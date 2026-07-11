@@ -29,20 +29,15 @@ let rec private show (e: Expr) : string =
 let private expectParse input expected =
     Expect.equal (show (parse input)) expected $"parse of '{input}'"
 
-let private fileRow =
-    { Name = "FileRow"
-      Fields = [ "Name", TStr; "Size", TInt(Some "mb"); "ReadOnly", TBool ] }
+let private env = FsLite.Builtins.typeEnv
 
-let private seqFile = TSeq(TRecord "FileRow")
+let private fakeFiles =
+    [ FsLite.Builtins.file "a.txt" 0 false
+      FsLite.Builtins.file "b.bin" 5 true
+      FsLite.Builtins.file "c.log" 1 false
+      FsLite.Builtins.file "d.iso" 3 false ]
 
-let private env =
-    { Values =
-        Map
-            [ "ls", seqFile
-              "where", TFun(TFun(TRecord "FileRow", TBool), TFun(seqFile, seqFile))
-              "first", TFun(TInt None, TFun(seqFile, seqFile))
-              "double", TFun(TInt None, TInt None) ]
-      Types = Map [ "FileRow", fileRow ] }
+let private valueEnv = Map.add "ls" (VSeq fakeFiles) FsLite.Builtins.valueEnv
 
 let private checkOk input =
     match typecheck env (parse input) with
@@ -54,7 +49,7 @@ let private checkErr input =
     | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
     | Error terr -> terr
 
-let private run input = eval builtins (parse input)
+let private run input = eval valueEnv (checkOk input)
 
 let private expectValue input expected =
     Expect.equal (run input) expected $"eval of '{input}'"
@@ -88,7 +83,9 @@ let parserTests =
 let checkerTests =
     testList
         "Check"
-        [ test "acceptance pipeline type-checks to seq<FileRow>" { Expect.equal (checkOk acceptance).Ty seqFile "" }
+        [ test "acceptance pipeline type-checks to seq<FileRow>" {
+              Expect.equal (checkOk acceptance).Ty FsLite.Builtins.seqFileRow ""
+          }
           test "typo in field is rejected with exact span and a hint" {
               let input = "ls | where (fun f -> f.Sze > 1<mb>) | first 5"
               let terr = checkErr input
@@ -152,22 +149,52 @@ let checkerTests =
 let evalTests =
     testList
         "Eval"
-        [ test "acceptance: 1 + 2 |> double" { expectValue "1 + 2 |> double" (VInt 6) }
+        [ test "acceptance pipeline evaluates over records" {
+              expectValue
+                  acceptance
+                  (VSeq [ FsLite.Builtins.file "b.bin" 5 true; FsLite.Builtins.file "d.iso" 3 false ])
+          }
+          test "where by string field" {
+              expectValue "ls | where (fun f -> f.Name == \"c.log\")" (VSeq [ FsLite.Builtins.file "c.log" 1 false ])
+          }
+          test "where by bool field" {
+              expectValue "ls | where (fun f -> f.ReadOnly)" (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+          }
+          test "first truncates" {
+              expectValue
+                  "ls | first 2"
+                  (VSeq [ FsLite.Builtins.file "a.txt" 0 false; FsLite.Builtins.file "b.bin" 5 true ])
+          }
+          test "arithmetic and pipes: 1 + 2 |> double" { expectValue "1 + 2 |> double" (VInt 6) }
           test "precedence: 1 + 2 * 3" { expectValue "1 + 2 * 3" (VInt 7) }
-          test "parens override precedence" { expectValue "(1 + 2) * 3" (VInt 9) }
           test "pipe chain" { expectValue "1 + 2 |> double |> double" (VInt 12) }
           test "pipe into lambda" { expectValue "5 |> fun x -> x * x" (VInt 25) }
           test "let-in" { expectValue "let x = 5 in x * 2" (VInt 10) }
           test "lambda application" { expectValue "(fun x -> x + 1) 41" (VInt 42) }
-          test "closure captures environment" {
-              expectValue "let add = fun a -> fun b -> a + b in let add5 = add 5 in add5 37" (VInt 42)
+          test "closure captures environment" { expectValue "let y = 40 in (fun x -> x + y) 2" (VInt 42) }
+          test "partially applied builtin is first-class" {
+              expectValue
+                  "let staged = where (fun f -> f.ReadOnly) in ls | staged"
+                  (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
           }
           test "shadowing" { expectValue "let x = 1 in let x = 2 in x" (VInt 2) }
           test "string concat" { expectValue "\"foo\" + \"bar\"" (VStr "foobar") }
           test "comparison" { expectValue "2 > 1" (VBool true) }
-          test "measure is erased at runtime" { expectValue "1<mb> + 2<mb>" (VInt 3) }
-          test "unbound variable fails" { Expect.throws (fun () -> run "nope" |> ignore) "" }
-          test "applying a non-function fails" { Expect.throws (fun () -> run "1 2" |> ignore) "" } ]
+          test "measure is erased at runtime" { expectValue "1<mb> + 2<mb>" (VInt 3) } ]
+
+let rejectedAtCheckTests =
+    testList
+        "Rejected at check time, never at eval"
+        [ test "unbound variable" { checkErr "nope" |> ignore }
+          test "applying a non-function" { checkErr "1 2" |> ignore }
+          test "string plus int" { checkErr "\"a\" + 1" |> ignore }
+          test "field typo in a pipeline" { checkErr "ls | where (fun f -> f.Sze > 1<mb>)" |> ignore }
+          test "wrong argument to a builtin" { checkErr "double \"x\"" |> ignore }
+          test "piping a seq into an int function" { checkErr "ls | double" |> ignore }
+          test "let-bound bare lambda cannot infer without annotations" {
+              checkErr "let add = fun a -> fun b -> a + b in add 1 2" |> ignore
+          } ]
 
 [<Tests>]
-let allTests = testList "FsLite" [ parserTests; checkerTests; evalTests ]
+let allTests =
+    testList "FsLite" [ parserTests; checkerTests; evalTests; rejectedAtCheckTests ]

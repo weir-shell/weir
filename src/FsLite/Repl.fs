@@ -9,10 +9,8 @@ let private prompt = "fslite> "
 type private State = { TypeEnv: TypeEnv; Values: Eval.Env }
 
 let private initial =
-    { TypeEnv =
-        { Values = Map [ "double", TFun(TInt None, TInt None) ]
-          Types = Map.empty }
-      Values = Eval.builtins }
+    { TypeEnv = Builtins.typeEnv
+      Values = Builtins.valueEnv }
 
 let private underline (span: Span) : string =
     String(' ', prompt.Length + span.Start.Col - 1)
@@ -23,7 +21,7 @@ let private tryRun (state: State) (e: Expr) : Result<Check.TypedExpr * Eval.Valu
     | Error terr -> Error(Check.formatError terr, Some terr.Span)
     | Ok te ->
         try
-            Ok(te, Eval.eval state.Values e)
+            Ok(te, Eval.eval state.Values te)
         with ex ->
             Error($"error: {ex.Message}", None)
 
