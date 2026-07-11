@@ -10,8 +10,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="Ast.fs" />
     <Compile Include="Types.fs" />
+    <Compile Include="Ast.fs" />
     <Compile Include="Check.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Eval.fs" />

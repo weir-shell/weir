@@ -6,7 +6,7 @@ type Ty =
     | TBool
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
-    | TRecord of name: string
+    | TNamed of name: string
 
 let rec formatTy (ty: Ty) : string =
     match ty with
@@ -22,12 +22,20 @@ let rec formatTy (ty: Ty) : string =
 
         $"{dom} -> {formatTy codomain}"
     | TSeq element -> $"seq<{formatTy element}>"
-    | TRecord name -> name
+    | TNamed name -> name
 
 type RecordDef =
     { Name: string
       Fields: (string * Ty) list }
 
+type UnionDef =
+    { Name: string
+      Cases: (string * Ty option) list }
+
+type TypeDef =
+    | Record of RecordDef
+    | Union of UnionDef
+
 type TypeEnv =
     { Values: Map<string, Ty>
-      Types: Map<string, RecordDef> }
+      Types: Map<string, TypeDef> }

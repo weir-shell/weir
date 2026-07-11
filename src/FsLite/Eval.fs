@@ -1,5 +1,7 @@
 module FsLite.Eval
 
+open FsLite.Types
+open FsLite.Ast
 open FsLite.Check
 
 let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
@@ -80,6 +82,15 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "==", a, b -> VBool(a = b)
     | _ -> unreachable $"the checker rejects '{op}' on {formatValue l} and {formatValue r}"
 
+let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
+    match p.PKind, v with
+    | PWildcard, _ -> Some []
+    | PVar name, _ -> Some [ name, v ]
+    | PCase(ctor, None), VUnion(case, None) -> if ctor = case then Some [] else None
+    | PCase(ctor, Some argPat), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
+    | PCase _, VUnion _ -> None
+    | PCase _, v -> unreachable $"the checker rejects constructor patterns on {formatValue v}"
+
 let rec eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
     | TEInt(n, _) -> VInt n
@@ -101,9 +112,29 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
             | None -> unreachable $"the checker rejects unknown field '{field}' on {name}"
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
+    | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
+    | TEMatch(scrutinee, arms) ->
+        let v = eval env scrutinee
+
+        let rec tryArms arms =
+            match arms with
+            | [] -> failwith $"match failure: no arm matched {formatValue v}"
+            | (pat, body) :: rest ->
+                match tryBind pat v with
+                | Some bindings -> eval (bindings |> List.fold (fun e (n, bv) -> Map.add n bv e) env) body
+                | None -> tryArms rest
+
+        tryArms arms
 
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
     | VClosure(param, body, closureEnv) -> eval (Map.add param arg closureEnv) body
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
+
+let constructorValues (cases: (string * Ty option) list) : (string * Value) list =
+    cases
+    |> List.map (fun (case, payload) ->
+        match payload with
+        | None -> case, VUnion(case, None)
+        | Some _ -> case, VBuiltin(fun v -> VUnion(case, Some v)))

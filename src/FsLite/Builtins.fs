@@ -8,7 +8,7 @@ let fileRow: RecordDef =
     { Name = "FileRow"
       Fields = [ "Name", TStr; "Size", TInt(Some "mb"); "ReadOnly", TBool ] }
 
-let seqFileRow = TSeq(TRecord fileRow.Name)
+let seqFileRow = TSeq(TNamed fileRow.Name)
 
 let file (name: string) (sizeMb: int) (readOnly: bool) : Value =
     VRecord(fileRow.Name, Map [ "Name", VStr name; "Size", VInt sizeMb; "ReadOnly", VBool readOnly ])
@@ -49,12 +49,12 @@ let private doubleImpl: Value =
 
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
-      "where", TFun(TFun(TRecord fileRow.Name, TBool), TFun(seqFileRow, seqFileRow)), whereImpl
+      "where", TFun(TFun(TNamed fileRow.Name, TBool), TFun(seqFileRow, seqFileRow)), whereImpl
       "first", TFun(TInt None, TFun(seqFileRow, seqFileRow)), firstImpl
       "double", TFun(TInt None, TInt None), doubleImpl ]
 
 let typeEnv: TypeEnv =
     { Values = entries |> List.map (fun (n, ty, _) -> n, ty) |> Map.ofList
-      Types = Map [ fileRow.Name, fileRow ] }
+      Types = Map [ fileRow.Name, Record fileRow ] }
 
 let valueEnv: Env = entries |> List.map (fun (n, _, v) -> n, v) |> Map.ofList

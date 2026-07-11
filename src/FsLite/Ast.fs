@@ -1,11 +1,20 @@
 module FsLite.Ast
 
+open FsLite.Types
+
 type Pos = { Line: int; Col: int }
 
 type Span = { Start: Pos; End: Pos }
 
 module Span =
     let union (a: Span) (b: Span) = { Start = a.Start; End = b.End }
+
+type Pattern = { PKind: PatternKind; PSpan: Span }
+
+and PatternKind =
+    | PWildcard
+    | PVar of string
+    | PCase of ctor: string * arg: Pattern option
 
 type Expr = { Kind: ExprKind; Span: Span }
 
@@ -20,7 +29,19 @@ and ExprKind =
     | EPipe of arg: Expr * fn: Expr
     | EField of target: Expr * field: string * fieldSpan: Span
     | EBinOp of op: string * left: Expr * right: Expr
+    | ERecord of fields: (string * Span * Expr) list
+    | EMatch of scrutinee: Expr * arms: (Pattern * Expr) list
+
+type DeclBody =
+    | DRecord of fields: (string * Ty) list
+    | DUnion of cases: (string * Ty option) list
+
+type Decl =
+    { Name: string
+      Body: DeclBody
+      Span: Span }
 
 type Stmt =
     | SLet of name: string * value: Expr
     | SExpr of Expr
+    | SType of Decl

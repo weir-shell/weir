@@ -1,9 +1,12 @@
 module FsLite.Parser
 
+open System
 open FParsec
+open FsLite.Types
 open FsLite.Ast
 
-let private keywords = Set [ "let"; "in"; "fun"; "true"; "false" ]
+let private keywords =
+    Set [ "let"; "in"; "fun"; "true"; "false"; "match"; "with"; "type"; "of" ]
 
 let private isIdentStart c = isLetter c || c = '_'
 let private isIdentCont c = isLetter c || isDigit c || c = '_'
@@ -23,16 +26,16 @@ let private rawWord = many1Satisfy2 isIdentStart isIdentCont
 let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
 
-let private ident =
-    attempt (
-        rawWord
-        >>= fun s ->
-            if keywords.Contains s then
-                fail $"'{s}' is a keyword"
-            else
-                preturn s
-    )
-    .>> ws
+let private notKeyword (w: string) =
+    if keywords.Contains w then
+        fail $"'{w}' is a keyword"
+    else
+        preturn w
+
+let private identSpanned =
+    attempt (spanned rawWord >>= fun (w, span) -> notKeyword w >>% (w, span)) .>> ws
+
+let private ident = identSpanned |>> fst
 
 let private expr, private exprRef = createParserForwardedToRef<Expr, unit> ()
 
@@ -68,7 +71,15 @@ let private parens =
     |>> fun (inner, span) -> { inner with Span = span }
     .>> ws
 
-let private atom = choice [ intLit; strLit; parens; wordAtom ]
+let private fieldAssign =
+    identSpanned .>> str_ws "=" .>>. expr |>> fun ((n, s), v) -> n, s, v
+
+let private recordLit =
+    spanned (pchar '{' >>. ws >>. sepBy1 fieldAssign (str_ws ";") .>> pchar '}' |>> ERecord)
+    |>> mkExpr
+    .>> ws
+
+let private atom = choice [ intLit; strLit; parens; recordLit; wordAtom ]
 
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 
@@ -102,8 +113,6 @@ let private letIn =
             { Kind = ELet(name, value, body)
               Span = { Start = pos p; End = body.Span.End } })
 
-let private opp = OperatorPrecedenceParser<Expr, unit, unit>()
-
 let private binOp op l r =
     { Kind = EBinOp(op, l, r)
       Span = Span.union l.Span r.Span }
@@ -112,24 +121,127 @@ let private pipeOp l r =
     { Kind = EPipe(l, r)
       Span = Span.union l.Span r.Span }
 
-opp.TermParser <- choice [ lambda; letIn; appChain ]
+let private mkOpp (withBarPipe: bool) =
+    let opp = OperatorPrecedenceParser<Expr, unit, unit>()
+    opp.AddOperator(InfixOperator("|>", ws, 1, Associativity.Left, pipeOp))
 
-opp.AddOperator(InfixOperator("|>", ws, 1, Associativity.Left, pipeOp))
-opp.AddOperator(InfixOperator("|", ws, 1, Associativity.Left, pipeOp))
-opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
-opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
-opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
-opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
-opp.AddOperator(InfixOperator("-", ws, 6, Associativity.Left, binOp "-"))
-opp.AddOperator(InfixOperator("*", ws, 7, Associativity.Left, binOp "*"))
-opp.AddOperator(InfixOperator("/", ws, 7, Associativity.Left, binOp "/"))
+    if withBarPipe then
+        opp.AddOperator(InfixOperator("|", ws, 1, Associativity.Left, pipeOp))
 
-exprRef.Value <- opp.ExpressionParser
+    opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
+    opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
+    opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
+    opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
+    opp.AddOperator(InfixOperator("-", ws, 6, Associativity.Left, binOp "-"))
+    opp.AddOperator(InfixOperator("*", ws, 7, Associativity.Left, binOp "*"))
+    opp.AddOperator(InfixOperator("/", ws, 7, Associativity.Left, binOp "/"))
+    opp
+
+let private fullOpp = mkOpp true
+let private armOpp = mkOpp false
+
+let private armExpr = armOpp.ExpressionParser
+
+let private pat, private patRef = createParserForwardedToRef<Pattern, unit> ()
+
+let private patWord =
+    attempt (spanned rawWord >>= fun (w, span) -> notKeyword w >>% (w, span)) .>> ws
+
+let private patAtom =
+    choice
+        [ between (str_ws "(") (str_ws ")") pat
+          patWord
+          |>> fun (w, span) ->
+              let kind =
+                  if w = "_" then PWildcard
+                  elif Char.IsUpper w[0] then PCase(w, None)
+                  else PVar w
+
+              { PKind = kind; PSpan = span } ]
+
+patRef.Value <-
+    choice
+        [ between (str_ws "(") (str_ws ")") pat
+          patWord
+          >>= fun (w, span) ->
+              if w = "_" then
+                  preturn { PKind = PWildcard; PSpan = span }
+              elif Char.IsUpper w[0] then
+                  opt patAtom
+                  |>> fun arg ->
+                      let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue span.End
+
+                      { PKind = PCase(w, arg)
+                        PSpan = { Start = span.Start; End = e } }
+              else
+                  preturn { PKind = PVar w; PSpan = span } ]
+
+let private matchArm = pat .>> str_ws "->" .>>. armExpr
+
+let private matchExpr =
+    pipe3
+        getPosition
+        (keyword "match" >>. expr .>> keyword "with")
+        (opt (str_ws "|") >>. matchArm .>>. many (attempt (str_ws "|" >>. matchArm)))
+        (fun p scrut (arm0, rest) ->
+            let arms = arm0 :: rest
+            let lastBody = snd (List.last arms)
+
+            { Kind = EMatch(scrut, arms)
+              Span =
+                { Start = pos p
+                  End = lastBody.Span.End } })
+
+fullOpp.TermParser <- choice [ lambda; letIn; matchExpr; appChain ]
+armOpp.TermParser <- appChain
+exprRef.Value <- fullOpp.ExpressionParser
+
+let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
+
+tySynRef.Value <-
+    rawWord
+    >>= fun w ->
+        match w with
+        | "int" -> opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws |>> TInt
+        | "string" -> ws >>% TStr
+        | "bool" -> ws >>% TBool
+        | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
+        | w when keywords.Contains w -> fail $"'{w}' is a keyword"
+        | w -> ws >>% TNamed w
+
+let private fieldDecl = ident .>> str_ws ":" .>>. tySyn
+
+let private recordBody =
+    str_ws "{" >>. sepBy1 fieldDecl (str_ws ";") .>> str_ws "}" |>> DRecord
+
+let private caseDecl =
+    spanned rawWord .>> ws
+    >>= fun (w, _) ->
+        if keywords.Contains w then
+            fail $"'{w}' is a keyword"
+        elif not (Char.IsUpper w[0]) then
+            fail "constructor names must start with an uppercase letter"
+        else
+            opt (keyword "of" >>. tySyn) |>> fun ty -> w, ty
+
+let private unionBody = opt (str_ws "|") >>. sepBy1 caseDecl (str_ws "|") |>> DUnion
+
+let private typeDecl =
+    pipe3
+        getPosition
+        (keyword "type" >>. ident .>> str_ws "=" .>>. (recordBody <|> unionBody))
+        getPosition
+        (fun p (name, body) e ->
+            SType
+                { Name = name
+                  Body = body
+                  Span = { Start = pos p; End = pos e } })
 
 let private topLet =
     attempt (keyword "let" >>. ident .>> str_ws "=" .>>. expr .>> eof) |>> SLet
 
-let private stmt = ws >>. (topLet <|> (expr .>> eof |>> SExpr))
+let private stmt =
+    ws >>. choice [ typeDecl .>> eof; topLet; expr .>> eof |>> SExpr ]
 
 let parseStmt (input: string) : Result<Stmt, string> =
     match run stmt input with
@@ -139,5 +251,5 @@ let parseStmt (input: string) : Result<Stmt, string> =
 let parseExpr (input: string) : Result<Expr, string> =
     match parseStmt input with
     | Result.Ok(SExpr e) -> Result.Ok e
-    | Result.Ok(SLet _) -> Result.Error "expected an expression, got a let statement"
+    | Result.Ok _ -> Result.Error "expected an expression, got a declaration"
     | Result.Error msg -> Result.Error msg
