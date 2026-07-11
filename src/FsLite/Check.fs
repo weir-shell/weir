@@ -76,9 +76,168 @@ let private firstDup (xs: string list) : string option =
     |> List.countBy id
     |> List.tryPick (fun (x, n) -> if n > 1 then Some x else None)
 
-let private bindAll (env: TypeEnv) (bindings: (string * Ty) list) : TypeEnv =
+let private bindParams (env: TypeEnv) (bindings: (string * Ty) list) : TypeEnv =
     { env with
-        Values = bindings |> List.fold (fun vs (n, t) -> Map.add n t vs) env.Values }
+        Values = bindings |> List.fold (fun vs (n, t) -> Map.add n (mono t) vs) env.Values }
+
+type private Ctx =
+    { mutable Fresh: int
+      mutable Subst: Map<string, Ty>
+      mutable Rows: Map<string, Map<string, Ty * Span>> }
+
+let private newCtx () =
+    { Fresh = 0
+      Subst = Map.empty
+      Rows = Map.empty }
+
+let private freshName (ctx: Ctx) (prefix: string) : string =
+    ctx.Fresh <- ctx.Fresh + 1
+    $"{prefix}{ctx.Fresh}"
+
+let rec private resolve (ctx: Ctx) (ty: Ty) : Ty =
+    match ty with
+    | TVar v ->
+        match Map.tryFind v ctx.Subst with
+        | Some t -> resolve ctx t
+        | None -> ty
+    | TRowVar(r, _) ->
+        match Map.tryFind r ctx.Subst with
+        | Some t -> resolve ctx t
+        | None -> ty
+    | t -> t
+
+let rec private finalTy (ctx: Ctx) (ty: Ty) : Ty =
+    match resolve ctx ty with
+    | TFun(a, b) -> TFun(finalTy ctx a, finalTy ctx b)
+    | TSeq t -> TSeq(finalTy ctx t)
+    | TRowVar(r, _) ->
+        let fields =
+            Map.tryFind r ctx.Rows
+            |> Option.defaultValue Map.empty
+            |> Map.toList
+            |> List.map (fun (f, (t, _)) -> f, finalTy ctx t)
+
+        TRowVar(r, fields)
+    | t -> t
+
+let private hasVars (ctx: Ctx) (ty: Ty) : bool =
+    not (Set.isEmpty (tyVars (finalTy ctx ty)))
+
+let private occurs (ctx: Ctx) (v: string) (ty: Ty) : bool =
+    let seenRows = System.Collections.Generic.HashSet<string>()
+
+    let rec go ty =
+        match resolve ctx ty with
+        | TVar u -> u = v
+        | TRowVar(r, _) ->
+            r = v
+            || (seenRows.Add r
+                && Map.tryFind r ctx.Rows
+                   |> Option.defaultValue Map.empty
+                   |> Map.exists (fun _ (t, _) -> go t))
+        | TFun(a, b) -> go a || go b
+        | TSeq t -> go t
+        | _ -> false
+
+    go ty
+
+let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
+    if Set.isEmpty sch.Forall then
+        sch.Ty
+    else
+        let rec rowNames ty =
+            match ty with
+            | TRowVar(r, fields) -> fields |> List.fold (fun acc (_, t) -> acc + rowNames t) (Set.singleton r)
+            | TFun(a, b) -> rowNames a + rowNames b
+            | TSeq t -> rowNames t
+            | _ -> Set.empty
+
+        let rows = rowNames sch.Ty
+
+        let mapping =
+            sch.Forall
+            |> Set.toList
+            |> List.map (fun v -> v, freshName ctx (if rows.Contains v then "r" else "a"))
+            |> Map.ofList
+
+        let rec rename ty =
+            match ty with
+            | TVar v ->
+                match Map.tryFind v mapping with
+                | Some v' -> TVar v'
+                | None -> ty
+            | TRowVar(r, fields) ->
+                let fields' = fields |> List.map (fun (f, t) -> f, rename t)
+
+                match Map.tryFind r mapping with
+                | Some r' ->
+                    ctx.Rows <- Map.add r' (fields' |> List.map (fun (f, t) -> f, (t, span)) |> Map.ofList) ctx.Rows
+                    TRowVar(r', fields')
+                | None -> TRowVar(r, fields')
+            | TFun(a, b) -> TFun(rename a, rename b)
+            | TSeq t -> TSeq(rename t)
+            | t -> t
+
+        rename sch.Ty
+
+let private envFreeVars (ctx: Ctx) (env: TypeEnv) : Set<string> =
+    env.Values
+    |> Map.fold (fun acc _ sch -> acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall)) Set.empty
+
+let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actual: Ty) : Result<unit, TypeError> =
+    let expected = resolve ctx expected
+    let actual = resolve ctx actual
+
+    match expected, actual with
+    | e, a when e = a -> Ok()
+    | TVar v, t
+    | t, TVar v ->
+        if occurs ctx v t then
+            err span $"cannot construct the infinite type '{v} = {formatTy (finalTy ctx t)}"
+        else
+            ctx.Subst <- Map.add v t ctx.Subst
+            Ok()
+    | TRowVar(r, _), TNamed n
+    | TNamed n, TRowVar(r, _) -> dischargeRow ctx env span r n
+    | TRowVar(r1, _), TRowVar(r2, _) -> mergeRows ctx env r1 r2
+    | (TRowVar _ as rv), t
+    | t, (TRowVar _ as rv) -> err span $"expected {formatTy (finalTy ctx rv)}, got {formatTy (finalTy ctx t)}"
+    | TFun(e1, e2), TFun(a1, a2) -> bind ctx env span e1 a1 |> Result.bind (fun () -> bind ctx env span e2 a2)
+    | TSeq e, TSeq a -> bind ctx env span e a
+    | e, a -> mismatch span (finalTy ctx e) (finalTy ctx a)
+
+and private dischargeRow (ctx: Ctx) (env: TypeEnv) (span: Span) (r: string) (name: string) : Result<unit, TypeError> =
+    match Map.tryFind name env.Types with
+    | Some(Record def) ->
+        let constraints =
+            Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty |> Map.toList
+
+        ctx.Subst <- Map.add r (TNamed name) ctx.Subst
+
+        allOk constraints (fun (field, (ft, fspan)) ->
+            match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
+            | Some(_, declTy) -> bind ctx env fspan declTy ft
+            | None ->
+                let hint = didYouMean field (List.map fst def.Fields)
+                err fspan $"{name} has no field '{field}'{hint}")
+    | Some(Union _) -> err span $"{name} is a union; only records have fields"
+    | None -> err span $"unknown type '{name}'"
+
+and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Result<unit, TypeError> =
+    if r1 = r2 then
+        Ok()
+    else
+        let fields1 = Map.tryFind r1 ctx.Rows |> Option.defaultValue Map.empty
+        ctx.Subst <- Map.add r1 (TRowVar(r2, [])) ctx.Subst
+
+        allOk (Map.toList fields1) (fun (field, (ft, fspan)) ->
+            let fields2 = Map.tryFind r2 ctx.Rows |> Option.defaultValue Map.empty
+
+            match Map.tryFind field fields2 with
+            | Some(ft2, _) -> bind ctx env fspan ft2 ft
+            | None ->
+                ctx.Rows <- Map.add r2 (Map.add field (ft, fspan) fields2) ctx.Rows
+                Ok())
 
 let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
     match ty with
@@ -87,7 +246,8 @@ let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
     | TBool -> true
     | TFun _
     | TSeq _
-    | TVar _ -> false
+    | TVar _
+    | TRowVar _ -> false
     | TNamed n ->
         seen.Contains n
         || (match Map.tryFind n env.Types with
@@ -97,8 +257,28 @@ let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
                 |> List.forall (fun (_, payload) -> payload |> Option.forall (isEquatable env (Set.add n seen)))
             | None -> false)
 
-let private typeBinOp (env: TypeEnv) (opSpan: Span) (op: string) (l: TypedExpr) (r: TypedExpr) : Result<Ty, TypeError> =
-    match op, l.Ty, r.Ty with
+let rec private typeBinOp
+    (ctx: Ctx)
+    (env: TypeEnv)
+    (opSpan: Span)
+    (op: string)
+    (l: TypedExpr)
+    (r: TypedExpr)
+    : Result<Ty, TypeError> =
+    let retryAfter binding =
+        binding |> Result.bind (fun () -> typeBinOp ctx env opSpan op l r)
+
+    match op, resolve ctx l.Ty, resolve ctx r.Ty with
+    | ("*" | "/"), TVar _, TVar _ ->
+        retryAfter (
+            bind ctx env l.Span (TInt None) l.Ty
+            |> Result.bind (fun () -> bind ctx env r.Span (TInt None) r.Ty)
+        )
+    | _, TVar _, ((TInt _ | TStr | TBool) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
+    | _, ((TInt _ | TStr | TBool) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
+    | _, TVar _, TVar _ -> err opSpan $"cannot infer the operand types of '{op}'; pipe data in or use concrete values"
+    | _, TRowVar _, _
+    | _, _, TRowVar _ -> err opSpan $"operator '{op}' is not defined for records"
     | ("+" | "-"), TInt m, TInt n when m = n -> Ok(TInt m)
     | "+", TStr, TStr -> Ok TStr
     | ("*" | "/"), TInt None, TInt None -> Ok(TInt None)
@@ -110,46 +290,12 @@ let private typeBinOp (env: TypeEnv) (opSpan: Span) (op: string) (l: TypedExpr) 
     | _, a, b when a <> b -> mismatch r.Span a b
     | _, a, _ -> err opSpan $"operator '{op}' is not defined for {formatTy a}"
 
-let rec private freeVars (ty: Ty) : Set<string> =
-    match ty with
-    | TVar v -> Set.singleton v
-    | TFun(a, b) -> Set.union (freeVars a) (freeVars b)
-    | TSeq t -> freeVars t
-    | TInt _
-    | TStr
-    | TBool
-    | TNamed _ -> Set.empty
-
-let rec private substTy (s: Map<string, Ty>) (ty: Ty) : Ty =
-    match ty with
-    | TVar v -> Map.tryFind v s |> Option.defaultValue ty
-    | TFun(a, b) -> TFun(substTy s a, substTy s b)
-    | TSeq t -> TSeq(substTy s t)
-    | t -> t
-
-let rec private bindVars
-    (span: Span)
-    (declared: Ty)
-    (actual: Ty)
-    (s: Map<string, Ty>)
-    : Result<Map<string, Ty>, TypeError> =
-    match declared, actual with
-    | TVar v, a ->
-        match Map.tryFind v s with
-        | None -> Ok(Map.add v a s)
-        | Some bound when bound = a -> Ok s
-        | Some bound -> mismatch span bound a
-    | TFun(d1, d2), TFun(a1, a2) -> bindVars span d1 a1 s |> Result.bind (bindVars span d2 a2)
-    | TSeq d, TSeq a -> bindVars span d a s
-    | d, a when d = a -> Ok s
-    | d, a -> mismatch span (substTy s d) a
-
-let rec private funParams (arity: int) (ty: Ty) : (Ty list * Ty) option =
+let rec private funParams (ctx: Ctx) (arity: int) (ty: Ty) : (Ty list * Ty) option =
     if arity = 0 then
         Some([], ty)
     else
-        match ty with
-        | TFun(dom, cod) -> funParams (arity - 1) cod |> Option.map (fun (ps, r) -> dom :: ps, r)
+        match resolve ctx ty with
+        | TFun(dom, cod) -> funParams ctx (arity - 1) cod |> Option.map (fun (ps, r) -> dom :: ps, r)
         | _ -> None
 
 let rec private spine (e: Expr) : Expr * Expr list =
@@ -203,7 +349,7 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
             | None -> err p.PSpan $"unknown type '{typeName}'"
         | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
-let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
+let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
     | EInt(n, m) ->
         Ok
@@ -222,66 +368,55 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
               Span = expr.Span }
     | EVar name ->
         match Map.tryFind name env.Values with
-        | Some ty ->
+        | Some sch ->
             Ok
                 { Kind = TEVar name
-                  Ty = ty
+                  Ty = instantiate ctx expr.Span sch
                   Span = expr.Span }
         | None ->
             let hint = didYouMean name (Map.keys env.Values)
             err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, value, body) ->
         result {
-            let! tvalue = infer env value
-            let! tbody = infer (bindAll env [ name, tvalue.Ty ]) body
+            let! tvalue = infer ctx env value
+            let valueTy = finalTy ctx tvalue.Ty
+
+            let scheme =
+                { Forall = tyVars valueTy - envFreeVars ctx env
+                  Ty = valueTy }
+
+            let! tbody =
+                infer
+                    ctx
+                    { env with
+                        Values = Map.add name scheme env.Values }
+                    body
 
             return
                 { Kind = TELet(name, tvalue, tbody)
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
-    | ELambda(param, _) ->
-        err expr.Span $"cannot infer the type of parameter '{param}'; use the lambda where a function type is expected"
-    | EApp(({ Kind = ELambda(param, body) } as fnExpr), arg) ->
+    | ELambda(param, body) ->
         result {
-            let! targ = infer env arg
-            let! tbody = infer (bindAll env [ param, targ.Ty ]) body
-
-            let tfn =
-                { Kind = TELambda(param, tbody)
-                  Ty = TFun(targ.Ty, tbody.Ty)
-                  Span = fnExpr.Span }
+            let paramTy = TVar(freshName ctx "a")
+            let! tbody = infer ctx (bindParams env [ param, paramTy ]) body
 
             return
-                { Kind = TEApp(tfn, targ)
-                  Ty = tbody.Ty
+                { Kind = TELambda(param, tbody)
+                  Ty = TFun(paramTy, tbody.Ty)
                   Span = expr.Span }
         }
     | EApp _ ->
         let head, args = spine expr
-        checkSpine env head args None
-    | EPipe(arg, ({ Kind = ELambda(param, body) } as fnExpr)) ->
-        result {
-            let! targ = infer env arg
-            let! tbody = infer (bindAll env [ param, targ.Ty ]) body
-
-            let tfn =
-                { Kind = TELambda(param, tbody)
-                  Ty = TFun(targ.Ty, tbody.Ty)
-                  Span = fnExpr.Span }
-
-            return
-                { Kind = TEPipe(targ, tfn)
-                  Ty = tbody.Ty
-                  Span = expr.Span }
-        }
+        checkSpine ctx env head args None
     | EPipe(arg, ({ Kind = ETo fmt } as toExpr)) ->
         result {
-            let! targ = infer env arg
+            let! targ = infer ctx env arg
 
-            match fmt, targ.Ty with
+            match fmt, resolve ctx targ.Ty with
             | "json", TSeq elem ->
-                do! jsonableElem toExpr.Span env elem
+                do! jsonableElem toExpr.Span env (resolve ctx elem)
 
                 let tto =
                     { Kind = TETo fmt
@@ -297,11 +432,11 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
         }
     | EPipe(arg, fnExpr) ->
         result {
-            let! targ = infer env arg
+            let! targ = infer ctx env arg
             let head, args = spine fnExpr
-            let! tfn = checkSpine env head args (Some(targ.Ty, arg.Span))
+            let! tfn = checkSpine ctx env head args (Some(targ.Ty, arg.Span))
 
-            match tfn.Ty with
+            match resolve ctx tfn.Ty with
             | TFun(_, resultTy) ->
                 return
                     { Kind = TEPipe(targ, tfn)
@@ -311,9 +446,9 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
         }
     | EField(target, field, fieldSpan) ->
         result {
-            let! ttarget = infer env target
+            let! ttarget = infer ctx env target
 
-            match ttarget.Ty with
+            match resolve ctx ttarget.Ty with
             | TNamed typeName ->
                 match Map.tryFind typeName env.Types with
                 | Some(Record def) ->
@@ -329,13 +464,40 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
                 | Some(Union _) ->
                     return! err fieldSpan $"{typeName} is a union; match on it instead of accessing fields"
                 | None -> return! err target.Span $"unknown type '{typeName}'"
+            | TVar v ->
+                let r = freshName ctx "r"
+                ctx.Subst <- Map.add v (TRowVar(r, [])) ctx.Subst
+                let fieldTy = TVar(freshName ctx "a")
+                ctx.Rows <- Map.add r (Map [ field, (fieldTy, fieldSpan) ]) ctx.Rows
+
+                return
+                    { Kind = TEField(ttarget, field)
+                      Ty = fieldTy
+                      Span = expr.Span }
+            | TRowVar(r, _) ->
+                let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
+
+                match Map.tryFind field existing with
+                | Some(fieldTy, _) ->
+                    return
+                        { Kind = TEField(ttarget, field)
+                          Ty = fieldTy
+                          Span = expr.Span }
+                | None ->
+                    let fieldTy = TVar(freshName ctx "a")
+                    ctx.Rows <- Map.add r (Map.add field (fieldTy, fieldSpan) existing) ctx.Rows
+
+                    return
+                        { Kind = TEField(ttarget, field)
+                          Ty = fieldTy
+                          Span = expr.Span }
             | ty -> return! err target.Span $"only records have fields; this expression has type {formatTy ty}"
         }
     | EBinOp(op, left, right) ->
         result {
-            let! tleft = infer env left
-            let! tright = infer env right
-            let! ty = typeBinOp env expr.Span op tleft tright
+            let! tleft = infer ctx env left
+            let! tright = infer ctx env right
+            let! ty = typeBinOp ctx env expr.Span op tleft tright
 
             return
                 { Kind = TEBinOp(op, tleft, tright)
@@ -363,7 +525,7 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
                 | [ def ] ->
                     let checkField (name: string, _: Span, value: Expr) =
                         let declaredTy = def.Fields |> List.find (fun (f, _) -> f = name) |> snd
-                        check env value declaredTy |> Result.map (fun tv -> name, tv)
+                        check ctx env value declaredTy |> Result.map (fun tv -> name, tv)
 
                     let! tfields =
                         fields
@@ -408,21 +570,22 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
             | "json", None -> return! err expr.Span "'from json' needs a record name, e.g. from json FileRow"
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain"
         }
-    | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs | to json"
+    | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs |> to json"
     | EMatch(scrutinee, arms) ->
         result {
-            let! tscrutinee = infer env scrutinee
+            let! tscrutinee = infer ctx env scrutinee
+            let scrutTy = resolve ctx tscrutinee.Ty
 
             match arms with
             | [] -> return! err expr.Span "a match needs at least one arm"
             | (pat0, body0) :: rest ->
-                let! bindings0 = checkPattern env tscrutinee.Ty pat0
-                let! tbody0 = infer (bindAll env bindings0) body0
+                let! bindings0 = checkPattern env scrutTy pat0
+                let! tbody0 = infer ctx (bindParams env bindings0) body0
 
                 let checkArm (pat: Pattern, body: Expr) =
                     result {
-                        let! bindings = checkPattern env tscrutinee.Ty pat
-                        let! tbody = check (bindAll env bindings) body tbody0.Ty
+                        let! bindings = checkPattern env scrutTy pat
+                        let! tbody = check ctx (bindParams env bindings) body tbody0.Ty
                         return pat, tbody
                     }
 
@@ -439,128 +602,103 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
         }
 
 and private checkSpine
+    (ctx: Ctx)
     (env: TypeEnv)
     (head: Expr)
     (args: Expr list)
     (piped: (Ty * Span) option)
     : Result<TypedExpr, TypeError> =
     result {
-        let! thead = infer env head
+        let! thead = infer ctx env head
         let arity = args.Length + (if piped.IsSome then 1 else 0)
 
-        match funParams arity thead.Ty with
+        match funParams ctx arity thead.Ty with
         | None ->
             match piped with
             | Some _ ->
                 return!
                     err
                         head.Span
-                        $"the right side of a pipe must be a function taking the piped value; it has type {formatTy thead.Ty}"
+                        $"the right side of a pipe must be a function taking the piped value; it has type {formatTy (finalTy ctx thead.Ty)}"
             | None ->
                 return!
                     err
                         head.Span
-                        $"this expression is not a function taking {args.Length} argument(s); it has type {formatTy thead.Ty}"
+                        $"this expression is not a function taking {args.Length} argument(s); it has type {formatTy (finalTy ctx thead.Ty)}"
         | Some(paramTys, resultTy) ->
-            let argParams = List.truncate args.Length paramTys
-
-            let! s0 =
+            do!
                 match piped with
-                | Some(pipedTy, pipedSpan) -> bindVars pipedSpan (List.last paramTys) pipedTy Map.empty
-                | None -> Ok Map.empty
+                | Some(pipedTy, pipedSpan) -> bind ctx env pipedSpan (List.last paramTys) pipedTy
+                | None -> Ok()
 
-            let isLambda (e: Expr) =
-                match e.Kind with
-                | ELambda _ -> true
-                | _ -> false
-
-            let indexed = List.zip args argParams |> List.mapi (fun i (a, p) -> i, a, p)
-
-            let inferPass (s, typed: Map<int, TypedExpr>) (i, arg: Expr, paramTy) =
-                result {
-                    let expected = substTy s paramTy
-
-                    if Set.isEmpty (freeVars expected) then
-                        let! targ = check env arg expected
-                        return s, Map.add i targ typed
-                    else
-                        let! targ = infer env arg
-                        let! s' = bindVars arg.Span expected targ.Ty s
-                        return s', Map.add i targ typed
-                }
-
-            let lambdaPass (s, typed: Map<int, TypedExpr>) (i, arg: Expr, paramTy) =
-                result {
-                    let expected = substTy s paramTy
-
-                    match arg.Kind, expected with
-                    | ELambda(param, body), TFun(dom, cod) when Set.isEmpty (freeVars dom) ->
-                        let! tbody = infer (bindAll env [ param, dom ]) body
-                        let! s' = bindVars body.Span cod tbody.Ty s
-
-                        let targ =
-                            { Kind = TELambda(param, tbody)
-                              Ty = TFun(dom, tbody.Ty)
-                              Span = arg.Span }
-
-                        return s', Map.add i targ typed
-                    | ELambda _, TFun _ ->
-                        return! err arg.Span "cannot infer the lambda's parameter type here; pipe the data in first"
-                    | ELambda _, _ -> return! err arg.Span $"expected {formatTy expected}, got a function"
-                    | _, _ -> return! inferPass (s, typed) (i, arg, paramTy)
-                }
-
-            let foldArgs pass state items =
-                items
-                |> List.fold (fun acc item -> Result.bind (fun st -> pass st item) acc) (Ok state)
-
-            let notLambdas = indexed |> List.filter (fun (_, a, _) -> not (isLambda a))
-            let lambdas = indexed |> List.filter (fun (_, a, _) -> isLambda a)
-
-            let! s1, typed1 = foldArgs inferPass (s0, Map.empty) notLambdas
-            let! s2, typed2 = foldArgs lambdaPass (s1, typed1) lambdas
+            let! typedArgs =
+                List.zip args (List.truncate args.Length paramTys)
+                |> List.fold
+                    (fun acc (arg, paramTy) ->
+                        acc
+                        |> Result.bind (fun ts -> check ctx env arg paramTy |> Result.map (fun t -> t :: ts)))
+                    (Ok [])
+                |> Result.map List.rev
 
             let fullTy =
-                List.foldBack (fun p acc -> TFun(substTy s2 p, acc)) paramTys (substTy s2 resultTy)
+                List.foldBack (fun p acc -> TFun(finalTy ctx p, acc)) paramTys (finalTy ctx resultTy)
 
-            match piped with
-            | Some _ when not (Set.isEmpty (freeVars (substTy s2 resultTy))) ->
-                return! err head.Span $"cannot infer the type parameters of {formatTy thead.Ty}"
-            | _ ->
-                let applied =
-                    args
-                    |> List.mapi (fun i arg -> typed2[i], arg)
-                    |> List.fold
-                        (fun (acc: TypedExpr) (targ, argExpr) ->
-                            let cod =
-                                match acc.Ty with
-                                | TFun(_, c) -> c
-                                | _ -> failwith "unreachable: funParams guaranteed a function"
+            let applied =
+                typedArgs
+                |> List.fold
+                    (fun (acc: TypedExpr) targ ->
+                        let cod =
+                            match acc.Ty with
+                            | TFun(_, c) -> c
+                            | _ -> failwith "unreachable: funParams guaranteed a function"
 
-                            { Kind = TEApp(acc, targ)
-                              Ty = cod
-                              Span = Span.union acc.Span argExpr.Span })
-                        { thead with Ty = fullTy }
+                        { Kind = TEApp(acc, targ)
+                          Ty = cod
+                          Span = Span.union acc.Span targ.Span })
+                    { thead with Ty = fullTy }
 
-                return applied
+            return applied
     }
 
-and check (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeError> =
-    match expr.Kind, expected with
+and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeError> =
+    match expr.Kind, resolve ctx expected with
     | ELambda(param, body), TFun(dom, cod) ->
         result {
-            let! tbody = check (bindAll env [ param, dom ]) body cod
+            let env' = bindParams env [ param, dom ]
+
+            let! tbody =
+                if hasVars ctx cod then
+                    result {
+                        let! tbody = infer ctx env' body
+                        do! bind ctx env tbody.Span cod tbody.Ty
+                        return tbody
+                    }
+                else
+                    check ctx env' body cod
 
             return
                 { Kind = TELambda(param, tbody)
-                  Ty = expected
+                  Ty = TFun(dom, tbody.Ty)
                   Span = expr.Span }
         }
-    | ELambda _, _ -> err expr.Span $"expected {formatTy expected}, got a function"
+    | ELambda _, (TInt _ | TStr | TBool | TSeq _ | TNamed _ as t) ->
+        err expr.Span $"expected {formatTy t}, got a function"
     | ELet(name, value, body), _ ->
         result {
-            let! tvalue = infer env value
-            let! tbody = check (bindAll env [ name, tvalue.Ty ]) body expected
+            let! tvalue = infer ctx env value
+            let valueTy = finalTy ctx tvalue.Ty
+
+            let scheme =
+                { Forall = tyVars valueTy - envFreeVars ctx env
+                  Ty = valueTy }
+
+            let! tbody =
+                check
+                    ctx
+                    { env with
+                        Values = Map.add name scheme env.Values }
+                    body
+                    expected
 
             return
                 { Kind = TELet(name, tvalue, tbody)
@@ -569,15 +707,31 @@ and check (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeErr
         }
     | _ ->
         result {
-            let! te = infer env expr
-
-            if te.Ty = expected then
-                return te
-            else
-                return! mismatch expr.Span expected te.Ty
+            let! te = infer ctx env expr
+            do! bind ctx env expr.Span expected te.Ty
+            return te
         }
 
-let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> = infer env expr
+let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
+    let kind =
+        match te.Kind with
+        | TELet(n, v, b) -> TELet(n, finalizeExpr ctx v, finalizeExpr ctx b)
+        | TELambda(p, b) -> TELambda(p, finalizeExpr ctx b)
+        | TEApp(f, a) -> TEApp(finalizeExpr ctx f, finalizeExpr ctx a)
+        | TEPipe(a, f) -> TEPipe(finalizeExpr ctx a, finalizeExpr ctx f)
+        | TEField(t, f) -> TEField(finalizeExpr ctx t, f)
+        | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
+        | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
+        | TEMatch(s, arms) -> TEMatch(finalizeExpr ctx s, arms |> List.map (fun (p, b) -> p, finalizeExpr ctx b))
+        | leaf -> leaf
+
+    { te with
+        Kind = kind
+        Ty = finalTy ctx te.Ty }
+
+let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
+    let ctx = newCtx ()
+    infer ctx env expr |> Result.map (finalizeExpr ctx)
 
 let rec private validateTy (env: TypeEnv) (selfName: string) (span: Span) (ty: Ty) : Result<unit, TypeError> =
     match ty with
@@ -587,6 +741,7 @@ let rec private validateTy (env: TypeEnv) (selfName: string) (span: Span) (ty: T
     | TSeq t -> validateTy env selfName span t
     | TFun(a, b) -> Result.bind (fun () -> validateTy env selfName span b) (validateTy env selfName span a)
     | TVar v -> err span $"type variables ('{v}) are not allowed in declarations"
+    | TRowVar _ -> err span "row types are not allowed in declarations"
     | TNamed n ->
         if n = selfName || Map.containsKey n env.Types then
             Ok()
@@ -628,7 +783,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
 
                 let values =
                     cases
-                    |> List.fold (fun vs (c, payload) -> Map.add c (ctorTy payload) vs) env.Values
+                    |> List.fold (fun vs (c, payload) -> Map.add c (generalize (ctorTy payload)) vs) env.Values
 
                 return
                     { env with

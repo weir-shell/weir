@@ -156,7 +156,7 @@ let private entries: (string * Ty * Value) list =
       "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl ]
 
 let typeEnv: TypeEnv =
-    { Values = entries |> List.map (fun (n, ty, _) -> n, ty) |> Map.ofList
+    { Values = entries |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList
       Types = Map [ fileRow.Name, Record fileRow; changeDef.Name, Record changeDef ] }
 
 let valueEnv: Env = entries |> List.map (fun (n, _, v) -> n, v) |> Map.ofList

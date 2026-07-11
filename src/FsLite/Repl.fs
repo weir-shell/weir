@@ -112,7 +112,7 @@ let rec private loop (state: State) =
 
                     { TypeEnv =
                         { state.TypeEnv with
-                            Values = Map.add name te.Ty state.TypeEnv.Values }
+                            Values = Map.add name (generalize te.Ty) state.TypeEnv.Values }
                       Values = Map.add name v state.Values }
             | Ok(SExpr e) ->
                 match tryRun state e with

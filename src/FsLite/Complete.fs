@@ -56,7 +56,7 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
 
         let headTy =
             match Map.tryFind head env.Values with
-            | Some ty -> Some ty
+            | Some sch -> Some sch.Ty
             | None -> pipelineElemTy env (text.Substring(0, wordStart))
 
         let finalTy =

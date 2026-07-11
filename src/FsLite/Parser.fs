@@ -149,26 +149,16 @@ let private pipeOp l r =
     { Kind = EPipe(l, r)
       Span = Span.union l.Span r.Span }
 
-let private mkOpp (withBarPipe: bool) =
-    let opp = OperatorPrecedenceParser<Expr, unit, unit>()
-    opp.AddOperator(InfixOperator("|>", ws, 1, Associativity.Left, pipeOp))
+let private opp = OperatorPrecedenceParser<Expr, unit, unit>()
 
-    if withBarPipe then
-        opp.AddOperator(InfixOperator("|", ws, 1, Associativity.Left, pipeOp))
-
-    opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
-    opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
-    opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
-    opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
-    opp.AddOperator(InfixOperator("-", ws, 6, Associativity.Left, binOp "-"))
-    opp.AddOperator(InfixOperator("*", ws, 7, Associativity.Left, binOp "*"))
-    opp.AddOperator(InfixOperator("/", ws, 7, Associativity.Left, binOp "/"))
-    opp
-
-let private fullOpp = mkOpp true
-let private armOpp = mkOpp false
-
-let private armExpr = armOpp.ExpressionParser
+opp.AddOperator(InfixOperator("|>", ws, 1, Associativity.Left, pipeOp))
+opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
+opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
+opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
+opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
+opp.AddOperator(InfixOperator("-", ws, 6, Associativity.Left, binOp "-"))
+opp.AddOperator(InfixOperator("*", ws, 7, Associativity.Left, binOp "*"))
+opp.AddOperator(InfixOperator("/", ws, 7, Associativity.Left, binOp "/"))
 
 let private pat, private patRef = createParserForwardedToRef<Pattern, unit> ()
 
@@ -222,7 +212,7 @@ let private toExpr =
     spanned (keyword "to" >>. ident)
     |>> fun (fmt, span) -> { Kind = ETo fmt; Span = span }
 
-let private matchArm = pat .>> str_ws "->" .>>. armExpr
+let private matchArm = pat .>> str_ws "->" .>>. expr
 
 let private matchExpr =
     pipe3
@@ -238,9 +228,8 @@ let private matchExpr =
                 { Start = pos p
                   End = lastBody.Span.End } })
 
-fullOpp.TermParser <- choice [ lambda; letIn; matchExpr; fromExpr; toExpr; appChain ]
-armOpp.TermParser <- appChain
-exprRef.Value <- fullOpp.ExpressionParser
+opp.TermParser <- choice [ lambda; letIn; matchExpr; fromExpr; toExpr; appChain ]
+exprRef.Value <- opp.ExpressionParser
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 

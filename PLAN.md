@@ -56,10 +56,10 @@ Scope: learning spikes, not a product build. Each spike is a self-contained sess
 
 ## Parked — revisit only after Spike 5
 
-- Row polymorphism (biggest checker-complexity jump; nominal first)
+- ~~Row polymorphism~~ — DONE (see NOTES.md): TRowVar + schemes + unification-lite; `|>`-only grammar landed alongside
 - Adapter automation (schema codegen, completion-file scraping, LLM-synthesized adapters from samples)
 - LSP server for script files
-- Daemon architecture (only if AOT startup disappoints)
+- ~~Daemon architecture~~ — moot: AOT cold start is 6ms
 
 ## Session hygiene
 
