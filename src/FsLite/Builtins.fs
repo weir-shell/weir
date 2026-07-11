@@ -1,5 +1,6 @@
 module FsLite.Builtins
 
+open System.Diagnostics
 open System.IO
 open FsLite.Types
 open FsLite.Eval
@@ -63,6 +64,74 @@ let private sumImpl: Value =
 
 let private natsImpl: Value = VSeq(Seq.initInfinite VInt)
 
+let changeDef: RecordDef =
+    { Name = "Change"
+      Fields = [ "Status", TStr; "Staged", TBool; "Unstaged", TBool; "Path", TStr ] }
+
+let private procLines (cmdline: string) (input: seq<string> option) : seq<string> =
+    seq {
+        let psi = ProcessStartInfo("/bin/sh")
+        psi.ArgumentList.Add "-c"
+        psi.ArgumentList.Add cmdline
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+        psi.RedirectStandardInput <- input.IsSome
+        use p = Process.Start psi
+
+        match input with
+        | Some lines ->
+            System.Threading.Tasks.Task.Run(fun () ->
+                try
+                    try
+                        for l in lines do
+                            p.StandardInput.WriteLine l
+                    with _ ->
+                        ()
+                finally
+                    p.StandardInput.Close())
+            |> ignore
+        | None -> ()
+
+        try
+            let out = p.StandardOutput
+            let mutable line = out.ReadLine()
+
+            while line <> null do
+                yield line
+                line <- out.ReadLine()
+
+            let stderr = p.StandardError.ReadToEnd().Trim()
+            p.WaitForExit()
+
+            if p.ExitCode <> 0 then
+                let detail = if stderr = "" then "" else $": {stderr}"
+                failwith $"command failed with exit code {p.ExitCode}: {cmdline}{detail}"
+        finally
+            if not p.HasExited then
+                p.Kill true
+    }
+
+let private cmdImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr cmdline -> VSeq(procLines cmdline None |> Seq.map VStr)
+        | v -> unreachable $"the checker rejects 'cmd' on {formatValue v}")
+
+let private intoImpl: Value =
+    VBuiltin(fun c ->
+        VBuiltin(fun s ->
+            match c, s with
+            | VStr cmdline, VSeq items ->
+                let lines =
+                    items
+                    |> Seq.map (fun v ->
+                        match v with
+                        | VStr s -> s
+                        | v -> unreachable $"the checker rejects 'into' on non-string elements: {formatValue v}")
+
+                VSeq(procLines cmdline (Some lines) |> Seq.map VStr)
+            | _ -> unreachable "the checker rejects 'into' on these arguments"))
+
 let private doubleImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -70,19 +139,24 @@ let private doubleImpl: Value =
         | v -> unreachable $"the checker rejects 'double' on {formatValue v}")
 
 let private seqInt = TSeq(TInt None)
+let private seqStr = TSeq TStr
+let private tA = TVar "a"
+let private tB = TVar "b"
 
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
-      "where", TFun(TFun(TNamed fileRow.Name, TBool), TFun(seqFileRow, seqFileRow)), whereImpl
-      "first", TFun(TInt None, TFun(seqFileRow, seqFileRow)), truncateImpl
+      "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
+      "first", TFun(TInt None, TFun(TSeq tA, TSeq tA)), truncateImpl
       "double", TFun(TInt None, TInt None), doubleImpl
       "nats", seqInt, natsImpl
-      "map", TFun(TFun(TInt None, TInt None), TFun(seqInt, seqInt)), mapImpl
-      "take", TFun(TInt None, TFun(seqInt, seqInt)), truncateImpl
-      "sum", TFun(seqInt, TInt None), sumImpl ]
+      "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
+      "take", TFun(TInt None, TFun(TSeq tA, TSeq tA)), truncateImpl
+      "sum", TFun(seqInt, TInt None), sumImpl
+      "cmd", TFun(TStr, seqStr), cmdImpl
+      "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl ]
 
 let typeEnv: TypeEnv =
     { Values = entries |> List.map (fun (n, ty, _) -> n, ty) |> Map.ofList
-      Types = Map [ fileRow.Name, Record fileRow ] }
+      Types = Map [ fileRow.Name, Record fileRow; changeDef.Name, Record changeDef ] }
 
 let valueEnv: Env = entries |> List.map (fun (n, _, v) -> n, v) |> Map.ofList

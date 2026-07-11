@@ -1,6 +1,7 @@
 module Tests
 
 open System.Diagnostics
+open System.IO
 open Expecto
 open FsLite.Ast
 open FsLite.Types
@@ -34,6 +35,9 @@ let rec private show (e: Expr) : string =
         let showArm (p, b) = $"[{showPat p} -> {show b}]"
         let armsStr = arms |> List.map showArm |> String.concat " "
         $"(match {show scrut} {armsStr})"
+    | EFrom(fmt, None) -> $"(from {fmt})"
+    | EFrom(fmt, Some ty) -> $"(from {fmt} {ty})"
+    | ETo fmt -> $"(to {fmt})"
 
 and private showPat (p: Pattern) : string =
     match p.PKind with
@@ -61,9 +65,13 @@ let private declErr input env =
     | Error terr -> terr
 
 let private env =
-    FsLite.Builtins.typeEnv
-    |> declare "type Proc = Running of int | Stopped"
-    |> declare "type Point = { X: int; Y: int }"
+    let e =
+        FsLite.Builtins.typeEnv
+        |> declare "type Proc = Running of int | Stopped"
+        |> declare "type Point = { X: int; Y: int }"
+
+    { e with
+        Values = Map.add "src" (TSeq TStr) e.Values }
 
 let private ctorValues =
     [ "type Proc = Running of int | Stopped" ]
@@ -224,10 +232,16 @@ let evalTests =
           test "let-in" { expectValue "let x = 5 in x * 2" (VInt 10) }
           test "lambda application" { expectValue "(fun x -> x + 1) 41" (VInt 42) }
           test "closure captures environment" { expectValue "let y = 40 in (fun x -> x + y) 2" (VInt 42) }
-          test "partially applied builtin is first-class" {
+          test "partially applied polymorphic builtin stays polymorphic" {
               expectValue
-                  "let staged = where (fun f -> f.ReadOnly) in ls | staged"
+                  "let firstTwo = first 2 in ls | firstTwo | where (fun f -> f.ReadOnly)"
                   (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+          }
+          test "lambda in polymorphic position without data is rejected with a hint" {
+              Expect.stringContains
+                  (checkErr "let staged = where (fun f -> f.ReadOnly) in 1").Message
+                  "pipe the data in first"
+                  ""
           }
           test "shadowing" { expectValue "let x = 1 in let x = 2 in x" (VInt 2) }
           test "string concat" { expectValue "\"foo\" + \"bar\"" (VStr "foobar") }
@@ -472,6 +486,161 @@ let streamingTests =
               expectValue "Running 1 == Stopped" (VBool false)
           } ]
 
+let polymorphismTests =
+    testList
+        "Pipe-directed instantiation"
+        [ test "where instantiates from the piped seq" {
+              Expect.equal (checkOk "ls | where (fun f -> f.ReadOnly)").Ty FsLite.Builtins.seqFileRow ""
+          }
+          test "map changes the element type" {
+              Expect.equal (checkOk "ls | map (fun f -> f.Size)").Ty (TSeq(TInt(Some "mb"))) ""
+          }
+          test "map over ints still works" {
+              Expect.equal (run "nats | map (fun x -> x * x) | take 3" |> forceSeq) [ VInt 0; VInt 1; VInt 4 ] ""
+          }
+          test "map with an inferable function argument works standalone" {
+              Expect.equal (run "nats | map double | take 3" |> forceSeq) [ VInt 0; VInt 2; VInt 4 ] ""
+          }
+          test "full application instantiates from the trailing data argument" {
+              expectValue "where (fun f -> f.ReadOnly) ls |> first 1" (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+          }
+          test "instantiation mismatch is reported" {
+              Expect.stringContains
+                  (checkErr "nats | where (fun f -> f.ReadOnly)").Message
+                  "only records have fields"
+                  ""
+          } ]
+
+let boundaryTests =
+    testList
+        "External command boundary"
+        [ test "cmd yields stdout lines" {
+              Expect.equal (run "cmd \"printf 'a\\nb\\n'\"" |> forceSeq) [ VStr "a"; VStr "b" ] ""
+          }
+          test "cmd is lazy across the process boundary" {
+              Expect.equal (run "cmd \"yes\" | first 3" |> forceSeq) [ VStr "y"; VStr "y"; VStr "y" ] ""
+          }
+          test "failing command raises when forced" {
+              Expect.throws (fun () -> run "cmd \"exit 3\"" |> forceSeq |> ignore) ""
+          }
+          test "unforced command runs nothing" { run "cmd \"exit 3\"" |> ignore }
+          test "porcelain adapter parses status lines" {
+              let src =
+                  VSeq
+                      [ VStr " M a.txt"
+                        VStr "A  b.txt"
+                        VStr "?? c.txt"
+                        VStr "R  old.txt -> new.txt" ]
+
+              let result = runWith [ "src", src ] "src | from porcelain" |> forceSeq
+
+              let change status staged unstaged path =
+                  VRecord(
+                      "Change",
+                      Map
+                          [ "Status", VStr status
+                            "Staged", VBool staged
+                            "Unstaged", VBool unstaged
+                            "Path", VStr path ]
+                  )
+
+              Expect.equal
+                  result
+                  [ change " M" false true "a.txt"
+                    change "A " true false "b.txt"
+                    change "??" false true "c.txt"
+                    change "R " true false "new.txt" ]
+                  ""
+          }
+          test "acceptance: git status | from porcelain | where staged on a real repo" {
+              let dir = Path.Combine(Path.GetTempPath(), $"fslite-{System.Guid.NewGuid():N}")
+
+              let setup =
+                  $"mkdir -p {dir} && cd {dir} && git init -q && echo a > staged.txt && echo b > untracked.txt && git add staged.txt"
+
+              let psi = System.Diagnostics.ProcessStartInfo("/bin/sh")
+              psi.ArgumentList.Add "-c"
+              psi.ArgumentList.Add setup
+              use p = System.Diagnostics.Process.Start psi
+              p.WaitForExit()
+              Expect.equal p.ExitCode 0 "repo setup"
+
+              try
+                  let result =
+                      run $"cmd \"cd {dir} && git status --porcelain\" | from porcelain | where (fun c -> c.Staged)"
+                      |> forceSeq
+
+                  match result with
+                  | [ VRecord("Change", fields) ] ->
+                      Expect.equal fields["Path"] (VStr "staged.txt") "path"
+                      Expect.equal fields["Staged"] (VBool true) "staged"
+                  | other -> failtest $"unexpected result: {other}"
+              finally
+                  Directory.Delete(dir, true)
+          }
+          test "to json serializes records as ndjson" {
+              Expect.equal
+                  (run "ls | first 1 | to json" |> forceSeq)
+                  [ VStr """{"Name":"a.txt","ReadOnly":false,"Size":0}""" ]
+                  ""
+          }
+          test "json roundtrip preserves rows" {
+              Expect.equal (run "ls | to json | from json FileRow" |> forceSeq) fakeFiles ""
+          }
+          test "from json validates field types" {
+              let src = VSeq [ VStr """{"Name":"x","Size":"big","ReadOnly":false}""" ]
+
+              Expect.throws (fun () -> runWith [ "src", src ] "src | from json FileRow" |> forceSeq |> ignore) ""
+          }
+          test "from json rejects missing fields" {
+              let src = VSeq [ VStr """{"Name":"x"}""" ]
+
+              Expect.throws (fun () -> runWith [ "src", src ] "src | from json FileRow" |> forceSeq |> ignore) ""
+          }
+          test "from json ignores extra fields" {
+              let src = VSeq [ VStr """{"Name":"x","Size":1,"ReadOnly":true,"Extra":42}""" ]
+
+              Expect.equal
+                  (runWith [ "src", src ] "src | from json FileRow" |> forceSeq)
+                  [ FsLite.Builtins.file "x" 1 true ]
+                  ""
+          }
+          test "into feeds stdin and yields stdout" {
+              Expect.equal (run "nats | take 3 | to json | into \"wc -l\"" |> forceSeq) [ VStr "3" ] ""
+          }
+          test "from can be let-bound" {
+              expectValue
+                  "let p = from porcelain in cmd \"printf 'A  x.txt\\n'\" | p | first 1 | map (fun c -> c.Path)"
+                  (VSeq [ VStr "x.txt" ])
+          } ]
+
+let boundaryCheckTests =
+    testList
+        "Boundary check errors"
+        [ test "from json needs a record name" {
+              Expect.stringContains (checkErr "cmd \"x\" | from json").Message "needs a record name" ""
+          }
+          test "from json rejects unknown records" {
+              Expect.stringContains (checkErr "cmd \"x\" | from json Missing").Message "unknown type 'Missing'" ""
+          }
+          test "from json rejects unions" {
+              Expect.stringContains (checkErr "cmd \"x\" | from json Proc").Message "needs a record" ""
+          }
+          test "unknown format is rejected" {
+              Expect.stringContains (checkErr "cmd \"x\" | from yaml").Message "unknown format 'yaml'" ""
+          }
+          test "from porcelain takes no type name" {
+              Expect.stringContains (checkErr "cmd \"x\" | from porcelain Proc").Message "fixed row type" ""
+          }
+          test "piping a non-string seq into from is rejected" {
+              Expect.stringContains (checkErr "nats | from porcelain").Message "expected string, got int" ""
+          }
+          test "to json on a union seq is rejected" {
+              let e = "let xs = nats | map (fun n -> Running n) in xs | to json"
+              Expect.stringContains (checkErr e).Message "primitive or record elements" ""
+          }
+          test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -483,4 +652,7 @@ let allTests =
           declTests
           matchTests
           warningTests
-          streamingTests ]
+          streamingTests
+          polymorphismTests
+          boundaryTests
+          boundaryCheckTests ]

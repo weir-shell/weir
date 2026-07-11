@@ -6,7 +6,18 @@ open FsLite.Types
 open FsLite.Ast
 
 let private keywords =
-    Set [ "let"; "in"; "fun"; "true"; "false"; "match"; "with"; "type"; "of" ]
+    Set
+        [ "let"
+          "in"
+          "fun"
+          "true"
+          "false"
+          "match"
+          "with"
+          "type"
+          "of"
+          "from"
+          "to" ]
 
 let private isIdentStart c = isLetter c || c = '_'
 let private isIdentCont c = isLetter c || isDigit c || c = '_'
@@ -176,6 +187,24 @@ patRef.Value <-
               else
                   preturn { PKind = PVar w; PSpan = span } ]
 
+let private fromExpr =
+    spanned (
+        keyword "from" >>. ident
+        .>>. opt (
+            attempt (
+                identSpanned
+                >>= fun (w, _) -> if Char.IsUpper w[0] then preturn w else fail "type name"
+            )
+        )
+    )
+    |>> fun ((fmt, tyName), span) ->
+        { Kind = EFrom(fmt, tyName)
+          Span = span }
+
+let private toExpr =
+    spanned (keyword "to" >>. ident)
+    |>> fun (fmt, span) -> { Kind = ETo fmt; Span = span }
+
 let private matchArm = pat .>> str_ws "->" .>>. armExpr
 
 let private matchExpr =
@@ -192,7 +221,7 @@ let private matchExpr =
                 { Start = pos p
                   End = lastBody.Span.End } })
 
-fullOpp.TermParser <- choice [ lambda; letIn; matchExpr; appChain ]
+fullOpp.TermParser <- choice [ lambda; letIn; matchExpr; fromExpr; toExpr; appChain ]
 armOpp.TermParser <- appChain
 exprRef.Value <- fullOpp.ExpressionParser
 

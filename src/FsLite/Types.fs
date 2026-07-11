@@ -7,9 +7,11 @@ type Ty =
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
     | TNamed of name: string
+    | TVar of name: string
 
 let rec formatTy (ty: Ty) : string =
     match ty with
+    | TVar v -> $"'{v}"
     | TInt None -> "int"
     | TInt(Some m) -> $"int<{m}>"
     | TStr -> "string"

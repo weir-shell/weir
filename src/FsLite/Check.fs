@@ -28,6 +28,8 @@ and TypedKind =
     | TEBinOp of op: string * left: TypedExpr * right: TypedExpr
     | TERecord of record: string * fields: (string * TypedExpr) list
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr) list
+    | TEFrom of format: string * rowDef: RecordDef
+    | TETo of format: string
 
 type private ResultBuilder() =
     member _.Bind(r, f) = Result.bind f r
@@ -84,7 +86,8 @@ let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
     | TStr
     | TBool -> true
     | TFun _
-    | TSeq _ -> false
+    | TSeq _
+    | TVar _ -> false
     | TNamed n ->
         seen.Contains n
         || (match Map.tryFind n env.Types with
@@ -106,6 +109,74 @@ let private typeBinOp (env: TypeEnv) (opSpan: Span) (op: string) (l: TypedExpr) 
     | _, (TInt _ as a), (TInt _ as b) when a <> b -> mismatch r.Span a b
     | _, a, b when a <> b -> mismatch r.Span a b
     | _, a, _ -> err opSpan $"operator '{op}' is not defined for {formatTy a}"
+
+let rec private freeVars (ty: Ty) : Set<string> =
+    match ty with
+    | TVar v -> Set.singleton v
+    | TFun(a, b) -> Set.union (freeVars a) (freeVars b)
+    | TSeq t -> freeVars t
+    | TInt _
+    | TStr
+    | TBool
+    | TNamed _ -> Set.empty
+
+let rec private substTy (s: Map<string, Ty>) (ty: Ty) : Ty =
+    match ty with
+    | TVar v -> Map.tryFind v s |> Option.defaultValue ty
+    | TFun(a, b) -> TFun(substTy s a, substTy s b)
+    | TSeq t -> TSeq(substTy s t)
+    | t -> t
+
+let rec private bindVars
+    (span: Span)
+    (declared: Ty)
+    (actual: Ty)
+    (s: Map<string, Ty>)
+    : Result<Map<string, Ty>, TypeError> =
+    match declared, actual with
+    | TVar v, a ->
+        match Map.tryFind v s with
+        | None -> Ok(Map.add v a s)
+        | Some bound when bound = a -> Ok s
+        | Some bound -> mismatch span bound a
+    | TFun(d1, d2), TFun(a1, a2) -> bindVars span d1 a1 s |> Result.bind (bindVars span d2 a2)
+    | TSeq d, TSeq a -> bindVars span d a s
+    | d, a when d = a -> Ok s
+    | d, a -> mismatch span (substTy s d) a
+
+let rec private funParams (arity: int) (ty: Ty) : (Ty list * Ty) option =
+    if arity = 0 then
+        Some([], ty)
+    else
+        match ty with
+        | TFun(dom, cod) -> funParams (arity - 1) cod |> Option.map (fun (ps, r) -> dom :: ps, r)
+        | _ -> None
+
+let rec private spine (e: Expr) : Expr * Expr list =
+    match e.Kind with
+    | EApp(fn, arg) ->
+        let head, args = spine fn
+        head, args @ [ arg ]
+    | _ -> e, []
+
+let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeError> =
+    allOk def.Fields (fun (name, ty) ->
+        match ty with
+        | TInt _
+        | TStr
+        | TBool -> Ok()
+        | ty -> err span $"field '{name}' has type {formatTy ty}; json rows support int, string and bool fields")
+
+let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
+    match elem with
+    | TInt _
+    | TStr
+    | TBool -> Ok()
+    | TNamed n ->
+        match Map.tryFind n env.Types with
+        | Some(Record def) -> jsonableRecord span def
+        | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
+    | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
 
 let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     match p.PKind with
@@ -186,20 +257,9 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
-    | EApp(fn, arg) ->
-        result {
-            let! tfn = infer env fn
-
-            match tfn.Ty with
-            | TFun(dom, cod) ->
-                let! targ = check env arg dom
-
-                return
-                    { Kind = TEApp(tfn, targ)
-                      Ty = cod
-                      Span = expr.Span }
-            | ty -> return! err fn.Span $"this expression is not a function; it has type {formatTy ty}"
-        }
+    | EApp _ ->
+        let head, args = spine expr
+        checkSpine env head args None
     | EPipe(arg, ({ Kind = ELambda(param, body) } as fnExpr)) ->
         result {
             let! targ = infer env arg
@@ -215,19 +275,39 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
-    | EPipe(arg, fn) ->
+    | EPipe(arg, ({ Kind = ETo fmt } as toExpr)) ->
         result {
-            let! tfn = infer env fn
+            let! targ = infer env arg
 
-            match tfn.Ty with
-            | TFun(dom, cod) ->
-                let! targ = check env arg dom
+            match fmt, targ.Ty with
+            | "json", TSeq elem ->
+                do! jsonableElem toExpr.Span env elem
+
+                let tto =
+                    { Kind = TETo fmt
+                      Ty = TFun(targ.Ty, TSeq TStr)
+                      Span = toExpr.Span }
 
                 return
-                    { Kind = TEPipe(targ, tfn)
-                      Ty = cod
+                    { Kind = TEPipe(targ, tto)
+                      Ty = TSeq TStr
                       Span = expr.Span }
-            | ty -> return! err fn.Span $"the right side of a pipe must be a function; it has type {formatTy ty}"
+            | "json", ty -> return! err arg.Span $"'to json' needs a seq, got {formatTy ty}"
+            | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json"
+        }
+    | EPipe(arg, fnExpr) ->
+        result {
+            let! targ = infer env arg
+            let head, args = spine fnExpr
+            let! tfn = checkSpine env head args (Some(targ.Ty, arg.Span))
+
+            match tfn.Ty with
+            | TFun(_, resultTy) ->
+                return
+                    { Kind = TEPipe(targ, tfn)
+                      Ty = resultTy
+                      Span = expr.Span }
+            | _ -> return! err fnExpr.Span "the right side of a pipe must be a function"
         }
     | EField(target, field, fieldSpan) ->
         result {
@@ -302,6 +382,33 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
                     let nameList = many |> List.map (fun r -> r.Name) |> String.concat ", "
                     return! err expr.Span $"ambiguous record literal; it matches: {nameList}"
         }
+    | EFrom(fmt, tyName) ->
+        result {
+            match fmt, tyName with
+            | "porcelain", None ->
+                match Map.tryFind "Change" env.Types with
+                | Some(Record def) ->
+                    return
+                        { Kind = TEFrom("porcelain", def)
+                          Ty = TFun(TSeq TStr, TSeq(TNamed "Change"))
+                          Span = expr.Span }
+                | _ -> return! err expr.Span "the porcelain adapter needs the builtin Change record"
+            | "porcelain", Some _ -> return! err expr.Span "'from porcelain' has a fixed row type (Change)"
+            | "json", Some name ->
+                match Map.tryFind name env.Types with
+                | Some(Record def) ->
+                    do! jsonableRecord expr.Span def
+
+                    return
+                        { Kind = TEFrom("json", def)
+                          Ty = TFun(TSeq TStr, TSeq(TNamed name))
+                          Span = expr.Span }
+                | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from json' needs a record"
+                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+            | "json", None -> return! err expr.Span "'from json' needs a record name, e.g. from json FileRow"
+            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain"
+        }
+    | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs | to json"
     | EMatch(scrutinee, arms) ->
         result {
             let! tscrutinee = infer env scrutinee
@@ -330,6 +437,113 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
                       Ty = tbody0.Ty
                       Span = expr.Span }
         }
+
+and private checkSpine
+    (env: TypeEnv)
+    (head: Expr)
+    (args: Expr list)
+    (piped: (Ty * Span) option)
+    : Result<TypedExpr, TypeError> =
+    result {
+        let! thead = infer env head
+        let arity = args.Length + (if piped.IsSome then 1 else 0)
+
+        match funParams arity thead.Ty with
+        | None ->
+            match piped with
+            | Some _ ->
+                return!
+                    err
+                        head.Span
+                        $"the right side of a pipe must be a function taking the piped value; it has type {formatTy thead.Ty}"
+            | None ->
+                return!
+                    err
+                        head.Span
+                        $"this expression is not a function taking {args.Length} argument(s); it has type {formatTy thead.Ty}"
+        | Some(paramTys, resultTy) ->
+            let argParams = List.truncate args.Length paramTys
+
+            let! s0 =
+                match piped with
+                | Some(pipedTy, pipedSpan) -> bindVars pipedSpan (List.last paramTys) pipedTy Map.empty
+                | None -> Ok Map.empty
+
+            let isLambda (e: Expr) =
+                match e.Kind with
+                | ELambda _ -> true
+                | _ -> false
+
+            let indexed = List.zip args argParams |> List.mapi (fun i (a, p) -> i, a, p)
+
+            let inferPass (s, typed: Map<int, TypedExpr>) (i, arg: Expr, paramTy) =
+                result {
+                    let expected = substTy s paramTy
+
+                    if Set.isEmpty (freeVars expected) then
+                        let! targ = check env arg expected
+                        return s, Map.add i targ typed
+                    else
+                        let! targ = infer env arg
+                        let! s' = bindVars arg.Span expected targ.Ty s
+                        return s', Map.add i targ typed
+                }
+
+            let lambdaPass (s, typed: Map<int, TypedExpr>) (i, arg: Expr, paramTy) =
+                result {
+                    let expected = substTy s paramTy
+
+                    match arg.Kind, expected with
+                    | ELambda(param, body), TFun(dom, cod) when Set.isEmpty (freeVars dom) ->
+                        let! tbody = infer (bindAll env [ param, dom ]) body
+                        let! s' = bindVars body.Span cod tbody.Ty s
+
+                        let targ =
+                            { Kind = TELambda(param, tbody)
+                              Ty = TFun(dom, tbody.Ty)
+                              Span = arg.Span }
+
+                        return s', Map.add i targ typed
+                    | ELambda _, TFun _ ->
+                        return! err arg.Span "cannot infer the lambda's parameter type here; pipe the data in first"
+                    | ELambda _, _ -> return! err arg.Span $"expected {formatTy expected}, got a function"
+                    | _, _ -> return! inferPass (s, typed) (i, arg, paramTy)
+                }
+
+            let foldArgs pass state items =
+                items
+                |> List.fold (fun acc item -> Result.bind (fun st -> pass st item) acc) (Ok state)
+
+            let notLambdas = indexed |> List.filter (fun (_, a, _) -> not (isLambda a))
+            let lambdas = indexed |> List.filter (fun (_, a, _) -> isLambda a)
+
+            let! s1, typed1 = foldArgs inferPass (s0, Map.empty) notLambdas
+            let! s2, typed2 = foldArgs lambdaPass (s1, typed1) lambdas
+
+            let fullTy =
+                List.foldBack (fun p acc -> TFun(substTy s2 p, acc)) paramTys (substTy s2 resultTy)
+
+            match piped with
+            | Some _ when not (Set.isEmpty (freeVars (substTy s2 resultTy))) ->
+                return! err head.Span $"cannot infer the type parameters of {formatTy thead.Ty}"
+            | _ ->
+                let applied =
+                    args
+                    |> List.mapi (fun i arg -> typed2[i], arg)
+                    |> List.fold
+                        (fun (acc: TypedExpr) (targ, argExpr) ->
+                            let cod =
+                                match acc.Ty with
+                                | TFun(_, c) -> c
+                                | _ -> failwith "unreachable: funParams guaranteed a function"
+
+                            { Kind = TEApp(acc, targ)
+                              Ty = cod
+                              Span = Span.union acc.Span argExpr.Span })
+                        { thead with Ty = fullTy }
+
+                return applied
+    }
 
 and check (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeError> =
     match expr.Kind, expected with
@@ -372,6 +586,7 @@ let rec private validateTy (env: TypeEnv) (selfName: string) (span: Span) (ty: T
     | TBool -> Ok()
     | TSeq t -> validateTy env selfName span t
     | TFun(a, b) -> Result.bind (fun () -> validateTy env selfName span b) (validateTy env selfName span a)
+    | TVar v -> err span $"type variables ('{v}) are not allowed in declarations"
     | TNamed n ->
         if n = selfName || Map.containsKey n env.Types then
             Ok()
@@ -449,6 +664,8 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
             walk l
             walk r
         | TERecord(_, fields) -> fields |> List.iter (snd >> walk)
+        | TEFrom _
+        | TETo _ -> ()
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
             arms |> List.iter (snd >> walk)

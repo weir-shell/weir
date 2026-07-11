@@ -31,6 +31,8 @@ and ExprKind =
     | EBinOp of op: string * left: Expr * right: Expr
     | ERecord of fields: (string * Span * Expr) list
     | EMatch of scrutinee: Expr * arms: (Pattern * Expr) list
+    | EFrom of format: string * tyName: string option
+    | ETo of format: string
 
 type DeclBody =
     | DRecord of fields: (string * Ty) list

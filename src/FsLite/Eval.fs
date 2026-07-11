@@ -82,6 +82,96 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "==", a, b -> VBool(a = b)
     | _ -> unreachable $"the checker rejects '{op}' on {formatValue l} and {formatValue r}"
 
+let private jsonLine (v: Value) : string =
+    let buffer = new System.Buffers.ArrayBufferWriter<byte>()
+    use writer = new System.Text.Json.Utf8JsonWriter(buffer)
+
+    let rec write (v: Value) =
+        match v with
+        | VInt n -> writer.WriteNumberValue n
+        | VStr s -> writer.WriteStringValue s
+        | VBool b -> writer.WriteBooleanValue b
+        | VRecord(_, fields) ->
+            writer.WriteStartObject()
+
+            for kv in fields do
+                writer.WritePropertyName kv.Key
+                write kv.Value
+
+            writer.WriteEndObject()
+        | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
+
+    write v
+    writer.Flush()
+    System.Text.Encoding.UTF8.GetString buffer.WrittenSpan
+
+let private jsonRow (def: RecordDef) (line: string) : Value =
+    use doc =
+        try
+            System.Text.Json.JsonDocument.Parse line
+        with ex ->
+            failwith $"from json: invalid json line: {line}"
+
+    let root = doc.RootElement
+
+    let readField (name: string, ty: Ty) =
+        let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
+
+        if not (root.TryGetProperty(name, &prop)) then
+            failwith $"from json: missing field '{name}' in: {line}"
+
+        let value =
+            match ty, prop.ValueKind with
+            | TInt _, System.Text.Json.JsonValueKind.Number -> VInt(prop.GetInt32())
+            | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
+            | TBool, System.Text.Json.JsonValueKind.True -> VBool true
+            | TBool, System.Text.Json.JsonValueKind.False -> VBool false
+            | ty, kind -> failwith $"from json: field '{name}' expected {formatTy ty}, got {kind} in: {line}"
+
+        name, value
+
+    VRecord(def.Name, def.Fields |> List.map readField |> Map.ofList)
+
+let private porcelainRow (def: RecordDef) (line: string) : Value =
+    if line.Length < 4 then
+        failwith $"from porcelain: unexpected line: '{line}'"
+
+    let x, y = line[0], line[1]
+    let path = line.Substring 3
+
+    let path =
+        match path.IndexOf " -> " with
+        | -1 -> path
+        | i -> path.Substring(i + 4)
+
+    VRecord(
+        def.Name,
+        Map
+            [ "Status", VStr(string x + string y)
+              "Staged", VBool(x <> ' ' && x <> '?')
+              "Unstaged", VBool(y <> ' ')
+              "Path", VStr path ]
+    )
+
+let private fromAdapter (fmt: string) (def: RecordDef) : Value =
+    let rowOf =
+        match fmt with
+        | "json" -> jsonRow def
+        | "porcelain" -> porcelainRow def
+        | f -> unreachable $"the checker rejects unknown format '{f}'"
+
+    VBuiltin(fun v ->
+        match v with
+        | VSeq lines ->
+            VSeq(
+                lines
+                |> Seq.map (fun l ->
+                    match l with
+                    | VStr s -> rowOf s
+                    | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
+            )
+        | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
+
 let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     match p.PKind, v with
     | PWildcard, _ -> Some []
@@ -113,6 +203,12 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
+    | TEFrom(fmt, def) -> fromAdapter fmt def
+    | TETo _ ->
+        VBuiltin(fun v ->
+            match v with
+            | VSeq items -> VSeq(items |> Seq.map (jsonLine >> VStr))
+            | v -> unreachable $"the checker rejects 'to json' on {formatValue v}")
     | TEMatch(scrutinee, arms) ->
         let v = eval env scrutinee
 
