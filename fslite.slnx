@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FsLite/FsLite.fsproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FsLite.Tests/FsLite.Tests.fsproj" />
+  </Folder>
+</Solution>
