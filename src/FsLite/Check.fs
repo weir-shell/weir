@@ -78,19 +78,31 @@ let private bindAll (env: TypeEnv) (bindings: (string * Ty) list) : TypeEnv =
     { env with
         Values = bindings |> List.fold (fun vs (n, t) -> Map.add n t vs) env.Values }
 
-let private typeBinOp (opSpan: Span) (op: string) (l: TypedExpr) (r: TypedExpr) : Result<Ty, TypeError> =
+let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
+    match ty with
+    | TInt _
+    | TStr
+    | TBool -> true
+    | TFun _
+    | TSeq _ -> false
+    | TNamed n ->
+        seen.Contains n
+        || (match Map.tryFind n env.Types with
+            | Some(Record def) -> def.Fields |> List.forall (snd >> isEquatable env (Set.add n seen))
+            | Some(Union def) ->
+                def.Cases
+                |> List.forall (fun (_, payload) -> payload |> Option.forall (isEquatable env (Set.add n seen)))
+            | None -> false)
+
+let private typeBinOp (env: TypeEnv) (opSpan: Span) (op: string) (l: TypedExpr) (r: TypedExpr) : Result<Ty, TypeError> =
     match op, l.Ty, r.Ty with
     | ("+" | "-"), TInt m, TInt n when m = n -> Ok(TInt m)
     | "+", TStr, TStr -> Ok TStr
     | ("*" | "/"), TInt None, TInt None -> Ok(TInt None)
     | (">" | "<"), TInt m, TInt n when m = n -> Ok TBool
-    | "==", a, b when
-        a = b
-        && (match a with
-            | TFun _ -> false
-            | _ -> true)
-        ->
-        Ok TBool
+    | "==", a, b when a = b && isEquatable env Set.empty a -> Ok TBool
+    | "==", a, b when a = b ->
+        err opSpan $"'==' is not defined for {formatTy a}; sequences and functions cannot be compared"
     | _, (TInt _ as a), (TInt _ as b) when a <> b -> mismatch r.Span a b
     | _, a, b when a <> b -> mismatch r.Span a b
     | _, a, _ -> err opSpan $"operator '{op}' is not defined for {formatTy a}"
@@ -243,7 +255,7 @@ let rec infer (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
         result {
             let! tleft = infer env left
             let! tright = infer env right
-            let! ty = typeBinOp expr.Span op tleft tright
+            let! ty = typeBinOp env expr.Span op tleft tright
 
             return
                 { Kind = TEBinOp(op, tleft, tright)

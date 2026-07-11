@@ -92,7 +92,16 @@ let private checkErr input =
     | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
     | Error terr -> terr
 
+let private runWith (overrides: (string * Value) list) input =
+    let env = overrides |> List.fold (fun vs (n, v) -> Map.add n v vs) valueEnv
+    eval env (checkOk input)
+
 let private run input = eval valueEnv (checkOk input)
+
+let private forceSeq v =
+    match v with
+    | VSeq items -> List.ofSeq items
+    | v -> failtest $"expected a seq, got {formatValue v}"
 
 let private expectValue input expected =
     Expect.equal (run input) expected $"eval of '{input}'"
@@ -388,6 +397,81 @@ let warningTests =
               Expect.throws (fun () -> run "match Stopped with | Running n -> n" |> ignore) ""
           } ]
 
+let streamingTests =
+    testList
+        "Streaming"
+        [ test "acceptance: infinite source | first 5 terminates" {
+              let infinite = Seq.initInfinite (fun i -> FsLite.Builtins.file $"f{i}" i false)
+
+              let result =
+                  runWith [ "ls", VSeq infinite ] "ls | where (fun f -> f.Size > 1<mb>) | first 5"
+                  |> forceSeq
+
+              Expect.equal (List.length result) 5 "exactly five rows"
+              Expect.equal result[0] (FsLite.Builtins.file "f2" 2 false) "first surviving row"
+          }
+          test "acceptance: first 5 pulls exactly 5 elements from the source" {
+              let pulled = ref 0
+
+              let counting =
+                  Seq.initInfinite (fun i ->
+                      System.Threading.Interlocked.Increment pulled |> ignore
+                      FsLite.Builtins.file $"f{i}" i false)
+
+              runWith [ "ls", VSeq counting ] "ls | first 5" |> forceSeq |> ignore
+              Expect.equal pulled.Value 5 "no over-pulling"
+          }
+          test "where pulls only what the filter and take demand" {
+              let pulled = ref 0
+
+              let counting =
+                  Seq.initInfinite (fun i ->
+                      System.Threading.Interlocked.Increment pulled |> ignore
+                      FsLite.Builtins.file $"f{i}" i false)
+
+              runWith [ "ls", VSeq counting ] "ls | where (fun f -> f.Size > 1<mb>) | first 2"
+              |> forceSeq
+              |> ignore
+
+              Expect.equal pulled.Value 4 "sizes 0..3 examined, 2 and 3 survive"
+          }
+          test "unforced pipeline pulls nothing" {
+              let pulled = ref 0
+
+              let counting =
+                  Seq.initInfinite (fun i ->
+                      System.Threading.Interlocked.Increment pulled |> ignore
+                      FsLite.Builtins.file $"f{i}" i false)
+
+              runWith [ "ls", VSeq counting ] "ls | where (fun f -> f.Size > 1<mb>) | first 5"
+              |> ignore
+
+              Expect.equal pulled.Value 0 "evaluation alone must not enumerate"
+          }
+          test "nats through map and take" {
+              Expect.equal
+                  (run "nats | map (fun x -> x * x) | take 5" |> forceSeq)
+                  [ VInt 0; VInt 1; VInt 4; VInt 9; VInt 16 ]
+                  ""
+          }
+          test "sum consumes a finite stream" { expectValue "nats | take 5 | sum" (VInt 10) }
+          test "lambda pipe stage stays lazy" { expectValue "nats | map (fun x -> x + 1) | take 3 | sum" (VInt 6) }
+          test "equality on seqs is rejected" {
+              Expect.stringContains (checkErr "nats == nats").Message "'==' is not defined for seq<int>" ""
+          }
+          test "equality through a seq-carrying record is rejected" {
+              let holderEnv = env |> declare "type Holder = { S: seq<int> }"
+              let e = parse "let h = { S = nats } in h == h"
+
+              match FsLite.Check.typecheck holderEnv e with
+              | Ok _ -> failtest "expected rejection"
+              | Error terr -> Expect.stringContains terr.Message "'==' is not defined for Holder" ""
+          }
+          test "equality on union values still works" {
+              expectValue "Running 1 == Running 1" (VBool true)
+              expectValue "Running 1 == Stopped" (VBool false)
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -398,4 +482,5 @@ let allTests =
           rejectedAtCheckTests
           declTests
           matchTests
-          warningTests ]
+          warningTests
+          streamingTests ]
