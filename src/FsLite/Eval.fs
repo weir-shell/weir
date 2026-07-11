@@ -48,7 +48,11 @@ and Env = Map<string, Value>
 let rec formatValue (v: Value) : string =
     match v with
     | VInt n -> string n
-    | VStr s -> $"\"{s}\""
+    | VStr s ->
+        let escaped =
+            s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
+
+        $"\"{escaped}\""
     | VBool true -> "true"
     | VBool false -> "false"
     | VRecord(_, fields) ->

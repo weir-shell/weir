@@ -60,8 +60,18 @@ let private intLit =
     |>> mkExpr
     .>> ws
 
+let private stringChar =
+    choice
+        [ satisfy (fun c -> c <> '"' && c <> '\\')
+          pchar '\\'
+          >>. (anyOf "\"\\nt"
+               |>> function
+                   | 'n' -> '\n'
+                   | 't' -> '\t'
+                   | c -> c) ]
+
 let private strLit =
-    spanned (between (pchar '"') (pchar '"') (manySatisfy ((<>) '"')) |>> EStr)
+    spanned (between (pchar '"') (pchar '"') (manyChars stringChar) |>> EStr)
     |>> mkExpr
     .>> ws
 
@@ -97,12 +107,19 @@ let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 let private postfixAtom =
     atom .>>. many fieldSuffix
     |>> fun (target, fields) ->
-        fields
-        |> List.fold
-            (fun t (name, fspan) ->
-                { Kind = EField(t, name, fspan)
-                  Span = Span.union t.Span fspan })
-            target
+        let applied =
+            fields
+            |> List.fold
+                (fun t (name, fspan) ->
+                    { Kind = EField(t, name, fspan)
+                      Span = Span.union t.Span fspan })
+                target
+
+        match target.Kind, fields with
+        | EVar "_", _ :: _ ->
+            { Kind = ELambda("_", applied)
+              Span = applied.Span }
+        | _ -> applied
 
 let private appChain =
     many1 postfixAtom

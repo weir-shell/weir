@@ -641,6 +641,76 @@ let boundaryCheckTests =
           }
           test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" } ]
 
+let shorthandTests =
+    testList
+        "Underscore shorthand and escapes"
+        [ test "underscore field access desugars to a lambda" {
+              expectParse "where _.ReadOnly" "(where (fun _ _.ReadOnly))"
+          }
+          test "where with shorthand filters" {
+              expectValue "ls | where _.ReadOnly" (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+          }
+          test "map with shorthand projects" {
+              Expect.equal (checkOk "ls | map _.Size").Ty (TSeq(TInt(Some "mb"))) ""
+
+              Expect.equal (run "ls | map _.Name | first 2" |> forceSeq) [ VStr "a.txt"; VStr "b.bin" ] ""
+          }
+          test "shorthand chains through nested records" { expectParse "map _.A.B" "(map (fun _ _.A.B))" }
+          test "bare underscore is not an expression" {
+              Expect.stringContains (checkErr "_ + 1").Message "unbound variable '_'" ""
+          }
+          test "string escapes parse" {
+              expectValue "\"a\\nb\"" (VStr "a\nb")
+              expectValue "\"say \\\"hi\\\"\"" (VStr "say \"hi\"")
+              expectValue "\"tab\\there\"" (VStr "tab\there")
+              expectValue "\"back\\\\slash\"" (VStr "back\\slash")
+          }
+          test "escaped strings survive a json roundtrip" {
+              let src = VSeq [ VStr """{"Name":"a\"b","Size":1,"ReadOnly":false}""" ]
+
+              Expect.equal
+                  (runWith [ "src", src ] "src | from json FileRow | map _.Name" |> forceSeq)
+                  [ VStr "a\"b" ]
+                  ""
+          } ]
+
+let private suggest text (wordStart: int) =
+    FsLite.Complete.suggest env text wordStart
+
+let completionTests =
+    testList
+        "Completion"
+        [ test "name completion from values in scope" { Expect.equal (suggest "ls | whe" 5) [ "where" ] "" }
+          test "keyword completion" { Expect.contains (suggest "ma" 0) "match" "" }
+          test "lambda parameter completes from the pipeline element type" {
+              let text = "ls | where (fun f -> f."
+              Expect.equal (suggest text (text.Length - 2)) [ "f.Name"; "f.ReadOnly"; "f.Size" ] ""
+          }
+          test "field prefix narrows the suggestions" {
+              let text = "ls | where (fun f -> f.S"
+              Expect.equal (suggest text (text.Length - 3)) [ "f.Size" ] ""
+          }
+          test "bound record variable completes its fields" {
+              let envWithQ =
+                  { env with
+                      Values = Map.add "q" (TNamed "Point") env.Values }
+
+              Expect.equal (FsLite.Complete.suggest envWithQ "q." 0) [ "q.X"; "q.Y" ] ""
+          }
+          test "later pipeline stages track the element type" {
+              let text = "cmd \"git status --porcelain\" | from porcelain | where (fun c -> c."
+              Expect.equal (suggest text (text.Length - 2)) [ "c.Path"; "c.Staged"; "c.Status"; "c.Unstaged" ] ""
+          }
+          test "no fields on a non-record element" {
+              let text = "nats | map (fun x -> x."
+              Expect.equal (suggest text (text.Length - 2)) [] ""
+          }
+          test "from json completes record names" {
+              let text = "cmd \"x\" | from json "
+              Expect.contains (suggest text text.Length) "FileRow" ""
+              Expect.contains (suggest text text.Length) "Change" ""
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -655,4 +725,6 @@ let allTests =
           streamingTests
           polymorphismTests
           boundaryTests
-          boundaryCheckTests ]
+          boundaryCheckTests
+          shorthandTests
+          completionTests ]

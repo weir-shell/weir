@@ -1,6 +1,7 @@
 module FsLite.Repl
 
 open System
+open System.IO
 open FsLite.Ast
 open FsLite.Types
 
@@ -12,6 +13,44 @@ let private initial =
     { TypeEnv = Builtins.typeEnv
       Values = Builtins.valueEnv }
 
+let private currentEnv = ref initial.TypeEnv
+
+type private Completer() =
+    let mutable separators = [| ' '; '('; ')' |]
+
+    interface IAutoCompleteHandler with
+        member _.Separators
+            with get () = separators
+            and set v = separators <- v
+
+        member _.GetSuggestions(text, index) =
+            Complete.suggest currentEnv.Value text index |> List.toArray
+
+let private historyFile =
+    Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".fslite_history")
+
+let private setupLineEditor () =
+    ReadLine.HistoryEnabled <- true
+    ReadLine.AutoCompletionHandler <- Completer()
+
+    if File.Exists historyFile then
+        ReadLine.AddHistory(File.ReadAllLines historyFile)
+
+let private readInput () =
+    if Console.IsInputRedirected then
+        Console.Write prompt
+        Console.ReadLine()
+    else
+        let line = ReadLine.Read prompt
+
+        if line <> null && line.Trim() <> "" then
+            try
+                File.AppendAllText(historyFile, line + Environment.NewLine)
+            with _ ->
+                ()
+
+        line
+
 let private underline (span: Span) : string =
     String(' ', prompt.Length + span.Start.Col - 1)
     + String('^', max 1 (span.End.Col - span.Start.Col))
@@ -22,19 +61,20 @@ let private printWarnings (state: State) (te: Check.TypedExpr) =
         Console.WriteLine(underline w.Span)
         Console.WriteLine(Check.formatWarning w))
 
-let private tryRun (state: State) (e: Expr) : Result<Check.TypedExpr * Eval.Value, string * Span option> =
+let private tryRun (state: State) (e: Expr) : Result<Check.TypedExpr * Eval.Value * string, string * Span option> =
     match Check.typecheck state.TypeEnv e with
     | Error terr -> Error(Check.formatError terr, Some terr.Span)
     | Ok te ->
         try
-            Ok(te, Eval.eval state.Values te)
+            let v = Eval.eval state.Values te
+            Ok(te, v, Eval.formatValue v)
         with ex ->
             Error($"error: {ex.Message}", None)
 
 let rec private loop (state: State) =
-    Console.Write prompt
+    currentEnv.Value <- state.TypeEnv
 
-    match Console.ReadLine() with
+    match readInput () with
     | null
     | ":q" -> ()
     | line when String.IsNullOrWhiteSpace line -> loop state
@@ -66,9 +106,9 @@ let rec private loop (state: State) =
                     span |> Option.iter (underline >> Console.WriteLine)
                     Console.WriteLine msg
                     state
-                | Ok(te, v) ->
+                | Ok(te, v, formatted) ->
                     printWarnings state te
-                    Console.WriteLine $"{name} : {formatTy te.Ty} = {Eval.formatValue v}"
+                    Console.WriteLine $"{name} : {formatTy te.Ty} = {formatted}"
 
                     { TypeEnv =
                         { state.TypeEnv with
@@ -80,11 +120,15 @@ let rec private loop (state: State) =
                     span |> Option.iter (underline >> Console.WriteLine)
                     Console.WriteLine msg
                     state
-                | Ok(te, v) ->
+                | Ok(te, _, formatted) ->
                     printWarnings state te
-                    Console.WriteLine $"{Eval.formatValue v} : {formatTy te.Ty}"
+                    Console.WriteLine $"{formatted} : {formatTy te.Ty}"
                     state
 
         loop next
 
-let run () = loop initial
+let run () =
+    if not Console.IsInputRedirected then
+        setupLineEditor ()
+
+    loop initial
