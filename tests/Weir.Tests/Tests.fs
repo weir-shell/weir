@@ -778,6 +778,73 @@ let rowTests =
               Expect.equal (formatTy (checkOk "where _.ReadOnly").Ty |> fun s -> s.Contains "ReadOnly") true ""
           } ]
 
+let private survivors (marker: string) : int =
+    let psi = ProcessStartInfo("/bin/sh")
+    psi.ArgumentList.Add "-c"
+    psi.ArgumentList.Add $"pgrep -f '[{marker[0]}]{marker.Substring 1}' | wc -l"
+    psi.RedirectStandardOutput <- true
+    use p = Process.Start psi
+    let out = p.StandardOutput.ReadToEnd().Trim()
+    p.WaitForExit()
+    int out
+
+let private eventuallyNoSurvivors (marker: string) : bool =
+    let mutable tries = 20
+    let mutable count = survivors marker
+
+    while count > 0 && tries > 0 do
+        System.Threading.Thread.Sleep 100
+        tries <- tries - 1
+        count <- survivors marker
+
+    count = 0
+
+let private defunctChildren () : int =
+    let psi = ProcessStartInfo("/bin/sh")
+    psi.ArgumentList.Add "-c"
+    psi.ArgumentList.Add $"ps -o stat= --ppid {System.Environment.ProcessId} | grep -c Z"
+    psi.RedirectStandardOutput <- true
+    use p = Process.Start psi
+    let out = p.StandardOutput.ReadToEnd().Trim()
+    p.WaitForExit()
+    if out = "" then 0 else int out
+
+let lifecycleTests =
+    testList
+        "Process lifecycle"
+        [ // TRIPWIRE PAIR: the simple case passes even without tree-kill because
+          // sh execs a single command (one process). The compound case is the
+          // real guard — sh forks pipeline children and only
+          // Kill(entireProcessTree: true) reaches them. If the sh backing is
+          // removed (PLAN-command-mode Session 2), this analysis changes:
+          // re-derive which of these guards what.
+          test "simple command: no survivors after partial consumption" {
+              run "cmd \"yes weir-s1-simple\" |> first 3" |> forceSeq |> ignore
+              Expect.isTrue (eventuallyNoSurvivors "weir-s1-simple") "yes leaked"
+          }
+          test "compound command: no survivors after partial consumption" {
+              run "cmd \"yes weir-s1-compound | grep --line-buffered weir-s1-compound\" |> first 3"
+              |> forceSeq
+              |> ignore
+
+              Expect.isTrue (eventuallyNoSurvivors "weir-s1-compound") "pipeline children leaked"
+          }
+          test "50 completed commands leave no zombies" {
+              for _ in 1..50 do
+                  run "cmd \"true\"" |> forceSeq |> ignore
+
+              let zombies = defunctChildren ()
+              Expect.equal zombies 0 "defunct children accumulated"
+          }
+          test "50 abandoned streams leave no zombies" {
+              for _ in 1..50 do
+                  run "cmd \"yes weir-s1-zombie\" |> first 1" |> forceSeq |> ignore
+
+              Expect.isTrue (eventuallyNoSurvivors "weir-s1-zombie") "killed children leaked"
+              let zombies = defunctChildren ()
+              Expect.equal zombies 0 "defunct children accumulated after kills"
+          } ]
+
 let operatorTests =
     testList
         "Operator completeness"
@@ -961,4 +1028,5 @@ let allTests =
           completionTests
           rowTests
           adversarialTests
-          operatorTests ]
+          operatorTests
+          lifecycleTests ]

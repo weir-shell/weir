@@ -107,8 +107,15 @@ let private procLines (cmdline: string) (input: seq<string> option) : seq<string
                 let detail = if stderr = "" then "" else $": {stderr}"
                 failwith $"command failed with exit code {p.ExitCode}: {cmdline}{detail}"
         finally
-            if not p.HasExited then
+            try
                 p.Kill true
+            with _ ->
+                ()
+
+            try
+                p.WaitForExit()
+            with _ ->
+                ()
     }
 
 let private cmdImpl: Value =
