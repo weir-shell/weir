@@ -17,7 +17,7 @@ let file (name: string) (sizeMb: int) (readOnly: bool) : Value =
 let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
-            DirectoryInfo(Directory.GetCurrentDirectory()).GetFiles()
+            DirectoryInfo(Session.Cwd).GetFiles()
             |> Seq.map (fun f -> file f.Name (int (f.Length / 1048576L)) f.IsReadOnly))
     )
 
@@ -64,19 +64,40 @@ let private sumImpl: Value =
 
 let private natsImpl: Value = VSeq(Seq.initInfinite VInt)
 
+let private notImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VBool b -> VBool(not b)
+        | v -> unreachable $"the checker rejects 'not' on {formatValue v}")
+
+let private doubleImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VInt n -> VInt(n * 2)
+        | v -> unreachable $"the checker rejects 'double' on {formatValue v}")
+
 let changeDef: RecordDef =
     { Name = "Change"
       Fields = [ "Status", TStr; "Staged", TBool; "Unstaged", TBool; "Path", TStr ] }
 
-let private procLines (cmdline: string) (input: seq<string> option) : seq<string> =
+let private procLines (prog: string) (args: string list) (input: seq<string> option) : seq<string> =
     seq {
-        let psi = ProcessStartInfo("/bin/sh")
-        psi.ArgumentList.Add "-c"
-        psi.ArgumentList.Add cmdline
+        let psi = ProcessStartInfo(prog)
+
+        for a in args do
+            psi.ArgumentList.Add a
+
+        psi.WorkingDirectory <- Session.Cwd
+        psi.UseShellExecute <- false
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
         psi.RedirectStandardInput <- input.IsSome
-        use p = Process.Start psi
+
+        use p =
+            try
+                Process.Start psi
+            with :? System.ComponentModel.Win32Exception ->
+                failwith $"command not found or not executable: {prog}"
 
         match input with
         | Some lines ->
@@ -105,7 +126,8 @@ let private procLines (cmdline: string) (input: seq<string> option) : seq<string
 
             if p.ExitCode <> 0 then
                 let detail = if stderr = "" then "" else $": {stderr}"
-                failwith $"command failed with exit code {p.ExitCode}: {cmdline}{detail}"
+                let shown = String.concat " " (prog :: args)
+                failwith $"command failed with exit code {p.ExitCode}: {shown}{detail}"
         finally
             try
                 p.Kill true
@@ -118,38 +140,67 @@ let private procLines (cmdline: string) (input: seq<string> option) : seq<string
                 ()
     }
 
-let private cmdImpl: Value =
+let private resolveProg (prog: string) : string =
+    if prog.Contains '/' then
+        Path.GetFullPath(Path.Combine(Session.Cwd, prog))
+    else
+        prog
+
+let private shImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VStr cmdline -> VSeq(procLines cmdline None |> Seq.map VStr)
-        | v -> unreachable $"the checker rejects 'cmd' on {formatValue v}")
+        | VStr cmdline -> VSeq(procLines "/bin/sh" [ "-c"; cmdline ] None |> Seq.map VStr)
+        | v -> unreachable $"the checker rejects 'sh' on {formatValue v}")
+
+let private asString (v: Value) : string =
+    match v with
+    | VStr s -> s
+    | v -> unreachable $"the checker rejects non-string command arguments: {formatValue v}"
+
+let private cmdImpl: Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            match progV, argsV with
+            | VStr prog, VSeq args ->
+                let argv = args |> Seq.map asString |> List.ofSeq
+                VSeq(procLines (resolveProg prog) argv None |> Seq.map VStr)
+            | _ -> unreachable "the checker rejects 'cmd' on these arguments"))
 
 let private intoImpl: Value =
     VBuiltin(fun c ->
-        VBuiltin(fun s ->
-            match c, s with
+        VBuiltin(fun sv ->
+            match c, sv with
             | VStr cmdline, VSeq items ->
-                let lines =
-                    items
-                    |> Seq.map (fun v ->
-                        match v with
-                        | VStr s -> s
-                        | v -> unreachable $"the checker rejects 'into' on non-string elements: {formatValue v}")
-
-                VSeq(procLines cmdline (Some lines) |> Seq.map VStr)
+                let lines = items |> Seq.map asString
+                VSeq(procLines "/bin/sh" [ "-c"; cmdline ] (Some lines) |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'into' on these arguments"))
 
-let private notImpl: Value =
+let private cdImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VBool b -> VBool(not b)
-        | v -> unreachable $"the checker rejects 'not' on {formatValue v}")
+        | VStr path ->
+            let home =
+                System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
 
-let private doubleImpl: Value =
-    VBuiltin(fun v ->
-        match v with
-        | VInt n -> VInt(n * 2)
-        | v -> unreachable $"the checker rejects 'double' on {formatValue v}")
+            let expanded =
+                if path = "~" then
+                    home
+                elif path.StartsWith "~/" then
+                    Path.Combine(home, path.Substring 2)
+                else
+                    path
+
+            let resolved = Path.GetFullPath(Path.Combine(Session.Cwd, expanded))
+
+            if not (Directory.Exists resolved) then
+                failwith $"cd: no such directory: {resolved}"
+
+            Session.Cwd <- resolved
+            VStr resolved
+        | v -> unreachable $"the checker rejects 'cd' on {formatValue v}")
+
+let private pwdImpl: Value =
+    VSeq(Seq.delay (fun () -> Seq.singleton (VStr Session.Cwd)))
 
 let private seqInt = TSeq(TInt None)
 let private seqStr = TSeq TStr
@@ -165,8 +216,11 @@ let private entries: (string * Ty * Value) list =
       "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "take", TFun(TInt None, TFun(TSeq tA, TSeq tA)), truncateImpl
       "sum", TFun(seqInt, TInt None), sumImpl
-      "cmd", TFun(TStr, seqStr), cmdImpl
+      "sh", TFun(TStr, seqStr), shImpl
+      "cmd", TFun(TStr, TFun(TSeq TStr, seqStr)), cmdImpl
       "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
+      "cd", TFun(TStr, TStr), cdImpl
+      "pwd", TSeq TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl ]
 
 let typeEnv: TypeEnv =

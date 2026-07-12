@@ -16,7 +16,9 @@ weir rejects rather than guesses.
 - **Base types and literals**: `int` (optionally measured), `string`, `bool`,
   `seq<T>`, functions, declared records and unions. **No floats yet.**
   Literals: unsigned digit runs (no negative literals — write `0 - 5`),
-  `1<measure>`, strings with `\" \\ \n \t` escapes, `true`/`false`.
+  `1<measure>`, strings with `\" \\ \n \t` escapes, `true`/`false`, and seq
+  literals `[a; b; c]` (homogeneous; elements evaluate eagerly, once — unlike
+  pipelines; `[]` is polymorphic `seq<'a>`).
 - **Generalization regime**: Damas-Milner-style. `let`-bound values generalize
   (minus variables free in the environment, reached transitively through row
   constraints); every use instantiates freshly, including a deep copy of row
@@ -82,15 +84,37 @@ weir rejects rather than guesses.
 - Constructor names must start uppercase; that is what distinguishes
   constructor patterns from variable patterns in `match`.
 
+## Processes and the session
+
+- **`sh : string -> seq<string>`** is the deliberate POSIX escape hatch: the
+  string goes to `/bin/sh -c`, so globs, pipes, `&&`, redirects, and `&` all
+  work — and their consequences are the user's. In particular, backgrounded
+  (`&`) processes are orphaned to init when sh exits and no tree-kill can
+  reach them: the user owns them (see the Session-1 lifecycle tripwires in
+  Tests.fs — removing sh backing changes their analysis).
+- **`cmd : string -> seq<string> -> seq<string>`** is direct exec: weir owns
+  (prog, args). No shell, zero expansion — every argument is one argv entry,
+  so there is no injection class (`cmd "echo" ["; rm -rf x"]` prints the
+  string). Programs containing `/` resolve against `Session.Cwd`; bare names
+  resolve against PATH.
+- **`Session.Cwd` is the only working directory.** Every spawn sets it as the
+  child's working directory (read at force time, not bind time);
+  `Environment.CurrentDirectory` is never touched (AOT/global-state hygiene,
+  honest under future concurrency). `cd : string -> string` mutates it
+  (handles `~`, `..`, relative; errors on nonexistent; returns the new cwd) —
+  the one deliberately effectful builtin. `pwd : seq<string>` re-reads
+  `Session.Cwd` per enumeration (same lazy-value pattern as `ls`); a plain
+  `string` would go stale, since env values compute once.
+- Nonzero exit raises when the stream is forced, not when constructed.
+  Abandoning a stream early tree-kills and reaps the child.
+
 ## Evaluation
 
 - Sequences are lazy end to end; re-enumerating a bound pipeline re-runs its
   effects (standard seq semantics), **including re-spawning external
-  commands** — `let files = cmd "find ..." in ...` used twice runs `find`
+  commands** — `let files = sh "find ..." in ...` used twice runs `find`
   twice, and the command may not be idempotent. Mitigation is backlog #2: a
   `collect` builtin (force once, materialize) as the standard escape hatch.
-- External command failure (nonzero exit) raises when the stream is forced, not
-  when it is constructed. Abandoning a stream early kills the child process.
 - Non-exhaustive matches are warnings at check time and `match failure` at
   runtime — the one deliberate runtime failure class besides boundary
   validation (`from json`/`from porcelain` reject malformed lines per line) and

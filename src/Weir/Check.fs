@@ -30,6 +30,7 @@ and TypedKind =
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr) list
     | TEFrom of format: string * rowDef: RecordDef
     | TETo of format: string
+    | TEList of items: TypedExpr list
 
 type private ResultBuilder() =
     member _.Bind(r, f) = Result.bind f r
@@ -581,6 +582,30 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain"
         }
     | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs |> to json"
+    | EList items ->
+        result {
+            match items with
+            | [] ->
+                return
+                    { Kind = TEList []
+                      Ty = TSeq(TVar(freshName ctx "a"))
+                      Span = expr.Span }
+            | head :: rest ->
+                let! thead = infer ctx env head
+
+                let! trest =
+                    rest
+                    |> List.fold
+                        (fun acc item ->
+                            acc
+                            |> Result.bind (fun ts -> check ctx env item thead.Ty |> Result.map (fun t -> t :: ts)))
+                        (Ok [])
+
+                return
+                    { Kind = TEList(thead :: List.rev trest)
+                      Ty = TSeq thead.Ty
+                      Span = expr.Span }
+        }
     | EMatch(scrutinee, arms) ->
         result {
             let! tscrutinee = infer ctx env scrutinee
@@ -732,6 +757,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEField(t, f) -> TEField(finalizeExpr ctx t, f)
         | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
+        | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
         | TEMatch(s, arms) -> TEMatch(finalizeExpr ctx s, arms |> List.map (fun (p, b) -> p, finalizeExpr ctx b))
         | leaf -> leaf
 
@@ -831,6 +857,7 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TERecord(_, fields) -> fields |> List.iter (snd >> walk)
         | TEFrom _
         | TETo _ -> ()
+        | TEList items -> items |> List.iter walk
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
             arms |> List.iter (snd >> walk)

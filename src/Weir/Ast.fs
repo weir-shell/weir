@@ -33,6 +33,7 @@ and ExprKind =
     | EMatch of scrutinee: Expr * arms: (Pattern * Expr) list
     | EFrom of format: string * tyName: string option
     | ETo of format: string
+    | EList of items: Expr list
 
 type DeclBody =
     | DRecord of fields: (string * Ty) list

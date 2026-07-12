@@ -100,7 +100,12 @@ let private recordLit =
     |>> mkExpr
     .>> ws
 
-let private atom = choice [ intLit; strLit; parens; recordLit; wordAtom ]
+let private listLit =
+    spanned (pchar '[' >>. ws >>. sepBy expr (str_ws ";") .>> pchar ']' |>> EList)
+    |>> mkExpr
+    .>> ws
+
+let private atom = choice [ intLit; strLit; parens; recordLit; listLit; wordAtom ]
 
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 

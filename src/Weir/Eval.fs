@@ -265,6 +265,7 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
          | v -> unreachable $"the checker rejects '||' on {formatValue v}")
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
+    | TEList items -> VSeq(items |> List.map (eval env))
     | TEFrom(fmt, def) -> fromAdapter fmt def
     | TETo _ ->
         VBuiltin(fun v ->
