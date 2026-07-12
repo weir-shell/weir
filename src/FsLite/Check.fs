@@ -106,19 +106,23 @@ let rec private resolve (ctx: Ctx) (ty: Ty) : Ty =
         | None -> ty
     | t -> t
 
-let rec private finalTy (ctx: Ctx) (ty: Ty) : Ty =
-    match resolve ctx ty with
-    | TFun(a, b) -> TFun(finalTy ctx a, finalTy ctx b)
-    | TSeq t -> TSeq(finalTy ctx t)
-    | TRowVar(r, _) ->
-        let fields =
-            Map.tryFind r ctx.Rows
-            |> Option.defaultValue Map.empty
-            |> Map.toList
-            |> List.map (fun (f, (t, _)) -> f, finalTy ctx t)
+let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
+    let rec go (seen: Set<string>) ty =
+        match resolve ctx ty with
+        | TFun(a, b) -> TFun(go seen a, go seen b)
+        | TSeq t -> TSeq(go seen t)
+        | TRowVar(r, _) when seen.Contains r -> TRowVar(r, [])
+        | TRowVar(r, _) ->
+            let fields =
+                Map.tryFind r ctx.Rows
+                |> Option.defaultValue Map.empty
+                |> Map.toList
+                |> List.map (fun (f, (t, _)) -> f, go (Set.add r seen) t)
 
-        TRowVar(r, fields)
-    | t -> t
+            TRowVar(r, fields)
+        | t -> t
+
+    go Set.empty ty
 
 let private hasVars (ctx: Ctx) (ty: Ty) : bool =
     not (Set.isEmpty (tyVars (finalTy ctx ty)))

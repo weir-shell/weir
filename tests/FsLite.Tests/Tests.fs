@@ -822,6 +822,61 @@ let adversarialTests =
                   "constructor patterns need a union"
                   ""
           }
+          test "1.1 self-application rejects without hanging" {
+              Expect.stringContains (checkErr "fun f -> f.x f").Message "not a function" ""
+          }
+          test "1.2 var-var row merge unifies field types, not just names" {
+              Expect.stringContains
+                  (checkErr "fun f -> ((fun g -> g.A > 1) f) == ((fun h -> h.A == \"s\") f)").Message
+                  "expected int, got string"
+                  ""
+          }
+          test "1.3 intra-lambda conflicting demands on one field" {
+              Expect.stringContains
+                  (checkErr "fun f -> (f.X > 1) == (f.X == \"a\")").Message
+                  "expected int, got string"
+                  ""
+          }
+          test "1.4 row is closed after nominal discharge" {
+              Expect.stringContains
+                  (checkErr "ls |> where (fun f -> f.Size > 1<mb>) |> where (fun f -> f.Nonexistent == 1)").Message
+                  "FileRow has no field 'Nonexistent'"
+                  ""
+          }
+          test "1.5 polymorphic reuse does not phantom-reject good code" {
+              expectValue "let idf = fun x -> x in (5 |> idf) + (idf 7)" (VInt 12)
+          }
+          test "3.1 generalized row projection instantiates freshly per use" {
+              let e2 =
+                  env
+                  |> declare "type IntV = { V: int; Tag: bool }"
+                  |> declare "type StrV = { V: string; Alt: bool }"
+
+              let expr =
+                  parse (
+                      "let getV = map _.V in "
+                      + "let a = nats |> take 2 |> map (fun n -> { V = n; Tag = true }) |> getV |> sum in "
+                      + "let b = nats |> take 1 |> map (fun n -> { V = \"s\"; Alt = true }) |> getV in "
+                      + "a"
+                  )
+
+              match FsLite.Check.typecheck e2 expr with
+              | Error terr -> failtest (formatError terr)
+              | Ok te ->
+                  Expect.equal te.Ty (TInt None) "int and string uses of getV both accepted"
+                  Expect.equal (eval valueEnv te) (VInt 1) "sum of 0+1"
+          }
+          test "4.3 measured division does not collapse to dimensionless" {
+              Expect.stringContains
+                  (checkErr "ls |> map (fun f -> f.Size / f.Size)").Message
+                  "'/' is not defined for int<mb>"
+                  ""
+          }
+          test "5.2 shadowing does not leak the outer row constraint" {
+              match (checkOk "fun f -> (f.A > 1) == (let f = \"s\" in f == \"s\")").Ty with
+              | TFun(TRowVar(_, [ "A", TInt None ]), TBool) -> ()
+              | t -> failtest $"expected {{ A: int; .. }} -> bool, got {formatTy t}"
+          }
           test "porcelain unquotes C-quoted paths" {
               let src =
                   VSeq
