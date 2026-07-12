@@ -109,9 +109,12 @@ weir rejects rather than guesses.
   concatenation: `foo$bar` is two args.
 - A command line's type is `seq<string>`; evaluation reuses the direct-exec
   machinery (`Proc`, `Session.Cwd`, tree-kill lifecycle — see the tripwires).
-- **PATH resolution** happens per submission (the REPL re-scans PATH once per
-  line, so a mid-session install is visible; completion reuses the line's
-  cache rather than re-scanning per keystroke).
+- **PATH resolution** happens per submission: mode decision uses existence
+  probes (one `File.Exists` per PATH entry — microseconds, so unknown heads
+  cost nothing measurable); the full name inventory is enumerated only for
+  did-you-mean hints and cached per line (a mid-session install is visible on
+  the next line; completion reuses the cache rather than re-scanning per
+  keystroke).
 - **Deliberately excluded, chosen not improvised** (each passes through as a
   literal argument today, it does not error): no glob *expansion*, no
   redirects (`>`), no env-var assignment prefix (`FOO=1 prog`), no `&&`/`;`
@@ -171,6 +174,11 @@ weir rejects rather than guesses.
    interpreter work; closes the re-enumeration surprise above.
 2. **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
    must become normalization-based) *and* the `*`/`/`-defaulting rule above.
+3. **Exit-code policy refinement**: "nonzero raises" collides with tools that
+   use exit codes informationally — `grep` exits 1 on no-match, so a filter
+   with zero hits is currently a runtime error. Needs a chosen policy
+   (per-command allowlist, a `try`-style combinator, or exit-code-as-value),
+   not an improvised exception.
 
 (Done: comparison/boolean completeness — landed with `<>` inheriting `==`'s
 equatability and short-circuit `&&`/`||`, as pre-committed.)

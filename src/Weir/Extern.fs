@@ -26,8 +26,16 @@ let names () : Set<string> =
         cache <- Some s
         s
 
+let private pathDirs () =
+    (Environment.GetEnvironmentVariable "PATH"
+     |> Option.ofObj
+     |> Option.defaultValue "")
+        .Split(':', StringSplitOptions.RemoveEmptyEntries)
+
 let exists (prog: string) : bool =
     if prog.Contains '/' then
         File.Exists(Path.GetFullPath(Path.Combine(Session.Cwd, prog)))
     else
-        (names ()).Contains prog
+        match cache with
+        | Some s -> s.Contains prog
+        | None -> pathDirs () |> Array.exists (fun dir -> File.Exists(Path.Combine(dir, prog)))
