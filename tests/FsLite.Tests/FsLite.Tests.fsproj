@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <Compile Include="Tests.fs" />
+    <Compile Include="Tripwires.fs" />
   </ItemGroup>
 
 </Project>
