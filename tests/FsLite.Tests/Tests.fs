@@ -781,6 +781,66 @@ let rowTests =
               Expect.equal (formatTy (checkOk "where _.ReadOnly").Ty |> fun s -> s.Contains "ReadOnly") true ""
           } ]
 
+let adversarialTests =
+    testList
+        "Adversarial probes"
+        [ test "wrong arity application" {
+              Expect.stringContains (checkErr "double 1 2").Message "not a function taking 2" ""
+          }
+          test "measure mismatch rejects in both directions" {
+              Expect.stringContains (checkErr "1<mb> > 1<s>").Message "expected int<mb>, got int<s>" ""
+              Expect.stringContains (checkErr "1<s> > 1<mb>").Message "expected int<s>, got int<mb>" ""
+          }
+          test "shadowing with a different type is respected" {
+              Expect.stringContains
+                  (checkErr "let x = 1 in let x = \"s\" in x + 1").Message
+                  "expected string, got int"
+                  ""
+
+              expectValue "let x = 1 in let x = \"s\" in x + \"!\"" (VStr "s!")
+          }
+          test "inferred element type contradicts use two stages later" {
+              let terr = checkErr "nats |> map (fun x -> x * x) |> where (fun x -> x.ReadOnly)"
+              Expect.stringContains terr.Message "only records have fields" ""
+          }
+          test "row constraint conflicts with the declared field measure" {
+              Expect.stringContains
+                  (checkErr "let g = fun r -> r.Size > 1<s> in ls |> where g").Message
+                  "expected int<mb>, got int<s>"
+                  ""
+          }
+          test "piping a lambda as data into an int function is rejected" {
+              checkErr "(fun x -> x) |> double" |> ignore
+          }
+          test "piping a constructor as data is rejected" { checkErr "Running |> double" |> ignore }
+          test "field access on a union is rejected toward the eval-unreachable arm" {
+              Expect.stringContains (checkErr "match Stopped with | p -> p.Sze").Message "Proc is a union" ""
+          }
+          test "match scrutinee cannot be a raw constructor pattern target mismatch" {
+              Expect.stringContains
+                  (checkErr "match 5 with | Running n -> n | _ -> 0").Message
+                  "constructor patterns need a union"
+                  ""
+          }
+          test "porcelain unquotes C-quoted paths" {
+              let src =
+                  VSeq
+                      [ VStr " M \"spaced name.txt\""
+                        VStr "?? \"qu\\\"ote.txt\""
+                        VStr "?? \"caf\\303\\251.txt\""
+                        VStr "R  \"old name.txt\" -> \"new name.txt\""
+                        VStr "R  plain.txt -> renamed.txt" ]
+
+              Expect.equal
+                  (runWith [ "src", src ] "src |> from porcelain |> map _.Path" |> forceSeq)
+                  [ VStr "spaced name.txt"
+                    VStr "qu\"ote.txt"
+                    VStr "café.txt"
+                    VStr "new name.txt"
+                    VStr "renamed.txt" ]
+                  ""
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -798,4 +858,5 @@ let allTests =
           boundaryCheckTests
           shorthandTests
           completionTests
-          rowTests ]
+          rowTests
+          adversarialTests ]

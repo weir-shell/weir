@@ -136,17 +136,62 @@ let private jsonRow (def: RecordDef) (line: string) : Value =
 
     VRecord(def.Name, def.Fields |> List.map readField |> Map.ofList)
 
+let private unquoteGitPath (path: string) : string =
+    if path.Length >= 2 && path.StartsWith "\"" && path.EndsWith "\"" then
+        let inner = path.Substring(1, path.Length - 2)
+        let bytes = ResizeArray<byte>()
+        let mutable i = 0
+
+        while i < inner.Length do
+            if inner[i] = '\\' && i + 1 < inner.Length then
+                let c = inner[i + 1]
+
+                if c >= '0' && c <= '7' && i + 3 < inner.Length then
+                    bytes.Add(byte (System.Convert.ToInt32(inner.Substring(i + 1, 3), 8)))
+                    i <- i + 4
+                else
+                    let b =
+                        match c with
+                        | 'n' -> byte '\n'
+                        | 't' -> byte '\t'
+                        | 'r' -> byte '\r'
+                        | c -> byte c
+
+                    bytes.Add b
+                    i <- i + 2
+            else
+                bytes.AddRange(System.Text.Encoding.UTF8.GetBytes(string inner[i]))
+                i <- i + 1
+
+        System.Text.Encoding.UTF8.GetString(bytes.ToArray())
+    else
+        path
+
+let private renameTarget (path: string) : string =
+    if path.StartsWith "\"" then
+        let mutable i = 1
+
+        while i < path.Length && not (path[i] = '"' && path[i - 1] <> '\\') do
+            i <- i + 1
+
+        let rest =
+            if i + 1 <= path.Length then
+                path.Substring(min (i + 1) path.Length)
+            else
+                ""
+
+        if rest.StartsWith " -> " then rest.Substring 4 else path
+    else
+        match path.IndexOf " -> " with
+        | -1 -> path
+        | i -> path.Substring(i + 4)
+
 let private porcelainRow (def: RecordDef) (line: string) : Value =
     if line.Length < 4 then
         failwith $"from porcelain: unexpected line: '{line}'"
 
     let x, y = line[0], line[1]
-    let path = line.Substring 3
-
-    let path =
-        match path.IndexOf " -> " with
-        | -1 -> path
-        | i -> path.Substring(i + 4)
+    let path = line.Substring 3 |> renameTarget |> unquoteGitPath
 
     VRecord(
         def.Name,
