@@ -34,6 +34,7 @@ and ExprKind =
     | EFrom of format: string * tyName: string option
     | ETo of format: string
     | EList of items: Expr list
+    | ECmd of prog: string * args: Expr list
 
 type DeclBody =
     | DRecord of fields: (string * Ty) list

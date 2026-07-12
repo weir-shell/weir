@@ -80,76 +80,10 @@ let changeDef: RecordDef =
     { Name = "Change"
       Fields = [ "Status", TStr; "Staged", TBool; "Unstaged", TBool; "Path", TStr ] }
 
-let private procLines (prog: string) (args: string list) (input: seq<string> option) : seq<string> =
-    seq {
-        let psi = ProcessStartInfo(prog)
-
-        for a in args do
-            psi.ArgumentList.Add a
-
-        psi.WorkingDirectory <- Session.Cwd
-        psi.UseShellExecute <- false
-        psi.RedirectStandardOutput <- true
-        psi.RedirectStandardError <- true
-        psi.RedirectStandardInput <- input.IsSome
-
-        use p =
-            try
-                Process.Start psi
-            with :? System.ComponentModel.Win32Exception ->
-                failwith $"command not found or not executable: {prog}"
-
-        match input with
-        | Some lines ->
-            System.Threading.Tasks.Task.Run(fun () ->
-                try
-                    try
-                        for l in lines do
-                            p.StandardInput.WriteLine l
-                    with _ ->
-                        ()
-                finally
-                    p.StandardInput.Close())
-            |> ignore
-        | None -> ()
-
-        try
-            let out = p.StandardOutput
-            let mutable line = out.ReadLine()
-
-            while line <> null do
-                yield line
-                line <- out.ReadLine()
-
-            let stderr = p.StandardError.ReadToEnd().Trim()
-            p.WaitForExit()
-
-            if p.ExitCode <> 0 then
-                let detail = if stderr = "" then "" else $": {stderr}"
-                let shown = String.concat " " (prog :: args)
-                failwith $"command failed with exit code {p.ExitCode}: {shown}{detail}"
-        finally
-            try
-                p.Kill true
-            with _ ->
-                ()
-
-            try
-                p.WaitForExit()
-            with _ ->
-                ()
-    }
-
-let private resolveProg (prog: string) : string =
-    if prog.Contains '/' then
-        Path.GetFullPath(Path.Combine(Session.Cwd, prog))
-    else
-        prog
-
 let private shImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VStr cmdline -> VSeq(procLines "/bin/sh" [ "-c"; cmdline ] None |> Seq.map VStr)
+        | VStr cmdline -> VSeq(Proc.lines "/bin/sh" [ "-c"; cmdline ] None |> Seq.map VStr)
         | v -> unreachable $"the checker rejects 'sh' on {formatValue v}")
 
 let private asString (v: Value) : string =
@@ -163,7 +97,7 @@ let private cmdImpl: Value =
             match progV, argsV with
             | VStr prog, VSeq args ->
                 let argv = args |> Seq.map asString |> List.ofSeq
-                VSeq(procLines (resolveProg prog) argv None |> Seq.map VStr)
+                VSeq(Proc.lines (Proc.resolveProg prog) argv None |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'cmd' on these arguments"))
 
 let private intoImpl: Value =
@@ -172,7 +106,7 @@ let private intoImpl: Value =
             match c, sv with
             | VStr cmdline, VSeq items ->
                 let lines = items |> Seq.map asString
-                VSeq(procLines "/bin/sh" [ "-c"; cmdline ] (Some lines) |> Seq.map VStr)
+                VSeq(Proc.lines "/bin/sh" [ "-c"; cmdline ] (Some lines) |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'into' on these arguments"))
 
 let private cdImpl: Value =

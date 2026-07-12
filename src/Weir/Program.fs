@@ -5,7 +5,12 @@ open Weir.Ast
 open Weir.Types
 
 let private evalOnce (input: string) : int =
-    match Parser.parseStmt input with
+    let resolver: Parser.Resolver =
+        { IsKnown = fun n -> Map.containsKey n Builtins.typeEnv.Values
+          IsExternal = Extern.exists
+          ExternalNames = fun () -> Extern.names () :> seq<string> }
+
+    match Parser.parseLine resolver input with
     | Error msg ->
         Console.Error.WriteLine msg
         1

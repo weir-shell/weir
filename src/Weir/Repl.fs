@@ -61,6 +61,11 @@ let private printWarnings (state: State) (te: Check.TypedExpr) =
         Console.WriteLine(underline w.Span)
         Console.WriteLine(Check.formatWarning w))
 
+let private resolver (state: State) : Parser.Resolver =
+    { IsKnown = fun n -> Map.containsKey n state.TypeEnv.Values
+      IsExternal = Extern.exists
+      ExternalNames = fun () -> Extern.names () :> seq<string> }
+
 let private tryRun (state: State) (e: Expr) : Result<Check.TypedExpr * Eval.Value * string, string * Span option> =
     match Check.typecheck state.TypeEnv e with
     | Error terr -> Error(Check.formatError terr, Some terr.Span)
@@ -79,8 +84,10 @@ let rec private loop (state: State) =
     | ":q" -> ()
     | line when String.IsNullOrWhiteSpace line -> loop state
     | line ->
+        Extern.refresh ()
+
         let next =
-            match Parser.parseStmt line with
+            match Parser.parseLine (resolver state) line with
             | Error msg ->
                 Console.WriteLine msg
                 state

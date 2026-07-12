@@ -65,3 +65,28 @@ type TypeDef =
 type TypeEnv =
     { Values: Map<string, Scheme>
       Types: Map<string, TypeDef> }
+
+let editDistance (a: string) (b: string) : int =
+    let d = Array2D.create (a.Length + 1) (b.Length + 1) 0
+
+    for i in 0 .. a.Length do
+        d[i, 0] <- i
+
+    for j in 0 .. b.Length do
+        d[0, j] <- j
+
+    for i in 1 .. a.Length do
+        for j in 1 .. b.Length do
+            let cost = if a[i - 1] = b[j - 1] then 0 else 1
+            d[i, j] <- min (min (d[i - 1, j] + 1) (d[i, j - 1] + 1)) (d[i - 1, j - 1] + cost)
+
+    d[a.Length, b.Length]
+
+let didYouMean (name: string) (candidates: seq<string>) : string =
+    candidates
+    |> Seq.map (fun c -> c, editDistance name c)
+    |> Seq.filter (fun (_, d) -> d <= 2)
+    |> Seq.sortBy snd
+    |> Seq.tryHead
+    |> Option.map (fun (c, _) -> $". Did you mean '{c}'?")
+    |> Option.defaultValue ""

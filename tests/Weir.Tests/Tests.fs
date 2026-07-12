@@ -41,6 +41,10 @@ let rec private show (e: Expr) : string =
     | EList items ->
         let body = items |> List.map show |> String.concat "; "
         $"[{body}]"
+    | ECmd(prog, []) -> $"(cmd {prog})"
+    | ECmd(prog, args) ->
+        let body = args |> List.map show |> String.concat " "
+        $"(cmd {prog} {body})"
 
 and private showPat (p: Pattern) : string =
     match p.PKind with
@@ -813,7 +817,8 @@ let private defunctChildren () : int =
     if out = "" then 0 else int out
 
 let lifecycleTests =
-    testList
+    testSequenced
+    <| testList
         "Process lifecycle"
         [ // TRIPWIRE PAIR: the simple case passes even without tree-kill because
           // sh execs a single command (one process). The compound case is the
@@ -849,7 +854,8 @@ let lifecycleTests =
           } ]
 
 let session2Tests =
-    testList
+    testSequenced
+    <| testList
         "sh/cmd split and session cwd"
         [ test "list literal parses, types, evaluates" {
               expectParse "[1; 2; 3]" "[1; 2; 3]"
@@ -934,6 +940,132 @@ let session2Tests =
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-dz") "direct-exec children leaked"
               Expect.equal (defunctChildren ()) 0 "defunct children accumulated"
+          } ]
+
+
+let private fakeExternals = Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls" ]
+
+let private cmdResolver: Weir.Parser.Resolver =
+    { IsKnown = fun n -> Map.containsKey n env.Values
+      IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
+      ExternalNames = fun () -> fakeExternals }
+
+let private realResolver: Weir.Parser.Resolver =
+    { IsKnown = fun n -> Map.containsKey n env.Values
+      IsExternal = Weir.Extern.exists
+      ExternalNames = fun () -> Weir.Extern.names () :> seq<string> }
+
+let private parseCmd input =
+    match Weir.Parser.parseLine cmdResolver input with
+    | Ok(SExpr e) -> e
+    | Ok other -> failtest $"expected an expression line, got {other}"
+    | Error msg -> failtest $"parse failed: {msg}"
+
+let private expectCmd input expected =
+    Expect.equal (show (parseCmd input)) expected $"parse of '{input}'"
+
+let private runReal input =
+    match Weir.Parser.parseLine realResolver input with
+    | Error msg -> failtest $"parse failed: {msg}"
+    | Ok(SExpr e) ->
+        match typecheck env e with
+        | Error terr -> failtest (formatError terr)
+        | Ok te -> eval valueEnv te
+    | Ok other -> failtest $"unexpected: {other}"
+
+let commandModeTests =
+    testList
+        "Command mode"
+        [ test "bare external command" { expectCmd "git status" "(cmd git \"status\")" }
+          test "quoted arg is a single argv entry" {
+              expectCmd "grep \"a b\" file.txt" "(cmd grep \"a b\" \"file.txt\")"
+          }
+          test "single quotes carry embedded double quotes" {
+              match parseCmd "grep 'a\"b' f" with
+              | { Kind = ECmd("grep", [ { Kind = EStr "a\"b" }; { Kind = EStr "f" } ]) } -> ()
+              | e -> failtest $"unexpected: {show e}"
+          }
+          test "dollar splices a binding" { expectCmd "git checkout $branch" "(cmd git \"checkout\" branch)" }
+          test "parens splice an expression" { expectCmd "echo (1 + 2)" "(cmd echo (+ 1 2))" }
+          test "rich barewords stay literal" {
+              expectCmd
+                  "git log --format=%H -n 3 ../path/x.txt"
+                  "(cmd git \"log\" \"--format=%H\" \"-n\" \"3\" \"../path/x.txt\")"
+          }
+          test "slashed program resolves as external" { expectCmd "./build.sh --flag" "(cmd ./build.sh \"--flag\")" }
+          test "caret forces PATH over a builtin shadow" { expectCmd "^ls -la" "(cmd ls \"-la\")" }
+          test "builtin shadows PATH: ls -la is expression mode" {
+              Expect.equal (show (parseCmd "ls -la")) "(- ls la)" "parses as subtraction"
+              Expect.stringContains (checkErr "ls - la").Message "unbound variable 'la'" ""
+          }
+          test "command pipes into expression stage" {
+              expectCmd "git log | first 5" "((cmd git \"log\") |> (first 5))"
+          }
+          test "pipe accepts |> in command mode too" {
+              expectCmd "git log |> first 5" "((cmd git \"log\") |> (first 5))"
+          }
+          test "external to external to expression" {
+              expectCmd "git log | grep x | first 2" "(((cmd git \"log\") |> (cmd grep \"x\")) |> (first 2))"
+          }
+          test "unknown head without PATH hit falls back to expression" {
+              match Weir.Parser.parseLine cmdResolver "gti status" with
+              | Ok(SExpr e) ->
+                  match typecheck env e with
+                  | Error terr -> Expect.stringContains terr.Message "unbound variable 'gti'" ""
+                  | Ok _ -> failtest "expected unbound error"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "forced unknown is a parse-time command-not-found with a hint" {
+              match Weir.Parser.parseLine cmdResolver "^gti status" with
+              | Error msg ->
+                  Expect.stringContains msg "command not found: gti" ""
+                  Expect.stringContains msg "Did you mean 'git'?" ""
+              | Ok _ -> failtest "expected parse failure"
+          }
+          test "command line types as seq<string>" {
+              match Weir.Parser.parseLine cmdResolver "git status | first 1" with
+              | Ok(SExpr e) ->
+                  match typecheck env e with
+                  | Ok te -> Expect.equal te.Ty (TSeq TStr) ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "splice must be a stringable scalar" {
+              let env2 =
+                  { env with
+                      Values =
+                          env.Values
+                          |> Map.add "branch" (generalize TStr)
+                          |> Map.add "pt" (generalize (TNamed "Point")) }
+
+              match Weir.Parser.parseLine cmdResolver "git checkout $branch" with
+              | Ok(SExpr e) ->
+                  match typecheck env2 e with
+                  | Ok te -> Expect.equal te.Ty (TSeq TStr) ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+
+              match Weir.Parser.parseLine cmdResolver "git checkout $pt" with
+              | Ok(SExpr e) ->
+                  match typecheck env2 e with
+                  | Error terr -> Expect.stringContains terr.Message "command arguments must be" ""
+                  | Ok _ -> failtest "expected splice type error"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "real exec: barewords, splices and scalars render" {
+              Expect.equal (runReal "echo hi (1 + 2) true" |> forceSeq) [ VStr "hi 3 true" ] ""
+          }
+          test "real exec: command pipes into first" {
+              Expect.equal
+                  (runReal "yes weir-s3-pipe | first 2" |> forceSeq)
+                  [ VStr "weir-s3-pipe"; VStr "weir-s3-pipe" ]
+                  ""
+
+              Expect.isTrue (eventuallyNoSurvivors "weir-s3-pipe") "command-mode child leaked"
+          }
+          test "real exec: argv verbatim, no shell interpretation" {
+              Expect.equal (runReal "echo ; rm -rf x") (runReal "echo ; rm -rf x") "deterministic"
+              Expect.equal (runReal "echo ; rm -rf x" |> forceSeq) [ VStr "; rm -rf x" ] ""
           } ]
 
 let operatorTests =
@@ -1121,4 +1253,5 @@ let allTests =
           adversarialTests
           operatorTests
           lifecycleTests
-          session2Tests ]
+          session2Tests
+          commandModeTests ]

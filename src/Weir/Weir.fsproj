@@ -20,8 +20,10 @@
     <Compile Include="Check.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Complete.fs" />
-    <Compile Include="Eval.fs" />
     <Compile Include="Session.fs" />
+    <Compile Include="Extern.fs" />
+    <Compile Include="Proc.fs" />
+    <Compile Include="Eval.fs" />
     <Compile Include="Builtins.fs" />
     <Compile Include="Repl.fs" />
     <Compile Include="Program.fs" />

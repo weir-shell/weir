@@ -31,6 +31,7 @@ and TypedKind =
     | TEFrom of format: string * rowDef: RecordDef
     | TETo of format: string
     | TEList of items: TypedExpr list
+    | TECmd of prog: string * args: TypedExpr list
 
 type private ResultBuilder() =
     member _.Bind(r, f) = Result.bind f r
@@ -43,31 +44,6 @@ let private err (span: Span) (msg: string) : Result<'a, TypeError> = Error { Spa
 
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
     err span $"expected {formatTy expected}, got {formatTy actual}"
-
-let private editDistance (a: string) (b: string) : int =
-    let d = Array2D.create (a.Length + 1) (b.Length + 1) 0
-
-    for i in 0 .. a.Length do
-        d[i, 0] <- i
-
-    for j in 0 .. b.Length do
-        d[0, j] <- j
-
-    for i in 1 .. a.Length do
-        for j in 1 .. b.Length do
-            let cost = if a[i - 1] = b[j - 1] then 0 else 1
-            d[i, j] <- min (min (d[i - 1, j] + 1) (d[i, j - 1] + 1)) (d[i - 1, j - 1] + cost)
-
-    d[a.Length, b.Length]
-
-let private didYouMean (name: string) (candidates: seq<string>) : string =
-    candidates
-    |> Seq.map (fun c -> c, editDistance name c)
-    |> Seq.filter (fun (_, d) -> d <= 2)
-    |> Seq.sortBy snd
-    |> Seq.tryHead
-    |> Option.map (fun (c, _) -> $". Did you mean '{c}'?")
-    |> Option.defaultValue ""
 
 let private allOk (items: 'a list) (f: 'a -> Result<unit, TypeError>) : Result<unit, TypeError> =
     items |> List.fold (fun acc x -> Result.bind (fun () -> f x) acc) (Ok())
@@ -582,6 +558,35 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain"
         }
     | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs |> to json"
+    | ECmd(prog, args) ->
+        result {
+            let checkArg (arg: Expr) =
+                result {
+                    let! targ = infer ctx env arg
+
+                    match resolve ctx targ.Ty with
+                    | TVar _ ->
+                        do! bind ctx env arg.Span TStr targ.Ty
+                        return targ
+                    | TStr
+                    | TInt _
+                    | TBool -> return targ
+                    | ty ->
+                        return!
+                            err arg.Span $"command arguments must be strings, ints or bools; this one is {formatTy ty}"
+                }
+
+            let! targs =
+                args
+                |> List.fold
+                    (fun acc a -> acc |> Result.bind (fun ts -> checkArg a |> Result.map (fun t -> t :: ts)))
+                    (Ok [])
+
+            return
+                { Kind = TECmd(prog, List.rev targs)
+                  Ty = TSeq TStr
+                  Span = expr.Span }
+        }
     | EList items ->
         result {
             match items with
@@ -758,6 +763,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
         | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
+        | TECmd(prog, args) -> TECmd(prog, args |> List.map (finalizeExpr ctx))
         | TEMatch(s, arms) -> TEMatch(finalizeExpr ctx s, arms |> List.map (fun (p, b) -> p, finalizeExpr ctx b))
         | leaf -> leaf
 
@@ -858,6 +864,7 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TEFrom _
         | TETo _ -> ()
         | TEList items -> items |> List.iter walk
+        | TECmd(_, args) -> args |> List.iter walk
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
             arms |> List.iter (snd >> walk)

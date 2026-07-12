@@ -266,6 +266,17 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
     | TEList items -> VSeq(items |> List.map (eval env))
+    | TECmd(prog, args) ->
+        let argString v =
+            match v with
+            | VStr s -> s
+            | VInt n -> string n
+            | VBool true -> "true"
+            | VBool false -> "false"
+            | v -> unreachable $"the checker rejects command argument {formatValue v}"
+
+        let argv = args |> List.map (fun a -> argString (eval env a))
+        VSeq(Proc.lines (Proc.resolveProg prog) argv None |> Seq.map VStr)
     | TEFrom(fmt, def) -> fromAdapter fmt def
     | TETo _ ->
         VBuiltin(fun v ->

@@ -19,6 +19,11 @@ let private keywords =
           "from"
           "to" ]
 
+type Resolver =
+    { IsKnown: string -> bool
+      IsExternal: string -> bool
+      ExternalNames: unit -> seq<string> }
+
 let private isIdentStart c = isLetter c || c = '_'
 let private isIdentCont c = isLetter c || isDigit c || c = '_'
 
@@ -154,21 +159,28 @@ let private pipeOp l r =
     { Kind = EPipe(l, r)
       Span = Span.union l.Span r.Span }
 
-let private opp = OperatorPrecedenceParser<Expr, unit, unit>()
+let private mkOpp (withPipe: bool) =
+    let opp = OperatorPrecedenceParser<Expr, unit, unit>()
 
-opp.AddOperator(InfixOperator("|>", ws, 1, Associativity.Left, pipeOp))
-opp.AddOperator(InfixOperator("||", ws, 2, Associativity.Left, binOp "||"))
-opp.AddOperator(InfixOperator("&&", ws, 3, Associativity.Left, binOp "&&"))
-opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
-opp.AddOperator(InfixOperator("<>", ws, 4, Associativity.Left, binOp "<>"))
-opp.AddOperator(InfixOperator(">=", ws, 4, Associativity.Left, binOp ">="))
-opp.AddOperator(InfixOperator("<=", ws, 4, Associativity.Left, binOp "<="))
-opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
-opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
-opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
-opp.AddOperator(InfixOperator("-", ws, 6, Associativity.Left, binOp "-"))
-opp.AddOperator(InfixOperator("*", ws, 7, Associativity.Left, binOp "*"))
-opp.AddOperator(InfixOperator("/", ws, 7, Associativity.Left, binOp "/"))
+    if withPipe then
+        opp.AddOperator(InfixOperator("|>", ws, 1, Associativity.Left, pipeOp))
+
+    opp.AddOperator(InfixOperator("||", ws, 2, Associativity.Left, binOp "||"))
+    opp.AddOperator(InfixOperator("&&", ws, 3, Associativity.Left, binOp "&&"))
+    opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
+    opp.AddOperator(InfixOperator("<>", ws, 4, Associativity.Left, binOp "<>"))
+    opp.AddOperator(InfixOperator(">=", ws, 4, Associativity.Left, binOp ">="))
+    opp.AddOperator(InfixOperator("<=", ws, 4, Associativity.Left, binOp "<="))
+    opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
+    opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
+    opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
+    opp.AddOperator(InfixOperator("-", ws, 6, Associativity.Left, binOp "-"))
+    opp.AddOperator(InfixOperator("*", ws, 7, Associativity.Left, binOp "*"))
+    opp.AddOperator(InfixOperator("/", ws, 7, Associativity.Left, binOp "/"))
+    opp
+
+let private opp = mkOpp true
+let private segOpp = mkOpp false
 
 let private pat, private patRef = createParserForwardedToRef<Pattern, unit> ()
 
@@ -239,7 +251,80 @@ let private matchExpr =
                   End = lastBody.Span.End } })
 
 opp.TermParser <- choice [ lambda; letIn; matchExpr; fromExpr; toExpr; appChain ]
+segOpp.TermParser <- choice [ lambda; letIn; matchExpr; fromExpr; toExpr; appChain ]
 exprRef.Value <- opp.ExpressionParser
+
+let private segExpr = segOpp.ExpressionParser
+
+
+let private cmdWordChar c =
+    not (System.Char.IsWhiteSpace c)
+    && c <> '|'
+    && c <> '('
+    && c <> ')'
+    && c <> '"'
+    && c <> '\''
+    && c <> '$'
+
+let private cmdWord = many1Satisfy cmdWordChar
+
+let private isIdentLike (w: string) =
+    isIdentStart w[0] && w |> Seq.forall isIdentCont
+
+let private singleQuoted =
+    spanned (between (pchar '\'') (pchar '\'') (manySatisfy ((<>) '\'')) |>> EStr)
+    |>> mkExpr
+    .>> ws
+
+let private spliceVar = spanned (pchar '$' >>. rawWord |>> EVar) |>> mkExpr .>> ws
+
+let private cmdArg =
+    choice
+        [ strLit
+          singleQuoted
+          spliceVar
+          parens
+          spanned (cmdWord |>> EStr) |>> mkExpr .>> ws ]
+
+let private commandSegment (r: Resolver) : Parser<Expr, unit> =
+    let head =
+        spanned (opt (pchar '^') .>>. cmdWord) .>> ws
+        >>= fun ((forced, w), span) ->
+            if forced.IsSome then
+                if r.IsExternal w then
+                    preturn (w, span)
+                else
+                    failFatally $"command not found: {w}{didYouMean w (r.ExternalNames())}"
+            elif isIdentLike w && (keywords.Contains w || r.IsKnown w) then
+                fail "known name; expression mode"
+            elif r.IsExternal w then
+                preturn (w, span)
+            else
+                fail "not an external command"
+
+    attempt head .>>. many cmdArg
+    |>> fun ((prog, span), args) ->
+        { Kind = ECmd(prog, args)
+          Span =
+            { Start = span.Start
+              End =
+                (match args with
+                 | [] -> span.End
+                 | _ -> (List.last args).Span.End) } }
+
+let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
+
+let private segment (r: Resolver) : Parser<Expr, unit> = choice [ commandSegment r; segExpr ]
+
+let private cmdLine (r: Resolver) : Parser<Expr, unit> =
+    commandSegment r .>>. many (pipeSep >>. segment r)
+    |>> fun (h, rest) ->
+        rest
+        |> List.fold
+            (fun acc seg ->
+                { Kind = EPipe(acc, seg)
+                  Span = Span.union acc.Span seg.Span })
+            h
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
@@ -285,13 +370,25 @@ let private typeDecl =
 let private topLet =
     attempt (keyword "let" >>. ident .>> str_ws "=" .>>. expr .>> eof) |>> SLet
 
-let private stmt =
-    ws >>. choice [ typeDecl .>> eof; topLet; expr .>> eof |>> SExpr ]
+let private stmtWith (r: Resolver) =
+    ws
+    >>. choice
+            [ typeDecl .>> eof
+              topLet
+              attempt (cmdLine r .>> eof) |>> SExpr
+              expr .>> eof |>> SExpr ]
 
-let parseStmt (input: string) : Result<Stmt, string> =
-    match run stmt input with
+let private noExternals =
+    { IsKnown = fun _ -> true
+      IsExternal = fun _ -> false
+      ExternalNames = fun () -> Seq.empty }
+
+let parseLine (r: Resolver) (input: string) : Result<Stmt, string> =
+    match run (stmtWith r) input with
     | Success(s, _, _) -> Result.Ok s
     | Failure(msg, _, _) -> Result.Error msg
+
+let parseStmt (input: string) : Result<Stmt, string> = parseLine noExternals input
 
 let parseExpr (input: string) : Result<Expr, string> =
     match parseStmt input with

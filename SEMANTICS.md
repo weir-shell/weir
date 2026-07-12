@@ -84,6 +84,42 @@ weir rejects rather than guesses.
 - Constructor names must start uppercase; that is what distinguishes
   constructor patterns from variable patterns in `match`.
 
+## Command mode
+
+- **Mode decision, at line head and per pipe segment** (this is the security
+  boundary between weir semantics and PATH execution): a head token that is a
+  known name (binding, builtin, or keyword) → expression mode, today's path
+  unchanged — bindings and builtins shadow PATH. Unknown head → PATH lookup;
+  hit → command mode; miss → fall back to expression parsing, which yields the
+  standard unbound-variable error (did-you-mean capped at edit distance ≤ 2).
+  Only a PATH *hit* can enter command mode — every ambiguous shape falls back
+  to expression semantics. `^prog` forces PATH even when shadowed; a forced
+  miss is a parse-time "command not found" with a PATH-based hint.
+- **Command grammar**: `head bareword* ((| or |>) segment)*`; each pipe segment
+  re-enters the mode decision, so `git log | grep x | first 2` flows
+  external→external→expression. `|` is accepted as `|>` in command mode only;
+  expression mode remains `|>`-only.
+- **Arguments**: barewords run until whitespace, `|`, `(`, `)`, quotes, `$`, or
+  end of line — `/`, `.`, `-`, `=`, `%` are ordinary characters. `"..."`
+  (with escapes) and `'...'` (raw) produce single args. `$name` splices a
+  binding; `(expr)` splices an expression result. **Splice typing rule**:
+  arguments must be strings, ints (any measure), or bools — rendered as single
+  argv entries, never re-split (no injection class; same ownership line as
+  `cmd`); an unresolved argument type defaults to `string`. No adjacent-token
+  concatenation: `foo$bar` is two args.
+- A command line's type is `seq<string>`; evaluation reuses the direct-exec
+  machinery (`Proc`, `Session.Cwd`, tree-kill lifecycle — see the tripwires).
+- **PATH resolution** happens per submission (the REPL re-scans PATH once per
+  line, so a mid-session install is visible; completion reuses the line's
+  cache rather than re-scanning per keystroke).
+- **Deliberately excluded, chosen not improvised** (each passes through as a
+  literal argument today, it does not error): no glob *expansion*, no
+  redirects (`>`), no env-var assignment prefix (`FOO=1 prog`), no `&&`/`;`
+  chaining in command mode. Also: `let`-headed lines are always expression
+  mode (no command mode on the right of a top-level `let`), and expression
+  mode never flows back into command mode (`ls |> git log` is an unbound
+  variable, not a command).
+
 ## Processes and the session
 
 - **`sh : string -> seq<string>`** is the deliberate POSIX escape hatch: the
@@ -97,6 +133,15 @@ weir rejects rather than guesses.
   so there is no injection class (`cmd "echo" ["; rm -rf x"]` prints the
   string). Programs containing `/` resolve against `Session.Cwd`; bare names
   resolve against PATH.
+- **The session is single-threaded.** One session per process; `Session.Cwd`
+  is mutated only from the REPL/eval thread (the sole background thread, the
+  stdin writer, never touches it). It is deliberately *not* synchronized: the
+  invariant that matters — "cwd is stable between my `cd` and my spawn" — is
+  transactional, not atomic, so a lock adds nothing. When real concurrency
+  arrives (parallel pipelines, multi-session daemon), the fix is structural:
+  `Session` becomes a value threaded through evaluation, not a locked global.
+  Tests that mutate the session run sequenced for the same reason (two
+  parallel tests sharing the global are two sessions pretending to be one).
 - **`Session.Cwd` is the only working directory.** Every spawn sets it as the
   child's working directory (read at force time, not bind time);
   `Environment.CurrentDirectory` is never touched (AOT/global-state hygiene,
