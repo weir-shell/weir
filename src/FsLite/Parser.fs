@@ -152,7 +152,12 @@ let private pipeOp l r =
 let private opp = OperatorPrecedenceParser<Expr, unit, unit>()
 
 opp.AddOperator(InfixOperator("|>", ws, 1, Associativity.Left, pipeOp))
+opp.AddOperator(InfixOperator("||", ws, 2, Associativity.Left, binOp "||"))
+opp.AddOperator(InfixOperator("&&", ws, 3, Associativity.Left, binOp "&&"))
 opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
+opp.AddOperator(InfixOperator("<>", ws, 4, Associativity.Left, binOp "<>"))
+opp.AddOperator(InfixOperator(">=", ws, 4, Associativity.Left, binOp ">="))
+opp.AddOperator(InfixOperator("<=", ws, 4, Associativity.Left, binOp "<="))
 opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
 opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
 opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))

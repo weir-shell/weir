@@ -781,6 +781,55 @@ let rowTests =
               Expect.equal (formatTy (checkOk "where _.ReadOnly").Ty |> fun s -> s.Contains "ReadOnly") true ""
           } ]
 
+let operatorTests =
+    testList
+        "Operator completeness"
+        [ test "precedence: || below && below comparisons" {
+              expectParse "a || b && c" "(|| a (&& b c))"
+              expectParse "1 < 2 || 2 <= 3 && 4 >= 4" "(|| (< 1 2) (&& (<= 2 3) (>= 4 4)))"
+          }
+          test "not-equal parses as one operator" { expectParse "a <> b" "(<> a b)" }
+          test "measure literal still wins over <=" { expectParse "1<mb> <= 2<mb>" "(<= 1<mb> 2<mb>)" }
+          test "not-equal on values" {
+              expectValue "1 <> 2" (VBool true)
+              expectValue "\"a\" <> \"a\"" (VBool false)
+              expectValue "Running 1 <> Stopped" (VBool true)
+          }
+          test "not-equal inherits equatability: seqs rejected" {
+              Expect.stringContains (checkErr "nats <> nats").Message "'<>' is not defined for seq<int>" ""
+          }
+          test "ordered comparisons include boundaries and measures" {
+              expectValue "2 >= 2" (VBool true)
+              expectValue "2 <= 1" (VBool false)
+              expectValue "3<mb> >= 2<mb>" (VBool true)
+              Expect.stringContains (checkErr "1<mb> <= 1<gb>").Message "expected int<mb>, got int<gb>" ""
+          }
+          test "common filter shape works" {
+              expectValue
+                  "ls |> where (fun f -> f.Name <> \"a.txt\" && f.Size <= 3<mb>)"
+                  (VSeq [ FsLite.Builtins.file "c.log" 1 false; FsLite.Builtins.file "d.iso" 3 false ])
+          }
+          test "not builtin" {
+              expectValue "not true" (VBool false)
+
+              expectValue
+                  "ls |> where (fun f -> not f.ReadOnly) |> first 1"
+                  (VSeq [ FsLite.Builtins.file "a.txt" 0 false ])
+          }
+          test "and-or require bools" {
+              Expect.stringContains (checkErr "1 && 2").Message "'&&' is not defined for int" ""
+          }
+          test "and-or on two unknowns default to bool" {
+              Expect.equal (checkOk "fun a -> fun b -> a && b").Ty (TFun(TBool, TFun(TBool, TBool))) ""
+          }
+          test "&& short-circuits: right side not evaluated on false" {
+              expectValue "false && (1 / 0 == 1)" (VBool false)
+          }
+          test "|| short-circuits: right side not evaluated on true" { expectValue "true || (1 / 0 == 1)" (VBool true) }
+          test "&& is strict when the left side is true" {
+              Expect.throws (fun () -> run "true && (1 / 0 == 1)" |> ignore) ""
+          } ]
+
 let adversarialTests =
     testList
         "Adversarial probes"
@@ -914,4 +963,5 @@ let allTests =
           shorthandTests
           completionTests
           rowTests
-          adversarialTests ]
+          adversarialTests
+          operatorTests ]

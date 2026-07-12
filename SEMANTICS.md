@@ -54,26 +54,27 @@ fslite rejects rather than guesses.
 
 ## Operators and syntax
 
-- Comparison/boolean surface is deliberately incomplete in v0.1: `==`, `>`, `<`
-  exist; **`<>`, `>=`, `<=`, `not`, `&&`, `||` do not**. Consequences:
-  `where (fun f -> f.Name <> "tmp")` — the most common shell filter shape —
-  does not type-check, and `>=` is expressible only as the awkward
-  `(a < b) == false`. This is backlog #1 (see below): pure parser + trivial
-  typing rules, no soundness surface.
+- Comparison/boolean surface: `==`, `<>`, `>`, `<`, `>=`, `<=` (precedence 4),
+  `&&` (3), `||` (2, lowest above pipe), all left-associative; `not` is a
+  builtin `bool -> bool`. `<>` shares `==`'s equatability rule in full.
+  **`&&`/`||` short-circuit**: the right operand is not evaluated when the left
+  decides — observable semantics, since the right side may spawn a process
+  (pinned by tests using division-by-zero as the effect proxy).
 - Pipe is `|>` only. Match arm bodies are full expressions; piping a whole
   `match` requires parens (arm bodies bind tighter), as does a nested `match`
   in an arm.
-- `==` unifies its operands first, then requires the resolved type to be
+- `==`/`<>` unify their operands first, then require the resolved type to be
   equatable: no sequences or functions, checked recursively through records
   and unions. Unification means one-sided resolution is fine —
   `fun f -> f.Name == "tmp"` binds the field's type to `string` (this is the
   mechanism behind the §1.2 conflicting-demands rejection); only a type still
   unresolved *after* unification is rejected.
-- Binary operators on two unresolved type variables are errors, except `*`/`/`
-  which bind both operands to unitless `int` — the only sound reading *because
-  no measure algebra exists*. When scalar×measure lands (backlog #3), `*` on
-  unresolved operands has two readings again and this defaulting rule must be
-  redesigned with it, not merely kept.
+- Binary operators on two unresolved type variables are errors, with two
+  deterministic exceptions: `*`/`/` bind both operands to unitless `int` — the
+  only sound reading *because no measure algebra exists* — and `&&`/`||` bind
+  both to `bool` (their only typing). When scalar×measure lands (backlog #2),
+  `*` on unresolved operands has two readings again and its defaulting rule
+  must be redesigned with it, not merely kept.
 - `let ... in` is the expression-level binding form (single-line grammar; the
   offside rule is out of scope until multi-line input exists).
 - `_.Field` is sugar for `fun x -> x.Field` (parser-level desugar; requires at
@@ -97,14 +98,10 @@ fslite rejects rather than guesses.
 
 ## Backlog (ordered by day-one impact)
 
-1. **Comparison/negation/boolean completeness**: `<>`, `>=`, `<=`, `not`,
-   `&&`, `||`. Parser registrations + typing rules mirroring `==`/`>` + eval
-   cases; reopens nothing. Two implementation notes decided now: `<>` must
-   inherit `==`'s full equatability recursion (not just its parser slot), and
-   `&&`/`||` are pre-committed to **short-circuit** evaluation — observable
-   semantics, since the right operand may spawn a process — and become a
-   stated rule under Operators the moment they exist.
-2. **`collect` builtin**: force-once materialization of a stream. Pure
+1. **`collect` builtin**: force-once materialization of a stream. Pure
    interpreter work; closes the re-enumeration surprise above.
-3. **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
+2. **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
    must become normalization-based) *and* the `*`/`/`-defaulting rule above.
+
+(Done: comparison/boolean completeness — landed with `<>` inheriting `==`'s
+equatability and short-circuit `&&`/`||`, as pre-committed.)

@@ -132,6 +132,12 @@ let private intoImpl: Value =
                 VSeq(procLines cmdline (Some lines) |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'into' on these arguments"))
 
+let private notImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VBool b -> VBool(not b)
+        | v -> unreachable $"the checker rejects 'not' on {formatValue v}")
+
 let private doubleImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -153,7 +159,8 @@ let private entries: (string * Ty * Value) list =
       "take", TFun(TInt None, TFun(TSeq tA, TSeq tA)), truncateImpl
       "sum", TFun(seqInt, TInt None), sumImpl
       "cmd", TFun(TStr, seqStr), cmdImpl
-      "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl ]
+      "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
+      "not", TFun(TBool, TBool), notImpl ]
 
 let typeEnv: TypeEnv =
     { Values = entries |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList

@@ -83,7 +83,10 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "/", VInt a, VInt b -> VInt(a / b)
     | ">", VInt a, VInt b -> VBool(a > b)
     | "<", VInt a, VInt b -> VBool(a < b)
+    | ">=", VInt a, VInt b -> VBool(a >= b)
+    | "<=", VInt a, VInt b -> VBool(a <= b)
     | "==", a, b -> VBool(a = b)
+    | "<>", a, b -> VBool(a <> b)
     | _ -> unreachable $"the checker rejects '{op}' on {formatValue l} and {formatValue r}"
 
 let private jsonLine (v: Value) : string =
@@ -250,6 +253,16 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
             | Some v -> v
             | None -> unreachable $"the checker rejects unknown field '{field}' on {name}"
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
+    | TEBinOp("&&", l, r) ->
+        (match eval env l with
+         | VBool false -> VBool false
+         | VBool true -> eval env r
+         | v -> unreachable $"the checker rejects '&&' on {formatValue v}")
+    | TEBinOp("||", l, r) ->
+        (match eval env l with
+         | VBool true -> VBool true
+         | VBool false -> eval env r
+         | v -> unreachable $"the checker rejects '||' on {formatValue v}")
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
     | TEFrom(fmt, def) -> fromAdapter fmt def

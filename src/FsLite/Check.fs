@@ -278,6 +278,11 @@ let rec private typeBinOp
             bind ctx env l.Span (TInt None) l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span (TInt None) r.Ty)
         )
+    | ("&&" | "||"), TVar _, TVar _ ->
+        retryAfter (
+            bind ctx env l.Span TBool l.Ty
+            |> Result.bind (fun () -> bind ctx env r.Span TBool r.Ty)
+        )
     | _, TVar _, ((TInt _ | TStr | TBool) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
     | _, ((TInt _ | TStr | TBool) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
     | _, TVar _, TVar _ -> err opSpan $"cannot infer the operand types of '{op}'; pipe data in or use concrete values"
@@ -286,10 +291,11 @@ let rec private typeBinOp
     | ("+" | "-"), TInt m, TInt n when m = n -> Ok(TInt m)
     | "+", TStr, TStr -> Ok TStr
     | ("*" | "/"), TInt None, TInt None -> Ok(TInt None)
-    | (">" | "<"), TInt m, TInt n when m = n -> Ok TBool
-    | "==", a, b when a = b && isEquatable env Set.empty a -> Ok TBool
-    | "==", a, b when a = b ->
-        err opSpan $"'==' is not defined for {formatTy a}; sequences and functions cannot be compared"
+    | (">" | "<" | ">=" | "<="), TInt m, TInt n when m = n -> Ok TBool
+    | ("&&" | "||"), TBool, TBool -> Ok TBool
+    | ("==" | "<>"), a, b when a = b && isEquatable env Set.empty a -> Ok TBool
+    | ("==" | "<>"), a, b when a = b ->
+        err opSpan $"'{op}' is not defined for {formatTy a}; sequences and functions cannot be compared"
     | _, (TInt _ as a), (TInt _ as b) when a <> b -> mismatch r.Span a b
     | _, a, b when a <> b -> mismatch r.Span a b
     | _, a, _ -> err opSpan $"operator '{op}' is not defined for {formatTy a}"
