@@ -1,6 +1,6 @@
-module FsLite.Complete
+module Weir.Complete
 
-open FsLite.Types
+open Weir.Types
 
 let private keywords =
     [ "let"
@@ -29,10 +29,10 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
     | i ->
         let prefix = text.Substring(0, i).Trim()
 
-        match FsLite.Parser.parseExpr prefix with
+        match Weir.Parser.parseExpr prefix with
         | Error _ -> None
         | Ok e ->
-            match FsLite.Check.typecheck env e with
+            match Weir.Check.typecheck env e with
             | Ok te ->
                 match te.Ty with
                 | TSeq elem -> Some elem

@@ -1,9 +1,9 @@
-module FsLite.Parser
+module Weir.Parser
 
 open System
 open FParsec
-open FsLite.Types
-open FsLite.Ast
+open Weir.Types
+open Weir.Ast
 
 let private keywords =
     Set

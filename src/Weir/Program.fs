@@ -1,8 +1,8 @@
-module FsLite.Main
+module Weir.Main
 
 open System
-open FsLite.Ast
-open FsLite.Types
+open Weir.Ast
+open Weir.Types
 
 let private evalOnce (input: string) : int =
     match Parser.parseStmt input with
@@ -34,8 +34,8 @@ let main argv =
     match argv with
     | [| "-e"; input |] -> evalOnce input
     | [||] ->
-        FsLite.Repl.run ()
+        Weir.Repl.run ()
         0
     | _ ->
-        Console.Error.WriteLine "usage: fslite [-e <expression>]"
+        Console.Error.WriteLine "usage: weir [-e <expression>]"
         2

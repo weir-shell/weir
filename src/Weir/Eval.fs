@@ -1,8 +1,8 @@
-module FsLite.Eval
+module Weir.Eval
 
-open FsLite.Types
-open FsLite.Ast
-open FsLite.Check
+open Weir.Types
+open Weir.Ast
+open Weir.Check
 
 let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 

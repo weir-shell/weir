@@ -1,4 +1,4 @@
-module FsLite.Types
+module Weir.Types
 
 type Ty =
     | TInt of measure: string option

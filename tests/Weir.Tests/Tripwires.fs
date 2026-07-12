@@ -6,13 +6,13 @@ module Tripwires
 // write direct tests for it before proceeding.
 
 open Expecto
-open FsLite.Types
-open FsLite.Check
+open Weir.Types
+open Weir.Check
 
-let private env = FsLite.Builtins.typeEnv
+let private env = Weir.Builtins.typeEnv
 
 let private checkErr input =
-    match FsLite.Parser.parseExpr input with
+    match Weir.Parser.parseExpr input with
     | Error msg -> failtest $"parse failed: {msg}"
     | Ok e ->
         match typecheck env e with
@@ -24,7 +24,7 @@ let tripwires =
     testList
         "Tripwires"
         [ test "occurs check is shielded by funParams (checklist 1.1)" {
-              // Language rule, not accident: fslite never unifies a type
+              // Language rule, not accident: weir never unifies a type
               // variable with a function type at application, so un-annotated
               // higher-order lambdas do not infer (HOFs flow from typed
               // builtins). This same rule blocks the standard occurs-check
@@ -49,7 +49,7 @@ let tripwires =
               // launder a row constraint. The day ascription lands, 2.3
               // reopens: an annotation must re-verify (check mode), never
               // relabel.
-              match FsLite.Parser.parseExpr "(5 : int)" with
+              match Weir.Parser.parseExpr "(5 : int)" with
               | Error _ -> ()
               | Ok _ -> failtest "ascription unexpectedly parses; checklist 2.3 is live"
           }
@@ -75,8 +75,8 @@ let tripwires =
               // Rows entry, discharging one use would poison its siblings and
               // this reuse at two different field types would fail.
               let declare input e =
-                  match FsLite.Parser.parseStmt input with
-                  | Ok(FsLite.Ast.SType d) ->
+                  match Weir.Parser.parseStmt input with
+                  | Ok(Weir.Ast.SType d) ->
                       match checkDecl e d with
                       | Ok e' -> e'
                       | Error terr -> failtest (formatError terr)
@@ -93,7 +93,7 @@ let tripwires =
                   + "let b = nats |> take 1 |> map (fun n -> { V = \"s\"; Alt = true }) |> getV in "
                   + "0"
 
-              match FsLite.Parser.parseExpr expr with
+              match Weir.Parser.parseExpr expr with
               | Error msg -> failtest msg
               | Ok e ->
                   match typecheck e2 e with

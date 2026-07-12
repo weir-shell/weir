@@ -1,11 +1,11 @@
-module FsLite.Repl
+module Weir.Repl
 
 open System
 open System.IO
-open FsLite.Ast
-open FsLite.Types
+open Weir.Ast
+open Weir.Types
 
-let private prompt = "fslite> "
+let private prompt = "weir> "
 
 type private State = { TypeEnv: TypeEnv; Values: Eval.Env }
 
@@ -27,7 +27,7 @@ type private Completer() =
             Complete.suggest currentEnv.Value text index |> List.toArray
 
 let private historyFile =
-    Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".fslite_history")
+    Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".weir_history")
 
 let private setupLineEditor () =
     ReadLine.HistoryEnabled <- true

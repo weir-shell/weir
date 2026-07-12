@@ -1,7 +1,7 @@
-module FsLite.Check
+module Weir.Check
 
-open FsLite.Ast
-open FsLite.Types
+open Weir.Ast
+open Weir.Types
 
 type TypeError = { Span: Span; Message: string }
 

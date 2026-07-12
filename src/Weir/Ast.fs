@@ -1,6 +1,6 @@
-module FsLite.Ast
+module Weir.Ast
 
-open FsLite.Types
+open Weir.Types
 
 type Pos = { Line: int; Col: int }
 

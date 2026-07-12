@@ -3,13 +3,13 @@ module Tests
 open System.Diagnostics
 open System.IO
 open Expecto
-open FsLite.Ast
-open FsLite.Types
-open FsLite.Check
-open FsLite.Eval
+open Weir.Ast
+open Weir.Types
+open Weir.Check
+open Weir.Eval
 
 let private parse input =
-    match FsLite.Parser.parseExpr input with
+    match Weir.Parser.parseExpr input with
     | Ok e -> e
     | Error msg -> failtest $"parse failed: {msg}"
 
@@ -50,23 +50,23 @@ let private expectParse input expected =
     Expect.equal (show (parse input)) expected $"parse of '{input}'"
 
 let private parseDecl input =
-    match FsLite.Parser.parseStmt input with
+    match Weir.Parser.parseStmt input with
     | Ok(SType d) -> d
     | other -> failtest $"expected a type declaration, got: {other}"
 
 let private declare input env =
-    match FsLite.Check.checkDecl env (parseDecl input) with
+    match Weir.Check.checkDecl env (parseDecl input) with
     | Ok env' -> env'
     | Error terr -> failtest $"declaration failed: {formatError terr}"
 
 let private declErr input env =
-    match FsLite.Check.checkDecl env (parseDecl input) with
+    match Weir.Check.checkDecl env (parseDecl input) with
     | Ok _ -> failtest "expected the declaration to be rejected"
     | Error terr -> terr
 
 let private env =
     let e =
-        FsLite.Builtins.typeEnv
+        Weir.Builtins.typeEnv
         |> declare "type Proc = Running of int | Stopped"
         |> declare "type Point = { X: int; Y: int }"
 
@@ -81,14 +81,14 @@ let private ctorValues =
         | DRecord _ -> [])
 
 let private fakeFiles =
-    [ FsLite.Builtins.file "a.txt" 0 false
-      FsLite.Builtins.file "b.bin" 5 true
-      FsLite.Builtins.file "c.log" 1 false
-      FsLite.Builtins.file "d.iso" 3 false ]
+    [ Weir.Builtins.file "a.txt" 0 false
+      Weir.Builtins.file "b.bin" 5 true
+      Weir.Builtins.file "c.log" 1 false
+      Weir.Builtins.file "d.iso" 3 false ]
 
 let private valueEnv =
     ("ls", VSeq fakeFiles) :: ctorValues
-    |> List.fold (fun vs (n, v) -> Map.add n v vs) FsLite.Builtins.valueEnv
+    |> List.fold (fun vs (n, v) -> Map.add n v vs) Weir.Builtins.valueEnv
 
 let private checkOk input =
     match typecheck env (parse input) with
@@ -135,7 +135,7 @@ let parserTests =
               Expect.equal e.Span.End.Col 9 "end"
           }
           test "top-level let statement" {
-              match FsLite.Parser.parseStmt "let x = 1" with
+              match Weir.Parser.parseStmt "let x = 1" with
               | Ok(SLet("x", _)) -> ()
               | other -> failtest $"unexpected: {other}"
           } ]
@@ -144,7 +144,7 @@ let checkerTests =
     testList
         "Check"
         [ test "acceptance pipeline type-checks to seq<FileRow>" {
-              Expect.equal (checkOk acceptance).Ty FsLite.Builtins.seqFileRow ""
+              Expect.equal (checkOk acceptance).Ty Weir.Builtins.seqFileRow ""
           }
           test "typo in field is rejected with exact span and a hint" {
               let input = "ls |> where (fun f -> f.Sze > 1<mb>) |> first 5"
@@ -212,20 +212,18 @@ let evalTests =
     testList
         "Eval"
         [ test "acceptance pipeline evaluates over records" {
-              expectValue
-                  acceptance
-                  (VSeq [ FsLite.Builtins.file "b.bin" 5 true; FsLite.Builtins.file "d.iso" 3 false ])
+              expectValue acceptance (VSeq [ Weir.Builtins.file "b.bin" 5 true; Weir.Builtins.file "d.iso" 3 false ])
           }
           test "where by string field" {
-              expectValue "ls |> where (fun f -> f.Name == \"c.log\")" (VSeq [ FsLite.Builtins.file "c.log" 1 false ])
+              expectValue "ls |> where (fun f -> f.Name == \"c.log\")" (VSeq [ Weir.Builtins.file "c.log" 1 false ])
           }
           test "where by bool field" {
-              expectValue "ls |> where (fun f -> f.ReadOnly)" (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+              expectValue "ls |> where (fun f -> f.ReadOnly)" (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
           }
           test "first truncates" {
               expectValue
                   "ls |> first 2"
-                  (VSeq [ FsLite.Builtins.file "a.txt" 0 false; FsLite.Builtins.file "b.bin" 5 true ])
+                  (VSeq [ Weir.Builtins.file "a.txt" 0 false; Weir.Builtins.file "b.bin" 5 true ])
           }
           test "arithmetic and pipes: 1 + 2 |> double" { expectValue "1 + 2 |> double" (VInt 6) }
           test "precedence: 1 + 2 * 3" { expectValue "1 + 2 * 3" (VInt 7) }
@@ -237,12 +235,12 @@ let evalTests =
           test "partially applied polymorphic builtin stays polymorphic" {
               expectValue
                   "let firstTwo = first 2 in ls |> firstTwo |> where (fun f -> f.ReadOnly)"
-                  (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+                  (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
           }
           test "lambda in polymorphic position without data now checks via rows" {
               expectValue
                   "let staged = where (fun f -> f.ReadOnly) in ls |> staged"
-                  (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+                  (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
           }
           test "shadowing" { expectValue "let x = 1 in let x = 2 in x" (VInt 2) }
           test "string concat" { expectValue "\"foo\" + \"bar\"" (VStr "foobar") }
@@ -262,8 +260,7 @@ let rejectedAtCheckTests =
               checkErr "let add = fun a -> fun b -> a + b in add 1 2" |> ignore
           } ]
 
-let private warningsOf input =
-    FsLite.Check.warnings env (checkOk input)
+let private warningsOf input = Weir.Check.warnings env (checkOk input)
 
 let declTests =
     testList
@@ -298,7 +295,7 @@ let declTests =
           test "ambiguous record literal is rejected" {
               let ambEnv = env |> declare "type Vec = { X: int; Y: int }"
 
-              match FsLite.Check.typecheck ambEnv (parse "{ X = 1; Y = 2 }") with
+              match Weir.Check.typecheck ambEnv (parse "{ X = 1; Y = 2 }") with
               | Ok _ -> failtest "expected ambiguity error"
               | Error terr -> Expect.stringContains terr.Message "ambiguous" ""
           }
@@ -310,7 +307,7 @@ let declTests =
               let treeEnv = env |> declare "type Tree = Leaf | Node of Tree"
               let e = parse "Node (Node Leaf)"
 
-              match FsLite.Check.typecheck treeEnv e with
+              match Weir.Check.typecheck treeEnv e with
               | Ok te -> Expect.equal te.Ty (TNamed "Tree") ""
               | Error terr -> failtest (formatError terr)
           }
@@ -335,7 +332,7 @@ let matchTests =
               let treeEnv = env |> declare "type Tree = Leaf | Node of Tree"
               let e = parse "match Node Leaf with | Node Leaf -> 1 | Node _ -> 2 | Leaf -> 0"
 
-              match FsLite.Check.typecheck treeEnv e with
+              match Weir.Check.typecheck treeEnv e with
               | Ok te -> Expect.equal te.Ty (TInt None) ""
               | Error terr -> failtest (formatError terr)
           }
@@ -414,14 +411,14 @@ let streamingTests =
     testList
         "Streaming"
         [ test "acceptance: infinite source |> first 5 terminates" {
-              let infinite = Seq.initInfinite (fun i -> FsLite.Builtins.file $"f{i}" i false)
+              let infinite = Seq.initInfinite (fun i -> Weir.Builtins.file $"f{i}" i false)
 
               let result =
                   runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.Size > 1<mb>) |> first 5"
                   |> forceSeq
 
               Expect.equal (List.length result) 5 "exactly five rows"
-              Expect.equal result[0] (FsLite.Builtins.file "f2" 2 false) "first surviving row"
+              Expect.equal result[0] (Weir.Builtins.file "f2" 2 false) "first surviving row"
           }
           test "acceptance: first 5 pulls exactly 5 elements from the source" {
               let pulled = ref 0
@@ -429,7 +426,7 @@ let streamingTests =
               let counting =
                   Seq.initInfinite (fun i ->
                       System.Threading.Interlocked.Increment pulled |> ignore
-                      FsLite.Builtins.file $"f{i}" i false)
+                      Weir.Builtins.file $"f{i}" i false)
 
               runWith [ "ls", VSeq counting ] "ls |> first 5" |> forceSeq |> ignore
               Expect.equal pulled.Value 5 "no over-pulling"
@@ -440,7 +437,7 @@ let streamingTests =
               let counting =
                   Seq.initInfinite (fun i ->
                       System.Threading.Interlocked.Increment pulled |> ignore
-                      FsLite.Builtins.file $"f{i}" i false)
+                      Weir.Builtins.file $"f{i}" i false)
 
               runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.Size > 1<mb>) |> first 2"
               |> forceSeq
@@ -454,7 +451,7 @@ let streamingTests =
               let counting =
                   Seq.initInfinite (fun i ->
                       System.Threading.Interlocked.Increment pulled |> ignore
-                      FsLite.Builtins.file $"f{i}" i false)
+                      Weir.Builtins.file $"f{i}" i false)
 
               runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.Size > 1<mb>) |> first 5"
               |> ignore
@@ -476,7 +473,7 @@ let streamingTests =
               let holderEnv = env |> declare "type Holder = { S: seq<int> }"
               let e = parse "let h = { S = nats } in h == h"
 
-              match FsLite.Check.typecheck holderEnv e with
+              match Weir.Check.typecheck holderEnv e with
               | Ok _ -> failtest "expected rejection"
               | Error terr -> Expect.stringContains terr.Message "'==' is not defined for Holder" ""
           }
@@ -489,7 +486,7 @@ let polymorphismTests =
     testList
         "Pipe-directed instantiation"
         [ test "where instantiates from the piped seq" {
-              Expect.equal (checkOk "ls |> where (fun f -> f.ReadOnly)").Ty FsLite.Builtins.seqFileRow ""
+              Expect.equal (checkOk "ls |> where (fun f -> f.ReadOnly)").Ty Weir.Builtins.seqFileRow ""
           }
           test "map changes the element type" {
               Expect.equal (checkOk "ls |> map (fun f -> f.Size)").Ty (TSeq(TInt(Some "mb"))) ""
@@ -501,7 +498,7 @@ let polymorphismTests =
               Expect.equal (run "nats |> map double |> take 3" |> forceSeq) [ VInt 0; VInt 2; VInt 4 ] ""
           }
           test "full application instantiates from the trailing data argument" {
-              expectValue "where (fun f -> f.ReadOnly) ls |> first 1" (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+              expectValue "where (fun f -> f.ReadOnly) ls |> first 1" (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
           }
           test "instantiation mismatch is reported" {
               Expect.stringContains
@@ -552,7 +549,7 @@ let boundaryTests =
                   ""
           }
           test "acceptance: git status |> from porcelain |> where staged on a real repo" {
-              let dir = Path.Combine(Path.GetTempPath(), $"fslite-{System.Guid.NewGuid():N}")
+              let dir = Path.Combine(Path.GetTempPath(), $"weir-{System.Guid.NewGuid():N}")
 
               let setup =
                   $"mkdir -p {dir} && cd {dir} && git init -q && echo a > staged.txt && echo b > untracked.txt && git add staged.txt"
@@ -601,7 +598,7 @@ let boundaryTests =
 
               Expect.equal
                   (runWith [ "src", src ] "src |> from json FileRow" |> forceSeq)
-                  [ FsLite.Builtins.file "x" 1 true ]
+                  [ Weir.Builtins.file "x" 1 true ]
                   ""
           }
           test "into feeds stdin and yields stdout" {
@@ -647,7 +644,7 @@ let shorthandTests =
               expectParse "where _.ReadOnly" "(where (fun _ _.ReadOnly))"
           }
           test "where with shorthand filters" {
-              expectValue "ls |> where _.ReadOnly" (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+              expectValue "ls |> where _.ReadOnly" (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
           }
           test "map with shorthand projects" {
               Expect.equal (checkOk "ls |> map _.Size").Ty (TSeq(TInt(Some "mb"))) ""
@@ -674,7 +671,7 @@ let shorthandTests =
           } ]
 
 let private suggest text (wordStart: int) =
-    FsLite.Complete.suggest env text wordStart
+    Weir.Complete.suggest env text wordStart
 
 let completionTests =
     testList
@@ -694,7 +691,7 @@ let completionTests =
                   { env with
                       Values = Map.add "q" (generalize (TNamed "Point")) env.Values }
 
-              Expect.equal (FsLite.Complete.suggest envWithQ "q." 0) [ "q.X"; "q.Y" ] ""
+              Expect.equal (Weir.Complete.suggest envWithQ "q." 0) [ "q.X"; "q.Y" ] ""
           }
           test "later pipeline stages track the element type" {
               let text = "cmd \"git status --porcelain\" |> from porcelain |> where (fun c -> c."
@@ -724,7 +721,7 @@ let rowTests =
               | t -> failtest $"expected {{ Size: int<mb>; .. }} -> bool, got {formatTy t}"
           }
           test "row-typed filter discharges against FileRow" {
-              expectValue "let staged = where _.ReadOnly in ls |> staged" (VSeq [ FsLite.Builtins.file "b.bin" 5 true ])
+              expectValue "let staged = where _.ReadOnly in ls |> staged" (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
           }
           test "one row-polymorphic projection reused across two record types" {
               let vecEnv = env |> declare "type Vec = { X: int; Z: int }"
@@ -737,7 +734,7 @@ let rowTests =
                       + "a + b"
                   )
 
-              match FsLite.Check.typecheck vecEnv e with
+              match Weir.Check.typecheck vecEnv e with
               | Error terr -> failtest (formatError terr)
               | Ok te ->
                   Expect.equal te.Ty (TInt None) "type"
@@ -807,14 +804,14 @@ let operatorTests =
           test "common filter shape works" {
               expectValue
                   "ls |> where (fun f -> f.Name <> \"a.txt\" && f.Size <= 3<mb>)"
-                  (VSeq [ FsLite.Builtins.file "c.log" 1 false; FsLite.Builtins.file "d.iso" 3 false ])
+                  (VSeq [ Weir.Builtins.file "c.log" 1 false; Weir.Builtins.file "d.iso" 3 false ])
           }
           test "not builtin" {
               expectValue "not true" (VBool false)
 
               expectValue
                   "ls |> where (fun f -> not f.ReadOnly) |> first 1"
-                  (VSeq [ FsLite.Builtins.file "a.txt" 0 false ])
+                  (VSeq [ Weir.Builtins.file "a.txt" 0 false ])
           }
           test "and-or require bools" {
               Expect.stringContains (checkErr "1 && 2").Message "'&&' is not defined for int" ""
@@ -909,7 +906,7 @@ let adversarialTests =
                       + "a"
                   )
 
-              match FsLite.Check.typecheck e2 expr with
+              match Weir.Check.typecheck e2 expr with
               | Error terr -> failtest (formatError terr)
               | Ok te ->
                   Expect.equal te.Ty (TInt None) "int and string uses of getV both accepted"
@@ -948,7 +945,7 @@ let adversarialTests =
 [<Tests>]
 let allTests =
     testList
-        "FsLite"
+        "Weir"
         [ parserTests
           checkerTests
           evalTests

@@ -1,9 +1,9 @@
-module FsLite.Builtins
+module Weir.Builtins
 
 open System.Diagnostics
 open System.IO
-open FsLite.Types
-open FsLite.Eval
+open Weir.Types
+open Weir.Eval
 
 let fileRow: RecordDef =
     { Name = "FileRow"

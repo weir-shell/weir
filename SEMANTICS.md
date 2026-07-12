@@ -1,7 +1,7 @@
-# fslite — deliberate language rules
+# weir — deliberate language rules
 
 Rules that are design decisions, not accidents of implementation. Each is pinned
-by a test (see `tests/FsLite.Tests/Tripwires.fs` for the ones that double as
+by a test (see `tests/Weir.Tests/Tripwires.fs` for the ones that double as
 soundness shields). Convention: every rule states its soundness
 cross-reference; keep that as rules accrete.
 
@@ -9,7 +9,7 @@ cross-reference; keep that as rules accrete.
 flows from typed builtins, not from user lambdas over operators.* A lambda
 parameter gains a type either from a builtin's declared signature (check mode)
 or from row/operator constraints in its body; where neither pins it down,
-fslite rejects rather than guesses.
+weir rejects rather than guesses.
 
 ## Types and inference
 
