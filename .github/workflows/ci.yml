@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: codeberg-tiny-lazy
     steps:
       - uses: actions/checkout@v4
 
