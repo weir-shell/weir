@@ -182,6 +182,9 @@ let checkerTests =
           test "unbound variable gets a hint" {
               Expect.stringContains (checkErr "doble 5").Message "Did you mean 'double'?" ""
           }
+          test "did-you-mean stays capped at edit distance 2" {
+              Expect.isFalse ((checkErr "zzzqqq 5").Message.Contains "Did you mean") "no hint beyond distance 2"
+          }
           test "bare lambda infers a polymorphic type" {
               match (checkOk "fun x -> x").Ty with
               | TFun(TVar a, TVar b) when a = b -> ()
@@ -1020,6 +1023,11 @@ let commandModeTests =
               | Error msg ->
                   Expect.stringContains msg "command not found: gti" ""
                   Expect.stringContains msg "Did you mean 'git'?" ""
+              | Ok _ -> failtest "expected parse failure"
+          }
+          test "PATH did-you-mean stays capped at edit distance 2" {
+              match Weir.Parser.parseLine cmdResolver "^gzzzzt status" with
+              | Error msg -> Expect.isFalse (msg.Contains "Did you mean") "no PATH hint beyond distance 2"
               | Ok _ -> failtest "expected parse failure"
           }
           test "command line types as seq<string>" {

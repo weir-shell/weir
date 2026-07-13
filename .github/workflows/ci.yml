@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test
+        run: dotnet test
+
+      - name: Test again (flake detection)
+        run: dotnet test
+
+      - name: AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev binutils
+
+      - name: Publish AOT
+        run: ./publish.sh
+
+      - name: E2E battery (AOT binary)
+        run: ./ci/e2e.sh
+
+      - name: Startup-time regression guard
+        run: ./ci/timing.sh
