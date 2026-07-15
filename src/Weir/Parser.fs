@@ -21,6 +21,7 @@ let private keywords =
 
 type Resolver =
     { IsKnown: string -> bool
+      IsCommandCallable: string -> bool
       IsExternal: string -> bool
       ExternalNames: unit -> seq<string> }
 
@@ -286,31 +287,55 @@ let private cmdArg =
           parens
           spanned (cmdWord |>> EStr) |>> mkExpr .>> ws ]
 
+type private HeadKind =
+    | ExternalHead
+    | BuiltinHead
+
 let private commandSegment (r: Resolver) : Parser<Expr, unit> =
     let head =
         spanned (opt (pchar '^') .>>. cmdWord) .>> ws
         >>= fun ((forced, w), span) ->
             if forced.IsSome then
                 if r.IsExternal w then
-                    preturn (w, span)
+                    preturn (ExternalHead, w, span)
                 else
                     failFatally $"command not found: {w}{didYouMean w (r.ExternalNames())}"
+            elif isIdentLike w && r.IsCommandCallable w then
+                preturn (BuiltinHead, w, span)
             elif isIdentLike w && (keywords.Contains w || r.IsKnown w) then
                 fail "known name; expression mode"
             elif r.IsExternal w then
-                preturn (w, span)
+                preturn (ExternalHead, w, span)
             else
                 fail "not an external command"
 
     attempt head .>>. many cmdArg
-    |>> fun ((prog, span), args) ->
-        { Kind = ECmd(prog, args)
-          Span =
+    |>> fun ((kind, prog, span), args) ->
+        let fullSpan =
             { Start = span.Start
               End =
                 (match args with
                  | [] -> span.End
-                 | _ -> (List.last args).Span.End) } }
+                 | _ -> (List.last args).Span.End) }
+
+        match kind with
+        | ExternalHead ->
+            { Kind = ECmd(prog, args)
+              Span = fullSpan }
+        | BuiltinHead ->
+            let headVar = { Kind = EVar prog; Span = span }
+
+            let effectiveArgs =
+                match args with
+                | [] -> [ { Kind = EStr "~"; Span = span } ]
+                | _ -> args
+
+            effectiveArgs
+            |> List.fold
+                (fun acc arg ->
+                    { Kind = EApp(acc, arg)
+                      Span = Span.union acc.Span arg.Span })
+                headVar
 
 let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
 
@@ -380,6 +405,7 @@ let private stmtWith (r: Resolver) =
 
 let private noExternals =
     { IsKnown = fun _ -> true
+      IsCommandCallable = fun _ -> false
       IsExternal = fun _ -> false
       ExternalNames = fun () -> Seq.empty }
 

@@ -661,10 +661,21 @@ and private checkSpine
                         head.Span
                         $"the right side of a pipe must be a function taking the piped value; it has type {formatTy (finalTy ctx thead.Ty)}"
             | None ->
-                return!
-                    err
-                        head.Span
-                        $"this expression is not a function taking {args.Length} argument(s); it has type {formatTy (finalTy ctx thead.Ty)}"
+                let rec countParams ty =
+                    match resolve ctx ty with
+                    | TFun(_, cod) -> 1 + countParams cod
+                    | _ -> 0
+
+                let available = countParams thead.Ty
+
+                match thead.Kind with
+                | TEVar name when available > 0 ->
+                    return! err head.Span $"'{name}' takes at most {available} argument(s), but got {args.Length}"
+                | _ ->
+                    return!
+                        err
+                            head.Span
+                            $"this expression is not a function taking {args.Length} argument(s); it has type {formatTy (finalTy ctx thead.Ty)}"
         | Some(paramTys, resultTy) ->
             do!
                 match piped with

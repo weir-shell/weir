@@ -7,12 +7,18 @@ open Weir.Types
 let private evalOnce (input: string) : int =
     let resolver: Parser.Resolver =
         { IsKnown = fun n -> Map.containsKey n Builtins.typeEnv.Values
+          IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
           IsExternal = Extern.exists
           ExternalNames = fun () -> Extern.names () :> seq<string> }
+
+    let printHint () =
+        Diagnose.hint (fun n -> Map.containsKey n Builtins.typeEnv.Values) Extern.exists input
+        |> Option.iter (fun h -> Console.Error.WriteLine $"hint: {h}")
 
     match Parser.parseLine resolver input with
     | Error msg ->
         Console.Error.WriteLine msg
+        printHint ()
         1
     | Ok(SType _) ->
         Console.Error.WriteLine "-e takes an expression, not a declaration"
@@ -24,6 +30,7 @@ let private evalOnce (input: string) : int =
         match Check.typecheck Builtins.typeEnv e with
         | Error terr ->
             Console.Error.WriteLine(Check.formatError terr)
+            printHint ()
             1
         | Ok te ->
             try

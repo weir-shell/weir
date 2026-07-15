@@ -63,8 +63,13 @@ let private printWarnings (state: State) (te: Check.TypedExpr) =
 
 let private resolver (state: State) : Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n state.TypeEnv.Values
+      IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
       IsExternal = Extern.exists
       ExternalNames = fun () -> Extern.names () :> seq<string> }
+
+let private printHint (state: State) (line: string) =
+    Diagnose.hint (fun n -> Map.containsKey n state.TypeEnv.Values) Extern.exists line
+    |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
 let private tryRun (state: State) (e: Expr) : Result<Check.TypedExpr * Eval.Value * string, string * Span option> =
     match Check.typecheck state.TypeEnv e with
@@ -90,6 +95,7 @@ let rec private loop (state: State) =
             match Parser.parseLine (resolver state) line with
             | Error msg ->
                 Console.WriteLine msg
+                printHint state line
                 state
             | Ok(SType decl) ->
                 match Check.checkDecl state.TypeEnv decl with
@@ -112,6 +118,10 @@ let rec private loop (state: State) =
                 | Error(msg, span) ->
                     span |> Option.iter (underline >> Console.WriteLine)
                     Console.WriteLine msg
+
+                    if span.IsSome then
+                        printHint state line
+
                     state
                 | Ok(te, v, formatted) ->
                     printWarnings state te
@@ -126,6 +136,10 @@ let rec private loop (state: State) =
                 | Error(msg, span) ->
                     span |> Option.iter (underline >> Console.WriteLine)
                     Console.WriteLine msg
+
+                    if span.IsSome then
+                        printHint state line
+
                     state
                 | Ok(te, _, formatted) ->
                     printWarnings state te

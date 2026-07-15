@@ -22,6 +22,7 @@
     <Compile Include="Complete.fs" />
     <Compile Include="Session.fs" />
     <Compile Include="Extern.fs" />
+    <Compile Include="Diagnose.fs" />
     <Compile Include="Proc.fs" />
     <Compile Include="Eval.fs" />
     <Compile Include="Builtins.fs" />

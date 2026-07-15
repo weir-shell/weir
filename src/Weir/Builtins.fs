@@ -157,6 +157,8 @@ let private entries: (string * Ty * Value) list =
       "pwd", TSeq TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl ]
 
+let commandCallable: Set<string> = Set [ "cd" ]
+
 let typeEnv: TypeEnv =
     { Values = entries |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList
       Types = Map [ fileRow.Name, Record fileRow; changeDef.Name, Record changeDef ] }

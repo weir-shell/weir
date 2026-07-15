@@ -95,6 +95,28 @@ weir rejects rather than guesses.
   Only a PATH *hit* can enter command mode — every ambiguous shape falls back
   to expression semantics. `^prog` forces PATH even when shadowed; a forced
   miss is a parse-time "command not found" with a PATH-based hint.
+- **Command-callable builtins**: a flagged subset of builtins may head a
+  command-mode line; the set is exactly `cd` and grows one member per
+  demonstrated need, never wholesale. The head desugars to the builtin's
+  ordinary application with barewords as string literals (`cd /work` =
+  `cd "/work"`), so splices and checking are inherited — command-callability
+  is a *head-position privilege only* and never leaks into expression
+  checking. Bare `cd` desugars to `cd "~"`; over-application is a check-time
+  arity error naming the builtin ("'cd' takes at most 1 argument(s)").
+  `~`/`~/...` are expanded **by the cd builtin itself** — cd-local behavior,
+  NOT general tilde expansion, which stays excluded (`echo ~` passes a
+  literal `~`). `cd` on a missing directory fails at runtime showing the
+  resolved absolute path. `^cd` is a parse-time command-not-found on systems
+  without an external cd (verified, pinned). *Case-law note: the
+  command-callable set, cd-local expansion, and `|` aliasing are case law —
+  if the set grows past a handful, stop and write the general line-head
+  grammar philosophy as a rules section instead of accreting cases.*
+- **Cliff diagnostic**: when a line fails at parse or check time (never at
+  runtime), its head is a known binding, and the tail looks command-invoked
+  (a `-flag`, a path token, or a bareword while the head also exists in
+  PATH), the error carries a hint: use `^head ...` for the external, pipe the
+  binding, or quote arguments. One shared mechanism (`Diagnose.hint`), not
+  per-case hacks.
 - **Command grammar**: `head bareword* ((| or |>) segment)*`; each pipe segment
   re-enters the mode decision, so `git log | grep x | first 2` flows
   external→external→expression. `|` is accepted as `|>` in command mode only;

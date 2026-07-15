@@ -950,11 +950,13 @@ let private fakeExternals = Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls" ]
 
 let private cmdResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
+      IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
       IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
       ExternalNames = fun () -> fakeExternals }
 
 let private realResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
+      IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
       IsExternal = Weir.Extern.exists
       ExternalNames = fun () -> Weir.Extern.names () :> seq<string> }
 
@@ -1076,6 +1078,110 @@ let commandModeTests =
               Expect.equal (runReal "echo ; rm -rf x" |> forceSeq) [ VStr "; rm -rf x" ] ""
           } ]
 
+
+let cdTests =
+    testSequenced
+    <| testList
+        "Command-callable cd"
+        [ test "cd with a path bareword parses to a builtin call" { expectCmd "cd /work" "(cd \"/work\")" }
+          test "bare cd desugars to home" { expectCmd "cd" "(cd \"~\")" }
+          test "cd dotdot and tilde-path parse" {
+              expectCmd "cd .." "(cd \"..\")"
+              expectCmd "cd ~/src" "(cd \"~/src\")"
+          }
+          test "cd splice parses to application of a binding" { expectCmd "cd $dir" "(cd dir)" }
+          test "cd arity is a check-time error with the builtin named" {
+              match Weir.Parser.parseLine cmdResolver "cd a b" with
+              | Ok(SExpr e) ->
+                  match typecheck env e with
+                  | Error terr -> Expect.stringContains terr.Message "'cd' takes at most 1 argument(s), but got 2" ""
+                  | Ok _ -> failtest "expected arity error"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "forced cd is command-not-found (no external cd exists)" {
+              match Weir.Parser.parseLine cmdResolver "^cd /tmp" with
+              | Error msg -> Expect.stringContains msg "command not found: cd" ""
+              | Ok _ -> failtest "expected parse failure"
+          }
+          test "cd evaluates in command mode and mutates the session" {
+              try
+                  match Weir.Parser.parseLine realResolver "cd /tmp" with
+                  | Ok(SExpr e) ->
+                      match typecheck env e with
+                      | Ok te ->
+                          Expect.equal (eval valueEnv te) (VStr "/tmp") "returns new cwd"
+                          Expect.equal Weir.Session.Cwd "/tmp" "session mutated"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+              finally
+                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+          }
+          test "bare cd goes home" {
+              try
+                  match Weir.Parser.parseLine realResolver "cd" with
+                  | Ok(SExpr e) ->
+                      let home =
+                          System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+
+                      match typecheck env e with
+                      | Ok te -> Expect.equal (eval valueEnv te) (VStr home) "home"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+              finally
+                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+          }
+          test "cd to a missing directory reports the resolved absolute path" {
+              try
+                  match Weir.Parser.parseLine realResolver "cd /definitely/not/weir" with
+                  | Ok(SExpr e) ->
+                      match typecheck env e with
+                      | Ok te ->
+                          let ex = Expect.throwsC (fun () -> eval valueEnv te |> ignore) id
+                          Expect.stringContains ex.Message "/definitely/not/weir" "absolute path shown"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+              finally
+                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+          }
+          test "expression-mode cd is unchanged" {
+              try
+                  expectValue "let d = cd \"/tmp\" in d" (VStr "/tmp")
+              finally
+                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+          } ]
+
+let diagnoseTests =
+    testList
+        "Cliff diagnostic"
+        [ test "ls -la gets the hint" {
+              match Weir.Diagnose.hint (fun n -> Map.containsKey n env.Values) (fun _ -> true) "ls -la" with
+              | Some h ->
+                  Expect.stringContains h "'ls' is a weir binding" ""
+                  Expect.stringContains h "^ls -la" ""
+              | None -> failtest "expected a hint"
+          }
+          test "binding shadowing a PATH name gets the hint on bareword tail" {
+              let isKnown n = n = "git"
+              let isExternal n = n = "git"
+
+              match Weir.Diagnose.hint isKnown isExternal "git status" with
+              | Some h -> Expect.stringContains h "'git' is a weir binding" ""
+              | None -> failtest "expected a hint"
+          }
+          test "plain unbound tail without PATH presence stays quiet" {
+              Expect.isNone (Weir.Diagnose.hint (fun n -> n = "where") (fun _ -> false) "where p") ""
+          }
+          test "operator tails stay quiet" {
+              let isKnown n = Map.containsKey n env.Values
+              Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> true) "ls |> first 5") ""
+              Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> true) "x + 1") ""
+          }
+          test "path tails hint even without PATH presence" {
+              match Weir.Diagnose.hint (fun n -> n = "mybinding") (fun _ -> false) "mybinding ../x" with
+              | Some _ -> ()
+              | None -> failtest "expected a hint for path-like tail"
+          } ]
+
 let operatorTests =
     testList
         "Operator completeness"
@@ -1129,7 +1235,7 @@ let adversarialTests =
     testList
         "Adversarial probes"
         [ test "wrong arity application" {
-              Expect.stringContains (checkErr "double 1 2").Message "not a function taking 2" ""
+              Expect.stringContains (checkErr "double 1 2").Message "'double' takes at most 1 argument(s), but got 2" ""
           }
           test "measure mismatch rejects in both directions" {
               Expect.stringContains (checkErr "1<mb> > 1<s>").Message "expected int<mb>, got int<s>" ""
@@ -1262,4 +1368,6 @@ let allTests =
           operatorTests
           lifecycleTests
           session2Tests
-          commandModeTests ]
+          commandModeTests
+          cdTests
+          diagnoseTests ]
