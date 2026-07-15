@@ -417,6 +417,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | "json", ty -> return! err arg.Span $"'to json' needs a seq, got {formatTy ty}"
             | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json"
         }
+    | EPipe(arg, ({ Kind = ECmd _ } as cmdExpr)) ->
+        result {
+            let! targ = infer ctx env arg
+            do! bind ctx env arg.Span (TSeq TStr) targ.Ty
+            let! tcmd = infer ctx env cmdExpr
+
+            return
+                { Kind = TEPipe(targ, tcmd)
+                  Ty = TSeq TStr
+                  Span = expr.Span }
+        }
     | EPipe(arg, fnExpr) ->
         result {
             let! targ = infer ctx env arg

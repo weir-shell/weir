@@ -13,7 +13,7 @@ let lines (prog: string) (args: string list) (input: seq<string> option) : seq<s
         psi.WorkingDirectory <- Session.Cwd
         psi.UseShellExecute <- false
         psi.RedirectStandardOutput <- true
-        psi.RedirectStandardError <- true
+        psi.RedirectStandardError <- false
         psi.RedirectStandardInput <- input.IsSome
 
         use p =
@@ -44,13 +44,11 @@ let lines (prog: string) (args: string list) (input: seq<string> option) : seq<s
                 yield line
                 line <- out.ReadLine()
 
-            let stderr = p.StandardError.ReadToEnd().Trim()
             p.WaitForExit()
 
             if p.ExitCode <> 0 then
-                let detail = if stderr = "" then "" else $": {stderr}"
                 let shown = String.concat " " (prog :: args)
-                failwith $"command failed with exit code {p.ExitCode}: {shown}{detail}"
+                failwith $"command failed with exit code {p.ExitCode}: {shown}"
         finally
             try
                 p.Kill true
@@ -68,3 +66,54 @@ let resolveProg (prog: string) : string =
         Path.GetFullPath(Path.Combine(Session.Cwd, prog))
     else
         prog
+
+let complete (prog: string) (args: string list) (input: seq<string> option) : int * string list * string list =
+    let psi = ProcessStartInfo(prog)
+
+    for a in args do
+        psi.ArgumentList.Add a
+
+    psi.WorkingDirectory <- Session.Cwd
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi.RedirectStandardInput <- input.IsSome
+
+    use p =
+        try
+            Process.Start psi
+        with :? System.ComponentModel.Win32Exception ->
+            failwith $"command not found or not executable: {prog}"
+
+    match input with
+    | Some lines ->
+        System.Threading.Tasks.Task.Run(fun () ->
+            try
+                try
+                    for l in lines do
+                        p.StandardInput.WriteLine l
+                with _ ->
+                    ()
+            finally
+                p.StandardInput.Close())
+        |> ignore
+    | None -> ()
+
+    let stderrTask =
+        System.Threading.Tasks.Task.Run(fun () -> p.StandardError.ReadToEnd())
+
+    let stdout =
+        let acc = ResizeArray<string>()
+        let mutable line = p.StandardOutput.ReadLine()
+
+        while line <> null do
+            acc.Add line
+            line <- p.StandardOutput.ReadLine()
+
+        List.ofSeq acc
+
+    let stderr =
+        stderrTask.Result.Split('\n') |> Array.toList |> List.filter (fun l -> l <> "")
+
+    p.WaitForExit()
+    p.ExitCode, stdout, stderr

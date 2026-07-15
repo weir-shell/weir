@@ -136,6 +136,35 @@ let private cdImpl: Value =
 let private pwdImpl: Value =
     VSeq(Seq.delay (fun () -> Seq.singleton (VStr Session.Cwd)))
 
+let private collectImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            let materialized = List.ofSeq items
+            VSeq(materialized :> seq<Value>)
+        | v -> unreachable $"the checker rejects 'collect' on {formatValue v}")
+
+let completedDef: RecordDef =
+    { Name = "Completed"
+      Fields = [ "ExitCode", TInt None; "Stdout", TSeq TStr; "Stderr", TSeq TStr ] }
+
+let private completedImpl: Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            match progV, argsV with
+            | VStr prog, VSeq args ->
+                let argv = args |> Seq.map asString |> List.ofSeq
+                let code, stdout, stderr = Proc.complete (Proc.resolveProg prog) argv None
+
+                VRecord(
+                    completedDef.Name,
+                    Map
+                        [ "ExitCode", VInt code
+                          "Stdout", VSeq(stdout |> List.map VStr :> seq<Value>)
+                          "Stderr", VSeq(stderr |> List.map VStr :> seq<Value>) ]
+                )
+            | _ -> unreachable "the checker rejects 'completed' on these arguments"))
+
 let private seqInt = TSeq(TInt None)
 let private seqStr = TSeq TStr
 let private tA = TVar "a"
@@ -155,12 +184,18 @@ let private entries: (string * Ty * Value) list =
       "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TSeq TStr, pwdImpl
-      "not", TFun(TBool, TBool), notImpl ]
+      "not", TFun(TBool, TBool), notImpl
+      "collect", TFun(TSeq tA, TSeq tA), collectImpl
+      "completed", TFun(TStr, TFun(TSeq TStr, TNamed completedDef.Name)), completedImpl ]
 
 let commandCallable: Set<string> = Set [ "cd" ]
 
 let typeEnv: TypeEnv =
     { Values = entries |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList
-      Types = Map [ fileRow.Name, Record fileRow; changeDef.Name, Record changeDef ] }
+      Types =
+        Map
+            [ fileRow.Name, Record fileRow
+              changeDef.Name, Record changeDef
+              completedDef.Name, Record completedDef ] }
 
 let valueEnv: Env = entries |> List.map (fun (n, _, v) -> n, v) |> Map.ofList

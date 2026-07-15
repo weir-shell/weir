@@ -158,6 +158,12 @@ weir rejects rather than guesses.
   so there is no injection class (`cmd "echo" ["; rm -rf x"]` prints the
   string). Programs containing `/` resolve against `Session.Cwd`; bare names
   resolve against PATH.
+- **Splice-defaulting soundness condition** (why "unresolved argv-position
+  types default to string" is harmless): command segments exist only at line
+  top level and can never occur under a generalizing `let` — guaranteed by
+  the "expression mode never flows back into command mode" exclusion — so a
+  defaulted variable can never be generalized and instantiated elsewhere at
+  a different type.
 - **The session is single-threaded.** One session per process; `Session.Cwd`
   is mutated only from the REPL/eval thread (the sole background thread, the
   stdin writer, never touches it). It is deliberately *not* synchronized: the
@@ -166,7 +172,33 @@ weir rejects rather than guesses.
   arrives (parallel pipelines, multi-session daemon), the fix is structural:
   `Session` becomes a value threaded through evaluation, not a locked global.
   Tests that mutate the session run sequenced for the same reason (two
-  parallel tests sharing the global are two sessions pretending to be one).
+  parallel tests sharing the global are two sessions pretending to be one) —
+  a symptom-level fix; any future daemon/concurrent story reopens this seam.
+- **stderr passes through to the terminal by default** — it is never part of
+  the typed stream, and weir does not buffer it (which also removes a
+  deadlock class: a chatty-stderr child can never fill a pipe weir isn't
+  reading). The opt-in capture is `complete`.
+- **`complete`** (command-mode pipe suffix) and **`completed`** (its
+  expression-mode builtin, `string -> seq<string> -> Completed`): run an
+  external command to completion and reify the outcome as
+  `Completed = { ExitCode: int; Stdout: seq<string>; Stderr: seq<string> }` —
+  **never raising on nonzero exit; the exit code is data**. This is the
+  chosen exit-code policy (closes backlog: grep's no-match exit 1 is now
+  `grep pat file | complete |> _.ExitCode`); a per-command allowlist was
+  rejected (grep's 1 is no-match but its 2 is a real error). `| complete`
+  must directly follow a single external command segment (parse error
+  otherwise) — it consumes the process, not the lines; the design is the
+  command-suffix fallback from the plan, chosen over a type-level
+  process-backed-stream distinction, which would not survive ordinary
+  combinators (`where`/`first` return plain seqs). Splices in a completed
+  command must be strings (the arg vector is a `seq<string>` literal).
+- **External-to-external pipes feed stdin**: `git log | grep x` wires the
+  left stream (which must be `seq<string>`) into the right command's stdin.
+  Piping into `sh`-strings stays unsupported — that is what `into` is for.
+- **`collect : seq<'a> -> seq<'a>`** materializes eagerly at application:
+  effects run exactly once, re-enumeration replays values with no re-spawn.
+  Live queries (`pwd`, `ls`, command streams) bind the *query*, not the
+  answer; `collect` is the snapshot operator.
 - **`Session.Cwd` is the only working directory.** Every spawn sets it as the
   child's working directory (read at force time, not bind time);
   `Environment.CurrentDirectory` is never touched (AOT/global-state hygiene,
@@ -192,15 +224,10 @@ weir rejects rather than guesses.
 
 ## Backlog (ordered by day-one impact)
 
-1. **`collect` builtin**: force-once materialization of a stream. Pure
-   interpreter work; closes the re-enumeration surprise above.
-2. **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
+1. **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
    must become normalization-based) *and* the `*`/`/`-defaulting rule above.
-3. **Exit-code policy refinement**: "nonzero raises" collides with tools that
-   use exit codes informationally — `grep` exits 1 on no-match, so a filter
-   with zero hits is currently a runtime error. Needs a chosen policy
-   (per-command allowlist, a `try`-style combinator, or exit-code-as-value),
-   not an improvised exception.
+(Done: `collect` — backlog #1 — and the exit-code policy — old #3 — landed
+as `collect`/`complete`; see "Processes and the session".)
 
 (Done: comparison/boolean completeness — landed with `<>` inheriting `==`'s
 equatability and short-circuit `&&`/`||`, as pre-committed.)

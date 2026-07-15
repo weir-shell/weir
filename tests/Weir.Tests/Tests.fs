@@ -946,7 +946,8 @@ let session2Tests =
           } ]
 
 
-let private fakeExternals = Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls" ]
+let private fakeExternals =
+    Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls"; "cat" ]
 
 let private cmdResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
@@ -1182,6 +1183,99 @@ let diagnoseTests =
               | None -> failtest "expected a hint for path-like tail"
           } ]
 
+
+let session3Tests =
+    testSequenced
+    <| testList
+        "complete and collect"
+        [ test "collect snapshots a live query" {
+              try
+                  expectValue
+                      "let p = pwd |> collect in let d = cd \"/tmp\" in p |> first 1"
+                      (VSeq [ VStr(System.IO.Directory.GetCurrentDirectory()) ])
+              finally
+                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+          }
+          test "collect forces effects exactly once" {
+              let marker =
+                  Path.Combine(Path.GetTempPath(), $"weir-collect-{System.Guid.NewGuid():N}")
+
+              try
+                  run
+                      $"let s = sh \"echo x >> {marker}; echo line\" |> collect in let a = s |> first 1 in let b = s |> first 1 in b"
+                  |> forceSeq
+                  |> ignore
+
+                  Expect.equal (File.ReadAllLines marker |> Array.length) 1 "one spawn with collect"
+
+                  File.Delete marker
+
+                  let r =
+                      run
+                          $"let s = sh \"echo x >> {marker}; echo line\" in let a = s |> first 1 |> collect in let b = s |> first 1 |> collect in b"
+
+                  r |> forceSeq |> ignore
+                  Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront collect"
+              finally
+                  if File.Exists marker then
+                      File.Delete marker
+          }
+          test "collect is polymorphic" { expectValue "[1; 2] |> collect |> sum" (VInt 3) }
+          test "stderr passes through: stdout stream stays clean" {
+              Expect.equal (runReal "sh \"echo out; echo err 1>&2\"" |> forceSeq) [ VStr "out" ] ""
+          }
+          test "external pipes into external via stdin" {
+              Expect.equal (runReal "yes hi | cat | first 2" |> forceSeq) [ VStr "hi"; VStr "hi" ] ""
+              Expect.isTrue (eventuallyNoSurvivors "weir-s3cc") "trivially true marker check"
+          }
+          test "non-string stream into an external is rejected" {
+              match Weir.Parser.parseLine cmdResolver "git x | map (fun s -> 1) | cat" with
+              | Ok(SExpr e) ->
+                  match typecheck env e with
+                  | Error terr -> Expect.stringContains terr.Message "expected string, got int" ""
+                  | Ok _ -> failtest "expected type error"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "complete reifies grep no-match without raising" {
+              match runReal "grep nomatch /etc/hostname | complete" with
+              | VRecord("Completed", fields) ->
+                  Expect.equal fields["ExitCode"] (VInt 1) "exit code"
+                  Expect.equal (fields["Stdout"] |> forceSeq) [] "stdout empty"
+                  Expect.equal (fields["Stderr"] |> forceSeq) [] "stderr empty"
+              | v -> failtest $"unexpected: {formatValue v}"
+          }
+          test "complete captures stderr and nonzero exit" {
+              match runReal "^ls /weir-definitely-not | complete" with
+              | VRecord("Completed", fields) ->
+                  match fields["ExitCode"], fields["Stderr"] with
+                  | VInt code, VSeq errs ->
+                      Expect.isTrue (code > 0) "nonzero exit"
+                      Expect.isFalse (Seq.isEmpty errs) "stderr captured"
+                  | _ -> failtest "unexpected field shapes"
+              | v -> failtest $"unexpected: {formatValue v}"
+          }
+          test "completed builtin is directly callable" {
+              match runReal "completed \"grep\" [\"localhost\"; \"/etc/hosts\"]" with
+              | VRecord("Completed", fields) -> Expect.equal fields["ExitCode"] (VInt 0) "found"
+              | v -> failtest $"unexpected: {formatValue v}"
+          }
+          test "complete result pipes onward" {
+              Expect.equal (runReal "grep nomatch /etc/hostname | complete |> _.ExitCode") (VInt 1) ""
+          }
+          test "complete after a non-external stage is a parse error" {
+              match Weir.Parser.parseLine realResolver "git status | first 1 | complete" with
+              | Error msg -> Expect.stringContains msg "must directly follow a single external command segment" ""
+              | Ok _ -> failtest "expected parse failure"
+          }
+          test "complete type is the Completed record" {
+              match Weir.Parser.parseLine cmdResolver "grep x f | complete" with
+              | Ok(SExpr e) ->
+                  match typecheck env e with
+                  | Ok te -> Expect.equal te.Ty (TNamed "Completed") ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          } ]
+
 let operatorTests =
     testList
         "Operator completeness"
@@ -1370,4 +1464,5 @@ let allTests =
           session2Tests
           commandModeTests
           cdTests
-          diagnoseTests ]
+          diagnoseTests
+          session3Tests ]

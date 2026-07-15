@@ -245,6 +245,28 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
     | TELet(name, value, body) -> eval (Map.add name (eval env value) env) body
     | TELambda(param, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
+    | TEPipe(arg, { Kind = TECmd(prog, cargs) }) ->
+        let argString v =
+            match v with
+            | VStr s -> s
+            | VInt n -> string n
+            | VBool true -> "true"
+            | VBool false -> "false"
+            | v -> unreachable $"the checker rejects command argument {formatValue v}"
+
+        let argv = cargs |> List.map (fun a -> argString (eval env a))
+
+        let stdin =
+            match eval env arg with
+            | VSeq items ->
+                items
+                |> Seq.map (fun v ->
+                    match v with
+                    | VStr s -> s
+                    | v -> unreachable $"the checker rejects non-string stdin: {formatValue v}")
+            | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
+
+        VSeq(Proc.lines (Proc.resolveProg prog) argv (Some stdin) |> Seq.map VStr)
     | TEPipe(arg, fn) -> apply (eval env fn) (eval env arg)
     | TEField(target, field) ->
         match eval env target with

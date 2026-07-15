@@ -341,15 +341,59 @@ let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
 
 let private segment (r: Resolver) : Parser<Expr, unit> = choice [ commandSegment r; segExpr ]
 
+type private Seg =
+    | Stage of Expr
+    | CompleteMarker of Span
+
+let private completeMarker =
+    attempt (
+        spanned (pstring "complete" .>> notFollowedBy (satisfy cmdWordChar))
+        .>> ws
+        .>> lookAhead (choice [ pipeSep |>> ignore; eof ])
+    )
+    |>> fun (_, span) -> CompleteMarker span
+
 let private cmdLine (r: Resolver) : Parser<Expr, unit> =
-    commandSegment r .>>. many (pipeSep >>. segment r)
-    |>> fun (h, rest) ->
-        rest
-        |> List.fold
-            (fun acc seg ->
-                { Kind = EPipe(acc, seg)
-                  Span = Span.union acc.Span seg.Span })
-            h
+    commandSegment r
+    .>>. many (pipeSep >>. (completeMarker <|> (segment r |>> Stage)))
+    >>= fun (h, rest) ->
+        let folded =
+            rest
+            |> List.fold
+                (fun acc seg ->
+                    match acc, seg with
+                    | Result.Error m, _ -> Result.Error m
+                    | Result.Ok acc, Stage seg ->
+                        Result.Ok
+                            { Kind = EPipe(acc, seg)
+                              Span = Span.union acc.Span seg.Span }
+                    | Result.Ok acc, CompleteMarker mspan ->
+                        match acc.Kind with
+                        | ECmd(prog, args) ->
+                            let span = Span.union acc.Span mspan
+
+                            let headVar =
+                                { Kind = EVar "completed"
+                                  Span = mspan }
+
+                            let progArg = { Kind = EStr prog; Span = acc.Span }
+
+                            let argList = { Kind = EList args; Span = acc.Span }
+
+                            Result.Ok
+                                { Kind =
+                                    EApp(
+                                        { Kind = EApp(headVar, progArg)
+                                          Span = span },
+                                        argList
+                                    )
+                                  Span = span }
+                        | _ -> Result.Error "'complete' must directly follow a single external command segment")
+                (Result.Ok h)
+
+        match folded with
+        | Result.Ok e -> preturn e
+        | Result.Error m -> failFatally m
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
@@ -400,7 +444,7 @@ let private stmtWith (r: Resolver) =
     >>. choice
             [ typeDecl .>> eof
               topLet
-              attempt (cmdLine r .>> eof) |>> SExpr
+              cmdLine r .>> eof |>> SExpr
               expr .>> eof |>> SExpr ]
 
 let private noExternals =
