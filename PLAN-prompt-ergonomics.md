@@ -150,6 +150,11 @@ dogfooding frequency data (the `sh`-escape-hatch grep) decides order.
 
 ## Claude Code hygiene
 
+- **Standing rule (institutionalized after three claim-vs-behavior gaps —
+  porcelain quoting, ext→ext piping, stderr passthrough): every grammar shape
+  or boundary behavior that appears in a done-when clause gets an eval test
+  in ci/e2e.sh against the AOT binary, not a parse/unit test. The e2e battery
+  is the only test layer that can't be fooled by shape.**
 - One session per branch; Session 1 merges alone and first.
 - Human-read targets: Session 2's mode-decision arm (security boundary) and
   Session 3's process-backed-stream type distinction if taken (first new

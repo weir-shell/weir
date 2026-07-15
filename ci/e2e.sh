@@ -44,6 +44,24 @@ expect "^ls forces external" 'untracked.txt' "$out"
 expect "bound-variable splice into grep" '["staged.txt"]' "$out"
 rm -rf "$dir"
 
+out=$($BIN -e 'yes hi | cat | first 2')
+expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
+
+out=$($BIN -e 'grep nomatch /etc/hostname | complete |> _.ExitCode')
+expect "complete reifies nonzero exit as data" "1 : int" "$out"
+
+out=$(timeout 10 $BIN -e 'bash -c "yes e | head -c 100000 1>&2; echo done" | complete |> _.ExitCode') \
+    || fail "chatty-stderr deadlock under complete (timeout)"
+expect "concurrent stderr drain under complete" "0 : int" "$out"
+
+out=$($BIN -e 'sh "echo out; echo err 1>&2"' 2>/dev/null)
+expect "stderr passthrough keeps stdout stream clean" '["out"]' "$out"
+
+if $BIN -e 'yes hi | grep hi | complete' 2>/dev/null; then
+    fail "multi-segment | complete should be a parse error"
+fi
+echo "e2e ok: multi-segment complete rejected"
+
 if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
     fail "forced unknown command should not succeed"
 fi

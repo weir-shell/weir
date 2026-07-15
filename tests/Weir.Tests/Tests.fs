@@ -1262,6 +1262,11 @@ let session3Tests =
           test "complete result pipes onward" {
               Expect.equal (runReal "grep nomatch /etc/hostname | complete |> _.ExitCode") (VInt 1) ""
           }
+          test "complete after an external-to-external pipeline is a parse error, not silent" {
+              match Weir.Parser.parseLine cmdResolver "yes hi | grep hi | complete" with
+              | Error msg -> Expect.stringContains msg "must directly follow a single external command segment" ""
+              | Ok _ -> failtest "expected parse failure"
+          }
           test "complete after a non-external stage is a parse error" {
               match Weir.Parser.parseLine realResolver "git status | first 1 | complete" with
               | Error msg -> Expect.stringContains msg "must directly follow a single external command segment" ""

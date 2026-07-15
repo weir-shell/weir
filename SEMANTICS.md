@@ -192,6 +192,19 @@ weir rejects rather than guesses.
   process-backed-stream distinction, which would not survive ordinary
   combinators (`where`/`first` return plain seqs). Splices in a completed
   command must be strings (the arg vector is a `seq<string>` literal).
+- **`complete` and `collect` force their source to completion** — on a
+  non-terminating source they do not return (`yes hi | complete` hangs by
+  design; the user owns it, exactly as with `yes hi |> collect`).
+- **sh-backed streams cannot be completed**: `| complete` is command-mode
+  desugar and `sh "..."` is an expression. This is the boundary, documented:
+  `sh` buys POSIX semantics at the price of POSIX error opacity (exit codes
+  raise, stderr passes through, no reification). If dogfooding demands it, a
+  `shc` variant is the shape — not a type distinction.
+- **A command-headed line commits to command mode**: once the first segment
+  parses as a command, there is no backtrack to expression parsing for the
+  rest of the line — errors after that point are command-line errors (this is
+  why `git status | first 1 | complete` reports the marker rule instead of a
+  generic expression error).
 - **External-to-external pipes feed stdin**: `git log | grep x` wires the
   left stream (which must be `seq<string>`) into the right command's stdin.
   Piping into `sh`-strings stays unsupported — that is what `into` is for.
