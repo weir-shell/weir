@@ -1221,6 +1221,14 @@ let session3Tests =
                       File.Delete marker
           }
           test "collect is polymorphic" { expectValue "[1; 2] |> collect |> sum" (VInt 3) }
+          test "head extracts the element" {
+              expectValue "[1; 2] |> head" (VInt 1)
+              expectValue "ls |> map _.Name |> head" (VStr "a.txt")
+              Expect.equal (checkOk "pwd |> head").Ty TStr "singleton extraction types to the element"
+          }
+          test "head on an empty sequence raises" {
+              Expect.throws (fun () -> run "ls |> where (fun f -> f.Size > 999<mb>) |> head" |> ignore) ""
+          }
           test "stderr passes through: stdout stream stays clean" {
               Expect.equal (runReal "sh \"echo out; echo err 1>&2\"" |> forceSeq) [ VStr "out" ] ""
           }

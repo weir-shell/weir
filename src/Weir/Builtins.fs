@@ -136,6 +136,15 @@ let private cdImpl: Value =
 let private pwdImpl: Value =
     VSeq(Seq.delay (fun () -> Seq.singleton (VStr Session.Cwd)))
 
+let private headImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            match Seq.tryHead items with
+            | Some x -> x
+            | None -> failwith "head: empty sequence"
+        | v -> unreachable $"the checker rejects 'head' on {formatValue v}")
+
 let private collectImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -186,6 +195,7 @@ let private entries: (string * Ty * Value) list =
       "pwd", TSeq TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl
       "collect", TFun(TSeq tA, TSeq tA), collectImpl
+      "head", TFun(TSeq tA, tA), headImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed completedDef.Name)), completedImpl ]
 
 let commandCallable: Set<string> = Set [ "cd" ]

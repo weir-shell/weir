@@ -208,6 +208,10 @@ weir rejects rather than guesses.
 - **External-to-external pipes feed stdin**: `git log | grep x` wires the
   left stream (which must be `seq<string>`) into the right command's stdin.
   Piping into `sh`-strings stays unsupported — that is what `into` is for.
+- **`head : seq<'a> -> 'a`** extracts the first element; on an empty sequence
+  it raises (weir has no Option type — empty-`head` joins the documented
+  runtime-failure class alongside match failure and division by zero). The
+  singleton idiom is `pwd |> head : string`.
 - **`collect : seq<'a> -> seq<'a>`** materializes eagerly at application:
   effects run exactly once, re-enumeration replays values with no re-spawn.
   Live queries (`pwd`, `ls`, command streams) bind the *query*, not the
