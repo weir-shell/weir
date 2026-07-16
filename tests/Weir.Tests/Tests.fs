@@ -1289,6 +1289,64 @@ let session3Tests =
               | other -> failtest $"unexpected: {other}"
           } ]
 
+
+let stringTests =
+    testList
+        "Strings and seq library"
+        [ test "contains, startsWith, endsWith are data-last" {
+              expectValue "contains \"err\" \"stderr\"" (VBool true)
+              expectValue "startsWith \"fix:\" \"fix: bug\"" (VBool true)
+              expectValue "endsWith \".txt\" \"a.txt\"" (VBool true)
+              expectValue "contains \"zzz\" \"stderr\"" (VBool false)
+          }
+          test "point-free pipeline predicate is the payoff" {
+              expectValue
+                  "[\"an error here\"; \"fine\"; \"error again\"] |> where (contains \"error\") |> head"
+                  (VStr "an error here")
+          }
+          test "trim family" {
+              expectValue "trim \"  x  \"" (VStr "x")
+              expectValue "trimStart \"  x  \"" (VStr "x  ")
+              expectValue "trimEnd \"  x  \"" (VStr "  x")
+          }
+          test "case mapping" {
+              expectValue "toLower \"AbC\"" (VStr "abc")
+              expectValue "toUpper \"AbC\"" (VStr "ABC")
+          }
+          test "split and join roundtrip" {
+              expectValue "split \",\" \"a,b,c\" |> join \";\"" (VStr "a;b;c")
+              Expect.equal (run "split \",\" \"a,,b\"" |> forceSeq) [ VStr "a"; VStr ""; VStr "b" ] "empties kept"
+          }
+          test "replace is pattern-replacement-subject" { expectValue "replace \"o\" \"0\" \"foo\"" (VStr "f00") }
+          test "strLen and toInt" {
+              expectValue "strLen \"abc\"" (VInt 3)
+              expectValue "toInt \"42\" + 1" (VInt 43)
+              Expect.throws (fun () -> run "toInt \"nope\"" |> ignore) "toInt raises"
+              expectValue "tryToInt \"42\" |> sum" (VInt 42)
+              expectValue "tryToInt \"nope\" |> sum" (VInt 0)
+          }
+          test "tryHead and isEmpty" {
+              expectValue "[1; 2] |> tryHead |> sum" (VInt 1)
+              expectValue "[] |> tryHead |> isEmpty" (VBool true)
+              expectValue "ls |> isEmpty" (VBool false)
+          }
+          test "sortBy over scalar keys" {
+              Expect.equal
+                  (run "ls |> sortBy _.Size |> map _.Name" |> forceSeq)
+                  [ VStr "a.txt"; VStr "c.log"; VStr "d.iso"; VStr "b.bin" ]
+                  "by size"
+
+              Expect.equal (run "[3; 1; 2] |> sortBy (fun x -> x)" |> forceSeq) [ VInt 1; VInt 2; VInt 3 ] ""
+          }
+          test "sortBy on a non-scalar key raises with a clear message" {
+              Expect.throws (fun () -> run "ls |> sortBy (fun f -> f)" |> forceSeq |> ignore) ""
+          }
+          test "the git-branch idiom composes point-free" {
+              expectValue
+                  "[\"* main\"; \"  feature/a\"; \"  feature/b\"] |> map trim |> where (startsWith \"feature\") |> join \",\""
+                  (VStr "feature/a,feature/b")
+          } ]
+
 let operatorTests =
     testList
         "Operator completeness"
@@ -1478,4 +1536,5 @@ let allTests =
           commandModeTests
           cdTests
           diagnoseTests
-          session3Tests ]
+          session3Tests
+          stringTests ]

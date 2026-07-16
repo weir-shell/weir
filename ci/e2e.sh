@@ -57,6 +57,19 @@ expect "concurrent stderr drain under complete" "0 : int" "$out"
 out=$($BIN -e 'sh "echo out; echo err 1>&2"' 2>/dev/null)
 expect "stderr passthrough keeps stdout stream clean" '["out"]' "$out"
 
+branchdir=$(mktemp -d)
+(
+    cd "$branchdir"
+    git init -q
+    git -c user.email=ci@ci -c user.name=ci commit -q --allow-empty -m init
+    git branch feature/a
+    git branch feature/b
+    git branch keep-me
+)
+out=$(printf 'cd "%s"\ngit branch | map trim | where (startsWith "feature") | join ","\n:q\n' "$branchdir" | $BIN)
+expect "git-branch-cleanup dogfood task" '"feature/a,feature/b"' "$out"
+rm -rf "$branchdir"
+
 if $BIN -e 'yes hi | grep hi | complete' 2>/dev/null; then
     fail "multi-segment | complete should be a parse error"
 fi

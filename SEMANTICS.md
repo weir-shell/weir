@@ -208,10 +208,34 @@ weir rejects rather than guesses.
 - **External-to-external pipes feed stdin**: `git log | grep x` wires the
   left stream (which must be `seq<string>`) into the right command's stdin.
   Piping into `sh`-strings stays unsupported — that is what `into` is for.
-- **`head : seq<'a> -> 'a`** extracts the first element; on an empty sequence
-  it raises (weir has no Option type — empty-`head` joins the documented
-  runtime-failure class alongside match failure and division by zero). The
-  singleton idiom is `pwd |> head : string`.
+- **Partiality convention (INTERIM — migrates to Option when generic unions
+  land, per PLAN-library Session 3; this seq idiom must not accrete into case
+  law)**: a raising name plus a `try`-prefixed sibling returning a 0-or-1
+  sequence. `head : seq<'a> -> 'a` raises on empty (runtime-failure class);
+  `tryHead : seq<'a> -> seq<'a>` yields nothing or one. Same pair: `toInt` /
+  `tryToInt`. The singleton idiom is `pwd |> head : string`.
+- **String builtins are data-last, curried — needle/pattern first, subject
+  last** (`contains : string -> string -> bool`): partial application yields
+  point-free pipeline predicates — `where (contains "error")`,
+  `where (startsWith "fix:")`, `map trim` — no lambda. This is the decision
+  that compounds; no string builtin ships data-first. Set: `contains`,
+  `startsWith`, `endsWith`, `trim`/`trimStart`/`trimEnd`, `toLower`,
+  `toUpper`, `split` (separator first; empty entries kept), `join`,
+  `replace` (pattern, replacement, subject), `strLen`, `toInt`/`tryToInt`.
+- **`strLen`, not polymorphic `length` and not member access.**
+  Member-access-on-primitives (`s.Length`, `map _.Length`) is a logged
+  candidate design — it rides EField and reads like F# — but it is a checker
+  change and stays uncoupled from builtins work. Logged, not built.
+- **`sortBy : ('a -> 'b) -> seq<'a> -> seq<'a>`** — the key must evaluate to
+  an int, string, or bool; anything else is a runtime error (the type system
+  has no comparability constraint — same check-at-the-boundary posture as
+  `from json` field types). **`groupBy` is deferred to the generics session
+  with a reason**: its honest shape `{ Key: 'b; Items: seq<'a> }` requires
+  generic records, which do not exist yet; a string-keyed fake would be case
+  law in the wrong direction. `isEmpty : seq<'a> -> bool` completes the set.
+- Deferred with intent: `substring`/`indexOf` (they want Option — Session 3
+  customers), padding, regex (its own design — match vs captures vs typed
+  groups; a backlog entry, not a builtins-session improvisation).
 - **`collect : seq<'a> -> seq<'a>`** materializes eagerly at application:
   effects run exactly once, re-enumeration replays values with no re-spawn.
   Live queries (`pwd`, `ls`, command streams) bind the *query*, not the

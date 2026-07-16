@@ -174,6 +174,98 @@ let private completedImpl: Value =
                 )
             | _ -> unreachable "the checker rejects 'completed' on these arguments"))
 
+let private str1 (name: string) (f: string -> string) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr s -> VStr(f s)
+        | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
+
+let private str2Bool (name: string) (f: string -> string -> bool) : Value =
+    VBuiltin(fun a ->
+        VBuiltin(fun b ->
+            match a, b with
+            | VStr x, VStr y -> VBool(f x y)
+            | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
+
+let private tryHeadImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items -> VSeq(Seq.truncate 1 items)
+        | v -> unreachable $"the checker rejects 'tryHead' on {formatValue v}")
+
+let private isEmptyImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items -> VBool(Seq.isEmpty items)
+        | v -> unreachable $"the checker rejects 'isEmpty' on {formatValue v}")
+
+let private scalarCompare (name: string) (a: Value) (b: Value) : int =
+    match a, b with
+    | VInt x, VInt y -> compare x y
+    | VStr x, VStr y -> compare x y
+    | VBool x, VBool y -> compare x y
+    | v, _ -> failwith $"{name}: keys must be ints, strings or bools, got {formatValue v}"
+
+let private sortByImpl: Value =
+    VBuiltin(fun keyf ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                VSeq(
+                    Seq.delay (fun () ->
+                        items
+                        |> Seq.map (fun item -> apply keyf item, item)
+                        |> Seq.sortWith (fun (k1, _) (k2, _) -> scalarCompare "sortBy" k1 k2)
+                        |> Seq.map snd)
+                )
+            | v -> unreachable $"the checker rejects 'sortBy' on {formatValue v}"))
+
+let private splitImpl: Value =
+    VBuiltin(fun sep ->
+        VBuiltin(fun subject ->
+            match sep, subject with
+            | VStr sep, VStr s -> VSeq(s.Split sep |> Seq.map VStr)
+            | _ -> unreachable "the checker rejects 'split' on these arguments"))
+
+let private joinImpl: Value =
+    VBuiltin(fun sep ->
+        VBuiltin(fun s ->
+            match sep, s with
+            | VStr sep, VSeq items -> VStr(items |> Seq.map asString |> String.concat sep)
+            | _ -> unreachable "the checker rejects 'join' on these arguments"))
+
+let private replaceImpl: Value =
+    VBuiltin(fun pat ->
+        VBuiltin(fun rep ->
+            VBuiltin(fun subject ->
+                match pat, rep, subject with
+                | VStr p, VStr r, VStr s -> VStr(s.Replace(p, r))
+                | _ -> unreachable "the checker rejects 'replace' on these arguments")))
+
+let private strLenImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr s -> VInt s.Length
+        | v -> unreachable $"the checker rejects 'strLen' on {formatValue v}")
+
+let private toIntImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            match System.Int32.TryParse s with
+            | true, n -> VInt n
+            | _ -> failwith $"toInt: not an integer: \"{s}\""
+        | v -> unreachable $"the checker rejects 'toInt' on {formatValue v}")
+
+let private tryToIntImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            match System.Int32.TryParse s with
+            | true, n -> VSeq [ VInt n ]
+            | _ -> VSeq Seq.empty
+        | v -> unreachable $"the checker rejects 'tryToInt' on {formatValue v}")
+
 let private seqInt = TSeq(TInt None)
 let private seqStr = TSeq TStr
 let private tA = TVar "a"
@@ -196,6 +288,23 @@ let private entries: (string * Ty * Value) list =
       "not", TFun(TBool, TBool), notImpl
       "collect", TFun(TSeq tA, TSeq tA), collectImpl
       "head", TFun(TSeq tA, tA), headImpl
+      "tryHead", TFun(TSeq tA, TSeq tA), tryHeadImpl
+      "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
+      "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
+      "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)
+      "startsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "startsWith" (fun p s -> s.StartsWith p)
+      "endsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "endsWith" (fun p s -> s.EndsWith p)
+      "trim", TFun(TStr, TStr), str1 "trim" (fun s -> s.Trim())
+      "trimStart", TFun(TStr, TStr), str1 "trimStart" (fun s -> s.TrimStart())
+      "trimEnd", TFun(TStr, TStr), str1 "trimEnd" (fun s -> s.TrimEnd())
+      "toLower", TFun(TStr, TStr), str1 "toLower" (fun s -> s.ToLowerInvariant())
+      "toUpper", TFun(TStr, TStr), str1 "toUpper" (fun s -> s.ToUpperInvariant())
+      "split", TFun(TStr, TFun(TStr, TSeq TStr)), splitImpl
+      "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
+      "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
+      "strLen", TFun(TStr, TInt None), strLenImpl
+      "toInt", TFun(TStr, TInt None), toIntImpl
+      "tryToInt", TFun(TStr, TSeq(TInt None)), tryToIntImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed completedDef.Name)), completedImpl ]
 
 let commandCallable: Set<string> = Set [ "cd" ]
