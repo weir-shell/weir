@@ -1,7 +1,6 @@
 # weir — proposal: builtin modules, then a script language
 
-Status: PROPOSAL. Pre-made decisions marked DECIDED are blessed; those marked
-PROPOSED need a bless/amend before their session starts.
+Status: BLESSED (advisor pass 2026-07-17). All decisions DECIDED.
 
 Driven by two forces. First, the flat namespace is creaking: `mapOption`,
 `strLen`, `tryIndexOf` are poor-man's namespacing, and the `strLen`-vs-
@@ -25,9 +24,14 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
   has members). NOT modularized: command-mode-critical names (`cd`, `sh`,
   `cmd`, `ls`, `pwd`, `into`, `completed`) and the adapters (`from`/`to` are
   syntax anyway).
-- DECIDED — **Bare aliases for the pipeline hot path**: `map`, `where`,
-  `first`, `head`, `take`, `sum`, `collect` stay bare *and* get canonical
-  `Seq.*` homes; both names bind the same implementation. Everything else
+- DECIDED — **Bare aliases for the pipeline hot path**, where the
+  criterion is *appears point-free inside a pipeline stage*, not *is a seq
+  function*: `map`, `where`, `first`, `head`, `take`, `sum`, `collect` —
+  AND the point-free predicate/transformer shapes `contains`,
+  `startsWith`, `endsWith`, `trim` (the pinned Session-1 payoff
+  `where (contains "error")`, `map trim` stays untaxed). All get canonical
+  `Seq.*`/`Str.*` homes; both names bind the same implementation.
+  Everything else — `split`, `join`, `replace`, case mapping, parsing —
   is qualified-only.
 - DECIDED — **Retirements the namespace enables**: `mapOption` →
   `Option.map`, `defaultTo` → `Option.defaultTo` (bare alias retired),
@@ -46,17 +50,22 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
   not a redesign. Members are *schemes* (instantiated per use — this is why
   modules cannot be record values: record field access returns a type,
   module member access must freshen).
-- PROPOSED — **Comment syntax: `#` to end of line.** Rationale: shebang
-  (`#!/usr/bin/env weir`) becomes a comment for free; shell-adjacent feel
-  matches command mode. Cost: diverges from F# (`//`). Amend to `//` +
-  special-cased shebang line if the F# feel wins.
+- DECIDED — **Comment syntax: `#` to end of line.** Shebang becomes a
+  comment for free; shell-adjacent, consistent with what weir is rather
+  than what it forked from. Consequence pinned deliberately: **`#` is
+  spent forever** — unavailable to any future syntax.
 - DECIDED (by architecture) — **Whole-file check before any effect**: a
   script typechecks completely — including command-not-found via PATH
   resolution — before line one executes. This is the pitch against bash;
   it falls out of the check/eval split and is non-negotiable in the runner.
-- PROPOSED — **Multi-line is gated, not assumed**: the offside rule has
+- DECIDED — **Multi-line is gated, not assumed**: the offside rule has
   been parked twice for cause. Session 3 is a design gate with kill
-  criteria, not an implementation promise.
+  criteria, not an implementation promise. Gate evidence includes the
+  Session-2 e2e script itself — the first honest data on single-line
+  statement pain — alongside the REPL wish-list.
+- DECIDED — **CLI is unambiguous, no sniffing**: a positional argument is
+  a script path, always; `-e` is an expression, always. File-vs-expression
+  sniffing is a bash-ism that ends in CVEs.
 
 ## Session 1 — builtin modules
 
@@ -71,7 +80,12 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
 3. Completion: module branch in the dot-completion (`Seq.<TAB>` → members);
    resolver/Diagnose `IsKnown` includes module names.
 4. Tests: qualified use at two types (scheme freshening through module
-   access — the inference-relevant bit), shadowing rule, bare-module error,
+   access — the inference-relevant bit), the three-way resolution
+   precedence pinned exactly — `let Seq = { ... } in Seq.map` must take
+   the value-shadow arm and behave as ordinary field access (same syntax
+   now resolves value → module → row-field, in that order; the failure
+   mode is not unsoundness but a record named `Seq` silently switching
+   arms), bare-module error,
    retired names produce unbound-with-hint (did-you-mean should suggest the
    qualified home — check the hint helper reaches module members),
    completion. Tripwires re-run explicitly (checker change). E2E: one
@@ -79,8 +93,14 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
 5. SEMANTICS: modules section (inventory, aliases, shadowing, mechanism
    note), measure-algebra-dropped recorded, `strLen` bullet superseded.
 
-Human read: the `EField` module arm (small; it is an instantiation site —
-the §3 discipline applies).
+Human read: the `EField` module arm — both as an instantiation site (§3
+discipline) and as the three-way resolution seam above; the precedence
+order is the thing to verify, not just the scheme handling.
+
+Budget note: the retirement list breaks the pinned e2e battery
+(`map trim`, `startsWith` in the git-branch task) and several SEMANTICS
+examples — the hot-path aliasing above keeps the battery text valid, but
+every example touching a retired name gets migrated in the same commit.
 
 **Done when:** `ls |> Seq.sortBy _.Size |> Seq.map _.Name` and
 `Str.split "," "a,b"` work; retired names hint their new homes; suite +
@@ -95,10 +115,20 @@ tripwires + e2e green.
 2. **Check-everything-first**: parse and typecheck every statement (PATH
    lookups included) before evaluating any. Errors report `file:line` using
    the spans that have carried line numbers since Spike 1.
+   **Named divergence from every shell users know**: install-then-use
+   (`sh "cargo install thing"` on line 2, `thing ...` on line 10) is a
+   check-time "command not found" — the script that bash would have run
+   fails before line one. This is the pitch, stated positively: declare
+   dependencies, don't install mid-script. Rules-doc line required, and
+   the escape hatch named explicitly: `sh "thing ..."` defers resolution
+   to runtime because sh takes a string.
 3. Script inputs: `args : seq<string>` (post-script-name argv), `stdin :
-   seq<string>` (lazy line stream; document interaction with commands that
-   also read stdin). Exit code: 0, or 1 on runtime error, or the checker
-   error path with nonzero before any effect.
+   seq<string>` (lazy line stream). **Flagged as a decision, not
+   plumbing**: when the script never touches `stdin`, do child commands
+   inherit the terminal's stdin (interactive ssh mid-script works) or the
+   script's? Inherit-unless-consumed is what users expect and is fiddly —
+   decide in-session, document either way. Exit code: 0, or 1 on runtime
+   error, or the checker error path with nonzero before any effect.
 4. E2E (per the standing rule): a `.weir` script exercising bindings, a
    command-mode line, a type declaration, and `args` — run via shebang on
    the AOT binary; plus a script with a type error on line N proving
