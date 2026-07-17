@@ -675,6 +675,23 @@ let shorthandTests =
               Expect.equal (run "ls |> map _.Name |> first 2" |> forceSeq) [ VStr "a.txt"; VStr "b.bin" ] ""
           }
           test "shorthand chains through nested records" { expectParse "map _.A.B" "(map (fun _ _.A.B))" }
+          test "shorthand in a larger expression gets the targeted hint" {
+              let terr = checkErr "ls |> where (_.Bytes > 9<mb>)"
+              Expect.stringContains terr.Message "_.Field is a whole function" ""
+          }
+          test "the corrected form hits the honest measure error" {
+              Expect.stringContains
+                  (checkErr "ls |> where (fun f -> f.Bytes > 9<mb>)").Message
+                  "expected int<b>, got int<mb>"
+                  ""
+          }
+          test "byte literals and Size both filter correctly" {
+              expectValue
+                  "ls |> where (fun f -> f.Bytes > 2097152<b>) |> map _.Name"
+                  (VSeq [ VStr "b.bin"; VStr "d.iso" ])
+
+              expectValue "ls |> where (fun f -> f.Size > 1<mb>) |> map _.Name" (VSeq [ VStr "b.bin"; VStr "d.iso" ])
+          }
           test "bare underscore is not an expression" {
               Expect.stringContains (checkErr "_ + 1").Message "unbound variable '_'" ""
           }

@@ -312,7 +312,19 @@ let rec private typeBinOp
             else
                 err opSpan $"'{op}' is not defined for {formatTy resolved}; sequences and functions cannot be compared")
     | _, (TInt _ as a), (TInt _ as b) when a <> b -> mismatch r.Span a b
-    | _, a, b when a <> b -> mismatch r.Span a b
+    | _, a, b when a <> b ->
+        let shorthandHint =
+            let isShorthand (side: TypedExpr) =
+                match side.Kind with
+                | TELambda("_", _) -> true
+                | _ -> false
+
+            if isShorthand l || isShorthand r then
+                " (note: _.Field is a whole function; to compare the field, write fun x -> x.Field ...)"
+            else
+                ""
+
+        err r.Span $"expected {formatTy a}, got {formatTy b}{shorthandHint}"
     | _, a, _ -> err opSpan $"operator '{op}' is not defined for {formatTy a}"
 
 let rec private funParams (ctx: Ctx) (arity: int) (ty: Ty) : (Ty list * Ty) option =
