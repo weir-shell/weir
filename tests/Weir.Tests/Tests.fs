@@ -71,9 +71,12 @@ let private declErr input env =
     | Ok _ -> failtest "expected the declaration to be rejected"
     | Error terr -> terr
 
+let private preludeTypeEnv, preludeValueEnv =
+    Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv
+
 let private env =
     let e =
-        Weir.Builtins.typeEnv
+        preludeTypeEnv
         |> declare "type Proc = Running of int | Stopped"
         |> declare "type Point = { X: int; Y: int }"
 
@@ -95,7 +98,7 @@ let private fakeFiles =
 
 let private valueEnv =
     ("ls", VSeq fakeFiles) :: ctorValues
-    |> List.fold (fun vs (n, v) -> Map.add n v vs) Weir.Builtins.valueEnv
+    |> List.fold (fun vs (n, v) -> Map.add n v vs) preludeValueEnv
 
 let private checkOk input =
     match typecheck env (parse input) with
@@ -276,8 +279,8 @@ let declTests =
     testList
         "Type declarations"
         [ test "union declares constructors as typed values" {
-              Expect.equal (checkOk "Running 5").Ty (TNamed "Proc") "payload ctor applies"
-              Expect.equal (checkOk "Stopped").Ty (TNamed "Proc") "nullary ctor is a value"
+              Expect.equal (checkOk "Running 5").Ty (TNamed("Proc", [])) "payload ctor applies"
+              Expect.equal (checkOk "Stopped").Ty (TNamed("Proc", [])) "nullary ctor is a value"
           }
           test "constructor payload is checked" {
               Expect.stringContains (checkErr "Running \"x\"").Message "expected int, got string" ""
@@ -287,7 +290,7 @@ let declTests =
               expectValue "Stopped" (VUnion("Stopped", None))
           }
           test "record literal finds its nominal type" {
-              Expect.equal (checkOk "{ X = 1; Y = 2 }").Ty (TNamed "Point") ""
+              Expect.equal (checkOk "{ X = 1; Y = 2 }").Ty (TNamed("Point", [])) ""
           }
           test "record literal evaluates and fields project" {
               expectValue "{ X = 1; Y = 2 }" (VRecord("Point", Map [ "X", VInt 1; "Y", VInt 2 ]))
@@ -318,7 +321,7 @@ let declTests =
               let e = parse "Node (Node Leaf)"
 
               match Weir.Check.typecheck treeEnv e with
-              | Ok te -> Expect.equal te.Ty (TNamed "Tree") ""
+              | Ok te -> Expect.equal te.Ty (TNamed("Tree", [])) ""
               | Error terr -> failtest (formatError terr)
           }
           test "duplicate cases are rejected" {
@@ -699,7 +702,7 @@ let completionTests =
           test "bound record variable completes its fields" {
               let envWithQ =
                   { env with
-                      Values = Map.add "q" (generalize (TNamed "Point")) env.Values }
+                      Values = Map.add "q" (generalize (TNamed("Point", []))) env.Values }
 
               Expect.equal (Weir.Complete.suggest envWithQ "q." 0) [ "q.X"; "q.Y" ] ""
           }
@@ -1047,7 +1050,7 @@ let commandModeTests =
                       Values =
                           env.Values
                           |> Map.add "branch" (generalize TStr)
-                          |> Map.add "pt" (generalize (TNamed "Point")) }
+                          |> Map.add "pt" (generalize (TNamed("Point", []))) }
 
               match Weir.Parser.parseLine cmdResolver "git checkout $branch" with
               | Ok(SExpr e) ->
@@ -1284,7 +1287,7 @@ let session3Tests =
               match Weir.Parser.parseLine cmdResolver "grep x f | complete" with
               | Ok(SExpr e) ->
                   match typecheck env e with
-                  | Ok te -> Expect.equal te.Ty (TNamed "Completed") ""
+                  | Ok te -> Expect.equal te.Ty (TNamed("Completed", [])) ""
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           } ]
@@ -1345,6 +1348,97 @@ let stringTests =
               expectValue
                   "[\"* main\"; \"  feature/a\"; \"  feature/b\"] |> map trim |> where (startsWith \"feature\") |> join \",\""
                   (VStr "feature/a,feature/b")
+          } ]
+
+
+let genericsTests =
+    testList
+        "Generic unions and records"
+        [ test "constructor schemes freshen per use" {
+              expectValue "let s = fun x -> Some x in (s 1 == Some 1) && (s \"a\" == Some \"a\")" (VBool true)
+          }
+          test "None is polymorphic and instantiates per use" {
+              expectValue "let n = None in (n == Some 1) == (n == Some \"a\")" (VBool true)
+          }
+          test "Some 3 types as Option<int>" { Expect.equal (formatTy (checkOk "Some 3").Ty) "Option<int>" "" }
+          test "equatability recurses through applied constructors" {
+              expectValue "Some 1 == Some 1" (VBool true)
+              Expect.stringContains (checkErr "Some (fun x -> x) == Some (fun x -> x)").Message "is not defined" ""
+          }
+          test "nested Option constructs, matches, evaluates" {
+              Expect.equal (formatTy (checkOk "Some (Some 1)").Ty) "Option<Option<int>>" ""
+              expectValue "match Some (Some 1) with | Some (Some x) -> x | Some None -> 0 | None -> 0" (VInt 1)
+          }
+          test "nested refutable payloads keep the conservative warning" {
+              let ws =
+                  warningsOf "match Some (Some 1) with | Some (Some x) -> x | Some None -> 0 | None -> 0"
+
+              Expect.hasLength ws 1 "conservatively warns: Some not fully covered"
+          }
+          test "occurs check through a constructor" {
+              Expect.stringContains (checkErr "fun x -> Some x == x").Message "infinite type" ""
+          }
+          test "match binds at the instantiated type" {
+              expectValue "match Some 5 with | Some x -> x + 1 | None -> 0" (VInt 6)
+          }
+          test "Result infers across arms" {
+              Expect.equal (checkOk "match Ok 3 with | Ok v -> v | Error e -> strLen e").Ty (TInt None) ""
+              expectValue "match Error \"boom\" with | Ok v -> v | Error e -> strLen e" (VInt 4)
+          }
+          test "missing None warns" {
+              let ws = warningsOf "match Some 1 with | Some x -> x"
+              Expect.hasLength ws 1 ""
+              Expect.stringContains ws[0].Message "missing: None" ""
+          }
+          test "payload pattern arity message shows the instantiated type" {
+              Expect.stringContains
+                  (checkErr "match Some 1 with | Some -> 1 | None -> 0").Message
+                  "carries int; add a pattern"
+                  ""
+          }
+          test "arity errors in declarations" {
+              Expect.stringContains
+                  (declErr "type Bad = { F: Option }" env).Message
+                  "expects 1 type argument(s), got 0"
+                  ""
+
+              Expect.stringContains
+                  (declErr "type Bad2 = { F: Option<int, int> }" env).Message
+                  "expects 1 type argument(s), got 2"
+                  ""
+          }
+          test "undeclared type parameter is rejected" {
+              Expect.stringContains (declErr "type Bad3 = Wrap of 'z" env).Message "unknown type parameter 'z" ""
+          }
+          test "generic record declares, constructs, projects" {
+              let e2 = env |> declare "type Pair<'a> = { Fst: 'a; Snd: 'a }"
+              let expr = parse "let p = { Fst = 1; Snd = 2 } in p.Fst + p.Snd"
+
+              match Weir.Check.typecheck e2 expr with
+              | Ok te ->
+                  Expect.equal te.Ty (TInt None) ""
+                  Expect.equal (eval valueEnv te) (VInt 3) ""
+              | Error terr -> failtest (formatError terr)
+          }
+          test "generic record enforces shared parameters" {
+              let e2 = env |> declare "type Pair<'a> = { Fst: 'a; Snd: 'a }"
+
+              match Weir.Check.typecheck e2 (parse "{ Fst = 1; Snd = \"a\" }") with
+              | Error terr -> Expect.stringContains terr.Message "expected int, got string" ""
+              | Ok _ -> failtest "expected rejection"
+          }
+          test "groupBy lands on generic Group records" {
+              Expect.equal
+                  (run "[1; 2; 3; 4] |> groupBy (fun x -> x < 3) |> map _.Key" |> forceSeq)
+                  [ VBool true; VBool false ]
+                  "keys"
+
+              expectValue "[1; 2; 3; 4] |> groupBy (fun x -> x < 3) |> head |> (fun g -> g.Items) |> sum" (VInt 3)
+
+              Expect.equal
+                  (formatTy (checkOk "[1; 2] |> groupBy (fun x -> x)").Ty)
+                  "seq<Group<int, int>>"
+                  "type display"
           } ]
 
 let operatorTests =
@@ -1537,4 +1631,5 @@ let allTests =
           cdTests
           diagnoseTests
           session3Tests
-          stringTests ]
+          stringTests
+          genericsTests ]

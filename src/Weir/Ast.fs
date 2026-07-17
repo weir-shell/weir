@@ -42,6 +42,7 @@ type DeclBody =
 
 type Decl =
     { Name: string
+      Params: string list
       Body: DeclBody
       Span: Span }
 

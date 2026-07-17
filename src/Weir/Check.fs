@@ -57,6 +57,20 @@ let private bindParams (env: TypeEnv) (bindings: (string * Ty) list) : TypeEnv =
     { env with
         Values = bindings |> List.fold (fun vs (n, t) -> Map.add n (mono t) vs) env.Values }
 
+let private substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
+    let m = List.zip ps args |> Map.ofList
+
+    let rec go ty =
+        match ty with
+        | TVar v -> Map.tryFind v m |> Option.defaultValue ty
+        | TFun(a, b) -> TFun(go a, go b)
+        | TSeq t -> TSeq(go t)
+        | TNamed(n, targs) -> TNamed(n, targs |> List.map go)
+        | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (f, t) -> f, go t))
+        | t -> t
+
+    go ty
+
 type private Ctx =
     { mutable Fresh: int
       mutable Subst: Map<string, Ty>
@@ -88,6 +102,7 @@ let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
         match resolve ctx ty with
         | TFun(a, b) -> TFun(go seen a, go seen b)
         | TSeq t -> TSeq(go seen t)
+        | TNamed(n, args) -> TNamed(n, args |> List.map (go seen))
         | TRowVar(r, _) when seen.Contains r -> TRowVar(r, [])
         | TRowVar(r, _) ->
             let fields =
@@ -118,6 +133,7 @@ let private occurs (ctx: Ctx) (v: string) (ty: Ty) : bool =
                    |> Map.exists (fun _ (t, _) -> go t))
         | TFun(a, b) -> go a || go b
         | TSeq t -> go t
+        | TNamed(_, args) -> args |> List.exists go
         | _ -> false
 
     go ty
@@ -157,6 +173,7 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                 | None -> TRowVar(r, fields')
             | TFun(a, b) -> TFun(rename a, rename b)
             | TSeq t -> TSeq(rename t)
+            | TNamed(n, args) -> TNamed(n, args |> List.map rename)
             | t -> t
 
         rename sch.Ty
@@ -178,8 +195,10 @@ let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actu
         else
             ctx.Subst <- Map.add v t ctx.Subst
             Ok()
-    | TRowVar(r, _), TNamed n
-    | TNamed n, TRowVar(r, _) -> dischargeRow ctx env span r n
+    | TNamed(n1, a1), TNamed(n2, a2) when n1 = n2 && List.length a1 = List.length a2 ->
+        allOk (List.zip a1 a2) (fun (x, y) -> bind ctx env span x y)
+    | TRowVar(r, _), TNamed(n, targs)
+    | TNamed(n, targs), TRowVar(r, _) -> dischargeRow ctx env span r n targs
     | TRowVar(r1, _), TRowVar(r2, _) -> mergeRows ctx env r1 r2
     | (TRowVar _ as rv), t
     | t, (TRowVar _ as rv) -> err span $"expected {formatTy (finalTy ctx rv)}, got {formatTy (finalTy ctx t)}"
@@ -187,17 +206,24 @@ let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actu
     | TSeq e, TSeq a -> bind ctx env span e a
     | e, a -> mismatch span (finalTy ctx e) (finalTy ctx a)
 
-and private dischargeRow (ctx: Ctx) (env: TypeEnv) (span: Span) (r: string) (name: string) : Result<unit, TypeError> =
+and private dischargeRow
+    (ctx: Ctx)
+    (env: TypeEnv)
+    (span: Span)
+    (r: string)
+    (name: string)
+    (targs: Ty list)
+    : Result<unit, TypeError> =
     match Map.tryFind name env.Types with
     | Some(Record def) ->
         let constraints =
             Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty |> Map.toList
 
-        ctx.Subst <- Map.add r (TNamed name) ctx.Subst
+        ctx.Subst <- Map.add r (TNamed(name, targs)) ctx.Subst
 
         allOk constraints (fun (field, (ft, fspan)) ->
             match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
-            | Some(_, declTy) -> bind ctx env fspan declTy ft
+            | Some(_, declTy) -> bind ctx env fspan (substParams def.Params targs declTy) ft
             | None ->
                 let hint = didYouMean field (List.map fst def.Fields)
                 err fspan $"{name} has no field '{field}'{hint}")
@@ -229,13 +255,19 @@ let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
     | TSeq _
     | TVar _
     | TRowVar _ -> false
-    | TNamed n ->
-        seen.Contains n
+    | TNamed(n, targs) ->
+        let key = formatTy ty
+
+        seen.Contains key
         || (match Map.tryFind n env.Types with
-            | Some(Record def) -> def.Fields |> List.forall (snd >> isEquatable env (Set.add n seen))
+            | Some(Record def) ->
+                def.Fields
+                |> List.forall (fun (_, ft) -> isEquatable env (Set.add key seen) (substParams def.Params targs ft))
             | Some(Union def) ->
                 def.Cases
-                |> List.forall (fun (_, payload) -> payload |> Option.forall (isEquatable env (Set.add n seen)))
+                |> List.forall (fun (_, payload) ->
+                    payload
+                    |> Option.forall (fun pt -> isEquatable env (Set.add key seen) (substParams def.Params targs pt)))
             | None -> false)
 
 let rec private typeBinOp
@@ -270,9 +302,15 @@ let rec private typeBinOp
     | ("*" | "/"), TInt None, TInt None -> Ok(TInt None)
     | (">" | "<" | ">=" | "<="), TInt m, TInt n when m = n -> Ok TBool
     | ("&&" | "||"), TBool, TBool -> Ok TBool
-    | ("==" | "<>"), a, b when a = b && isEquatable env Set.empty a -> Ok TBool
-    | ("==" | "<>"), a, b when a = b ->
-        err opSpan $"'{op}' is not defined for {formatTy a}; sequences and functions cannot be compared"
+    | ("==" | "<>"), a, b ->
+        bind ctx env opSpan a b
+        |> Result.bind (fun () ->
+            let resolved = finalTy ctx a
+
+            if isEquatable env Set.empty resolved then
+                Ok TBool
+            else
+                err opSpan $"'{op}' is not defined for {formatTy resolved}; sequences and functions cannot be compared")
     | _, (TInt _ as a), (TInt _ as b) when a <> b -> mismatch r.Span a b
     | _, a, b when a <> b -> mismatch r.Span a b
     | _, a, _ -> err opSpan $"operator '{op}' is not defined for {formatTy a}"
@@ -305,7 +343,7 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
     | TInt _
     | TStr
     | TBool -> Ok()
-    | TNamed n ->
+    | TNamed(n, []) ->
         match Map.tryFind n env.Types with
         | Some(Record def) -> jsonableRecord span def
         | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
@@ -317,7 +355,7 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
     | PVar name -> Ok [ name, ty ]
     | PCase(ctor, argPat) ->
         match ty with
-        | TNamed typeName ->
+        | TNamed(typeName, targs) ->
             match Map.tryFind typeName env.Types with
             | Some(Union def) ->
                 match def.Cases |> List.tryFind (fun (c, _) -> c = ctor) with
@@ -329,6 +367,8 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
                     | None -> Ok []
                     | Some ap -> err ap.PSpan $"'{ctor}' has no payload"
                 | Some(_, Some payloadTy) ->
+                    let payloadTy = substParams def.Params targs payloadTy
+
                     match argPat with
                     | Some ap -> checkPattern env payloadTy ap
                     | None -> err p.PSpan $"'{ctor}' carries {formatTy payloadTy}; add a pattern for it"
@@ -447,14 +487,14 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! ttarget = infer ctx env target
 
             match resolve ctx ttarget.Ty with
-            | TNamed typeName ->
+            | TNamed(typeName, targs) ->
                 match Map.tryFind typeName env.Types with
                 | Some(Record def) ->
                     match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
                     | Some(_, fieldTy) ->
                         return
                             { Kind = TEField(ttarget, field)
-                              Ty = fieldTy
+                              Ty = substParams def.Params targs fieldTy
                               Span = expr.Span }
                     | None ->
                         let hint = didYouMean field (List.map fst def.Fields)
@@ -521,8 +561,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 match candidates with
                 | [ def ] ->
+                    let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
+
                     let checkField (name: string, _: Span, value: Expr) =
-                        let declaredTy = def.Fields |> List.find (fun (f, _) -> f = name) |> snd
+                        let declaredTy =
+                            def.Fields
+                            |> List.find (fun (f, _) -> f = name)
+                            |> snd
+                            |> substParams def.Params targs
+
                         check ctx env value declaredTy |> Result.map (fun tv -> name, tv)
 
                     let! tfields =
@@ -533,7 +580,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                     return
                         { Kind = TERecord(def.Name, List.rev tfields)
-                          Ty = TNamed def.Name
+                          Ty = TNamed(def.Name, targs)
                           Span = expr.Span }
                 | [] ->
                     let fieldList = String.concat ", " (Set.toList names)
@@ -550,19 +597,20 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some(Record def) ->
                     return
                         { Kind = TEFrom("porcelain", def)
-                          Ty = TFun(TSeq TStr, TSeq(TNamed "Change"))
+                          Ty = TFun(TSeq TStr, TSeq(TNamed("Change", [])))
                           Span = expr.Span }
                 | _ -> return! err expr.Span "the porcelain adapter needs the builtin Change record"
             | "porcelain", Some _ -> return! err expr.Span "'from porcelain' has a fixed row type (Change)"
             | "json", Some name ->
                 match Map.tryFind name env.Types with
-                | Some(Record def) ->
+                | Some(Record def) when def.Params.IsEmpty ->
                     do! jsonableRecord expr.Span def
 
                     return
                         { Kind = TEFrom("json", def)
-                          Ty = TFun(TSeq TStr, TSeq(TNamed name))
+                          Ty = TFun(TSeq TStr, TSeq(TNamed(name, [])))
                           Span = expr.Span }
+                | Some(Record _) -> return! err expr.Span $"'from json' needs a monomorphic record; '{name}' is generic"
                 | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from json' needs a record"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
             | "json", None -> return! err expr.Span "'from json' needs a record name, e.g. from json FileRow"
@@ -797,63 +845,105 @@ let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     let ctx = newCtx ()
     infer ctx env expr |> Result.map (finalizeExpr ctx)
 
-let rec private validateTy (env: TypeEnv) (selfName: string) (span: Span) (ty: Ty) : Result<unit, TypeError> =
+let rec private validateTy
+    (env: TypeEnv)
+    (selfName: string)
+    (selfArity: int)
+    (allowed: Set<string>)
+    (span: Span)
+    (ty: Ty)
+    : Result<unit, TypeError> =
     match ty with
     | TInt _
     | TStr
     | TBool -> Ok()
-    | TSeq t -> validateTy env selfName span t
-    | TFun(a, b) -> Result.bind (fun () -> validateTy env selfName span b) (validateTy env selfName span a)
-    | TVar v -> err span $"type variables ('{v}) are not allowed in declarations"
-    | TRowVar _ -> err span "row types are not allowed in declarations"
-    | TNamed n ->
-        if n = selfName || Map.containsKey n env.Types then
+    | TSeq t -> validateTy env selfName selfArity allowed span t
+    | TFun(a, b) ->
+        Result.bind
+            (fun () -> validateTy env selfName selfArity allowed span b)
+            (validateTy env selfName selfArity allowed span a)
+    | TVar v ->
+        if allowed.Contains v then
             Ok()
         else
-            err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+            err span $"unknown type parameter '{v}; declare it: type X<'{v}> = ..."
+    | TRowVar _ -> err span "row types are not allowed in declarations"
+    | TNamed(n, targs) ->
+        let arity =
+            if n = selfName then
+                Some selfArity
+            else
+                match Map.tryFind n env.Types with
+                | Some(Record d) -> Some d.Params.Length
+                | Some(Union d) -> Some d.Params.Length
+                | None -> None
+
+        match arity with
+        | None -> err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+        | Some a when a <> targs.Length -> err span $"'{n}' expects {a} type argument(s), got {targs.Length}"
+        | Some _ -> allOk targs (validateTy env selfName selfArity allowed span)
 
 let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
-    match decl.Body with
-    | DRecord fields ->
-        result {
-            match firstDup (List.map fst fields) with
-            | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
-            | None ->
-                do! allOk fields (snd >> validateTy env decl.Name decl.Span)
+    let allowed = Set.ofList decl.Params
+    let selfArity = decl.Params.Length
+    let selfTy = TNamed(decl.Name, decl.Params |> List.map TVar)
 
-                let def = Record { Name = decl.Name; Fields = fields }
+    match firstDup decl.Params with
+    | Some dup -> err decl.Span $"duplicate type parameter '{dup}"
+    | None ->
+        match decl.Body with
+        | DRecord fields ->
+            result {
+                match firstDup (List.map fst fields) with
+                | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
+                | None ->
+                    do! allOk fields (snd >> validateTy env decl.Name selfArity allowed decl.Span)
 
-                return
-                    { env with
-                        Types = Map.add decl.Name def env.Types }
-        }
-    | DUnion cases ->
-        result {
-            match firstDup (List.map fst cases) with
-            | Some dup -> return! err decl.Span $"duplicate case '{dup}'"
-            | None ->
-                do!
-                    allOk cases (fun (_, payload) ->
+                    let def =
+                        Record
+                            { Name = decl.Name
+                              Params = decl.Params
+                              Fields = fields }
+
+                    return
+                        { env with
+                            Types = Map.add decl.Name def env.Types }
+            }
+        | DUnion cases ->
+            result {
+                match firstDup (List.map fst cases) with
+                | Some dup -> return! err decl.Span $"duplicate case '{dup}'"
+                | None ->
+                    do!
+                        allOk cases (fun (_, payload) ->
+                            match payload with
+                            | Some ty -> validateTy env decl.Name selfArity allowed decl.Span ty
+                            | None -> Ok())
+
+                    let def =
+                        Union
+                            { Name = decl.Name
+                              Params = decl.Params
+                              Cases = cases }
+
+                    let ctorTy payload =
                         match payload with
-                        | Some ty -> validateTy env decl.Name decl.Span ty
-                        | None -> Ok())
+                        | None -> selfTy
+                        | Some ty -> TFun(ty, selfTy)
 
-                let def = Union { Name = decl.Name; Cases = cases }
+                    let ctorScheme payload =
+                        { Forall = allowed + tyVars (ctorTy payload)
+                          Ty = ctorTy payload }
 
-                let ctorTy payload =
-                    match payload with
-                    | None -> TNamed decl.Name
-                    | Some ty -> TFun(ty, TNamed decl.Name)
+                    let values =
+                        cases
+                        |> List.fold (fun vs (c, payload) -> Map.add c (ctorScheme payload) vs) env.Values
 
-                let values =
-                    cases
-                    |> List.fold (fun vs (c, payload) -> Map.add c (generalize (ctorTy payload)) vs) env.Values
-
-                return
-                    { env with
-                        Types = Map.add decl.Name def env.Types
-                        Values = values }
-        }
+                    return
+                        { env with
+                            Types = Map.add decl.Name def env.Types
+                            Values = values }
+            }
 
 let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
     let acc = ResizeArray<Warning>()
@@ -901,7 +991,7 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
                           Message = "this match arm is unreachable" })
             | None ->
                 match scrutinee.Ty with
-                | TNamed typeName ->
+                | TNamed(typeName, _) ->
                     match Map.tryFind typeName env.Types with
                     | Some(Union def) ->
                         let covers (case: string) =

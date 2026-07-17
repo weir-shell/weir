@@ -7,9 +7,10 @@ open Weir.Eval
 
 let fileRow: RecordDef =
     { Name = "FileRow"
+      Params = []
       Fields = [ "Name", TStr; "Size", TInt(Some "mb"); "ReadOnly", TBool ] }
 
-let seqFileRow = TSeq(TNamed fileRow.Name)
+let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
 let file (name: string) (sizeMb: int) (readOnly: bool) : Value =
     VRecord(fileRow.Name, Map [ "Name", VStr name; "Size", VInt sizeMb; "ReadOnly", VBool readOnly ])
@@ -78,6 +79,7 @@ let private doubleImpl: Value =
 
 let changeDef: RecordDef =
     { Name = "Change"
+      Params = []
       Fields = [ "Status", TStr; "Staged", TBool; "Unstaged", TBool; "Path", TStr ] }
 
 let private shImpl: Value =
@@ -155,6 +157,7 @@ let private collectImpl: Value =
 
 let completedDef: RecordDef =
     { Name = "Completed"
+      Params = []
       Fields = [ "ExitCode", TInt None; "Stdout", TSeq TStr; "Stderr", TSeq TStr ] }
 
 let private completedImpl: Value =
@@ -271,6 +274,40 @@ let private seqStr = TSeq TStr
 let private tA = TVar "a"
 let private tB = TVar "b"
 
+let groupDef: RecordDef =
+    { Name = "Group"
+      Params = [ "k"; "v" ]
+      Fields = [ "Key", TVar "k"; "Items", TSeq(TVar "v") ] }
+
+let private groupByImpl: Value =
+    VBuiltin(fun keyf ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                VSeq(
+                    Seq.delay (fun () ->
+                        items
+                        |> Seq.groupBy (fun item ->
+                            match apply keyf item with
+                            | VInt n -> box n
+                            | VStr str -> box str
+                            | VBool b -> box b
+                            | v -> failwith $"groupBy: keys must be ints, strings or bools, got {formatValue v}")
+                        |> Seq.map (fun (key, group) ->
+                            let keyValue =
+                                match key with
+                                | :? int as n -> VInt n
+                                | :? string as str -> VStr str
+                                | :? bool as b -> VBool b
+                                | _ -> unreachable "groupBy key box"
+
+                            VRecord(
+                                groupDef.Name,
+                                Map [ "Key", keyValue; "Items", VSeq(List.ofSeq group :> seq<Value>) ]
+                            )))
+                )
+            | v -> unreachable $"the checker rejects 'groupBy' on {formatValue v}"))
+
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
@@ -291,6 +328,7 @@ let private entries: (string * Ty * Value) list =
       "tryHead", TFun(TSeq tA, TSeq tA), tryHeadImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
+      "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl
       "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)
       "startsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "startsWith" (fun p s -> s.StartsWith p)
       "endsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "endsWith" (fun p s -> s.EndsWith p)
@@ -305,7 +343,7 @@ let private entries: (string * Ty * Value) list =
       "strLen", TFun(TStr, TInt None), strLenImpl
       "toInt", TFun(TStr, TInt None), toIntImpl
       "tryToInt", TFun(TStr, TSeq(TInt None)), tryToIntImpl
-      "completed", TFun(TStr, TFun(TSeq TStr, TNamed completedDef.Name)), completedImpl ]
+      "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl ]
 
 let commandCallable: Set<string> = Set [ "cd" ]
 
@@ -315,6 +353,7 @@ let typeEnv: TypeEnv =
         Map
             [ fileRow.Name, Record fileRow
               changeDef.Name, Record changeDef
-              completedDef.Name, Record completedDef ] }
+              completedDef.Name, Record completedDef
+              groupDef.Name, Record groupDef ] }
 
 let valueEnv: Env = entries |> List.map (fun (n, _, v) -> n, v) |> Map.ofList

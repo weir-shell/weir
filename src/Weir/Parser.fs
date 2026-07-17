@@ -398,15 +398,19 @@ let private cmdLine (r: Resolver) : Parser<Expr, unit> =
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
 tySynRef.Value <-
-    rawWord
-    >>= fun w ->
-        match w with
-        | "int" -> opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws |>> TInt
-        | "string" -> ws >>% TStr
-        | "bool" -> ws >>% TBool
-        | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
-        | w when keywords.Contains w -> fail $"'{w}' is a keyword"
-        | w -> ws >>% TNamed w
+    choice
+        [ pchar '\'' >>. rawWord .>> ws |>> TVar
+          rawWord
+          >>= fun w ->
+              match w with
+              | "int" -> opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws |>> TInt
+              | "string" -> ws >>% TStr
+              | "bool" -> ws >>% TBool
+              | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
+              | w when keywords.Contains w -> fail $"'{w}' is a keyword"
+              | w ->
+                  ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+                  |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
 
 let private fieldDecl = ident .>> str_ws ":" .>>. tySyn
 
@@ -425,14 +429,20 @@ let private caseDecl =
 
 let private unionBody = opt (str_ws "|") >>. sepBy1 caseDecl (str_ws "|") |>> DUnion
 
+let private typeParams =
+    opt (between (str_ws "<") (str_ws ">") (sepBy1 (pchar '\'' >>. rawWord .>> ws) (str_ws ",")))
+    |>> Option.defaultValue []
+
 let private typeDecl =
-    pipe3
+    pipe4
         getPosition
-        (keyword "type" >>. ident .>> str_ws "=" .>>. (recordBody <|> unionBody))
+        (keyword "type" >>. ident .>>. typeParams .>> str_ws "=")
+        (recordBody <|> unionBody)
         getPosition
-        (fun p (name, body) e ->
+        (fun p (name, tps) body e ->
             SType
                 { Name = name
+                  Params = tps
                   Body = body
                   Span = { Start = pos p; End = pos e } })
 

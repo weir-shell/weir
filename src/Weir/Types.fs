@@ -6,7 +6,7 @@ type Ty =
     | TBool
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
-    | TNamed of name: string
+    | TNamed of name: string * args: Ty list
     | TVar of name: string
     | TRowVar of name: string * fields: (string * Ty) list
 
@@ -31,7 +31,10 @@ let rec formatTy (ty: Ty) : string =
 
         $"{dom} -> {formatTy codomain}"
     | TSeq element -> $"seq<{formatTy element}>"
-    | TNamed name -> name
+    | TNamed(name, []) -> name
+    | TNamed(name, args) ->
+        let argStr = args |> List.map formatTy |> String.concat ", "
+        $"{name}<{argStr}>"
 
 let rec tyVars (ty: Ty) : Set<string> =
     match ty with
@@ -39,10 +42,10 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TRowVar(r, fields) -> fields |> List.fold (fun acc (_, t) -> acc + tyVars t) (Set.singleton r)
     | TFun(a, b) -> tyVars a + tyVars b
     | TSeq t -> tyVars t
+    | TNamed(_, args) -> args |> List.fold (fun acc t -> acc + tyVars t) Set.empty
     | TInt _
     | TStr
-    | TBool
-    | TNamed _ -> Set.empty
+    | TBool -> Set.empty
 
 type Scheme = { Forall: Set<string>; Ty: Ty }
 
@@ -52,10 +55,12 @@ let mono (ty: Ty) : Scheme = { Forall = Set.empty; Ty = ty }
 
 type RecordDef =
     { Name: string
+      Params: string list
       Fields: (string * Ty) list }
 
 type UnionDef =
     { Name: string
+      Params: string list
       Cases: (string * Ty option) list }
 
 type TypeDef =

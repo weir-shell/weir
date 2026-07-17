@@ -10,8 +10,8 @@ let private prompt = "weir> "
 type private State = { TypeEnv: TypeEnv; Values: Eval.Env }
 
 let private initial =
-    { TypeEnv = Builtins.typeEnv
-      Values = Builtins.valueEnv }
+    let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv
+    { TypeEnv = typeEnv; Values = valueEnv }
 
 let private currentEnv = ref initial.TypeEnv
 

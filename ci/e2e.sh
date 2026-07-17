@@ -57,6 +57,12 @@ expect "concurrent stderr drain under complete" "0 : int" "$out"
 out=$($BIN -e 'sh "echo out; echo err 1>&2"' 2>/dev/null)
 expect "stderr passthrough keeps stdout stream clean" '["out"]' "$out"
 
+out=$($BIN -e 'match Ok 3 with | Ok v -> v | Error e -> strLen e')
+expect "prelude Result with cross-arm inference" "3 : int" "$out"
+
+out=$($BIN -e 'Some 3')
+expect "prelude Option types generically" "Some 3 : Option<int>" "$out"
+
 branchdir=$(mktemp -d)
 (
     cd "$branchdir"

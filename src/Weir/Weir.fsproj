@@ -26,6 +26,7 @@
     <Compile Include="Proc.fs" />
     <Compile Include="Eval.fs" />
     <Compile Include="Builtins.fs" />
+    <Compile Include="Prelude.fs" />
     <Compile Include="Repl.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

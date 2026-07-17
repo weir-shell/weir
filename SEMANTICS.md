@@ -35,6 +35,23 @@ weir rejects rather than guesses.
   `let eq = fun a -> fun b -> a == b` is rejected *at the definition*, not
   instantiated per use. If you read only the generalization bullet you might
   expect `eq` to work; the governing principle above is why it doesn't.
+- **Generic declarations**: `type Option<'a> = Some of 'a | None` and
+  `type Pair<'a> = { Fst: 'a; Snd: 'a }` — unions and records both take type
+  parameters. Cases carry a **single payload** (no tuple payloads — weir has
+  no product types; wrap in a record). Applied types unify argument-wise with
+  an occurs check through arguments; arity is validated at declaration.
+- **Constructors are generalized schemes** (`Some : forall 'a. 'a ->
+  Option<'a>`), instantiated fresh per use with the same deep-copy discipline
+  as generalized lets — see the generalization bullet; the §3 checklist items
+  apply to constructors identically and are pinned by the generics battery.
+- **`==`/`<>` truly unify** (the implementation caught up with this doc):
+  operands unify — including variables nested in constructor arguments, so
+  `None == Some 1` instantiates and binds — then the resolved type must be
+  equatable, recursively through applied constructors (`Option<int>` yes,
+  `Option<int -> int>` no).
+- **The prelude** is plain weir source (Option, Result) evaluated through the
+  ordinary declaration path at session start — no host-registered special
+  types — and embedded in the binary, so the single-file story holds.
 - **Rows are records-only and close on discharge**: field access on an unknown
   accumulates row constraints; meeting a nominal record type validates all
   demanded fields and permanently resolves the variable to that record. There
@@ -233,6 +250,10 @@ weir rejects rather than guesses.
   with a reason**: its honest shape `{ Key: 'b; Items: seq<'a> }` requires
   generic records, which do not exist yet; a string-keyed fake would be case
   law in the wrong direction. `isEmpty : seq<'a> -> bool` completes the set.
+  (`groupBy` has since landed on generic records:
+  `groupBy : ('a -> 'b) -> seq<'a> -> seq<Group<'b, 'a>>` with builtin-owned
+  `Group<'k, 'v> = { Key: 'k; Items: seq<'v> }`; keys share `sortBy`'s
+  scalar-only runtime rule.)
 - Deferred with intent: `substring`/`indexOf` (they want Option — Session 3
   customers), padding, regex (its own design — match vs captures vs typed
   groups; a backlog entry, not a builtins-session improvisation).

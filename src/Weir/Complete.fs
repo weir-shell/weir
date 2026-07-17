@@ -17,7 +17,7 @@ let private keywords =
 
 let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
     match ty with
-    | TNamed n ->
+    | TNamed(n, _) ->
         match Map.tryFind n env.Types with
         | Some(Record def) -> Some def.Fields
         | _ -> None
