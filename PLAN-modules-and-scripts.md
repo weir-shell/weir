@@ -1,6 +1,10 @@
 # weir — proposal: builtin modules, then a script language
 
-Status: BLESSED (advisor pass 2026-07-17). All decisions DECIDED.
+Status: BLESSED (advisor pass + user amendments 2026-07-17). All decisions
+DECIDED. User amendments: `//` comments (F# feel), indentation-based
+scripts as the chosen target (gate retained as tractability checkpoint),
+broad bare string ops in normal mode, strict mode for scripts,
+qualification required on cross-module name conflicts.
 
 Driven by two forces. First, the flat namespace is creaking: `mapOption`,
 `strLen`, `tryIndexOf` are poor-man's namespacing, and the `strLen`-vs-
@@ -24,15 +28,21 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
   has members). NOT modularized: command-mode-critical names (`cd`, `sh`,
   `cmd`, `ls`, `pwd`, `into`, `completed`) and the adapters (`from`/`to` are
   syntax anyway).
-- DECIDED — **Bare aliases for the pipeline hot path**, where the
-  criterion is *appears point-free inside a pipeline stage*, not *is a seq
-  function*: `map`, `where`, `first`, `head`, `take`, `sum`, `collect` —
-  AND the point-free predicate/transformer shapes `contains`,
-  `startsWith`, `endsWith`, `trim` (the pinned Session-1 payoff
-  `where (contains "error")`, `map trim` stays untaxed). All get canonical
-  `Seq.*`/`Str.*` homes; both names bind the same implementation.
-  Everything else — `split`, `join`, `replace`, case mapping, parsing —
-  is qualified-only.
+- DECIDED — **Two resolution modes.** *Normal mode* (REPL, and scripts by
+  default): common operations are available bare — the seq pipeline set
+  AND all common string operations (`contains`, `startsWith`, `endsWith`,
+  `trim` family, `split`, `join`, `replace`, `toLower`, `toUpper`,
+  `toInt`, `tryToInt`, ...) — every bare name doubly registered with its
+  canonical `Seq.*`/`Str.*`/`Option.*` home. *Strict mode* (per-script
+  directive): bare aliases are disabled; everything module-owned must be
+  qualified. REPL is always normal mode.
+- DECIDED — **Cross-module conflicts require qualification, no winner.**
+  When two modules export the same member name, the bare alias does not
+  exist and use is an error naming both candidates ("ambiguous: Seq.map or
+  Option.map; qualify"). **Named casualty, accepted: bare `map`** — the
+  moment `Option.map` exists, pipelines write `Seq.map` (or strict-mode
+  habits leak into the REPL, which is fine). `where`, `first`, `head`,
+  `defaultTo`, the string set, etc. remain unambiguous and bare.
 - DECIDED — **Retirements the namespace enables**: `mapOption` →
   `Option.map`, `defaultTo` → `Option.defaultTo` (bare alias retired),
   `strLen` → `Str.length` (superseding the collision decision properly),
@@ -50,19 +60,25 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
   not a redesign. Members are *schemes* (instantiated per use — this is why
   modules cannot be record values: record field access returns a type,
   module member access must freshen).
-- DECIDED — **Comment syntax: `#` to end of line.** Shebang becomes a
-  comment for free; shell-adjacent, consistent with what weir is rather
-  than what it forked from. Consequence pinned deliberately: **`#` is
-  spent forever** — unavailable to any future syntax.
+- DECIDED — **Comment syntax: `//` to end of line** (F# feel wins, per
+  user). The shebang line (`#!`) is special-cased by the script runner:
+  line one starting `#!` is skipped. **`#` at line head is reserved for
+  directives** — the first being `#strict` (strict resolution mode,
+  above); shebang is then just the OS's directive. Comments are never
+  `#`.
 - DECIDED (by architecture) — **Whole-file check before any effect**: a
   script typechecks completely — including command-not-found via PATH
   resolution — before line one executes. This is the pitch against bash;
   it falls out of the check/eval split and is non-negotiable in the runner.
-- DECIDED — **Multi-line is gated, not assumed**: the offside rule has
-  been parked twice for cause. Session 3 is a design gate with kill
-  criteria, not an implementation promise. Gate evidence includes the
-  Session-2 e2e script itself — the first honest data on single-line
-  statement pain — alongside the REPL wish-list.
+- DECIDED — **Indentation-based multi-line is the chosen target** (F#
+  feel, per user): offside-rule scripts, not delimiters. Session 3 remains
+  a *tractability* gate, not a direction gate — the design is decided, the
+  gate proves it implementable against the kill criteria (expression-suite
+  green, command-mode interaction sane); a kill outcome falls back to
+  single-line statements and schedules a second attempt, it does not
+  reopen the direction. Gate evidence includes the Session-2 e2e script
+  itself — the first honest data on single-line statement pain — alongside
+  the REPL wish-list.
 - DECIDED — **CLI is unambiguous, no sniffing**: a positional argument is
   a script path, always; `-e` is an expression, always. File-vs-expression
   sniffing is a bash-ism that ends in CVEs.
@@ -110,8 +126,10 @@ tripwires + e2e green.
 
 1. `weir run script.weir` (and `weir script.weir` if unambiguous with `-e`):
    statements executed top to bottom with persistent bindings — the REPL
-   loop's semantics, batched. Comment/shebang lines skipped per the comment
-   decision.
+   loop's semantics, batched. `//` comments stripped; `#!` line one
+   skipped; `#strict` directive (line one, or two after a shebang) flips
+   the file to strict resolution — bare aliases off, module members
+   qualified-only.
 2. **Check-everything-first**: parse and typecheck every statement (PATH
    lookups included) before evaluating any. Errors report `file:line` using
    the spans that have carried line numbers since Spike 1.
