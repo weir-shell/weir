@@ -1325,12 +1325,13 @@ let stringTests =
               expectValue "strLen \"abc\"" (VInt 3)
               expectValue "toInt \"42\" + 1" (VInt 43)
               Expect.throws (fun () -> run "toInt \"nope\"" |> ignore) "toInt raises"
-              expectValue "tryToInt \"42\" |> sum" (VInt 42)
-              expectValue "tryToInt \"nope\" |> sum" (VInt 0)
+              expectValue "tryToInt \"42\"" (VUnion("Some", Some(VInt 42)))
+              expectValue "tryToInt \"nope\"" (VUnion("None", None))
           }
-          test "tryHead and isEmpty" {
-              expectValue "[1; 2] |> tryHead |> sum" (VInt 1)
-              expectValue "[] |> tryHead |> isEmpty" (VBool true)
+          test "tryHead returns Option and isEmpty stands" {
+              expectValue "[1; 2] |> tryHead" (VUnion("Some", Some(VInt 1)))
+              expectValue "[] |> tryHead" (VUnion("None", None))
+              expectValue "[] |> isEmpty" (VBool true)
               expectValue "ls |> isEmpty" (VBool false)
           }
           test "sortBy over scalar keys" {
@@ -1439,6 +1440,46 @@ let genericsTests =
                   (formatTy (checkOk "[1; 2] |> groupBy (fun x -> x)").Ty)
                   "seq<Group<int, int>>"
                   "type display"
+          } ]
+
+
+let optionSweepTests =
+    testList
+        "Option sweep"
+        [ test "tryHead types as Option of the element" {
+              Expect.equal (formatTy (checkOk "ls |> tryHead").Ty) "Option<FileRow>" ""
+          }
+          test "defaultTo closes the idiom without a match" {
+              expectValue "[] |> tryHead |> defaultTo 0" (VInt 0)
+              expectValue "[7] |> tryHead |> defaultTo 0" (VInt 7)
+              expectValue "tryToInt \"nope\" |> defaultTo (0 - 1)" (VInt(-1))
+          }
+          test "mapOption maps through Some and skips None" {
+              expectValue "[3] |> tryHead |> mapOption double |> defaultTo 0" (VInt 6)
+              expectValue "[] |> tryHead |> mapOption double |> defaultTo 0" (VInt 0)
+          }
+          test "tryFind is data-last and Option-returning" {
+              expectValue "ls |> tryFind _.ReadOnly |> mapOption _.Name |> defaultTo \"none\"" (VStr "b.bin")
+
+              expectValue
+                  "ls |> tryFind (fun f -> f.Size > 999<mb>) |> mapOption _.Name |> defaultTo \"none\""
+                  (VStr "none")
+          }
+          test "tryIndexOf and substring compose" {
+              expectValue "tryIndexOf \"b\" \"abc\"" (VUnion("Some", Some(VInt 1)))
+              expectValue "tryIndexOf \"z\" \"abc\"" (VUnion("None", None))
+              expectValue "substring 1 2 \"abcd\"" (VStr "bc")
+
+              expectValue
+                  "match tryIndexOf \":\" \"a:b\" with | Some i -> substring 0 i \"a:b\" | None -> \"\""
+                  (VStr "a")
+          }
+          test "substring bounds raise with detail" {
+              let ex = Expect.throwsC (fun () -> run "substring 2 9 \"abc\"" |> ignore) id
+              Expect.stringContains ex.Message "out of bounds" ""
+          }
+          test "match on tryHead pins the full idiom" {
+              expectValue "match ls |> tryHead with | Some f -> f.Name | None -> \"empty\"" (VStr "a.txt")
           } ]
 
 let operatorTests =
@@ -1632,4 +1673,5 @@ let allTests =
           diagnoseTests
           session3Tests
           stringTests
-          genericsTests ]
+          genericsTests
+          optionSweepTests ]

@@ -60,6 +60,9 @@ expect "stderr passthrough keeps stdout stream clean" '["out"]' "$out"
 out=$($BIN -e 'match Ok 3 with | Ok v -> v | Error e -> strLen e')
 expect "prelude Result with cross-arm inference" "3 : int" "$out"
 
+out=$($BIN -e '[] |> tryHead |> defaultTo 9')
+expect "Option sweep idiom on the AOT binary" "9 : int" "$out"
+
 out=$($BIN -e 'Some 3')
 expect "prelude Option types generically" "Some 3 : Option<int>" "$out"
 

@@ -225,12 +225,14 @@ weir rejects rather than guesses.
 - **External-to-external pipes feed stdin**: `git log | grep x` wires the
   left stream (which must be `seq<string>`) into the right command's stdin.
   Piping into `sh`-strings stays unsupported — that is what `into` is for.
-- **Partiality convention (INTERIM — migrates to Option when generic unions
-  land, per PLAN-library Session 3; this seq idiom must not accrete into case
-  law)**: a raising name plus a `try`-prefixed sibling returning a 0-or-1
-  sequence. `head : seq<'a> -> 'a` raises on empty (runtime-failure class);
-  `tryHead : seq<'a> -> seq<'a>` yields nothing or one. Same pair: `toInt` /
-  `tryToInt`. The singleton idiom is `pwd |> head : string`.
+- **Partiality convention (FINAL)**: a raising name plus a `try`-prefixed
+  sibling returning `Option<'a>`. Pairs: `head`/`tryHead`, `toInt`/`tryToInt`;
+  Option-native: `tryFind`, `tryIndexOf`; raising-only (documented bounds):
+  `substring start len subject`. The idiom's other half: `defaultTo` and
+  `mapOption`, so an Option in a pipeline does not force a match —
+  `ls |> tryFind _.ReadOnly |> mapOption _.Name |> defaultTo "none"`. The
+  interim 0-or-1-seq idiom is retired (it never became case law, as
+  intended). The singleton extraction is `pwd |> head : string`.
 - **String builtins are data-last, curried — needle/pattern first, subject
   last** (`contains : string -> string -> bool`): partial application yields
   point-free pipeline predicates — `where (contains "error")`,

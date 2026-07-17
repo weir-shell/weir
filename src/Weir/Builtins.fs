@@ -190,10 +190,16 @@ let private str2Bool (name: string) (f: string -> string -> bool) : Value =
             | VStr x, VStr y -> VBool(f x y)
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
+let private vSome (v: Value) : Value = VUnion("Some", Some v)
+let private vNone: Value = VUnion("None", None)
+
 let private tryHeadImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VSeq items -> VSeq(Seq.truncate 1 items)
+        | VSeq items ->
+            match Seq.tryHead items with
+            | Some x -> vSome x
+            | None -> vNone
         | v -> unreachable $"the checker rejects 'tryHead' on {formatValue v}")
 
 let private isEmptyImpl: Value =
@@ -265,9 +271,64 @@ let private tryToIntImpl: Value =
         match v with
         | VStr s ->
             match System.Int32.TryParse s with
-            | true, n -> VSeq [ VInt n ]
-            | _ -> VSeq Seq.empty
+            | true, n -> vSome (VInt n)
+            | _ -> vNone
         | v -> unreachable $"the checker rejects 'tryToInt' on {formatValue v}")
+
+let private tryFindImpl: Value =
+    VBuiltin(fun pred ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                let found =
+                    items
+                    |> Seq.tryFind (fun item ->
+                        match apply pred item with
+                        | VBool b -> b
+                        | v -> unreachable $"the checker rejects a non-bool predicate result: {formatValue v}")
+
+                match found with
+                | Some x -> vSome x
+                | None -> vNone
+            | v -> unreachable $"the checker rejects 'tryFind' on {formatValue v}"))
+
+let private tryIndexOfImpl: Value =
+    VBuiltin(fun needle ->
+        VBuiltin(fun subject ->
+            match needle, subject with
+            | VStr n, VStr s ->
+                match s.IndexOf n with
+                | -1 -> vNone
+                | i -> vSome (VInt i)
+            | _ -> unreachable "the checker rejects 'tryIndexOf' on these arguments"))
+
+let private substringImpl: Value =
+    VBuiltin(fun start ->
+        VBuiltin(fun len ->
+            VBuiltin(fun subject ->
+                match start, len, subject with
+                | VInt st, VInt ln, VStr s ->
+                    if st < 0 || ln < 0 || st + ln > s.Length then
+                        failwith $"substring: out of bounds (start {st}, length {ln}, string length {s.Length})"
+                    else
+                        VStr(s.Substring(st, ln))
+                | _ -> unreachable "the checker rejects 'substring' on these arguments")))
+
+let private defaultToImpl: Value =
+    VBuiltin(fun fallback ->
+        VBuiltin(fun opt ->
+            match opt with
+            | VUnion("Some", Some v) -> v
+            | VUnion("None", None) -> fallback
+            | v -> unreachable $"the checker rejects 'defaultTo' on {formatValue v}"))
+
+let private mapOptionImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun opt ->
+            match opt with
+            | VUnion("Some", Some v) -> vSome (apply f v)
+            | VUnion("None", None) -> vNone
+            | v -> unreachable $"the checker rejects 'mapOption' on {formatValue v}"))
 
 let private seqInt = TSeq(TInt None)
 let private seqStr = TSeq TStr
@@ -325,7 +386,10 @@ let private entries: (string * Ty * Value) list =
       "not", TFun(TBool, TBool), notImpl
       "collect", TFun(TSeq tA, TSeq tA), collectImpl
       "head", TFun(TSeq tA, tA), headImpl
-      "tryHead", TFun(TSeq tA, TSeq tA), tryHeadImpl
+      "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
+      "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
+      "defaultTo", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl
+      "mapOption", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl
@@ -342,7 +406,9 @@ let private entries: (string * Ty * Value) list =
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
       "strLen", TFun(TStr, TInt None), strLenImpl
       "toInt", TFun(TStr, TInt None), toIntImpl
-      "tryToInt", TFun(TStr, TSeq(TInt None)), tryToIntImpl
+      "tryToInt", TFun(TStr, TNamed("Option", [ TInt None ])), tryToIntImpl
+      "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt None ]))), tryIndexOfImpl
+      "substring", TFun(TInt None, TFun(TInt None, TFun(TStr, TStr))), substringImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl ]
 
 let commandCallable: Set<string> = Set [ "cd" ]
