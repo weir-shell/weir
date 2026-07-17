@@ -71,12 +71,6 @@ let private notImpl: Value =
         | VBool b -> VBool(not b)
         | v -> unreachable $"the checker rejects 'not' on {formatValue v}")
 
-let private doubleImpl: Value =
-    VBuiltin(fun v ->
-        match v with
-        | VInt n -> VInt(n * 2)
-        | v -> unreachable $"the checker rejects 'double' on {formatValue v}")
-
 let changeDef: RecordDef =
     { Name = "Change"
       Params = []
@@ -446,7 +440,6 @@ let private bareEntries: (string * Ty * Value) list =
 
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
-      "double", TFun(TInt None, TInt None), doubleImpl
       "nats", seqInt, natsImpl
       "sh", TFun(TStr, seqStr), shImpl
       "cmd", TFun(TStr, TFun(TSeq TStr, seqStr)), cmdImpl

@@ -18,4 +18,4 @@ mkdir -p ~/.local/bin
 install -m 755 "src/Weir/bin/Release/net10.0/$rid/publish/Weir" ~/.local/bin/weir
 
 echo "installed: ~/.local/bin/weir"
-~/.local/bin/weir -e '1 + 2 |> double'
+~/.local/bin/weir -e '(1 + 2) * 2'

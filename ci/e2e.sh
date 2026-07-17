@@ -15,7 +15,7 @@ expect() {
     echo "e2e ok: $desc"
 }
 
-out=$($BIN -e '1 + 2 |> double')
+out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
 
 out=$($BIN -e 'cmd "echo" ["*"]')

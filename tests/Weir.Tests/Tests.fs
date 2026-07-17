@@ -81,7 +81,10 @@ let private env =
         |> declare "type Point = { X: int; Y: int }"
 
     { e with
-        Values = Map.add "src" (generalize (TSeq TStr)) e.Values }
+        Values =
+            e.Values
+            |> Map.add "src" (generalize (TSeq TStr))
+            |> Map.add "double" (generalize (TFun(TInt None, TInt None))) }
 
 let private ctorValues =
     [ "type Proc = Running of int | Stopped" ]
@@ -96,8 +99,14 @@ let private fakeFiles =
       Weir.Builtins.file "c.log" 1 false
       Weir.Builtins.file "d.iso" 3 false ]
 
+let private doubleFixture =
+    VBuiltin(fun v ->
+        match v with
+        | VInt n -> VInt(n * 2)
+        | v -> failwith $"double fixture applied to {formatValue v}")
+
 let private valueEnv =
-    ("ls", VSeq fakeFiles) :: ctorValues
+    ("ls", VSeq fakeFiles) :: ("double", doubleFixture) :: ctorValues
     |> List.fold (fun vs (n, v) -> Map.add n v vs) preludeValueEnv
 
 let private checkOk input =
