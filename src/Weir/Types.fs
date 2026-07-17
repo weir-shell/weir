@@ -69,6 +69,7 @@ type TypeDef =
 
 type TypeEnv =
     { Values: Map<string, Scheme>
+      Modules: Map<string, Map<string, Scheme>>
       Types: Map<string, TypeDef> }
 
 let editDistance (a: string) (b: string) : int =

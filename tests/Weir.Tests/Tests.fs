@@ -1321,29 +1321,29 @@ let stringTests =
               Expect.equal (run "split \",\" \"a,,b\"" |> forceSeq) [ VStr "a"; VStr ""; VStr "b" ] "empties kept"
           }
           test "replace is pattern-replacement-subject" { expectValue "replace \"o\" \"0\" \"foo\"" (VStr "f00") }
-          test "strLen and toInt" {
-              expectValue "strLen \"abc\"" (VInt 3)
+          test "Str.length and toInt" {
+              expectValue "Str.length \"abc\"" (VInt 3)
               expectValue "toInt \"42\" + 1" (VInt 43)
               Expect.throws (fun () -> run "toInt \"nope\"" |> ignore) "toInt raises"
               expectValue "tryToInt \"42\"" (VUnion("Some", Some(VInt 42)))
               expectValue "tryToInt \"nope\"" (VUnion("None", None))
           }
-          test "tryHead returns Option and isEmpty stands" {
-              expectValue "[1; 2] |> tryHead" (VUnion("Some", Some(VInt 1)))
-              expectValue "[] |> tryHead" (VUnion("None", None))
-              expectValue "[] |> isEmpty" (VBool true)
-              expectValue "ls |> isEmpty" (VBool false)
+          test "Seq.tryHead returns Option and Seq.isEmpty stands" {
+              expectValue "[1; 2] |> Seq.tryHead" (VUnion("Some", Some(VInt 1)))
+              expectValue "[] |> Seq.tryHead" (VUnion("None", None))
+              expectValue "[] |> Seq.isEmpty" (VBool true)
+              expectValue "ls |> Seq.isEmpty" (VBool false)
           }
-          test "sortBy over scalar keys" {
+          test "Seq.sortBy over scalar keys" {
               Expect.equal
-                  (run "ls |> sortBy _.Size |> map _.Name" |> forceSeq)
+                  (run "ls |> Seq.sortBy _.Size |> map _.Name" |> forceSeq)
                   [ VStr "a.txt"; VStr "c.log"; VStr "d.iso"; VStr "b.bin" ]
                   "by size"
 
-              Expect.equal (run "[3; 1; 2] |> sortBy (fun x -> x)" |> forceSeq) [ VInt 1; VInt 2; VInt 3 ] ""
+              Expect.equal (run "[3; 1; 2] |> Seq.sortBy (fun x -> x)" |> forceSeq) [ VInt 1; VInt 2; VInt 3 ] ""
           }
-          test "sortBy on a non-scalar key raises with a clear message" {
-              Expect.throws (fun () -> run "ls |> sortBy (fun f -> f)" |> forceSeq |> ignore) ""
+          test "Seq.sortBy on a non-scalar key raises with a clear message" {
+              Expect.throws (fun () -> run "ls |> Seq.sortBy (fun f -> f)" |> forceSeq |> ignore) ""
           }
           test "the git-branch idiom composes point-free" {
               expectValue
@@ -1383,8 +1383,8 @@ let genericsTests =
               expectValue "match Some 5 with | Some x -> x + 1 | None -> 0" (VInt 6)
           }
           test "Result infers across arms" {
-              Expect.equal (checkOk "match Ok 3 with | Ok v -> v | Error e -> strLen e").Ty (TInt None) ""
-              expectValue "match Error \"boom\" with | Ok v -> v | Error e -> strLen e" (VInt 4)
+              Expect.equal (checkOk "match Ok 3 with | Ok v -> v | Error e -> Str.length e").Ty (TInt None) ""
+              expectValue "match Error \"boom\" with | Ok v -> v | Error e -> Str.length e" (VInt 4)
           }
           test "missing None warns" {
               let ws = warningsOf "match Some 1 with | Some x -> x"
@@ -1428,16 +1428,16 @@ let genericsTests =
               | Error terr -> Expect.stringContains terr.Message "expected int, got string" ""
               | Ok _ -> failtest "expected rejection"
           }
-          test "groupBy lands on generic Group records" {
+          test "Seq.groupBy lands on generic Group records" {
               Expect.equal
-                  (run "[1; 2; 3; 4] |> groupBy (fun x -> x < 3) |> map _.Key" |> forceSeq)
+                  (run "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> map _.Key" |> forceSeq)
                   [ VBool true; VBool false ]
                   "keys"
 
-              expectValue "[1; 2; 3; 4] |> groupBy (fun x -> x < 3) |> head |> (fun g -> g.Items) |> sum" (VInt 3)
+              expectValue "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> head |> (fun g -> g.Items) |> sum" (VInt 3)
 
               Expect.equal
-                  (formatTy (checkOk "[1; 2] |> groupBy (fun x -> x)").Ty)
+                  (formatTy (checkOk "[1; 2] |> Seq.groupBy (fun x -> x)").Ty)
                   "seq<Group<int, int>>"
                   "type display"
           } ]
@@ -1446,40 +1446,93 @@ let genericsTests =
 let optionSweepTests =
     testList
         "Option sweep"
-        [ test "tryHead types as Option of the element" {
-              Expect.equal (formatTy (checkOk "ls |> tryHead").Ty) "Option<FileRow>" ""
+        [ test "Seq.tryHead types as Option of the element" {
+              Expect.equal (formatTy (checkOk "ls |> Seq.tryHead").Ty) "Option<FileRow>" ""
           }
-          test "defaultTo closes the idiom without a match" {
-              expectValue "[] |> tryHead |> defaultTo 0" (VInt 0)
-              expectValue "[7] |> tryHead |> defaultTo 0" (VInt 7)
-              expectValue "tryToInt \"nope\" |> defaultTo (0 - 1)" (VInt(-1))
+          test "Option.defaultTo closes the idiom without a match" {
+              expectValue "[] |> Seq.tryHead |> Option.defaultTo 0" (VInt 0)
+              expectValue "[7] |> Seq.tryHead |> Option.defaultTo 0" (VInt 7)
+              expectValue "tryToInt \"nope\" |> Option.defaultTo (0 - 1)" (VInt(-1))
           }
-          test "mapOption maps through Some and skips None" {
-              expectValue "[3] |> tryHead |> mapOption double |> defaultTo 0" (VInt 6)
-              expectValue "[] |> tryHead |> mapOption double |> defaultTo 0" (VInt 0)
+          test "Option.map maps through Some and skips None" {
+              expectValue "[3] |> Seq.tryHead |> Option.map double |> Option.defaultTo 0" (VInt 6)
+              expectValue "[] |> Seq.tryHead |> Option.map double |> Option.defaultTo 0" (VInt 0)
           }
-          test "tryFind is data-last and Option-returning" {
-              expectValue "ls |> tryFind _.ReadOnly |> mapOption _.Name |> defaultTo \"none\"" (VStr "b.bin")
+          test "Seq.tryFind is data-last and Option-returning" {
+              expectValue
+                  "ls |> Seq.tryFind _.ReadOnly |> Option.map _.Name |> Option.defaultTo \"none\""
+                  (VStr "b.bin")
 
               expectValue
-                  "ls |> tryFind (fun f -> f.Size > 999<mb>) |> mapOption _.Name |> defaultTo \"none\""
+                  "ls |> Seq.tryFind (fun f -> f.Size > 999<mb>) |> Option.map _.Name |> Option.defaultTo \"none\""
                   (VStr "none")
           }
-          test "tryIndexOf and substring compose" {
-              expectValue "tryIndexOf \"b\" \"abc\"" (VUnion("Some", Some(VInt 1)))
-              expectValue "tryIndexOf \"z\" \"abc\"" (VUnion("None", None))
-              expectValue "substring 1 2 \"abcd\"" (VStr "bc")
+          test "Str.tryIndexOf and Str.sub compose" {
+              expectValue "Str.tryIndexOf \"b\" \"abc\"" (VUnion("Some", Some(VInt 1)))
+              expectValue "Str.tryIndexOf \"z\" \"abc\"" (VUnion("None", None))
+              expectValue "Str.sub 1 2 \"abcd\"" (VStr "bc")
 
               expectValue
-                  "match tryIndexOf \":\" \"a:b\" with | Some i -> substring 0 i \"a:b\" | None -> \"\""
+                  "match Str.tryIndexOf \":\" \"a:b\" with | Some i -> Str.sub 0 i \"a:b\" | None -> \"\""
                   (VStr "a")
           }
-          test "substring bounds raise with detail" {
-              let ex = Expect.throwsC (fun () -> run "substring 2 9 \"abc\"" |> ignore) id
+          test "Str.sub bounds raise with detail" {
+              let ex = Expect.throwsC (fun () -> run "Str.sub 2 9 \"abc\"" |> ignore) id
               Expect.stringContains ex.Message "out of bounds" ""
           }
-          test "match on tryHead pins the full idiom" {
-              expectValue "match ls |> tryHead with | Some f -> f.Name | None -> \"empty\"" (VStr "a.txt")
+          test "match on Seq.tryHead pins the full idiom" {
+              expectValue "match ls |> Seq.tryHead with | Some f -> f.Name | None -> \"empty\"" (VStr "a.txt")
+          } ]
+
+
+let moduleTests =
+    testList
+        "Builtin modules"
+        [ test "qualified members work and freshen per use" {
+              expectValue "ls |> Seq.map _.Name |> Seq.head" (VStr "a.txt")
+
+              expectValue
+                  "([1] |> Seq.map double |> Seq.head) + (Str.length (Seq.head (ls |> Seq.map _.Name)))"
+                  (VInt 7)
+          }
+          test "bare hot-path aliases still bind" {
+              expectValue "ls |> where _.ReadOnly |> map _.Name |> head" (VStr "b.bin")
+              expectValue "split \",\" \"a,b\" |> join \";\"" (VStr "a;b")
+          }
+          test "Option members are qualified-only" {
+              expectValue "[7] |> Seq.tryHead |> Option.map double |> Option.defaultTo 0" (VInt 14)
+              Expect.stringContains (checkErr "[7] |> Seq.tryHead |> defaultTo 0").Message "Option.defaultTo" ""
+          }
+          test "length is qualified-only in both homes" {
+              expectValue "Str.length \"abc\"" (VInt 3)
+              expectValue "[1; 2; 3] |> Seq.length" (VInt 3)
+              Expect.stringContains (checkErr "length \"abc\"").Message "moved into a module" ""
+          }
+          test "three-way precedence: value shadow wins over module" {
+              Expect.stringContains
+                  (checkErr "let Seq = { X = 1; Y = 2 } in Seq.map").Message
+                  "Point has no field 'map'"
+                  ""
+
+              expectValue "let Seq = { X = 1; Y = 2 } in Seq.X" (VInt 1)
+          }
+          test "bare module name errors with member guidance" {
+              Expect.stringContains (checkErr "Seq").Message "'Seq' is a module" ""
+          }
+          test "unknown member gets a hint" {
+              Expect.stringContains
+                  (checkErr "Seq.mpa").Message
+                  "module Seq has no member 'mpa'. Did you mean 'map'?"
+                  ""
+          }
+          test "moved names hint their qualified home" {
+              Expect.stringContains (checkErr "[] |> defaultTo 1").Message "use 'Option.defaultTo'" ""
+              Expect.stringContains (checkErr "ls |> groupBy _.ReadOnly").Message "use 'Seq.groupBy'" ""
+          }
+          test "module member completion" {
+              Expect.contains (suggest "Seq.tr" 0) "Seq.tryHead" ""
+              Expect.contains (suggest "Str." 0) "Str.length" ""
+              Expect.contains (suggest "Se" 0) "Seq" "module names complete"
           } ]
 
 let operatorTests =
@@ -1674,4 +1727,5 @@ let allTests =
           session3Tests
           stringTests
           genericsTests
-          optionSweepTests ]
+          optionSweepTests
+          moduleTests ]

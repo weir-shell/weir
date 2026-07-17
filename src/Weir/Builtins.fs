@@ -202,6 +202,12 @@ let private tryHeadImpl: Value =
             | None -> vNone
         | v -> unreachable $"the checker rejects 'tryHead' on {formatValue v}")
 
+let private seqLengthImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items -> VInt(Seq.length items)
+        | v -> unreachable $"the checker rejects 'Seq.length' on {formatValue v}")
+
 let private isEmptyImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -369,31 +375,23 @@ let private groupByImpl: Value =
                 )
             | v -> unreachable $"the checker rejects 'groupBy' on {formatValue v}"))
 
-let private entries: (string * Ty * Value) list =
-    [ "ls", seqFileRow, realLs
+let private seqMembers: (string * Ty * Value) list =
+    [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
       "first", TFun(TInt None, TFun(TSeq tA, TSeq tA)), truncateImpl
-      "double", TFun(TInt None, TInt None), doubleImpl
-      "nats", seqInt, natsImpl
-      "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "take", TFun(TInt None, TFun(TSeq tA, TSeq tA)), truncateImpl
-      "sum", TFun(seqInt, TInt None), sumImpl
-      "sh", TFun(TStr, seqStr), shImpl
-      "cmd", TFun(TStr, TFun(TSeq TStr, seqStr)), cmdImpl
-      "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
-      "cd", TFun(TStr, TStr), cdImpl
-      "pwd", TSeq TStr, pwdImpl
-      "not", TFun(TBool, TBool), notImpl
-      "collect", TFun(TSeq tA, TSeq tA), collectImpl
       "head", TFun(TSeq tA, tA), headImpl
+      "sum", TFun(seqInt, TInt None), sumImpl
+      "collect", TFun(TSeq tA, TSeq tA), collectImpl
       "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
-      "defaultTo", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl
-      "mapOption", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
+      "length", TFun(TSeq tA, TInt None), seqLengthImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
-      "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl
-      "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)
+      "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
+
+let private strMembers: (string * Ty * Value) list =
+    [ "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)
       "startsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "startsWith" (fun p s -> s.StartsWith p)
       "endsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "endsWith" (fun p s -> s.EndsWith p)
       "trim", TFun(TStr, TStr), str1 "trim" (fun s -> s.Trim())
@@ -404,17 +402,69 @@ let private entries: (string * Ty * Value) list =
       "split", TFun(TStr, TFun(TStr, TSeq TStr)), splitImpl
       "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
-      "strLen", TFun(TStr, TInt None), strLenImpl
+      "length", TFun(TStr, TInt None), strLenImpl
+      "sub", TFun(TInt None, TFun(TInt None, TFun(TStr, TStr))), substringImpl
       "toInt", TFun(TStr, TInt None), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt None ])), tryToIntImpl
-      "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt None ]))), tryIndexOfImpl
-      "substring", TFun(TInt None, TFun(TInt None, TFun(TStr, TStr))), substringImpl
+      "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt None ]))), tryIndexOfImpl ]
+
+let private optionMembers: (string * Ty * Value) list =
+    [ "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
+      "defaultTo", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl ]
+
+let private moduleTable: (string * (string * Ty * Value) list) list =
+    [ "Seq", seqMembers; "Str", strMembers; "Option", optionMembers ]
+
+let private bareAliases: Set<string> =
+    Set
+        [ "map"
+          "where"
+          "first"
+          "take"
+          "head"
+          "sum"
+          "collect"
+          "contains"
+          "startsWith"
+          "endsWith"
+          "trim"
+          "trimStart"
+          "trimEnd"
+          "toLower"
+          "toUpper"
+          "split"
+          "join"
+          "replace"
+          "toInt"
+          "tryToInt" ]
+
+let private bareEntries: (string * Ty * Value) list =
+    moduleTable
+    |> List.filter (fun (m, _) -> m <> "Option")
+    |> List.collect snd
+    |> List.filter (fun (n, _, _) -> bareAliases.Contains n && n <> "length")
+
+let private entries: (string * Ty * Value) list =
+    [ "ls", seqFileRow, realLs
+      "double", TFun(TInt None, TInt None), doubleImpl
+      "nats", seqInt, natsImpl
+      "sh", TFun(TStr, seqStr), shImpl
+      "cmd", TFun(TStr, TFun(TSeq TStr, seqStr)), cmdImpl
+      "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
+      "cd", TFun(TStr, TStr), cdImpl
+      "pwd", TSeq TStr, pwdImpl
+      "not", TFun(TBool, TBool), notImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl ]
+    @ bareEntries
 
 let commandCallable: Set<string> = Set [ "cd" ]
 
 let typeEnv: TypeEnv =
     { Values = entries |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList
+      Modules =
+        moduleTable
+        |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
+        |> Map.ofList
       Types =
         Map
             [ fileRow.Name, Record fileRow
@@ -422,4 +472,11 @@ let typeEnv: TypeEnv =
               completedDef.Name, Record completedDef
               groupDef.Name, Record groupDef ] }
 
-let valueEnv: Env = entries |> List.map (fun (n, _, v) -> n, v) |> Map.ofList
+let valueEnv: Env =
+    let flat = entries |> List.map (fun (n, _, v) -> n, v)
+
+    let mangled =
+        moduleTable
+        |> List.collect (fun (m, members) -> members |> List.map (fun (n, _, v) -> $"{m}.{n}", v))
+
+    flat @ mangled |> Map.ofList

@@ -8,13 +8,16 @@ let private evalOnce (input: string) : int =
     let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv
 
     let resolver: Parser.Resolver =
-        { IsKnown = fun n -> Map.containsKey n typeEnv.Values
+        { IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
           IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
           IsExternal = Extern.exists
           ExternalNames = fun () -> Extern.names () :> seq<string> }
 
     let printHint () =
-        Diagnose.hint (fun n -> Map.containsKey n typeEnv.Values) Extern.exists input
+        Diagnose.hint
+            (fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules)
+            Extern.exists
+            input
         |> Option.iter (fun h -> Console.Error.WriteLine $"hint: {h}")
 
     match Parser.parseLine resolver input with

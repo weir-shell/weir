@@ -241,10 +241,21 @@ weir rejects rather than guesses.
   `startsWith`, `endsWith`, `trim`/`trimStart`/`trimEnd`, `toLower`,
   `toUpper`, `split` (separator first; empty entries kept), `join`,
   `replace` (pattern, replacement, subject), `strLen`, `toInt`/`tryToInt`.
-- **`strLen`, not polymorphic `length` and not member access.**
-  Member-access-on-primitives (`s.Length`, `map _.Length`) is a logged
-  candidate design — it rides EField and reads like F# — but it is a checker
-  change and stays uncoupled from builtins work. Logged, not built.
+- **Builtin modules**: `Seq`, `Str`, `Option` — resolved by a checker arm on
+  `Module.member` syntax; members are schemes instantiated per use; runtime
+  sees mangled flat names. Resolution precedence on the shared syntax:
+  value shadow, then module, then ordinary field access (`let Seq = ...`
+  wins and behaves as a record — pinned). Bare aliases exist in loose mode
+  for the pipeline hot path and common string ops; `Option` members are
+  qualified-only in both modes (bare names are the data plane, Option is
+  the control plane); `length` is qualified-only in both homes
+  (`Seq.length`, `Str.length` — the old `strLen` collision resolved by
+  qualification, superseding the strLen decision). Retired flat names:
+  exact member names hint their home ("use 'Seq.groupBy'"); renamed ones
+  (`strLen`, `substring`, `mapOption`, `tryIndexOf`) are plain unbound —
+  accepted. Member-access-on-primitives (`s.Length`) stays a logged
+  candidate. Strict/loose script modes and trial resolution:
+  PLAN-modules-and-scripts.md (trial resolution deferred, design on file).
 - **`sortBy : ('a -> 'b) -> seq<'a> -> seq<'a>`** — the key must evaluate to
   an int, string, or bool; anything else is a runtime error (the type system
   has no comparability constraint — same check-at-the-boundary posture as
@@ -288,7 +299,12 @@ weir rejects rather than guesses.
 
 ## Backlog (ordered by day-one impact)
 
-1. **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
+1. ~~**Measure algebra**~~ — **dropped for the foreseeable future**
+   (2026-07-17, recorded in PLAN-modules-and-scripts.md): measures stay
+   nominal tags with preservation-only arithmetic; the
+   `no_unit_algebra_means_no_normalization` tripwire becomes a permanent
+   guard. If revived, it arrives as its own plan re-reading checklist 4.2.
+   The original entry, for the record: **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
    must become normalization-based) *and* the `*`/`/`-defaulting rule above.
 (Done: `collect` — backlog #1 — and the exit-code policy — old #3 — landed
 as `collect`/`complete`; see "Processes and the session".)
