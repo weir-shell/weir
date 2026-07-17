@@ -288,7 +288,12 @@ weir rejects rather than guesses.
 
 ## Backlog (ordered by day-one impact)
 
-1. **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
+1. ~~**Measure algebra**~~ — **dropped for the foreseeable future**
+   (2026-07-17, recorded in PLAN-modules-and-scripts.md): measures stay
+   nominal tags with preservation-only arithmetic; the
+   `no_unit_algebra_means_no_normalization` tripwire becomes a permanent
+   guard. If revived, it arrives as its own plan re-reading checklist 4.2.
+   The original entry, for the record: **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
    must become normalization-based) *and* the `*`/`/`-defaulting rule above.
 (Done: `collect` — backlog #1 — and the exit-code policy — old #3 — landed
 as `collect`/`complete`; see "Processes and the session".)
