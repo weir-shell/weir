@@ -599,7 +599,7 @@ let boundaryTests =
           test "to json serializes records as ndjson" {
               Expect.equal
                   (run "ls |> first 1 |> to json" |> forceSeq)
-                  [ VStr """{"Name":"a.txt","ReadOnly":false,"Size":0}""" ]
+                  [ VStr """{"Bytes":0,"Name":"a.txt","ReadOnly":false,"Size":0}""" ]
                   ""
           }
           test "json roundtrip preserves rows" {
@@ -616,7 +616,8 @@ let boundaryTests =
               Expect.throws (fun () -> runWith [ "src", src ] "src |> from json FileRow" |> forceSeq |> ignore) ""
           }
           test "from json ignores extra fields" {
-              let src = VSeq [ VStr """{"Name":"x","Size":1,"ReadOnly":true,"Extra":42}""" ]
+              let src =
+                  VSeq [ VStr """{"Name":"x","Size":1,"Bytes":1048576,"ReadOnly":true,"Extra":42}""" ]
 
               Expect.equal
                   (runWith [ "src", src ] "src |> from json FileRow" |> forceSeq)
@@ -684,7 +685,8 @@ let shorthandTests =
               expectValue "\"back\\\\slash\"" (VStr "back\\slash")
           }
           test "escaped strings survive a json roundtrip" {
-              let src = VSeq [ VStr """{"Name":"a\"b","Size":1,"ReadOnly":false}""" ]
+              let src =
+                  VSeq [ VStr """{"Name":"a\"b","Size":1,"Bytes":1048576,"ReadOnly":false}""" ]
 
               Expect.equal
                   (runWith [ "src", src ] "src |> from json FileRow |> map _.Name" |> forceSeq)
@@ -702,7 +704,7 @@ let completionTests =
           test "keyword completion" { Expect.contains (suggest "ma" 0) "match" "" }
           test "lambda parameter completes from the pipeline element type" {
               let text = "ls |> where (fun f -> f."
-              Expect.equal (suggest text (text.Length - 2)) [ "f.Name"; "f.ReadOnly"; "f.Size" ] ""
+              Expect.equal (suggest text (text.Length - 2)) [ "f.Bytes"; "f.Name"; "f.ReadOnly"; "f.Size" ] ""
           }
           test "field prefix narrows the suggestions" {
               let text = "ls |> where (fun f -> f.S"
@@ -1588,6 +1590,44 @@ let scriptTests =
               Expect.equal line "ls |> Seq.map _.Name" ""
           } ]
 
+
+let multilineTests =
+    testList
+        "Multi-line assembly"
+        [ test "indented continuations join with source mapping" {
+              match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.Name" ] with
+              | Ok [ ll ] ->
+                  Expect.equal ll.Text "let x = ls |> Seq.map _.Name" "joined"
+                  Expect.equal ll.Head 1 "head line"
+                  Expect.equal (Weir.Script.translate ll 9) (2, 5) "col 9 is line 2 col 5"
+                  Expect.equal (Weir.Script.translate ll 1) (1, 1) "head col maps to itself"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "pipe-headed lines continue at column 0" {
+              match
+                  Weir.Script.assemble [ 1, "match x with"; 2, "| Some n -> n"; 3, "| None -> 0"; 4, ""; 5, "next" ]
+              with
+              | Ok [ m; n ] ->
+                  Expect.equal m.Text "match x with | Some n -> n | None -> 0" ""
+                  Expect.equal n.Text "next" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "blank then continuation is an error" {
+              match Weir.Script.assemble [ 1, "let x = 1"; 2, ""; 3, "    |> Seq.map f" ] with
+              | Error msg -> Expect.stringContains msg "continuation after a blank line" ""
+              | Ok _ -> failtest "expected error"
+          }
+          test "tabs in indentation are an error" {
+              match Weir.Script.assemble [ 1, "let x = 1"; 2, "\t|> f" ] with
+              | Error msg -> Expect.stringContains msg "tabs are not allowed" ""
+              | Ok _ -> failtest "expected error"
+          }
+          test "leading continuation is an error" {
+              match Weir.Script.assemble [ 1, "    orphan" ] with
+              | Error msg -> Expect.stringContains msg "continuation without a statement" ""
+              | Ok _ -> failtest "expected error"
+          } ]
+
 let operatorTests =
     testList
         "Operator completeness"
@@ -1782,4 +1822,5 @@ let allTests =
           genericsTests
           optionSweepTests
           moduleTests
-          scriptTests ]
+          scriptTests
+          multilineTests ]

@@ -181,6 +181,18 @@ weir rejects rather than guesses.
   span-precise AST-driven rewrite of bare names to their homes (single-home
   guarantee holds while trial resolution stays deferred), dropping `#loose`
   when done; splices and field accesses untouched.
+- **Multi-line statements via logical-line reconstruction** (scripts
+  only): a statement head starts at column 0; indented lines — and lines
+  whose first character is `|`, which can never begin a statement —
+  continue it and join with a single space; a blank line ends the
+  statement; tabs in indentation are errors. The single-line grammar then
+  consumes each logical line unchanged, so mode decision and every
+  existing rule apply per logical line. Type errors map back to physical
+  `file:line:col` via per-segment source tracking; parse errors attribute
+  to the head line (documented limitation). Not provided, deliberately:
+  in-less nested `let` (still `let ... in` inside expressions),
+  indentation-delimited scope, multi-line REPL input. Full design and
+  gate verdict: DESIGN-multiline.md.
 - **Comments are `//` to end of line** (string-aware; applies to script
   lines). Line one `#!` is skipped by the runner; `#` at line head is
   reserved for directives.

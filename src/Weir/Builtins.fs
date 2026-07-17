@@ -8,18 +8,39 @@ open Weir.Eval
 let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
-      Fields = [ "Name", TStr; "Size", TInt(Some "mb"); "ReadOnly", TBool ] }
+      Fields =
+        [ "Name", TStr
+          "Size", TInt(Some "mb")
+          "Bytes", TInt(Some "b")
+          "ReadOnly", TBool ] }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
 let file (name: string) (sizeMb: int) (readOnly: bool) : Value =
-    VRecord(fileRow.Name, Map [ "Name", VStr name; "Size", VInt sizeMb; "ReadOnly", VBool readOnly ])
+    VRecord(
+        fileRow.Name,
+        Map
+            [ "Name", VStr name
+              "Size", VInt sizeMb
+              "Bytes", VInt(sizeMb * 1048576)
+              "ReadOnly", VBool readOnly ]
+    )
+
+let fileWithBytes (name: string) (bytes: int) (readOnly: bool) : Value =
+    VRecord(
+        fileRow.Name,
+        Map
+            [ "Name", VStr name
+              "Size", VInt(bytes / 1048576)
+              "Bytes", VInt bytes
+              "ReadOnly", VBool readOnly ]
+    )
 
 let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
             DirectoryInfo(Session.Cwd).GetFiles()
-            |> Seq.map (fun f -> file f.Name (int (f.Length / 1048576L)) f.IsReadOnly))
+            |> Seq.map (fun f -> fileWithBytes f.Name (int f.Length) f.IsReadOnly))
     )
 
 let private whereImpl: Value =

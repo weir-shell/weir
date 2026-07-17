@@ -119,6 +119,31 @@ expect "fmt --qualify graduates loose to strict-clean" ".gitignore" "$out"
 grep -q "Seq.map" "$scriptdir/loose.weir" || fail "fmt did not qualify"
 if grep -q "#loose" "$scriptdir/loose.weir"; then fail "fmt left the #loose directive"; fi
 echo "e2e ok: fmt --qualify roundtrip"
+cat > "$scriptdir/multi.weir" <<'WEOF'
+type Verdict =
+    | Pass of int
+    | Fail
+
+let doubled =
+    [1; 2; 3]
+    |> Seq.map (fun x -> x * 2)
+    |> Seq.sum
+
+match Pass doubled with
+| Pass n -> n
+| Fail -> 0
+WEOF
+out=$($BIN "$scriptdir/multi.weir")
+expect "multi-line script: decl, pipeline, canonical match arms" "12" "$out"
+
+cat > "$scriptdir/multibad.weir" <<'WEOF'
+let names =
+    ls
+    |> Seq.map _.Nmae
+WEOF
+errout=$($BIN "$scriptdir/multibad.weir" 2>&1 || true)
+expect "continuation error maps to the physical line" "multibad.weir:3:" "$errout"
+
 rm -rf "$scriptdir"
 
 if $BIN -e 'yes hi | grep hi | complete' 2>/dev/null; then

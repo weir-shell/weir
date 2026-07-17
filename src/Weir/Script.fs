@@ -32,6 +32,77 @@ let stripComment (line: string) : string =
 
     if cut >= 0 then line.Substring(0, cut) else line
 
+type LogicalLine =
+    { Text: string
+      Head: int
+      Segments: (int * int * int) list }
+
+let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
+    let close (current: LogicalLine option) acc =
+        match current with
+        | Some ll ->
+            { ll with
+                Segments = List.rev ll.Segments }
+            :: acc
+        | None -> acc
+
+    let folded =
+        numbered
+        |> List.fold
+            (fun state (lineNo, raw) ->
+                match state with
+                | Error e -> Error e
+                | Ok(current, acc, blankSinceHead) ->
+                    if raw.Trim() = "" then
+                        Ok(None, close current acc, true)
+                    elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' then
+                        let indent = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
+
+                        if raw.Substring(0, indent).Contains '\t' then
+                            Error $"line {lineNo}: tabs are not allowed in indentation"
+                        else
+                            match current with
+                            | None ->
+                                if blankSinceHead then
+                                    Error
+                                        $"line {lineNo}: continuation after a blank line has no statement to continue"
+                                else
+                                    Error $"line {lineNo}: continuation without a statement"
+                            | Some ll ->
+                                let piece = raw.Substring indent
+                                let joinedStart = ll.Text.Length + 1
+
+                                Ok(
+                                    Some
+                                        { ll with
+                                            Text = ll.Text + " " + piece
+                                            Segments = (joinedStart, lineNo, indent) :: ll.Segments },
+                                    acc,
+                                    blankSinceHead
+                                )
+                    else
+                        Ok(
+                            Some
+                                { Text = raw
+                                  Head = lineNo
+                                  Segments = [ (0, lineNo, 0) ] },
+                            close current acc,
+                            false
+                        ))
+            (Ok(None, [], false))
+
+    match folded with
+    | Error e -> Error e
+    | Ok(current, acc, _) -> Ok(List.rev (close current acc))
+
+let translate (ll: LogicalLine) (col: int) : int * int =
+    let joinedIdx = col - 1
+
+    let segStart, physLine, physIndent =
+        ll.Segments |> List.filter (fun (js, _, _) -> js <= joinedIdx) |> List.last
+
+    physLine, joinedIdx - segStart + physIndent + 1
+
 type Mode =
     | Strict
     | Loose
@@ -135,72 +206,80 @@ let run (path: string) (scriptArgs: string list) : int =
             Extern.refresh ()
             let r = resolver typeEnv0
 
-            let statements =
-                body
-                |> List.mapi (fun i l -> bodyOffset + i + 1, stripComment l)
-                |> List.filter (fun (_, l) -> l.Trim() <> "")
+            let assembled =
+                body |> List.mapi (fun i l -> bodyOffset + i + 1, stripComment l) |> assemble
 
-            let checkedProgram =
-                statements
-                |> List.fold
-                    (fun state (lineNo, line) ->
-                        match state with
-                        | Error e -> Error e
-                        | Ok(tenv, acc) ->
-                            match Parser.parseLine r line with
-                            | Error msg -> Error(located path lineNo msg)
-                            | Ok(SType decl) ->
-                                match Check.checkDecl tenv decl with
-                                | Error terr -> Error(located path lineNo (Check.formatError terr))
-                                | Ok tenv' -> Ok(tenv', (lineNo, CType decl) :: acc)
-                            | Ok(SLet(name, e)) ->
-                                match Check.typecheck tenv e with
-                                | Error terr -> Error(located path lineNo (Check.formatError terr))
-                                | Ok te ->
-                                    let tenv' =
-                                        { tenv with
-                                            Values = Map.add name (generalize te.Ty) tenv.Values }
-
-                                    Ok(tenv', (lineNo, CLet(name, te)) :: acc)
-                            | Ok(SExpr e) ->
-                                match Check.typecheck tenv e with
-                                | Error terr -> Error(located path lineNo (Check.formatError terr))
-                                | Ok te -> Ok(tenv, (lineNo, CExpr te) :: acc))
-                    (Ok(typeEnv0, []))
-
-            match checkedProgram with
+            match assembled with
             | Error msg ->
-                Console.Error.WriteLine msg
+                Console.Error.WriteLine $"{path}: {msg}"
                 1
-            | Ok(_, revStmts) ->
-                let stmts = List.rev revStmts
+            | Ok logicalLines ->
 
-                let rec exec (venv: Eval.Env) (rest: (int * CheckedStmt) list) : int =
-                    match rest with
-                    | [] -> 0
-                    | (lineNo, stmt) :: tail ->
-                        match stmt with
-                        | CNoop -> exec venv tail
-                        | CType decl ->
-                            let venv' =
-                                match decl.Body with
-                                | DUnion cases ->
-                                    Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                | DRecord _ -> venv
+                let typedErr (ll: LogicalLine) (terr: Check.TypeError) =
+                    let physLine, physCol = translate ll terr.Span.Start.Col
+                    $"{path}:{physLine}:{physCol}: type error: {terr.Message}"
 
-                            exec venv' tail
-                        | CLet(name, te) ->
-                            try
-                                exec (Map.add name (Eval.eval venv te) venv) tail
-                            with ex ->
-                                Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
-                                1
-                        | CExpr te ->
-                            try
-                                printResult (Eval.eval venv te)
-                                exec venv tail
-                            with ex ->
-                                Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
-                                1
+                let checkedProgram =
+                    logicalLines
+                    |> List.fold
+                        (fun state ll ->
+                            match state with
+                            | Error e -> Error e
+                            | Ok(tenv, acc) ->
+                                match Parser.parseLine r ll.Text with
+                                | Error msg -> Error(located path ll.Head msg)
+                                | Ok(SType decl) ->
+                                    match Check.checkDecl tenv decl with
+                                    | Error terr -> Error(typedErr ll terr)
+                                    | Ok tenv' -> Ok(tenv', (ll.Head, CType decl) :: acc)
+                                | Ok(SLet(name, e)) ->
+                                    match Check.typecheck tenv e with
+                                    | Error terr -> Error(typedErr ll terr)
+                                    | Ok te ->
+                                        let tenv' =
+                                            { tenv with
+                                                Values = Map.add name (generalize te.Ty) tenv.Values }
 
-                exec valueEnv0 stmts
+                                        Ok(tenv', (ll.Head, CLet(name, te)) :: acc)
+                                | Ok(SExpr e) ->
+                                    match Check.typecheck tenv e with
+                                    | Error terr -> Error(typedErr ll terr)
+                                    | Ok te -> Ok(tenv, (ll.Head, CExpr te) :: acc))
+                        (Ok(typeEnv0, []))
+
+                match checkedProgram with
+                | Error msg ->
+                    Console.Error.WriteLine msg
+                    1
+                | Ok(_, revStmts) ->
+                    let stmts = List.rev revStmts
+
+                    let rec exec (venv: Eval.Env) (rest: (int * CheckedStmt) list) : int =
+                        match rest with
+                        | [] -> 0
+                        | (lineNo, stmt) :: tail ->
+                            match stmt with
+                            | CNoop -> exec venv tail
+                            | CType decl ->
+                                let venv' =
+                                    match decl.Body with
+                                    | DUnion cases ->
+                                        Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                    | DRecord _ -> venv
+
+                                exec venv' tail
+                            | CLet(name, te) ->
+                                try
+                                    exec (Map.add name (Eval.eval venv te) venv) tail
+                                with ex ->
+                                    Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                    1
+                            | CExpr te ->
+                                try
+                                    printResult (Eval.eval venv te)
+                                    exec venv tail
+                                with ex ->
+                                    Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                    1
+
+                    exec valueEnv0 stmts
