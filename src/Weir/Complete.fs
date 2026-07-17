@@ -54,31 +54,49 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
         let path = segments[1 .. segments.Length - 2] |> Array.toList
         let prefix = segments[segments.Length - 1]
 
-        let headTy =
-            match Map.tryFind head env.Values with
-            | Some sch -> Some sch.Ty
-            | None -> pipelineElemTy env (text.Substring(0, wordStart))
+        let moduleMembers =
+            if not (Map.containsKey head env.Values) then
+                Map.tryFind head env.Modules
+            else
+                None
 
-        let finalTy =
-            path
-            |> List.fold
-                (fun acc seg ->
-                    acc
-                    |> Option.bind (recordFields env)
-                    |> Option.bind (List.tryFind (fst >> (=) seg))
-                    |> Option.map snd)
-                headTy
+        match moduleMembers with
+        | Some members ->
+            let prefix = word.Substring(head.Length + 1)
 
-        match finalTy |> Option.bind (recordFields env) with
-        | None -> []
-        | Some fields ->
-            let stem = word.Substring(0, word.Length - prefix.Length)
+            members
+            |> Map.keys
+            |> Seq.filter (fun m -> m.StartsWith prefix)
+            |> Seq.sort
+            |> Seq.map (fun m -> $"{head}.{m}")
+            |> List.ofSeq
+        | None ->
 
-            fields
-            |> List.map fst
-            |> List.filter (fun f -> f.StartsWith prefix)
-            |> List.sort
-            |> List.map (fun f -> stem + f)
+            let headTy =
+                match Map.tryFind head env.Values with
+                | Some sch -> Some sch.Ty
+                | None -> pipelineElemTy env (text.Substring(0, wordStart))
+
+            let finalTy =
+                path
+                |> List.fold
+                    (fun acc seg ->
+                        acc
+                        |> Option.bind (recordFields env)
+                        |> Option.bind (List.tryFind (fst >> (=) seg))
+                        |> Option.map snd)
+                    headTy
+
+            match finalTy |> Option.bind (recordFields env) with
+            | None -> []
+            | Some fields ->
+                let stem = word.Substring(0, word.Length - prefix.Length)
+
+                fields
+                |> List.map fst
+                |> List.filter (fun f -> f.StartsWith prefix)
+                |> List.sort
+                |> List.map (fun f -> stem + f)
     elif before.EndsWith "from json" then
         env.Types
         |> Map.toList
@@ -88,7 +106,7 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
             | _ -> None)
         |> List.sort
     else
-        (List.ofSeq (Map.keys env.Values) @ keywords)
+        (List.ofSeq (Map.keys env.Values) @ List.ofSeq (Map.keys env.Modules) @ keywords)
         |> List.filter (fun n -> n.StartsWith word && n <> word)
         |> List.distinct
         |> List.sort

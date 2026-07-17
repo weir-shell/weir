@@ -57,10 +57,13 @@ expect "concurrent stderr drain under complete" "0 : int" "$out"
 out=$($BIN -e 'sh "echo out; echo err 1>&2"' 2>/dev/null)
 expect "stderr passthrough keeps stdout stream clean" '["out"]' "$out"
 
-out=$($BIN -e 'match Ok 3 with | Ok v -> v | Error e -> strLen e')
+out=$($BIN -e 'match Ok 3 with | Ok v -> v | Error e -> Str.length e')
 expect "prelude Result with cross-arm inference" "3 : int" "$out"
 
-out=$($BIN -e '[] |> tryHead |> defaultTo 9')
+out=$($BIN -e 'ls |> Seq.sortBy _.Size |> Seq.map _.Name |> Seq.head' 2>/dev/null | head -1)
+expect "qualified module pipeline" " : string" "$out"
+
+out=$($BIN -e '[] |> Seq.tryHead |> Option.defaultTo 9')
 expect "Option sweep idiom on the AOT binary" "9 : int" "$out"
 
 out=$($BIN -e 'Some 3')

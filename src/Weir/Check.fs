@@ -401,8 +401,20 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = instantiate ctx expr.Span sch
                   Span = expr.Span }
         | None ->
-            let hint = didYouMean name (Map.keys env.Values)
-            err expr.Span $"unbound variable '{name}'{hint}"
+            if Map.containsKey name env.Modules then
+                let members = env.Modules[name] |> Map.keys |> Seq.truncate 5 |> String.concat ", "
+
+                err expr.Span $"'{name}' is a module; use a member: {name}.{{{members}, ...}}"
+            else
+                let home =
+                    env.Modules
+                    |> Map.tryPick (fun m members -> if Map.containsKey name members then Some m else None)
+
+                match home with
+                | Some m -> err expr.Span $"'{name}' moved into a module; use '{m}.{name}'"
+                | None ->
+                    let hint = didYouMean name (Map.keys env.Values)
+                    err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, value, body) ->
         result {
             let! tvalue = infer ctx env value
@@ -481,6 +493,22 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Ty = resultTy
                       Span = expr.Span }
             | _ -> return! err fnExpr.Span "the right side of a pipe must be a function"
+        }
+    | EField({ Kind = EVar m }, field, fieldSpan) when
+        not (Map.containsKey m env.Values) && Map.containsKey m env.Modules
+        ->
+        result {
+            let members = env.Modules[m]
+
+            match Map.tryFind field members with
+            | Some sch ->
+                return
+                    { Kind = TEVar $"{m}.{field}"
+                      Ty = instantiate ctx expr.Span sch
+                      Span = expr.Span }
+            | None ->
+                let hint = didYouMean field (Map.keys members)
+                return! err fieldSpan $"module {m} has no member '{field}'{hint}"
         }
     | EField(target, field, fieldSpan) ->
         result {

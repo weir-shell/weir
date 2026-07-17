@@ -62,13 +62,21 @@ let private printWarnings (state: State) (te: Check.TypedExpr) =
         Console.WriteLine(Check.formatWarning w))
 
 let private resolver (state: State) : Parser.Resolver =
-    { IsKnown = fun n -> Map.containsKey n state.TypeEnv.Values
+    { IsKnown =
+        fun n ->
+            Map.containsKey n state.TypeEnv.Values
+            || Map.containsKey n state.TypeEnv.Modules
       IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
       IsExternal = Extern.exists
       ExternalNames = fun () -> Extern.names () :> seq<string> }
 
 let private printHint (state: State) (line: string) =
-    Diagnose.hint (fun n -> Map.containsKey n state.TypeEnv.Values) Extern.exists line
+    Diagnose.hint
+        (fun n ->
+            Map.containsKey n state.TypeEnv.Values
+            || Map.containsKey n state.TypeEnv.Modules)
+        Extern.exists
+        line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
 let private tryRun (state: State) (e: Expr) : Result<Check.TypedExpr * Eval.Value * string, string * Span option> =
