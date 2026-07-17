@@ -28,29 +28,48 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
   has members). NOT modularized: command-mode-critical names (`cd`, `sh`,
   `cmd`, `ls`, `pwd`, `into`, `completed`) and the adapters (`from`/`to` are
   syntax anyway).
-- DECIDED — **Two resolution modes.** *Normal mode* (REPL, and scripts by
-  default): common operations are available bare — the seq pipeline set
-  AND all common string operations (`contains`, `startsWith`, `endsWith`,
-  `trim` family, `split`, `join`, `replace`, `toLower`, `toUpper`,
-  `toInt`, `tryToInt`, ...) — every bare name doubly registered with its
-  canonical `Seq.*`/`Str.*`/`Option.*` home. *Strict mode* (per-script
-  directive): bare aliases are disabled; everything module-owned must be
-  qualified. REPL is always normal mode.
-- DECIDED — **Cross-module conflicts resolve by type, never by
-  priority.** A bare name exported by several modules is resolved by trial
-  unification over the closed candidate set at its application site — the
-  pipe rule binds the piped argument first (the Spike-5 ordering), so
-  `ls |> map f` has the data's type in hand before the choice: unique fit
-  wins; zero or multiple fits is an error naming all candidates
-  ("ambiguous: Seq.map or Option.map; qualify or pipe data in"). A bare
-  conflicted name with no application context (`let m = map`) always
-  requires qualification. This is bare-alias resolution over the curated
-  table only — NOT user-facing overloading. **Mechanism note for the
-  read**: this is the checker's first backtracking — each trial runs
-  against a Ctx snapshot (Subst + Rows restored on failure; the fresh
-  counter deliberately monotone). The adversarial pin: a trial that fails
-  *after* depositing a row constraint must leave no residue that a later
-  binding can observe. Strict mode sidesteps all of it (bare names off).
+- DECIDED — **Two resolution modes; scripts are STRICT BY DEFAULT.**
+  *Loose mode* (the REPL, always — no directive exists there): common
+  operations are available bare — the seq pipeline set AND all common
+  string operations (`contains`, `startsWith`, `endsWith`, `trim` family,
+  `split`, `join`, `replace`, `toLower`, `toUpper`, `toInt`, `tryToInt`)
+  — every bare name doubly registered with its canonical `Seq.*`/`Str.*`
+  home. *Strict mode* (scripts, by default): bare aliases off, module
+  members qualified-only. `#loose` at file head (line one, or two after a
+  shebang) opts a file into REPL-style bare names for quick glue — the
+  directive names the concession, so it is `#loose`, not `#normal`.
+  **The stability argument, which decides the default**: bare-name
+  resolution is a moving target (the bare table grows), and scripts are
+  durable artifacts — a script must not change meaning or die because
+  weir gained a builtin. Qualified names mean the same thing forever;
+  strict scripts are immune by construction. REPL lines are ephemeral;
+  resolution drift there costs a retype. Pins: `#loose` anywhere but
+  file-head is an error; any `#`-directive at the REPL is rejected with
+  "directives are for scripts; the REPL is always loose."
+- DECIDED — **Option members are qualified-only, in both modes** ("bare
+  names are the data plane; Option is the control plane"): `Option.map`,
+  `Option.defaultTo`, `Option.tryHead`-consumers etc. never register bare
+  names. Stated as a rule so the day someone adds bare `Option.map` "for
+  consistency" is recognized as reopening a decision, not tidying.
+- DECIDED — **Trial resolution is DEFERRED; the design is on file.**
+  With scripts strict by default and Option qualified-only, the launch
+  bare table has exactly one prospective conflict (`length`, if
+  `Seq.length` ever joins `Str.length`) — one launch customer does not
+  justify the checker's first backtracking. Interim rule: `length` is
+  qualified-only in both homes (the collision that once forced `strLen`
+  gets its honest answer: qualification). The mechanism is retained here
+  as design-on-file for when user modules create the second conflict:
+  type-directed trial unification over the closed candidate set at the
+  application site, pipe-argument-first (the Spike-5 ordering); trials
+  run under the site's bidirectional mode with pushed expected types
+  participating (else `where (contains ...)`-shaped idioms break the day
+  their name conflicts); each trial against a Ctx snapshot — Subst AND
+  Rows restored, fresh counter monotone, **and no diagnostics: a failed
+  trial's warnings must not survive the rollback**; snapshots nest for
+  nested conflicted names; zero-fit errors show best-per-candidate
+  reasons, not just names. Those five clauses are the adversarial floor
+  when it is built. Unique-fit wins; zero or multiple fits errors naming
+  all candidates; no priority, ever.
 - DECIDED — **Retirements the namespace enables**: `mapOption` →
   `Option.map`, `defaultTo` → `Option.defaultTo` (bare alias retired),
   `strLen` → `Str.length` (superseding the collision decision properly),
@@ -117,12 +136,9 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
 5. SEMANTICS: modules section (inventory, aliases, shadowing, mechanism
    note), measure-algebra-dropped recorded, `strLen` bullet superseded.
 
-Human read, now two targets: (a) the `EField` module arm — instantiation
-site (§3 discipline) plus the three-way resolution seam above, precedence
-order verified; (b) **the trial-resolution snapshot/restore** — the
-checker's first backtracking; verify the snapshot covers everything `bind`
-mutates and that failed trials are observationally absent (the
-residue-free adversarial test is the floor, the read is the ceiling).
+Human read: the `EField` module arm — instantiation site (§3 discipline)
+plus the three-way resolution seam above, precedence order verified.
+(The trial-resolution read target left with the deferral.)
 
 Budget note: the retirement list breaks the pinned e2e battery
 (`map trim`, `startsWith` in the git-branch task) and several SEMANTICS
@@ -151,13 +167,23 @@ tripwires + e2e green.
    dependencies, don't install mid-script. Rules-doc line required, and
    the escape hatch named explicitly: `sh "thing ..."` defers resolution
    to runtime because sh takes a string.
-3. Script inputs: `args : seq<string>` (post-script-name argv), `stdin :
+3. **`weir fmt --qualify`** (promoted from parked — it ships WITH the
+   strict default, not after it): the graduation bridge for the
+   paste-from-REPL-history workflow. The checker knows every bare name's
+   canonical home, so the rewrite is mechanical and type-directed;
+   `--qualify` converts a loose file to strict-clean and reports the
+   rewrites. Without this, strict-by-default taxes exactly the
+   prompt-to-file flow scripting exists to serve.
+4. Script inputs: `args : seq<string>` (post-script-name argv), `stdin :
    seq<string>` (lazy line stream). **Flagged as a decision, not
    plumbing**: when the script never touches `stdin`, do child commands
    inherit the terminal's stdin (interactive ssh mid-script works) or the
    script's? Inherit-unless-consumed is what users expect and is fiddly —
    decide in-session, document either way. Exit code: 0, or 1 on runtime
    error, or the checker error path with nonzero before any effect.
+   **Decided now**: a raising external maps to generic exit 1 — the
+   child's code does not propagate (bash's `$?` reflex will ask; the
+   answer is documented: use `complete` if the code matters).
 4. E2E (per the standing rule): a `.weir` script exercising bindings, a
    command-mode line, a type declaration, and `args` — run via shebang on
    the AOT binary; plus a script with a type error on line N proving
@@ -183,8 +209,10 @@ prototype answering:
    greediness, seq literals spanning lines.
 3. Kill criteria, written before prototyping: if the prototype cannot keep
    the expression suite green with < N parser-lines changed (pick N in
-   session), or if command-mode interaction demands mode decisions inside
-   continuation lines, STOP — ship scripts single-line-statement-only
+   session), if command-mode interaction demands mode decisions inside
+   continuation lines, or **if the timing guard trips** (indentation-
+   sensitive lexing sits on the -e/script startup path; the 6ms number
+   has a CI tripwire that must not meet a surprise), STOP — ship scripts single-line-statement-only
    (they are already useful) and revisit with dogfooding data.
 
 **Done when:** decision documented either way; if continue, Session 4 is
@@ -198,7 +226,9 @@ Scoped entirely by Session 3's output. Not specced here on purpose.
 ## Parked (recorded, not forgotten)
 
 - User modules (`module X = ...`) and file imports — additive on Session
-  1's mechanism; wait for a script that wants them.
+  1's mechanism; wait for a script that wants them. **User modules are
+  also the trigger for building the deferred trial resolution** (they
+  create the second bare conflict).
 - `Result` members, `Option.bind`/chaining — wait for the Option idiom to
   demand them in dogfooding.
 - Measure algebra — dropped (see header).
