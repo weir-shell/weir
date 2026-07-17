@@ -102,7 +102,7 @@ let private fakeFiles =
 let private doubleFixture =
     VBuiltin(fun v ->
         match v with
-        | VInt n -> VInt(n * 2)
+        | VInt n -> VInt(n * 2L)
         | v -> failwith $"double fixture applied to {formatValue v}")
 
 let private valueEnv =

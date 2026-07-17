@@ -8,7 +8,7 @@ let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 
 [<CustomEquality; NoComparison>]
 type Value =
-    | VInt of int
+    | VInt of int64
     | VStr of string
     | VBool of bool
     | VRecord of record: string * fields: Map<string, Value>
@@ -63,7 +63,14 @@ let rec formatValue (v: Value) : string =
 
         "{ " + body + " }"
     | VUnion(case, None) -> case
-    | VUnion(case, Some payload) -> $"{case} {formatValue payload}"
+    | VUnion(case, Some payload) ->
+        let inner = formatValue payload
+
+        match payload with
+        | VInt _
+        | VStr _
+        | VBool _ -> $"{case} {inner}"
+        | _ -> $"{case} ({inner})"
     | VSeq items ->
         let shown = items |> Seq.truncate 21 |> List.ofSeq
 
@@ -129,7 +136,7 @@ let private jsonRow (def: RecordDef) (line: string) : Value =
 
         let value =
             match ty, prop.ValueKind with
-            | TInt _, System.Text.Json.JsonValueKind.Number -> VInt(prop.GetInt32())
+            | TInt _, System.Text.Json.JsonValueKind.Number -> VInt(prop.GetInt64())
             | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
             | TBool, System.Text.Json.JsonValueKind.True -> VBool true
             | TBool, System.Text.Json.JsonValueKind.False -> VBool false
@@ -235,7 +242,7 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
 
 let rec eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
-    | TEInt(n, _) -> VInt n
+    | TEInt(n, _) -> VInt(int64 n)
     | TEStr s -> VStr s
     | TEBool b -> VBool b
     | TEVar name ->

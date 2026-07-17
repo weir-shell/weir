@@ -1,5 +1,21 @@
 # Spike Notes
 
+## Dogfood sweep — assistant-driven error hunt (2026-07-17)
+
+Four probe batches against the AOT binary. Fixed this session:
+
+- **int is now int64 end-to-end** (the big one): weir ints were int32, so `ls` on a >2GB file reported negative `Bytes` and `where (fun f -> f.Bytes > 0<b>)` silently returned zero files — wrong answers on exactly the data the filter exists for. Verified fixed: 3GB file → `3221225472<b>`, filter finds it, `2147483647 + 1 = 2147483648`. Sweep was mechanical (F# literal inference absorbed nearly all sites).
+- Nested union display gains parens: `Some (Some (Some 1))`, not `Some Some Some 1`.
+- `cmd "" []` reports "cmd: empty program name" instead of leaking a raw .NET exception.
+- The fmt e2e entry asserted on filesystem enumeration order (`.gitignore` first) — latent flake exposed by adding files; now deterministic.
+
+**Filed, not fixed (language decisions, not sessions)**:
+- **No boolean branching exists**: no `if`/`then`/`else`, and `true`/`false` are not legal patterns (`match b with | true -> ...` is a parse error). There is currently no way to branch on a bool. Biggest known language gap; needs a chosen design (if-expression vs bool patterns vs both) — top of the next plan's input.
+- Shadowed-`cd` diagnostic claims "expression mode" on a line that actually took the command-callable arm — minor hint inaccuracy.
+- `Str.split "" s` returns `[s]` (.NET semantics) — fine, but undocumented.
+
+Verified healthy: unicode strings, CRLF scripts, `/dev/stdin` as a script, `stdin` builtin one-shot, empty-everything edges, negative take, match-arm shadowing of builtin names, `Seq.groupBy` over row projections, `into`, porcelain garbage errors, `cd`-to-file error.
+
 ## Dogfood fix — ls Size was always 0 (2026-07-17)
 
 Diagnosis: `Size : int<mb>` = bytes ÷ 1,048,576 truncated — the Spike-2 decision that made `f.Size > 1<mb>` work against real files; sub-megabyte files (i.e. nearly everything in a source tree) round to 0.

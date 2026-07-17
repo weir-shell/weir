@@ -16,22 +16,22 @@ let fileRow: RecordDef =
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
-let file (name: string) (sizeMb: int) (readOnly: bool) : Value =
+let file (name: string) (sizeMb: int64) (readOnly: bool) : Value =
     VRecord(
         fileRow.Name,
         Map
             [ "Name", VStr name
               "Size", VInt sizeMb
-              "Bytes", VInt(sizeMb * 1048576)
+              "Bytes", VInt(sizeMb * 1048576L)
               "ReadOnly", VBool readOnly ]
     )
 
-let fileWithBytes (name: string) (bytes: int) (readOnly: bool) : Value =
+let fileWithBytes (name: string) (bytes: int64) (readOnly: bool) : Value =
     VRecord(
         fileRow.Name,
         Map
             [ "Name", VStr name
-              "Size", VInt(bytes / 1048576)
+              "Size", VInt(bytes / 1048576L)
               "Bytes", VInt bytes
               "ReadOnly", VBool readOnly ]
     )
@@ -40,7 +40,7 @@ let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
             DirectoryInfo(Session.Cwd).GetFiles()
-            |> Seq.map (fun f -> fileWithBytes f.Name (int f.Length) f.IsReadOnly))
+            |> Seq.map (fun f -> fileWithBytes f.Name f.Length f.IsReadOnly))
     )
 
 let private whereImpl: Value =
@@ -61,7 +61,7 @@ let private truncateImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
-            | VInt n, VSeq items -> VSeq(Seq.truncate n items)
+            | VInt n, VSeq items -> VSeq(Seq.truncate (int n) items)
             | _ -> unreachable "the checker rejects truncation on these arguments"))
 
 let private mapImpl: Value =
@@ -84,7 +84,7 @@ let private sumImpl: Value =
             )
         | v -> unreachable $"the checker rejects 'sum' on {formatValue v}")
 
-let private natsImpl: Value = VSeq(Seq.initInfinite VInt)
+let private natsImpl: Value = VSeq(Seq.initInfinite (int64 >> VInt))
 
 let private notImpl: Value =
     VBuiltin(fun v ->
@@ -113,6 +113,9 @@ let private cmdImpl: Value =
         VBuiltin(fun argsV ->
             match progV, argsV with
             | VStr prog, VSeq args ->
+                if prog.Trim() = "" then
+                    failwith "cmd: empty program name"
+
                 let argv = args |> Seq.map asString |> List.ofSeq
                 VSeq(Proc.lines (Proc.resolveProg prog) argv None |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'cmd' on these arguments"))
@@ -186,7 +189,7 @@ let private completedImpl: Value =
                 VRecord(
                     completedDef.Name,
                     Map
-                        [ "ExitCode", VInt code
+                        [ "ExitCode", VInt(int64 code)
                           "Stdout", VSeq(stdout |> List.map VStr :> seq<Value>)
                           "Stderr", VSeq(stderr |> List.map VStr :> seq<Value>) ]
                 )
@@ -220,7 +223,7 @@ let private tryHeadImpl: Value =
 let private seqLengthImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VSeq items -> VInt(Seq.length items)
+        | VSeq items -> VInt(int64 (Seq.length items))
         | v -> unreachable $"the checker rejects 'Seq.length' on {formatValue v}")
 
 let private isEmptyImpl: Value =
@@ -275,14 +278,14 @@ let private replaceImpl: Value =
 let private strLenImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VStr s -> VInt s.Length
+        | VStr s -> VInt(int64 s.Length)
         | v -> unreachable $"the checker rejects 'strLen' on {formatValue v}")
 
 let private toIntImpl: Value =
     VBuiltin(fun v ->
         match v with
         | VStr s ->
-            match System.Int32.TryParse s with
+            match System.Int64.TryParse s with
             | true, n -> VInt n
             | _ -> failwith $"toInt: not an integer: \"{s}\""
         | v -> unreachable $"the checker rejects 'toInt' on {formatValue v}")
@@ -291,7 +294,7 @@ let private tryToIntImpl: Value =
     VBuiltin(fun v ->
         match v with
         | VStr s ->
-            match System.Int32.TryParse s with
+            match System.Int64.TryParse s with
             | true, n -> vSome (VInt n)
             | _ -> vNone
         | v -> unreachable $"the checker rejects 'tryToInt' on {formatValue v}")
@@ -320,7 +323,7 @@ let private tryIndexOfImpl: Value =
             | VStr n, VStr s ->
                 match s.IndexOf n with
                 | -1 -> vNone
-                | i -> vSome (VInt i)
+                | i -> vSome (VInt(int64 i))
             | _ -> unreachable "the checker rejects 'tryIndexOf' on these arguments"))
 
 let private substringImpl: Value =
@@ -328,7 +331,9 @@ let private substringImpl: Value =
         VBuiltin(fun len ->
             VBuiltin(fun subject ->
                 match start, len, subject with
-                | VInt st, VInt ln, VStr s ->
+                | VInt st64, VInt ln64, VStr s ->
+                    let st, ln = int st64, int ln64
+
                     if st < 0 || ln < 0 || st + ln > s.Length then
                         failwith $"substring: out of bounds (start {st}, length {ln}, string length {s.Length})"
                     else
@@ -378,7 +383,7 @@ let private groupByImpl: Value =
                         |> Seq.map (fun (key, group) ->
                             let keyValue =
                                 match key with
-                                | :? int as n -> VInt n
+                                | :? int64 as n -> VInt n
                                 | :? string as str -> VStr str
                                 | :? bool as b -> VBool b
                                 | _ -> unreachable "groupBy key box"

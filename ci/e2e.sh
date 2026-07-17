@@ -111,11 +111,11 @@ echo "e2e ok: whole-file check runs nothing on error"
 
 cat > "$scriptdir/loose.weir" <<'WEOF'
 #loose
-ls |> map _.Name |> first 1
+[2; 1] |> where (fun x -> x > 0) |> map (fun x -> x * 3) |> first 1
 WEOF
 $BIN fmt --qualify "$scriptdir/loose.weir" 2>/dev/null
 out=$($BIN "$scriptdir/loose.weir")
-expect "fmt --qualify graduates loose to strict-clean" ".gitignore" "$out"
+expect "fmt --qualify graduates loose to strict-clean" "6" "$out"
 grep -q "Seq.map" "$scriptdir/loose.weir" || fail "fmt did not qualify"
 if grep -q "#loose" "$scriptdir/loose.weir"; then fail "fmt left the #loose directive"; fi
 echo "e2e ok: fmt --qualify roundtrip"
