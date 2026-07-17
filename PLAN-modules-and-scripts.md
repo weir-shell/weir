@@ -36,13 +36,21 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
   canonical `Seq.*`/`Str.*`/`Option.*` home. *Strict mode* (per-script
   directive): bare aliases are disabled; everything module-owned must be
   qualified. REPL is always normal mode.
-- DECIDED — **Cross-module conflicts require qualification, no winner.**
-  When two modules export the same member name, the bare alias does not
-  exist and use is an error naming both candidates ("ambiguous: Seq.map or
-  Option.map; qualify"). **Named casualty, accepted: bare `map`** — the
-  moment `Option.map` exists, pipelines write `Seq.map` (or strict-mode
-  habits leak into the REPL, which is fine). `where`, `first`, `head`,
-  `defaultTo`, the string set, etc. remain unambiguous and bare.
+- DECIDED — **Cross-module conflicts resolve by type, never by
+  priority.** A bare name exported by several modules is resolved by trial
+  unification over the closed candidate set at its application site — the
+  pipe rule binds the piped argument first (the Spike-5 ordering), so
+  `ls |> map f` has the data's type in hand before the choice: unique fit
+  wins; zero or multiple fits is an error naming all candidates
+  ("ambiguous: Seq.map or Option.map; qualify or pipe data in"). A bare
+  conflicted name with no application context (`let m = map`) always
+  requires qualification. This is bare-alias resolution over the curated
+  table only — NOT user-facing overloading. **Mechanism note for the
+  read**: this is the checker's first backtracking — each trial runs
+  against a Ctx snapshot (Subst + Rows restored on failure; the fresh
+  counter deliberately monotone). The adversarial pin: a trial that fails
+  *after* depositing a row constraint must leave no residue that a later
+  binding can observe. Strict mode sidesteps all of it (bare names off).
 - DECIDED — **Retirements the namespace enables**: `mapOption` →
   `Option.map`, `defaultTo` → `Option.defaultTo` (bare alias retired),
   `strLen` → `Str.length` (superseding the collision decision properly),
@@ -109,9 +117,12 @@ returns as its own plan, re-reading checklist §4.2 from scratch.
 5. SEMANTICS: modules section (inventory, aliases, shadowing, mechanism
    note), measure-algebra-dropped recorded, `strLen` bullet superseded.
 
-Human read: the `EField` module arm — both as an instantiation site (§3
-discipline) and as the three-way resolution seam above; the precedence
-order is the thing to verify, not just the scheme handling.
+Human read, now two targets: (a) the `EField` module arm — instantiation
+site (§3 discipline) plus the three-way resolution seam above, precedence
+order verified; (b) **the trial-resolution snapshot/restore** — the
+checker's first backtracking; verify the snapshot covers everything `bind`
+mutates and that failed trials are observationally absent (the
+residue-free adversarial test is the floor, the read is the ceiling).
 
 Budget note: the retirement list breaks the pinned e2e battery
 (`map trim`, `startsWith` in the git-branch task) and several SEMANTICS
