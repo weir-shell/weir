@@ -162,6 +162,46 @@ weir rejects rather than guesses.
   mode never flows back into command mode (`ls |> git log` is an unbound
   variable, not a command).
 
+## Scripts
+
+- **Execution model — check everything first**: a script parses and
+  typechecks completely (PATH lookups included) before any statement
+  evaluates; a type error anywhere means nothing runs (pinned in e2e by a
+  touch-then-error script whose file never appears). Named divergence from
+  every shell users know: install-then-use is a check-time
+  "command not found" — declare dependencies, don't install mid-script; the
+  escape hatch is `sh "thing ..."`, which defers resolution to runtime
+  because sh takes a string. Errors report `path:line: [line:col] ...`.
+- **Strict by default**: scripts resolve module members qualified-only;
+  `#loose` at file head (line one, or two after a shebang) opts into
+  REPL-style bare names. Any other `#`-directive placement is an error. The
+  REPL is always loose. Rationale: bare-name resolution is a moving target
+  and scripts are durable artifacts — qualified names mean the same thing
+  forever. `weir fmt --qualify <script>` is the graduation bridge: a
+  span-precise AST-driven rewrite of bare names to their homes (single-home
+  guarantee holds while trial resolution stays deferred), dropping `#loose`
+  when done; splices and field accesses untouched.
+- **Comments are `//` to end of line** (string-aware; applies to script
+  lines). Line one `#!` is skipped by the runner; `#` at line head is
+  reserved for directives.
+- **Statement output is shell-shaped**: a bare expression statement prints
+  strings raw and string-seqs line by line (so `weir script | grep x`
+  composes); other values print in REPL form; `let` and `type` statements
+  print nothing.
+- **Script inputs**: `args : seq<string>` (argv after the script name) and
+  `stdin : seq<string>` (lazy, one-shot — `Seq.collect` it if reused) exist
+  only in scripts, not the REPL (the REPL owns its own stdin). Children
+  inherit the process stdin unless a value is piped into them; the `stdin`
+  binding reads the same underlying stream, so consuming it both ways is
+  user error, as in any shell.
+- **Exit codes**: 0 on success; 1 on check errors (before any effect) and
+  on runtime errors (at the fault, prior effects done); 2 for CLI misuse.
+  A raising external maps to generic 1 — the child's code does not
+  propagate; use `complete` if the code matters.
+- **CLI is unambiguous**: a positional argument is a script path, always;
+  `-e` is an expression, always; `weir run <script>` is the explicit form.
+  No content sniffing.
+
 ## Processes and the session
 
 - **`sh : string -> seq<string>`** is the deliberate POSIX escape hatch: the

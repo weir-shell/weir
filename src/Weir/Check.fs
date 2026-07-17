@@ -406,13 +406,21 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 err expr.Span $"'{name}' is a module; use a member: {name}.{{{members}, ...}}"
             else
-                let home =
+                let homes =
                     env.Modules
-                    |> Map.tryPick (fun m members -> if Map.containsKey name members then Some m else None)
+                    |> Map.toList
+                    |> List.choose (fun (m, members) ->
+                        if Map.containsKey name members then
+                            Some $"{m}.{name}"
+                        else
+                            None)
 
-                match home with
-                | Some m -> err expr.Span $"'{name}' moved into a module; use '{m}.{name}'"
-                | None ->
+                match homes with
+                | [ one ] -> err expr.Span $"'{name}' moved into a module; use '{one}'"
+                | _ :: _ ->
+                    let all = String.concat " or " homes
+                    err expr.Span $"'{name}' is module-qualified here; use {all}"
+                | [] ->
                     let hint = didYouMean name (Map.keys env.Values)
                     err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, value, body) ->

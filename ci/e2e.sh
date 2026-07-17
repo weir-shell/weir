@@ -82,6 +82,45 @@ out=$(printf 'cd "%s"\ngit branch | map trim | where (startsWith "feature") | jo
 expect "git-branch-cleanup dogfood task" '"feature/a,feature/b"' "$out"
 rm -rf "$branchdir"
 
+scriptdir=$(mktemp -d)
+cat > "$scriptdir/task.weir" <<'WEOF'
+#!/usr/bin/env weir
+// strict by default
+type Tag = Big | Small
+let names = ls |> Seq.map _.Name
+names |> Seq.first 1
+echo spliced (40 + 2)
+args |> Seq.head
+WEOF
+chmod +x "$scriptdir/task.weir"
+out=$(cd "$scriptdir" && WEIR_BIN_PATH=1 $BIN task.weir firstarg)
+expect "shebang script: bindings, decl, command mode, args" "spliced 42" "$out"
+expect "shebang script: args flow" "firstarg" "$out"
+
+cat > "$scriptdir/broken.weir" <<'WEOF'
+sh "touch proof-file"
+let x = 1 + "oops"
+WEOF
+if (cd "$scriptdir" && $BIN broken.weir) 2>/dev/null; then
+    fail "type-broken script should exit nonzero"
+fi
+if [ -e "$scriptdir/proof-file" ]; then
+    fail "check-first violated: effect ran before the type error"
+fi
+echo "e2e ok: whole-file check runs nothing on error"
+
+cat > "$scriptdir/loose.weir" <<'WEOF'
+#loose
+ls |> map _.Name |> first 1
+WEOF
+$BIN fmt --qualify "$scriptdir/loose.weir" 2>/dev/null
+out=$($BIN "$scriptdir/loose.weir")
+expect "fmt --qualify graduates loose to strict-clean" ".gitignore" "$out"
+grep -q "Seq.map" "$scriptdir/loose.weir" || fail "fmt did not qualify"
+if grep -q "#loose" "$scriptdir/loose.weir"; then fail "fmt left the #loose directive"; fi
+echo "e2e ok: fmt --qualify roundtrip"
+rm -rf "$scriptdir"
+
 if $BIN -e 'yes hi | grep hi | complete' 2>/dev/null; then
     fail "multi-segment | complete should be a parse error"
 fi

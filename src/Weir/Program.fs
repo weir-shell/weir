@@ -48,11 +48,14 @@ let private evalOnce (input: string) : int =
 
 [<EntryPoint>]
 let main argv =
-    match argv with
-    | [| "-e"; input |] -> evalOnce input
-    | [||] ->
+    match Array.toList argv with
+    | [ "-e"; input ] -> evalOnce input
+    | [] ->
         Weir.Repl.run ()
         0
+    | [ "fmt"; "--qualify"; path ] -> Fmt.qualifyFile path
+    | "run" :: path :: rest -> Script.run path rest
+    | path :: rest when not (path.StartsWith "-") -> Script.run path rest
     | _ ->
-        Console.Error.WriteLine "usage: weir [-e <expression>]"
+        Console.Error.WriteLine "usage: weir [-e <expression>] [run] <script> [args...] | weir fmt --qualify <script>"
         2

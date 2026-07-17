@@ -1,0 +1,206 @@
+module Weir.Script
+
+open System
+open Weir.Ast
+open Weir.Types
+
+let stripComment (line: string) : string =
+    let mutable i = 0
+    let mutable inDouble = false
+    let mutable inSingle = false
+    let mutable cut = -1
+
+    while i < line.Length && cut < 0 do
+        let c = line[i]
+
+        if inDouble then
+            if c = '\\' && i + 1 < line.Length then
+                i <- i + 1
+            elif c = '"' then
+                inDouble <- false
+        elif inSingle then
+            if c = '\'' then
+                inSingle <- false
+        elif c = '"' then
+            inDouble <- true
+        elif c = '\'' then
+            inSingle <- true
+        elif c = '/' && i + 1 < line.Length && line[i + 1] = '/' then
+            cut <- i
+
+        i <- i + 1
+
+    if cut >= 0 then line.Substring(0, cut) else line
+
+type Mode =
+    | Strict
+    | Loose
+
+type private CheckedStmt =
+    | CLet of name: string * te: Check.TypedExpr
+    | CExpr of te: Check.TypedExpr
+    | CType of decl: Decl
+    | CNoop
+
+let private baseEnvs (mode: Mode) (scriptArgs: string list) =
+    let typeEnv =
+        match mode with
+        | Strict -> Builtins.typeEnvStrict
+        | Loose -> Builtins.typeEnv
+
+    let typeEnv, valueEnv = Prelude.extend typeEnv Builtins.valueEnv
+
+    let typeEnv =
+        { typeEnv with
+            Values =
+                typeEnv.Values
+                |> Map.add "args" (generalize (TSeq TStr))
+                |> Map.add "stdin" (generalize (TSeq TStr)) }
+
+    let stdinStream =
+        Eval.VSeq(
+            Seq.delay (fun () ->
+                seq {
+                    let mutable line = Console.In.ReadLine()
+
+                    while line <> null do
+                        yield Eval.VStr line
+                        line <- Console.In.ReadLine()
+                })
+        )
+
+    let valueEnv =
+        valueEnv
+        |> Map.add "args" (Eval.VSeq(scriptArgs |> List.map Eval.VStr :> seq<Eval.Value>))
+        |> Map.add "stdin" stdinStream
+
+    typeEnv, valueEnv
+
+let private resolver (typeEnv: TypeEnv) : Parser.Resolver =
+    { IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
+      IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
+      IsExternal = Extern.exists
+      ExternalNames = fun () -> Extern.names () :> seq<string> }
+
+let private located (path: string) (lineNo: int) (msg: string) : string =
+    let msg =
+        if msg.StartsWith "[1:" then
+            $"[{lineNo}:" + msg.Substring 3
+        else
+            msg
+
+    $"{path}:{lineNo}: {msg}"
+
+let private printResult (v: Eval.Value) =
+    match v with
+    | Eval.VStr s -> Console.WriteLine s
+    | Eval.VSeq items ->
+        for item in items do
+            match item with
+            | Eval.VStr s -> Console.WriteLine s
+            | other -> Console.WriteLine(Eval.formatValue other)
+    | other -> Console.WriteLine(Eval.formatValue other)
+
+let run (path: string) (scriptArgs: string list) : int =
+    if not (IO.File.Exists path) then
+        Console.Error.WriteLine $"weir: no such script: {path}"
+        2
+    else
+        let rawLines = IO.File.ReadAllLines path |> Array.toList
+
+        let afterShebang, shebangOffset =
+            match rawLines with
+            | first :: rest when first.StartsWith "#!" -> rest, 1
+            | _ -> rawLines, 0
+
+        let mode, body, bodyOffset =
+            match afterShebang with
+            | first :: rest when first.Trim() = "#loose" -> Loose, rest, shebangOffset + 1
+            | _ -> Strict, afterShebang, shebangOffset
+
+        let directiveError =
+            body
+            |> List.mapi (fun i l -> i, l.Trim())
+            |> List.tryFind (fun (_, l) -> l.StartsWith "#")
+
+        match directiveError with
+        | Some(i, l) ->
+            Console.Error.WriteLine(
+                located path (bodyOffset + i + 1) $"unknown or misplaced directive: {l} (#loose belongs at file head)"
+            )
+
+            1
+        | None ->
+            let typeEnv0, valueEnv0 = baseEnvs mode scriptArgs
+            Extern.refresh ()
+            let r = resolver typeEnv0
+
+            let statements =
+                body
+                |> List.mapi (fun i l -> bodyOffset + i + 1, stripComment l)
+                |> List.filter (fun (_, l) -> l.Trim() <> "")
+
+            let checkedProgram =
+                statements
+                |> List.fold
+                    (fun state (lineNo, line) ->
+                        match state with
+                        | Error e -> Error e
+                        | Ok(tenv, acc) ->
+                            match Parser.parseLine r line with
+                            | Error msg -> Error(located path lineNo msg)
+                            | Ok(SType decl) ->
+                                match Check.checkDecl tenv decl with
+                                | Error terr -> Error(located path lineNo (Check.formatError terr))
+                                | Ok tenv' -> Ok(tenv', (lineNo, CType decl) :: acc)
+                            | Ok(SLet(name, e)) ->
+                                match Check.typecheck tenv e with
+                                | Error terr -> Error(located path lineNo (Check.formatError terr))
+                                | Ok te ->
+                                    let tenv' =
+                                        { tenv with
+                                            Values = Map.add name (generalize te.Ty) tenv.Values }
+
+                                    Ok(tenv', (lineNo, CLet(name, te)) :: acc)
+                            | Ok(SExpr e) ->
+                                match Check.typecheck tenv e with
+                                | Error terr -> Error(located path lineNo (Check.formatError terr))
+                                | Ok te -> Ok(tenv, (lineNo, CExpr te) :: acc))
+                    (Ok(typeEnv0, []))
+
+            match checkedProgram with
+            | Error msg ->
+                Console.Error.WriteLine msg
+                1
+            | Ok(_, revStmts) ->
+                let stmts = List.rev revStmts
+
+                let rec exec (venv: Eval.Env) (rest: (int * CheckedStmt) list) : int =
+                    match rest with
+                    | [] -> 0
+                    | (lineNo, stmt) :: tail ->
+                        match stmt with
+                        | CNoop -> exec venv tail
+                        | CType decl ->
+                            let venv' =
+                                match decl.Body with
+                                | DUnion cases ->
+                                    Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                | DRecord _ -> venv
+
+                            exec venv' tail
+                        | CLet(name, te) ->
+                            try
+                                exec (Map.add name (Eval.eval venv te) venv) tail
+                            with ex ->
+                                Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                1
+                        | CExpr te ->
+                            try
+                                printResult (Eval.eval venv te)
+                                exec venv tail
+                            with ex ->
+                                Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                1
+
+                exec valueEnv0 stmts

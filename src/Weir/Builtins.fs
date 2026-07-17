@@ -452,6 +452,18 @@ let private entries: (string * Ty * Value) list =
 
 let commandCallable: Set<string> = Set [ "cd" ]
 
+let bareAliasHomes: Map<string, string> =
+    moduleTable
+    |> List.filter (fun (m, _) -> m <> "Option")
+    |> List.collect (fun (m, members) ->
+        members
+        |> List.choose (fun (n, _, _) ->
+            if bareAliases.Contains n && n <> "length" then
+                Some(n, m)
+            else
+                None))
+    |> Map.ofList
+
 let typeEnv: TypeEnv =
     { Values = entries |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList
       Modules =
@@ -464,6 +476,10 @@ let typeEnv: TypeEnv =
               changeDef.Name, Record changeDef
               completedDef.Name, Record completedDef
               groupDef.Name, Record groupDef ] }
+
+let typeEnvStrict: TypeEnv =
+    { typeEnv with
+        Values = bareAliasHomes |> Map.fold (fun vs name _ -> Map.remove name vs) typeEnv.Values }
 
 let valueEnv: Env =
     let flat = entries |> List.map (fun (n, _, v) -> n, v)

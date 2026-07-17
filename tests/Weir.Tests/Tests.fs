@@ -1515,7 +1515,7 @@ let moduleTests =
           test "length is qualified-only in both homes" {
               expectValue "Str.length \"abc\"" (VInt 3)
               expectValue "[1; 2; 3] |> Seq.length" (VInt 3)
-              Expect.stringContains (checkErr "length \"abc\"").Message "moved into a module" ""
+              Expect.stringContains (checkErr "length \"abc\"").Message "use Seq.length or Str.length" ""
           }
           test "three-way precedence: value shadow wins over module" {
               Expect.stringContains
@@ -1542,6 +1542,50 @@ let moduleTests =
               Expect.contains (suggest "Seq.tr" 0) "Seq.tryHead" ""
               Expect.contains (suggest "Str." 0) "Str.length" ""
               Expect.contains (suggest "Se" 0) "Seq" "module names complete"
+          } ]
+
+
+let scriptTests =
+    testList
+        "Script machinery"
+        [ test "comment stripper respects strings" {
+              Expect.equal (Weir.Script.stripComment "1 + 1 // note") "1 + 1 " ""
+              Expect.equal (Weir.Script.stripComment "sh \"echo a//b\" // real") "sh \"echo a//b\" " ""
+              Expect.equal (Weir.Script.stripComment "grep 'a//b' f") "grep 'a//b' f" ""
+              Expect.equal (Weir.Script.stripComment "\"esc \\\" // still string\"") "\"esc \\\" // still string\"" ""
+              Expect.equal (Weir.Script.stripComment "no comment") "no comment" ""
+          }
+          test "strict env drops bare aliases, keeps the rest" {
+              Expect.isFalse (Map.containsKey "map" Weir.Builtins.typeEnvStrict.Values) "map gone"
+              Expect.isFalse (Map.containsKey "trim" Weir.Builtins.typeEnvStrict.Values) "trim gone"
+              Expect.isTrue (Map.containsKey "ls" Weir.Builtins.typeEnvStrict.Values) "ls stays"
+              Expect.isTrue (Map.containsKey "cd" Weir.Builtins.typeEnvStrict.Values) "cd stays"
+              Expect.isTrue (Map.containsKey "Seq" Weir.Builtins.typeEnvStrict.Modules) "modules stay"
+          }
+          test "multi-home moved name lists all candidates" {
+              let strictEnv, _ =
+                  Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+
+              match Weir.Check.typecheck strictEnv (parse "ls |> map (fun x -> x)") with
+              | Error terr -> Expect.stringContains terr.Message "use Option.map or Seq.map" ""
+              | Ok _ -> failtest "expected strict rejection"
+          }
+          test "fmt qualifies bare uses span-precisely" {
+              let line, n =
+                  Weir.Fmt.qualifyLine realResolver "ls |> map _.Name |> where (contains \"x\")"
+
+              Expect.equal n 3 "three rewrites"
+              Expect.equal line "ls |> Seq.map _.Name |> Seq.where (Str.contains \"x\")" ""
+          }
+          test "fmt leaves splices and fields alone" {
+              let line, n = Weir.Fmt.qualifyLine realResolver "git checkout $map"
+              Expect.equal n 0 "splice untouched"
+              Expect.equal line "git checkout $map" ""
+          }
+          test "fmt leaves already-qualified lines alone" {
+              let line, n = Weir.Fmt.qualifyLine realResolver "ls |> Seq.map _.Name"
+              Expect.equal n 0 ""
+              Expect.equal line "ls |> Seq.map _.Name" ""
           } ]
 
 let operatorTests =
@@ -1737,4 +1781,5 @@ let allTests =
           stringTests
           genericsTests
           optionSweepTests
-          moduleTests ]
+          moduleTests
+          scriptTests ]
