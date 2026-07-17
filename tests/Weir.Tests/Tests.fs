@@ -1645,6 +1645,80 @@ let multilineTests =
               | Ok _ -> failtest "expected error"
           } ]
 
+
+let readProbes =
+    testList
+        "Read probes"
+        [ test "(a) generic constructor inside a row constraint discharges" {
+              let e2 =
+                  env
+                  |> declare "type OptHolder = { X: Option<int>; TagA: bool }"
+                  |> declare "type StrHolder = { X: Option<string>; TagB: bool }"
+
+              match
+                  Weir.Check.typecheck e2 (parse "let g = fun r -> r.X == Some 1 in g { X = Some 2; TagA = true }")
+              with
+              | Ok te -> Expect.equal te.Ty TBool "discharges against Option<int>"
+              | Error terr -> failtest (formatError terr)
+
+              match
+                  Weir.Check.typecheck e2 (parse "let g = fun r -> r.X == Some 1 in g { X = Some \"s\"; TagB = true }")
+              with
+              | Error terr -> Expect.stringContains terr.Message "expected" "conflicting Option payload rejected"
+              | Ok _ -> failtest "expected discharge conflict"
+          }
+          test "(b) envFreeVars reaches vars inside applied constructors inside row constraints" {
+              match
+                  Weir.Check.typecheck
+                      env
+                      (parse (
+                          "fun y -> let g = fun p -> y.Kids |> Seq.where p in "
+                          + "let u1 = g (fun n -> n == Some 1) in "
+                          + "let u2 = g (fun s -> s == \"a\") in 0"
+                      ))
+              with
+              | Error terr -> Expect.stringContains terr.Message "expected" "second use must conflict, not freshen"
+              | Ok _ -> failtest "unsound generalization: var inside constructor arg inside row constraint escaped"
+          }
+          test "(c) occurs through two constructor layers under a row field" {
+              Expect.stringContains (checkErr "fun f -> f.X == Some (Some f.X)").Message "infinite type" ""
+          }
+          test "(d) module member freshens across conflicting types in one expression" {
+              expectValue
+                  "((ls |> Seq.map _.Name |> Seq.head) == \"a.txt\") && (([1] |> Seq.map (fun x -> x * 2) |> Seq.head) == 2)"
+                  (VBool true)
+          }
+          test "(e) generalized row binding with Option-typed field: independent discharge per use" {
+              let e2 =
+                  env
+                  |> declare "type OA = { X: Option<int>; TagA: bool }"
+                  |> declare "type OB = { X: Option<string>; TagB: bool }"
+
+              match
+                  Weir.Check.typecheck
+                      e2
+                      (parse (
+                          "let getX = fun r -> r.X in "
+                          + "let a = getX { X = Some 1; TagA = true } in "
+                          + "let b = getX { X = Some \"s\"; TagB = true } in 0"
+                      ))
+              with
+              | Ok _ -> ()
+              | Error terr -> failtest $"sibling discharge interfered: {formatError terr}"
+          }
+          test "short-circuit pinned by real process effect, not just div-by-zero" {
+              let marker = Path.Combine(Path.GetTempPath(), $"weir-sc-{System.Guid.NewGuid():N}")
+
+              try
+                  expectValue $"false && (sh \"touch {marker}; echo x\" |> Seq.isEmpty)" (VBool false)
+                  Expect.isFalse (File.Exists marker) "right operand must not spawn"
+                  expectValue $"true && (sh \"touch {marker}; echo x\" |> Seq.isEmpty)" (VBool false)
+                  Expect.isTrue (File.Exists marker) "strict when left is true"
+              finally
+                  if File.Exists marker then
+                      File.Delete marker
+          } ]
+
 let operatorTests =
     testList
         "Operator completeness"
@@ -1840,4 +1914,5 @@ let allTests =
           optionSweepTests
           moduleTests
           scriptTests
-          multilineTests ]
+          multilineTests
+          readProbes ]
