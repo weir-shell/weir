@@ -13,10 +13,10 @@ weir rejects rather than guesses.
 
 ## Types and inference
 
-- **Base types and literals**: `int` (optionally measured), `string`, `bool`,
+- **Base types and literals**: `int`, `string`, `bool`,
   `seq<T>`, functions, declared records and unions. **No floats yet.**
   Literals: unsigned digit runs (no negative literals — write `0 - 5`),
-  `1<measure>`, strings with `\" \\ \n \t` escapes, `true`/`false`, and seq
+  strings with `\" \\ \n \t` escapes, `true`/`false`, and seq
   literals `[a; b; c]` (homogeneous; elements evaluate eagerly, once — unlike
   pipelines; `[]` is polymorphic `seq<'a>`).
 - **Range literals**: `[a..b]` inclusive ascending, `[a..step..b]` stepped;
@@ -32,11 +32,9 @@ weir rejects rather than guesses.
   literal step, runtime "range step is zero" when computed. Endpoints
   are simple expressions only (literals, idents, field access,
   parenthesized anything) — `[x..f y]` is rejected with an error naming
-  the parens fix. **Bare int only** (any-measure ranges were proposed
-  and NOT shipped: weir has no measure-polymorphic scheme mechanism — a
-  `∀a` scheme would accept strings — and the library precedent is
-  `Seq.sum`, bare-only; measured ranges wait on that machinery or a
-  blessed checker arm). No float or char ranges (no floats or chars).
+  the parens fix. Int only (once a "bare int only" limitation vs measured
+  ranges — dissolved when measures were removed, 2026-07-18). No float
+  or char ranges (no floats or chars).
 - **Generalization regime**: Damas-Milner-style. `let`-bound values generalize
   (minus variables free in the environment, reached transitively through row
   constraints); every use instantiates freshly, including a deep copy of row
@@ -78,16 +76,21 @@ weir rejects rather than guesses.
 - **No type ascription syntax**. When it lands it must re-verify (check mode),
   never relabel (checklist §2.3).
 
-## Units of measure
+## Units of measure — REMOVED (tombstone)
 
-- Measures are **nominal tags** (`int<mb>`), compared by name, erased at
-  runtime. Exact-match only: no implicit conversion (`int<mb>` never meets
-  `int<gb>` or bare `int`).
-- **No measure algebra** — measures are *preserved* through `+`/`-` and
-  compared through `>`/`<` (same measure required on both sides), but never
-  *computed with*: `*`/`/` are defined on unitless `int` only, so
-  `f.Size * 2` and `f.Size / f.Size` are type errors. The missing piece of the
-  minimum viable set is exactly scalar×measure (backlog #3 below).
+Weir had nominal measure tags on int (`1<mb>`, exact-match equality, no
+algebra) from Spike 2 until 2026-07-18, when they were removed entirely.
+The arc — landed on a showcase claim, algebra cancelled for zero dogfood
+evidence, the `int<mb>` truncation causing the ls-Size-always-0
+wrong-answer incident, `Seq.sum`/ranges shipping bare-only because no
+measure-variable machinery existed — is recorded in full in NOTES.md
+("Remove measures — the evidence-standard case study"), which is the
+mandatory prior reading if quantities-with-conversion ever returns as an
+evidenced plan. Old scripts using `1<mb>` or `int<m>` get a transition
+error ("measure literals were removed"); the recognizer retires at the
+1.0 grammar freeze. `FileRow.Size` (truncated megabytes) was deleted
+with the measures; `Bytes : int` is the survivor — field names carry
+quantity semantics now.
 
 ## Operators and syntax
 
@@ -108,10 +111,9 @@ weir rejects rather than guesses.
   unresolved *after* unification is rejected.
 - Binary operators on two unresolved type variables are errors, with two
   deterministic exceptions: `*`/`/` bind both operands to unitless `int` — the
-  only sound reading *because no measure algebra exists* — and `&&`/`||` bind
-  both to `bool` (their only typing). When scalar×measure lands (backlog #2),
-  `*` on unresolved operands has two readings again and its defaulting rule
-  must be redesigned with it, not merely kept.
+  only sound reading — and `&&`/`||` bind both to `bool` (their only
+  typing). (The old caveat that scalar×measure would give `*` two
+  readings again retired with the measures.)
 - **Expression-level `let` is F#-shaped** (decided 2026-07-18, replacing
   the earlier keep-`in` decision): in scripts, a continuation line
   beginning with `let` opens a binding closed implicitly by the next line
@@ -142,7 +144,7 @@ weir rejects rather than guesses.
 - **String interpolation**: `$"... {expr} ..."`, F#-style, usable anywhere an
   expression is (including as a command argument, where it stays one argv
   entry). Holes follow the **command-splice typing rule** — string, int (any
-  measure), or bool, rendered the same way (int as digits, bool as
+  or bool, rendered the same way (int as digits, bool as
   `true`/`false`); an unresolved hole type defaults to `string`. One rule for
   both splice kinds, by design (one shared checker helper, `checkScalarSplice`).
   `{{`/`}}` escape literal braces; no format specifiers. `$"{n}"` is also the
@@ -204,7 +206,7 @@ weir rejects rather than guesses.
   end of line — `/`, `.`, `-`, `=`, `%` are ordinary characters. `"..."`
   (with escapes) and `'...'` (raw) produce single args. `$name` splices a
   binding; `(expr)` splices an expression result. **Splice typing rule**:
-  arguments must be strings, ints (any measure), or bools — rendered as single
+  arguments must be strings, ints, or bools — rendered as single
   argv entries, never re-split (no injection class; same ownership line as
   `cmd`); an unresolved argument type defaults to `string`. No adjacent-token
   concatenation: `foo$bar` is two args.
@@ -462,13 +464,10 @@ weir rejects rather than guesses.
    positions, the statement rule's discipline applied inside blocks.
    Revive on dogfood demand; until then a block is bindings + one result
    expression.
-1. ~~**Measure algebra**~~ — **dropped for the foreseeable future**
-   (2026-07-17, recorded in PLAN-modules-and-scripts.md): measures stay
-   nominal tags with preservation-only arithmetic; the
-   `no_unit_algebra_means_no_normalization` tripwire becomes a permanent
-   guard. If revived, it arrives as its own plan re-reading checklist 4.2.
-   The original entry, for the record: **Measure algebra** (scalar×measure): reopens checklist §4.2 (unit equality
-   must become normalization-based) *and* the `*`/`/`-defaulting rule above.
+1. ~~**Measure algebra**~~ — superseded: **measures were removed
+   entirely** (2026-07-18; see the tombstone section and the NOTES arc).
+   The 2026-07-17 drop decision and the `no_unit_algebra` tripwire
+   retired with them *and* the `*`/`/`-defaulting rule above.
 (Done: `collect` — backlog #1 — and the exit-code policy — old #3 — landed
 as `collect`/`complete`; see "Processes and the session".)
 

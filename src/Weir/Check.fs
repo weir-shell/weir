@@ -16,7 +16,7 @@ let formatWarning (w: Warning) : string =
 type TypedExpr = { Kind: TypedKind; Ty: Ty; Span: Span }
 
 and TypedKind =
-    | TEInt of value: int * measure: string option
+    | TEInt of value: int
     | TEStr of string
     | TEBool of bool
     | TEUnit
@@ -250,7 +250,7 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
 
 let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
     match ty with
-    | TInt _
+    | TInt
     | TStr
     | TBool
     | TUnit -> true
@@ -286,7 +286,7 @@ let private isPrintBuiltin (env: TypeEnv) =
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with
     | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
-    | (TStr | TInt _ | TBool) as t -> Ok t
+    | (TStr | TInt | TBool) as t -> Ok t
     | TSeq inner ->
         (match resolve ctx inner with
          | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TSeq TStr)
@@ -309,23 +309,23 @@ let rec private typeBinOp
     match op, resolve ctx l.Ty, resolve ctx r.Ty with
     | ("*" | "/"), TVar _, TVar _ ->
         retryAfter (
-            bind ctx env l.Span (TInt None) l.Ty
-            |> Result.bind (fun () -> bind ctx env r.Span (TInt None) r.Ty)
+            bind ctx env l.Span (TInt) l.Ty
+            |> Result.bind (fun () -> bind ctx env r.Span (TInt) r.Ty)
         )
     | ("&&" | "||"), TVar _, TVar _ ->
         retryAfter (
             bind ctx env l.Span TBool l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span TBool r.Ty)
         )
-    | _, TVar _, ((TInt _ | TStr | TBool) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
-    | _, ((TInt _ | TStr | TBool) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
+    | _, TVar _, ((TInt | TStr | TBool) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
+    | _, ((TInt | TStr | TBool) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
     | _, TVar _, TVar _ -> err opSpan $"cannot infer the operand types of '{op}'; pipe data in or use concrete values"
     | _, TRowVar _, _
     | _, _, TRowVar _ -> err opSpan $"operator '{op}' is not defined for records"
-    | ("+" | "-"), TInt m, TInt n when m = n -> Ok(TInt m)
+    | ("+" | "-"), TInt, TInt -> Ok TInt
     | "+", TStr, TStr -> Ok TStr
-    | ("*" | "/"), TInt None, TInt None -> Ok(TInt None)
-    | (">" | "<" | ">=" | "<="), TInt m, TInt n when m = n -> Ok TBool
+    | ("*" | "/"), TInt, TInt -> Ok(TInt)
+    | (">" | "<" | ">=" | "<="), TInt, TInt -> Ok TBool
     | ("&&" | "||"), TBool, TBool -> Ok TBool
     | ("==" | "<>"), a, b ->
         bind ctx env opSpan a b
@@ -336,7 +336,7 @@ let rec private typeBinOp
                 Ok TBool
             else
                 err opSpan $"'{op}' is not defined for {formatTy resolved}; sequences and functions cannot be compared")
-    | _, (TInt _ as a), (TInt _ as b) when a <> b -> mismatch r.Span a b
+    | _, (TInt as a), (TInt as b) when a <> b -> mismatch r.Span a b
     | _, a, b when a <> b ->
         let shorthandHint =
             let isShorthand (side: TypedExpr) =
@@ -370,14 +370,14 @@ let rec private spine (e: Expr) : Expr * Expr list =
 let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeError> =
     allOk def.Fields (fun (name, ty) ->
         match ty with
-        | TInt _
+        | TInt
         | TStr
         | TBool -> Ok()
         | ty -> err span $"field '{name}' has type {formatTy ty}; json rows support int, string and bool fields")
 
 let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
     match elem with
-    | TInt _
+    | TInt
     | TStr
     | TBool -> Ok()
     | TNamed(n, []) ->
@@ -415,10 +415,10 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
 
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
-    | EInt(n, m) ->
+    | EInt n ->
         Ok
-            { Kind = TEInt(n, m)
-              Ty = TInt m
+            { Kind = TEInt n
+              Ty = TInt
               Span = expr.Span }
     | EStr s ->
         Ok
@@ -913,7 +913,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                   Ty = TFun(dom, tbody.Ty)
                   Span = expr.Span }
         }
-    | ELambda _, (TInt _ | TStr | TBool | TSeq _ | TNamed _ as t) ->
+    | ELambda _, (TInt | TStr | TBool | TSeq _ | TNamed _ as t) ->
         err expr.Span $"expected {formatTy t}, got a function"
     | ELet(name, value, body), _ ->
         result {
@@ -953,7 +953,7 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (what: string) (arg: Exp
             do! bind ctx env arg.Span TStr targ.Ty
             return targ
         | TStr
-        | TInt _
+        | TInt
         | TBool -> return targ
         | ty -> return! err arg.Span $"{what} must be strings, ints or bools; this one is {formatTy ty}"
     }
@@ -997,7 +997,7 @@ let rec private validateTy
     (ty: Ty)
     : Result<unit, TypeError> =
     match ty with
-    | TInt _
+    | TInt
     | TStr
     | TBool
     | TUnit -> Ok()

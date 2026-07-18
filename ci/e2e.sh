@@ -18,6 +18,17 @@ expect() {
 out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
 
+out=$($BIN -e 'ls |> where (fun f -> f.Bytes > 1048576) |> first 5' 2>&1); rc=$?
+[ $rc -eq 0 ] || fail "flagship pipeline must run measure-free: $out"
+echo "e2e ok: flagship pipeline, bare bytes"
+
+if $BIN -e '1<mb> + 2<mb>' 2>/dev/null; then
+    fail "old measure literal should be rejected"
+fi
+errout=$($BIN -e '1<mb>' 2>&1 || true)
+echo "$errout" | grep -qF "measure literals were removed" || fail "transition message missing: $errout"
+echo "e2e ok: measure transition error"
+
 out=$($BIN -e 'cmd "echo" ["*"]')
 expect "argv stays literal" '["*"]' "$out"
 
@@ -88,7 +99,7 @@ expect "sh lines can complete now (old builtin boundary gone)" "7 : int" "$out"
 out=$($BIN -e 'match Ok 3 with | Ok v -> v | Error e -> Str.length e')
 expect "prelude Result with cross-arm inference" "3 : int" "$out"
 
-out=$($BIN -e 'ls |> Seq.sortBy _.Size |> Seq.map _.Name |> Seq.head' 2>/dev/null | head -1)
+out=$($BIN -e 'ls |> Seq.sortBy _.Bytes |> Seq.map _.Name |> Seq.head' 2>/dev/null | head -1)
 expect "qualified module pipeline" " : string" "$out"
 
 out=$($BIN -e '[] |> Seq.tryHead |> Option.defaultTo 9')

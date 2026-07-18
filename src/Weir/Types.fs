@@ -1,7 +1,7 @@
 module Weir.Types
 
 type Ty =
-    | TInt of measure: string option
+    | TInt
     | TStr
     | TBool
     | TUnit
@@ -20,8 +20,7 @@ let rec formatTy (ty: Ty) : string =
             fields |> List.map (fun (f, t) -> $"{f}: {formatTy t}") |> String.concat "; "
 
         $"{{ {fs}; .. }}"
-    | TInt None -> "int"
-    | TInt(Some m) -> $"int<{m}>"
+    | TInt -> "int"
     | TStr -> "string"
     | TBool -> "bool"
     | TUnit -> "unit"
@@ -45,7 +44,7 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TFun(a, b) -> tyVars a + tyVars b
     | TSeq t -> tyVars t
     | TNamed(_, args) -> args |> List.fold (fun acc t -> acc + tyVars t) Set.empty
-    | TInt _
+    | TInt
     | TStr
     | TBool
     | TUnit -> Set.empty

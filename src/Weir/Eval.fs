@@ -149,7 +149,7 @@ let private jsonRow (def: RecordDef) (line: string) : Value =
 
         let value =
             match ty, prop.ValueKind with
-            | TInt _, System.Text.Json.JsonValueKind.Number -> VInt(prop.GetInt64())
+            | TInt, System.Text.Json.JsonValueKind.Number -> VInt(prop.GetInt64())
             | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
             | TBool, System.Text.Json.JsonValueKind.True -> VBool true
             | TBool, System.Text.Json.JsonValueKind.False -> VBool false
@@ -263,7 +263,7 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
 
 let rec eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
-    | TEInt(n, _) -> VInt(int64 n)
+    | TEInt n -> VInt(int64 n)
     | TEStr s -> VStr s
     | TEBool b -> VBool b
     | TEUnit -> VUnit

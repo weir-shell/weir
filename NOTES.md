@@ -1,5 +1,61 @@
 # Spike Notes
 
+## Remove measures — the evidence-standard case study (2026-07-18)
+
+Units of measure are removed from weir. This entry is written BEFORE
+the deletions (plan order) so every deletion references it; it is the
+project's best case study of the evidence standard and should be
+readable in one place.
+
+The full arc, dated:
+- Spike 2: measures land; `f.Size > 1<mb>` is the acceptance test and
+  the UoM showcase. Advisor calls extensible measures "the single most
+  compelling reason to do this over Nushell" — a claim the record never
+  backed; logged here as advisor error.
+- Rules doc: measures are nominal exact-match tags; no algebra;
+  `f.Size * 2` a type error, flagged as "known ergonomic cliff, top
+  backlog item."
+- Measure algebra CANCELLED (library-phase review): zero dogfood
+  findings in the ledger; the cliff never materialized. The
+  `no_unit_algebra` tripwire made permanent (now retired below).
+- ls-Size-always-0 bug: the `int<mb>` field truncates sub-megabyte
+  files to zero — the measure *causes* a wrong-answer incident and
+  forces the two-field Bytes/Size workaround. First shape change driven
+  by dogfooding, and it cut against the feature.
+- `Seq.sum` ships bare-int-only (no measure variables exist); measured
+  ints silently excluded from aggregation.
+- Range literals session, stop-and-report: `[1<mb>..3<mb>]` needs a
+  Ty-level measure variable — a new variable kind through every audited
+  checker arm. Third checker customer for machinery serving a feature
+  with zero organic usage.
+- 2026-07-18: grep standard applied — measure literals outside tests
+  approximately zero — REMOVED. The queued measure-variables
+  re-blessing is cancelled with a pointer here.
+
+What this entry is the tombstone for (retire-loudly rule): the
+`no_unit_algebra` tripwire, the gb-vs-mb conflict pin, every §4
+checklist row and its tests, the measured-range pins from the range
+session, and FileRow.Size (the truncating field the incident created —
+`Bytes`, bare int, is the survivor; field names now carry quantity
+semantics).
+
+The named successor question: `f.Bytes > 1048576` will feel worse to
+write than `f.Size > 1<mb>` — that feeling is DATA, the display/
+conversion want surfacing honestly as an ergonomic gap instead of
+hiding behind a type tag. Evidenced answers are cheap and type-free
+when dogfooding demands them: multiplier builtins (`mb : int -> int`)
+or underscore literals (`1_048_576`). Neither ships with the removal.
+
+Consequences named: the pitch loses "extensible typed measures" and
+keeps the stronger claim (sound static HM+rows, zero runtime type
+checks, in a shell); `sortBy`'s runtime scalar-key check is again the
+ONLY qualified-types customer, and the type-class conversation returns
+to parked-until-customers with this arc as the precedent for
+speculative checker machinery; the read anchor moves to the
+post-removal commit and TRANSCRIPTION.md regenerates once, smaller
+(§4 retires; measure cases vanish from bind; the splice rule
+simplifies).
+
 ## Range literals (2026-07-18)
 
 Mini-plan session (ranges taken from the comprehension decomposition;

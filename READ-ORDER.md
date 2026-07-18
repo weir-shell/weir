@@ -1,6 +1,8 @@
 # Consolidated read — order and verdict protocol
 
-Anchored to commit d12aefd. Method: per arm, (1) verify the
+Anchored to the measure-removal commit (see PLAN-remove-measures.md for
+the hash; supersedes the original d12aefd anchor — TRANSCRIPTION.md was
+regenerated there, smaller: §4 retired with the measures). Method: per arm, (1) verify the
 TRANSCRIPTION.md rule matches the code — mechanical; (2) verify the rule
 is standard against the reading (Christiansen for bidirectional mode
 discipline; the HM walkthrough for bind/instantiate/generalize; Leijen

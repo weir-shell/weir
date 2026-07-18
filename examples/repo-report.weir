@@ -42,10 +42,10 @@ changes
     |> Seq.map (fun c -> $"  {c.Path}")
     |> print
 
-print "largest files (weir has units — Bytes is int<b>):"
+print "largest files:"
 
 ls
-    |> Seq.sortBy (fun f -> 0<b> - f.Bytes)
+    |> Seq.sortBy (fun f -> 0 - f.Bytes)
     |> Seq.first 3
     |> Seq.map (fun f -> $"  {f.Name}")
     |> print

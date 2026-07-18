@@ -8,39 +8,18 @@ open Weir.Eval
 let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
-      Fields =
-        [ "Name", TStr
-          "Size", TInt(Some "mb")
-          "Bytes", TInt(Some "b")
-          "ReadOnly", TBool ] }
+      Fields = [ "Name", TStr; "Bytes", TInt; "ReadOnly", TBool ] }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
-let file (name: string) (sizeMb: int64) (readOnly: bool) : Value =
-    VRecord(
-        fileRow.Name,
-        Map
-            [ "Name", VStr name
-              "Size", VInt sizeMb
-              "Bytes", VInt(sizeMb * 1048576L)
-              "ReadOnly", VBool readOnly ]
-    )
-
-let fileWithBytes (name: string) (bytes: int64) (readOnly: bool) : Value =
-    VRecord(
-        fileRow.Name,
-        Map
-            [ "Name", VStr name
-              "Size", VInt(bytes / 1048576L)
-              "Bytes", VInt bytes
-              "ReadOnly", VBool readOnly ]
-    )
+let file (name: string) (bytes: int64) (readOnly: bool) : Value =
+    VRecord(fileRow.Name, Map [ "Name", VStr name; "Bytes", VInt bytes; "ReadOnly", VBool readOnly ])
 
 let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
             DirectoryInfo(Session.Cwd).GetFiles()
-            |> Seq.map (fun f -> fileWithBytes f.Name f.Length f.IsReadOnly))
+            |> Seq.map (fun f -> file f.Name f.Length f.IsReadOnly))
     )
 
 let private whereImpl: Value =
@@ -170,7 +149,7 @@ let private collectImpl: Value =
 let completedDef: RecordDef =
     { Name = "Completed"
       Params = []
-      Fields = [ "ExitCode", TInt None; "Stdout", TSeq TStr; "Stderr", TSeq TStr ] }
+      Fields = [ "ExitCode", TInt; "Stdout", TSeq TStr; "Stderr", TSeq TStr ] }
 
 let private completedImpl: Value =
     VBuiltin(fun progV ->
@@ -350,7 +329,7 @@ let private mapOptionImpl: Value =
             | VUnion("None", None) -> vNone
             | v -> unreachable $"the checker rejects 'mapOption' on {formatValue v}"))
 
-let private seqInt = TSeq(TInt None)
+let private seqInt = TSeq(TInt)
 let private seqStr = TSeq TStr
 let private tA = TVar "a"
 let private tB = TVar "b"
@@ -423,18 +402,18 @@ let private rangeImpl: Value =
 let private seqMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
-      "first", TFun(TInt None, TFun(TSeq tA, TSeq tA)), truncateImpl
-      "take", TFun(TInt None, TFun(TSeq tA, TSeq tA)), truncateImpl
+      "first", TFun(TInt, TFun(TSeq tA, TSeq tA)), truncateImpl
+      "take", TFun(TInt, TFun(TSeq tA, TSeq tA)), truncateImpl
       "head", TFun(TSeq tA, tA), headImpl
-      "sum", TFun(seqInt, TInt None), sumImpl
+      "sum", TFun(seqInt, TInt), sumImpl
       "collect", TFun(TSeq tA, TSeq tA), collectImpl
       "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
-      "length", TFun(TSeq tA, TInt None), seqLengthImpl
+      "length", TFun(TSeq tA, TInt), seqLengthImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
-      "range", TFun(TInt None, TFun(TInt None, TFun(TInt None, seqInt))), rangeImpl
+      "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
 
 let private strMembers: (string * Ty * Value) list =
@@ -449,11 +428,11 @@ let private strMembers: (string * Ty * Value) list =
       "split", TFun(TStr, TFun(TStr, TSeq TStr)), splitImpl
       "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
-      "length", TFun(TStr, TInt None), strLenImpl
-      "sub", TFun(TInt None, TFun(TInt None, TFun(TStr, TStr))), substringImpl
-      "toInt", TFun(TStr, TInt None), toIntImpl
-      "tryToInt", TFun(TStr, TNamed("Option", [ TInt None ])), tryToIntImpl
-      "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt None ]))), tryIndexOfImpl ]
+      "length", TFun(TStr, TInt), strLenImpl
+      "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
+      "toInt", TFun(TStr, TInt), toIntImpl
+      "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
+      "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl ]
 
 let private optionMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl

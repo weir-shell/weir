@@ -23,7 +23,7 @@ type InterpPart<'e> =
 type Expr = { Kind: ExprKind; Span: Span }
 
 and ExprKind =
-    | EInt of value: int * measure: string option
+    | EInt of value: int
     | EStr of string
     | EBool of bool
     | EUnit

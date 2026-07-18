@@ -21,7 +21,7 @@ median() {
 
 $BIN -e '1 + 1' > /dev/null # warm the fs cache
 
-expr_ms=$(median 'ls |> where (fun f -> f.Size > 1<mb>) |> first 5')
+expr_ms=$(median 'ls |> where (fun f -> f.Bytes > 1048576) |> first 5')
 cmd_ms=$(median 'echo hi | first 1')
 
 echo "expression line median: ${expr_ms}ms (max ${EXPR_MAX_MS}ms)"

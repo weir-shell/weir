@@ -34,16 +34,6 @@ let tripwires =
               Expect.stringContains (checkErr "fun f -> f 1").Message "not a function" ""
               Expect.stringContains (checkErr "fun f -> f.x f").Message "not a function" ""
           }
-          test "no unit algebra means no normalization question (checklist 4.2)" {
-              // Measures are nominal tags (string option) with no arithmetic:
-              // scalar*measure and measure*measure are rejected, so no unit
-              // representation exists to (mis)normalize. Adding measure algebra
-              // (top of the backlog: scalar-times-measure, same-measure sum)
-              // reopens 4.2: unit equality must become normalization-based,
-              // never structural comparison of the representation.
-              Expect.stringContains (checkErr "ls |> map (fun f -> f.Size * 2)").Message "expected int<mb>, got int" ""
-              Expect.stringContains (checkErr "1<mb> * 1<mb>").Message "'*' is not defined for int<mb>" ""
-          }
           test "no annotation syntax means no trust boundary (checklist 2.3)" {
               // There is no type-ascription syntax, so an annotation cannot
               // launder a row constraint. The day ascription lands, 2.3

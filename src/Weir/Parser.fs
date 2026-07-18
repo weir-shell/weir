@@ -61,7 +61,10 @@ let private mkExpr (kind, span) = { Kind = kind; Span = span }
 let private intLit =
     spanned (
         many1Satisfy isDigit .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
-        |>> fun (digits, m) -> EInt(int digits, m)
+        >>= fun (digits, m) ->
+            match m with
+            | Some _ -> failFatally "measure literals were removed (2026-07-18); use bare int"
+            | None -> preturn (EInt(int digits))
     )
     |>> mkExpr
     .>> ws
@@ -118,11 +121,7 @@ let private dotdot = pstring ".." .>> ws
 // no unary minus elsewhere. rangeTerm is a forward ref: it needs atom, which
 // needs listLit.
 let private negIntLit =
-    spanned (
-        pchar '-' >>. many1Satisfy isDigit
-        .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
-        |>> fun (digits, m) -> EInt(-(int digits), m)
-    )
+    spanned (pchar '-' >>. many1Satisfy isDigit |>> fun digits -> EInt(-(int digits)))
     |>> mkExpr
     .>> ws
 
@@ -135,10 +134,10 @@ let private rangeBody =
         let start, step, stop =
             match c with
             | Some stop -> a, b, stop
-            | None -> a, { Kind = EInt(1, None); Span = a.Span }, b
+            | None -> a, { Kind = EInt 1; Span = a.Span }, b
 
         match step.Kind with
-        | EInt(0, _) -> failFatally "range step is zero"
+        | EInt 0 -> failFatally "range step is zero"
         | _ -> preturn (start, step, stop)
 
 // [a..s..b] is pure sugar for Seq.range a s b; [a; b; c] stays an eager list.
@@ -501,7 +500,11 @@ tySynRef.Value <-
           rawWord
           >>= fun w ->
               match w with
-              | "int" -> opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws |>> TInt
+              | "int" ->
+                  opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws
+                  >>= (function
+                  | Some _ -> failFatally "measure literals were removed (2026-07-18); use bare int"
+                  | None -> preturn TInt)
               | "string" -> ws >>% TStr
               | "bool" -> ws >>% TBool
               | "unit" -> ws >>% TUnit

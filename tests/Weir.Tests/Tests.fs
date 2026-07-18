@@ -15,8 +15,7 @@ let private parse input =
 
 let rec private show (e: Expr) : string =
     match e.Kind with
-    | EInt(n, None) -> string n
-    | EInt(n, Some m) -> $"{n}<{m}>"
+    | EInt n -> string n
     | EStr s -> $"\"{s}\""
     | EBool b -> if b then "true" else "false"
     | EVar x -> x
@@ -94,7 +93,7 @@ let private env =
         Values =
             e.Values
             |> Map.add "src" (generalize (TSeq TStr))
-            |> Map.add "double" (generalize (TFun(TInt None, TInt None))) }
+            |> Map.add "double" (generalize (TFun(TInt, TInt))) }
 
 let private ctorValues =
     [ "type Proc = Running of int | Stopped" ]
@@ -105,9 +104,9 @@ let private ctorValues =
 
 let private fakeFiles =
     [ Weir.Builtins.file "a.txt" 0 false
-      Weir.Builtins.file "b.bin" 5 true
-      Weir.Builtins.file "c.log" 1 false
-      Weir.Builtins.file "d.iso" 3 false ]
+      Weir.Builtins.file "b.bin" 5242880 true
+      Weir.Builtins.file "c.log" 1048576 false
+      Weir.Builtins.file "d.iso" 3145728 false ]
 
 let private doubleFixture =
     VBuiltin(fun v ->
@@ -143,7 +142,7 @@ let private forceSeq v =
 let private expectValue input expected =
     Expect.equal (run input) expected $"eval of '{input}'"
 
-let acceptance = "ls |> where (fun f -> f.Size > 1<mb>) |> first 5"
+let acceptance = "ls |> where (fun f -> f.Bytes > 1048576) |> first 5"
 
 let parserTests =
     testList
@@ -154,10 +153,22 @@ let parserTests =
           test "comparison binds looser than plus" { expectParse "1 + 2 > 2" "(> (+ 1 2) 2)" }
           test "lambda body extends right" { expectParse "fun x -> x + 1" "(fun x (+ x 1))" }
           test "let-in" { expectParse "let x = 1 in x" "(let x 1 x)" }
-          test "field access chains" { expectParse "f.Size > 1<mb>" "(> f.Size 1<mb>)" }
+          test "field access chains" { expectParse "f.Bytes > 1048576" "(> f.Bytes 1048576)" }
           test "shell pipe is pipe" { expectParse "ls |> where p |> first 5" "((ls |> (where p)) |> (first 5))" }
-          test "measure literal" { expectParse "1<mb> + 2<mb>" "(+ 1<mb> 2<mb>)" }
-          test "less-than without space is not a measure" { expectParse "1<2" "(< 1 2)" }
+          test "less-than without space parses as comparison (transition-recognizer guard)" {
+              expectParse "1<2" "(< 1 2)"
+          }
+          test "old measure literal gets the transition error" {
+              for old in [ "1<mb>"; "1<mb> <= 2<mb>" ] do
+                  match Weir.Parser.parseExpr old with
+                  | Error msg -> Expect.stringContains msg "measure literals were removed" "courtesy error"
+                  | Ok _ -> failtest $"expected the transition error for {old}"
+          }
+          test "old measure type syntax gets the transition error" {
+              match Weir.Parser.parseStmt "type T = { F: int<mb> }" with
+              | Error msg -> Expect.stringContains msg "measure literals were removed" "courtesy error"
+              | Ok _ -> failtest "expected the transition error"
+          }
           test "leaf span is exact" {
               let e = parse "  double  "
               Expect.equal e.Span.Start.Col 3 "start"
@@ -176,30 +187,17 @@ let checkerTests =
               Expect.equal (checkOk acceptance).Ty Weir.Builtins.seqFileRow ""
           }
           test "typo in field is rejected with exact span and a hint" {
-              let input = "ls |> where (fun f -> f.Sze > 1<mb>) |> first 5"
+              let input = "ls |> where (fun f -> f.Bytse > 1048576) |> first 5"
               let terr = checkErr input
-              let expectedStart = input.IndexOf "Sze" + 1
+              let expectedStart = input.IndexOf "Bytse" + 1
               Expect.equal terr.Span.Start.Col expectedStart "start col"
-              Expect.equal terr.Span.End.Col (expectedStart + 3) "end col"
-              Expect.stringContains terr.Message "FileRow has no field 'Sze'" ""
-              Expect.stringContains terr.Message "Did you mean 'Size'?" ""
+              Expect.equal terr.Span.End.Col (expectedStart + 5) "end col"
+              Expect.stringContains terr.Message "FileRow has no field 'Bytse'" ""
+              Expect.stringContains terr.Message "Did you mean 'Bytes'?" ""
           }
           test "lambda body of wrong type reports expected vs actual" {
-              let terr = checkErr "ls |> where (fun f -> f.Size) |> first 5"
-              Expect.stringContains terr.Message "expected bool, got int<mb>" ""
-          }
-          test "measure mismatch in comparison" {
-              let input = "ls |> where (fun f -> f.Size > 1) |> first 5"
-              let terr = checkErr input
-              Expect.stringContains terr.Message "expected int<mb>, got int" ""
-              Expect.equal terr.Span.Start.Col (input.IndexOf "1)" + 1) "span points at the bare 1"
-          }
-          test "same measures add" { Expect.equal (checkOk "1<mb> + 2<mb>").Ty (TInt(Some "mb")) "" }
-          test "different measures do not add" {
-              Expect.stringContains (checkErr "1<mb> + 2<gb>").Message "expected int<mb>, got int<gb>" ""
-          }
-          test "measureless int does not add to measured" {
-              Expect.stringContains (checkErr "1<mb> + 2").Message "expected int<mb>, got int" ""
+              let terr = checkErr "ls |> where (fun f -> f.Bytes) |> first 5"
+              Expect.stringContains terr.Message "expected bool, got int" ""
           }
           test "unbound variable gets a hint" {
               Expect.stringContains (checkErr "doble 5").Message "Did you mean 'double'?" ""
@@ -212,13 +210,9 @@ let checkerTests =
               | TFun(TVar a, TVar b) when a = b -> ()
               | t -> failtest $"expected 'a -> 'a, got {formatTy t}"
           }
-          test "lambda applied to a known argument infers" {
-              Expect.equal (checkOk "(fun x -> x + 1) 41").Ty (TInt None) ""
-          }
-          test "pipe into lambda infers" { Expect.equal (checkOk "5 |> fun x -> x * x").Ty (TInt None) "" }
-          test "let body type is the expression type" {
-              Expect.equal (checkOk "let x = 5 in x |> double").Ty (TInt None) ""
-          }
+          test "lambda applied to a known argument infers" { Expect.equal (checkOk "(fun x -> x + 1) 41").Ty (TInt) "" }
+          test "pipe into lambda infers" { Expect.equal (checkOk "5 |> fun x -> x * x").Ty (TInt) "" }
+          test "let body type is the expression type" { Expect.equal (checkOk "let x = 5 in x |> double").Ty (TInt) "" }
           test "applying a non-function is rejected" {
               Expect.stringContains (checkErr "5 |> 3").Message "must be a function" ""
           }
@@ -244,18 +238,24 @@ let evalTests =
     testList
         "Eval"
         [ test "acceptance pipeline evaluates over records" {
-              expectValue acceptance (VSeq [ Weir.Builtins.file "b.bin" 5 true; Weir.Builtins.file "d.iso" 3 false ])
+              expectValue
+                  acceptance
+                  (VSeq
+                      [ Weir.Builtins.file "b.bin" 5242880 true
+                        Weir.Builtins.file "d.iso" 3145728 false ])
           }
           test "where by string field" {
-              expectValue "ls |> where (fun f -> f.Name == \"c.log\")" (VSeq [ Weir.Builtins.file "c.log" 1 false ])
+              expectValue
+                  "ls |> where (fun f -> f.Name == \"c.log\")"
+                  (VSeq [ Weir.Builtins.file "c.log" 1048576 false ])
           }
           test "where by bool field" {
-              expectValue "ls |> where (fun f -> f.ReadOnly)" (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
+              expectValue "ls |> where (fun f -> f.ReadOnly)" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "first truncates" {
               expectValue
                   "ls |> first 2"
-                  (VSeq [ Weir.Builtins.file "a.txt" 0 false; Weir.Builtins.file "b.bin" 5 true ])
+                  (VSeq [ Weir.Builtins.file "a.txt" 0 false; Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "arithmetic and pipes: 1 + 2 |> double" { expectValue "1 + 2 |> double" (VInt 6) }
           test "precedence: 1 + 2 * 3" { expectValue "1 + 2 * 3" (VInt 7) }
@@ -267,17 +267,16 @@ let evalTests =
           test "partially applied polymorphic builtin stays polymorphic" {
               expectValue
                   "let firstTwo = first 2 in ls |> firstTwo |> where (fun f -> f.ReadOnly)"
-                  (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
+                  (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "lambda in polymorphic position without data now checks via rows" {
               expectValue
                   "let staged = where (fun f -> f.ReadOnly) in ls |> staged"
-                  (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
+                  (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "shadowing" { expectValue "let x = 1 in let x = 2 in x" (VInt 2) }
           test "string concat" { expectValue "\"foo\" + \"bar\"" (VStr "foobar") }
-          test "comparison" { expectValue "2 > 1" (VBool true) }
-          test "measure is erased at runtime" { expectValue "1<mb> + 2<mb>" (VInt 3) } ]
+          test "comparison" { expectValue "2 > 1" (VBool true) } ]
 
 let rejectedAtCheckTests =
     testList
@@ -285,7 +284,7 @@ let rejectedAtCheckTests =
         [ test "unbound variable" { checkErr "nope" |> ignore }
           test "applying a non-function" { checkErr "1 2" |> ignore }
           test "string plus int" { checkErr "\"a\" + 1" |> ignore }
-          test "field typo in a pipeline" { checkErr "ls |> where (fun f -> f.Sze > 1<mb>)" |> ignore }
+          test "field typo in a pipeline" { checkErr "ls |> where (fun f -> f.Bytse > 1)" |> ignore }
           test "wrong argument to a builtin" { checkErr "double \"x\"" |> ignore }
           test "piping a seq into an int function" { checkErr "ls |> double" |> ignore }
           test "let-bound bare lambda cannot infer without annotations" {
@@ -365,7 +364,7 @@ let matchTests =
               let e = parse "match Node Leaf with | Node Leaf -> 1 | Node _ -> 2 | Leaf -> 0"
 
               match Weir.Check.typecheck treeEnv e with
-              | Ok te -> Expect.equal te.Ty (TInt None) ""
+              | Ok te -> Expect.equal te.Ty (TInt) ""
               | Error terr -> failtest (formatError terr)
           }
           test "arm bodies must agree on type" {
@@ -446,7 +445,7 @@ let streamingTests =
               let infinite = Seq.initInfinite (fun i -> Weir.Builtins.file $"f{i}" i false)
 
               let result =
-                  runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.Size > 1<mb>) |> first 5"
+                  runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.Bytes > 1) |> first 5"
                   |> forceSeq
 
               Expect.equal (List.length result) 5 "exactly five rows"
@@ -471,7 +470,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.Size > 1<mb>) |> first 2"
+              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.Bytes > 1) |> first 2"
               |> forceSeq
               |> ignore
 
@@ -485,7 +484,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.Size > 1<mb>) |> first 5"
+              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.Bytes > 1) |> first 5"
               |> ignore
 
               Expect.equal pulled.Value 0 "evaluation alone must not enumerate"
@@ -521,7 +520,7 @@ let polymorphismTests =
               Expect.equal (checkOk "ls |> where (fun f -> f.ReadOnly)").Ty Weir.Builtins.seqFileRow ""
           }
           test "map changes the element type" {
-              Expect.equal (checkOk "ls |> map (fun f -> f.Size)").Ty (TSeq(TInt(Some "mb"))) ""
+              Expect.equal (checkOk "ls |> map (fun f -> f.Bytes)").Ty (TSeq TInt) ""
           }
           test "map over ints still works" {
               Expect.equal (run "nats |> map (fun x -> x * x) |> take 3" |> forceSeq) [ VInt 0; VInt 1; VInt 4 ] ""
@@ -530,7 +529,7 @@ let polymorphismTests =
               Expect.equal (run "nats |> map double |> take 3" |> forceSeq) [ VInt 0; VInt 2; VInt 4 ] ""
           }
           test "full application instantiates from the trailing data argument" {
-              expectValue "where (fun f -> f.ReadOnly) ls |> first 1" (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
+              expectValue "where (fun f -> f.ReadOnly) ls |> first 1" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "instantiation mismatch is reported" {
               Expect.stringContains
@@ -613,14 +612,14 @@ let boundaryTests =
           test "to json serializes records as ndjson" {
               Expect.equal
                   (run "ls |> first 1 |> to json" |> forceSeq)
-                  [ VStr """{"Bytes":0,"Name":"a.txt","ReadOnly":false,"Size":0}""" ]
+                  [ VStr """{"Bytes":0,"Name":"a.txt","ReadOnly":false}""" ]
                   ""
           }
           test "json roundtrip preserves rows" {
               Expect.equal (run "ls |> to json |> from json FileRow" |> forceSeq) fakeFiles ""
           }
           test "from json validates field types" {
-              let src = VSeq [ VStr """{"Name":"x","Size":"big","ReadOnly":false}""" ]
+              let src = VSeq [ VStr """{"Name":"x","Bytes":"big","ReadOnly":false}""" ]
 
               Expect.throws (fun () -> runWith [ "src", src ] "src |> from json FileRow" |> forceSeq |> ignore) ""
           }
@@ -635,7 +634,7 @@ let boundaryTests =
 
               Expect.equal
                   (runWith [ "src", src ] "src |> from json FileRow" |> forceSeq)
-                  [ Weir.Builtins.file "x" 1 true ]
+                  [ Weir.Builtins.file "x" 1048576 true ]
                   ""
           }
           test "into feeds stdin and yields stdout" {
@@ -696,30 +695,20 @@ let shorthandTests =
               expectParse "where _.ReadOnly" "(where (fun _ _.ReadOnly))"
           }
           test "where with shorthand filters" {
-              expectValue "ls |> where _.ReadOnly" (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
+              expectValue "ls |> where _.ReadOnly" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "map with shorthand projects" {
-              Expect.equal (checkOk "ls |> map _.Size").Ty (TSeq(TInt(Some "mb"))) ""
+              Expect.equal (checkOk "ls |> map _.Bytes").Ty (TSeq TInt) ""
 
               Expect.equal (run "ls |> map _.Name |> first 2" |> forceSeq) [ VStr "a.txt"; VStr "b.bin" ] ""
           }
           test "shorthand chains through nested records" { expectParse "map _.A.B" "(map (fun _ _.A.B))" }
           test "shorthand in a larger expression gets the targeted hint" {
-              let terr = checkErr "ls |> where (_.Bytes > 9<mb>)"
+              let terr = checkErr "ls |> where (_.Bytes > 9) |> first \"x\""
               Expect.stringContains terr.Message "_.Field is a whole function" ""
           }
-          test "the corrected form hits the honest measure error" {
-              Expect.stringContains
-                  (checkErr "ls |> where (fun f -> f.Bytes > 9<mb>)").Message
-                  "expected int<b>, got int<mb>"
-                  ""
-          }
-          test "byte literals and Size both filter correctly" {
-              expectValue
-                  "ls |> where (fun f -> f.Bytes > 2097152<b>) |> map _.Name"
-                  (VSeq [ VStr "b.bin"; VStr "d.iso" ])
-
-              expectValue "ls |> where (fun f -> f.Size > 1<mb>) |> map _.Name" (VSeq [ VStr "b.bin"; VStr "d.iso" ])
+          test "byte literals filter correctly" {
+              expectValue "ls |> where (fun f -> f.Bytes > 2097152) |> map _.Name" (VSeq [ VStr "b.bin"; VStr "d.iso" ])
           }
           test "bare underscore is not an expression" {
               Expect.stringContains (checkErr "_ + 1").Message "unbound variable '_'" ""
@@ -731,8 +720,7 @@ let shorthandTests =
               expectValue "\"back\\\\slash\"" (VStr "back\\slash")
           }
           test "escaped strings survive a json roundtrip" {
-              let src =
-                  VSeq [ VStr """{"Name":"a\"b","Size":1,"Bytes":1048576,"ReadOnly":false}""" ]
+              let src = VSeq [ VStr """{"Name":"a\"b","Bytes":1048576,"ReadOnly":false}""" ]
 
               Expect.equal
                   (runWith [ "src", src ] "src |> from json FileRow |> map _.Name" |> forceSeq)
@@ -750,11 +738,11 @@ let completionTests =
           test "keyword completion" { Expect.contains (suggest "ma" 0) "match" "" }
           test "lambda parameter completes from the pipeline element type" {
               let text = "ls |> where (fun f -> f."
-              Expect.equal (suggest text (text.Length - 2)) [ "f.Bytes"; "f.Name"; "f.ReadOnly"; "f.Size" ] ""
+              Expect.equal (suggest text (text.Length - 2)) [ "f.Bytes"; "f.Name"; "f.ReadOnly" ] ""
           }
           test "field prefix narrows the suggestions" {
-              let text = "ls |> where (fun f -> f.S"
-              Expect.equal (suggest text (text.Length - 3)) [ "f.Size" ] ""
+              let text = "ls |> where (fun f -> f.B"
+              Expect.equal (suggest text (text.Length - 3)) [ "f.Bytes" ] ""
           }
           test "bound record variable completes its fields" {
               let envWithQ =
@@ -788,12 +776,14 @@ let rowTests =
               | t -> failtest $"expected a row-typed projection, got {formatTy t}"
           }
           test "field usage constrains the row" {
-              match (checkOk "fun f -> f.Size > 1<mb>").Ty with
-              | TFun(TRowVar(_, [ "Size", TInt(Some "mb") ]), TBool) -> ()
-              | t -> failtest $"expected {{ Size: int<mb>; .. }} -> bool, got {formatTy t}"
+              match (checkOk "fun f -> f.Bytes > 1048576").Ty with
+              | TFun(TRowVar(_, [ "Bytes", TInt ]), TBool) -> ()
+              | t -> failtest $"expected {{ Bytes: int; .. }} -> bool, got {formatTy t}"
           }
           test "row-typed filter discharges against FileRow" {
-              expectValue "let staged = where _.ReadOnly in ls |> staged" (VSeq [ Weir.Builtins.file "b.bin" 5 true ])
+              expectValue
+                  "let staged = where _.ReadOnly in ls |> staged"
+                  (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "one row-polymorphic projection reused across two record types" {
               let vecEnv = env |> declare "type Vec = { X: int; Z: int }"
@@ -809,24 +799,24 @@ let rowTests =
               match Weir.Check.typecheck vecEnv e with
               | Error terr -> failtest (formatError terr)
               | Ok te ->
-                  Expect.equal te.Ty (TInt None) "type"
+                  Expect.equal te.Ty (TInt) "type"
                   Expect.equal (eval valueEnv te) (VInt 4) "0+1 and 0+1+2"
           }
           test "row discharge through a let reports the typo at the use site" {
-              let input = "let f = where (fun c -> c.Sze > 1<mb>) in ls |> f"
+              let input = "let f = where (fun c -> c.Bytse > 1) in ls |> f"
               let terr = checkErr input
-              Expect.stringContains terr.Message "FileRow has no field 'Sze'" ""
-              Expect.stringContains terr.Message "Did you mean 'Size'?" ""
+              Expect.stringContains terr.Message "FileRow has no field 'Bytse'" ""
+              Expect.stringContains terr.Message "Did you mean 'Bytes'?" ""
               Expect.equal terr.Span.Start.Col (input.LastIndexOf "f" + 1) "span points at the use"
           }
           test "direct pipeline typo keeps the exact field span" {
-              let input = "ls |> where (fun c -> c.Sze > 1<mb>)"
+              let input = "ls |> where (fun c -> c.Bytse > 1)"
               let terr = checkErr input
-              Expect.equal terr.Span.Start.Col (input.IndexOf "Sze" + 1) "span points at the typo"
+              Expect.equal terr.Span.Start.Col (input.IndexOf "Bytse" + 1) "span points at the typo"
           }
           test "row discharge checks the field type" {
-              let terr = checkErr "let f = where (fun c -> c.Name > 1<mb>) in ls |> f"
-              Expect.stringContains terr.Message "expected string, got int<mb>" ""
+              let terr = checkErr "let f = where (fun c -> c.Name > 1) in ls |> f"
+              Expect.stringContains terr.Message "expected string, got int" ""
           }
           test "record missing a constrained field is rejected" {
               Expect.stringContains
@@ -835,7 +825,7 @@ let rowTests =
                   ""
           }
           test "unitless product binds unknowns to int" {
-              Expect.equal (checkOk "fun x -> x * x").Ty (TFun(TInt None, TInt None)) ""
+              Expect.equal (checkOk "fun x -> x * x").Ty (TFun(TInt, TInt)) ""
           }
           test "ambiguous operands stay an error" {
               Expect.stringContains (checkErr "fun x -> x + x").Message "cannot infer the operand types" ""
@@ -929,7 +919,7 @@ let session2Tests =
         "sh/cmd split and session cwd"
         [ test "list literal parses, types, evaluates" {
               expectParse "[1; 2; 3]" "[1; 2; 3]"
-              Expect.equal (checkOk "[1; 2]").Ty (TSeq(TInt None)) "type"
+              Expect.equal (checkOk "[1; 2]").Ty (TSeq(TInt)) "type"
               expectValue "[1; 2] |> sum" (VInt 3)
               expectValue "[\"a\"; \"b\"] |> first 1" (VSeq [ VStr "a" ])
           }
@@ -1301,7 +1291,7 @@ let session3Tests =
               Expect.equal (checkOk "pwd |> head").Ty TStr "singleton extraction types to the element"
           }
           test "head on an empty sequence raises" {
-              Expect.throws (fun () -> run "ls |> where (fun f -> f.Size > 999<mb>) |> head" |> ignore) ""
+              Expect.throws (fun () -> run "ls |> where (fun f -> f.Bytes > 999999999) |> head" |> ignore) ""
           }
           test "stderr passes through: stdout stream stays clean" {
               Expect.equal (runReal "cmd \"sh\" [\"-c\"; \"echo out; echo err 1>&2\"]" |> forceSeq) [ VStr "out" ] ""
@@ -1407,7 +1397,7 @@ let stringTests =
           }
           test "Seq.sortBy over scalar keys" {
               Expect.equal
-                  (run "ls |> Seq.sortBy _.Size |> map _.Name" |> forceSeq)
+                  (run "ls |> Seq.sortBy _.Bytes |> map _.Name" |> forceSeq)
                   [ VStr "a.txt"; VStr "c.log"; VStr "d.iso"; VStr "b.bin" ]
                   "by size"
 
@@ -1454,7 +1444,7 @@ let genericsTests =
               expectValue "match Some 5 with | Some x -> x + 1 | None -> 0" (VInt 6)
           }
           test "Result infers across arms" {
-              Expect.equal (checkOk "match Ok 3 with | Ok v -> v | Error e -> Str.length e").Ty (TInt None) ""
+              Expect.equal (checkOk "match Ok 3 with | Ok v -> v | Error e -> Str.length e").Ty (TInt) ""
               expectValue "match Error \"boom\" with | Ok v -> v | Error e -> Str.length e" (VInt 4)
           }
           test "missing None warns" {
@@ -1488,7 +1478,7 @@ let genericsTests =
 
               match Weir.Check.typecheck e2 expr with
               | Ok te ->
-                  Expect.equal te.Ty (TInt None) ""
+                  Expect.equal te.Ty (TInt) ""
                   Expect.equal (eval valueEnv te) (VInt 3) ""
               | Error terr -> failtest (formatError terr)
           }
@@ -1535,7 +1525,7 @@ let optionSweepTests =
                   (VStr "b.bin")
 
               expectValue
-                  "ls |> Seq.tryFind (fun f -> f.Size > 999<mb>) |> Option.map _.Name |> Option.defaultTo \"none\""
+                  "ls |> Seq.tryFind (fun f -> f.Bytes > 999999999) |> Option.map _.Name |> Option.defaultTo \"none\""
                   (VStr "none")
           }
           test "Str.tryIndexOf and Str.sub compose" {
@@ -2016,9 +2006,8 @@ let rangeTests =
           test "computed zero step raises at runtime" {
               Expect.throwsT<exn> (fun () -> run "let z = 0 in [1..z..5] |> Seq.length" |> ignore) "runtime"
           }
-          test "measured endpoints rejected (named limitation: no measure-polymorphic schemes)" {
-              let terr = checkErr "[1<mb>..3<mb>] |> Seq.length"
-              Expect.stringContains (formatError terr) "int<mb>" "ordinary mismatch error"
+          test "ranges are plainly int (the measure limitation dissolved with measures)" {
+              expectValue "[1..3] |> Seq.sum" (VInt 6L)
           }
           test "F#-rejects-this: open and malformed ranges" {
               for bad in [ "[1..]"; "[..5]"; "[1..2..3..4]" ] do
@@ -2081,7 +2070,6 @@ let operatorTests =
               expectParse "1 < 2 || 2 <= 3 && 4 >= 4" "(|| (< 1 2) (&& (<= 2 3) (>= 4 4)))"
           }
           test "not-equal parses as one operator" { expectParse "a <> b" "(<> a b)" }
-          test "measure literal still wins over <=" { expectParse "1<mb> <= 2<mb>" "(<= 1<mb> 2<mb>)" }
           test "not-equal on values" {
               expectValue "1 <> 2" (VBool true)
               expectValue "\"a\" <> \"a\"" (VBool false)
@@ -2090,16 +2078,16 @@ let operatorTests =
           test "not-equal inherits equatability: seqs rejected" {
               Expect.stringContains (checkErr "nats <> nats").Message "'<>' is not defined for seq<int>" ""
           }
-          test "ordered comparisons include boundaries and measures" {
+          test "ordered comparisons include boundaries" {
               expectValue "2 >= 2" (VBool true)
               expectValue "2 <= 1" (VBool false)
-              expectValue "3<mb> >= 2<mb>" (VBool true)
-              Expect.stringContains (checkErr "1<mb> <= 1<gb>").Message "expected int<mb>, got int<gb>" ""
           }
           test "common filter shape works" {
               expectValue
-                  "ls |> where (fun f -> f.Name <> \"a.txt\" && f.Size <= 3<mb>)"
-                  (VSeq [ Weir.Builtins.file "c.log" 1 false; Weir.Builtins.file "d.iso" 3 false ])
+                  "ls |> where (fun f -> f.Name <> \"a.txt\" && f.Bytes <= 3145728)"
+                  (VSeq
+                      [ Weir.Builtins.file "c.log" 1048576 false
+                        Weir.Builtins.file "d.iso" 3145728 false ])
           }
           test "not builtin" {
               expectValue "not true" (VBool false)
@@ -2128,10 +2116,6 @@ let adversarialTests =
         [ test "wrong arity application" {
               Expect.stringContains (checkErr "double 1 2").Message "'double' takes at most 1 argument(s), but got 2" ""
           }
-          test "measure mismatch rejects in both directions" {
-              Expect.stringContains (checkErr "1<mb> > 1<s>").Message "expected int<mb>, got int<s>" ""
-              Expect.stringContains (checkErr "1<s> > 1<mb>").Message "expected int<s>, got int<mb>" ""
-          }
           test "shadowing with a different type is respected" {
               Expect.stringContains
                   (checkErr "let x = 1 in let x = \"s\" in x + 1").Message
@@ -2144,10 +2128,10 @@ let adversarialTests =
               let terr = checkErr "nats |> map (fun x -> x * x) |> where (fun x -> x.ReadOnly)"
               Expect.stringContains terr.Message "only records have fields" ""
           }
-          test "row constraint conflicts with the declared field measure" {
+          test "row constraint conflicts with the declared field type" {
               Expect.stringContains
-                  (checkErr "let g = fun r -> r.Size > 1<s> in ls |> where g").Message
-                  "expected int<mb>, got int<s>"
+                  (checkErr "let g = fun r -> r.Name > 1 in ls |> where g").Message
+                  "expected string, got int"
                   ""
           }
           test "piping a lambda as data into an int function is rejected" {
@@ -2180,7 +2164,7 @@ let adversarialTests =
           }
           test "1.4 row is closed after nominal discharge" {
               Expect.stringContains
-                  (checkErr "ls |> where (fun f -> f.Size > 1<mb>) |> where (fun f -> f.Nonexistent == 1)").Message
+                  (checkErr "ls |> where (fun f -> f.Bytes > 1) |> where (fun f -> f.Nonexistent == 1)").Message
                   "FileRow has no field 'Nonexistent'"
                   ""
           }
@@ -2204,18 +2188,12 @@ let adversarialTests =
               match Weir.Check.typecheck e2 expr with
               | Error terr -> failtest (formatError terr)
               | Ok te ->
-                  Expect.equal te.Ty (TInt None) "int and string uses of getV both accepted"
+                  Expect.equal te.Ty (TInt) "int and string uses of getV both accepted"
                   Expect.equal (eval valueEnv te) (VInt 1) "sum of 0+1"
-          }
-          test "4.3 measured division does not collapse to dimensionless" {
-              Expect.stringContains
-                  (checkErr "ls |> map (fun f -> f.Size / f.Size)").Message
-                  "'/' is not defined for int<mb>"
-                  ""
           }
           test "5.2 shadowing does not leak the outer row constraint" {
               match (checkOk "fun f -> (f.A > 1) == (let f = \"s\" in f == \"s\")").Ty with
-              | TFun(TRowVar(_, [ "A", TInt None ]), TBool) -> ()
+              | TFun(TRowVar(_, [ "A", TInt ]), TBool) -> ()
               | t -> failtest $"expected {{ A: int; .. }} -> bool, got {formatTy t}"
           }
           test "porcelain unquotes C-quoted paths" {
