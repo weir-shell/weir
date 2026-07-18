@@ -1,5 +1,27 @@
 # Spike Notes
 
+## Example modernization catches a let-RHS regression (2026-07-18)
+
+Modernizing examples/repo-report.weir to current idioms (let-RHS
+porcelain binding, a when-guarded status tier, a streaming command
+section, workdir interpolated from cd's return) immediately exposed a
+regression the let-RHS session shipped: **`let workdir = cd target`
+silently changed meaning** — command-callable `cd` won the RHS head
+decision and `target` became a bareword (literal "target"), where the
+line had always been expression mode (cd applied to the binding). The
+old test pin covered known-name heads (`let x = ls`) but commandCallable
+outranks the known-check in the head decision — exactly the shadowing
+subtlety the sh-removal amendment warned about, on the other builtin.
+
+Fix: command-callable builtins stay ordinary functions on a let RHS
+(builtinHeads flag threaded through the command grammar); only genuine
+externals enter command mode there. Old meaning restored exactly;
+regression pin added (cd applied to the binding, by AST shape).
+411 tests. Lesson recorded: every mode-decision change needs pins for
+ALL THREE head classes (external, known, command-callable), not just
+the two that seem relevant.
+
+
 ## Part 3: overflow policy + data-range battery; collect renamed (2026-07-18)
 
 Branch overflow-policy, gate waived by the owner (Part 2 pattern).

@@ -12,14 +12,16 @@ let target =
     |> Seq.tryHead
     |> Option.defaultTo "."
 
+// cd returns the new cwd — bind it once, interpolate it everywhere
 let workdir = cd target
 
-print $"=== repo report: {pwd |> Seq.head} ==="
+print $"=== repo report: {workdir} ==="
 
-// typed rows straight out of git's porcelain format
+// a command line on a let RHS binds its output; the porcelain adapter
+// turns it into typed rows
 let changes =
-    cmd "git" ["status"; "--porcelain"]
-    |> from porcelain
+    git status --porcelain
+    | from porcelain
 
 let health =
     let count = changes |> Seq.length
@@ -28,6 +30,7 @@ let health =
 let status =
     match health with
     | Clean -> "status: clean"
+    | Dirty n when n > 10 -> $"status: dirty ({n} changes — commit soon?)"
     | Dirty n -> $"status: dirty ({n} changes)"
 
 print status
@@ -44,7 +47,12 @@ print "largest files:"
 ls
     |> Seq.sortBy (fun f -> 0 - f.Bytes)
     |> Seq.first 3
-    |> Seq.map (fun f -> $"  {f.Name}")
+    |> Seq.map (fun f -> $"  {f.Name} ({f.Bytes} bytes)")
     |> print
 
-print $"done in {pwd |> Seq.head}"
+print "recent commits:"
+
+// command statements stream straight to stdout
+git log -3 "--format=  %h %s"
+
+print $"done in {workdir}"

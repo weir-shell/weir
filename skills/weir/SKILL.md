@@ -109,9 +109,11 @@ print "unreached"
   `type T = { field: ty; ... }` declared first (exact field set).
 - A top-level `let` RHS takes command lines: `let files = git ls-files`
   binds `seq<string>`; `let r = git status | complete` binds the
-  record. NOT in `let ... in` or inside expressions — there use
-  `cmd "git" ["status"; "--porcelain"]` (prog + argv list). A bareword
-  `in` on a let RHS ends the command grammar; quote `"in"` to pass it.
+  record. Externals only — builtins stay functions there
+  (`let w = cd target` applies the BINDING target). NOT in `let ... in`
+  or inside expressions — there use `cmd "git" ["status"; "--porcelain"]`
+  (prog + argv list). A bareword `in` on a let RHS ends the command
+  grammar; quote `"in"` to pass it.
 - `Seq.pairwise` gives adjacent pairs as `{ Fst; Snd }` records:
   `xs |> Seq.pairwise |> Seq.map (fun p -> p.Snd - p.Fst)`.
 - Blank lines END statements — never leave one inside an indented

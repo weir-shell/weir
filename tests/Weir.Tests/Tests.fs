@@ -2160,6 +2160,13 @@ let agentFindingsTests =
                   failtest $"the in-eating cliff is back: {List.length args} argv words"
               | _ -> ()
           }
+          test "let RHS: command-callable builtins stay functions (regression pin)" {
+              // `let workdir = cd target` must apply the BINDING, not pass a
+              // bareword — the meaning it had before let-RHS command mode.
+              match Weir.Parser.parseLine cmdResolver "let w = cd target" with
+              | Ok(SLet("w", { Kind = EApp({ Kind = EVar "cd" }, { Kind = EVar "target" }) })) -> ()
+              | other -> failtest $"expected cd applied to the binding, got {other}"
+          }
           test "let RHS: quoted in passes to the command" {
               match Weir.Parser.parseLine cmdResolver "let x = grep \"in\" f" with
               | Ok(SLet("x", { Kind = ECmd("grep", [ _; _ ]) })) -> ()

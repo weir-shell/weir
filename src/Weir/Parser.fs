@@ -426,7 +426,7 @@ type private HeadKind =
     | ExternalHead
     | BuiltinHead
 
-let private commandSegment (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
+let private commandSegment (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
     let head =
         spanned (opt (pchar '^') .>>. cmdWord) .>> ws
         >>= fun ((forced, w), span) ->
@@ -443,7 +443,7 @@ let private commandSegment (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Exp
                     preturn (ExternalHead, w, span)
                 else
                     failFatally $"command not found: {w}{didYouMean w (r.ExternalNames())}"
-            elif isIdentLike w && r.IsCommandCallable w then
+            elif builtinHeads && isIdentLike w && r.IsCommandCallable w then
                 preturn (BuiltinHead, w, span)
             elif isIdentLike w && (keywords.Contains w || r.IsKnown w) then
                 fail "known name; expression mode"
@@ -482,8 +482,8 @@ let private commandSegment (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Exp
 
 let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
 
-let private segment (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
-    choice [ commandSegment argP r; segExpr ]
+let private segment (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
+    choice [ commandSegment builtinHeads argP r; segExpr ]
 
 type private Seg =
     | Stage of Expr
@@ -497,9 +497,9 @@ let private completeMarker =
     )
     |>> fun (_, span) -> CompleteMarker span
 
-let private cmdLineWith (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
-    commandSegment argP r
-    .>>. many (pipeSep >>. (completeMarker <|> (segment argP r |>> Stage)))
+let private cmdLineWith (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
+    commandSegment builtinHeads argP r
+    .>>. many (pipeSep >>. (completeMarker <|> (segment builtinHeads argP r |>> Stage)))
     >>= fun (h, rest) ->
         let folded =
             rest
@@ -539,10 +539,14 @@ let private cmdLineWith (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, 
         | Result.Ok e -> preturn e
         | Result.Error m -> failFatally m
 
-let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith cmdArg r
+let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg r
 
-// let-RHS command lines stop at a bareword `in` (see cmdArgWith)
-let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> = cmdLineWith (cmdArgWith true) r
+// let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
+// command-callable builtins (cd) stay ordinary functions there — found as a
+// silent meaning change of `let workdir = cd target` (target became a
+// bareword) when the example script was modernized.
+let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
+    cmdLineWith false (cmdArgWith true) r
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
