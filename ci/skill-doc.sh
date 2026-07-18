@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Doc-tests for skills/weir/SKILL.md: every fenced `weir` block must run
+# clean against the AOT binary; every `weir-error` block must fail.
+# A skill-file line that stops being true fails the build.
+set -euo pipefail
+
+BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
+SKILL="$(dirname "$0")/../skills/weir/SKILL.md"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+(
+    cd "$work"
+    git init -q
+    echo seed > seed.txt
+    git add -A
+    git -c user.email=ci@ci -c user.name=ci commit -qm seed
+)
+
+# extract blocks: emit "<kind>\t<file>" pairs
+mapfile -t blocks < <(awk -v out="$work" '
+    /^```weir-error$/ { kind="err"; n++; f=out"/block-"n".weir"; printf "" > f; inblock=1; print kind"\t"f; next }
+    /^```weir$/       { kind="ok";  n++; f=out"/block-"n".weir"; printf "" > f; inblock=1; print kind"\t"f; next }
+    /^```$/           { inblock=0; next }
+    inblock           { print $0 >> f }
+' "$SKILL")
+
+[ "${#blocks[@]}" -gt 0 ] || { echo "skill-doc FAIL: no blocks extracted" >&2; exit 1; }
+
+i=0
+for entry in "${blocks[@]}"; do
+    kind="${entry%%$'\t'*}"
+    file="${entry#*$'\t'}"
+    i=$((i + 1))
+
+    if [ "$kind" = "ok" ]; then
+        if ! out=$(cd "$work" && "$BIN" "$file" 2>&1); then
+            echo "skill-doc FAIL: block $i should run clean:" >&2
+            cat "$file" >&2
+            echo "--- output:" >&2
+            echo "$out" >&2
+            exit 1
+        fi
+        echo "skill-doc ok: block $i runs"
+    else
+        if (cd "$work" && "$BIN" "$file" >/dev/null 2>&1); then
+            echo "skill-doc FAIL: block $i should be rejected:" >&2
+            cat "$file" >&2
+            exit 1
+        fi
+        echo "skill-doc ok: block $i rejected as documented"
+    fi
+done
+
+echo "skill-doc: all $i blocks hold"

@@ -132,6 +132,12 @@ quantity semantics now.
 - Pipe is `|>` only. Match arm bodies are full expressions; piping a whole
   `match` requires parens (arm bodies bind tighter), as does a nested `match`
   in an arm.
+- **Why `==` and not `=`** (archaeology backfilled 2026-07-18; the rule
+  predates the decision-record convention): `=` already serves `let`
+  and record fields, and a dual-role `=` needs contextual
+  disambiguation — contrary to the LL-simple, reject-don't-guess
+  grammar posture. `==` additionally matches C-family/bash priors, now
+  strategically relevant for agent authorship (skills/weir/SKILL.md).
 - `==`/`<>` unify their operands first, then require the resolved type to be
   equatable: no sequences or functions, checked recursively through records
   and unions. Unification means one-sided resolution is fine —
@@ -361,11 +367,14 @@ quantity semantics now.
   string). Programs containing `/` resolve against `Session.Cwd`; bare names
   resolve against PATH.
 - **Splice-defaulting soundness condition** (why "unresolved argv-position
-  types default to string" is harmless): command segments exist only at line
-  top level and can never occur under a generalizing `let` — guaranteed by
-  the "expression mode never flows back into command mode" exclusion — so a
-  defaulted variable can never be generalized and instantiated elsewhere at
-  a different type.
+  types default to string" is harmless) — justification updated when
+  let-RHS command mode landed (2026-07-18; commands CAN now sit under a
+  generalizing top-level `let`): splices bind their variable to string
+  EAGERLY at check time, and command segments still exist only at line
+  top level — never under a lambda — so no monomorphic parameter
+  variable is in scope to default, and a freshly-instantiated
+  outer-binding variable defaulted by a splice is local to the line's
+  ctx. Nothing defaulted survives to be generalized at another type.
 - **The session is single-threaded.** One session per process; `Session.Cwd`
   is mutated only from the REPL/eval thread (the sole background thread, the
   stdin writer, never touches it). It is deliberately *not* synchronized: the
@@ -397,6 +406,16 @@ quantity semantics now.
 - **`complete` and `collect` force their source to completion** — on a
   non-terminating source they do not return (`yes hi | complete` hangs by
   design; the user owns it, exactly as with `yes hi |> collect`).
+- **A top-level `let` RHS admits command mode** (2026-07-18; agent
+  dogfooding produced the second independent hit of the gap within
+  hours of the protocol starting): `let files = git ls-files` binds
+  `seq<string>`; `|` chains and `| complete` work
+  (`let r = grep -c x f | complete` binds the Completed record). Same
+  conservative head decision as line heads. Expression-level
+  `let ... in` stays expression-only, and the let-RHS command grammar
+  STOPS at a bareword `in` — otherwise `let h = git log in h` would
+  silently pass `in h` as argv (the cliff that kept `let...in`
+  excluded); quote `"in"` to pass the word to a command from a let RHS.
 - **A command-headed line commits to command mode**: once the first segment
   parses as a command, there is no backtrack to expression parsing for the
   rest of the line — errors after that point are command-line errors (this is
@@ -484,10 +503,17 @@ quantity semantics now.
 - Non-exhaustive matches are hard errors at check time (2026-07-18;
   they were warnings, and `match failure` was a deliberate runtime
   class — both retired together, see the booleans bullet). The
-  remaining deliberate runtime failure classes: boundary validation
+  deliberate runtime failure classes: boundary validation
   (`from json`/`from porcelain` reject malformed lines per line),
-  arithmetic (division by zero), and failed guards falling through are
-  not a class (an unguarded arm must exist).
+  arithmetic (division by zero), and **user-raised `fail "reason"`**
+  (added 2026-07-18 from the agent-dogfooding ledger: `string -> unit`,
+  halts with a located error and exit 1 — the checking-script idiom is
+  `if bad then fail $"..."`). `printerr` (the stderr twin of `print`,
+  same argument rule, revived from parked on the same evidence) keeps
+  diagnostics off the data stream. Piping into an operator expression
+  (`xs |> f == v`) is a targeted check error naming the precedence fix
+  — operators yield values, never functions, so the shape is always
+  wrong.
 
 ## Backlog (ordered by day-one impact)
 

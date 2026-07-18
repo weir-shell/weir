@@ -52,6 +52,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
         Error
             $"line {letLine}: this let needs a body — an expression at the same indentation must follow before the statement ends"
 
+    let noBodyBlank letLine =
+        Error
+            $"line {letLine}: this let needs a body — a blank line ends the statement; keep the block's lines contiguous"
+
     let close (current: (LogicalLine * (int * int) list) option) acc =
         match current with
         | Some(_, (_, letLine) :: _) -> noBody letLine
@@ -73,7 +77,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 | Error e -> Error e
                 | Ok(current, acc, blankSinceHead) ->
                     if raw.Trim() = "" then
-                        close current acc |> Result.map (fun acc -> None, acc, true)
+                        match current with
+                        | Some(_, (_, letLine) :: _) -> noBodyBlank letLine
+                        | _ -> close current acc |> Result.map (fun acc -> None, acc, true)
                     elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' then
                         let indent = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
 

@@ -2136,6 +2136,70 @@ let boolBranchTests =
               expectValue "5 - 3" (VInt 2L)
           } ]
 
+let agentFindingsTests =
+    testList
+        "Agent findings fixes"
+        [ test "let RHS admits command mode" {
+              match Weir.Parser.parseLine cmdResolver "let files = git status" with
+              | Ok(SLet("files", { Kind = ECmd("git", _) })) -> ()
+              | other -> failtest $"expected SLet with a command RHS, got {other}"
+          }
+          test "let RHS: known names stay expression mode" {
+              match Weir.Parser.parseLine cmdResolver "let x = ls" with
+              | Ok(SLet("x", { Kind = EVar "ls" })) -> ()
+              | other -> failtest $"expected the builtin binding, got {other}"
+          }
+          test "let RHS: complete chains bind the record" {
+              match Weir.Parser.parseLine cmdResolver "let r = git status | complete" with
+              | Ok(SLet("r", { Kind = EApp _ })) -> ()
+              | other -> failtest $"expected the completed desugar, got {other}"
+          }
+          test "let RHS: bareword in stops the command grammar (no silent argv)" {
+              match Weir.Parser.parseLine cmdResolver "let h = git log in h" with
+              | Ok(SLet(_, { Kind = ECmd(_, args) })) ->
+                  failtest $"the in-eating cliff is back: {List.length args} argv words"
+              | _ -> ()
+          }
+          test "let RHS: quoted in passes to the command" {
+              match Weir.Parser.parseLine cmdResolver "let x = grep \"in\" f" with
+              | Ok(SLet("x", { Kind = ECmd("grep", [ _; _ ]) })) -> ()
+              | other -> failtest $"expected grep with two args, got {other}"
+          }
+          test "statement-head commands keep bareword in" {
+              match Weir.Parser.parseLine cmdResolver "git log in h" with
+              | Ok(SCmd { Kind = ECmd("git", args) }) -> Expect.hasLength args 3 "log, in, h"
+              | other -> failtest $"expected a command statement, got {other}"
+          }
+          test "pairwise types and evaluates" {
+              Expect.equal (checkOk "[1; 2] |> Seq.pairwise").Ty (TSeq(TNamed("Pair", [ TInt ]))) "type"
+
+              expectValue "[10; 13; 11] |> Seq.pairwise |> Seq.map (fun p -> p.Snd - p.Fst) |> Seq.sum" (VInt 1L)
+              expectValue "[1] |> Seq.pairwise |> Seq.isEmpty" (VBool true)
+          }
+          test "fail raises with the message" {
+              Expect.equal (checkOk "fail \"boom\"").Ty TUnit "unit-typed statement"
+              Expect.throwsT<exn> (fun () -> run "fail \"boom\"" |> ignore) "raises"
+              expectValue "if 1 > 2 then fail \"never\"" VUnit
+          }
+          test "printerr types like print" {
+              Expect.equal (checkOk "printerr \"x\"").Ty TUnit "scalar"
+              Expect.equal (checkOk "[\"a\"] |> printerr").Ty TUnit "seq"
+              Expect.equal (checkOk "Seq.iter printerr").Ty (TFun(TSeq TStr, TUnit)) "bare value"
+
+              let terr = checkErr "printerr ls"
+              Expect.stringContains (formatError terr) "takes a string" "family rule shared"
+          }
+          test "pipe into an operator gets the precedence hint" {
+              let terr = checkErr "[1; 2] |> Seq.length == 2"
+              Expect.stringContains (formatError terr) "parenthesize the pipeline" "actionable"
+              expectValue "([1; 2] |> Seq.length) == 2" (VBool true)
+          }
+          test "blank line inside a block names its cause" {
+              match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, ""; 4, "    a + 1" ] with
+              | Error msg -> Expect.stringContains msg "blank line ends the statement" "attribution"
+              | other -> failtest $"expected an error, got {other}"
+          } ]
+
 let fileTests =
     testSequenced
     <| testList
@@ -2363,4 +2427,5 @@ let allTests =
           unitPrintTests
           rangeTests
           boolBranchTests
+          agentFindingsTests
           fileTests ]

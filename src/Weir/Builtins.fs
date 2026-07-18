@@ -339,6 +339,22 @@ let groupDef: RecordDef =
       Params = [ "k"; "v" ]
       Fields = [ "Key", TVar "k"; "Items", TSeq(TVar "v") ] }
 
+let pairDef: RecordDef =
+    { Name = "Pair"
+      Params = [ "a" ]
+      Fields = [ "Fst", TVar "a"; "Snd", TVar "a" ] }
+
+let private pairwiseImpl: Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            VSeq(
+                items
+                |> Seq.pairwise
+                |> Seq.map (fun (a, b) -> VRecord(pairDef.Name, Map [ "Fst", a; "Snd", b ]))
+            )
+        | v -> unreachable $"the checker rejects 'pairwise' on {formatValue v}")
+
 let private groupByImpl: Value =
     VBuiltin(fun keyf ->
         VBuiltin(fun s ->
@@ -414,6 +430,7 @@ let private seqMembers: (string * Ty * Value) list =
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
       "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
+      "pairwise", TFun(TSeq tA, TSeq(TNamed("Pair", [ tA ]))), pairwiseImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
 
 let private strMembers: (string * Ty * Value) list =
@@ -505,6 +522,23 @@ let private bareEntries: (string * Ty * Value) list =
     |> List.collect snd
     |> List.filter (fun (n, _, _) -> bareAliases.Contains n && n <> "length")
 
+let private failImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr msg -> failwith msg
+        | v -> unreachable $"the checker rejects 'fail' on {formatValue v}")
+
+let private printerrImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            writeLinesTo System.Console.Error items
+            VUnit
+        | (VStr _ | VInt _ | VBool _) as scalar ->
+            System.Console.Error.WriteLine(scalarString "printerr argument" scalar)
+            VUnit
+        | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
+
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
       "nats", seqInt, natsImpl
@@ -513,7 +547,8 @@ let private entries: (string * Ty * Value) list =
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TSeq TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl
-      "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl ]
+      "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
+      "fail", TFun(TStr, TUnit), failImpl ]
     @ bareEntries
 
 let private printImpl: Value =
@@ -547,6 +582,7 @@ let typeEnv: TypeEnv =
         |> List.map (fun (n, ty, _) -> n, generalize ty)
         |> Map.ofList
         |> Map.add "print" Check.printScheme
+        |> Map.add "printerr" Check.printScheme
       Modules =
         moduleTable
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
@@ -556,7 +592,8 @@ let typeEnv: TypeEnv =
             [ fileRow.Name, Record fileRow
               changeDef.Name, Record changeDef
               completedDef.Name, Record completedDef
-              groupDef.Name, Record groupDef ] }
+              groupDef.Name, Record groupDef
+              pairDef.Name, Record pairDef ] }
 
 let typeEnvStrict: TypeEnv =
     { typeEnv with
@@ -569,4 +606,5 @@ let valueEnv: Env =
         moduleTable
         |> List.collect (fun (m, members) -> members |> List.map (fun (n, _, v) -> $"{m}.{n}", v))
 
-    ("print", printImpl) :: flat @ mangled |> Map.ofList
+    ("print", printImpl) :: ("printerr", printerrImpl) :: flat @ mangled
+    |> Map.ofList

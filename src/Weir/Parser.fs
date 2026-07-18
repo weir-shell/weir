@@ -399,20 +399,27 @@ let private singleQuoted =
 
 let private spliceVar = spanned (pchar '$' >>. rawWord |>> EVar) |>> mkExpr .>> ws
 
-let private cmdArg =
-    choice
-        [ strLit
-          singleQuoted
-          interpLit
-          spliceVar
-          parens
-          spanned (cmdWord |>> EStr) |>> mkExpr .>> ws ]
+let private cmdArgWith (stopAtIn: bool) =
+    let bareword =
+        if stopAtIn then
+            // In a let RHS, a bareword `in` would silently become argv (the
+            // let...in cliff). Stop instead: the parse falls through to the
+            // expression grammar and surfaces a check error. Quote "in" to
+            // pass it to a command from a let RHS.
+            notFollowedBy (attempt (pstring "in" .>> notFollowedBy (satisfy cmdWordChar)))
+            >>. (spanned (cmdWord |>> EStr) |>> mkExpr .>> ws)
+        else
+            spanned (cmdWord |>> EStr) |>> mkExpr .>> ws
+
+    choice [ strLit; singleQuoted; interpLit; spliceVar; parens; bareword ]
+
+let private cmdArg = cmdArgWith false
 
 type private HeadKind =
     | ExternalHead
     | BuiltinHead
 
-let private commandSegment (r: Resolver) : Parser<Expr, unit> =
+let private commandSegment (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
     let head =
         spanned (opt (pchar '^') .>>. cmdWord) .>> ws
         >>= fun ((forced, w), span) ->
@@ -438,7 +445,7 @@ let private commandSegment (r: Resolver) : Parser<Expr, unit> =
             else
                 fail "not an external command"
 
-    attempt head .>>. many cmdArg
+    attempt head .>>. many argP
     |>> fun ((kind, prog, span), args) ->
         let fullSpan =
             { Start = span.Start
@@ -468,7 +475,8 @@ let private commandSegment (r: Resolver) : Parser<Expr, unit> =
 
 let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
 
-let private segment (r: Resolver) : Parser<Expr, unit> = choice [ commandSegment r; segExpr ]
+let private segment (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
+    choice [ commandSegment argP r; segExpr ]
 
 type private Seg =
     | Stage of Expr
@@ -482,9 +490,9 @@ let private completeMarker =
     )
     |>> fun (_, span) -> CompleteMarker span
 
-let private cmdLine (r: Resolver) : Parser<Expr, unit> =
-    commandSegment r
-    .>>. many (pipeSep >>. (completeMarker <|> (segment r |>> Stage)))
+let private cmdLineWith (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
+    commandSegment argP r
+    .>>. many (pipeSep >>. (completeMarker <|> (segment argP r |>> Stage)))
     >>= fun (h, rest) ->
         let folded =
             rest
@@ -523,6 +531,11 @@ let private cmdLine (r: Resolver) : Parser<Expr, unit> =
         match folded with
         | Result.Ok e -> preturn e
         | Result.Error m -> failFatally m
+
+let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith cmdArg r
+
+// let-RHS command lines stop at a bareword `in` (see cmdArgWith)
+let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> = cmdLineWith (cmdArgWith true) r
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
@@ -580,12 +593,22 @@ let private typeDecl =
                   Body = body
                   Span = { Start = pos p; End = pos e } })
 
-let private topLet =
-    attempt (keyword "let" >>. ident .>> str_ws "=" .>>. expr .>> eof) |>> SLet
+// A top-level let RHS admits command mode (agent-dogfooding finding, two
+// independent hits): the RHS occupies the rest of the logical line, so
+// commit-to-command semantics carry over. Expression-level `let ... in`
+// stays expression-only — a greedy command grammar would eat `in x` as
+// barewords.
+let private topLet (r: Resolver) =
+    attempt (keyword "let" >>. ident .>> str_ws "=" .>>. (cmdLineLetRhs r <|> expr) .>> eof)
+    |>> SLet
 
 let private stmtWith (r: Resolver) =
     ws
-    >>. choice [ typeDecl .>> eof; topLet; cmdLine r .>> eof |>> SCmd; expr .>> eof |>> SExpr ]
+    >>. choice
+            [ typeDecl .>> eof
+              topLet r
+              cmdLine r .>> eof |>> SCmd
+              expr .>> eof |>> SExpr ]
 
 let private noExternals =
     { IsKnown = fun _ -> true

@@ -281,8 +281,9 @@ let printScheme: Scheme =
     { Forall = Set.singleton "__print"
       Ty = TFun(TVar "__print", TUnit) }
 
-let private isPrintBuiltin (env: TypeEnv) =
-    Map.tryFind "print" env.Values = Some printScheme
+let private isPrintFamily (env: TypeEnv) (name: string) =
+    (name = "print" || name = "printerr")
+    && Map.tryFind name env.Values = Some printScheme
 
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with
@@ -518,10 +519,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEUnit
               Ty = TUnit
               Span = expr.Span }
-    | EVar "print" when isPrintBuiltin env ->
+    | EVar(("print" | "printerr") as pname) when isPrintFamily env pname ->
         // Bare-value position (e.g. Seq.iter print): the defaulted form.
         Ok
-            { Kind = TEVar "print"
+            { Kind = TEVar pname
               Ty = TFun(TStr, TUnit)
               Span = expr.Span }
     | EVar name ->
@@ -589,13 +590,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         let head, args = spine expr
 
         match head.Kind, args with
-        | EVar "print", [ arg ] when isPrintBuiltin env ->
+        | EVar(("print" | "printerr") as pname), [ arg ] when isPrintFamily env pname ->
             result {
                 let! targ = infer ctx env arg
                 let! argTy = printArgTy ctx env arg.Span targ.Ty
 
                 let tprint =
-                    { Kind = TEVar "print"
+                    { Kind = TEVar pname
                       Ty = TFun(argTy, TUnit)
                       Span = head.Span }
 
@@ -636,13 +637,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = TSeq TStr
                   Span = expr.Span }
         }
-    | EPipe(arg, ({ Kind = EVar "print" } as printExpr)) when isPrintBuiltin env ->
+    | EPipe(arg, ({ Kind = EVar(("print" | "printerr") as pname) } as printExpr)) when isPrintFamily env pname ->
         result {
             let! targ = infer ctx env arg
             let! argTy = printArgTy ctx env arg.Span targ.Ty
 
             let tprint =
-                { Kind = TEVar "print"
+                { Kind = TEVar pname
                   Ty = TFun(argTy, TUnit)
                   Span = printExpr.Span }
 
@@ -651,6 +652,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = TUnit
                   Span = expr.Span }
         }
+    | EPipe(_,
+            { Kind = EBinOp(op, _, _)
+              Span = opSpan }) ->
+        // Operators yield values, never functions, so piping into an operator
+        // expression is always wrong — and usually a precedence surprise
+        // (agent-dogfooding finding).
+        err
+            opSpan
+            $"'{op}' binds tighter than '|>', so this parses as xs |> (a {op} b); parenthesize the pipeline: (xs |> f) {op} value"
     | EPipe(arg, fnExpr) ->
         result {
             let! targ = infer ctx env arg

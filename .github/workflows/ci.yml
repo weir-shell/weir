@@ -25,5 +25,8 @@ jobs:
       - name: E2E battery (AOT binary)
         run: ./ci/e2e.sh
 
+      - name: Skill-file doc-tests (AOT binary)
+        run: ./ci/skill-doc.sh
+
       - name: Startup-time regression guard
         run: ./ci/timing.sh

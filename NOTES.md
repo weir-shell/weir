@@ -1,5 +1,92 @@
 # Spike Notes
 
+## Ledger round 2 — fail, printerr, precedence hint (2026-07-18)
+
+Second same-day fix round from the dogfood ledger. 401 tests;
+skill-doc extended (fail/printerr blocks); timing holds.
+
+- **`fail : string -> unit`** — located runtime error, exit 1;
+  `if bad then fail $"..."` closes the checking-script gap (the
+  cmd-sh-exit-1 workaround retires). Typed unit, not F#'s `'a`:
+  weir statements want unit and a bottom-typed var would trip the
+  statement rule; match-arm positions restructure instead (documented
+  divergence). Joins the runtime-failure inventory in SEMANTICS.
+- **`printerr`** — print's stderr twin, revived from parked on the
+  ledger evidence; same sentinel scheme and argument rule (the print
+  family generalized to two names, one shared checker path).
+- **Pipe-into-operator is a targeted error** — operators yield values,
+  never functions, so `xs |> f == v` is always wrong; the error now
+  says so and names the fix ("parenthesize the pipeline").
+- `in` question resolved at review: the token cannot leave the grammar
+  (it is the assembler's join token) and -e/REPL need the one-liner
+  form; user-typed `in` stays legal, scripts steer to block lets.
+
+
+## Fix the findings — let-RHS commands, Seq.pairwise, blank-line attribution (2026-07-18)
+
+Same-day fixes for the protocol's day-zero friction trio. 398 tests;
+skill-doc blocks extended and green; timing holds.
+
+- **Top-level let RHS admits command mode** (`let files = git ls-files`;
+  `| complete` chains bind the record). The probe battery caught a
+  cliff the naive version shipped with: the command grammar ate
+  `in h` as argv in `let h = git log in h` — the exact in-eating
+  hazard that keeps `let ... in` expression-only. Fixed by an
+  `in`-bareword stop in the let-RHS arg parser (quote "in" to pass the
+  word); statement-head commands keep bareword `in` untouched. The
+  splice-defaulting soundness note re-derived and updated (commands
+  can now sit under a generalizing let; eager splice binding keeps it
+  sound — no lambda can enclose a command line).
+- **Seq.pairwise** returns `Pair<'a>` records ({ Fst; Snd }), the
+  Group<'k,'v> precedent. TUPLES were considered and deferred at user
+  review: tuples without destructuring are worse than records, and
+  destructuring means pattern binders in let/lambda — its own plan,
+  to be fed by the prior-bleed catalog (the protocol will count
+  `(a, b)` attempts). Pair does not foreclose it.
+- **Blank-line-in-block error names its cause** ("a blank line ends
+  the statement; keep the block's lines contiguous").
+- Live task rewritten to its original ask (deltas via pairwise +
+  let-RHS command): green in 3 iterations — the two new stumbles were
+  anonymous-record prior-bleed (exact error, instant fix) and bareword
+  word-splitting (bash-identical, quoted). Both logged.
+
+
+## Agent dogfooding protocol — setup session (2026-07-18)
+
+PLAN-agent-dogfooding executed on branch agent-dogfooding (off the
+unpushed bool-branching tip, per user). No checker surface — runs
+during the read week by design.
+
+- **skills/weir/SKILL.md**: ~30 divergence rules, six executable
+  fenced blocks (3 must-run + 3 must-fail), ALL verified
+  against the AOT binary. Draft corrections found by verification:
+  the "bare hot path in scripts" line was WRONG (strict mode has no
+  bare aliases anywhere, including command-mode stages — probe:
+  `git branch | map trim` errors in a script); `cmd ... |> complete`
+  was invented syntax (the expression form is the `completed` builtin);
+  the booleans [VERIFY] resolved to landed-reality including the
+  non-exhaustive-is-a-hard-error rule.
+- **The doc-test harness caught the author's own prior-bleed on its
+  first run**: `let files = git ls-files` (the let-RHS command-mode
+  gap) written reflexively INTO the skill file whose own commands
+  section says it doesn't work. Strongest possible validation of both
+  the doc-test discipline and the parked let-RHS extension.
+- ci/skill-doc.sh wired into ci.yml and ci/local.sh. Scripting policy
+  in repo-level CLAUDE.md (the shared /output/CLAUDE.md is
+  workspace-agnostic by its own rule, so the policy lives in the repo —
+  a placement deviation from the plan's letter, recorded).
+- **Live task ran end to end** (tools/test-counts.weir): first check
+  failed on a blank line inside a lambda block (the F#-divergence
+  biting the agent immediately; error accurate but doesn't name the
+  blank line — friction-logged); self-corrected in one iteration, no
+  doc re-read, no fallback. Metric 1 day-zero: 1/1.
+- == archaeology backfilled into SEMANTICS.
+- Day-zero telemetry vs the plan's expected-findings list: none of the
+  effectful-edge cluster hit yet; actual first hits were let-RHS
+  command mode, Seq.pairwise, and blank-line error attribution — the
+  last being adjacent to the plan's wildcard prediction (multi-line
+  attribution stranding).
+
 ## Amendment: exhaustiveness is a hard error (2026-07-18, same session)
 
 User decision at review: non-exhaustive match = type error, always.

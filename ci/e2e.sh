@@ -258,6 +258,23 @@ if $BIN -e 'match 1 == 1 with | true -> 1' 2>/dev/null; then
 fi
 echo "e2e ok: -e rejects non-exhaustive matches"
 
+faildir=$(mktemp -d)
+cat > "$faildir/f.weir" <<'WEOF'
+printerr "diag"
+print "data"
+fail "stop here"
+print "unreached"
+WEOF
+rc=0
+out=$($BIN "$faildir/f.weir" 2>/dev/null) || rc=$?
+errout=$($BIN "$faildir/f.weir" 2>&1 >/dev/null) || true
+[ $rc -ne 0 ] || fail "fail must exit nonzero"
+[ "$out" = "data" ] || fail "stdout must carry only data (got: $out)"
+echo "$errout" | grep -qF "diag" || fail "printerr must reach stderr"
+echo "$errout" | grep -qF "error: stop here" || fail "fail must be located on stderr: $errout"
+echo "e2e ok: fail exits located; printerr separates streams"
+rm -rf "$faildir"
+
 cat > "$scriptdir/blockmatch.weir" <<'WEOF'
 type Size = Big | Small
 

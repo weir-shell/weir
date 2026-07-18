@@ -88,11 +88,13 @@ let rec formatValue (v: Value) : string =
 // The line-per-element renderer. Both consumers — the print builtin and the
 // runner's command-statement streaming — must call this one function; the
 // byte-identity of their output is a plan-level claim, not a coincidence.
-let writeLines (items: seq<Value>) : unit =
+let writeLinesTo (w: System.IO.TextWriter) (items: seq<Value>) : unit =
     for item in items do
         match item with
-        | VStr s -> System.Console.WriteLine s
-        | other -> System.Console.WriteLine(formatValue other)
+        | VStr s -> w.WriteLine s
+        | other -> w.WriteLine(formatValue other)
+
+let writeLines (items: seq<Value>) : unit = writeLinesTo System.Console.Out items
 
 let private binOp (op: string) (l: Value) (r: Value) : Value =
     match op, l, r with
