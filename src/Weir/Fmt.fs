@@ -11,7 +11,8 @@ let private collectBareUses (e: Expr) : (Span * string) list =
         | EVar _
         | EInt _
         | EStr _
-        | EBool _ -> ()
+        | EBool _
+        | EUnit -> ()
         | ELet(_, v, b) ->
             walk v
             walk b
@@ -30,6 +31,11 @@ let private collectBareUses (e: Expr) : (Span * string) list =
             arms |> List.iter (snd >> walk)
         | EList items -> items |> List.iter walk
         | ECmd(_, args) -> args |> List.iter walk
+        | EInterp parts ->
+            parts
+            |> List.iter (function
+                | IStr _ -> ()
+                | IExpr e -> walk e)
         | EFrom _
         | ETo _ -> ()
 
@@ -42,7 +48,8 @@ let qualifyLine (r: Parser.Resolver) (line: string) : string * int =
     | Ok stmt ->
         let uses =
             match stmt with
-            | SExpr e -> collectBareUses e
+            | SExpr e
+            | SCmd e -> collectBareUses e
             | SLet(_, e) -> collectBareUses e
             | SType _ -> []
 

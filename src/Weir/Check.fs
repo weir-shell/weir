@@ -19,6 +19,7 @@ and TypedKind =
     | TEInt of value: int * measure: string option
     | TEStr of string
     | TEBool of bool
+    | TEUnit
     | TEVar of string
     | TELet of name: string * value: TypedExpr * body: TypedExpr
     | TELambda of param: string * body: TypedExpr
@@ -32,6 +33,7 @@ and TypedKind =
     | TETo of format: string
     | TEList of items: TypedExpr list
     | TECmd of prog: string * args: TypedExpr list
+    | TEInterp of parts: InterpPart<TypedExpr> list
 
 type private ResultBuilder() =
     member _.Bind(r, f) = Result.bind f r
@@ -250,7 +252,8 @@ let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
     match ty with
     | TInt _
     | TStr
-    | TBool -> true
+    | TBool
+    | TUnit -> true
     | TFun _
     | TSeq _
     | TVar _
@@ -269,6 +272,28 @@ let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
                     payload
                     |> Option.forall (fun pt -> isEquatable env (Set.add key seen) (substParams def.Params targs pt)))
             | None -> false)
+
+// The sentinel scheme registered for the print builtin. The quantified name
+// is unforgeable through declarations (ctx-fresh names are aN/rN), so a
+// structural comparison against this scheme is exactly "print, unshadowed".
+let printScheme: Scheme =
+    { Forall = Set.singleton "__print"
+      Ty = TFun(TVar "__print", TUnit) }
+
+let private isPrintBuiltin (env: TypeEnv) =
+    Map.tryFind "print" env.Values = Some printScheme
+
+let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
+    match resolve ctx ty with
+    | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
+    | (TStr | TInt _ | TBool) as t -> Ok t
+    | TSeq inner ->
+        (match resolve ctx inner with
+         | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TSeq TStr)
+         | TStr -> Ok(TSeq TStr)
+         | TUnit -> err span "print cannot take seq<unit> — a lazy effect sequence never runs; use Seq.iter"
+         | t -> err span $"print takes a string, int, bool, or seq<string>; this is {formatTy (TSeq t)}")
+    | t -> err span $"print takes a string, int, bool, or seq<string>; this is {formatTy t}"
 
 let rec private typeBinOp
     (ctx: Ctx)
@@ -405,6 +430,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEBool b
               Ty = TBool
               Span = expr.Span }
+    | EUnit ->
+        Ok
+            { Kind = TEUnit
+              Ty = TUnit
+              Span = expr.Span }
+    | EVar "print" when isPrintBuiltin env ->
+        // Bare-value position (e.g. Seq.iter print): the defaulted form.
+        Ok
+            { Kind = TEVar "print"
+              Ty = TFun(TStr, TUnit)
+              Span = expr.Span }
     | EVar name ->
         match Map.tryFind name env.Values with
         | Some sch ->
@@ -468,7 +504,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | EApp _ ->
         let head, args = spine expr
-        checkSpine ctx env head args None
+
+        match head.Kind, args with
+        | EVar "print", [ arg ] when isPrintBuiltin env ->
+            result {
+                let! targ = infer ctx env arg
+                let! argTy = printArgTy ctx env arg.Span targ.Ty
+
+                let tprint =
+                    { Kind = TEVar "print"
+                      Ty = TFun(argTy, TUnit)
+                      Span = head.Span }
+
+                return
+                    { Kind = TEApp(tprint, targ)
+                      Ty = TUnit
+                      Span = expr.Span }
+            }
+        | _ -> checkSpine ctx env head args None
     | EPipe(arg, ({ Kind = ETo fmt } as toExpr)) ->
         result {
             let! targ = infer ctx env arg
@@ -498,6 +551,21 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             return
                 { Kind = TEPipe(targ, tcmd)
                   Ty = TSeq TStr
+                  Span = expr.Span }
+        }
+    | EPipe(arg, ({ Kind = EVar "print" } as printExpr)) when isPrintBuiltin env ->
+        result {
+            let! targ = infer ctx env arg
+            let! argTy = printArgTy ctx env arg.Span targ.Ty
+
+            let tprint =
+                { Kind = TEVar "print"
+                  Ty = TFun(argTy, TUnit)
+                  Span = printExpr.Span }
+
+            return
+                { Kind = TEPipe(targ, tprint)
+                  Ty = TUnit
                   Span = expr.Span }
         }
     | EPipe(arg, fnExpr) ->
@@ -667,21 +735,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs |> to json"
     | ECmd(prog, args) ->
         result {
-            let checkArg (arg: Expr) =
-                result {
-                    let! targ = infer ctx env arg
-
-                    match resolve ctx targ.Ty with
-                    | TVar _ ->
-                        do! bind ctx env arg.Span TStr targ.Ty
-                        return targ
-                    | TStr
-                    | TInt _
-                    | TBool -> return targ
-                    | ty ->
-                        return!
-                            err arg.Span $"command arguments must be strings, ints or bools; this one is {formatTy ty}"
-                }
+            let checkArg = checkScalarSplice ctx env "command arguments"
 
             let! targs =
                 args
@@ -692,6 +746,26 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             return
                 { Kind = TECmd(prog, List.rev targs)
                   Ty = TSeq TStr
+                  Span = expr.Span }
+        }
+    | EInterp parts ->
+        result {
+            let checkHole = checkScalarSplice ctx env "interpolation holes"
+
+            let! tparts =
+                parts
+                |> List.fold
+                    (fun acc p ->
+                        acc
+                        |> Result.bind (fun ts ->
+                            match p with
+                            | IStr s -> Ok(IStr s :: ts)
+                            | IExpr e -> checkHole e |> Result.map (fun t -> IExpr t :: ts)))
+                    (Ok [])
+
+            return
+                { Kind = TEInterp(List.rev tparts)
+                  Ty = TStr
                   Span = expr.Span }
         }
     | EList items ->
@@ -870,6 +944,20 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             return te
         }
 
+and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (what: string) (arg: Expr) : Result<TypedExpr, TypeError> =
+    result {
+        let! targ = infer ctx env arg
+
+        match resolve ctx targ.Ty with
+        | TVar _ ->
+            do! bind ctx env arg.Span TStr targ.Ty
+            return targ
+        | TStr
+        | TInt _
+        | TBool -> return targ
+        | ty -> return! err arg.Span $"{what} must be strings, ints or bools; this one is {formatTy ty}"
+    }
+
 let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
     let kind =
         match te.Kind with
@@ -882,6 +970,13 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
         | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
         | TECmd(prog, args) -> TECmd(prog, args |> List.map (finalizeExpr ctx))
+        | TEInterp parts ->
+            TEInterp(
+                parts
+                |> List.map (function
+                    | IStr s -> IStr s
+                    | IExpr e -> IExpr(finalizeExpr ctx e))
+            )
         | TEMatch(s, arms) -> TEMatch(finalizeExpr ctx s, arms |> List.map (fun (p, b) -> p, finalizeExpr ctx b))
         | leaf -> leaf
 
@@ -904,7 +999,8 @@ let rec private validateTy
     match ty with
     | TInt _
     | TStr
-    | TBool -> Ok()
+    | TBool
+    | TUnit -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
     | TFun(a, b) ->
         Result.bind
@@ -1007,6 +1103,7 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TEInt _
         | TEStr _
         | TEBool _
+        | TEUnit
         | TEVar _ -> ()
         | TELet(_, value, body) ->
             walk value
@@ -1025,6 +1122,11 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TETo _ -> ()
         | TEList items -> items |> List.iter walk
         | TECmd(_, args) -> args |> List.iter walk
+        | TEInterp parts ->
+            parts
+            |> List.iter (function
+                | IStr _ -> ()
+                | IExpr e -> walk e)
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
             arms |> List.iter (snd >> walk)

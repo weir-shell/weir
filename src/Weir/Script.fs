@@ -37,14 +37,30 @@ type LogicalLine =
       Head: int
       Segments: (int * int * int) list }
 
+// Block lets — F# light syntax at the assembly layer, the same way F#'s own
+// lexer implements it (token insertion at offside boundaries): a continuation
+// line beginning with `let` opens a binding; the next line at the SAME
+// indentation closes it by joining with " in " instead of " ", so the
+// single-line grammar sees the explicit form. `|`-headed lines never open or
+// close bindings (they extend the current expression — match arms, command
+// pipes). Every pending let must be closed before the statement ends.
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
-    let close (current: LogicalLine option) acc =
+    let noBody letLine =
+        Error
+            $"line {letLine}: this let needs a body — an expression at the same indentation must follow before the statement ends"
+
+    let close (current: (LogicalLine * (int * int) list) option) acc =
         match current with
-        | Some ll ->
-            { ll with
-                Segments = List.rev ll.Segments }
-            :: acc
-        | None -> acc
+        | Some(_, (_, letLine) :: _) -> noBody letLine
+        | Some(ll, []) ->
+            Ok(
+                { ll with
+                    Segments = List.rev ll.Segments }
+                :: acc
+            )
+        | None -> Ok acc
+
+    let isLetHead (piece: string) = piece.StartsWith "let "
 
     let folded =
         numbered
@@ -54,7 +70,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 | Error e -> Error e
                 | Ok(current, acc, blankSinceHead) ->
                     if raw.Trim() = "" then
-                        Ok(None, close current acc, true)
+                        close current acc |> Result.map (fun acc -> None, acc, true)
                     elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' then
                         let indent = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
 
@@ -68,32 +84,48 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         $"line {lineNo}: continuation after a blank line has no statement to continue"
                                 else
                                     Error $"line {lineNo}: continuation without a statement"
-                            | Some ll ->
+                            | Some(ll, stack) ->
                                 let piece = raw.Substring indent
-                                let joinedStart = ll.Text.Length + 1
 
-                                Ok(
-                                    Some
+                                let closed =
+                                    if piece.StartsWith "|" then
+                                        Ok(stack, " ")
+                                    else
+                                        match stack with
+                                        | (k, letLine) :: _ when indent < k -> noBody letLine
+                                        | (k, _) :: rest when indent = k -> Ok(rest, " in ")
+                                        | _ -> Ok(stack, " ")
+
+                                closed
+                                |> Result.map (fun (stack, sep) ->
+                                    let stack = if isLetHead piece then (indent, lineNo) :: stack else stack
+
+                                    let joinedStart = ll.Text.Length + sep.Length
+
+                                    Some(
                                         { ll with
-                                            Text = ll.Text + " " + piece
+                                            Text = ll.Text + sep + piece
                                             Segments = (joinedStart, lineNo, indent) :: ll.Segments },
+                                        stack
+                                    ),
                                     acc,
-                                    blankSinceHead
-                                )
+                                    blankSinceHead)
                     else
-                        Ok(
-                            Some
+                        close current acc
+                        |> Result.map (fun acc ->
+                            Some(
                                 { Text = raw
                                   Head = lineNo
                                   Segments = [ (0, lineNo, 0) ] },
-                            close current acc,
-                            false
-                        ))
+                                []
+                            ),
+                            acc,
+                            false))
             (Ok(None, [], false))
 
     match folded with
     | Error e -> Error e
-    | Ok(current, acc, _) -> Ok(List.rev (close current acc))
+    | Ok(current, acc, _) -> close current acc |> Result.map List.rev
 
 let translate (ll: LogicalLine) (col: int) : int * int =
     let joinedIdx = col - 1
@@ -110,6 +142,7 @@ type Mode =
 type private CheckedStmt =
     | CLet of name: string * te: Check.TypedExpr
     | CExpr of te: Check.TypedExpr
+    | CCmd of te: Check.TypedExpr
     | CType of decl: Decl
     | CNoop
 
@@ -162,15 +195,29 @@ let private located (path: string) (lineNo: int) (msg: string) : string =
 
     $"{path}:{lineNo}: {msg}"
 
+// Streaming output for command-mode statements — the single exempt form.
+// The seq case goes through Eval.writeLines, the same renderer print uses.
 let private printResult (v: Eval.Value) =
     match v with
     | Eval.VStr s -> Console.WriteLine s
-    | Eval.VSeq items ->
-        for item in items do
-            match item with
-            | Eval.VStr s -> Console.WriteLine s
-            | other -> Console.WriteLine(Eval.formatValue other)
+    | Eval.VSeq items -> Eval.writeLines items
     | other -> Console.WriteLine(Eval.formatValue other)
+
+// The statement rule: a pure expression statement must have type unit.
+// Classification is the parser's mode decision alone (SCmd vs SExpr) — no
+// name lookup, no type direction; the removed form-2 exemption (bare
+// sh/cmd applications) must not creep back in here.
+let discardError (ty: Ty) : string option =
+    match ty with
+    | TUnit -> None
+    | TSeq TUnit ->
+        Some "this statement computes a seq<unit> and discards it — a lazy effect sequence never runs; use Seq.iter"
+    | TSeq(TNamed("FileRow", [])) as ty ->
+        Some(
+            $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
+            + " (for a plain listing, ^ls runs the real program)"
+        )
+    | ty -> Some $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
 
 let run (path: string) (scriptArgs: string list) : int =
     if not (IO.File.Exists path) then
@@ -241,10 +288,17 @@ let run (path: string) (scriptArgs: string list) : int =
                                                 Values = Map.add name (generalize te.Ty) tenv.Values }
 
                                         Ok(tenv', (ll.Head, CLet(name, te)) :: acc)
+                                | Ok(SCmd e) ->
+                                    match Check.typecheck tenv e with
+                                    | Error terr -> Error(typedErr ll terr)
+                                    | Ok te -> Ok(tenv, (ll.Head, CCmd te) :: acc)
                                 | Ok(SExpr e) ->
                                     match Check.typecheck tenv e with
                                     | Error terr -> Error(typedErr ll terr)
-                                    | Ok te -> Ok(tenv, (ll.Head, CExpr te) :: acc))
+                                    | Ok te ->
+                                        match discardError te.Ty with
+                                        | Some msg -> Error(typedErr ll { Span = e.Span; Message = msg })
+                                        | None -> Ok(tenv, (ll.Head, CExpr te) :: acc))
                         (Ok(typeEnv0, []))
 
                 match checkedProgram with
@@ -274,9 +328,16 @@ let run (path: string) (scriptArgs: string list) : int =
                                 with ex ->
                                     Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
                                     1
-                            | CExpr te ->
+                            | CCmd te ->
                                 try
                                     printResult (Eval.eval venv te)
+                                    exec venv tail
+                                with ex ->
+                                    Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                    1
+                            | CExpr te ->
+                                try
+                                    Eval.eval venv te |> ignore
                                     exec venv tail
                                 with ex ->
                                     Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")

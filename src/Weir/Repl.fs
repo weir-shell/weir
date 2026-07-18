@@ -133,13 +133,16 @@ let rec private loop (state: State) =
                     state
                 | Ok(te, v, formatted) ->
                     printWarnings state te
-                    Console.WriteLine $"{name} : {formatTy te.Ty} = {formatted}"
+
+                    if v <> Eval.VUnit then
+                        Console.WriteLine $"{name} : {formatTy te.Ty} = {formatted}"
 
                     { TypeEnv =
                         { state.TypeEnv with
                             Values = Map.add name (generalize te.Ty) state.TypeEnv.Values }
                       Values = Map.add name v state.Values }
-            | Ok(SExpr e) ->
+            | Ok(SExpr e)
+            | Ok(SCmd e) ->
                 match tryRun state e with
                 | Error(msg, span) ->
                     span |> Option.iter (underline >> Console.WriteLine)
@@ -149,9 +152,12 @@ let rec private loop (state: State) =
                         printHint state line
 
                     state
-                | Ok(te, _, formatted) ->
+                | Ok(te, v, formatted) ->
                     printWarnings state te
-                    Console.WriteLine $"{formatted} : {formatTy te.Ty}"
+
+                    if v <> Eval.VUnit then
+                        Console.WriteLine $"{formatted} : {formatTy te.Ty}"
+
                     state
 
         loop next

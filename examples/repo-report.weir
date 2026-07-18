@@ -4,7 +4,7 @@
 
 type Health =
     | Clean
-    | Dirty
+    | Dirty of int
 
 // first arg, or the current directory
 let target =
@@ -14,36 +14,40 @@ let target =
 
 let workdir = cd target
 
-echo === repo report: (pwd |> Seq.head) ===
+print $"=== repo report: {pwd |> Seq.head} ==="
 
 // typed rows straight out of git's porcelain format
 let changes =
-    sh "git status --porcelain"
+    cmd "git" ["status"; "--porcelain"]
     |> from porcelain
 
 // no bool branching yet — the Option idiom is the honest weir way
 let health =
+    let count = changes |> Seq.length
     match changes |> Seq.tryHead with
-    | Some c -> Dirty
+    | Some c -> Dirty count
     | None -> Clean
 
-match health with
-| Clean -> "status: clean"
-| Dirty -> "status: dirty"
+let status =
+    match health with
+    | Clean -> "status: clean"
+    | Dirty n -> $"status: dirty ({n} changes)"
 
-echo tracked changes: (changes |> Seq.length)
+print status
 
-"staged:"
+print "staged:"
 
 changes
     |> Seq.where _.Staged
-    |> Seq.map (fun c -> Str.join "" ["  "; c.Path])
+    |> Seq.map (fun c -> $"  {c.Path}")
+    |> print
 
-"largest files (weir has units — Bytes is int<b>):"
+print "largest files (weir has units — Bytes is int<b>):"
 
 ls
     |> Seq.sortBy (fun f -> 0<b> - f.Bytes)
     |> Seq.first 3
-    |> Seq.map (fun f -> Str.join "" ["  "; f.Name])
+    |> Seq.map (fun f -> $"  {f.Name}")
+    |> print
 
-echo done in (pwd |> Seq.head)
+print $"done in {pwd |> Seq.head}"

@@ -4,6 +4,7 @@ type Ty =
     | TInt of measure: string option
     | TStr
     | TBool
+    | TUnit
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
     | TNamed of name: string * args: Ty list
@@ -23,6 +24,7 @@ let rec formatTy (ty: Ty) : string =
     | TInt(Some m) -> $"int<{m}>"
     | TStr -> "string"
     | TBool -> "bool"
+    | TUnit -> "unit"
     | TFun(domain, codomain) ->
         let dom =
             match domain with
@@ -45,7 +47,8 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TNamed(_, args) -> args |> List.fold (fun acc t -> acc + tyVars t) Set.empty
     | TInt _
     | TStr
-    | TBool -> Set.empty
+    | TBool
+    | TUnit -> Set.empty
 
 type Scheme = { Forall: Set<string>; Ty: Ty }
 

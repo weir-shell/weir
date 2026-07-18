@@ -31,7 +31,8 @@ let private evalOnce (input: string) : int =
     | Ok(SLet _) ->
         Console.Error.WriteLine "-e takes an expression, not a let statement"
         1
-    | Ok(SExpr e) ->
+    | Ok(SExpr e)
+    | Ok(SCmd e) ->
         match Check.typecheck typeEnv e with
         | Error terr ->
             Console.Error.WriteLine(Check.formatError terr)
@@ -40,7 +41,10 @@ let private evalOnce (input: string) : int =
         | Ok te ->
             try
                 let v = Eval.eval valueEnv te
-                Console.WriteLine $"{Eval.formatValue v} : {formatTy te.Ty}"
+
+                if v <> Eval.VUnit then
+                    Console.WriteLine $"{Eval.formatValue v} : {formatTy te.Ty}"
+
                 0
             with ex ->
                 Console.Error.WriteLine $"error: {ex.Message}"

@@ -97,12 +97,6 @@ let changeDef: RecordDef =
       Params = []
       Fields = [ "Status", TStr; "Staged", TBool; "Unstaged", TBool; "Path", TStr ] }
 
-let private shImpl: Value =
-    VBuiltin(fun v ->
-        match v with
-        | VStr cmdline -> VSeq(Proc.lines "/bin/sh" [ "-c"; cmdline ] None |> Seq.map VStr)
-        | v -> unreachable $"the checker rejects 'sh' on {formatValue v}")
-
 let private asString (v: Value) : string =
     match v with
     | VStr s -> s
@@ -395,6 +389,17 @@ let private groupByImpl: Value =
                 )
             | v -> unreachable $"the checker rejects 'groupBy' on {formatValue v}"))
 
+let private iterImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                for item in items do
+                    apply f item |> ignore
+
+                VUnit
+            | v -> unreachable $"the checker rejects 'iter' on {formatValue v}"))
+
 let private seqMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
@@ -408,6 +413,7 @@ let private seqMembers: (string * Ty * Value) list =
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
       "length", TFun(TSeq tA, TInt None), seqLengthImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
+      "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
 
 let private strMembers: (string * Ty * Value) list =
@@ -440,24 +446,22 @@ let private fileMembers: (string * Ty * Value) list =
           | VStr path -> VSeq(File.ReadAllLines(Session.resolve path) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
       "write",
-      TFun(TStr, TFun(TSeq TStr, TStr)),
+      TFun(TStr, TFun(TSeq TStr, TUnit)),
       VBuiltin(fun pathV ->
           VBuiltin(fun linesV ->
               match pathV, linesV with
               | VStr path, VSeq lines ->
-                  let resolved = Session.resolve path
-                  File.WriteAllLines(resolved, lines |> Seq.map asString)
-                  VStr resolved
+                  File.WriteAllLines(Session.resolve path, lines |> Seq.map asString)
+                  VUnit
               | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
       "append",
-      TFun(TStr, TFun(TSeq TStr, TStr)),
+      TFun(TStr, TFun(TSeq TStr, TUnit)),
       VBuiltin(fun pathV ->
           VBuiltin(fun linesV ->
               match pathV, linesV with
               | VStr path, VSeq lines ->
-                  let resolved = Session.resolve path
-                  File.AppendAllLines(resolved, lines |> Seq.map asString)
-                  VStr resolved
+                  File.AppendAllLines(Session.resolve path, lines |> Seq.map asString)
+                  VUnit
               | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
       "exists",
       TFun(TStr, TBool),
@@ -504,7 +508,6 @@ let private bareEntries: (string * Ty * Value) list =
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
       "nats", seqInt, natsImpl
-      "sh", TFun(TStr, seqStr), shImpl
       "cmd", TFun(TStr, TFun(TSeq TStr, seqStr)), cmdImpl
       "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
       "cd", TFun(TStr, TStr), cdImpl
@@ -512,6 +515,17 @@ let private entries: (string * Ty * Value) list =
       "not", TFun(TBool, TBool), notImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl ]
     @ bareEntries
+
+let private printImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            writeLines items
+            VUnit
+        | (VStr _ | VInt _ | VBool _) as scalar ->
+            System.Console.WriteLine(scalarString "print argument" scalar)
+            VUnit
+        | v -> unreachable $"the checker rejects 'print' on {formatValue v}")
 
 let commandCallable: Set<string> = Set [ "cd" ]
 
@@ -528,7 +542,11 @@ let bareAliasHomes: Map<string, string> =
     |> Map.ofList
 
 let typeEnv: TypeEnv =
-    { Values = entries |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList
+    { Values =
+        entries
+        |> List.map (fun (n, ty, _) -> n, generalize ty)
+        |> Map.ofList
+        |> Map.add "print" Check.printScheme
       Modules =
         moduleTable
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
@@ -551,4 +569,4 @@ let valueEnv: Env =
         moduleTable
         |> List.collect (fun (m, members) -> members |> List.map (fun (n, _, v) -> $"{m}.{n}", v))
 
-    flat @ mangled |> Map.ofList
+    ("print", printImpl) :: flat @ mangled |> Map.ofList

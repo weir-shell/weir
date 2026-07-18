@@ -93,6 +93,9 @@ let private wordAtom =
     )
     .>> ws
 
+let private unitLit =
+    spanned (attempt (pchar '(' >>. ws >>. pchar ')') >>% EUnit) |>> mkExpr .>> ws
+
 let private parens =
     spanned (pchar '(' >>. ws >>. expr .>> pchar ')')
     |>> fun (inner, span) -> { inner with Span = span }
@@ -111,7 +114,29 @@ let private listLit =
     |>> mkExpr
     .>> ws
 
-let private atom = choice [ intLit; strLit; parens; recordLit; listLit; wordAtom ]
+let private interpChar =
+    choice
+        [ satisfy (fun c -> c <> '"' && c <> '\\' && c <> '{' && c <> '}')
+          pchar '\\'
+          >>. (anyOf "\"\\nt"
+               |>> function
+                   | 'n' -> '\n'
+                   | 't' -> '\t'
+                   | c -> c) ]
+
+let private interpPart =
+    choice
+        [ pstring "{{" >>% IStr "{"
+          pstring "}}" >>% IStr "}"
+          pchar '{' >>. ws >>. expr .>> pchar '}' |>> IExpr
+          many1Chars interpChar |>> IStr ]
+
+let private interpLit =
+    spanned (pstring "$\"" >>. many interpPart .>> pchar '"' |>> EInterp) |>> mkExpr
+    .>> ws
+
+let private atom =
+    choice [ intLit; strLit; interpLit; unitLit; parens; recordLit; listLit; wordAtom ]
 
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 
@@ -283,6 +308,7 @@ let private cmdArg =
     choice
         [ strLit
           singleQuoted
+          interpLit
           spliceVar
           parens
           spanned (cmdWord |>> EStr) |>> mkExpr .>> ws ]
@@ -295,7 +321,15 @@ let private commandSegment (r: Resolver) : Parser<Expr, unit> =
     let head =
         spanned (opt (pchar '^') .>>. cmdWord) .>> ws
         >>= fun ((forced, w), span) ->
-            if forced.IsSome then
+            if w[0] = '[' then
+                // '[' never heads a command (decided 2026-07-18): a line-head
+                // string list would otherwise resolve to /usr/bin/[. The
+                // external is still reachable as cmd "[" [...].
+                if forced.IsSome then
+                    failFatally "'[' cannot begin a command; use cmd \"[\" [...] to run the external"
+                else
+                    fail "list literal; expression mode"
+            elif forced.IsSome then
                 if r.IsExternal w then
                     preturn (ExternalHead, w, span)
                 else
@@ -406,6 +440,7 @@ tySynRef.Value <-
               | "int" -> opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws |>> TInt
               | "string" -> ws >>% TStr
               | "bool" -> ws >>% TBool
+              | "unit" -> ws >>% TUnit
               | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
               | w when keywords.Contains w -> fail $"'{w}' is a keyword"
               | w ->
@@ -451,11 +486,7 @@ let private topLet =
 
 let private stmtWith (r: Resolver) =
     ws
-    >>. choice
-            [ typeDecl .>> eof
-              topLet
-              cmdLine r .>> eof |>> SExpr
-              expr .>> eof |>> SExpr ]
+    >>. choice [ typeDecl .>> eof; topLet; cmdLine r .>> eof |>> SCmd; expr .>> eof |>> SExpr ]
 
 let private noExternals =
     { IsKnown = fun _ -> true
@@ -472,6 +503,7 @@ let parseStmt (input: string) : Result<Stmt, string> = parseLine noExternals inp
 
 let parseExpr (input: string) : Result<Expr, string> =
     match parseStmt input with
-    | Result.Ok(SExpr e) -> Result.Ok e
+    | Result.Ok(SExpr e)
+    | Result.Ok(SCmd e) -> Result.Ok e
     | Result.Ok _ -> Result.Error "expected an expression, got a declaration"
     | Result.Error msg -> Result.Error msg

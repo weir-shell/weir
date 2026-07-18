@@ -11,6 +11,7 @@ type Value =
     | VInt of int64
     | VStr of string
     | VBool of bool
+    | VUnit
     | VRecord of record: string * fields: Map<string, Value>
     | VUnion of case: string * payload: Value option
     | VSeq of items: seq<Value>
@@ -24,6 +25,7 @@ type Value =
             | VInt a, VInt b -> a = b
             | VStr a, VStr b -> a = b
             | VBool a, VBool b -> a = b
+            | VUnit, VUnit -> true
             | VRecord(n1, f1), VRecord(n2, f2) -> n1 = n2 && f1 = f2
             | VUnion(c1, p1), VUnion(c2, p2) -> c1 = c2 && p1 = p2
             | VSeq a, VSeq b -> obj.ReferenceEquals(a, b) || List.ofSeq a = List.ofSeq b
@@ -37,6 +39,7 @@ type Value =
         | VInt n -> hash n
         | VStr s -> hash s
         | VBool b -> hash b
+        | VUnit -> 17
         | VRecord(n, _) -> hash n
         | VUnion(c, _) -> hash c
         | VSeq _ -> 0
@@ -80,6 +83,16 @@ let rec formatValue (v: Value) : string =
         $"[{body}{ellipsis}]"
     | VClosure _ -> "<fun>"
     | VBuiltin _ -> "<builtin>"
+    | VUnit -> "()"
+
+// The line-per-element renderer. Both consumers — the print builtin and the
+// runner's command-statement streaming — must call this one function; the
+// byte-identity of their output is a plan-level claim, not a coincidence.
+let writeLines (items: seq<Value>) : unit =
+    for item in items do
+        match item with
+        | VStr s -> System.Console.WriteLine s
+        | other -> System.Console.WriteLine(formatValue other)
 
 let private binOp (op: string) (l: Value) (r: Value) : Value =
     match op, l, r with
@@ -231,6 +244,14 @@ let private fromAdapter (fmt: string) (def: RecordDef) : Value =
             )
         | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
 
+let scalarString (what: string) (v: Value) : string =
+    match v with
+    | VStr s -> s
+    | VInt n -> string n
+    | VBool true -> "true"
+    | VBool false -> "false"
+    | v -> unreachable $"the checker rejects {what} {formatValue v}"
+
 let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     match p.PKind, v with
     | PWildcard, _ -> Some []
@@ -245,6 +266,7 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
     | TEInt(n, _) -> VInt(int64 n)
     | TEStr s -> VStr s
     | TEBool b -> VBool b
+    | TEUnit -> VUnit
     | TEVar name ->
         match Map.tryFind name env with
         | Some v -> v
@@ -253,15 +275,7 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
     | TELambda(param, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
     | TEPipe(arg, { Kind = TECmd(prog, cargs) }) ->
-        let argString v =
-            match v with
-            | VStr s -> s
-            | VInt n -> string n
-            | VBool true -> "true"
-            | VBool false -> "false"
-            | v -> unreachable $"the checker rejects command argument {formatValue v}"
-
-        let argv = cargs |> List.map (fun a -> argString (eval env a))
+        let argv = cargs |> List.map (fun a -> scalarString "command argument" (eval env a))
 
         let stdin =
             match eval env arg with
@@ -296,16 +310,17 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
     | TEList items -> VSeq(items |> List.map (eval env))
     | TECmd(prog, args) ->
-        let argString v =
-            match v with
-            | VStr s -> s
-            | VInt n -> string n
-            | VBool true -> "true"
-            | VBool false -> "false"
-            | v -> unreachable $"the checker rejects command argument {formatValue v}"
-
-        let argv = args |> List.map (fun a -> argString (eval env a))
+        let argv = args |> List.map (fun a -> scalarString "command argument" (eval env a))
         VSeq(Proc.lines (Proc.resolveProg prog) argv None |> Seq.map VStr)
+    | TEInterp parts ->
+        let sb = System.Text.StringBuilder()
+
+        for p in parts do
+            match p with
+            | IStr s -> sb.Append s |> ignore
+            | IExpr e -> sb.Append(scalarString "interpolation hole" (eval env e)) |> ignore
+
+        VStr(sb.ToString())
     | TEFrom(fmt, def) -> fromAdapter fmt def
     | TETo _ ->
         VBuiltin(fun v ->

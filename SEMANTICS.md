@@ -94,12 +94,49 @@ weir rejects rather than guesses.
   both to `bool` (their only typing). When scalar×measure lands (backlog #2),
   `*` on unresolved operands has two readings again and its defaulting rule
   must be redesigned with it, not merely kept.
-- `let ... in` is the expression-level binding form (single-line grammar; the
-  offside rule is out of scope until multi-line input exists).
+- **Expression-level `let` is F#-shaped** (decided 2026-07-18, replacing
+  the earlier keep-`in` decision): in scripts, a continuation line
+  beginning with `let` opens a binding closed implicitly by the next line
+  at the same indentation — F# light syntax, implemented exactly as F#
+  implements it, by token insertion at the assembly layer (the joined
+  logical line carries an explicit ` in `, so the single-line grammar,
+  checker, and evaluator are untouched; ELet and its generalization
+  machinery serve unchanged). Explicit `let ... in` remains legal as the
+  single-line form — F#'s verbose syntax analog, and the only form
+  available in the REPL and `-e` (both line-based). Blocks are
+  *bindings + one result expression*: a second non-`let` line at the
+  same indentation is not sequencing (parked below); `|`-headed lines
+  never open or close bindings; a `let` whose body never arrives (dedent
+  or statement end) is an assembly error naming the line. Blank lines
+  still end the statement (named divergence from F#, inherited from the
+  multi-line rules).
 - `_.Field` is sugar for `fun x -> x.Field` (parser-level desugar; requires at
   least one field, like F#).
 - Constructor names must start uppercase; that is what distinguishes
   constructor patterns from variable patterns in `match`.
+- **String interpolation**: `$"... {expr} ..."`, F#-style, usable anywhere an
+  expression is (including as a command argument, where it stays one argv
+  entry). Holes follow the **command-splice typing rule** — string, int (any
+  measure), or bool, rendered the same way (int as digits, bool as
+  `true`/`false`); an unresolved hole type defaults to `string`. One rule for
+  both splice kinds, by design (one shared checker helper, `checkScalarSplice`).
+  `{{`/`}}` escape literal braces; no format specifiers. `$"{n}"` is also the
+  sanctioned int→string conversion — the previously-filed gap.
+- **`unit` is a real type, F# semantics**: `()` literal, `unit` in type
+  syntax, trivially equatable, ordinary leaf everywhere (rows, generics,
+  generalization see just another ground type). Excluded from the splice
+  family — command args and interpolation holes stay str/int/bool.
+  Invisible interactively: the REPL and `-e` show nothing for a unit
+  result (no `() : unit` trailer after `print`), F# FSI's `it` manner.
+- **`print`** is the typed output builtin (bespoke checker rule, same
+  species as `to json`): argument is a splice-family scalar — rendered by
+  the same shared renderer as command splices — or `seq<string>`,
+  streamed line-per-element with strict enumeration; returns `unit`;
+  pipeable (`xs |> print`). As a bare value (`Seq.iter print`) it is the
+  defaulted `string -> unit`. Not command-callable: `echo` owns bareword
+  ergonomics in command mode. A `let print = ...` shadows it entirely
+  (values shadow builtins, the standing rule). `Seq.iter` is the strict
+  effectful traversal, qualified-only in both modes.
 
 ## Command mode
 
@@ -146,6 +183,14 @@ weir rejects rather than guesses.
   argv entries, never re-split (no injection class; same ownership line as
   `cmd`); an unresolved argument type defaults to `string`. No adjacent-token
   concatenation: `foo$bar` is two args.
+- **`[` never heads a command** (decided 2026-07-18): quotes end a
+  bareword, so a line-head string list (`["a"; "b"] |> ...`) would
+  otherwise tokenize to bare `[` and PATH-hit `/usr/bin/[` — discovered
+  as a capture bug during the unit-print session. The head rule excludes
+  `[`-initial words in both the bare and `^`-forced paths (forced is a
+  hard error naming the alternative); `/usr/bin/[` stays reachable as
+  `cmd "[" [...]`, and `[` remains an ordinary character inside command
+  *arguments* (`pgrep -f [m]arker`).
 - A command line's type is `seq<string>`; evaluation reuses the direct-exec
   machinery (`Proc`, `Session.Cwd`, tree-kill lifecycle — see the tripwires).
 - **PATH resolution** happens per submission: mode decision uses existence
@@ -170,8 +215,9 @@ weir rejects rather than guesses.
   touch-then-error script whose file never appears). Named divergence from
   every shell users know: install-then-use is a check-time
   "command not found" — declare dependencies, don't install mid-script; the
-  escape hatch is `sh "thing ..."`, which defers resolution to runtime
-  because sh takes a string. Errors report `path:line: [line:col] ...`.
+  escape hatch is running the POSIX shell as an ordinary external
+  (`sh -c "thing ..."`): the head resolves at check time, the string's
+  contents at runtime. Errors report `path:line: [line:col] ...`.
 - **Strict by default**: scripts resolve module members qualified-only;
   `#loose` at file head (line one, or two after a shebang) opts into
   REPL-style bare names. Any other `#`-directive placement is an error. The
@@ -196,10 +242,30 @@ weir rejects rather than guesses.
 - **Comments are `//` to end of line** (string-aware; applies to script
   lines). Line one `#!` is skipped by the runner; `#` at line head is
   reserved for directives.
-- **Statement output is shell-shaped**: a bare expression statement prints
-  strings raw and string-seqs line by line (so `weir script | grep x`
-  composes); other values print in REPL form; `let` and `type` statements
-  print nothing.
+- **The statement rule**: *command-mode lines stream; every expression
+  computes a value; values are bound or printed.* A pure expression
+  statement must have type `unit` — anything else is a check error before
+  line one runs ("this statement computes a `<ty>` and discards it — bind
+  it, or pipe it to print"; `seq<unit>` gets the targeted lazy-effects
+  text pointing at `Seq.iter`; `seq<FileRow>` names `^ls`). Command-mode
+  statements are the single exempt form, `|`-chains included: they keep
+  shell-shaped streaming output through the same renderer `print` uses
+  (byte-identity pinned in e2e). The exemption is the parser's mode
+  decision reified (`SCmd` vs `SExpr`) — syntactic, never name- or
+  type-directed. Decision archaeology: a second exempt form (bare
+  `sh`/`cmd` applications) was in the blessed draft and removed at
+  proposal stage — deciding it required resolving `sh` to the real
+  builtin inside a rule that must stay syntactic (the shadowing cliff
+  `let sh = fun s -> s in sh "hi"` was the proof); bare `sh "x"` became
+  the same discard error as any value. Superseded one review later
+  (2026-07-18) by removing the `sh` builtin outright — see "Processes
+  and the session" — after which POSIX one-liners are command-mode
+  `sh -c "..."` lines: exempt, streaming, `| complete`-able.
+  `let`/`type` statements print nothing, as before. `#loose` does not
+  loosen this — resolution mode and output semantics are different axes.
+  The rule is script-only: the REPL and `-e` keep `it`-style auto-print
+  (ephemeral lines are not the PS output-pollution bug class; durable
+  scripts are).
 - **Script inputs**: `args : seq<string>` (argv after the script name) and
   `stdin : seq<string>` (lazy, one-shot — `Seq.collect` it if reused) exist
   only in scripts, not the REPL (the REPL owns its own stdin). Children
@@ -216,12 +282,19 @@ weir rejects rather than guesses.
 
 ## Processes and the session
 
-- **`sh : string -> seq<string>`** is the deliberate POSIX escape hatch: the
-  string goes to `/bin/sh -c`, so globs, pipes, `&&`, redirects, and `&` all
-  work — and their consequences are the user's. In particular, backgrounded
-  (`&`) processes are orphaned to init when sh exits and no tree-kill can
-  reach them: the user owns them (see the Session-1 lifecycle tripwires in
-  Tests.fs — removing sh backing changes their analysis).
+- **There is no `sh` builtin** (removed 2026-07-18; it shipped in the
+  command-mode sessions as the blessed POSIX escape hatch). Decision
+  archaeology: the statement rule exposed it as a stringly parallel
+  surface — a library function pretending to be a shell. Bare effect
+  lines needed `|> print`, `| complete` could never reach it (it was an
+  expression, not a command), and it deferred resolution past
+  check-everything-first. The external `/bin/sh` does everything it did
+  with zero special-casing: command mode `sh -c "glob* && stuff"`
+  (streams, completes, pipes like any command); expression positions
+  use `cmd "sh" ["-c"; "..."]`. Consequences of a shell string remain
+  the user's — backgrounded (`&`) children are orphaned to init when sh
+  exits and no tree-kill can reach them (Session-1 lifecycle tripwires
+  keep that analysis, now via the cmd spelling).
 - **`cmd : string -> seq<string> -> seq<string>`** is direct exec: weir owns
   (prog, args). No shell, zero expansion — every argument is one argv entry,
   so there is no injection class (`cmd "echo" ["; rm -rf x"]` prints the
@@ -264,11 +337,6 @@ weir rejects rather than guesses.
 - **`complete` and `collect` force their source to completion** — on a
   non-terminating source they do not return (`yes hi | complete` hangs by
   design; the user owns it, exactly as with `yes hi |> collect`).
-- **sh-backed streams cannot be completed**: `| complete` is command-mode
-  desugar and `sh "..."` is an expression. This is the boundary, documented:
-  `sh` buys POSIX semantics at the price of POSIX error opacity (exit codes
-  raise, stderr passes through, no reification). If dogfooding demands it, a
-  `shc` variant is the shape — not a type distinction.
 - **A command-headed line commits to command mode**: once the first segment
   parses as a command, there is no backtrack to expression parsing for the
   rest of the line — errors after that point are command-line errors (this is
@@ -276,7 +344,8 @@ weir rejects rather than guesses.
   generic expression error).
 - **External-to-external pipes feed stdin**: `git log | grep x` wires the
   left stream (which must be `seq<string>`) into the right command's stdin.
-  Piping into `sh`-strings stays unsupported — that is what `into` is for.
+  Piping into the shell is just `xs | sh -c "..."` now; `into` remains
+  the expression-position spelling.
 - **Partiality convention (FINAL)**: a raising name plus a `try`-prefixed
   sibling returning `Option<'a>`. Pairs: `head`/`tryHead`, `toInt`/`tryToInt`;
   Option-native: `tryFind`, `tryIndexOf`; raising-only (documented bounds):
@@ -327,9 +396,10 @@ weir rejects rather than guesses.
   Live queries (`pwd`, `ls`, command streams) bind the *query*, not the
   answer; `collect` is the snapshot operator.
 - **`File.read`/`File.write`/`File.append`/`File.exists`** (qualified-only,
-  data-last, eager): the library-owned alternative to `sh`-redirect
-  idioms. `write`/`append` return the resolved absolute path (the `cd`
-  precedent — weir has no unit). All relative paths resolve through the
+  data-last, eager): the library-owned alternative to shell-redirect
+  idioms. `write`/`append` return `unit` (their path-return was an
+  explicit no-unit stopgap, retired the day unit landed). All relative
+  paths resolve through the
   single shared helper `Session.resolve` — the same one used by spawns'
   working directories, `cd`, and PATH probes, so every filesystem touch
   agrees on what "relative" means.
@@ -348,8 +418,8 @@ weir rejects rather than guesses.
 
 - Sequences are lazy end to end; re-enumerating a bound pipeline re-runs its
   effects (standard seq semantics), **including re-spawning external
-  commands** — `let files = sh "find ..." in ...` used twice runs `find`
-  twice, and the command may not be idempotent. Mitigation is backlog #2: a
+  commands** — `let files = cmd "find" [...] in ...` used twice runs
+  `find` twice, and the command may not be idempotent. Mitigation is backlog #2: a
   `collect` builtin (force once, materialize) as the standard escape hatch.
 - Non-exhaustive matches are warnings at check time and `match failure` at
   runtime — the one deliberate runtime failure class besides boundary
@@ -358,6 +428,11 @@ weir rejects rather than guesses.
 
 ## Backlog (ordered by day-one impact)
 
+0. **Block effect-sequencing** (`print "a"` mid-block — F#'s other half of
+   light syntax): needs an ESeq node checked `unit` in non-final
+   positions, the statement rule's discipline applied inside blocks.
+   Revive on dogfood demand; until then a block is bindings + one result
+   expression.
 1. ~~**Measure algebra**~~ — **dropped for the foreseeable future**
    (2026-07-17, recorded in PLAN-modules-and-scripts.md): measures stay
    nominal tags with preservation-only arithmetic; the

@@ -1,5 +1,121 @@
 # Spike Notes
 
+## Block lets — F# light syntax at the assembly layer (2026-07-18)
+
+User decision closing the `let ... in` thread (opened during the spikes,
+kept then; reopened at the interpolation review): **do it like F#** —
+implicit `in` at the offside boundary, not the austere removal. 353
+tests; battery +2 pins; timing holds.
+
+- **Zero parser/checker/evaluator changes.** F# implements light syntax
+  by token insertion in the lexer; weir's logical-line assembler is the
+  same layer. A continuation line starting with `let ` pushes a pending
+  binding (indent, line); the next line at the SAME indent closes it by
+  joining with " in " instead of " ". The single-line grammar sees the
+  explicit form; ELet and envFreeVars serve unchanged — the austere
+  option (kill ELet, kill envFreeVars) was assessed and set aside in
+  favor of F# fidelity; that analysis is on record in the conversation
+  and the read shrinkage it promised is forgone knowingly.
+- Stack invariant: pending indents strictly increase, so each closing
+  line pops at most one binding; a dedent past a deeper pending let is
+  the "needs a body" error naming the deepest line — same verdict F#
+  gives the shape.
+- `|`-headed lines are inert to the stack (match arms, command pipes),
+  which makes match-as-let-body work with canonical arm style for free.
+- **Span translation needed nothing**: Segments already carry
+  per-segment joined offsets; " in " just makes the offset arithmetic
+  4 instead of 1 (`typo at 2:24` pins it).
+- Explicit `let ... in` stays legal — F#'s verbose-syntax analog and the
+  only binding form in the line-based REPL/-e. Blocks are bindings + one
+  result expression; effect-sequencing inside blocks (ESeq, unit-checked
+  non-final lines) is backlog #0, revive on dogfood demand.
+- Blank-line-ends-statement is retained and now documented as a named
+  F# divergence (a blank inside a block is a "needs a body" error).
+
+## Review amendments: [ heads nothing; the sh builtin is gone (2026-07-18)
+
+Two user decisions at review of the unit-print session. 346 tests;
+battery reshaped (+3 pins, −1 obsolete); timing holds.
+
+- **`[` never heads a command.** The capture bug (line-head string list
+  → bare `[` token → /usr/bin/[) is fixed at the head rule: `[`-initial
+  words fail to expression mode; `^[` is a hard error naming
+  `cmd "[" [...]`. `[` stays ordinary inside arguments (`[m]arker`).
+  Pinned with realResolver (real PATH) and in e2e with the natural
+  spelling that used to break.
+- **The `sh` builtin is removed.** The statement rule had exposed it:
+  a library function pretending to be a shell — bare effect lines
+  needed `|> print`, `| complete` could never reach it, and it deferred
+  resolution past check-everything-first. The external `/bin/sh` does
+  everything with zero special-casing: `sh -c "..."` is command mode
+  (exempt, streaming, completable — `sh -c "exit 7" | complete` works
+  now, which the builtin structurally never could); expression
+  positions use `cmd "sh" ["-c"; "..."]`. 27 test sites migrated
+  mechanically; the parked "effect-only sh ergonomic" demand dissolves
+  (effect lines are command mode now). One migration self-inflicted
+  wound: the sed-style regex mangled `./build.sh \"--flag\"` inside an
+  *expectation string* — the sed-migration lesson from the module
+  session, relearned on a smaller stage.
+- SEMANTICS updated with decision archaeology in place (hatch bullet,
+  dead completed-boundary bullet removed, statement-rule clause
+  superseded-noted, `[` rule added).
+
+## Unit, print, and the statement rule (2026-07-18)
+
+PLAN-unit-and-print Session 1, complete. 346 tests; battery +9 pins;
+timing pins hold (7/20ms medians).
+
+- **`unit` cost what the plan predicted**: a leaf. TUnit/VUnit/`()`/
+  `unit` tySyn, equatable, invisible interactively (REPL, `-e`, and
+  `let x = ()` all show nothing — pinned in e2e). No read-path arm
+  touched; TRANSCRIPTION got the addenda.
+- **The statement rule**: parser reifies its mode decision as
+  `SCmd`/`SExpr` (new Stmt case — the classifier is a pattern match, so
+  the removed form-2 exemption *cannot* be reintroduced without a
+  parser change), and the runner's `discardError` gates pure statements
+  on unit. `| complete` chains classify as commands for free because
+  classification happens at parse time, before the desugar to
+  `completed` application.
+- **print**: sentinel-scheme guard (∀__print. __print → unit is
+  unforgeable — ctx names are aN/rN) gives bespoke typing in applied/
+  piped positions and defaulted `string -> unit` as a bare value;
+  shadowing falls through to normal rules by construction. Renderer
+  byte-identity with the retired statement printer is by shared
+  function (`Eval.writeLines`), pinned by the adversarial e2e case
+  (empty strings, embedded newline).
+- **`File.write`/`append` → unit**; the path-return stopgap retired.
+- **Found, not fixed (pre-existing, out of session scope): line-head
+  string lists enter command mode.** `["a"; "b"] |> print` at a line
+  head: quotes end the bareword, the head token is bare `[`, and
+  `/usr/bin/[` is a PATH hit → ECmd. Ints escape (`[2;` fails the PATH
+  probe). Migration workaround: `let`-bind the list. Needs a decision:
+  may `[` head a command? (bash's `[ -f x ]` idiom vs list literals.)
+- Effect-only `sh` lines (`sh "mkdir x" |> print`) read as predicted —
+  noted in the plan as the first candidate demand for the discard
+  hatch; no dogfood complaint yet.
+
+## String interpolation (2026-07-18)
+
+User-requested off-plan feature (dogfood follow-up to the example script's
+`echo tracked changes: (...)` bareword question). `$"... {expr} ..."`,
+F#-style. 331 tests.
+
+- **One rule, two splice kinds**: holes reuse the command-splice typing rule
+  verbatim — str/int/bool, unresolved defaults to string — via a shared
+  `checkScalarSplice` extracted from the ECmd arm (behavior unchanged there).
+  Eval-side the same consolidation: one `scalarString` renderer now serves
+  both command argv and holes (was duplicated at two TECmd sites).
+- Works as a command argument (`echo $"n={x}"` is one argv entry, never
+  re-split) — cmdArg tries `interpLit` before `spliceVar` so `$"` isn't eaten
+  by the `$name` path. `{{`/`}}` escape braces; no format specifiers.
+- `$"{n}"` closes the filed int→string gap; the example script now uses
+  interpolation throughout (including a `Dirty of int` payload rendered in a
+  match arm).
+- Checker arm added post-read-anchor: TRANSCRIPTION.md gained a "post-anchor
+  addenda" section so the pending READ.md scope stays exactly d12aefd.
+- e2e battery: interpolation + brace escapes, and the one-argv-entry pin,
+  against the AOT binary.
+
 ## Read prep — transcription, read order, composition probes (2026-07-17)
 
 Part 1 prep of PLAN-read-booleans-overflow, complete. 317 tests.

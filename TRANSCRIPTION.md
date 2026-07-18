@@ -194,6 +194,41 @@ Fallback: infer then bind (subsumption-by-unification).
 Constructor schemes are ordinary Schemes — instantiation rides the
 audited path; that identity is the §3 reopening argument.
 
+## Post-anchor addenda (arms added after d12aefd — not part of the read)
+
+### EInterp (string interpolation session)
+    ∀ hole e: Γ ⊢ e ⇒ τ ⊣ Δ, resolve(τ) ∈ {str, int _, bool}
+              (TVar ⟹ bind to str)
+    ────────────────────────────────────────────────────────
+    Γ ⊢ $"…{e}…" ⇒ str ⊣ ⋃Δ
+Identical to ECmd's argument rule; both now call the shared
+`checkScalarSplice` (the ECmd arm's inline copy was extracted — behavior
+unchanged, so the anchored read of ECmd still holds; only the code moved).
+No new unification or generalization machinery — literal parts are inert.
+
+### unit (unit-and-print session)
+`TUnit` is a ground leaf: equal-case in bind, vacuous in occurs/rows/
+generalization, equatable trivially, excluded from the splice family by
+construction (not added to `checkScalarSplice`'s accepted set). EUnit ⇒
+unit is an axiom. No read-path arm touched.
+
+### print (unit-and-print session)
+Three syntactic positions, guarded by an unforgeable sentinel scheme
+(∀__print. __print → unit — ctx-fresh names are aN/rN, so structural
+equality against the registered scheme means "print, unshadowed";
+a user `let print = ...` replaces the scheme and every rule below
+falls through to the normal paths):
+    applied (print e) / piped (e |> print):
+        Γ ⊢ e ⇒ τ,  printArg(τ) = τ'   (scalar family; TVar ↦ str;
+        seq with str/TVar elements ↦ seq<string>; seq<unit> errors
+        with the Seq.iter hint)
+        ─────────────────────────────────────────────
+        ⇒ unit
+    bare value: print ⇒ str → unit    (the defaulted form)
+The statement rule itself (pure statements must be unit) lives in the
+script runner (`Script.discardError`), not the checker — classification
+is the parser's SCmd/SExpr split, outside this document's scope.
+
 ## Flags summary (pre-read findings, per plan)
 
 1. instantiate: two jobs (rename + R installation). Verify snapshot
