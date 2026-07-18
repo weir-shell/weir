@@ -1258,40 +1258,40 @@ let diagnoseTests =
 let session3Tests =
     testSequenced
     <| testList
-        "complete and collect"
-        [ test "collect snapshots a live query" {
+        "complete and toList"
+        [ test "toList snapshots a live query" {
               try
                   expectValue
-                      "let p = pwd |> collect in let d = cd \"/tmp\" in p |> first 1"
+                      "let p = pwd |> toList in let d = cd \"/tmp\" in p |> first 1"
                       (VSeq [ VStr(System.IO.Directory.GetCurrentDirectory()) ])
               finally
                   Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
           }
-          test "collect forces effects exactly once" {
+          test "toList forces effects exactly once" {
               let marker =
-                  Path.Combine(Path.GetTempPath(), $"weir-collect-{System.Guid.NewGuid():N}")
+                  Path.Combine(Path.GetTempPath(), $"weir-toList-{System.Guid.NewGuid():N}")
 
               try
                   run
-                      $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] |> collect in let a = s |> first 1 in let b = s |> first 1 in b"
+                      $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] |> toList in let a = s |> first 1 in let b = s |> first 1 in b"
                   |> forceSeq
                   |> ignore
 
-                  Expect.equal (File.ReadAllLines marker |> Array.length) 1 "one spawn with collect"
+                  Expect.equal (File.ReadAllLines marker |> Array.length) 1 "one spawn with toList"
 
                   File.Delete marker
 
                   let r =
                       run
-                          $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] in let a = s |> first 1 |> collect in let b = s |> first 1 |> collect in b"
+                          $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] in let a = s |> first 1 |> toList in let b = s |> first 1 |> toList in b"
 
                   r |> forceSeq |> ignore
-                  Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront collect"
+                  Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront toList"
               finally
                   if File.Exists marker then
                       File.Delete marker
           }
-          test "collect is polymorphic" { expectValue "[1; 2] |> collect |> sum" (VInt 3) }
+          test "toList is polymorphic" { expectValue "[1; 2] |> toList |> sum" (VInt 3) }
           test "head extracts the element" {
               expectValue "[1; 2] |> head" (VInt 1)
               expectValue "ls |> map _.Name |> head" (VStr "a.txt")

@@ -54,13 +54,20 @@ let private sumImpl: Value =
     VBuiltin(fun s ->
         match s with
         | VSeq items ->
-            VInt(
+            let total =
                 items
-                |> Seq.sumBy (fun v ->
-                    match v with
-                    | VInt n -> n
-                    | v -> unreachable $"the checker rejects summing {formatValue v}")
-            )
+                |> Seq.fold
+                    (fun acc v ->
+                        match v with
+                        | VInt n ->
+                            try
+                                Checked.(+) acc n
+                            with :? System.OverflowException ->
+                                failwith "integer overflow in sum"
+                        | v -> unreachable $"the checker rejects summing {formatValue v}")
+                    0L
+
+            VInt total
         | v -> unreachable $"the checker rejects 'sum' on {formatValue v}")
 
 let private natsImpl: Value = VSeq(Seq.initInfinite (int64 >> VInt))
@@ -138,13 +145,13 @@ let private headImpl: Value =
             | None -> failwith "head: empty sequence"
         | v -> unreachable $"the checker rejects 'head' on {formatValue v}")
 
-let private collectImpl: Value =
+let private toListImpl: Value =
     VBuiltin(fun v ->
         match v with
         | VSeq items ->
             let materialized = List.ofSeq items
             VSeq(materialized :> seq<Value>)
-        | v -> unreachable $"the checker rejects 'collect' on {formatValue v}")
+        | v -> unreachable $"the checker rejects 'toList' on {formatValue v}")
 
 let completedDef: RecordDef =
     { Name = "Completed"
@@ -407,10 +414,15 @@ let private rangeImpl: Value =
                     VSeq(
                         seq {
                             let mutable i = start
+                            let mutable go = if step > 0L then i <= stop else i >= stop
 
-                            while (if step > 0L then i <= stop else i >= stop) do
+                            while go do
                                 yield VInt i
-                                i <- i + step
+                                let next = i + step
+                                // wrap past Int64 boundary = the range is done
+                                let wrapped = (step > 0L && next < i) || (step < 0L && next > i)
+                                i <- next
+                                go <- not wrapped && (if step > 0L then i <= stop else i >= stop)
                         }
                     )
                 | _ -> unreachable "the checker rejects non-int range bounds")))
@@ -422,7 +434,7 @@ let private seqMembers: (string * Ty * Value) list =
       "take", TFun(TInt, TFun(TSeq tA, TSeq tA)), truncateImpl
       "head", TFun(TSeq tA, tA), headImpl
       "sum", TFun(seqInt, TInt), sumImpl
-      "collect", TFun(TSeq tA, TSeq tA), collectImpl
+      "toList", TFun(TSeq tA, TSeq tA), toListImpl
       "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
@@ -501,7 +513,7 @@ let private bareAliases: Set<string> =
           "take"
           "head"
           "sum"
-          "collect"
+          "toList"
           "contains"
           "startsWith"
           "endsWith"

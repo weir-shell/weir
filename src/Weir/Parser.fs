@@ -66,9 +66,10 @@ let private intLit =
     spanned (
         many1Satisfy isDigit .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
         >>= fun (digits, m) ->
-            match m with
-            | Some _ -> failFatally "measure literals were removed (2026-07-18); use bare int"
-            | None -> preturn (EInt(int digits))
+            match m, System.Int64.TryParse digits with
+            | Some _, _ -> failFatally "measure literals were removed (2026-07-18); use bare int"
+            | None, (true, n) -> preturn (EInt n)
+            | None, (false, _) -> failFatally $"int literal out of range (64-bit): {digits}"
     )
     |>> mkExpr
     .>> ws
@@ -125,7 +126,13 @@ let private dotdot = pstring ".." .>> ws
 // no unary minus elsewhere. rangeTerm is a forward ref: it needs atom, which
 // needs listLit.
 let private negIntLit =
-    spanned (pchar '-' >>. many1Satisfy isDigit |>> fun digits -> EInt(-(int digits)))
+    spanned (
+        pchar '-' >>. many1Satisfy isDigit
+        >>= fun digits ->
+            match System.Int64.TryParse digits with
+            | true, n -> preturn (EInt(-n))
+            | false, _ -> failFatally $"int literal out of range (64-bit): -{digits}"
+    )
     |>> mkExpr
     .>> ws
 
@@ -138,10 +145,10 @@ let private rangeBody =
         let start, step, stop =
             match c with
             | Some stop -> a, b, stop
-            | None -> a, { Kind = EInt 1; Span = a.Span }, b
+            | None -> a, { Kind = EInt 1L; Span = a.Span }, b
 
         match step.Kind with
-        | EInt 0 -> failFatally "range step is zero"
+        | EInt 0L -> failFatally "range step is zero"
         | _ -> preturn (start, step, stop)
 
 // [a..s..b] is pure sugar for Seq.range a s b; [a; b; c] stays an eager list.

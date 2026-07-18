@@ -1,5 +1,31 @@
 # Spike Notes
 
+## Part 3: overflow policy + data-range battery; collect renamed (2026-07-18)
+
+Branch overflow-policy, gate waived by the owner (Part 2 pattern).
+410 tests; battery +4 AOT pins; timing holds. PLAN-read-booleans-
+overflow is now complete except the human READ.md.
+
+- **collect → Seq.toList** (rides ahead of Part 3 as its own commit):
+  F#'s Seq.collect is flatMap — a direct agent prior-bleed collision;
+  toList is the F# name whose muscle memory matches (weir has no list
+  type, so the seq return is the only reading). Frees Seq.collect for
+  evidenced flatMap.
+- **int literals were silently int32 while runtime was int64** — found
+  as an AOT hard CRASH on `weir -e 9223372036854775807` (ParseInt32 in
+  the literal path; F# 6 implicit widening had hidden the mismatch at
+  compile time). Literals now parse as int64 with a parse-time range
+  error beyond 64 bits. The data-range battery's first catch, before
+  it was even written.
+- Checked +,-,*,/ and Seq.sum raise "integer overflow" (uniform text;
+  the Min/-1 division edge rides the same path). Ranges TERMINATE at
+  the Int64 boundary instead of raising — yielded values are all
+  correct, so termination is honest semantics; pinned.
+- DataRange.fs is the permanent layer (boundaries, big strings,
+  billion-element laziness); e2e adds >2GB sparse file, 0-byte file,
+  Max-literal, and overflow-raise pins against the AOT binary.
+
+
 ## Ledger round 2 — fail, printerr, precedence hint (2026-07-18)
 
 Second same-day fix round from the dogfood ledger. 401 tests;

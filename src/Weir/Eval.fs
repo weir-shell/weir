@@ -96,13 +96,22 @@ let writeLinesTo (w: System.IO.TextWriter) (items: seq<Value>) : unit =
 
 let writeLines (items: seq<Value>) : unit = writeLinesTo System.Console.Out items
 
+// Overflow policy (Part 3): int arithmetic is CHECKED — wrapping silently
+// is the bash-calculator bug class; a raise joins the named runtime
+// failure classes instead.
+let private checkedInt (f: unit -> int64) : Value =
+    try
+        VInt(f ())
+    with :? System.OverflowException ->
+        failwith "integer overflow"
+
 let private binOp (op: string) (l: Value) (r: Value) : Value =
     match op, l, r with
-    | "+", VInt a, VInt b -> VInt(a + b)
+    | "+", VInt a, VInt b -> checkedInt (fun () -> Checked.(+) a b)
     | "+", VStr a, VStr b -> VStr(a + b)
-    | "-", VInt a, VInt b -> VInt(a - b)
-    | "*", VInt a, VInt b -> VInt(a * b)
-    | "/", VInt a, VInt b -> VInt(a / b)
+    | "-", VInt a, VInt b -> checkedInt (fun () -> Checked.(-) a b)
+    | "*", VInt a, VInt b -> checkedInt (fun () -> Checked.(*) a b)
+    | "/", VInt a, VInt b -> checkedInt (fun () -> a / b)
     | ">", VInt a, VInt b -> VBool(a > b)
     | "<", VInt a, VInt b -> VBool(a < b)
     | ">=", VInt a, VInt b -> VBool(a >= b)

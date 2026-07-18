@@ -275,6 +275,24 @@ echo "$errout" | grep -qF "error: stop here" || fail "fail must be located on st
 echo "e2e ok: fail exits located; printerr separates streams"
 rm -rf "$faildir"
 
+bigdir=$(mktemp -d)
+truncate -s 3G "$bigdir/sparse.bin"
+touch "$bigdir/empty.txt"
+out=$(printf 'cd "%s"\nls |> Seq.where (fun f -> f.Bytes > 2147483647) |> Seq.map _.Name\nls |> Seq.where (fun f -> f.Bytes == 0) |> Seq.map _.Name\n:q\n' "$bigdir" | $BIN)
+expect ">2GB file survives int64 end to end" "sparse.bin" "$out"
+expect "0-byte file filters exactly" "empty.txt" "$out"
+rm -rf "$bigdir"
+
+out=$($BIN -e '9223372036854775807')
+expect "Int64.Max literal on the AOT binary" "9223372036854775807 : int" "$out"
+
+if $BIN -e '9223372036854775807 + 1' 2>/dev/null; then
+    fail "overflow must raise, not wrap"
+fi
+errout=$($BIN -e '9223372036854775807 + 1' 2>&1 || true)
+echo "$errout" | grep -qF "integer overflow" || fail "overflow error text missing: $errout"
+echo "e2e ok: checked arithmetic raises on the AOT binary"
+
 cat > "$scriptdir/blockmatch.weir" <<'WEOF'
 type Size = Big | Small
 

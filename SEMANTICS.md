@@ -333,7 +333,7 @@ quantity semantics now.
   (ephemeral lines are not the PS output-pollution bug class; durable
   scripts are).
 - **Script inputs**: `args : seq<string>` (argv after the script name) and
-  `stdin : seq<string>` (lazy, one-shot — `Seq.collect` it if reused) exist
+  `stdin : seq<string>` (lazy, one-shot — `Seq.toList` it if reused) exist
   only in scripts, not the REPL (the REPL owns its own stdin). Children
   inherit the process stdin unless a value is piped into them; the `stdin`
   binding reads the same underlying stream, so consuming it both ways is
@@ -403,9 +403,9 @@ quantity semantics now.
   process-backed-stream distinction, which would not survive ordinary
   combinators (`where`/`first` return plain seqs). Splices in a completed
   command must be strings (the arg vector is a `seq<string>` literal).
-- **`complete` and `collect` force their source to completion** — on a
+- **`complete` and `Seq.toList` force their source to completion** — on a
   non-terminating source they do not return (`yes hi | complete` hangs by
-  design; the user owns it, exactly as with `yes hi |> collect`).
+  design; the user owns it, exactly as with `yes hi |> Seq.toList`).
 - **A top-level `let` RHS admits command mode** (2026-07-18; agent
   dogfooding produced the second independent hit of the gap within
   hours of the protocol starting): `let files = git ls-files` binds
@@ -470,10 +470,16 @@ quantity semantics now.
 - Deferred with intent: `substring`/`indexOf` (they want Option — Session 3
   customers), padding, regex (its own design — match vs captures vs typed
   groups; a backlog entry, not a builtins-session improvisation).
-- **`collect : seq<'a> -> seq<'a>`** materializes eagerly at application:
+- **`Seq.toList : seq<'a> -> seq<'a>`** (RENAMED from `collect`,
+  2026-07-18 — agent-era decision: F#'s `Seq.collect` is flatMap, a
+  direct prior-bleed collision for F#-trained authors; `toList` is the
+  F# name whose muscle-memory semantics match, and weir has no list
+  type so the seq return is the only reading. The rename frees
+  `Seq.collect` for flatMap if the bleed catalog demands it.)
+  It materializes eagerly at application:
   effects run exactly once, re-enumeration replays values with no re-spawn.
   Live queries (`pwd`, `ls`, command streams) bind the *query*, not the
-  answer; `collect` is the snapshot operator.
+  answer; `Seq.toList` is the snapshot operator.
 - **`File.read`/`File.write`/`File.append`/`File.exists`** (qualified-only,
   data-last, eager): the library-owned alternative to shell-redirect
   idioms. `write`/`append` return `unit` (their path-return was an
@@ -499,7 +505,19 @@ quantity semantics now.
   effects (standard seq semantics), **including re-spawning external
   commands** — `let files = cmd "find" [...] in ...` used twice runs
   `find` twice, and the command may not be idempotent. Mitigation is backlog #2: a
-  `collect` builtin (force once, materialize) as the standard escape hatch.
+  `Seq.toList` builtin (force once, materialize; né `collect`) as the
+  standard escape hatch.
+- **Overflow policy (Part 3, 2026-07-18)**: `int` is 64-bit end to end —
+  literals parse as int64 (beyond-range literals are parse errors:
+  "int literal out of range (64-bit)") — and arithmetic is CHECKED:
+  `+`/`-`/`*`/`/` and `Seq.sum` raise "integer overflow" instead of
+  wrapping (the bash-calculator bug class; joins the runtime failure
+  inventory below). Ranges TERMINATE at the type boundary rather than
+  raise ([...Int64.Max] yields its elements and stops — the yielded
+  values are all correct, so termination is the honest semantics).
+  Pinned by the permanent data-range battery (DataRange.fs + e2e:
+  >2GB sparse file, 0-byte file, Int64 boundaries, megabyte strings,
+  laziness under a billion-element range).
 - Non-exhaustive matches are hard errors at check time (2026-07-18;
   they were warnings, and `match failure` was a deliberate runtime
   class — both retired together, see the booleans bullet). The
@@ -526,8 +544,9 @@ quantity semantics now.
    entirely** (2026-07-18; see the tombstone section and the NOTES arc).
    The 2026-07-17 drop decision and the `no_unit_algebra` tripwire
    retired with them *and* the `*`/`/`-defaulting rule above.
-(Done: `collect` — backlog #1 — and the exit-code policy — old #3 — landed
-as `collect`/`complete`; see "Processes and the session".)
+(Done: backlog #1 and the exit-code policy — old #3 — landed as
+`Seq.toList` (né `collect`) and `complete`; see "Processes and the
+session".)
 
 (Done: comparison/boolean completeness — landed with `<>` inheriting `==`'s
 equatability and short-circuit `&&`/`||`, as pre-committed.)

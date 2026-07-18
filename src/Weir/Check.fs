@@ -16,7 +16,7 @@ let formatWarning (w: Warning) : string =
 type TypedExpr = { Kind: TypedKind; Ty: Ty; Span: Span }
 
 and TypedKind =
-    | TEInt of value: int
+    | TEInt of value: int64
     | TEStr of string
     | TEBool of bool
     | TEUnit
