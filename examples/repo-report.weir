@@ -1,0 +1,49 @@
+#!/usr/bin/env weir
+// repo-report — a typed look at a git repository
+// usage: repo-report [path]
+
+type Health =
+    | Clean
+    | Dirty
+
+// first arg, or the current directory
+let target =
+    args
+    |> Seq.tryHead
+    |> Option.defaultTo "."
+
+let workdir = cd target
+
+echo === repo report: (pwd |> Seq.head) ===
+
+// typed rows straight out of git's porcelain format
+let changes =
+    sh "git status --porcelain"
+    |> from porcelain
+
+// no bool branching yet — the Option idiom is the honest weir way
+let health =
+    match changes |> Seq.tryHead with
+    | Some c -> Dirty
+    | None -> Clean
+
+match health with
+| Clean -> "status: clean"
+| Dirty -> "status: dirty"
+
+echo tracked changes: (changes |> Seq.length)
+
+"staged:"
+
+changes
+    |> Seq.where _.Staged
+    |> Seq.map (fun c -> Str.join "" ["  "; c.Path])
+
+"largest files (weir has units — Bytes is int<b>):"
+
+ls
+    |> Seq.sortBy (fun f -> 0<b> - f.Bytes)
+    |> Seq.first 3
+    |> Seq.map (fun f -> Str.join "" ["  "; f.Name])
+
+echo done in (pwd |> Seq.head)

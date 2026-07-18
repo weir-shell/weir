@@ -1719,6 +1719,44 @@ let readProbes =
                       File.Delete marker
           } ]
 
+
+let fileTests =
+    testSequenced
+    <| testList
+        "File module"
+        [ test "write, read, append roundtrip" {
+              let path =
+                  Path.Combine(Path.GetTempPath(), $"weir-file-{System.Guid.NewGuid():N}.txt")
+
+              try
+                  expectValue $"File.write \"{path}\" [\"a\"; \"b\"]" (VStr path)
+                  Expect.equal (run $"File.read \"{path}\"" |> forceSeq) [ VStr "a"; VStr "b" ] "read back"
+                  run $"File.append \"{path}\" [\"c\"]" |> ignore
+                  Expect.equal (run $"File.read \"{path}\" |> Seq.length") (VInt 3L) "appended"
+                  expectValue $"File.exists \"{path}\"" (VBool true)
+              finally
+                  if File.Exists path then
+                      File.Delete path
+          }
+          test "exists is false for missing" { expectValue "File.exists \"/weir-definitely-not\"" (VBool false) }
+          test "relative paths resolve against Session.Cwd" {
+              let dir = Path.Combine(Path.GetTempPath(), $"weir-fdir-{System.Guid.NewGuid():N}")
+              Directory.CreateDirectory dir |> ignore
+
+              try
+                  let expected = Path.Combine(dir, "rel.txt")
+
+                  expectValue $"let d = cd \"{dir}\" in File.write \"rel.txt\" [\"x\"]" (VStr expected)
+
+                  Expect.isTrue (File.Exists expected) "written under Session.Cwd"
+              finally
+                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Directory.Delete(dir, true)
+          }
+          test "read of a missing file raises" {
+              Expect.throws (fun () -> run "File.read \"/weir-definitely-not\"" |> forceSeq |> ignore) ""
+          } ]
+
 let operatorTests =
     testList
         "Operator completeness"
@@ -1915,4 +1953,5 @@ let allTests =
           moduleTests
           scriptTests
           multilineTests
-          readProbes ]
+          readProbes
+          fileTests ]

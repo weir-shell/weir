@@ -144,7 +144,7 @@ let private cdImpl: Value =
                 else
                     path
 
-            let resolved = Path.GetFullPath(Path.Combine(Session.Cwd, expanded))
+            let resolved = Session.resolve expanded
 
             if not (Directory.Exists resolved) then
                 failwith $"cd: no such directory: {resolved}"
@@ -432,8 +432,45 @@ let private optionMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
       "defaultTo", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl ]
 
+let private fileMembers: (string * Ty * Value) list =
+    [ "read",
+      TFun(TStr, TSeq TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr path -> VSeq(File.ReadAllLines(Session.resolve path) |> Seq.map VStr)
+          | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
+      "write",
+      TFun(TStr, TFun(TSeq TStr, TStr)),
+      VBuiltin(fun pathV ->
+          VBuiltin(fun linesV ->
+              match pathV, linesV with
+              | VStr path, VSeq lines ->
+                  let resolved = Session.resolve path
+                  File.WriteAllLines(resolved, lines |> Seq.map asString)
+                  VStr resolved
+              | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
+      "append",
+      TFun(TStr, TFun(TSeq TStr, TStr)),
+      VBuiltin(fun pathV ->
+          VBuiltin(fun linesV ->
+              match pathV, linesV with
+              | VStr path, VSeq lines ->
+                  let resolved = Session.resolve path
+                  File.AppendAllLines(resolved, lines |> Seq.map asString)
+                  VStr resolved
+              | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
+      "exists",
+      TFun(TStr, TBool),
+      VBuiltin(fun v ->
+          match v with
+          | VStr path -> VBool(File.Exists(Session.resolve path))
+          | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
-    [ "Seq", seqMembers; "Str", strMembers; "Option", optionMembers ]
+    [ "Seq", seqMembers
+      "Str", strMembers
+      "Option", optionMembers
+      "File", fileMembers ]
 
 let private bareAliases: Set<string> =
     Set

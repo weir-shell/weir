@@ -326,6 +326,13 @@ weir rejects rather than guesses.
   effects run exactly once, re-enumeration replays values with no re-spawn.
   Live queries (`pwd`, `ls`, command streams) bind the *query*, not the
   answer; `collect` is the snapshot operator.
+- **`File.read`/`File.write`/`File.append`/`File.exists`** (qualified-only,
+  data-last, eager): the library-owned alternative to `sh`-redirect
+  idioms. `write`/`append` return the resolved absolute path (the `cd`
+  precedent — weir has no unit). All relative paths resolve through the
+  single shared helper `Session.resolve` — the same one used by spawns'
+  working directories, `cd`, and PATH probes, so every filesystem touch
+  agrees on what "relative" means.
 - **`Session.Cwd` is the only working directory.** Every spawn sets it as the
   child's working directory (read at force time, not bind time);
   `Environment.CurrentDirectory` is never touched (AOT/global-state hygiene,

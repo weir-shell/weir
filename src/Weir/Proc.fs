@@ -62,10 +62,7 @@ let lines (prog: string) (args: string list) (input: seq<string> option) : seq<s
     }
 
 let resolveProg (prog: string) : string =
-    if prog.Contains '/' then
-        Path.GetFullPath(Path.Combine(Session.Cwd, prog))
-    else
-        prog
+    if prog.Contains '/' then Session.resolve prog else prog
 
 let complete (prog: string) (args: string list) (input: seq<string> option) : int * string list * string list =
     let psi = ProcessStartInfo(prog)

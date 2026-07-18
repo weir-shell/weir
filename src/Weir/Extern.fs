@@ -34,7 +34,7 @@ let private pathDirs () =
 
 let exists (prog: string) : bool =
     if prog.Contains '/' then
-        File.Exists(Path.GetFullPath(Path.Combine(Session.Cwd, prog)))
+        File.Exists(Session.resolve prog)
     else
         match cache with
         | Some s -> s.Contains prog
