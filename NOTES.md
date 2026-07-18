@@ -1,5 +1,41 @@
 # Spike Notes
 
+## Range literals (2026-07-18)
+
+Mini-plan session (ranges taken from the comprehension decomposition;
+for-yield sugar and Seq.collect stay parked with reopen criteria in the
+plan). 375 tests; battery +3 pins; timing holds. No checker arm added —
+the literal desugars to a `Seq.range` application before checking, as
+the plan modeled.
+
+**Deviation, stop-and-reported mid-session**: the DECIDED
+measured-ranges bullet ("measure-polymorphic via the same scheme shape
+as other Seq members") assumed machinery that does not exist. A `∀a`
+scheme would also accept strings — weir has no measure variables or
+int-constrained type variables — and the actual library precedent is
+`Seq.sum : seq<int> -> int`, bare-only for exactly this reason. Shipped
+the sound subset: `Seq.range` is monomorphic bare int; `[1<mb>..3<mb>]`
+is the ordinary measure-mismatch error, pinned as a named limitation.
+Measured ranges need re-blessing with either a Ty-level measure
+variable or a checker arm.
+
+Session decisions the plan left open, as resolved:
+- Range-vs-list disambiguation is a bounded backtrack: `attempt` over
+  the first simple term + `..` — one term deep, not exponential; noted
+  per the plan's lookahead-vs-backtrack question.
+- Zero literal step errors at PARSE time (failFatally in the desugar),
+  slightly earlier than the plan's "check-time" — same guarantee
+  (before anything runs), reported for precision.
+- The negative literal needed for descending steps exists ONLY in
+  range positions (`negIntLit` in rangeTerm) — no unary minus leaked
+  into the general grammar.
+- `..` never touches command mode (expression-land parser only);
+  `cd ..` composed with a range in the same script is e2e-pinned.
+- Field access in endpoints wraps fieldSuffix in `attempt` so the
+  first dot of `..` is never eaten as a field dot — the `1.` /
+  `1..` boundary the plan flagged (`1.` remains an error shape,
+  pinned by the F#-negatives).
+
 ## Fix: |-inertness is statement-level only (2026-07-18)
 
 Corrective session per the blessed fix plan. 358 tests; battery +2

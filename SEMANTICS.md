@@ -19,6 +19,24 @@ weir rejects rather than guesses.
   `1<measure>`, strings with `\" \\ \n \t` escapes, `true`/`false`, and seq
   literals `[a; b; c]` (homogeneous; elements evaluate eagerly, once — unlike
   pipelines; `[]` is polymorphic `seq<'a>`).
+- **Range literals**: `[a..b]` inclusive ascending, `[a..step..b]` stepped;
+  descending only via an explicit negative step (`[10.. -1 ..1]` — the
+  range positions are the one place a negative int literal exists; weir
+  has no unary minus). Empty when `a > b` in the ascending form. Pure
+  parser sugar over `Seq.range : int -> int -> int -> seq<int>`
+  (start/step/stop, qualified-only — computed ranges spell it out).
+  **Named asymmetry**: *bracketed semicolon lists are eager values;
+  bracketed ranges are lazy generators* — `[1..1000000] |> first 3`
+  never materializes; re-enumeration re-runs the generator (pure, so
+  the collect caveat does not bite). Zero step: parse-time error for a
+  literal step, runtime "range step is zero" when computed. Endpoints
+  are simple expressions only (literals, idents, field access,
+  parenthesized anything) — `[x..f y]` is rejected with an error naming
+  the parens fix. **Bare int only** (any-measure ranges were proposed
+  and NOT shipped: weir has no measure-polymorphic scheme mechanism — a
+  `∀a` scheme would accept strings — and the library precedent is
+  `Seq.sum`, bare-only; measured ranges wait on that machinery or a
+  blessed checker arm). No float or char ranges (no floats or chars).
 - **Generalization regime**: Damas-Milner-style. `let`-bound values generalize
   (minus variables free in the environment, reached transitively through row
   constraints); every use instantiates freshly, including a deep copy of row

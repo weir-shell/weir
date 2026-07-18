@@ -400,6 +400,26 @@ let private iterImpl: Value =
                 VUnit
             | v -> unreachable $"the checker rejects 'iter' on {formatValue v}"))
 
+let private rangeImpl: Value =
+    VBuiltin(fun a ->
+        VBuiltin(fun s ->
+            VBuiltin(fun b ->
+                match a, s, b with
+                | VInt start, VInt step, VInt stop ->
+                    if step = 0L then
+                        failwith "range step is zero"
+
+                    VSeq(
+                        seq {
+                            let mutable i = start
+
+                            while (if step > 0L then i <= stop else i >= stop) do
+                                yield VInt i
+                                i <- i + step
+                        }
+                    )
+                | _ -> unreachable "the checker rejects non-int range bounds")))
+
 let private seqMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
@@ -414,6 +434,7 @@ let private seqMembers: (string * Ty * Value) list =
       "length", TFun(TSeq tA, TInt None), seqLengthImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
+      "range", TFun(TInt None, TFun(TInt None, TFun(TInt None, seqInt))), rangeImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
 
 let private strMembers: (string * Ty * Value) list =

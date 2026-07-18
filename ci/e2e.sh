@@ -24,6 +24,22 @@ expect "argv stays literal" '["*"]' "$out"
 out=$($BIN -e 'echo hi (40 + 2) | first 1')
 expect "command mode with splice" '["hi 42"]' "$out"
 
+out=$($BIN -e '[1..5] |> Seq.length')
+expect "range literal on the AOT binary" "5 : int" "$out"
+
+out=$(timeout 5 $BIN -e '[1..1000000] |> first 3') || fail "huge range under first must terminate (laziness)"
+expect "ranges are lazy generators" '[1; 2; 3]' "$out"
+
+rangedir=$(mktemp -d)
+mkdir -p "$rangedir/sub"
+cat > "$rangedir/sub/updot.weir" <<'WEOF'
+cd ..
+[1..3] |> Seq.length |> print
+WEOF
+out=$(cd "$rangedir/sub" && $BIN updot.weir)
+expect "cd .. barewords compose with range lexing" "3" "$out"
+rm -rf "$rangedir"
+
 out=$($BIN -e 'let n = 40 + 2 in $"answer: {n} {{ok}}"')
 expect "string interpolation with brace escapes" '"answer: 42 {ok}"' "$out"
 

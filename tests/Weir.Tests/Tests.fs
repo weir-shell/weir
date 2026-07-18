@@ -1988,6 +1988,54 @@ let unitPrintTests =
               | None -> failtest "seq<unit> discard must be rejected"
           } ]
 
+let rangeTests =
+    testList
+        "Range literals"
+        [ test "desugars to Seq.range" { expectParse "[1..5]" "(((Seq.range 1) 1) 5)" }
+          test "stepped form" { expectParse "[0..2..10]" "(((Seq.range 0) 2) 10)" }
+          test "basic ascending" { expectValue "[1..5] |> Seq.length" (VInt 5L) }
+          test "empty when start exceeds stop" { expectValue "[1..0] |> Seq.isEmpty" (VBool true) }
+          test "stepped" { expectValue "[0..2..10] |> Seq.length" (VInt 6L) }
+          test "descending via negative step, spaced" { expectValue "[10.. -1 ..1] |> Seq.length" (VInt 10L) }
+          test "descending via negative step, unspaced" { expectValue "[10..-1..1] |> Seq.length" (VInt 10L) }
+          test "whitespace-tolerant" { expectValue "[1 .. 10] |> Seq.length" (VInt 10L) }
+          test "endpoints may be idents and parenthesized expressions" {
+              expectValue "let a = 2 in [a..(a + 3)] |> Seq.length" (VInt 4L)
+          }
+          test "lazy: huge range under first terminates" {
+              expectValue "[1..1000000] |> Seq.first 3 |> Seq.length" (VInt 3L)
+          }
+          test "re-enumeration re-runs the generator" {
+              expectValue "let r = [1..3] in (r |> Seq.length) + (r |> Seq.length)" (VInt 6L)
+          }
+          test "zero literal step is a parse-time error" {
+              match Weir.Parser.parseExpr "[1..0..5]" with
+              | Error msg -> Expect.stringContains msg "range step is zero" "named error"
+              | Ok _ -> failtest "expected a parse error"
+          }
+          test "computed zero step raises at runtime" {
+              Expect.throwsT<exn> (fun () -> run "let z = 0 in [1..z..5] |> Seq.length" |> ignore) "runtime"
+          }
+          test "measured endpoints rejected (named limitation: no measure-polymorphic schemes)" {
+              let terr = checkErr "[1<mb>..3<mb>] |> Seq.length"
+              Expect.stringContains (formatError terr) "int<mb>" "ordinary mismatch error"
+          }
+          test "F#-rejects-this: open and malformed ranges" {
+              for bad in [ "[1..]"; "[..5]"; "[1..2..3..4]" ] do
+                  match Weir.Parser.parseExpr bad with
+                  | Error _ -> ()
+                  | Ok _ -> failtest $"expected a parse error for {bad}"
+          }
+          test "complex endpoint error names the parens fix" {
+              match Weir.Parser.parseExpr "[1..f 3]" with
+              | Error msg -> Expect.stringContains msg "parentheses" "actionable"
+              | Ok _ -> failtest "expected a parse error"
+          }
+          test "eager list literals unaffected" {
+              expectValue "[2; 3] |> Seq.length" (VInt 2L)
+              expectValue "[] |> Seq.isEmpty" (VBool true)
+          } ]
+
 let fileTests =
     testSequenced
     <| testList
@@ -2224,4 +2272,5 @@ let allTests =
           readProbes
           interpTests
           unitPrintTests
+          rangeTests
           fileTests ]

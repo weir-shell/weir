@@ -109,9 +109,61 @@ let private recordLit =
     |>> mkExpr
     .>> ws
 
-let private listLit =
-    spanned (pchar '[' >>. ws >>. sepBy expr (str_ws ";") .>> pchar ']' |>> EList)
+let private dotdot = pstring ".." .>> ws
+
+// Range endpoints/steps are simple expressions only (literals, idents, field
+// access, parenthesized anything) — reject-rather-than-guess. The attempt on
+// fieldSuffix keeps the first dot of '..' out of field-access parsing. The
+// negative-literal form exists for descending steps ([10.. -1 ..1]); weir has
+// no unary minus elsewhere. rangeTerm is a forward ref: it needs atom, which
+// needs listLit.
+let private negIntLit =
+    spanned (
+        pchar '-' >>. many1Satisfy isDigit
+        .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
+        |>> fun (digits, m) -> EInt(-(int digits), m)
+    )
     |>> mkExpr
+    .>> ws
+
+let private rangeTerm, private rangeTermRef =
+    createParserForwardedToRef<Expr, unit> ()
+
+let private rangeBody =
+    attempt (rangeTerm .>> dotdot) .>>. rangeTerm .>>. opt (dotdot >>. rangeTerm)
+    >>= fun ((a, b), c) ->
+        let start, step, stop =
+            match c with
+            | Some stop -> a, b, stop
+            | None -> a, { Kind = EInt(1, None); Span = a.Span }, b
+
+        match step.Kind with
+        | EInt(0, _) -> failFatally "range step is zero"
+        | _ -> preturn (start, step, stop)
+
+// [a..s..b] is pure sugar for Seq.range a s b; [a; b; c] stays an eager list.
+let private buildBracket (content, span) : Expr =
+    match content with
+    | Choice1Of2(start, step, stop) ->
+        let rangeFn =
+            { Kind = EField({ Kind = EVar "Seq"; Span = span }, "range", span)
+              Span = span }
+
+        let app f a = { Kind = EApp(f, a); Span = span }
+        app (app (app rangeFn start) step) stop
+    | Choice2Of2 items -> { Kind = EList items; Span = span }
+
+let private listLit =
+    spanned (
+        pchar '['
+        >>. ws
+        >>. choice
+                [ rangeBody
+                  .>> (pchar ']' <?> "']' (complex range endpoints need parentheses: [a..(f x)])")
+                  |>> Choice1Of2
+                  sepBy expr (str_ws ";") .>> pchar ']' |>> Choice2Of2 ]
+    )
+    |>> buildBracket
     .>> ws
 
 let private interpChar =
@@ -156,6 +208,18 @@ let private postfixAtom =
             { Kind = ELambda("_", applied)
               Span = applied.Span }
         | _ -> applied
+
+rangeTermRef.Value <-
+    choice
+        [ negIntLit
+          atom .>>. many (attempt fieldSuffix)
+          |>> fun (target, fields) ->
+              fields
+              |> List.fold
+                  (fun t (name, fspan) ->
+                      { Kind = EField(t, name, fspan)
+                        Span = Span.union t.Span fspan })
+                  target ]
 
 let private appChain =
     many1 postfixAtom
