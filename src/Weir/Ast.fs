@@ -14,6 +14,7 @@ type Pattern = { PKind: PatternKind; PSpan: Span }
 and PatternKind =
     | PWildcard
     | PVar of string
+    | PBool of bool
     | PCase of ctor: string * arg: Pattern option
 
 type InterpPart<'e> =
@@ -35,7 +36,8 @@ and ExprKind =
     | EField of target: Expr * field: string * fieldSpan: Span
     | EBinOp of op: string * left: Expr * right: Expr
     | ERecord of fields: (string * Span * Expr) list
-    | EMatch of scrutinee: Expr * arms: (Pattern * Expr) list
+    | EMatch of scrutinee: Expr * arms: (Pattern * Expr option * Expr) list
+    | EIf of cond: Expr * thn: Expr * els: Expr option
     | EFrom of format: string * tyName: string option
     | ETo of format: string
     | EList of items: Expr list

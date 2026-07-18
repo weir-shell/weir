@@ -21,12 +21,9 @@ let changes =
     cmd "git" ["status"; "--porcelain"]
     |> from porcelain
 
-// no bool branching yet — the Option idiom is the honest weir way
 let health =
     let count = changes |> Seq.length
-    match changes |> Seq.tryHead with
-    | Some c -> Dirty count
-    | None -> Clean
+    if changes |> Seq.isEmpty then Clean else Dirty count
 
 let status =
     match health with

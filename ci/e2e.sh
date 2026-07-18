@@ -198,6 +198,66 @@ WEOF
 out=$($BIN "$scriptdir/blocklet.weir")
 expect "block lets: implicit in, F#-style, on the AOT binary" "count: 3" "$out"
 
+cat > "$scriptdir/bools.weir" <<'WEOF'
+let n = [1; 2; 3] |> Seq.length
+
+if n > 2 then print "big"
+
+let label =
+    match n > 100 with
+    | true -> "huge"
+    | false -> "modest"
+
+print label
+
+let tier =
+    match n with
+    | x when x > 100 -> "t1"
+    | x when x > 2 -> "t2"
+    | _ -> "t3"
+
+print tier
+
+print (if n == 3 then "three" else "not-three")
+WEOF
+out=$($BIN "$scriptdir/bools.weir")
+for needle in big modest t2 three; do
+    expect "bool branching on the AOT binary: $needle" "$needle" "$out"
+done
+
+cat > "$scriptdir/nonex.weir" <<'WEOF'
+let x = match 1 == 1 with | true -> 1
+print $"{x}"
+WEOF
+errout=$($BIN "$scriptdir/nonex.weir" 2>&1) && fail "non-exhaustive match must be a hard error"
+echo "$errout" | grep -qF "not exhaustive" || fail "exhaustiveness error text missing: $errout"
+echo "e2e ok: non-exhaustive match is a hard check error"
+
+cat > "$scriptdir/warn.weir" <<'WEOF'
+let x = match 1 == 1 with | _ -> 1 | true -> 2
+print $"{x}"
+WEOF
+errout=$($BIN "$scriptdir/warn.weir" 2>&1 >/dev/null)
+echo "$errout" | grep -qF "warning: this match arm is unreachable" || fail "runner must surface warnings: $errout"
+out=$($BIN "$scriptdir/warn.weir" 2>/dev/null)
+expect "warnings do not block execution" "1" "$out"
+
+cat > "$scriptdir/noelse.weir" <<'WEOF'
+if 1 > 2 then "x"
+WEOF
+errout=$($BIN "$scriptdir/noelse.weir" 2>&1) && fail "non-unit no-else should be rejected"
+echo "$errout" | grep -qF "add an else" || fail "tailored no-else error missing: $errout"
+echo "e2e ok: non-unit no-else rejected with the tailored fix"
+
+errout=$($BIN -e 'match 1 == 1 with | _ -> 1 | true -> 2' 2>&1 >/dev/null)
+echo "$errout" | grep -qF "unreachable" || fail "-e must surface warnings: $errout"
+echo "e2e ok: -e surfaces warnings (unreachable arm)"
+
+if $BIN -e 'match 1 == 1 with | true -> 1' 2>/dev/null; then
+    fail "-e must hard-reject a non-exhaustive match"
+fi
+echo "e2e ok: -e rejects non-exhaustive matches"
+
 cat > "$scriptdir/blockmatch.weir" <<'WEOF'
 type Size = Big | Small
 

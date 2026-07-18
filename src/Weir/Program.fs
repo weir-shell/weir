@@ -16,6 +16,7 @@ let private evalOnce (input: string) : int =
     let printHint () =
         Diagnose.hint
             (fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules)
+            Builtins.commandCallable.Contains
             Extern.exists
             input
         |> Option.iter (fun h -> Console.Error.WriteLine $"hint: {h}")
@@ -39,6 +40,9 @@ let private evalOnce (input: string) : int =
             printHint ()
             1
         | Ok te ->
+            for w in Check.warnings typeEnv te do
+                Console.Error.WriteLine(Check.formatWarning w)
+
             try
                 let v = Eval.eval valueEnv te
 

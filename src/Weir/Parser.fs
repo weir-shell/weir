@@ -17,7 +17,11 @@ let private keywords =
           "type"
           "of"
           "from"
-          "to" ]
+          "to"
+          "if"
+          "then"
+          "else"
+          "when" ]
 
 type Resolver =
     { IsKnown: string -> bool
@@ -263,7 +267,7 @@ let private mkOpp (withPipe: bool) =
     opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
     opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
     opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
-    opp.AddOperator(InfixOperator("-", ws, 6, Associativity.Left, binOp "-"))
+    opp.AddOperator(InfixOperator("-", notFollowedBy (pchar '>') >>. ws, 6, Associativity.Left, binOp "-"))
     opp.AddOperator(InfixOperator("*", ws, 7, Associativity.Left, binOp "*"))
     opp.AddOperator(InfixOperator("/", ws, 7, Associativity.Left, binOp "/"))
     opp
@@ -274,7 +278,15 @@ let private segOpp = mkOpp false
 let private pat, private patRef = createParserForwardedToRef<Pattern, unit> ()
 
 let private patWord =
-    attempt (spanned rawWord >>= fun (w, span) -> notKeyword w >>% (w, span)) .>> ws
+    attempt (
+        spanned rawWord
+        >>= fun (w, span) ->
+            if w = "true" || w = "false" then
+                preturn (w, span)
+            else
+                notKeyword w >>% (w, span)
+    )
+    .>> ws
 
 let private patAtom =
     choice
@@ -283,6 +295,8 @@ let private patAtom =
           |>> fun (w, span) ->
               let kind =
                   if w = "_" then PWildcard
+                  elif w = "true" then PBool true
+                  elif w = "false" then PBool false
                   elif Char.IsUpper w[0] then PCase(w, None)
                   else PVar w
 
@@ -295,6 +309,10 @@ patRef.Value <-
           >>= fun (w, span) ->
               if w = "_" then
                   preturn { PKind = PWildcard; PSpan = span }
+              elif w = "true" then
+                  preturn { PKind = PBool true; PSpan = span }
+              elif w = "false" then
+                  preturn { PKind = PBool false; PSpan = span }
               elif Char.IsUpper w[0] then
                   opt patAtom
                   |>> fun arg ->
@@ -323,7 +341,9 @@ let private toExpr =
     spanned (keyword "to" >>. ident)
     |>> fun (fmt, span) -> { Kind = ETo fmt; Span = span }
 
-let private matchArm = pat .>> str_ws "->" .>>. expr
+let private matchArm =
+    pat .>>. opt (keyword "when" >>. expr) .>> str_ws "->" .>>. expr
+    |>> fun ((p, guard), body) -> p, guard, body
 
 let private matchExpr =
     pipe3
@@ -332,15 +352,27 @@ let private matchExpr =
         (opt (str_ws "|") >>. matchArm .>>. many (attempt (str_ws "|" >>. matchArm)))
         (fun p scrut (arm0, rest) ->
             let arms = arm0 :: rest
-            let lastBody = snd (List.last arms)
+            let lastBody = List.last arms |> fun (_, _, b) -> b
 
             { Kind = EMatch(scrut, arms)
               Span =
                 { Start = pos p
                   End = lastBody.Span.End } })
 
-opp.TermParser <- choice [ lambda; letIn; matchExpr; fromExpr; toExpr; appChain ]
-segOpp.TermParser <- choice [ lambda; letIn; matchExpr; fromExpr; toExpr; appChain ]
+let private ifExpr =
+    pipe4
+        getPosition
+        (keyword "if" >>. expr)
+        (keyword "then" >>. expr)
+        (opt (keyword "else" >>. expr))
+        (fun p cond thn els ->
+            let endPos = (els |> Option.defaultValue thn).Span.End
+
+            { Kind = EIf(cond, thn, els)
+              Span = { Start = pos p; End = endPos } })
+
+opp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
+segOpp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
 exprRef.Value <- opp.ExpressionParser
 
 let private segExpr = segOpp.ExpressionParser

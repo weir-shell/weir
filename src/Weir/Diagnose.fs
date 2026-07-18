@@ -5,7 +5,12 @@ let private isIdentStart c = System.Char.IsLetter c || c = '_'
 let private isIdentCont c =
     System.Char.IsLetterOrDigit c || c = '_'
 
-let hint (isKnown: string -> bool) (isExternal: string -> bool) (line: string) : string option =
+let hint
+    (isKnown: string -> bool)
+    (isCommandCallable: string -> bool)
+    (isExternal: string -> bool)
+    (line: string)
+    : string option =
     let trimmed = line.TrimStart()
 
     if trimmed = "" || not (isIdentStart trimmed[0]) then
@@ -14,7 +19,10 @@ let hint (isKnown: string -> bool) (isExternal: string -> bool) (line: string) :
         let head = trimmed |> Seq.takeWhile isIdentCont |> System.String.Concat
         let tail = trimmed.Substring(head.Length).TrimStart()
 
-        if head = "" || tail = "" || not (isKnown head) then
+        // Command-callable heads (cd) parse in COMMAND mode even though they
+        // are bindings — the old text claimed "expression mode" for them,
+        // which was wrong (Part 2 plan: fix while the file is open).
+        if head = "" || tail = "" || not (isKnown head) || isCommandCallable head then
             None
         else
             let flagLike =

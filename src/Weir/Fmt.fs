@@ -28,7 +28,15 @@ let private collectBareUses (e: Expr) : (Span * string) list =
         | ERecord fields -> fields |> List.iter (fun (_, _, v) -> walk v)
         | EMatch(s, arms) ->
             walk s
-            arms |> List.iter (snd >> walk)
+
+            arms
+            |> List.iter (fun (_, g, b) ->
+                g |> Option.iter walk
+                walk b)
+        | EIf(c, t, e) ->
+            walk c
+            walk t
+            e |> Option.iter walk
         | EList items -> items |> List.iter walk
         | ECmd(_, args) -> args |> List.iter walk
         | EInterp parts ->

@@ -31,9 +31,15 @@ let rec private show (e: Expr) : string =
 
         "{" + body + "}"
     | EMatch(scrut, arms) ->
-        let showArm (p, b) = $"[{showPat p} -> {show b}]"
+        let showArm (p, g, b) =
+            match g with
+            | None -> $"[{showPat p} -> {show b}]"
+            | Some g -> $"[{showPat p} when {show g} -> {show b}]"
+
         let armsStr = arms |> List.map showArm |> String.concat " "
         $"(match {show scrut} {armsStr})"
+    | EIf(c, t, None) -> $"(if {show c} {show t})"
+    | EIf(c, t, Some e) -> $"(if {show c} {show t} {show e})"
     | EFrom(fmt, None) -> $"(from {fmt})"
     | EFrom(fmt, Some ty) -> $"(from {fmt} {ty})"
     | ETo fmt -> $"(to {fmt})"
@@ -58,6 +64,7 @@ let rec private show (e: Expr) : string =
 and private showPat (p: Pattern) : string =
     match p.PKind with
     | PWildcard -> "_"
+    | PBool b -> if b then "true" else "false"
     | PVar x -> x
     | PCase(c, None) -> c
     | PCase(c, Some arg) -> $"({c} {showPat arg})"
@@ -411,12 +418,11 @@ let matchTests =
 let warningTests =
     testList
         "Exhaustiveness warnings"
-        [ test "missing case warns" {
-              let ws = warningsOf "match Running 5 with | Running n -> n"
-              Expect.hasLength ws 1 ""
-              Expect.stringContains ws[0].Message "missing: Stopped" ""
+        [ test "missing case is a hard error" {
+              let terr = checkErr "match Running 5 with | Running n -> n"
+              Expect.stringContains (formatError terr) "missing: Stopped" ""
           }
-          test "all cases covered does not warn" {
+          test "all cases covered checks" {
               Expect.isEmpty (warningsOf "match Running 5 with | Running n -> n | Stopped -> 0") ""
           }
           test "wildcard covers everything" { Expect.isEmpty (warningsOf "match Running 5 with | _ -> 0") "" }
@@ -425,17 +431,14 @@ let warningTests =
               Expect.hasLength ws 1 ""
               Expect.stringContains ws[0].Message "unreachable" ""
           }
-          test "match on a non-union needs a catch-all" {
-              let ws = warningsOf "match 5 with | n -> n"
-              Expect.isEmpty ws "variable arm is a catch-all"
-              let ws2 = warningsOf "match Running 5 with | Running n -> n"
-              Expect.hasLength ws2 1 ""
+          test "match on a non-union: a variable arm is the catch-all" {
+              Expect.isEmpty (warningsOf "match 5 with | n -> n") ""
+              expectValue "match 5 with | n -> n + 1" (VInt 6L)
           }
-          test "non-exhaustive match still evaluates when an arm hits" {
-              expectValue "match Running 5 with | Running n -> n" (VInt 5)
-          }
-          test "non-exhaustive match fails at runtime when no arm hits" {
-              Expect.throws (fun () -> run "match Stopped with | Running n -> n" |> ignore) ""
+          test "accepted matches are total: the runtime match-failure class is gone" {
+              // the shapes that used to fail at runtime are now check errors
+              let terr = checkErr "match Stopped with | Running n -> n"
+              Expect.stringContains (formatError terr) "missing: Stopped" ""
           } ]
 
 let streamingTests =
@@ -1219,7 +1222,9 @@ let diagnoseTests =
     testList
         "Cliff diagnostic"
         [ test "ls -la gets the hint" {
-              match Weir.Diagnose.hint (fun n -> Map.containsKey n env.Values) (fun _ -> true) "ls -la" with
+              match
+                  Weir.Diagnose.hint (fun n -> Map.containsKey n env.Values) (fun _ -> false) (fun _ -> true) "ls -la"
+              with
               | Some h ->
                   Expect.stringContains h "'ls' is a weir binding" ""
                   Expect.stringContains h "^ls -la" ""
@@ -1229,20 +1234,22 @@ let diagnoseTests =
               let isKnown n = n = "git"
               let isExternal n = n = "git"
 
-              match Weir.Diagnose.hint isKnown isExternal "git status" with
+              match Weir.Diagnose.hint isKnown (fun _ -> false) isExternal "git status" with
               | Some h -> Expect.stringContains h "'git' is a weir binding" ""
               | None -> failtest "expected a hint"
           }
           test "plain unbound tail without PATH presence stays quiet" {
-              Expect.isNone (Weir.Diagnose.hint (fun n -> n = "where") (fun _ -> false) "where p") ""
+              Expect.isNone (Weir.Diagnose.hint (fun n -> n = "where") (fun _ -> false) (fun _ -> false) "where p") ""
           }
           test "operator tails stay quiet" {
               let isKnown n = Map.containsKey n env.Values
-              Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> true) "ls |> first 5") ""
-              Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> true) "x + 1") ""
+              Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> false) (fun _ -> true) "ls |> first 5") ""
+              Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> false) (fun _ -> true) "x + 1") ""
           }
           test "path tails hint even without PATH presence" {
-              match Weir.Diagnose.hint (fun n -> n = "mybinding") (fun _ -> false) "mybinding ../x" with
+              match
+                  Weir.Diagnose.hint (fun n -> n = "mybinding") (fun _ -> false) (fun _ -> false) "mybinding ../x"
+              with
               | Some _ -> ()
               | None -> failtest "expected a hint for path-like tail"
           } ]
@@ -1431,11 +1438,13 @@ let genericsTests =
               Expect.equal (formatTy (checkOk "Some (Some 1)").Ty) "Option<Option<int>>" ""
               expectValue "match Some (Some 1) with | Some (Some x) -> x | Some None -> 0 | None -> 0" (VInt 1)
           }
-          test "nested refutable payloads keep the conservative warning" {
-              let ws =
-                  warningsOf "match Some (Some 1) with | Some (Some x) -> x | Some None -> 0 | None -> 0"
+          test "nested refutable payloads are covered recursively" {
+              Expect.isEmpty
+                  (warningsOf "match Some (Some 1) with | Some (Some x) -> x | Some None -> 0 | None -> 0")
+                  "recursive coverage: genuinely-total nested match accepted"
 
-              Expect.hasLength ws 1 "conservatively warns: Some not fully covered"
+              let terr = checkErr "match Some (Some 1) with | Some (Some x) -> x | None -> 0"
+              Expect.stringContains (formatError terr) "missing: Some" "incomplete payload surfaces the case"
           }
           test "occurs check through a constructor" {
               Expect.stringContains (checkErr "fun x -> Some x == x").Message "infinite type" ""
@@ -1447,10 +1456,9 @@ let genericsTests =
               Expect.equal (checkOk "match Ok 3 with | Ok v -> v | Error e -> Str.length e").Ty (TInt) ""
               expectValue "match Error \"boom\" with | Ok v -> v | Error e -> Str.length e" (VInt 4)
           }
-          test "missing None warns" {
-              let ws = warningsOf "match Some 1 with | Some x -> x"
-              Expect.hasLength ws 1 ""
-              Expect.stringContains ws[0].Message "missing: None" ""
+          test "missing None is a hard error" {
+              let terr = checkErr "match Some 1 with | Some x -> x"
+              Expect.stringContains (formatError terr) "missing: None" ""
           }
           test "payload pattern arity message shows the instantiated type" {
               Expect.stringContains
@@ -2025,6 +2033,109 @@ let rangeTests =
               expectValue "[] |> Seq.isEmpty" (VBool true)
           } ]
 
+let boolBranchTests =
+    testList
+        "Bool branching"
+        [ test "if-else parses" { expectParse "if 1 > 2 then \"a\" else \"b\"" "(if (> 1 2) \"a\" \"b\")" }
+          test "no-else parses" { expectParse "if 1 > 2 then print \"a\"" "(if (> 1 2) (print \"a\"))" }
+          test "when-guard parses" {
+              expectParse "match 1 with | n when n > 0 -> n | _ -> 0" "(match 1 [n when (> n 0) -> n] [_ -> 0])"
+          }
+          test "bool patterns parse" {
+              expectParse "match true with | true -> 1 | false -> 0" "(match true [true -> 1] [false -> 0])"
+          }
+          test "if evaluates both ways" {
+              expectValue "if 2 > 1 then \"t\" else \"f\"" (VStr "t")
+              expectValue "if 1 > 2 then \"t\" else \"f\"" (VStr "f")
+          }
+          test "no-else false yields unit" { expectValue "if 1 > 2 then print \"never\"" VUnit }
+          test "else-if chains" { expectValue "if 1 > 2 then \"a\" else if 2 > 3 then \"b\" else \"c\"" (VStr "c") }
+          test "condition must be bool" {
+              let terr = checkErr "if 3 then 1 else 2"
+              Expect.stringContains (formatError terr) "expected bool, got int" ""
+          }
+          test "branches must unify" {
+              let terr = checkErr "if 1 > 2 then 1 else \"x\""
+              Expect.stringContains (formatError terr) "expected int, got string" ""
+          }
+          test "no-else non-unit gets the tailored error" {
+              let terr = checkErr "if 1 > 2 then \"x\""
+              Expect.stringContains (formatError terr) "add an else" "names the fix"
+          }
+          test "row constraints merge across branches" {
+              let te = checkOk "fun f -> if f.ReadOnly then f.Bytes else 0"
+
+              Expect.equal
+                  (Weir.Check.typecheck env (parse "ls |> Seq.map (fun f -> if f.ReadOnly then f.Bytes else 0)")
+                   |> Result.isOk)
+                  true
+                  "discharges against FileRow"
+
+              match te.Ty with
+              | TFun(TRowVar _, TInt) -> ()
+              | t -> failtest $"expected a row-constrained function, got {formatTy t}"
+          }
+          test "branch-merged row constraints conflict at discharge, not before" {
+              // pre-discharge: both fields legally share one row variable
+              let te = checkOk "fun f -> if f.ReadOnly then f.Name else f.Bytes"
+
+              match te.Ty with
+              | TFun(TRowVar _, TVar _) -> ()
+              | t -> failtest $"expected a row-constrained function, got {formatTy t}"
+
+              // discharge against FileRow exposes the Name/Bytes conflict
+              let terr =
+                  checkErr "ls |> Seq.map (fun f -> if f.ReadOnly then f.Name else f.Bytes)"
+
+              Expect.stringContains (formatError terr) "expected" "conflict surfaces at discharge"
+          }
+          test "guard must be bool" {
+              let terr = checkErr "match 1 with | n when n + 1 -> 2 | _ -> 0"
+              Expect.stringContains (formatError terr) "expected bool, got int" ""
+          }
+          test "guard sees pattern bindings" { expectValue "match 5 with | n when n > 3 -> n | _ -> 0" (VInt 5L) }
+          test "failed guard falls through in order" {
+              expectValue "match 5 with | n when n > 100 -> 1 | n when n > 3 -> 2 | _ -> 3" (VInt 2L)
+          }
+          test "guard on a constructor pattern" {
+              expectValue "match Some 5 with | Some n when n > 3 -> n | Some n -> 0 | None -> 0" (VInt 5L)
+          }
+          test "bool match evaluates" { expectValue "match 1 == 1 with | true -> \"t\" | false -> \"f\"" (VStr "t") }
+          test "bool patterns default an unresolved scrutinee" {
+              Expect.equal (checkOk "fun b -> match b with | true -> 1 | false -> 0").Ty (TFun(TBool, TInt)) ""
+          }
+          test "bool patterns on a non-bool scrutinee rejected" {
+              let terr = checkErr "match 3 with | true -> 1 | false -> 0"
+              Expect.stringContains (formatError terr) "bool patterns need a bool scrutinee" ""
+          }
+          test "bool exhaustiveness: both cases check, one case is a hard error" {
+              Expect.isEmpty (warningsOf "match 1 == 1 with | true -> 1 | false -> 0") ""
+              let terr = checkErr "match 1 == 1 with | true -> 1"
+              Expect.stringContains (formatError terr) "missing: false" ""
+          }
+          test "guarded arms do not count toward exhaustiveness" {
+              let terr = checkErr "match 1 == 1 with | true -> 1 | false when 2 > 1 -> 0"
+              Expect.stringContains (formatError terr) "missing: false" ""
+          }
+          test "guarded catch-all is not terminal for reachability" {
+              Expect.isEmpty (warningsOf "match Running 5 with | n when 1 > 2 -> 0 | Running n -> n | Stopped -> 9") ""
+          }
+          test "unguarded catch-all still flags later arms" {
+              let ws = warningsOf "match Running 5 with | _ -> 0 | Stopped -> 1"
+              Expect.hasLength ws 1 ""
+              Expect.stringContains ws[0].Message "unreachable" ""
+          }
+          test "F#-rejects-this: malformed conditionals" {
+              for bad in [ "if 1 > 2"; "if then 1 else 2"; "else 3"; "1 when 2" ] do
+                  match Weir.Parser.parseExpr bad with
+                  | Error _ -> ()
+                  | Ok _ -> failtest $"expected a parse error for {bad}"
+          }
+          test "minus still parses next to arrows" {
+              expectValue "match 5 with | n when n > 0 -> n - 1 | _ -> 0" (VInt 4L)
+              expectValue "5 - 3" (VInt 2L)
+          } ]
+
 let fileTests =
     testSequenced
     <| testList
@@ -2251,4 +2362,5 @@ let allTests =
           interpTests
           unitPrintTests
           rangeTests
+          boolBranchTests
           fileTests ]

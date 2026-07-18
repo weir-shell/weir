@@ -271,6 +271,14 @@ let run (path: string) (scriptArgs: string list) : int =
                     let physLine, physCol = translate ll terr.Span.Start.Col
                     $"{path}:{physLine}:{physCol}: type error: {terr.Message}"
 
+                // Warnings were silently dropped by the runner until the
+                // bool-branching session (found via a warning-less
+                // non-exhaustive match in -e); they go to stderr, located.
+                let printWarnings (ll: LogicalLine) (te: Check.TypedExpr) =
+                    for w in Check.warnings typeEnv0 te do
+                        let physLine, physCol = translate ll w.Span.Start.Col
+                        Console.Error.WriteLine $"{path}:{physLine}:{physCol}: warning: {w.Message}"
+
                 let checkedProgram =
                     logicalLines
                     |> List.fold
@@ -288,6 +296,8 @@ let run (path: string) (scriptArgs: string list) : int =
                                     match Check.typecheck tenv e with
                                     | Error terr -> Error(typedErr ll terr)
                                     | Ok te ->
+                                        printWarnings ll te
+
                                         let tenv' =
                                             { tenv with
                                                 Values = Map.add name (generalize te.Ty) tenv.Values }
@@ -296,11 +306,15 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Ok(SCmd e) ->
                                     match Check.typecheck tenv e with
                                     | Error terr -> Error(typedErr ll terr)
-                                    | Ok te -> Ok(tenv, (ll.Head, CCmd te) :: acc)
+                                    | Ok te ->
+                                        printWarnings ll te
+                                        Ok(tenv, (ll.Head, CCmd te) :: acc)
                                 | Ok(SExpr e) ->
                                     match Check.typecheck tenv e with
                                     | Error terr -> Error(typedErr ll terr)
                                     | Ok te ->
+                                        printWarnings ll te
+
                                         match discardError te.Ty with
                                         | Some msg -> Error(typedErr ll { Span = e.Span; Message = msg })
                                         | None -> Ok(tenv, (ll.Head, CExpr te) :: acc))

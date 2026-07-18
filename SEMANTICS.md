@@ -94,6 +94,35 @@ quantity semantics now.
 
 ## Operators and syntax
 
+- **Boolean branching** (Part 2 of the read/booleans/overflow plan,
+  landed 2026-07-18 with the READ.md gate explicitly waived by the gate
+  owner): `if cond then a else b` is an expression; branches unify (row
+  constraints merge across them and conflicts surface at discharge, as
+  with match arms). **Else is optional only when the then-branch is
+  unit** — F#'s rule, riding on the unit type as pre-committed in
+  PLAN-unit-and-print — so `if c then print "x"` is a valid unit
+  statement and `if c then "x"` is the tailored error "add an else".
+  `else if` chains; no `elif` (parked). Bool patterns
+  (`match b with | true -> .. | false -> ..`) participate in
+  exhaustiveness and default an unresolved scrutinee to bool (the
+  operator/splice defaulting precedent). **`when` guards** on match
+  arms: the guard checks bool under the arm's pattern bindings; a
+  guarded arm never counts toward exhaustiveness or terminal
+  reachability (it can fail at runtime); failed guards fall through in
+  arm order. **Non-exhaustive matches are HARD ERRORS** (decided
+  2026-07-18, upgraded from warnings the same day they gained bool
+  coverage): coverage is recursive through union payloads
+  (`Some (Some x) / Some None / None` is exhaustive), only unguarded
+  arms count, and the precision matters because a hard error must not
+  reject genuinely-total matches. Consequence: every accepted match is
+  total — the match-failure runtime class no longer exists. The
+  warnings channel keeps advisory findings only (unreachable arms). Grammar note: `-`
+  no longer matches when followed by `>`, so guard expressions sit
+  naturally before `->`. Keywords if/then/else/when joined the reserved
+  set — and therefore can never be command heads. Warnings surfacing:
+  the runner and `-e` print check warnings to stderr (found during this
+  session — they were silently dropped before; the REPL always showed
+  them); warnings never block execution.
 - Comparison/boolean surface: `==`, `<>`, `>`, `<`, `>=`, `<=` (precedence 4),
   `&&` (3), `||` (2, lowest above pipe), all left-associative; `not` is a
   builtin `bool -> bool`. `<>` shares `==`'s equatability rule in full.
@@ -452,10 +481,13 @@ quantity semantics now.
   commands** — `let files = cmd "find" [...] in ...` used twice runs
   `find` twice, and the command may not be idempotent. Mitigation is backlog #2: a
   `collect` builtin (force once, materialize) as the standard escape hatch.
-- Non-exhaustive matches are warnings at check time and `match failure` at
-  runtime — the one deliberate runtime failure class besides boundary
-  validation (`from json`/`from porcelain` reject malformed lines per line) and
-  arithmetic (division by zero).
+- Non-exhaustive matches are hard errors at check time (2026-07-18;
+  they were warnings, and `match failure` was a deliberate runtime
+  class — both retired together, see the booleans bullet). The
+  remaining deliberate runtime failure classes: boundary validation
+  (`from json`/`from porcelain` reject malformed lines per line),
+  arithmetic (division by zero), and failed guards falling through are
+  not a class (an unguarded arm must exist).
 
 ## Backlog (ordered by day-one impact)
 

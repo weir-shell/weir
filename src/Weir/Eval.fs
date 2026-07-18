@@ -256,6 +256,8 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     match p.PKind, v with
     | PWildcard, _ -> Some []
     | PVar name, _ -> Some [ name, v ]
+    | PBool b, VBool v -> if b = v then Some [] else None
+    | PBool _, v -> unreachable $"the checker rejects bool patterns on {formatValue v}"
     | PCase(ctor, None), VUnion(case, None) -> if ctor = case then Some [] else None
     | PCase(ctor, Some argPat), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
     | PCase _, VUnion _ -> None
@@ -332,13 +334,30 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
 
         let rec tryArms arms =
             match arms with
-            | [] -> failwith $"match failure: no arm matched {formatValue v}"
-            | (pat, body) :: rest ->
+            | [] -> unreachable $"the checker guarantees totality; no arm matched {formatValue v}"
+            | (pat, guard, body) :: rest ->
                 match tryBind pat v with
-                | Some bindings -> eval (bindings |> List.fold (fun e (n, bv) -> Map.add n bv e) env) body
+                | Some bindings ->
+                    let armEnv = bindings |> List.fold (fun e (n, bv) -> Map.add n bv e) env
+
+                    let guardPasses =
+                        match guard with
+                        | None -> true
+                        | Some g ->
+                            match eval armEnv g with
+                            | VBool b -> b
+                            | gv -> unreachable $"the checker rejects a non-bool guard: {formatValue gv}"
+
+                    if guardPasses then eval armEnv body else tryArms rest
                 | None -> tryArms rest
 
         tryArms arms
+    | TEIf(cond, thn, els) ->
+        match eval env cond, els with
+        | VBool true, _ -> eval env thn
+        | VBool false, Some e -> eval env e
+        | VBool false, None -> VUnit
+        | v, _ -> unreachable $"the checker rejects a non-bool condition: {formatValue v}"
 
 and apply (fn: Value) (arg: Value) : Value =
     match fn with

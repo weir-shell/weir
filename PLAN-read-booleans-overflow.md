@@ -20,3 +20,15 @@ Full text as received — see conversation record; operative structure:)
   intrinsics. Resolved during prep: &&/|| short-circuit pins exist
   (operator session, div-by-zero proxy; spawn-count variant added with
   the composition probes).
+
+## Completion note — Part 2 (2026-07-18)
+
+Executed on branch bool-branching with the READ.md gate waived by the
+gate owner (recorded in NOTES). In-session decisions: when-guards
+SHIPPED (the blessed |-inertness fix plan already used one in its
+canonical example); `elif` parked (`else if` chains suffice); EIf is a
+dedicated checker arm for error quality (TRANSCRIPTION addenda).
+Riders done: shadowed-cd hint fixed; warnings surfacing in -e and the
+script runner fixed (found in-session — they were silently dropped
+everywhere but the REPL). Part 3 (overflow policy, data-range battery)
+remains open, still sequenced after READ.md by default.

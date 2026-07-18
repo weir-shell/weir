@@ -75,6 +75,7 @@ let private printHint (state: State) (line: string) =
         (fun n ->
             Map.containsKey n state.TypeEnv.Values
             || Map.containsKey n state.TypeEnv.Modules)
+        Builtins.commandCallable.Contains
         Extern.exists
         line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")

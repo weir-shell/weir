@@ -168,6 +168,25 @@ generalization as infer-ELet — **FLAG: two code sites for one rule
 Constructor schemes are ordinary Schemes — instantiation rides the
 audited path (§3).
 
+## Post-anchor addenda (bool-branching session — after the measure-removal anchor)
+
+### EIf
+    Γ ⊢ c ⇐ bool    Γ ⊢ t ⇒ τ    Γ ⊢ e ⇐ τ
+    ─────────────────────────────────────────
+    Γ ⊢ if c then t else e ⇒ τ
+    Γ ⊢ c ⇐ bool    Γ ⊢ t ⇒ unit
+    ─────────────────────────────    (no else: unit-valued; tailored
+    Γ ⊢ if c then t ⇒ unit           error otherwise)
+Row merge across branches is the match-arm discipline (else checks
+against then's type); no new unification machinery.
+
+### EMatch extensions
+Arms are now (pattern, guard?, body). Guard: Γ+bindings ⊢ g ⇐ bool.
+PBool patterns: scrutinee must be bool; an unresolved scrutinee with a
+bool pattern pre-binds to bool (defaulting precedent). Exhaustiveness:
+guarded arms never count (coverage or terminal reachability); bool
+scrutinee is exhaustive iff unguarded true AND false appear.
+
 ## Flags summary (pre-read findings)
 
 1. instantiate: two jobs (rename + R installation).

@@ -1,5 +1,79 @@
 # Spike Notes
 
+## Amendment: exhaustiveness is a hard error (2026-07-18, same session)
+
+User decision at review: non-exhaustive match = type error, always.
+390 tests; battery reshaped. Two things the upgrade forced:
+
+- **Coverage went RECURSIVE, not shallow.** As a warning, shallow
+  payload coverage (Some true does not cover Some) was fine; as a hard
+  error it would reject genuinely-total nested matches — the existing
+  nested-Option test failed immediately and proved it. `missingCases`
+  now recurses through union payloads; `Some (Some x) | Some None |
+  None` is exhaustive. Precision must match severity.
+- **The match-failure runtime class is GONE.** Guarded arms never count
+  toward coverage, so every accepted match is total; eval's no-arm case
+  is now an unreachable, and SEMANTICS' runtime-failure inventory
+  shrank by one. The old "still evaluates when an arm hits" and "fails
+  at runtime" pins were deleted with it — this NOTES line is their
+  tombstone.
+- The "match on X needs a catch-all" error arm turned out defensively
+  dead: refutable patterns on non-union/non-bool scrutinees are all
+  rejected earlier by checkPattern. Kept as defense, noted here.
+- Warnings channel now carries advisory findings only (unreachable
+  arms); the -e/runner surfacing from earlier today pins on those.
+
+## Bool branching — if/then/else, bool patterns, when-guards (2026-07-18)
+
+Part 2 of PLAN-read-booleans-overflow, executed with the READ.md gate
+explicitly waived by the gate owner (user go on 2026-07-18; the gate
+remains theirs — flagged, not forgotten). 391 tests; battery +9 pins;
+timing holds; tripwires ran with the suite (checker-touching session).
+
+- **EIf is a dedicated checker arm**, not a match desugar — chosen for
+  error quality: "an if without an else is unit-valued; this
+  then-branch is string — add an else" beats a synthesized-unit-arm
+  mismatch. Row merge across branches is the match-arm discipline
+  (else checks against then's inferred type) — pinned including the
+  subtlety that a branch-merged row conflict (Name vs Bytes at one row
+  var) is LEGAL pre-discharge and errors at discharge; my first pin
+  expected the error too early and the checker was right.
+- **Guards**: arms are (pattern, guard?, body); guard checks bool under
+  the arm's bindings; guarded arms never count toward exhaustiveness or
+  reachability. Grammar: `-` gained notFollowedBy '>' so guard
+  expressions can precede `->` — a latent OPP collision that only
+  guards exposed.
+- **Bool patterns** pre-bind an unresolved scrutinee (defaulting
+  precedent); exhaustiveness knows true/false coverage.
+- **Found: warnings were silently dropped by -e AND the script
+  runner** — only the REPL surfaced them. Exposed by a warning-less
+  non-exhaustive bool match in -e. Fixed in-session: both surfaces
+  print located warnings to stderr; warnings never block execution.
+  e2e-pinned. (Pre-existing since scripts landed.)
+- **Shadowed-cd hint fixed** (the Part 2 rider): command-callable heads
+  never fall to expression mode, so the hint now excludes them instead
+  of claiming "expression mode" for cd lines.
+
+**Dogfood ledger** (user directive: weir over python for session
+tooling; friction = findings):
+- Used weir scripts for: the bool-branching smoke battery, and a
+  doc-staleness probe (File.read |> where (Str.contains ...) — reads
+  naturally). Both worked first try apart from findings below.
+- FRICTION 1 — precedence trap: `if xs |> Seq.length == 2 then` parses
+  as `xs |> (Seq.length == 2)` (`==` binds tighter than `|>`,
+  F#-consistent). The error surfaces as "expected seq<'a> -> int" at
+  the pipe — correct but puzzling. Candidate: a targeted hint when a
+  pipe RHS is a comparison of a function. Filed, not fixed.
+- FRICTION 2 — no `fail`/`exit` builtin: a checking script cannot
+  deliberately exit nonzero with a message; the workaround
+  (`if bad then cmd "sh" ["-c"; "exit 1"] |> print`) is a paragraph
+  where `fail "reason"` is the want. First-order candidate for the
+  next library session; `fail : string -> unit` raising a located
+  runtime error would also serve `printerr`'s parked use case.
+- FRICTION 3 — python still required for: multi-line context-sensitive
+  file surgery (no multi-line strings, no regex — regex is already
+  parked as its own plan). Single-line filters/maps are fully covered.
+
 ## Remove measures — the evidence-standard case study (2026-07-18)
 
 Units of measure are removed from weir. This entry is written BEFORE

@@ -28,7 +28,8 @@ and TypedKind =
     | TEField of target: TypedExpr * field: string
     | TEBinOp of op: string * left: TypedExpr * right: TypedExpr
     | TERecord of record: string * fields: (string * TypedExpr) list
-    | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr) list
+    | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
+    | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
     | TEFrom of format: string * rowDef: RecordDef
     | TETo of format: string
     | TEList of items: TypedExpr list
@@ -390,6 +391,10 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
     match p.PKind with
     | PWildcard -> Ok []
     | PVar name -> Ok [ name, ty ]
+    | PBool _ ->
+        match ty with
+        | TBool -> Ok []
+        | ty -> err p.PSpan $"bool patterns need a bool scrutinee; this one has type {formatTy ty}"
     | PCase(ctor, argPat) ->
         match ty with
         | TNamed(typeName, targs) ->
@@ -412,6 +417,84 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
             | Some(Record _) -> err p.PSpan $"{typeName} is a record; only a name or '_' can match it"
             | None -> err p.PSpan $"unknown type '{typeName}'"
         | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
+
+let private isIrrefutablePat (p: Pattern) =
+    match p.PKind with
+    | PWildcard
+    | PVar _ -> true
+    | PBool _
+    | PCase _ -> false
+
+// Exhaustiveness is a HARD ERROR (decided 2026-07-18; it was a warning).
+// Only unguarded arms count — a guarded arm can fail at runtime. Coverage is
+// RECURSIVE through union payloads (Some (Some x) / Some None / None is
+// exhaustive), so precision matches the severity: a hard error must not
+// reject genuinely-total matches. Consequence: every accepted match is
+// total and the match-failure runtime class is gone.
+let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : string list =
+    if pats |> List.exists isIrrefutablePat then
+        []
+    else
+        match ty with
+        | TNamed(name, targs) ->
+            match Map.tryFind name env.Types with
+            | Some(Union def) ->
+                def.Cases
+                |> List.filter (fun (case, payload) ->
+                    let uncovered =
+                        match payload with
+                        | None ->
+                            pats
+                            |> List.exists (fun p ->
+                                match p.PKind with
+                                | PCase(c, None) -> c = case
+                                | _ -> false)
+                            |> not
+                        | Some payloadTy ->
+                            let payloadPats =
+                                pats
+                                |> List.choose (fun p ->
+                                    match p.PKind with
+                                    | PCase(c, Some arg) when c = case -> Some arg
+                                    | _ -> None)
+
+                            payloadPats.IsEmpty
+                            || not (
+                                missingCases env (substParams def.Params targs payloadTy) payloadPats
+                                |> List.isEmpty
+                            )
+
+                    uncovered)
+                |> List.map fst
+            | _ -> []
+        | TBool ->
+            [ if not (pats |> List.exists (fun p -> p.PKind = PBool true)) then
+                  "true"
+              if not (pats |> List.exists (fun p -> p.PKind = PBool false)) then
+                  "false" ]
+        | _ -> []
+
+let private exhaustive
+    (env: TypeEnv)
+    (span: Span)
+    (scrutTy: Ty)
+    (arms: (Pattern * 'g option) list)
+    : Result<unit, TypeError> =
+    let unguarded =
+        arms |> List.choose (fun (p, g) -> if g.IsNone then Some p else None)
+
+    if unguarded |> List.exists isIrrefutablePat then
+        Ok()
+    else
+        match scrutTy with
+        | TNamed _
+        | TBool ->
+            match missingCases env scrutTy unguarded with
+            | [] -> Ok()
+            | missing ->
+                let missingList = String.concat ", " missing
+                err span $"match is not exhaustive; missing: {missingList}"
+        | ty -> err span $"match on {formatTy ty} needs a catch-all pattern"
 
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
@@ -795,19 +878,35 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EMatch(scrutinee, arms) ->
         result {
             let! tscrutinee = infer ctx env scrutinee
+
+            // Bool patterns default an unresolved scrutinee to bool — the same
+            // defaulting precedent as the operator and splice rules.
+            do!
+                match resolve ctx tscrutinee.Ty with
+                | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPBool) ->
+                    bind ctx env scrutinee.Span TBool tscrutinee.Ty
+                | _ -> Ok()
+
             let scrutTy = resolve ctx tscrutinee.Ty
+
+            let checkGuard bindings (guard: Expr option) =
+                match guard with
+                | None -> Ok None
+                | Some g -> check ctx (bindParams env bindings) g TBool |> Result.map Some
 
             match arms with
             | [] -> return! err expr.Span "a match needs at least one arm"
-            | (pat0, body0) :: rest ->
+            | (pat0, guard0, body0) :: rest ->
                 let! bindings0 = checkPattern env scrutTy pat0
+                let! tguard0 = checkGuard bindings0 guard0
                 let! tbody0 = infer ctx (bindParams env bindings0) body0
 
-                let checkArm (pat: Pattern, body: Expr) =
+                let checkArm (pat: Pattern, guard: Expr option, body: Expr) =
                     result {
                         let! bindings = checkPattern env scrutTy pat
+                        let! tguard = checkGuard bindings guard
                         let! tbody = check ctx (bindParams env bindings) body tbody0.Ty
-                        return pat, tbody
+                        return pat, tguard, tbody
                     }
 
                 let! trest =
@@ -816,10 +915,41 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         (fun acc arm -> acc |> Result.bind (fun ts -> checkArm arm |> Result.map (fun t -> t :: ts)))
                         (Ok [])
 
+                let tarms = (pat0, tguard0, tbody0) :: List.rev trest
+                do! exhaustive env expr.Span scrutTy (tarms |> List.map (fun (p, g, _) -> p, g))
+
                 return
-                    { Kind = TEMatch(tscrutinee, (pat0, tbody0) :: List.rev trest)
+                    { Kind = TEMatch(tscrutinee, tarms)
                       Ty = tbody0.Ty
                       Span = expr.Span }
+        }
+    | EIf(cond, thn, els) ->
+        result {
+            let! tcond = check ctx env cond TBool
+
+            match els with
+            | Some e ->
+                let! tthn = infer ctx env thn
+                let! tels = check ctx env e tthn.Ty
+
+                return
+                    { Kind = TEIf(tcond, tthn, Some tels)
+                      Ty = tthn.Ty
+                      Span = expr.Span }
+            | None ->
+                let! tthn = infer ctx env thn
+
+                match resolve ctx tthn.Ty with
+                | TUnit ->
+                    return
+                        { Kind = TEIf(tcond, tthn, None)
+                          Ty = TUnit
+                          Span = expr.Span }
+                | ty ->
+                    return!
+                        err
+                            thn.Span
+                            $"an if without an else is unit-valued; this then-branch is {formatTy ty} — add an else"
         }
 
 and private checkSpine
@@ -977,7 +1107,13 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
                     | IStr s -> IStr s
                     | IExpr e -> IExpr(finalizeExpr ctx e))
             )
-        | TEMatch(s, arms) -> TEMatch(finalizeExpr ctx s, arms |> List.map (fun (p, b) -> p, finalizeExpr ctx b))
+        | TEMatch(s, arms) ->
+            TEMatch(
+                s |> finalizeExpr ctx,
+                arms
+                |> List.map (fun (p, g, b) -> p, g |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
+            )
+        | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
         | leaf -> leaf
 
     { te with
@@ -1089,14 +1225,13 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                             Values = values }
             }
 
+// Exhaustiveness moved into the checker as a hard error (2026-07-18);
+// this pass keeps only advisory findings: unreachable arms.
 let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
     let acc = ResizeArray<Warning>()
 
-    let isIrrefutable (p: Pattern) =
-        match p.PKind with
-        | PWildcard
-        | PVar _ -> true
-        | PCase _ -> false
+    // A guarded arm never guarantees a match, whatever its pattern.
+    let armIrrefutable (p: Pattern, guard: TypedExpr option, _: TypedExpr) = guard.IsNone && isIrrefutablePat p
 
     let rec walk (te: TypedExpr) =
         match te.Kind with
@@ -1127,44 +1262,30 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
             |> List.iter (function
                 | IStr _ -> ()
                 | IExpr e -> walk e)
+        | TEIf(cond, thn, els) ->
+            walk cond
+            walk thn
+            els |> Option.iter walk
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
-            arms |> List.iter (snd >> walk)
 
-            match arms |> List.tryFindIndex (fst >> isIrrefutable) with
+            arms
+            |> List.iter (fun (_, g, b) ->
+                g |> Option.iter walk
+                walk b)
+
+            // Only unguarded arms participate in coverage; guarded arms can fail.
+            let unguarded (p: Pattern, g: TypedExpr option, _) = if g.IsNone then Some p else None
+
+            match arms |> List.tryFindIndex armIrrefutable with
             | Some i ->
                 arms
                 |> List.skip (i + 1)
-                |> List.iter (fun (p, _) ->
+                |> List.iter (fun (p, _, _) ->
                     acc.Add
                         { Span = p.PSpan
                           Message = "this match arm is unreachable" })
-            | None ->
-                match scrutinee.Ty with
-                | TNamed(typeName, _) ->
-                    match Map.tryFind typeName env.Types with
-                    | Some(Union def) ->
-                        let covers (case: string) =
-                            arms
-                            |> List.exists (fun (p, _) ->
-                                match p.PKind with
-                                | PCase(c, None) -> c = case
-                                | PCase(c, Some arg) -> c = case && isIrrefutable arg
-                                | _ -> false)
-
-                        let missing = def.Cases |> List.map fst |> List.filter (covers >> not)
-
-                        if not missing.IsEmpty then
-                            let missingList = String.concat ", " missing
-
-                            acc.Add
-                                { Span = te.Span
-                                  Message = $"match is not exhaustive; missing: {missingList}" }
-                    | _ -> ()
-                | ty ->
-                    acc.Add
-                        { Span = te.Span
-                          Message = $"match on {formatTy ty} needs a catch-all pattern" }
+            | None -> ()
 
     walk te
     List.ofSeq acc
