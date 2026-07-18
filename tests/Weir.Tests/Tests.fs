@@ -1681,7 +1681,7 @@ let multilineTests =
               | Ok [ ll ] -> Expect.equal ll.Text "let x = let a = [1; 2] |> Seq.length in a + 1" "spill then close"
               | other -> failtest $"unexpected: {other}"
           }
-          test "block lets: pipe-headed lines never close a binding" {
+          test "block lets: arms deeper than the pending indent are plain continuations" {
               match
                   Weir.Script.assemble
                       [ 1, "let x ="
@@ -1692,7 +1692,70 @@ let multilineTests =
                         6, "    v + 1" ]
               with
               | Ok [ ll ] ->
-                  Expect.equal ll.Text "let x = let v = match h with | Some n -> n | None -> 0 in v + 1" "arms inert"
+                  Expect.equal
+                      ll.Text
+                      "let x = let v = match h with | Some n -> n | None -> 0 in v + 1"
+                      "the plain indent rule, no |-special-casing needed"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "statement-level let with indented arms assembles (the valid F# shape, verbatim)" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let category ="
+                        2, "    match size with"
+                        3, "    | s when s > 100 -> \"big\""
+                        4, "    | _ -> \"small\"" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.equal
+                      ll.Text
+                      "let category = match size with | s when s > 100 -> \"big\" | _ -> \"small\""
+                      "arms inert at statement level (stack empty)"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "F#-rejects-this: dedented arm inside a block" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let r ="
+                        2, "    let v ="
+                        3, "        match h with"
+                        4, "| Some n -> n"
+                        5, "    v" ]
+              with
+              | Error msg ->
+                  Expect.stringContains msg "line 2" "blames the binding line"
+                  Expect.stringContains msg "needs a body" "the same verdict F# gives"
+              | other -> failtest $"expected an error, got {other}"
+          }
+          test "F#-rejects-this: arm at exactly the pending indent" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let r ="
+                        2, "    let v ="
+                        3, "        match h with"
+                        4, "    | Some n -> n" ]
+              with
+              | Error msg -> Expect.stringContains msg "line 2" "at-or-left errors, matching F#"
+              | other -> failtest $"expected an error, got {other}"
+          }
+          test "guard: column-0 pipeline continuation outside any block survives" {
+              match Weir.Script.assemble [ 1, "git branch"; 2, "| map trim" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "git branch | map trim" "the rule's real customer"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "composition: inertness resumes after a block closes mid-script" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let x ="
+                        2, "    let a = 1"
+                        3, "    a + 1"
+                        4, ""
+                        5, "git branch"
+                        6, "| map trim" ]
+              with
+              | Ok [ first; second ] ->
+                  Expect.equal first.Text "let x = let a = 1 in a + 1" "block closed"
+                  Expect.equal second.Text "git branch | map trim" "stack empty again, | inert"
               | other -> failtest $"unexpected: {other}"
           }
           test "block lets: statement end with pending let errors" {

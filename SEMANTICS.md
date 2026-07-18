@@ -105,9 +105,16 @@ weir rejects rather than guesses.
   single-line form — F#'s verbose syntax analog, and the only form
   available in the REPL and `-e` (both line-based). Blocks are
   *bindings + one result expression*: a second non-`let` line at the
-  same indentation is not sequencing (parked below); `|`-headed lines
-  never open or close bindings; a `let` whose body never arrives (dedent
-  or statement end) is an assembly error naming the line. Blank lines
+  same indentation is not sequencing (parked below). `|`-headed lines
+  are inert to the pending-let stack only while it is EMPTY (the two
+  statement-level customers above); with a binding open they follow the
+  plain indent rules — arms deeper than the pending indent are ordinary
+  continuations (which is all the valid F# shape ever needed), and an
+  arm at or left of it is the needs-a-body error, the same verdict F#
+  gives (corrected 2026-07-18: the initial unconditional inertness
+  over-accepted a dedented-arm shape F# rejects). A `let` whose body
+  never arrives (dedent or statement end) is an assembly error naming
+  the line. Blank lines
   still end the statement (named divergence from F#, inherited from the
   multi-line rules).
 - `_.Field` is sugar for `fun x -> x.Field` (parser-level desugar; requires at
@@ -228,10 +235,14 @@ weir rejects rather than guesses.
   guarantee holds while trial resolution stays deferred), dropping `#loose`
   when done; splices and field accesses untouched.
 - **Multi-line statements via logical-line reconstruction** (scripts
-  only): a statement head starts at column 0; indented lines — and lines
-  whose first character is `|`, which can never begin a statement —
-  continue it and join with a single space; a blank line ends the
-  statement; tabs in indentation are errors. The single-line grammar then
+  only): a statement head starts at column 0; indented lines continue it
+  and join with a single space; a blank line ends the statement; tabs in
+  indentation are errors. **`|` can never begin a statement** — a named
+  invariant with exactly two dependents, both statement-level:
+  shell-style unindented pipeline continuations (`| where ...` at column
+  0 under a command line) and column-0 match arms outside any pending
+  binding. Inside an open block let, `|`-headed lines get no special
+  treatment (corrected 2026-07-18; see the block-lets bullet). The single-line grammar then
   consumes each logical line unchanged, so mode decision and every
   existing rule apply per logical line. Type errors map back to physical
   `file:line:col` via per-segment source tracking; parse errors attribute

@@ -41,9 +41,12 @@ type LogicalLine =
 // lexer implements it (token insertion at offside boundaries): a continuation
 // line beginning with `let` opens a binding; the next line at the SAME
 // indentation closes it by joining with " in " instead of " ", so the
-// single-line grammar sees the explicit form. `|`-headed lines never open or
-// close bindings (they extend the current expression — match arms, command
-// pipes). Every pending let must be closed before the statement ends.
+// single-line grammar sees the explicit form. `|`-headed lines are inert to
+// the stack ONLY while it is empty (statement-level pipeline continuations
+// and column-0 match arms — the two customers); with a binding pending they
+// follow the plain indent rules, so a dedented arm inside a block is the
+// same "needs a body" error F# gives the shape. Every pending let must be
+// closed before the statement ends.
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
     let noBody letLine =
         Error
@@ -89,7 +92,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                 let closed =
                                     if piece.StartsWith "|" then
-                                        Ok(stack, " ")
+                                        match stack with
+                                        | (k, letLine) :: _ when indent <= k -> noBody letLine
+                                        | _ -> Ok(stack, " ")
                                     else
                                         match stack with
                                         | (k, letLine) :: _ when indent < k -> noBody letLine

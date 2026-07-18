@@ -1,5 +1,37 @@
 # Spike Notes
 
+## Fix: |-inertness is statement-level only (2026-07-18)
+
+Corrective session per the blessed fix plan. 358 tests; battery +2
+pins; timing holds. Not a checker change (assembler only) — no tripwire
+re-run needed; standard suite + battery + timing are the coverage. The
+assembler diff came in at 4 lines against the plan's ~2-line model
+(the `|` branch needs its own two-case match: error at-or-left, plain
+when deeper) — within the ≤10 stop-and-report budget.
+
+Decision archaeology, as blessed: the block-lets session shipped
+`|`-headed lines as unconditionally inert to the pending-let stack,
+justified by "match-as-let-body works with canonical arm style for
+free." The justification rested on an invalid example — arms dedented
+to or past their binding's indent, a shape F# *rejects*. The valid F#
+shape has every arm deeper than the pending `let`, which the plain
+indent rule already handles with zero special-casing: block bodies
+never needed `|`-inertness at all. As shipped, the rule over-accepted a
+join F# would reject at parse — cutting against the F#-fidelity
+direction chosen in the same session. Caught by the user knowing F#'s
+actual grammar; advisor drift, not implementation drift.
+
+Corrected rule: `|` is inert only while the stack is empty (the two
+statement-level customers: column-0 pipeline continuations under a
+command line, column-0 match arms outside any binding). With a binding
+pending: deeper = plain continuation; at-or-left = needs-a-body naming
+the binding line.
+
+**Process rule generated**: pin batteries for grammar/assembler rules
+must include F#-rejects-this NEGATIVE cases, not only weir-accepts-this
+positives — invalid-example drift is invisible to positive-only
+batteries. The six pins of this session are the template.
+
 ## Block lets — F# light syntax at the assembly layer (2026-07-18)
 
 User decision closing the `let ... in` thread (opened during the spikes,
@@ -20,8 +52,10 @@ tests; battery +2 pins; timing holds.
   line pops at most one binding; a dedent past a deeper pending let is
   the "needs a body" error naming the deepest line — same verdict F#
   gives the shape.
-- `|`-headed lines are inert to the stack (match arms, command pipes),
-  which makes match-as-let-body work with canonical arm style for free.
+- `|`-headed lines were shipped unconditionally inert to the stack —
+  corrected the same day (see the fix entry above): inertness is
+  statement-level only; block bodies are handled by the plain indent
+  rule.
 - **Span translation needed nothing**: Segments already carry
   per-segment joined offsets; " in " just makes the offset arithmetic
   4 instead of 1 (`typo at 2:24` pins it).

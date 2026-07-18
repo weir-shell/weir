@@ -171,6 +171,31 @@ WEOF
 out=$($BIN "$scriptdir/blocklet.weir")
 expect "block lets: implicit in, F#-style, on the AOT binary" "count: 3" "$out"
 
+cat > "$scriptdir/blockmatch.weir" <<'WEOF'
+type Size = Big | Small
+
+let category =
+    let n = [1; 2; 3] |> Seq.length
+    match Big with
+    | Big -> $"big ({n})"
+    | Small -> "small"
+
+print category
+WEOF
+out=$($BIN "$scriptdir/blockmatch.weir")
+expect "valid F# shape: arms deeper than the pending binding" "big (3)" "$out"
+
+cat > "$scriptdir/dedentarm.weir" <<'WEOF'
+let r =
+    let v =
+        match 1 with
+| _ -> 0
+    v
+WEOF
+errout=$($BIN "$scriptdir/dedentarm.weir" 2>&1) && fail "dedented arm inside a block should be rejected"
+echo "$errout" | grep -qF "needs a body" || fail "dedented-arm rejection text missing: $errout"
+echo "e2e ok: dedented arm inside a block rejected (F#-rejects-this)"
+
 cat > "$scriptdir/blockbad.weir" <<'WEOF'
 let msg =
     let n = 1
