@@ -7,6 +7,8 @@ stops being true fails the build.
 ## Files and running
 
 - Shebang `#!/usr/bin/env weir`; extension `.weir`; run `weir file.weir [args]`.
+- `weir fmt file.weir` canonicalizes indentation (4 per block depth);
+  `--check` for CI; `--qualify` converts `#loose` scripts to strict.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
 - Comments are `//`. A blank line ends a statement (F# divergence).

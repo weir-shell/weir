@@ -2207,6 +2207,55 @@ let agentFindingsTests =
               | other -> failtest $"expected an error, got {other}"
           } ]
 
+let fmtTests =
+    testList
+        "Formatter"
+        [ test "normalizes structural indentation to 4 per depth" {
+              match Weir.Fmt.formatLines [ "let x ="; "      let a = 1"; "      a + 1" ] with
+              | Ok fmt -> Expect.equal fmt [ "let x ="; "    let a = 1"; "    a + 1" ] ""
+              | Error e -> failtest e
+          }
+          test "nested blocks and pipes canonicalize together" {
+              match
+                  Weir.Fmt.formatLines [ "let x ="; "  let a ="; "        [1; 2]"; "        |> Seq.sum"; "  a + 1" ]
+              with
+              | Ok fmt ->
+                  Expect.equal
+                      fmt
+                      [ "let x ="
+                        "    let a ="
+                        "        [1; 2]"
+                        "        |> Seq.sum"
+                        "    a + 1" ]
+                      ""
+              | Error e -> failtest e
+          }
+          test "column-0 pipe style is preserved" {
+              match Weir.Fmt.formatLines [ "git branch"; "| Seq.map Str.trim" ] with
+              | Ok fmt -> Expect.equal fmt [ "git branch"; "| Seq.map Str.trim" ] ""
+              | Error e -> failtest e
+          }
+          test "trailing whitespace stripped; comments verbatim" {
+              match Weir.Fmt.formatLines [ "// aligned comment  "; "let x = 1   // tail  " ] with
+              | Ok fmt -> Expect.equal fmt [ "// aligned comment"; "let x = 1   // tail" ] ""
+              | Error e -> failtest e
+          }
+          test "idempotent" {
+              let src = [ "let x ="; "  let a = 1"; "  a + 1"; ""; "print $\"{x}\"" ]
+
+              match Weir.Fmt.formatLines src with
+              | Ok once ->
+                  match Weir.Fmt.formatLines once with
+                  | Ok twice -> Expect.equal twice once "format twice = format once"
+                  | Error e -> failtest e
+              | Error e -> failtest e
+          }
+          test "invalid files are refused, not mangled" {
+              match Weir.Fmt.formatLines [ "let x ="; "    let a = 1" ] with
+              | Error msg -> Expect.stringContains msg "cannot format" "assembler error surfaces"
+              | Ok _ -> failtest "expected refusal"
+          } ]
+
 let fileTests =
     testSequenced
     <| testList
@@ -2435,4 +2484,5 @@ let allTests =
           rangeTests
           boolBranchTests
           agentFindingsTests
+          fmtTests
           fileTests ]

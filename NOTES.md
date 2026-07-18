@@ -1,5 +1,28 @@
 # Spike Notes
 
+## weir fmt — the canonical formatter, v1 (2026-07-18)
+
+User hit `weir fmt file` falling through to "no such script: fmt"
+(dispatch had only --qualify) and asked for an actual formatter.
+Scoped honestly: v1 normalizes leading indentation (4 per structural
+depth, derived from the same pending-let stack the assembler tracks)
+and strips trailing whitespace; comments and token spacing are
+verbatim (respacing/re-flowing needs trivia-preserving parsing — the
+AST has no comments — parked). Column-0 pipe continuations keep their
+shell style. `--check` gates CI.
+
+The safety property is the design's spine: format, re-assemble both,
+compare logical-line texts — refuse to write on any mismatch. It
+tripped on its FIRST real input: original trailing spaces joined into
+the logical text (`sum   in` vs `sum in`) — a false positive fixed by
+TrimEnd-normalizing both comparison passes (sound: trailing whitespace
+cannot sit inside a string at line end; strings are single-line and
+close with a quote). A formatter that can prove it didn't change the
+parse is the claim-vs-behavior discipline applied to itself.
+
+417 tests; battery +1 pin; skill line added; timing holds.
+
+
 ## Example modernization catches a let-RHS regression (2026-07-18)
 
 Modernizing examples/repo-report.weir to current idioms (let-RHS

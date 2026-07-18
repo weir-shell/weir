@@ -62,8 +62,15 @@ let main argv =
         Weir.Repl.run ()
         0
     | [ "fmt"; "--qualify"; path ] -> Fmt.qualifyFile path
+    | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
+    | [ "fmt"; path ] -> Fmt.formatFile false path
+    | "fmt" :: _ ->
+        Console.Error.WriteLine "usage: weir fmt [--check|--qualify] <script>"
+        2
     | "run" :: path :: rest -> Script.run path rest
     | path :: rest when not (path.StartsWith "-") -> Script.run path rest
     | _ ->
-        Console.Error.WriteLine "usage: weir [-e <expression>] [run] <script> [args...] | weir fmt --qualify <script>"
+        Console.Error.WriteLine
+            "usage: weir [-e <expression>] [run] <script> [args...] | weir fmt [--check|--qualify] <script>"
+
         2

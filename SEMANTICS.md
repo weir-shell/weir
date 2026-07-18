@@ -288,7 +288,16 @@ quantity semantics now.
   forever. `weir fmt --qualify <script>` is the graduation bridge: a
   span-precise AST-driven rewrite of bare names to their homes (single-home
   guarantee holds while trial resolution stays deferred), dropping `#loose`
-  when done; splices and field accesses untouched.
+  when done; splices and field accesses untouched. **`weir fmt <script>`**
+  (2026-07-18) is the canonical formatter, v1: structural indentation
+  normalized to 4 spaces per block depth (computed from the same
+  pending-let structure the assembler tracks), trailing whitespace
+  stripped, comments and token spacing verbatim, column-0 pipe style
+  respected; `--check` exits 1 for CI gating. Safety property: the
+  formatted body must re-assemble to identical logical lines or fmt
+  refuses to write (trailing-whitespace-normalized comparison — never
+  significant, strings are single-line). Token respacing/re-flowing
+  needs trivia-preserving parsing — parked with evidence criteria.
 - **Multi-line statements via logical-line reconstruction** (scripts
   only): a statement head starts at column 0; indented lines continue it
   and join with a single space; a blank line ends the statement; tabs in

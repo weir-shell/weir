@@ -293,6 +293,18 @@ errout=$($BIN -e '9223372036854775807 + 1' 2>&1 || true)
 echo "$errout" | grep -qF "integer overflow" || fail "overflow error text missing: $errout"
 echo "e2e ok: checked arithmetic raises on the AOT binary"
 
+fmtdir=$(mktemp -d)
+printf 'let x =\n      let a = 1\n      a + 1\n\nprint $"{x}"\n' > "$fmtdir/ugly.weir"
+if $BIN fmt --check "$fmtdir/ugly.weir" 2>/dev/null; then
+    fail "fmt --check must flag an unformatted file"
+fi
+$BIN fmt "$fmtdir/ugly.weir" 2>/dev/null
+$BIN fmt --check "$fmtdir/ugly.weir" 2>/dev/null || fail "fmt output must pass --check"
+out=$($BIN "$fmtdir/ugly.weir")
+expect "formatted file runs identically" "2" "$out"
+rm -rf "$fmtdir"
+echo "e2e ok: fmt canonicalizes, --check gates, output runs"
+
 cat > "$scriptdir/blockmatch.weir" <<'WEOF'
 type Size = Big | Small
 

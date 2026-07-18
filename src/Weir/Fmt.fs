@@ -126,3 +126,112 @@ let qualifyFile (path: string) : int =
         let looseNote = if droppedLoose then "; #loose directive removed" else ""
         System.Console.Error.WriteLine $"weir fmt: {total} name(s) qualified{looseNote}"
         0
+
+// ---------------------------------------------------------------------------
+// weir fmt <script> — the canonical formatter, v1 (2026-07-18).
+// Scope: leading-indent normalization (4 spaces per structural depth, using
+// the same pending-let structure the assembler tracks) and trailing-
+// whitespace stripping. Comments and token spacing are preserved verbatim —
+// respacing/re-flowing needs trivia-preserving parsing (parked). Pipe-headed
+// lines keep the column-0 shell style if they use it. Safety: the formatted
+// body must re-assemble to IDENTICAL logical lines or fmt refuses to write.
+
+let formatLines (body: string list) : Result<string list, string> =
+    // trailing whitespace is never significant (strings are single-line and
+    // close with a quote), so both equivalence passes compare TrimEnd'd code
+    let numbered =
+        body |> List.mapi (fun i l -> i + 1, (Script.stripComment l).TrimEnd())
+
+    match Script.assemble numbered with
+    | Error e -> Error $"cannot format: {e} (fix errors first)"
+    | Ok originalLogical ->
+
+        let mutable stack: (int * int) list = [] // originalIndent, depth
+
+        let formatted =
+            body
+            |> List.map (fun raw ->
+                let code = Script.stripComment raw
+                let content = raw.TrimStart().TrimEnd()
+
+                if raw.Trim() = "" then
+                    stack <- []
+                    ""
+                elif code.Trim() = "" then
+                    // comment-only: a statement separator for the assembler;
+                    // keep its own indentation untouched
+                    stack <- []
+                    raw.TrimEnd()
+                else
+                    let indent = code |> Seq.takeWhile ((=) ' ') |> Seq.length
+                    let piece = code.TrimStart()
+
+                    let depth =
+                        if piece.StartsWith "|" then
+                            if List.isEmpty stack then
+                                if indent = 0 then 0 else 1
+                            else
+                                List.length stack + 1
+                        elif indent = 0 then
+                            stack <- []
+                            0
+                        else
+                            match stack with
+                            | (k, d) :: rest when indent = k ->
+                                stack <- rest
+                                d
+                            | _ -> List.length stack + 1
+
+                    if not (piece.StartsWith "|") && indent > 0 && piece.StartsWith "let " then
+                        stack <- (indent, depth) :: stack
+
+                    String.replicate (depth * 4) " " + content)
+
+        let renumbered =
+            formatted |> List.mapi (fun i l -> i + 1, (Script.stripComment l).TrimEnd())
+
+        match Script.assemble renumbered with
+        | Error e -> Error $"fmt safety check failed (file left unchanged): {e}"
+        | Ok formattedLogical ->
+            let texts (lls: Script.LogicalLine list) = lls |> List.map (fun ll -> ll.Text)
+
+            if texts originalLogical <> texts formattedLogical then
+                Error "fmt safety check failed: reformatting would change the parse; file left unchanged"
+            else
+                Ok formatted
+
+let formatFile (checkOnly: bool) (path: string) : int =
+    if not (System.IO.File.Exists path) then
+        System.Console.Error.WriteLine $"weir: no such script: {path}"
+        2
+    else
+        let lines = System.IO.File.ReadAllLines path |> Array.toList
+
+        let header, body =
+            match lines with
+            | first :: rest when first.StartsWith "#!" ->
+                match rest with
+                | second :: tail when second.Trim() = "#loose" -> [ first; second ], tail
+                | _ -> [ first ], rest
+            | first :: rest when first.Trim() = "#loose" -> [ first ], rest
+            | _ -> [], lines
+
+        match formatLines body with
+        | Error msg ->
+            System.Console.Error.WriteLine $"weir fmt: {msg}"
+            3
+        | Ok formattedBody ->
+            let result = header @ formattedBody
+
+            if result = lines then
+                if not checkOnly then
+                    System.Console.Error.WriteLine "weir fmt: already formatted"
+
+                0
+            elif checkOnly then
+                System.Console.Error.WriteLine $"weir fmt: {path} would be reformatted"
+                1
+            else
+                System.IO.File.WriteAllLines(path, result)
+                System.Console.Error.WriteLine $"weir fmt: formatted {path}"
+                0

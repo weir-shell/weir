@@ -545,8 +545,7 @@ let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg
 // command-callable builtins (cd) stay ordinary functions there — found as a
 // silent meaning change of `let workdir = cd target` (target became a
 // bareword) when the example script was modernized.
-let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
-    cmdLineWith false (cmdArgWith true) r
+let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> = cmdLineWith false (cmdArgWith true) r
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
