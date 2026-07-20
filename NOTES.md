@@ -1,5 +1,80 @@
 # Spike Notes
 
+## Corpus mining executed — the park reopened and paid (2026-07-20)
+
+User overrode the park; the blocker dissolved on second look: the
+"parser of its own" was wrong — ComponentTests snippets live in
+triple-quoted strings, which are regex-extractable (no escapes inside
+"""..."""). Pipeline: sparse clone (dotnet/fsharp @ 5928e91, 2978
+files, 35MB) → 4256 extracted strings → aggressive mechanical filter →
+78 unique weir-plausible snippets → bulk verdict comparison
+(env-gated Corpus.fs; report committed as
+tests/fidelity/corpus-report-5928e91.md).
+
+Headline: **zero GOLD** — across the corpus, weir never accepts a
+shape F# rejects. 4 agree-accept, 50 agree-reject, 24 disagreements
+all in the F#-accepts direction; triage: ~11 filter leakage, plus
+FOUR unnamed divergences nobody had listed:
+1. **`let f x = ...` parameter sugar** — 8 of the 24; the most common
+   F# line shape does not exist in weir. Named + pinned + skill lines
+   with must-fail doc blocks. ALSO FLAGGED as a candidate feature:
+   the desugar is parser-only (nested fun) and the agent prior-bleed
+   pressure here will be relentless — user decision queued.
+2. **Literal int patterns** (`| 0 ->`) — named + pinned + skill line
+   (the guard idiom is the spelling).
+3. **Function-valued interpolation holes** — the splice rule was
+   documented as a weir rule but never as an F#-divergence; named.
+4. **Format specifiers in holes** — in SEMANTICS, missing from the
+   artifact; named.
+The artifact audit's real lesson: divergences implied by a rule's
+ABSENCE are invisible to prose review — only a corpus finds them.
+
+## The F# oracle — FCS referees fidelity claims (2026-07-20)
+
+PLAN-fsharp-oracle executed on branch fsharp-oracle. CI-side only:
+FCS 43.12.204 is a dependency of a separate test project
+(tests/Weir.Fidelity) and never approaches the binary; the 7ms story
+is untouched. 27 fidelity pins green; both deliberately-wrong-tag
+directions proven to fail the build (a bogus divergence id: "missing
+from divergences.md"; a Same-tag on the tuple pin: "F# must agree
+(weir=Reject, fsharp=Accept)") — captured, then reverted.
+
+Decision archaeology, as the plan directed: the subtractive-fork
+detour (fork dotnet/fsharp, subtract down to weir) was REJECTED —
+compiler features are not subtractive, divergence must stay cheap
+(one artifact row, by intent), and the fork would have inherited
+measures the week after weir deleted them (see the removal arc).
+The oracle is the salvage: dotnet/fsharp as REFEREE, not substrate.
+Shapes only, accept/reject only — semantics, inference, and error
+text are out of scope permanently.
+
+Implementation findings:
+- GetProjectOptionsFromScript is broken in sandboxed containers (its
+  legacy-fsi default references produced a WebClient resolution error
+  on EVERY snippet, poisoning all verdicts Reject). Fix: manual
+  FSharpProjectOptions with the runtime's TRUSTED_PLATFORM_ASSEMBLIES
+  as the reference set — complete and correct by construction.
+- FCS is not safe under Expecto's parallelism on one virtual filename
+  (nondeterministic verdicts run to run); the oracle is serialized
+  behind a lock, cached by snippet hash.
+- The |-inertness incident shape is now pin #4, refereed by the real
+  compiler: the dedented-arm snippet gets F#'s own offside error and
+  weir's needs-a-body — Same(reject), mechanically forever.
+- divergences.md seeded from SEMANTICS (11 entries). The audit the
+  plan predicted found the list complete — every codebase divergence
+  had made it into SEMANTICS — except `no-mutation` and `no-let-rec`
+  existed only as prose implications; they are named entries now.
+
+Corpus mining: PARKED at the time-box, with findings. Github egress
+works; dotnet/fsharp pinned at 5928e91; sparse checkout of
+tests/fsharp/typecheck/sigs (428 files) yielded ZERO snippets after
+the mechanical filter — sig tests are module/namespace-shaped, and no
+tests/fsharp/parsing directory exists. The real corpus is embedded
+strings inside ComponentTests test CODE — extraction is a parser of
+its own, which is precisely the plan's park criterion. The oracle's
+snippet-hash cache is ready if a corpus ever lands.
+
+
 ## weir fmt — the canonical formatter, v1 (2026-07-18)
 
 User hit `weir fmt file` falling through to "no such script: fmt"

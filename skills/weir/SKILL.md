@@ -46,6 +46,10 @@ git ls-files | Seq.first 1
 - No tuples — wrap in records: `{ Fst = a; Snd = b }` needs a declared
   `type Pair = { Fst: int; Snd: int }` (exact field set, no width subtyping).
 - Union cases take ONE payload: `Case of int`, never `Case of int * int`.
+- `let f x = ...` does NOT define a function (corpus-mined: the most
+  common F# line shape). Write `let f = fun x -> fun y -> ...`.
+- No literal patterns: `match n with | 0 -> ...` does not parse; use a
+  guard (`| x when x == 0 -> ...`) or bool match.
 - No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
   Ranges are lazy; `[a; b; c]` lists are eager.
@@ -89,6 +93,18 @@ print $"{x}"
 ```weir-error
 // tuples do not exist
 let p = (1, 2)
+print "unreached"
+```
+
+```weir-error
+// let-parameter sugar does not exist; write let f = fun x -> x + 1
+let f x = x + 1
+print "unreached"
+```
+
+```weir-error
+// literal patterns do not exist; use a when-guard
+let v = match 1 with | 0 -> 0 | _ -> 1
 print "unreached"
 ```
 
