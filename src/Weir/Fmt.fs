@@ -139,8 +139,14 @@ let qualifyFile (path: string) : int =
 let formatLines (body: string list) : Result<string list, string> =
     // trailing whitespace is never significant (strings are single-line and
     // close with a quote), so both equivalence passes compare TrimEnd'd code
+    let commentOnly (raw: string) =
+        raw.Trim() <> "" && (Script.stripComment raw).Trim() = ""
+
     let numbered =
-        body |> List.mapi (fun i l -> i + 1, (Script.stripComment l).TrimEnd())
+        body
+        |> List.mapi (fun i l -> i + 1, l)
+        |> List.filter (fun (_, raw) -> not (commentOnly raw))
+        |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
 
     match Script.assemble numbered with
     | Error e -> Error $"cannot format: {e} (fix errors first)"
@@ -158,9 +164,8 @@ let formatLines (body: string list) : Result<string list, string> =
                     stack <- []
                     ""
                 elif code.Trim() = "" then
-                    // comment-only: a statement separator for the assembler;
-                    // keep its own indentation untouched
-                    stack <- []
+                    // comment-only: transparent to assembly (2026-07-20);
+                    // keep it verbatim and leave formatter state alone
                     raw.TrimEnd()
                 else
                     let indent = code |> Seq.takeWhile ((=) ' ') |> Seq.length
@@ -188,7 +193,10 @@ let formatLines (body: string list) : Result<string list, string> =
                     String.replicate (depth * 4) " " + content)
 
         let renumbered =
-            formatted |> List.mapi (fun i l -> i + 1, (Script.stripComment l).TrimEnd())
+            formatted
+            |> List.mapi (fun i l -> i + 1, l)
+            |> List.filter (fun (_, raw) -> not (commentOnly raw))
+            |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
 
         match Script.assemble renumbered with
         | Error e -> Error $"fmt safety check failed (file left unchanged): {e}"

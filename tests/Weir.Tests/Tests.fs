@@ -2201,6 +2201,16 @@ let agentFindingsTests =
               Expect.stringContains (formatError terr) "parenthesize the pipeline" "actionable"
               expectValue "([1; 2] |> Seq.length) == 2" (VBool true)
           }
+          test "comment-only lines are transparent to assembly (runner-level filter)" {
+              // assemble itself never sees them; pin the filter contract:
+              // whitespace-only survives as blank, comment-only is dropped
+              let commentOnly (raw: string) =
+                  raw.Trim() <> "" && (Weir.Script.stripComment raw).Trim() = ""
+
+              Expect.isTrue (commentOnly "    // note") "comment"
+              Expect.isFalse (commentOnly "   ") "whitespace stays a blank"
+              Expect.isFalse (commentOnly "let x = 1 // tail") "code with tail comment stays"
+          }
           test "blank line inside a block names its cause" {
               match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, ""; 4, "    a + 1" ] with
               | Error msg -> Expect.stringContains msg "blank line ends the statement" "attribution"

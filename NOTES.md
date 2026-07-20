@@ -1,5 +1,33 @@
 # Spike Notes
 
+## Fix round: transparent comments, parse-error attribution (2026-07-20)
+
+Two bug-class items from the standing ledger, done on user "anything
+else to fix". 426 + 34 tests; battery +2 pins; timing holds.
+
+- **Comment-only lines were ending statements** — stripComment reduced
+  them to blank before assembly, so any block with an interior comment
+  died ("continuation after a blank line"). Noted mid-bool-session,
+  never fixed — a fidelity bug in the letter (F# comments are
+  transparent). Fix at the runner layer: comment-only lines are
+  filtered before assemble (the assembler itself cannot distinguish
+  them post-strip); fmt and the oracle's weirVerdict mirror the
+  filter, and the formatter no longer resets its block state at a
+  comment. Oracle pin: comment-inside-block is Same-accept, refereed.
+- **Parse errors now translate through the segment table** like type
+  errors always did: the FParsec Ln/Col of the joined logical line is
+  remapped to physical file:line:col ("perr.weir:2:8: parse error"
+  pointing at the offending token on the continuation line). This was
+  the read plan's wildcard prediction for stranding agents on
+  multi-line scripts; e2e-pinned.
+
+Remaining ledger is feature-class, user's pick: literal int patterns
+(corpus-mined, guard idiom is the workaround), anonymous records (one
+bleed hit), Seq.collect-as-flatMap (name freed, no demand yet),
+show/record-print (predicted first debugging complaint), comprehensions
+(evidence-gated), REPL multi-line.
+
+
 ## let f x = ... parameter sugar (2026-07-20)
 
 The corpus session's top yield, shipped same day on user go. Pure

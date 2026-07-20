@@ -209,6 +209,25 @@ WEOF
 out=$($BIN "$scriptdir/sugar.weir")
 expect "let parameter sugar end to end" "3 -> 6" "$out"
 
+cat > "$scriptdir/comments.weir" <<'WEOF'
+let total =
+    // the base value
+    let base = 2
+    base + 1
+
+print $"{total}"
+WEOF
+out=$($BIN "$scriptdir/comments.weir")
+expect "comment lines transparent inside blocks" "3" "$out"
+
+cat > "$scriptdir/perr.weir" <<'WEOF'
+let x =
+    1 +* 2
+WEOF
+errout=$($BIN "$scriptdir/perr.weir" 2>&1) && fail "parse error expected"
+echo "$errout" | grep -qF "perr.weir:2:8: parse error" || fail "parse error must map to the physical line:col: $errout"
+echo "e2e ok: parse errors translate through multi-line segments"
+
 cat > "$scriptdir/bools.weir" <<'WEOF'
 let n = [1; 2; 3] |> Seq.length
 

@@ -264,8 +264,14 @@ let run (path: string) (scriptArgs: string list) : int =
             Extern.refresh ()
             let r = resolver typeEnv0
 
+            // comment-only lines are TRANSPARENT (F#-faithful, fixed
+            // 2026-07-20 — they used to strip to blank and end statements)
             let assembled =
-                body |> List.mapi (fun i l -> bodyOffset + i + 1, stripComment l) |> assemble
+                body
+                |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+                |> List.filter (fun (_, raw) -> not (raw.Trim() <> "" && (stripComment raw).Trim() = ""))
+                |> List.map (fun (n, raw) -> n, stripComment raw)
+                |> assemble
 
             match assembled with
             | Error msg ->
@@ -293,7 +299,17 @@ let run (path: string) (scriptArgs: string list) : int =
                             | Error e -> Error e
                             | Ok(tenv, acc) ->
                                 match Parser.parseLine r ll.Text with
-                                | Error msg -> Error(located path ll.Head msg)
+                                | Error msg ->
+                                    let locatedMsg =
+                                        let m = System.Text.RegularExpressions.Regex.Match(msg, @"Ln: 1 Col: (\d+)")
+
+                                        if m.Success then
+                                            let physLine, physCol = translate ll (int m.Groups[1].Value)
+                                            $"{path}:{physLine}:{physCol}: parse error:\n{msg}"
+                                        else
+                                            located path ll.Head msg
+
+                                    Error locatedMsg
                                 | Ok(SType decl) ->
                                     match Check.checkDecl tenv decl with
                                     | Error terr -> Error(typedErr ll terr)

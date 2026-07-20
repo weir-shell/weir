@@ -50,6 +50,7 @@ let pins =
           "let r =\n    let v =\n        match 3 with\n    | _ -> 0\n"
           Same
       pin "F#-rejects-this: bodyless block let" "let x =\n    let a = 1\n" Same
+      pin "comment lines are transparent inside blocks" "let x =\n    // note\n    let a = 1\n    a + 1\n" Same
       pin
           "blank line inside a block ends the statement (weir only)"
           "let x =\n    let a = 1\n\n    a + 1\n"

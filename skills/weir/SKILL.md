@@ -11,7 +11,8 @@ stops being true fails the build.
   `--check` for CI; `--qualify` converts `#loose` scripts to strict.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
-- Comments are `//`. A blank line ends a statement (F# divergence).
+- Comments are `//`. A blank line ends a statement (F# divergence);
+  comment lines are transparent and safe inside blocks.
 - Scripts are STRICT: every library name is module-qualified —
   `Seq.map`, `Str.trim`, `Option.defaultTo`, `File.read` — including in
   command pipelines (`| Seq.map Str.trim`). Bare names (`map`, `where`)

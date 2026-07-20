@@ -315,7 +315,13 @@ quantity semantics now.
 - **Multi-line statements via logical-line reconstruction** (scripts
   only): a statement head starts at column 0; indented lines continue it
   and join with a single space; a blank line ends the statement; tabs in
-  indentation are errors. **`|` can never begin a statement** — a named
+  indentation are errors. **Comment-only lines are transparent**
+  (F#-faithful; fixed 2026-07-20 — they used to strip to blank and end
+  the statement, breaking any block with an interior comment; oracle
+  pin). **Parse errors translate to physical `file:line:col`** through
+  the same segment table type errors always used (fixed 2026-07-20 —
+  they attributed to the head line, the agent-stranding wildcard the
+  read plan predicted). **`|` can never begin a statement** — a named
   invariant with exactly two dependents, both statement-level:
   shell-style unindented pipeline continuations (`| where ...` at column
   0 under a command line) and column-0 match arms outside any pending
