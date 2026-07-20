@@ -59,6 +59,8 @@ git ls-files | Seq.first 1
   words with no meaning.
 - No literal patterns: `match n with | 0 -> ...` does not parse; use a
   guard (`| x when x == 0 -> ...`) or bool match.
+- No async/task/await — processes and pipelines are the concurrency
+  model. A task that truly needs async belongs in full F#, not weir.
 - No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
   Ranges are lazy; `[a; b; c]` lists are eager.

@@ -414,6 +414,12 @@ quantity semantics now.
   variable is in scope to default, and a freshly-instantiated
   outer-binding variable defaulted by a splice is local to the line's
   ctx. Nothing defaulted survives to be generalized at another type.
+- **Async/task machinery is REJECTED, permanently** (2026-07-20, user
+  decision): a scripting shell's concurrency model is processes and
+  pipelines — spawn, stream, complete. Weir will not grow async/await,
+  tasks, or their scheduling machinery; the moment a script genuinely
+  needs them is the graduation signal to full F#, and weir says so
+  rather than growing toward it. (Border row: no-async-concurrency.)
 - **The session is single-threaded.** One session per process; `Session.Cwd`
   is mutated only from the REPL/eval thread (the sole background thread, the
   stdin writer, never touches it). It is deliberately *not* synchronized: the
