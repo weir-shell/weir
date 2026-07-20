@@ -2207,6 +2207,36 @@ let agentFindingsTests =
               | other -> failtest $"expected an error, got {other}"
           } ]
 
+let paramSugarTests =
+    testList
+        "Let parameter sugar"
+        [ test "single param, let-in" { expectValue "let double x = x * 2 in double 21" (VInt 42L) }
+          test "multi param curries" { expectValue "let sub x y = x - y in sub 10 3" (VInt 7L) }
+          test "generalizes like the lambda spelling" { expectValue "let id x = x in (id 5) + (id 7)" (VInt 12L) }
+          test "statement-level parse shape" {
+              match Weir.Parser.parseLine cmdResolver "let f x = x * 2" with
+              | Ok(SLet("f", { Kind = ELambda("x", _) })) -> ()
+              | other -> failtest $"expected a desugared lambda, got {other}"
+          }
+          test "params take an expression RHS only (no command mode under a lambda)" {
+              match Weir.Parser.parseLine cmdResolver "let f x = git status" with
+              | Ok(SLet(_, { Kind = ELambda(_, { Kind = EApp _ }) })) -> ()
+              | other -> failtest $"expected expression-mode application (which then fails check), got {other}"
+          }
+          test "unit and pattern params rejected" {
+              match Weir.Parser.parseExpr "let f () = 1 in f" with
+              | Error _ -> ()
+              | Ok _ -> failtest "unit params are not in the v1 sugar"
+          }
+          test "HOF restriction unchanged through the sugar" {
+              let terr = checkErr "let apply f x = f x in apply double 1"
+              Expect.stringContains (formatError terr) "not a function" ""
+          }
+          test "operator ambiguity unchanged through the sugar" {
+              let terr = checkErr "let add x y = x + y in add 1 2"
+              Expect.stringContains (formatError terr) "cannot infer" ""
+          } ]
+
 let fmtTests =
     testList
         "Formatter"
@@ -2485,4 +2515,5 @@ let allTests =
           boolBranchTests
           agentFindingsTests
           fmtTests
+          paramSugarTests
           fileTests ]

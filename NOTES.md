@@ -1,5 +1,33 @@
 # Spike Notes
 
+## let f x = ... parameter sugar (2026-07-20)
+
+The corpus session's top yield, shipped same day on user go. Pure
+parser desugar (curryParams: nested lambdas) in both let forms;
+checker untouched for the sugar itself. 425 + 33 tests; battery +1;
+skill-doc reshaped (the must-fail block became the positive example).
+
+Scope edges, decided reject-don't-guess: params are plain idents (no
+(), no patterns, no annotations); a param-ful let takes an expression
+RHS only — command mode under a lambda would break the splice-
+defaulting soundness invariant; HOF restriction unchanged (named as
+divergence no-hof-inference with a pin).
+
+Two findings from the session's own tripwires:
+- **The oracle caught a regression MINUTES after the sugar landed**:
+  `let mutable x = 1` and `let rec f = 1` began parsing as functions
+  named `mutable`/`rec` — both fidelity pins flipped to both=Accept.
+  Fix: `rec` and `mutable` are reserved words now. This is the
+  oracle's first live catch, and the strongest possible argument for
+  it: the failure mode (F# muscle memory silently doing something
+  else) is invisible to positive tests.
+- The sugar made var-var operands common and exposed that `-` and the
+  comparisons were missing from the defaulting family by accident of
+  history (`let sub x y = x - y` failed to infer). Rule regularized:
+  every UNIQUE-typing operator defaults; `+` alone rejects
+  (int-or-string), named as divergence no-operator-defaulting.
+
+
 ## Corpus mining executed — the park reopened and paid (2026-07-20)
 
 User overrode the park; the blocker dissolved on second look: the

@@ -19,7 +19,8 @@ the prose home; the cross-reference column points there.
 | no-let-rec | let rec bindings | reject | accept | Backlog: recursion |
 | no-unary-minus | negative literals outside ranges | reject | accept | Operators: range literals |
 | pipe-precedence-error | piping into an operator expression | reject (targeted) | accept ((|>) into bool = valid partial shapes differ) | Operators: precedence error |
-| no-let-param-sugar | let f x = ... function definitions | reject (spell it let f = fun x -> ...) | accept | Operators: bindings |
 | no-literal-patterns | int/string literal patterns in match | reject | accept | Types: match patterns |
 | interp-scalar-only | non-scalar interpolation holes ($"{someFn}") | reject | accept | Operators: interpolation |
 | no-format-specifiers | format specifiers in holes ($"{x:N2}") | reject | accept | Operators: interpolation |
+| no-hof-inference | applying a bare parameter as a function (let apply f x = f x) | reject | accept | Types: no higher-order inference |
+| no-operator-defaulting | + on two unresolved params (let add x y = x + y) | reject | accept (defaults int) | Operators: var-var operators |

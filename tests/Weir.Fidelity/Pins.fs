@@ -21,7 +21,11 @@ type Pin =
       Fs: string option // None = identical text
       Tag: Tag }
 
-let private pin name weir tag = { Name = name; Weir = weir; Fs = None; Tag = tag }
+let private pin name weir tag =
+    { Name = name
+      Weir = weir
+      Fs = None
+      Tag = tag }
 
 let private pinT name weir fs tag =
     { Name = name
@@ -82,7 +86,9 @@ let pins =
       pin "negative literal outside a range" "let n = -1\n" (Diverges "no-unary-minus")
 
       // --- corpus-born pins (dotnet/fsharp @ 5928e91, ComponentTests mining) ---
-      pin "corpus: let parameter sugar" "let f x = x + 1\n" (Diverges "no-let-param-sugar")
+      pin "let parameter sugar (corpus-born feature, 2026-07-20)" "let f x = x + 1\n" Same
+      pin "HOF param application" "let apply f x = f x\n" (Diverges "no-hof-inference")
+      pin "operator on two unresolved params" "let add x y = x + y\n" (Diverges "no-operator-defaulting")
       pin
           "corpus: literal int pattern"
           "let v =\n    match 1 with\n    | 0 -> 0\n    | _ -> 1\n"
@@ -103,8 +109,7 @@ let fidelityTests =
                   let fsV = fsharpVerdict (defaultArg p.Fs p.Weir)
 
                   match p.Tag with
-                  | Same ->
-                      Expect.equal fsV weirV $"fidelity claim: F# must agree (weir={weirV}, fsharp={fsV})"
+                  | Same -> Expect.equal fsV weirV $"fidelity claim: F# must agree (weir={weirV}, fsharp={fsV})"
                   | Diverges id ->
                       Expect.isTrue (divergenceIds.Contains id) $"divergence id '{id}' missing from divergences.md"
 

@@ -198,6 +198,17 @@ WEOF
 out=$($BIN "$scriptdir/blocklet.weir")
 expect "block lets: implicit in, F#-style, on the AOT binary" "count: 3" "$out"
 
+cat > "$scriptdir/sugar.weir" <<'WEOF'
+let double n = n * 2
+let describe n =
+    let d = double n
+    $"{n} -> {d}"
+
+[1..3] |> Seq.map describe |> Seq.iter print
+WEOF
+out=$($BIN "$scriptdir/sugar.weir")
+expect "let parameter sugar end to end" "3 -> 6" "$out"
+
 cat > "$scriptdir/bools.weir" <<'WEOF'
 let n = [1; 2; 3] |> Seq.length
 

@@ -144,11 +144,25 @@ quantity semantics now.
   `fun f -> f.Name == "tmp"` binds the field's type to `string` (this is the
   mechanism behind the §1.2 conflicting-demands rejection); only a type still
   unresolved *after* unification is rejected.
-- Binary operators on two unresolved type variables are errors, with two
-  deterministic exceptions: `*`/`/` bind both operands to unitless `int` — the
-  only sound reading — and `&&`/`||` bind both to `bool` (their only
-  typing). (The old caveat that scalar×measure would give `*` two
-  readings again retired with the measures.)
+- Binary operators on two unresolved type variables: every operator with
+  a UNIQUE typing defaults its operands — `*` `/` `-` `>` `<` `>=` `<=`
+  to `int`, `&&`/`||` to `bool` (extended 2026-07-20 when the parameter
+  sugar made var-var operands common; `-` and the comparisons had been
+  left out of the family by accident of history). `+` alone stays an
+  error: int-or-string is a guess weir refuses to make — anchor one
+  side. Named as an F# divergence (F# defaults `+` to int).
+- **`let f x y = e` defines a curried function** (2026-07-20 — the
+  corpus-mining session's top yield became a feature the same day, on
+  agent-prior evidence: F#'s most common line shape). Pure parser
+  desugar to nested lambdas, both let forms; generalization and the
+  HOF restriction flow through unchanged. Params are plain idents —
+  unit/pattern params and annotations stay rejected — and a param-ful
+  let takes an expression RHS only (a command line under a lambda
+  would break the splice-defaulting soundness invariant). `rec` and
+  `mutable` became reserved words with the sugar: the oracle caught
+  `let mutable x = 1` silently parsing as a function named `mutable`
+  minutes after the sugar landed — F#-binding forms must fail loudly,
+  not bind strangely.
 - **Expression-level `let` is F#-shaped** (decided 2026-07-18, replacing
   the earlier keep-`in` decision): in scripts, a continuation line
   beginning with `let` opens a binding closed implicitly by the next line

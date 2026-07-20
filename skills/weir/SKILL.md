@@ -46,8 +46,13 @@ git ls-files | Seq.first 1
 - No tuples — wrap in records: `{ Fst = a; Snd = b }` needs a declared
   `type Pair = { Fst: int; Snd: int }` (exact field set, no width subtyping).
 - Union cases take ONE payload: `Case of int`, never `Case of int * int`.
-- `let f x = ...` does NOT define a function (corpus-mined: the most
-  common F# line shape). Write `let f = fun x -> fun y -> ...`.
+- `let f x y = ...` defines a curried function (desugars to nested
+  `fun`). Params are plain idents — no `()`, no patterns, no type
+  annotations — and a param-ful let cannot take a command-line RHS.
+- `+` on two unknown params cannot infer (int-or-string): anchor one
+  side (`x + 0`) or take data in. All single-typing operators
+  (`- * / > <`) default to int; `let rec` and `mutable` are reserved
+  words with no meaning.
 - No literal patterns: `match n with | 0 -> ...` does not parse; use a
   guard (`| x when x == 0 -> ...`) or bool match.
 - No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
@@ -70,8 +75,10 @@ type Verdict =
     | Pass of int
     | Fail
 
+let double n = n * 2
+
 let grade =
-    let doubled = [1; 2; 3] |> Seq.map (fun x -> x * 2) |> Seq.sum
+    let doubled = [1; 2; 3] |> Seq.map double |> Seq.sum
     if doubled > 10 then Pass doubled else Fail
 
 let text =
@@ -93,12 +100,6 @@ print $"{x}"
 ```weir-error
 // tuples do not exist
 let p = (1, 2)
-print "unreached"
-```
-
-```weir-error
-// let-parameter sugar does not exist; write let f = fun x -> x + 1
-let f x = x + 1
 print "unreached"
 ```
 

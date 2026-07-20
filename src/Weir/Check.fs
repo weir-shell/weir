@@ -309,7 +309,9 @@ let rec private typeBinOp
         binding |> Result.bind (fun () -> typeBinOp ctx env opSpan op l r)
 
     match op, resolve ctx l.Ty, resolve ctx r.Ty with
-    | ("*" | "/"), TVar _, TVar _ ->
+    // every operator with a UNIQUE typing defaults var-var operands; '+' alone
+    // stays an error (int-or-string is a guess weir refuses to make)
+    | ("*" | "/" | "-" | ">" | "<" | ">=" | "<="), TVar _, TVar _ ->
         retryAfter (
             bind ctx env l.Span (TInt) l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span (TInt) r.Ty)

@@ -21,7 +21,9 @@ let private keywords =
           "if"
           "then"
           "else"
-          "when" ]
+          "when"
+          "rec"
+          "mutable" ]
 
 type Resolver =
     { IsKnown: string -> bool
@@ -242,13 +244,25 @@ let private lambda =
         { Kind = ELambda(param, body)
           Span = { Start = pos p; End = body.Span.End } })
 
+// let f x y = e desugars to nested lambdas (corpus-driven feature,
+// 2026-07-20: the top mining yield — F#'s most common line shape).
+// Params are plain idents; unit/pattern params stay rejected.
+let private curryParams (ps: string list) (value: Expr) : Expr =
+    List.foldBack
+        (fun p body ->
+            { Kind = ELambda(p, body)
+              Span = value.Span })
+        ps
+        value
+
 let private letIn =
     pipe3
         getPosition
-        (keyword "let" >>. ident .>> str_ws "=" .>>. expr .>> keyword "in")
+        (keyword "let" >>. ident .>>. many ident .>> str_ws "=" .>>. expr
+         .>> keyword "in")
         expr
-        (fun p (name, value) body ->
-            { Kind = ELet(name, value, body)
+        (fun p ((name, ps), value) body ->
+            { Kind = ELet(name, curryParams ps value, body)
               Span = { Start = pos p; End = body.Span.End } })
 
 let private binOp op l r =
@@ -609,8 +623,14 @@ let private typeDecl =
 // stays expression-only — a greedy command grammar would eat `in x` as
 // barewords.
 let private topLet (r: Resolver) =
-    attempt (keyword "let" >>. ident .>> str_ws "=" .>>. (cmdLineLetRhs r <|> expr) .>> eof)
-    |>> SLet
+    attempt (
+        keyword "let" >>. ident .>>. many ident .>> str_ws "="
+        >>= fun (name, ps) ->
+            // command mode never sits under a lambda (splice-soundness
+            // invariant), so a param-ful let takes an expression RHS only
+            let rhsP = if List.isEmpty ps then cmdLineLetRhs r <|> expr else expr
+            rhsP .>> eof |>> fun rhs -> SLet(name, curryParams ps rhs)
+    )
 
 let private stmtWith (r: Resolver) =
     ws

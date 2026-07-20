@@ -27,8 +27,7 @@ let private scriptFile = "/oracle/Snippet.fs"
 
 let private baseOptions =
     lazy
-        (let tpa =
-            System.AppContext.GetData "TRUSTED_PLATFORM_ASSEMBLIES" :?> string
+        (let tpa = System.AppContext.GetData "TRUSTED_PLATFORM_ASSEMBLIES" :?> string
 
          let refs =
              tpa.Split System.IO.Path.PathSeparator
@@ -38,8 +37,7 @@ let private baseOptions =
          { ProjectFileName = "/oracle/oracle.fsproj"
            ProjectId = None
            SourceFiles = [| scriptFile |]
-           OtherOptions =
-             Array.append [| "--noframework"; "--targetprofile:netcore"; "--langversion:latest" |] refs
+           OtherOptions = Array.append [| "--noframework"; "--targetprofile:netcore"; "--langversion:latest" |] refs
            ReferencedProjects = [||]
            IsIncompleteTypeCheckEnvironment = false
            UseScriptResolutionRules = false
@@ -58,38 +56,38 @@ let fsharpVerdict (src: string) : Verdict =
     cache.GetOrAdd(
         src,
         fun _ ->
-          lock gate (fun () ->
-            let sourceText = SourceText.ofString src
+            lock gate (fun () ->
+                let sourceText = SourceText.ofString src
 
-            let parseRes, checkAnswer =
-                checker.ParseAndCheckFileInProject(scriptFile, src.GetHashCode(), sourceText, baseOptions.Value)
-                |> Async.RunSynchronously
+                let parseRes, checkAnswer =
+                    checker.ParseAndCheckFileInProject(scriptFile, src.GetHashCode(), sourceText, baseOptions.Value)
+                    |> Async.RunSynchronously
 
-            let parseErrors =
-                parseRes.Diagnostics
-                |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
-
-            let checkErrors =
-                match checkAnswer with
-                | FSharpCheckFileAnswer.Succeeded res ->
-                    res.Diagnostics
+                let parseErrors =
+                    parseRes.Diagnostics
                     |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
-                | FSharpCheckFileAnswer.Aborted -> true
 
-            if System.Environment.GetEnvironmentVariable "WEIR_ORACLE_DEBUG" <> null then
-                let all =
+                let checkErrors =
                     match checkAnswer with
-                    | FSharpCheckFileAnswer.Succeeded res -> Array.append parseRes.Diagnostics res.Diagnostics
-                    | FSharpCheckFileAnswer.Aborted -> parseRes.Diagnostics
+                    | FSharpCheckFileAnswer.Succeeded res ->
+                        res.Diagnostics
+                        |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
+                    | FSharpCheckFileAnswer.Aborted -> true
 
-                let dump =
-                    all
-                    |> Array.map (fun d -> $"[oracle] {d.Severity} {d.Message}")
-                    |> String.concat "\n"
+                if System.Environment.GetEnvironmentVariable "WEIR_ORACLE_DEBUG" <> null then
+                    let all =
+                        match checkAnswer with
+                        | FSharpCheckFileAnswer.Succeeded res -> Array.append parseRes.Diagnostics res.Diagnostics
+                        | FSharpCheckFileAnswer.Aborted -> parseRes.Diagnostics
 
-                System.IO.File.AppendAllText("/tmp/oracle-debug.log", $"--- snippet:\n{src}\n{dump}\n")
+                    let dump =
+                        all
+                        |> Array.map (fun d -> $"[oracle] {d.Severity} {d.Message}")
+                        |> String.concat "\n"
 
-            if parseErrors || checkErrors then Reject else Accept)
+                    System.IO.File.AppendAllText("/tmp/oracle-debug.log", $"--- snippet:\n{src}\n{dump}\n")
+
+                if parseErrors || checkErrors then Reject else Accept)
     )
 
 // Weir's verdict replicates the script runner's check phase exactly:
@@ -115,10 +113,7 @@ let weirVerdict (src: string) : Verdict =
                     |> Map.add "stdin" (generalize (TSeq TStr)) }
 
         let resolver: Weir.Parser.Resolver =
-            { IsKnown =
-                fun n ->
-                    Map.containsKey n typeEnv0.Values
-                    || Map.containsKey n typeEnv0.Modules
+            { IsKnown = fun n -> Map.containsKey n typeEnv0.Values || Map.containsKey n typeEnv0.Modules
               IsCommandCallable = Weir.Builtins.commandCallable.Contains
               IsExternal = fun _ -> false
               ExternalNames = fun () -> Seq.empty }
@@ -158,8 +153,7 @@ let weirVerdict (src: string) : Verdict =
 
 // The named-divergence artifact: ids parsed from the markdown table.
 let divergenceIds: Set<string> =
-    let path =
-        System.IO.Path.Combine(System.AppContext.BaseDirectory, "divergences.md")
+    let path = System.IO.Path.Combine(System.AppContext.BaseDirectory, "divergences.md")
 
     System.IO.File.ReadAllLines path
     |> Array.choose (fun line ->
