@@ -220,6 +220,18 @@ WEOF
 out=$($BIN "$scriptdir/comments.weir")
 expect "comment lines transparent inside blocks" "3" "$out"
 
+cat > "$scriptdir/show.weir" <<'WEOF'
+let staged =
+    git status --porcelain
+    | from porcelain
+    | Seq.first 1
+
+staged |> Seq.iter (fun c -> print (show c))
+WEOF
+out=$(cd "$scriptdir" && git init -q 2>/dev/null; cd "$scriptdir" && $BIN show.weir)
+echo "$out" | grep -qF "Staged = " || fail "show must render the porcelain row: $out"
+echo "e2e ok: show renders typed rows on the AOT binary"
+
 cat > "$scriptdir/perr.weir" <<'WEOF'
 let x =
     1 +* 2

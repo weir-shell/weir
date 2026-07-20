@@ -285,6 +285,37 @@ let private isPrintFamily (env: TypeEnv) (name: string) =
     (name = "print" || name = "printerr")
     && Map.tryFind name env.Values = Some printScheme
 
+// show : 'a -> string — the debugging renderer (REPL-shaped, lossy).
+// Same sentinel discipline as print; showable = no function anywhere in
+// the type, recursively.
+let showScheme: Scheme =
+    { Forall = Set.singleton "__show"
+      Ty = TFun(TVar "__show", TStr) }
+
+let private isShowBuiltin (env: TypeEnv) =
+    Map.tryFind "show" env.Values = Some showScheme
+
+let rec private hasFunction (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
+    match ty with
+    | TFun _ -> true
+    | TSeq t -> hasFunction env seen t
+    | TRowVar(_, fields) -> fields |> List.exists (snd >> hasFunction env seen)
+    | TNamed(n, targs) ->
+        let key = formatTy ty
+
+        not (seen.Contains key)
+        && (match Map.tryFind n env.Types with
+            | Some(Record def) ->
+                def.Fields
+                |> List.exists (fun (_, ft) -> hasFunction env (Set.add key seen) (substParams def.Params targs ft))
+            | Some(Union def) ->
+                def.Cases
+                |> List.exists (fun (_, payload) ->
+                    payload
+                    |> Option.exists (fun pt -> hasFunction env (Set.add key seen) (substParams def.Params targs pt)))
+            | None -> false)
+    | _ -> false
+
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with
     | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
@@ -521,6 +552,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEUnit
               Ty = TUnit
               Span = expr.Span }
+    | EVar "show" when isShowBuiltin env ->
+        // bare-value position: the defaulted form, like print
+        Ok
+            { Kind = TEVar "show"
+              Ty = TFun(TStr, TStr)
+              Span = expr.Span }
     | EVar(("print" | "printerr") as pname) when isPrintFamily env pname ->
         // Bare-value position (e.g. Seq.iter print): the defaulted form.
         Ok
@@ -592,6 +629,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         let head, args = spine expr
 
         match head.Kind, args with
+        | EVar "show", [ arg ] when isShowBuiltin env ->
+            result {
+                let! targ = infer ctx env arg
+                let argTy = finalTy ctx targ.Ty
+
+                if hasFunction env Set.empty argTy then
+                    return! err arg.Span $"show cannot render functions; this is {formatTy argTy}"
+                else
+                    let tshow =
+                        { Kind = TEVar "show"
+                          Ty = TFun(argTy, TStr)
+                          Span = head.Span }
+
+                    return
+                        { Kind = TEApp(tshow, targ)
+                          Ty = TStr
+                          Span = expr.Span }
+            }
         | EVar(("print" | "printerr") as pname), [ arg ] when isPrintFamily env pname ->
             result {
                 let! targ = infer ctx env arg
@@ -638,6 +693,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 { Kind = TEPipe(targ, tcmd)
                   Ty = TSeq TStr
                   Span = expr.Span }
+        }
+    | EPipe(arg, ({ Kind = EVar "show" } as showExpr)) when isShowBuiltin env ->
+        result {
+            let! targ = infer ctx env arg
+            let argTy = finalTy ctx targ.Ty
+
+            if hasFunction env Set.empty argTy then
+                return! err arg.Span $"show cannot render functions; this is {formatTy argTy}"
+            else
+                let tshow =
+                    { Kind = TEVar "show"
+                      Ty = TFun(argTy, TStr)
+                      Span = showExpr.Span }
+
+                return
+                    { Kind = TEPipe(targ, tshow)
+                      Ty = TStr
+                      Span = expr.Span }
         }
     | EPipe(arg, ({ Kind = EVar(("print" | "printerr") as pname) } as printExpr)) when isPrintFamily env pname ->
         result {

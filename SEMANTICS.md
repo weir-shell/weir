@@ -204,6 +204,16 @@ quantity semantics now.
   family — command args and interpolation holes stay str/int/bool.
   Invisible interactively: the REPL and `-e` show nothing for a unit
   result (no `() : unit` trailer after `print`), F# FSI's `it` manner.
+- **`show : 'a -> string`** (2026-07-20; resolves the collision parked
+  in the unit-print plan, choosing the builtin over widening `print` —
+  print's data-plane contract stays intact). The debugging renderer:
+  any value renders REPL-shaped (the SAME `formatValue` the REPL uses —
+  one renderer, deliberately lossy: strings quoted, seqs truncated at
+  20). Showable = no function anywhere in the type, checked recursively
+  through records/unions/seqs/rows ("show cannot render functions" —
+  a `Some (fun ...)` is caught in the payload). Bespoke checker arm on
+  the print-family sentinel discipline; bare-value `show` defaults to
+  `string -> string`; a `let show = ...` shadows it entirely.
 - **`print`** is the typed output builtin (bespoke checker rule, same
   species as `to json`): argument is a splice-family scalar — rendered by
   the same shared renderer as command splices — or `seq<string>`,

@@ -24,8 +24,11 @@ stops being true fails the build.
 - Command lines (`git add -A`, `tar xf x.tgz | ...`) stream their output.
 - EVERY other statement must be unit: bind values (`let x = ...`) or
   print them (`expr |> print`). A discarded value is a check error.
-- `print` takes string, int, bool, or `seq<string>`. Records/unions:
-  interpolate fields — `print $"n={x.ExitCode}"`.
+- `print` takes string, int, bool, or `seq<string>`. For records,
+  unions, options and debugging: `show x` renders ANY value (except
+  functions) as a REPL-shaped string — `print (show row)`,
+  `$"got: {show r}"`. Lossy debug format (strings come quoted, long
+  seqs truncate); `print` remains the raw data channel.
 - `xs |> Seq.map print` does nothing (lazy) and is a check error as a
   statement; use `xs |> Seq.iter print`.
 

@@ -1,5 +1,23 @@
 # Spike Notes
 
+## show — the debugging renderer (2026-07-20)
+
+The collision parked in PLAN-unit-and-print ("first dogfood complaint
+lands here") resolved on user go, taking the show-builtin fork over
+widening print: print keeps its data-plane contract, show is the
+explicitly lossy REPL-shaped renderer (the SAME formatValue — one
+renderer). Composes as strings do: print (show row), $"{show r}",
+Seq.map (fun r -> show r).
+
+The what-is-showable question got the checker answer: showable = no
+function anywhere in the type, recursively (hasFunction walks
+records/unions/seqs/rows with a seen-set) — `show (Some f)` is caught
+in the payload, not just the top type. Print-family sentinel
+discipline reused verbatim: bespoke arms in applied/piped positions,
+string -> string bare-value default, value-shadowing falls through.
+430+ tests; battery +1; skill updated.
+
+
 ## Fix round: transparent comments, parse-error attribution (2026-07-20)
 
 Two bug-class items from the standing ledger, done on user "anything

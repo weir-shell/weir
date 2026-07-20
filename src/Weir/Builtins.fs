@@ -563,6 +563,8 @@ let private entries: (string * Ty * Value) list =
       "fail", TFun(TStr, TUnit), failImpl ]
     @ bareEntries
 
+let private showImpl: Value = VBuiltin(formatValue >> VStr)
+
 let private printImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -595,6 +597,7 @@ let typeEnv: TypeEnv =
         |> Map.ofList
         |> Map.add "print" Check.printScheme
         |> Map.add "printerr" Check.printScheme
+        |> Map.add "show" Check.showScheme
       Modules =
         moduleTable
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
@@ -618,5 +621,6 @@ let valueEnv: Env =
         moduleTable
         |> List.collect (fun (m, members) -> members |> List.map (fun (n, _, v) -> $"{m}.{n}", v))
 
-    ("print", printImpl) :: ("printerr", printerrImpl) :: flat @ mangled
+    ("print", printImpl) :: ("printerr", printerrImpl) :: ("show", showImpl) :: flat
+    @ mangled
     |> Map.ofList

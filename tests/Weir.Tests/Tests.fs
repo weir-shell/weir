@@ -2296,6 +2296,35 @@ let fmtTests =
               | Ok _ -> failtest "expected refusal"
           } ]
 
+let showTests =
+    testList
+        "show"
+        [ test "records render REPL-shaped" {
+              expectValue "show (ls |> Seq.head)" (VStr "{ Bytes = 0; Name = \"a.txt\"; ReadOnly = false }")
+          }
+          test "unions, seqs, scalars" {
+              expectValue "show (Some 3)" (VStr "Some 3")
+              expectValue "show [1; 2]" (VStr "[1; 2]")
+              expectValue "show 5" (VStr "5")
+              expectValue "show \"a\"" (VStr "\"a\"")
+          }
+          test "composes with print and interpolation" {
+              Expect.equal (checkOk "print (show (ls |> Seq.head))").Ty TUnit "print"
+              expectValue "$\"v: {show (Some 1)}\"" (VStr "v: Some 1")
+          }
+          test "pipeable" { expectValue "Some 2 |> show" (VStr "Some 2") }
+          test "functions rejected, recursively" {
+              let direct = checkErr "show (fun x -> x)"
+              Expect.stringContains (formatError direct) "cannot render functions" "direct"
+
+              let nested = checkErr "let f = fun x -> x in show (Some f)"
+              Expect.stringContains (formatError nested) "cannot render functions" "nested in a payload"
+          }
+          test "bare value defaults to string -> string" {
+              Expect.equal (checkOk "Seq.map show").Ty (TFun(TSeq TStr, TSeq TStr)) ""
+          }
+          test "a let shadows the show builtin" { expectValue "let show = fun x -> x in show 9" (VInt 9L) } ]
+
 let fileTests =
     testSequenced
     <| testList
@@ -2526,4 +2555,5 @@ let allTests =
           agentFindingsTests
           fmtTests
           paramSugarTests
+          showTests
           fileTests ]
