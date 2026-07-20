@@ -1,5 +1,35 @@
 # Spike Notes
 
+## Hardening sweep — the postmortem pays out (2026-07-20)
+
+The silent-swallow postmortem, run through the deferral experiment's
+two questions: (a) the bug lived in NEITHER an addendum NOR the
+checker core — it lived in the assembler, and the measurement surface
+was checker-scoped; first evidence that "process instead of read"
+needs its net wider than the checker (raised for the experiment's
+owner, not taken here). (b) The composition-product rule would have
+caught it and postdated it; the retroactive matrix
+(tests/PRODUCT-MATRIX.md) is the make-the-class-extinct response.
+
+The sweep's own scoreboard argues for the rules it enforces: the six
+missing matrix cells all landed GREEN (invariants held by behavior,
+now by test) — but the FIXTURE-DIVERSITY backfill caught a real
+parser-facing bug within minutes (field value opening on the next
+line inside a record: spurious separator; classifier fix,
+StartsField), and the ExitRequest insurance pin came up RED exactly
+where the plan predicted a fifth site (the REPL swallowed the
+carrier and exited 0; fixed, pin-per-site chosen over helper
+unification — three differently-shaped sites, reported per the
+plan). Two real bugs from the "mostly mechanical" session: the
+mechanical sweeps are where the bugs were. PROCESS.md now exists as
+the standing-rules index; POSITIONS.md as the copyable inventory.
+
+One live masking incident during the session, for the ledger: a
+2-error build slipped through a grep-chained pipeline and the battery
+ran against a stale binary — the verify rule (exit code first)
+exists for exactly this and was applied on the second look.
+
+
 ## Env sugar Layers 1+2 — the seam pays out (2026-07-20)
 
 (Addendum, same day: modernizing the bicep example to the new idiom

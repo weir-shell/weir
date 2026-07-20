@@ -237,10 +237,12 @@ quantity semantics now.
   grammar-interior surgery the assembler must never do.
 - **Multi-line record literals** (2026-07-20, same session, receipt
   count 2): inside an open `{ }` the assembler is in record-
-  continuation mode — a line break after a field is a separator (with
-  or without a trailing `;`), the sibling/let/district rules are
-  inert (records are expressions, not effect blocks), and closing
-  `}` may sit at any column including 0. Blank line or EOF with the
+  continuation mode — the separator inserts before FIELD-START lines
+  (`Ident =`), so a field's value may open on the next line and a
+  trailing `;` stays legal (refined 2026-07-20, the fixture sweep's
+  catch); the sibling/let/district rules are inert (records are
+  expressions, not effect blocks), and closing `}` may sit at any
+  column including 0. Blank line or EOF with the
   brace open is a located error naming the brace. The brace counter
   is string-aware (stripComment's scanner rules), so interpolation
   holes and quoted command args never count. Weir is

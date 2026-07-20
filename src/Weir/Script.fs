@@ -115,6 +115,7 @@ type PieceClass =
       OpensCompound: bool
       IsBangSigil: bool
       ClosesBrace: bool
+      StartsField: bool
       BraceDelta: int }
 
 let private isIdentToken (t: string) =
@@ -152,6 +153,10 @@ let classifyPiece (piece: string) : PieceClass =
                 | i when i > 1 -> isIdentToken (piece.Substring(1, i - 1))
                 | _ -> false))
       ClosesBrace = piece.StartsWith "}"
+      StartsField =
+        (match piece.IndexOf '=' with
+         | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
+         | _ -> false)
       BraceDelta = braceDelta piece }
 
 /// The marker's district wrap: opener text and how many trailing
@@ -327,11 +332,17 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         // field is a separator (with or without `;`)
                                         let prev = p.LL.Text.TrimEnd()
 
+                                        // the separator goes BEFORE a field-start line
+                                        // (`Ident =`), never before a value continuation —
+                                        // a field's value may open on the next line (the
+                                        // fixture-diversity sweep's first catch, 2026-07-20)
                                         let join =
-                                            if prev.EndsWith "{" || prev.EndsWith ";" || cls.ClosesBrace then
-                                                JSpace
-                                            else
+                                            if
+                                                cls.StartsField && not (prev.EndsWith "{") && not (prev.EndsWith ";")
+                                            then
                                                 JSibling
+                                            else
+                                                JSpace
 
                                         Ok(
                                             Some

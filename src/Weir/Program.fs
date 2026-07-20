@@ -60,9 +60,7 @@ let private evalOnce (input: string) : int =
 let main argv =
     match Array.toList argv with
     | [ "-e"; input ] -> evalOnce input
-    | [] ->
-        Weir.Repl.run ()
-        0
+    | [] -> Weir.Repl.run ()
     | [ "fmt"; "--qualify"; path ] -> Fmt.qualifyFile path
     | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
     | [ "fmt"; path ] -> Fmt.formatFile false path

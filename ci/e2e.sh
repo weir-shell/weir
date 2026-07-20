@@ -619,6 +619,95 @@ if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
 fi
 echo "e2e ok: forced unknown command rejected"
 
+# --- hardening sweep (2026-07-20): product-matrix effect counts,
+# fixture backfill, ExitRequest entry-point insurance
+
+hdir=$(mktemp -d)
+
+# A x E: a blank line ends a compound body — the tail runs UNCONDITIONALLY
+cat > "$hdir/axe.weir" <<'WEOF'
+if 1 > 2 then
+    printerr "conditional"
+
+printerr "always"
+WEOF
+out=$($BIN "$hdir/axe.weir" 2>&1)
+expect "A x E: dedent tail after blank runs unconditionally" "always" "$out"
+echo "$out" | grep -qF "conditional" && fail "A x E: false branch must not run"
+echo "e2e ok: A x E false branch stayed dead"
+
+# A x F: comment inside a compound body — grouping unchanged (effect count)
+cat > "$hdir/axf.weir" <<'WEOF'
+let f c =
+    if c then
+        printerr "one"
+        // a transparent comment
+        printerr "two"
+
+f false
+f true
+WEOF
+out=$($BIN "$hdir/axf.weir" 2>&1)
+[ "$(echo "$out" | grep -c one)" = "1" ] || fail "A x F: 'one' must run exactly once (got: $out)"
+[ "$(echo "$out" | grep -c two)" = "1" ] || fail "A x F: 'two' must run exactly once (got: $out)"
+echo "e2e ok: A x F comment in compound body, effects counted"
+
+# F x G: sibling sequencing across a comment — both effects, once each
+cat > "$hdir/fxg.weir" <<'WEOF'
+let go x =
+    printerr "first"
+    // between siblings
+    printerr "second"
+
+go 1
+WEOF
+out=$($BIN "$hdir/fxg.weir" 2>&1)
+[ "$(echo "$out" | grep -c first)" = "1" ] && [ "$(echo "$out" | grep -c second)" = "1" ] || fail "F x G effect count (got: $out)"
+echo "e2e ok: F x G sibling effects across comment, counted"
+
+# fixture backfill: record continuation HEADED (inside a compound body)
+cat > "$hdir/rec-headed.weir" <<'WEOF'
+type T = { Name: string; Count: int }
+
+let t =
+    if 1 > 0 then
+        { Name = "headed"
+          Count = 1 }
+    else
+        { Name = "no"
+          Count = 0 }
+
+print t.Name
+WEOF
+out=$($BIN "$hdir/rec-headed.weir")
+expect "record continuation headed under if/else" "headed" "$out"
+
+# fixture backfill: record continuation NESTED (record in record, multi-line)
+cat > "$hdir/rec-nested.weir" <<'WEOF'
+type Inner = { V: int }
+type Outer = { Name: string; In: Inner }
+
+let o =
+    { Name = "outer"
+      In =
+        { V = 42 } }
+
+print $"{o.Name}{o.In.V}"
+WEOF
+out=$($BIN "$hdir/rec-nested.weir")
+expect "record continuation nested (record in record)" "outer42" "$out"
+
+# ExitRequest insurance: all eval entry points return the code silently
+rc=0; out=$($BIN -e 'Exit.code 6' 2>&1) || rc=$?
+[ $rc -eq 6 ] && [ -z "$out" ] || fail "-e Exit.code must exit 6 silently (rc=$rc out=$out)"
+echo "e2e ok: -e entry point honors Exit.code"
+
+rc=0; out=$(echo 'Exit.code 4' | $BIN 2>&1 >/dev/null) || rc=$?
+[ $rc -eq 4 ] || fail "REPL entry point must honor Exit.code (rc=$rc out=$out)"
+echo "e2e ok: REPL entry point honors Exit.code"
+
+rm -rf "$hdir"
+
 # --- env sugar layers 1+2 (2026-07-20): $e(...) / !e(...) and the !e district
 
 sdir=$(mktemp -d)

@@ -2542,16 +2542,14 @@ let childEnvTests =
           }
           test "standalone marker: dedent after the district sequences (latent bare-! bug)" {
               match
-                  Weir.Script.assemble
-                      [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
+                  Weir.Script.assemble [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
               with
               | Ok [ ll ] -> Expect.equal ll.Text "let f x = !e(git pull) ; printerr \"OK\"" ""
               | other -> failtest $"unexpected: {other}"
           }
           test "standalone bare marker: same sequencing on dedent" {
               match
-                  Weir.Script.assemble
-                      [ 1, "let f x ="; 2, "    !"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
+                  Weir.Script.assemble [ 1, "let f x ="; 2, "    !"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
               with
               | Ok [ ll ] -> Expect.equal ll.Text "let f x = !(git pull) ; printerr \"OK\"" ""
               | other -> failtest $"unexpected: {other}"
@@ -2569,6 +2567,51 @@ let childEnvTests =
 
               Expect.equal got (VStr "$HOME") ""
               System.IO.File.Delete f
+          } ]
+
+let productMatrixTests =
+    testList
+        "Product matrix (retroactive sweep)"
+        [ // A x F: comment inside a compound body is transparent
+          test "A x F: comment between compound-body siblings keeps grouping" {
+              match Weir.Script.assemble [ 1, "if c then"; 2, "    eff1"; 4, "    eff2" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "if c then eff1 ; eff2" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          // C x E: pipe line after a blank
+          test "C x E: pipe continuation after a blank is the located error" {
+              match Weir.Script.assemble [ 1, "ls"; 2, ""; 3, "    |> Seq.length" ] with
+              | Error e -> Expect.stringContains e "continuation after a blank line" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          // C x F: comment between pipe stages (comment filtered upstream:
+          // the runner drops it; assemble sees the gap in line numbers)
+          test "C x F: comment between pipe stages is transparent" {
+              match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 4, "    |> Seq.length" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let x = ls |> Seq.length" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          // E x F: comment-only after a blank stays invisible
+          test "E x F: indented line after blank+comment is still the blank error" {
+              // the comment line never reaches assemble (runner filters it);
+              // the indented line after the gap is the continuation error
+              match Weir.Script.assemble [ 1, "let x = 1"; 2, ""; 4, "    + 2" ] with
+              | Error e -> Expect.stringContains e "continuation after a blank line" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          // E x G: former sibling level after a blank
+          test "E x G: a sibling-level line after a blank is the located error, not a join" {
+              match
+                  Weir.Script.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 3, ""; 4, "    printerr \"b\"" ]
+              with
+              | Error e -> Expect.stringContains e "continuation after a blank line" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          // F x G: sibling `;` joins across a transparent comment
+          test "F x G: sibling sequencing joins across a comment line" {
+              match Weir.Script.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 4, "    printerr \"b\"" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f x = printerr \"a\" ; printerr \"b\"" ""
+              | other -> failtest $"unexpected: {other}"
           } ]
 
 let offsideTests =
@@ -2672,6 +2715,23 @@ let offsideTests =
               with
               | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\" ; Count = 2 ; Tag = \"x\" }" ""
               | other -> failtest $"unexpected: {other}"
+          }
+          test "record continuation: a field's value may open on the NEXT line (sweep catch)" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let o ="
+                        2, "    { Name = \"outer\""
+                        3, "      In ="
+                        4, "        { V = 42 } }" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let o = { Name = \"outer\" ; In = { V = 42 } }" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "classifyPiece: StartsField is ident-guarded" {
+              Expect.isTrue (Weir.Script.classifyPiece "Count = 2").StartsField ""
+              Expect.isTrue (Weir.Script.classifyPiece "In =").StartsField ""
+              Expect.isFalse (Weir.Script.classifyPiece "{ V = 42 } }").StartsField ""
+              Expect.isFalse (Weir.Script.classifyPiece "1 + x = y").StartsField ""
           }
           test "record continuation: col-0 close is legal inside a brace" {
               match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "}" ] with
@@ -3232,6 +3292,7 @@ let allTests =
           seqAccessTests
           sequencingTests
           offsideTests
+          productMatrixTests
           childEnvTests
           scannerTests
           sigilTests

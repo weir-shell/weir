@@ -87,8 +87,12 @@ let private tryRun (state: State) (e: Expr) : Result<Check.TypedExpr * Eval.Valu
         try
             let v = Eval.eval state.Values te
             Ok(te, v, Eval.formatValue v)
-        with ex ->
-            Error($"error: {ex.Message}", None)
+        with
+        | Eval.ExitRequest _ ->
+            // intentional exit, not an eval error — the run loop turns it
+            // into the process exit code (the fifth-site pin's fix)
+            reraise ()
+        | ex -> Error($"error: {ex.Message}", None)
 
 let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
@@ -167,4 +171,8 @@ let run () =
     if not Console.IsInputRedirected then
         setupLineEditor ()
 
-    loop initial
+    try
+        loop initial
+        0
+    with Eval.ExitRequest code ->
+        code
