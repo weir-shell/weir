@@ -101,15 +101,33 @@ type PieceKind =
     | LetHead
     | Plain
 
+/// Line-end district markers: bare `!` or the Layer-2 env header `!name`
+/// (2026-07-20 — the marker distributes `!name(...)` over the block).
+[<RequireQualifiedAccess>]
+type MarkerKind =
+    | NoMarker
+    | Bare
+    | Env of name: string
+
 type PieceClass =
     { Kind: PieceKind
-      IsMarker: bool
+      Marker: MarkerKind
       OpensCompound: bool
       IsBangSigil: bool
       ClosesBrace: bool
       BraceDelta: int }
 
+let private isIdentToken (t: string) =
+    t.Length > 0
+    && (System.Char.IsLetter t[0] || t[0] = '_')
+    && t |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+
 let classifyPiece (piece: string) : PieceClass =
+    let lastToken =
+        match piece.LastIndexOf ' ' with
+        | -1 -> piece
+        | i -> piece.Substring(i + 1)
+
     { Kind =
         if piece.StartsWith "|" then
             PieceKind.PipeHead
@@ -119,11 +137,30 @@ let classifyPiece (piece: string) : PieceClass =
             PieceKind.LetHead
         else
             PieceKind.Plain
-      IsMarker = piece = "!" || piece.EndsWith " !"
+      Marker =
+        if piece = "!" || piece.EndsWith " !" then
+            MarkerKind.Bare
+        elif lastToken.StartsWith "!" && isIdentToken (lastToken.Substring 1) then
+            MarkerKind.Env(lastToken.Substring 1)
+        else
+            MarkerKind.NoMarker
       OpensCompound = piece.StartsWith "if " || piece.StartsWith "match "
-      IsBangSigil = piece.StartsWith "!("
+      IsBangSigil =
+        piece.StartsWith "!("
+        || (piece.StartsWith "!"
+            && (match piece.IndexOf '(' with
+                | i when i > 1 -> isIdentToken (piece.Substring(1, i - 1))
+                | _ -> false))
       ClosesBrace = piece.StartsWith "}"
       BraceDelta = braceDelta piece }
+
+/// The marker's district wrap: opener text and how many trailing
+/// characters of the armed line the first district line strips.
+let private markerOpener (m: MarkerKind) : (string * int) option =
+    match m with
+    | MarkerKind.NoMarker -> None
+    | MarkerKind.Bare -> Some("!(", 1)
+    | MarkerKind.Env name -> Some("!" + name + "(", 1 + name.Length)
 
 type LogicalLine =
     { Text: string
@@ -149,11 +186,18 @@ type LogicalLine =
 // extend a compound instead of closing it. BraceDepth > 0 puts the
 // assembler in record-continuation mode: line breaks separate fields,
 // every other joining rule is inert (records are expressions).
+type private District =
+    { MarkerIndent: int
+      MarkerLine: int
+      Opener: string
+      Strip: int
+      Active: int option }
+
 type private Pend =
     { LL: LogicalLine
       Lets: (int * int) list
       LastIndent: int
-      District: (int * int * int option) option
+      District: District option
       Compounds: (int * int) list
       BraceDepth: int
       BraceLine: int }
@@ -166,8 +210,8 @@ type private Join =
     | JIn // let-close: text + " in " + piece
     | JSibling // sequencing (and record field separators): " ; "
     | JSpace // plain continuation: " "
-    | JDistrictOpen // strip the armed "!", wrap: stem + "!(" + piece + ")"
-    | JDistrictSibling // text + " ; !(" + piece + ")"
+    | JDistrictOpen of strip: int * opener: string // strip the armed marker, wrap
+    | JDistrictSibling of opener: string // text + " ; " + opener + piece + ")"
     | JDistrictPipe // reopen the wrap: stem + " " + piece + ")"
 
 let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) (indent: int) : LogicalLine =
@@ -182,12 +226,11 @@ let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) 
         | JSpace ->
             let sep = " "
             ll.Text + sep + piece, ll.Text.Length + sep.Length
-        | JDistrictOpen ->
-            let stem = ll.Text.Substring(0, ll.Text.Length - 1)
-            let opener = "!("
+        | JDistrictOpen(strip, opener) ->
+            let stem = ll.Text.Substring(0, ll.Text.Length - strip)
             stem + opener + piece + ")", stem.Length + opener.Length
-        | JDistrictSibling ->
-            let sep = " ; !("
+        | JDistrictSibling opener ->
+            let sep = " ; " + opener
             ll.Text + sep + piece + ")", ll.Text.Length + sep.Length
         | JDistrictPipe ->
             let stem = ll.Text.Substring(0, ll.Text.Length - 1)
@@ -213,7 +256,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
     let close (current: Pend option) acc =
         match current with
         | Some p when p.BraceDepth > 0 -> braceOpen p.BraceLine
-        | Some { District = Some(_, mLine, None) } ->
+        | Some { District = Some { Active = None; MarkerLine = mLine } } ->
             Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
         | Some { Lets = (_, letLine) :: _ } -> noBody letLine
         | Some p ->
@@ -257,7 +300,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                     if raw.Trim() = "" then
                         match current with
                         | Some p when p.BraceDepth > 0 -> braceOpen p.BraceLine
-                        | Some { District = Some(_, mLine, None) } ->
+                        | Some { District = Some { Active = None; MarkerLine = mLine } } ->
                             Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
                         | Some { Lets = (_, letLine) :: _ } -> noBodyBlank letLine
                         | _ -> close current acc |> Result.map (fun acc -> None, acc, true)
@@ -301,20 +344,26 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         )
                                     else
                                         match p.District with
-                                        | Some(m, mLine, None) when indent > m ->
+                                        | Some({ Active = None } as dst) when indent > dst.MarkerIndent ->
                                             districtLineCheck lineNo cls
                                             |> Result.map (fun () ->
                                                 Some
                                                     { p with
-                                                        LL = applyJoin JDistrictOpen p.LL piece lineNo indent
+                                                        LL =
+                                                            applyJoin
+                                                                (JDistrictOpen(dst.Strip, dst.Opener))
+                                                                p.LL
+                                                                piece
+                                                                lineNo
+                                                                indent
                                                         LastIndent = indent
-                                                        District = Some(m, mLine, Some indent) },
+                                                        District = Some { dst with Active = Some indent } },
                                                 acc,
                                                 blankSinceHead)
-                                        | Some(_, mLine, None) ->
+                                        | Some { Active = None; MarkerLine = mLine } ->
                                             Error
                                                 $"line {mLine}: line-end '!' needs an indented block of command lines below it"
-                                        | Some(m, _, Some d) when indent > m ->
+                                        | Some({ Active = Some d } as dst) when indent > dst.MarkerIndent ->
                                             if cls.Kind = PieceKind.PipeHead then
                                                 Ok(
                                                     Some
@@ -329,17 +378,29 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 |> Result.map (fun () ->
                                                     Some
                                                         { p with
-                                                            LL = applyJoin JDistrictSibling p.LL piece lineNo indent
+                                                            LL =
+                                                                applyJoin
+                                                                    (JDistrictSibling dst.Opener)
+                                                                    p.LL
+                                                                    piece
+                                                                    lineNo
+                                                                    indent
                                                             LastIndent = indent },
                                                     acc,
                                                     blankSinceHead)
                                             else
                                                 Error
                                                     $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
-                                        | Some _ ->
-                                            // at or left of the marker: the district closes;
-                                            // reprocess this line under the normal rules
-                                            go { p with District = None }
+                                        | Some dst ->
+                                            // at or left of the marker: the district closes and
+                                            // its marker line is the sibling level for what
+                                            // follows (like a compound closing — found via the
+                                            // standalone-marker shape, latent for bare ! too);
+                                            // then this line reprocesses under the normal rules
+                                            go
+                                                { p with
+                                                    District = None
+                                                    LastIndent = dst.MarkerIndent }
                                         | None ->
                                             if cls.Kind = PieceKind.PipeHead || cls.Kind = PieceKind.ElseHead then
                                                 // arms, pipeline stages, and else extend the
@@ -389,7 +450,13 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             lets
 
                                                     let district =
-                                                        if cls.IsMarker then Some(indent, lineNo, None) else None
+                                                        markerOpener cls.Marker
+                                                        |> Option.map (fun (opener, strip) ->
+                                                            { MarkerIndent = indent
+                                                              MarkerLine = lineNo
+                                                              Opener = opener
+                                                              Strip = strip
+                                                              Active = None })
 
                                                     let joined = applyJoin join ll piece lineNo indent
 
@@ -429,7 +496,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                       Segments = [ (0, lineNo, 0) ] }
                                   Lets = []
                                   LastIndent = 0
-                                  District = (if cls.IsMarker then Some(0, lineNo, None) else None)
+                                  District =
+                                    markerOpener cls.Marker
+                                    |> Option.map (fun (opener, strip) ->
+                                        { MarkerIndent = 0
+                                          MarkerLine = lineNo
+                                          Opener = opener
+                                          Strip = strip
+                                          Active = None })
                                   Compounds = []
                                   BraceDepth = max 0 cls.BraceDelta
                                   BraceLine = lineNo },

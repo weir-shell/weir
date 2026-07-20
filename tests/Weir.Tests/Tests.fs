@@ -56,8 +56,8 @@ let rec private show (e: Expr) : string =
             |> String.concat ""
 
         $"(interp {body})"
-    | ECmd(prog, []) -> $"(cmd {prog})"
-    | ECmd(prog, args) ->
+    | ECmd(prog, [], _) -> $"(cmd {prog})"
+    | ECmd(prog, args, _) ->
         let body = args |> List.map show |> String.concat " "
         $"(cmd {prog} {body})"
 
@@ -1055,7 +1055,7 @@ let commandModeTests =
           }
           test "single quotes carry embedded double quotes" {
               match parseCmd "grep 'a\"b' f" with
-              | { Kind = ECmd("grep", [ { Kind = EStr "a\"b" }; { Kind = EStr "f" } ]) } -> ()
+              | { Kind = ECmd("grep", [ { Kind = EStr "a\"b" }; { Kind = EStr "f" } ], _) } -> ()
               | e -> failtest $"unexpected: {show e}"
           }
           test "dollar splices a binding" { expectCmd "git checkout $branch" "(cmd git \"checkout\" branch)" }
@@ -2141,7 +2141,7 @@ let agentFindingsTests =
         "Agent findings fixes"
         [ test "let RHS admits command mode" {
               match Weir.Parser.parseLine cmdResolver "let files = git status" with
-              | Ok(SLet("files", { Kind = ECmd("git", _) })) -> ()
+              | Ok(SLet("files", { Kind = ECmd("git", _, _) })) -> ()
               | other -> failtest $"expected SLet with a command RHS, got {other}"
           }
           test "let RHS: known names stay expression mode" {
@@ -2156,7 +2156,7 @@ let agentFindingsTests =
           }
           test "let RHS: bareword in stops the command grammar (no silent argv)" {
               match Weir.Parser.parseLine cmdResolver "let h = git log in h" with
-              | Ok(SLet(_, { Kind = ECmd(_, args) })) ->
+              | Ok(SLet(_, { Kind = ECmd(_, args, _) })) ->
                   failtest $"the in-eating cliff is back: {List.length args} argv words"
               | _ -> ()
           }
@@ -2169,12 +2169,12 @@ let agentFindingsTests =
           }
           test "let RHS: quoted in passes to the command" {
               match Weir.Parser.parseLine cmdResolver "let x = grep \"in\" f" with
-              | Ok(SLet("x", { Kind = ECmd("grep", [ _; _ ]) })) -> ()
+              | Ok(SLet("x", { Kind = ECmd("grep", [ _; _ ], _) })) -> ()
               | other -> failtest $"expected grep with two args, got {other}"
           }
           test "statement-head commands keep bareword in" {
               match Weir.Parser.parseLine cmdResolver "git log in h" with
-              | Ok(SCmd { Kind = ECmd("git", args) }) -> Expect.hasLength args 3 "log, in, h"
+              | Ok(SCmd { Kind = ECmd("git", args, _) }) -> Expect.hasLength args 3 "log, in, h"
               | other -> failtest $"expected a command statement, got {other}"
           }
           test "pairwise types and evaluates" {
@@ -2429,8 +2429,19 @@ let scannerTests =
           }
           test "classifyPiece: marker and compound overlap on `if c then !`" {
               let c = Weir.Script.classifyPiece "if c then !"
-              Expect.isTrue c.IsMarker ""
+              Expect.equal c.Marker Weir.Script.MarkerKind.Bare ""
               Expect.isTrue c.OpensCompound ""
+          }
+          test "classifyPiece: env marker `!name` at line end (Layer 2)" {
+              Expect.equal (Weir.Script.classifyPiece "if c then !e").Marker (Weir.Script.MarkerKind.Env "e") ""
+              Expect.equal (Weir.Script.classifyPiece "!targetEnv").Marker (Weir.Script.MarkerKind.Env "targetEnv") ""
+              Expect.equal (Weir.Script.classifyPiece "echo hello!").Marker Weir.Script.MarkerKind.NoMarker ""
+              Expect.equal (Weir.Script.classifyPiece "!e(git st)").Marker Weir.Script.MarkerKind.NoMarker ""
+          }
+          test "classifyPiece: env sigil heads count as bang sigils in districts" {
+              Expect.isTrue (Weir.Script.classifyPiece "!e(git st)").IsBangSigil ""
+              Expect.isTrue (Weir.Script.classifyPiece "!(git st)").IsBangSigil ""
+              Expect.isFalse (Weir.Script.classifyPiece "!e").IsBangSigil ""
           }
           test "classifyPiece: brace deltas ignore strings and interp holes" {
               Expect.equal (Weir.Script.classifyPiece "{ Name = $\"a{1}b\"").BraceDelta 1 ""
@@ -2444,6 +2455,120 @@ let scannerTests =
                   | Some col -> Expect.stringContains f.Message $"Col: {col}" "position data matches message text"
                   | None -> failtest "expected a column"
               | Ok s -> failtest $"unexpected: {s}"
+          } ]
+
+let childEnvTests =
+    testList
+        "Child-env injection"
+        [ test "cmdEnv types: seq<EnvVar> overlay in front of cmd's shape" {
+              let te = checkOk "cmdEnv (Env.vars) \"sh\" [\"-c\"; \"true\"]"
+              Expect.equal (formatTy te.Ty) "seq<string>" ""
+          }
+          test "runEnv types to unit (statement-legal)" {
+              let te = checkOk "runEnv (Env.vars) \"sh\" [\"-c\"; \"true\"]"
+              Expect.equal (formatTy te.Ty) "unit" ""
+          }
+          test "Env.fromFile types to seq<EnvVar>" {
+              let te = checkOk "Env.fromFile \"x.env\""
+              Expect.equal (formatTy te.Ty) "seq<EnvVar>" ""
+          }
+          test "cmdEnv rejects a non-EnvVar overlay" {
+              let terr = checkErr "cmdEnv [\"A=1\"] \"sh\" [\"-c\"; \"true\"]"
+              Expect.stringContains (formatError terr) "EnvVar" ""
+          }
+          test "fromFile: the dotenv subset parses (quotes, comments, blanks, empty)" {
+              let f = System.IO.Path.GetTempFileName()
+
+              System.IO.File.WriteAllLines(f, [ "A=1"; "B='sq val'"; "C=\"dq\" # note"; "# comment"; ""; "D=" ])
+
+              let got =
+                  run ("Env.fromFile \"" + f + "\" |> Seq.map (fun e -> e.Value) |> Seq.toList")
+                  |> forceSeq
+
+              Expect.equal got [ VStr "1"; VStr "sq val"; VStr "dq"; VStr "" ] ""
+              System.IO.File.Delete f
+          }
+          test "fromFile: rejection raises at force, naming the sh escape" {
+              let f = System.IO.Path.GetTempFileName()
+              System.IO.File.WriteAllLines(f, [ "GOOD=1"; "BAD=$HOME" ])
+
+              let ex =
+                  Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> Seq.toList") |> ignore) ""
+
+              System.IO.File.Delete f
+          }
+          test "env sigil: $e(...) attaches the overlay to the chain's spawn" {
+              match Weir.Parser.parseLine realResolver "let x = $e(git status)" with
+              | Ok(SLet("x", { Kind = ECmd("git", _, Some { Kind = EVar "e" }) })) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "env sigil: !e(...) is chain-with-env |> print" {
+              match Weir.Parser.parseLine realResolver "!e(git status)" with
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, Some _) }, { Kind = EVar "print" }) }) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "env sigil: every segment in the chain gets the env" {
+              match Weir.Parser.parseLine realResolver "let x = $e(git log | grep x)" with
+              | Ok(SLet("x", { Kind = EPipe({ Kind = ECmd("git", _, Some _) }, { Kind = ECmd("grep", _, Some _) }) })) ->
+                  ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "env sigil x complete: routes through completedEnv" {
+              match Weir.Parser.parseLine realResolver "let r = $e(git status | complete)" with
+              | Ok(SLet("r", { Kind = EApp({ Kind = EApp({ Kind = EApp({ Kind = EVar "completedEnv" }, _) }, _) }, _) })) ->
+                  ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "env sigil: a space after the ident falls back (no sigil)" {
+              match Weir.Parser.parseLine realResolver "let x = $e (git status)" with
+              | Ok(SLet("x", { Kind = ECmd _ })) -> failtest "space must not read as an env sigil"
+              | _ -> ()
+          }
+          test "district header: !e distributes the env over the block" {
+              match Weir.Script.assemble [ 1, "if go then !e"; 2, "    git pull"; 3, "    git push" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "if go then !e(git pull) ; !e(git push)" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "district header x offside: closing sibling wraps the env district" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f t ="
+                        2, "    if c then !e"
+                        3, "        git pull"
+                        4, "    print \"x\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f t = (if c then !e(git pull)) ; print \"x\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "standalone marker: dedent after the district sequences (latent bare-! bug)" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f x = !e(git pull) ; printerr \"OK\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "standalone bare marker: same sequencing on dedent" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f x ="; 2, "    !"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f x = !(git pull) ; printerr \"OK\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "district header x pipes: continuation keeps the wrap" {
+              match Weir.Script.assemble [ 1, "if go then !e"; 2, "    git log"; 3, "        | grep x" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "if go then !e(git log | grep x)" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "fromFile: single quotes are shell-literal ($ allowed)" {
+              let f = System.IO.Path.GetTempFileName()
+              System.IO.File.WriteAllLines(f, [ "LIT='$HOME'" ])
+
+              let got = run ("Env.fromFile \"" + f + "\" |> Seq.map _.Value |> Seq.head")
+
+              Expect.equal got (VStr "$HOME") ""
+              System.IO.File.Delete f
           } ]
 
 let offsideTests =
@@ -2644,12 +2769,12 @@ let sigilTests =
         "Command sigils"
         [ test "capture sigil parses to the command chain (realResolver)" {
               match Weir.Parser.parseLine realResolver "let b = $(git branch) |> Seq.length" with
-              | Ok(SLet("b", { Kind = EPipe({ Kind = ECmd("git", _) }, _) })) -> ()
+              | Ok(SLet("b", { Kind = EPipe({ Kind = ECmd("git", _, _) }, _) })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "effect sigil desugars to chain |> print" {
               match Weir.Parser.parseLine realResolver "!(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _) }, { Kind = EVar "print" }) }) -> ()
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, _) }, { Kind = EVar "print" }) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "sigils x interpolation: holes never open command mode" {
@@ -3107,6 +3232,7 @@ let allTests =
           seqAccessTests
           sequencingTests
           offsideTests
+          childEnvTests
           scannerTests
           sigilTests
           districtTests

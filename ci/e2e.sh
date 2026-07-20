@@ -619,6 +619,123 @@ if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
 fi
 echo "e2e ok: forced unknown command rejected"
 
+# --- env sugar layers 1+2 (2026-07-20): $e(...) / !e(...) and the !e district
+
+sdir=$(mktemp -d)
+printf 'MARK=layered\n' > "$sdir/s.env"
+
+cat > "$sdir/sigil.weir" <<'WEOF'
+let e = Env.fromFile "s.env"
+
+!e(sh -c "echo effect: $MARK")
+
+let got = $e(sh -c "echo cap: $MARK") |> Seq.head
+print got
+
+let r = $e(sh -c "exit 7" | complete)
+print $"complete-env exit {r.ExitCode}"
+
+let tag = "spliced"
+!e(sh -c $"echo {tag}: $MARK")
+WEOF
+out=$(cd "$sdir" && $BIN sigil.weir 2>&1)
+expect "env sigil effect form" "effect: layered" "$out"
+expect "env sigil capture form" "cap: layered" "$out"
+expect "env sigil x complete (completedEnv route)" "complete-env exit 7" "$out"
+expect "env sigil x interpolation splice" "spliced: layered" "$out"
+
+cat > "$sdir/district.weir" <<'WEOF'
+let e = Env.fromFile "s.env"
+let go = 1 > 0
+
+if go then !e
+    sh -c "echo d-one: $MARK"
+    sh -c "echo d-two: $MARK"
+
+if go then !
+    sh -c "echo d-bare: [$MARK]"
+WEOF
+out=$(cd "$sdir" && $BIN district.weir 2>&1)
+expect "env district distributes over the block" "d-two: layered" "$out"
+expect "bare district stays env-less" "d-bare: []" "$out"
+
+$BIN fmt --check "$sdir/district.weir" >/dev/null 2>&1 || fail "fmt must accept the env district"
+echo "e2e ok: fmt roundtrips the env district"
+
+rm -rf "$sdir"
+
+# --- child-env injection (2026-07-20): the shEnv receipt ------------
+
+edir=$(mktemp -d)
+
+cat > "$edir/target.env" <<'EOF'
+AZURE_SUBSCRIPTION_ID=sub-web
+AZURE_DEFAULTS_GROUP='rg web'
+# per-target settings
+OVERRIDE=from-file
+EOF
+
+# the bicep deployStack shape: load a per-target env file, inject into
+# the child; the stub asserts the child saw the overlay
+cat > "$edir/deploy.weir" <<'WEOF'
+let targetEnv = Env.fromFile "target.env"
+
+runEnv targetEnv "sh" ["-c"; "echo \"AZ($AZURE_SUBSCRIPTION_ID|$AZURE_DEFAULTS_GROUP|$OVERRIDE|$INHERITED)\""]
+WEOF
+out=$(cd "$edir" && OVERRIDE=from-parent INHERITED=passed-through $BIN deploy.weir)
+expect "bicep shape: overlay sets, overrides, and inherits" "AZ(sub-web|rg web|from-file|passed-through)" "$out"
+
+# parent isolation: the overlay never leaks into the weir process
+cat > "$edir/iso.weir" <<'WEOF'
+let vars = Env.fromFile "target.env"
+
+runEnv vars "sh" ["-c"; "true"]
+
+print (Env.get "AZURE_SUBSCRIPTION_ID" |> Option.defaultTo "(clean)")
+WEOF
+out=$(cd "$edir" && $BIN iso.weir)
+expect "child-env never leaks into the parent session" "(clean)" "$out"
+
+# byte-identity: runEnv with an empty overlay IS run
+printf 'EMPTYFILE=x\n' > "$edir/one.env"
+cat > "$edir/ident-a.weir" <<'WEOF'
+run "sh" ["-c"; "echo one; echo two"]
+WEOF
+cat > "$edir/ident-b.weir" <<'WEOF'
+runEnv [] "sh" ["-c"; "echo one; echo two"]
+WEOF
+a=$(cd "$edir" && $BIN ident-a.weir)
+b=$(cd "$edir" && $BIN ident-b.weir)
+[ "$a" = "$b" ] || fail "runEnv [] must be byte-identical to run (got '$a' vs '$b')"
+echo "e2e ok: runEnv [] byte-identical to run"
+
+# empty-string value: the documented removal workaround
+cat > "$edir/empty.weir" <<'WEOF'
+let vars = Env.fromFile "blank.env"
+
+runEnv vars "sh" ["-c"; "echo [$BLANKED]"]
+WEOF
+printf 'BLANKED=\n' > "$edir/blank.env"
+out=$(cd "$edir" && BLANKED=parent-value $BIN empty.weir)
+expect "empty-string value overrides (removal workaround)" "[]" "$out"
+
+# lifecycle with env: raise-at-force and tree-kill hold on the env path
+if (cd "$edir" && $BIN -e 'runEnv (Env.fromFile "one.env") "sh" ["-c"; "exit 3"]') 2>/dev/null; then
+    fail "runEnv must raise on nonzero exit at force"
+fi
+echo "e2e ok: runEnv raises on nonzero exit"
+
+out=$(cd "$edir" && timeout 10 $BIN -e 'cmdEnv (Env.fromFile "one.env") "yes" ["hi"] |> Seq.first 1 |> Seq.length') || fail "cmdEnv stream must tree-kill after first"
+expect "cmdEnv tree-kills like cmd" "1 : int" "$out"
+
+# subset rejections name the sh escape
+printf 'export FOO=1\n' > "$edir/bad.env"
+errout=$(cd "$edir" && $BIN -e 'Env.fromFile "bad.env" |> Seq.length' 2>&1 || true)
+echo "$errout" | grep -qF 'set -a; . file' || fail "dotenv rejection must name the sh escape: $errout"
+echo "e2e ok: dotenv rejection names the sh escape"
+
+rm -rf "$edir"
+
 # --- grammar consolidation (2026-07-20): offside close, record
 # continuations, Exit.code — the bicep translation's shapes verbatim
 

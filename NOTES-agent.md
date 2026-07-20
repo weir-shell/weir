@@ -109,3 +109,11 @@ skill lines and targeted hints).
   finally-shaped feature stays parked pending repeat receipts against
   the idiom). Still open: shEnv/child-env (receipt 1, own plan),
   two-value CLI options (receipt 4, unranked).
+- 2026-07-20 | FIX SHIPPED for the strongest bicep receipt: child-env
+  injection (cmdEnv/runEnv + Env.fromFile, overlay semantics). The
+  sh -c "set -a; . file" spelling survives only as the ESCAPE for
+  lines that genuinely need shell evaluation — the boundary error
+  names it. Two-value options formally parked (idiom documented in
+  GUIDE). All bicep receipts now dispositioned: 1 shipped, 2 GUIDE
+  idiom, 3 shipped (Exit.code), 4 parked-with-idiom, 5-7 shipped in
+  the consolidation session.

@@ -1,5 +1,54 @@
 # Spike Notes
 
+## Env sugar Layers 1+2 — the seam pays out (2026-07-20)
+
+(Addendum, same day: modernizing the bicep example to the new idiom
+immediately caught a LATENT district bug — a dedent back to marker
+level after a standalone marker joined with space, not `;`; every
+prior district shape was if-headed, where the offside compound
+supplied the sibling level by accident. Fix: a closing district sets
+its marker line as the sibling level, exactly like a compound. Pinned
+for standalone `!` and `!e` both. The example-as-acceptance-test
+pattern earns its keep again.)
+
+Opened by user choice, not receipts (on record; the parks' reopen
+triggers never fired). The pre-scoping was right that together is
+cheaper than either alone: the `!name` line-end meaning got decided
+once, and Layer 2 cost NOTHING below the assembler — a MarkerKind
+variant and two parameterized joins emit `!name(...)` text that Layer
+1's grammar reparses. Layer 1's env threads at parse-construction
+(commandSegment/cmdLineWith param), so every spawn form — segments,
+pipe stages, `| complete` — carries it by architecture rather than by
+a post-walk; `completedEnv` completes the cmd/cmdEnv/completed
+pattern family. The formalization session's success test ran forward
+for the first time: this diff landed in classify/Join, no raw string
+logic. Reservation cost, pinned: a line-end bareword `!word` is now a
+district header — quote a literal one. The adjacency rule (ident
+glued to glyph and paren) keeps `$e (...)` and `$name` splices
+meaning what they always did.
+
+
+## Child-env injection — the shEnv receipt lands (2026-07-20)
+
+The premise did the design work: "injection, not session mutation"
+(adopted from the receipt's shape analysis) dissolved the parked
+Env.set question without building anything ambient. cmdEnv/runEnv are
+the run/cmd precedent applied verbatim — even the implementation is
+the same composition (`apply printImpl (...)`), and `Proc.lines =
+linesWith []` makes the shared-path claim true by construction rather
+than by discipline. Env.fromFile is typed-boundary customer five, and
+the reject-don't-guess line (parser, not evaluator; every rejection
+names the sh escape) held cleanly — single-quoted values are the one
+place shell semantics leak in ON PURPOSE ($ is literal there, which
+IS the shell's own rule, so the subset stays faithful). The rewritten
+bicep example beat the sh-c translation on its own ground: values
+that shell expansion silently passed as EMPTY (unset AZURE_CLIENT_ID
+at translation time) now flow as typed argv lookups. Layer ledger on
+record in SEMANTICS: 0 ships, 1-2 parked with split triggers (the
+prediction, repeated: Layer 2 — the district header — is where
+receipts will point), 3 tombstoned.
+
+
 ## Assembler formalization — the boundary question (2026-07-20)
 
 "Shouldn't the assembler be part of the parser?" NO, on record so it

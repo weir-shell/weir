@@ -164,6 +164,49 @@ continue it, a blank line ends it (comment lines are transparent). An
 indented `let` closes at the next line of the same indent — F# light
 syntax.
 
+## Per-child environment
+
+`runEnv` / `cmdEnv` inject variables into ONE child process — an
+overlay on the inherited environment (set those names, keep the rest,
+parent untouched). `Env.fromFile` reads the dotenv subset: `KEY=VALUE`,
+optional quotes, `#` comments — no `export`, no `$VAR` references
+(sourcing is shell evaluation; for that, `sh -c "set -a; . file; ..."`
+remains the honest spelling). The house idiom is partial application —
+name the env-carrying runner once, use it like `run`:
+
+```weir
+["GREETING=hello"] |> File.write "demo.env"
+
+let child = runEnv (Env.fromFile "demo.env") "sh"
+
+child ["-c"; "echo child: $GREETING"]
+child ["-c"; "echo again: $GREETING"]
+
+print (Env.get "GREETING" |> Option.defaultTo "parent stays clean")
+```
+
+For command chains the env slot goes INSIDE the sigil — `$e(...)` /
+`!e(...)` with the name glued to the glyph — and a line-end `!name`
+turns a whole command block into an env-carrying district:
+
+```weir
+["STAGE=prod"] |> File.write "stage.env"
+
+let e = Env.fromFile "stage.env"
+let ready = 1 > 0
+
+!e(sh -c "echo inline: $STAGE")
+
+if ready then !e
+    sh -c "echo block one: $STAGE"
+    sh -c "echo block two: $STAGE"
+```
+
+Multi-value options idiom, while we are near CLI shapes: weir's `Args`
+has no two-token options — reshape `--app stack env` as one flag per
+value (`--stack X --env Y`, two `Args.value` calls). The reshape is
+usually clearer than the positional pair.
+
 ## Parallelism
 
 `Seq.pmap` / `Seq.piter` fan out over a seq: parallel execution,

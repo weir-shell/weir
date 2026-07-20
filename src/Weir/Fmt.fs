@@ -41,7 +41,9 @@ let private collectBareUses (e: Expr) : (Span * string) list =
             walk a
             walk b
         | EList items -> items |> List.iter walk
-        | ECmd(_, args) -> args |> List.iter walk
+        | ECmd(_, args, envO) ->
+            args |> List.iter walk
+            envO |> Option.iter walk
         | EInterp parts ->
             parts
             |> List.iter (function
@@ -199,7 +201,7 @@ let formatLines (body: string list) : Result<string list, string> =
                                 levels <- indent :: kept
                                 List.length kept + 1
 
-                        if (Script.classifyPiece piece).IsMarker then
+                        if ((Script.classifyPiece piece).Marker <> Script.MarkerKind.NoMarker) then
                             district <- Some(indent, depth)
 
                         String.replicate (depth * 4) " " + content)

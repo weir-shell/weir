@@ -283,7 +283,26 @@ let private wrapOpt (ty: Ty) (v: Value) : Value =
     | TNamed("Option", _) -> VUnion("Some", Some v)
     | _ -> v
 
-let rec eval (env: Env) (te: TypedExpr) : Value =
+// the sigil env slot evaluated to overlay pairs — inside the stream's
+// delay, so Env.fromFile boundary errors keep raise-at-force semantics
+let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
+    match cenvO with
+    | None -> []
+    | Some ce ->
+        match eval env ce with
+        | VSeq items ->
+            items
+            |> Seq.map (fun item ->
+                match item with
+                | VRecord(_, fields) ->
+                    (match Map.tryFind "Name" fields, Map.tryFind "Value" fields with
+                     | Some(VStr n), Some(VStr value) -> n, value
+                     | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
+                | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
+            |> List.ofSeq
+        | v -> unreachable $"the checker rejects a sigil env of {formatValue v}"
+
+and eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
     | TEInt n -> VInt(int64 n)
     | TEStr s -> VStr s
@@ -296,7 +315,7 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
     | TELet(name, value, body) -> eval (Map.add name (eval env value) env) body
     | TELambda(param, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
-    | TEPipe(arg, { Kind = TECmd(prog, cargs) }) ->
+    | TEPipe(arg, { Kind = TECmd(prog, cargs, cenvO) }) ->
         let argv = cargs |> List.map (fun a -> scalarString "command argument" (eval env a))
 
         let stdin =
@@ -309,7 +328,10 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
                     | v -> unreachable $"the checker rejects non-string stdin: {formatValue v}")
             | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
 
-        VSeq(Proc.lines (Proc.resolveProg prog) argv (Some stdin) |> Seq.map VStr)
+        VSeq(
+            Seq.delay (fun () -> Proc.linesWith (overlayOf env cenvO) (Proc.resolveProg prog) argv (Some stdin))
+            |> Seq.map VStr
+        )
     | TEPipe(arg, fn) -> apply (eval env fn) (eval env arg)
     | TEField(target, field) ->
         match eval env target with
@@ -331,9 +353,13 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
     | TEList items -> VSeq(items |> List.map (eval env))
-    | TECmd(prog, args) ->
+    | TECmd(prog, args, cenvO) ->
         let argv = args |> List.map (fun a -> scalarString "command argument" (eval env a))
-        VSeq(Proc.lines (Proc.resolveProg prog) argv None |> Seq.map VStr)
+
+        VSeq(
+            Seq.delay (fun () -> Proc.linesWith (overlayOf env cenvO) (Proc.resolveProg prog) argv None)
+            |> Seq.map VStr
+        )
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
 

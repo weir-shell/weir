@@ -3,12 +3,24 @@ module Weir.Proc
 open System.Diagnostics
 open System.IO
 
-let lines (prog: string) (args: string list) (input: seq<string> option) : seq<string> =
+// Child-env overlay (2026-07-20, the shEnv receipt): injected vars sit
+// ON TOP of the inherited environment — set/override those names,
+// inherit the rest, parent process untouched. `lines` IS the empty
+// overlay, so cmd/cmdEnv share one path by construction.
+let linesWith
+    (overlay: (string * string) list)
+    (prog: string)
+    (args: string list)
+    (input: seq<string> option)
+    : seq<string> =
     seq {
         let psi = ProcessStartInfo(prog)
 
         for a in args do
             psi.ArgumentList.Add a
+
+        for k, v in overlay do
+            psi.Environment[k] <- v
 
         psi.WorkingDirectory <- Session.Cwd()
         psi.UseShellExecute <- false
@@ -72,14 +84,24 @@ let lines (prog: string) (args: string list) (input: seq<string> option) : seq<s
                 ()
     }
 
+let lines (prog: string) (args: string list) (input: seq<string> option) : seq<string> = linesWith [] prog args input
+
 let resolveProg (prog: string) : string =
     if prog.Contains '/' then Session.resolve prog else prog
 
-let complete (prog: string) (args: string list) (input: seq<string> option) : int * string list * string list =
+let completeWith
+    (overlay: (string * string) list)
+    (prog: string)
+    (args: string list)
+    (input: seq<string> option)
+    : int * string list * string list =
     let psi = ProcessStartInfo(prog)
 
     for a in args do
         psi.ArgumentList.Add a
+
+    for k, v in overlay do
+        psi.Environment[k] <- v
 
     psi.WorkingDirectory <- Session.Cwd()
     psi.UseShellExecute <- false
@@ -125,3 +147,6 @@ let complete (prog: string) (args: string list) (input: seq<string> option) : in
 
     p.WaitForExit()
     p.ExitCode, stdout, stderr
+
+let complete (prog: string) (args: string list) (input: seq<string> option) : int * string list * string list =
+    completeWith [] prog args input

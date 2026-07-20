@@ -158,13 +158,17 @@ let completedDef: RecordDef =
       Params = []
       Fields = [ "ExitCode", TInt; "Stdout", TSeq TStr; "Stderr", TSeq TStr ] }
 
-let private completedImpl: Value =
+// completedWith is the shared body; completed IS the empty overlay and
+// completedEnv the env-sigil desugar target — the cmd/cmdEnv pattern.
+let private completedWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
             match progV, argsV with
             | VStr prog, VSeq args ->
                 let argv = args |> Seq.map asString |> List.ofSeq
-                let code, stdout, stderr = Proc.complete (Proc.resolveProg prog) argv None
+
+                let code, stdout, stderr =
+                    Proc.completeWith overlay (Proc.resolveProg prog) argv None
 
                 VRecord(
                     completedDef.Name,
@@ -174,6 +178,8 @@ let private completedImpl: Value =
                           "Stderr", VSeq(stderr |> List.map VStr :> seq<Value>) ]
                 )
             | _ -> unreachable "the checker rejects 'completed' on these arguments"))
+
+let private completedImpl: Value = completedWith []
 
 let private str1 (name: string) (f: string -> string) : Value =
     VBuiltin(fun v ->
@@ -614,6 +620,102 @@ let envVarDef: RecordDef =
       Params = []
       Fields = [ "Name", TStr; "Value", TStr ] }
 
+// Env.fromFile parses the DOTENV SUBSET only: KEY=VALUE, optional
+// single/double quotes around VALUE, # full-line and trailing
+// comments, blank lines. No export keyword, no $VAR references, no
+// command substitution — sourcing is shell EVALUATION; this is a
+// parser, and anything needing evaluation is a per-line boundary
+// error naming the sh escape. (The formalization scanner is NOT
+// reused here: it speaks weir-string quote rules and lives in a later
+// compile unit; dotenv's quoting is its own three-case grammar.)
+let private dotenvEscape =
+    "this .env line needs shell semantics; use sh -c \"set -a; . file; ...\""
+
+let private parseDotenvLine (path: string) (lineNo: int) (raw: string) : (string * string) option =
+    let bad (why: string) =
+        failwith $"{path}:{lineNo}: {why} — {dotenvEscape}"
+
+    let line = raw.Trim()
+
+    if line = "" || line.StartsWith "#" then
+        None
+    elif line.StartsWith "export " then
+        bad "the export keyword is shell syntax"
+    else
+        match line.IndexOf '=' with
+        | -1 -> bad "not a KEY=VALUE line"
+        | eq ->
+            let key = line.Substring(0, eq).TrimEnd()
+
+            let keyOk =
+                key.Length > 0
+                && (System.Char.IsLetter key[0] || key[0] = '_')
+                && key |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+
+            if not keyOk then
+                bad $"invalid key '{key}'"
+
+            let rest = line.Substring(eq + 1).TrimStart()
+
+            let closedQuote (q: char) =
+                let close = rest.IndexOf(q, 1)
+
+                if close < 0 then
+                    bad $"unterminated {q} quote"
+
+                let value = rest.Substring(1, close - 1)
+                let tail = rest.Substring(close + 1).TrimStart()
+
+                if tail <> "" && not (tail.StartsWith "#") then
+                    bad "text after the closing quote"
+
+                value
+
+            let value =
+                if rest.StartsWith "\"" then
+                    let v = closedQuote '"'
+
+                    if v.Contains '$' || v.Contains '`' then
+                        bad "shell expansion in a double-quoted value"
+
+                    v
+                elif rest.StartsWith "'" then
+                    // single quotes are shell-literal: $ is just a character
+                    closedQuote '\''
+                else
+                    let cut =
+                        match rest.IndexOf '#' with
+                        | i when i > 0 && System.Char.IsWhiteSpace rest[i - 1] -> rest.Substring(0, i)
+                        | _ -> rest
+
+                    let v = cut.TrimEnd()
+
+                    if v.Contains '$' || v.Contains '`' then
+                        bad "shell expansion in an unquoted value"
+
+                    if v |> Seq.exists System.Char.IsWhiteSpace then
+                        bad "unquoted value with spaces"
+
+                    v
+
+            Some(key, value)
+
+let private envFromFileImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr path ->
+            VSeq(
+                Seq.delay (fun () ->
+                    let resolved = Session.resolve path
+
+                    File.ReadLines resolved
+                    |> Seq.indexed
+                    |> Seq.choose (fun (i, raw) -> parseDotenvLine path (i + 1) raw)
+                    |> Seq.map (fun (k, value) ->
+                        VRecord(envVarDef.Name, Map [ "Name", VStr k; "Value", VStr value ])))
+            )
+        | v -> unreachable $"the checker rejects 'Env.fromFile' on {formatValue v}")
+
 // Env — process environment, the shell's other ambient input. Receipt:
 // the nuget http-get translation (2026-07-20), the long-predicted gap.
 let private envMembers: (string * Ty * Value) list =
@@ -634,7 +736,8 @@ let private envMembers: (string * Ty * Value) list =
               |> Seq.cast<System.Collections.DictionaryEntry>
               |> Seq.map (fun e ->
                   VRecord(envVarDef.Name, Map [ "Name", VStr(string e.Key); "Value", VStr(string e.Value) ])))
-      ) ]
+      )
+      "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
@@ -733,6 +836,42 @@ let private printerrImpl: Value =
             VUnit
         | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
 
+// cmdEnv/runEnv — the shEnv receipt (2026-07-20): child-env injection,
+// explicit per call, overlay semantics via Proc.linesWith (lines IS
+// linesWith [] — one spawn path by construction). The overlay seq is
+// forced inside the delay, so Env.fromFile boundary errors keep
+// raise-at-force semantics.
+let private envVarPairs (v: Value) : (string * string) list =
+    match v with
+    | VSeq items ->
+        items
+        |> Seq.map (fun item ->
+            match item with
+            | VRecord(_, fields) ->
+                match fields["Name"], fields["Value"] with
+                | VStr n, VStr value -> n, value
+                | _ -> unreachable "the checker rejects non-EnvVar overlay entries"
+            | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
+        |> List.ofSeq
+    | v -> unreachable $"the checker rejects 'cmdEnv' on {formatValue v}"
+
+let private cmdEnvImpl: Value =
+    VBuiltin(fun envV ->
+        VBuiltin(fun progV ->
+            VBuiltin(fun argsV ->
+                match progV, argsV with
+                | VStr prog, VSeq args ->
+                    if prog.Trim() = "" then
+                        failwith "cmd: empty program name"
+
+                    let argv = args |> Seq.map asString |> List.ofSeq
+
+                    VSeq(
+                        Seq.delay (fun () -> Proc.linesWith (envVarPairs envV) (Proc.resolveProg prog) argv None)
+                        |> Seq.map VStr
+                    )
+                | _ -> unreachable "the checker rejects 'cmdEnv' on these arguments")))
+
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
       "nats", seqInt, natsImpl
@@ -742,7 +881,11 @@ let private entries: (string * Ty * Value) list =
       "pwd", TSeq TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
-      "fail", TFun(TStr, TUnit), failImpl ]
+      "fail", TFun(TStr, TUnit), failImpl
+      "cmdEnv", TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TSeq TStr))), cmdEnvImpl
+      "completedEnv",
+      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))),
+      VBuiltin(fun envV -> completedWith (envVarPairs envV)) ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)
@@ -764,6 +907,12 @@ let private printImpl: Value =
 // construction (pinned anyway).
 let private runImpl: Value =
     VBuiltin(fun prog -> VBuiltin(fun argv -> apply printImpl (apply (apply cmdImpl prog) argv)))
+
+// runEnv e p a IS cmdEnv e p a |> print — the run/cmd desugar
+// relationship applied verbatim (byte-identity pinned).
+let private runEnvImpl: Value =
+    VBuiltin(fun env ->
+        VBuiltin(fun prog -> VBuiltin(fun argv -> apply printImpl (apply (apply (apply cmdEnvImpl env) prog) argv))))
 
 let commandCallable: Set<string> = Set [ "cd" ]
 
@@ -788,6 +937,7 @@ let typeEnv: TypeEnv =
         |> Map.add "printerr" Check.printScheme
         |> Map.add "show" Check.showScheme
         |> Map.add "run" (generalize (TFun(TStr, TFun(TSeq TStr, TUnit))))
+        |> Map.add "runEnv" (generalize (TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TUnit)))))
       Modules =
         moduleTable
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
@@ -817,6 +967,7 @@ let valueEnv: Env =
     :: ("printerr", printerrImpl)
     :: ("show", showImpl)
     :: ("run", runImpl)
+    :: ("runEnv", runEnvImpl)
     :: flat
     @ mangled
     |> Map.ofList

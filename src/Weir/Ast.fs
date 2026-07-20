@@ -42,7 +42,7 @@ and ExprKind =
     | EFrom of format: string * tyName: string option
     | ETo of format: string
     | EList of items: Expr list
-    | ECmd of prog: string * args: Expr list
+    | ECmd of prog: string * args: Expr list * env: Expr option
     | EInterp of parts: InterpPart<Expr> list
 
 type DeclBody =

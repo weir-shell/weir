@@ -205,6 +205,17 @@ if 1 > 0 then !
   through; comments need line start or a preceding space.
 - `run "git" ["push"]` runs a program from expression positions:
   streams like a command line, raises on nonzero, returns unit.
+- `runEnv vars "az" [...]` / `cmdEnv vars ...` inject child-env
+  (overlay: set those names, inherit the rest; parent untouched).
+  `Env.fromFile "x.env"` loads the dotenv SUBSET (KEY=VALUE, optional
+  quotes, # comments — NO export/$VAR; those lines error, naming the
+  `sh -c "set -a; . file; ..."` escape). House idiom: partially apply
+  — `let az = runEnv (Env.fromFile p) "az"` then `az [...]`. In
+  sigils: `$e(...)`/`!e(...)` (ident GLUED to glyph and paren) injects
+  into every spawn in the chain. Line-end `!name` = env district
+  (distributes over the block); a literal `!word` as a final command
+  arg must be quoted. Bare `!(...)`/`!` districts and command lines
+  stay env-less.
 - Multi-line record literals separate fields by newline, F#-style
   (trailing `;` also fine); a blank line inside an open `{` is an
   error. Braces ignore indentation.

@@ -35,7 +35,7 @@ and TypedKind =
     | TEFrom of format: string * rowDef: RecordDef
     | TETo of format: string
     | TEList of items: TypedExpr list
-    | TECmd of prog: string * args: TypedExpr list
+    | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
     | TEInterp of parts: InterpPart<TypedExpr> list
 
 type private ResultBuilder() =
@@ -1024,7 +1024,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain"
         }
     | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs |> to json"
-    | ECmd(prog, args) ->
+    | ECmd(prog, args, envO) ->
         result {
             let checkArg = checkScalarSplice ctx env "command arguments"
 
@@ -1034,8 +1034,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     (fun acc a -> acc |> Result.bind (fun ts -> checkArg a |> Result.map (fun t -> t :: ts)))
                     (Ok [])
 
+            let! tenvO =
+                match envO with
+                | None -> Ok None
+                | Some e ->
+                    result {
+                        let! te = infer ctx env e
+                        do! bind ctx env e.Span (TSeq(TNamed("EnvVar", []))) te.Ty
+                        return Some te
+                    }
+
             return
-                { Kind = TECmd(prog, List.rev targs)
+                { Kind = TECmd(prog, List.rev targs, tenvO)
                   Ty = TSeq TStr
                   Span = expr.Span }
         }
@@ -1307,7 +1317,8 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
         | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
-        | TECmd(prog, args) -> TECmd(prog, args |> List.map (finalizeExpr ctx))
+        | TECmd(prog, args, envO) ->
+            TECmd(prog, args |> List.map (finalizeExpr ctx), envO |> Option.map (finalizeExpr ctx))
         | TEInterp parts ->
             TEInterp(
                 parts
@@ -1466,8 +1477,9 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TEFrom _
         | TETo _ -> ()
         | TEList items -> items |> List.iter walk
-        | TECmd(_, args) ->
+        | TECmd(_, args, envO) ->
             args |> List.iter walk
+            envO |> Option.iter walk
 
             // the bash prior-bleed: `git add -A ; git push` hands git a
             // literal ';' argv word (the standing no-injection pin) — warn,

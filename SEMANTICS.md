@@ -473,9 +473,57 @@ quantity semantics now.
   are a SNAPSHOT at force; the record is plain data after (no
   pwd-style liveness). All problems collect into ONE boundary error —
   the existing runtime failure class, no new member. `Env.vars` is
-  the untyped floor (builtin-owned EnvVar rows). `Env.set` parked:
-  the ambient-state decision, no receipt. Line one `#!` is skipped by the runner; `#` at line head is
+  the untyped floor (builtin-owned EnvVar rows). `Env.set` DISSOLVED
+  (2026-07-20): the bicep receipt's shape was child-env injection,
+  not session mutation — see the child-env entry below; no ambient
+  member ships. Line one `#!` is skipped by the runner; `#` at line head is
   reserved for directives.
+- **Child-env injection** (2026-07-20, the shEnv receipt — the bicep
+  translation's strongest): `cmdEnv : seq<EnvVar> -> string ->
+  seq<string> -> seq<string>` and `runEnv` (its `|> print` desugar,
+  the run/cmd relationship verbatim, byte-identity pinned). OVERLAY
+  semantics: injected vars sit on top of the inherited environment —
+  set/override those names, inherit the rest, parent process
+  untouched (pinned). Removing a var has no spelling (no receipt;
+  empty-string value is the documented workaround, pinned). One spawn
+  path by construction: `Proc.lines` IS `linesWith []`.
+  `Env.fromFile : string -> seq<EnvVar>` parses the DOTENV SUBSET
+  only — KEY=VALUE, optional single/double quotes (single is
+  shell-literal, `$` allowed; double and bare reject `$`/backtick),
+  `#` full-line and trailing comments, blank lines, empty values. No
+  `export`, no expansion, no substitution: sourcing is shell
+  EVALUATION, Env.fromFile is a parser, and every rejected line says
+  so by naming the escape (`sh -c "set -a; . file; ..."`). It feeds
+  cmdEnv, NOT Env.load (process-env snapshot, unchanged);
+  file-to-typed-record is parked (Env.load over an arbitrary source —
+  real design weight, no receipt). The SUGAR STORY is layered: Layer
+  0 is partial application — `let az = runEnv (Env.fromFile p) "az"`
+  — the house idiom. Layers 1 and 2 SHIPPED together (2026-07-20,
+  user-opened rather than receipt-triggered — the trigger discipline
+  was overridden by choice, on record): Layer 1 is the sigil env slot
+  `$e(...)`/`!e(...)` — an identifier GLUED to glyph and paren (a
+  space falls back to the old parses); the env applies to EVERY spawn
+  in the interior chain, `| complete` included (routed through
+  `completedEnv`, the same desugar family). Layer 2 is the district
+  header — line-end `!name` distributes `!name(...)` over the block's
+  lines; implemented entirely in the assembler (a MarkerKind
+  classifier variant + parameterized district joins) and reparsed by
+  Layer 1's grammar. The shared line-end seam is DECIDED: `!name` at
+  line end IS a district header — a final command argument spelled
+  `!word` must be quoted (classifier-pinned). Bare `!(...)`,
+  bare districts, and bareword command lines stay env-less. Layer 3
+  (ambient/scoped env, Session-carried) remains REJECTED,
+  tombstone-style: the premise — injection, not session mutation —
+  came from the receipt's own shape analysis; if deep-threading
+  friction arrives, the answer is still Layer 0 (pass the runner as a
+  value). Re-askable only against this entry.
+- **Multi-value CLI options — parked, idiom documented** (2026-07-20
+  disposition of the bicep `App of stack * env` finding): one
+  occurrence, and the two-flag reshape (`--stack X --env Y`) is clean
+  and cost nothing — `Args.pair`-style API stays unbuilt. GUIDE
+  carries the idiom ("one flag per value"). Reopen criterion:
+  receipts where the reshape is NOT available — mimicking an external
+  tool's fixed CLI contract. Ranked below everything with receipts.
 - **The statement rule**: *command-mode lines stream; every expression
   computes a value; values are bound or printed.* A pure expression
   statement must have type `unit` — anything else is a check error before

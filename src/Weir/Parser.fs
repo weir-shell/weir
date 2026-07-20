@@ -225,23 +225,41 @@ let private interpLit =
 // the intent unambiguous, unlike the bare let-RHS which excludes
 // builtins). $(chain) captures the value; !(chain) desugars to
 // (chain) |> print — eager, streaming, raising, unit.
-let private sigilChain, private sigilChainRef =
-    createParserForwardedToRef<Expr, unit> ()
+// Layer 1 (2026-07-20): sigils take an optional env slot between glyph
+// and paren — $e(...) / !e(...), e : seq<EnvVar>, applied to EVERY
+// spawn in the interior chain (segments and | complete alike, threaded
+// at construction). The ident must be GLUED to both glyph and paren;
+// with a space the parse falls back ($name splice, plain paren).
+let mutable private sigilChainImpl: Expr option -> Parser<Expr, unit> =
+    fun _ -> fail "sigilChain not initialized"
+
+let private sigilChain (envO: Expr option) : Parser<Expr, unit> =
+    fun stream -> (sigilChainImpl envO) stream
+
+let private sigilOpen (glyph: char) : Parser<Expr option, unit> =
+    attempt (
+        pchar glyph >>. spanned (opt rawWord) .>> pchar '('
+        |>> fun (nameO, span) -> nameO |> Option.map (fun n -> { Kind = EVar n; Span = span })
+    )
 
 let private captureSigil =
     spanned (
-        pstring "$(" >>. ws >>. sigilChain
-        .>> (pchar ')'
-             <?> "')' — close the sigil on this line, or bind with 'let x = <command>' at statement level")
+        sigilOpen '$'
+        >>= fun envO ->
+            ws >>. sigilChain envO
+            .>> (pchar ')'
+                 <?> "')' — close the sigil on this line, or bind with 'let x = <command>' at statement level")
     )
     |>> fun (chain, span) -> { chain with Span = span }
     .>> ws
 
 let private effectSigil =
     spanned (
-        pstring "!(" >>. ws >>. sigilChain
-        .>> (pchar ')'
-             <?> "')' — close the sigil on this line, or use line-end '!' for a block of commands")
+        sigilOpen '!'
+        >>= fun envO ->
+            ws >>. sigilChain envO
+            .>> (pchar ')'
+                 <?> "')' — close the sigil on this line, or use line-end '!' for a block of commands")
     )
     |>> (fun (chain, span) ->
         { Kind = EPipe(chain, { Kind = EVar "print"; Span = span })
@@ -556,7 +574,12 @@ type private HeadKind =
     | ExternalHead
     | BuiltinHead
 
-let private commandSegment (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
+let private commandSegment
+    (builtinHeads: bool)
+    (argP: Parser<Expr, unit>)
+    (sigilEnv: Expr option)
+    (r: Resolver)
+    : Parser<Expr, unit> =
     let head =
         spanned (opt (pchar '^') .>>. cmdWord) .>> ws
         >>= fun ((forced, w), span) ->
@@ -593,7 +616,7 @@ let private commandSegment (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: R
 
         match kind with
         | ExternalHead ->
-            { Kind = ECmd(prog, args)
+            { Kind = ECmd(prog, args, sigilEnv)
               Span = fullSpan }
         | BuiltinHead ->
             let headVar = { Kind = EVar prog; Span = span }
@@ -612,8 +635,13 @@ let private commandSegment (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: R
 
 let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
 
-let private segment (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
-    choice [ commandSegment builtinHeads argP r; segExpr ]
+let private segment
+    (builtinHeads: bool)
+    (argP: Parser<Expr, unit>)
+    (sigilEnv: Expr option)
+    (r: Resolver)
+    : Parser<Expr, unit> =
+    choice [ commandSegment builtinHeads argP sigilEnv r; segExpr ]
 
 type private Seg =
     | Stage of Expr
@@ -627,9 +655,17 @@ let private completeMarker =
     )
     |>> fun (_, span) -> CompleteMarker span
 
-let private cmdLineWith (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Resolver) : Parser<Expr, unit> =
-    commandSegment builtinHeads argP r
-    .>>. many (pipeSep >>. (completeMarker <|> (segment builtinHeads argP r |>> Stage)))
+let private cmdLineWith
+    (builtinHeads: bool)
+    (argP: Parser<Expr, unit>)
+    (sigilEnv: Expr option)
+    (r: Resolver)
+    : Parser<Expr, unit> =
+    commandSegment builtinHeads argP sigilEnv r
+    .>>. many (
+        pipeSep
+        >>. (completeMarker <|> (segment builtinHeads argP sigilEnv r |>> Stage))
+    )
     >>= fun (h, rest) ->
         let folded =
             rest
@@ -643,12 +679,24 @@ let private cmdLineWith (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Reso
                               Span = Span.union acc.Span seg.Span }
                     | Result.Ok acc, CompleteMarker mspan ->
                         match acc.Kind with
-                        | ECmd(prog, args) ->
+                        | ECmd(prog, args, cenv) ->
                             let span = Span.union acc.Span mspan
 
+                            // env sigils route through completedEnv — the
+                            // same desugar family, env threaded up front
                             let headVar =
-                                { Kind = EVar "completed"
-                                  Span = mspan }
+                                match cenv with
+                                | Some e ->
+                                    { Kind =
+                                        EApp(
+                                            { Kind = EVar "completedEnv"
+                                              Span = mspan },
+                                            e
+                                        )
+                                      Span = mspan }
+                                | None ->
+                                    { Kind = EVar "completed"
+                                      Span = mspan }
 
                             let progArg = { Kind = EStr prog; Span = acc.Span }
 
@@ -669,15 +717,16 @@ let private cmdLineWith (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Reso
         | Result.Ok e -> preturn e
         | Result.Error m -> failFatally m
 
-let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg r
+let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg None r
 
-sigilChainRef.Value <- fun stream -> (cmdLineWith true cmdArg ambientResolver.Value) stream
+sigilChainImpl <- fun envO -> fun stream -> (cmdLineWith true cmdArg envO ambientResolver.Value) stream
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
 // command-callable builtins (cd) stay ordinary functions there — found as a
 // silent meaning change of `let workdir = cd target` (target became a
 // bareword) when the example script was modernized.
-let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> = cmdLineWith false (cmdArgWith true) r
+let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
+    cmdLineWith false (cmdArgWith true) None r
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
