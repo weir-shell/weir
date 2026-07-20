@@ -25,6 +25,7 @@ argument that killed the subtractive fork.
 | no-hof-inference | rejected | applying a bare parameter as a function | reject | accept | SEMANTICS: governing principle |
 | no-operator-defaulting | rejected | + on two unresolved params | reject (int-or-string guess refused) | accept (defaults int) | SEMANTICS: var-var operators |
 | no-oo | rejected | classes, interfaces, members, inheritance | reject | accept | a typed shell, not an object language |
+| no-computation-expressions | rejected | builder blocks (seq { }, async { }, custom CEs) | reject | accept | pipelines are the composition story; comprehension sugar, if ever, is parser-only — not CE machinery |
 | no-imperative-loops | rejected | for / while | reject (pipelines + ranges are iteration) | accept | SKILL: iteration; comprehension-for is separately pending |
 | no-tuples | pending | tuple literals and types | reject | accept | deferred at review pending prior-bleed evidence; destructuring is the real scope |
 | single-payload-unions | pending | union case with a starred payload | reject | accept | record-wrapping today; reopens with tuples |

@@ -98,7 +98,8 @@ let pins =
           "corpus: function-valued interpolation hole"
           "let f = fun x -> x + 1\nlet s = $\"{f}\"\n"
           (Diverges "interp-scalar-only")
-      pin "corpus: format specifier in a hole" "let s = $\"{1:N2}\"\n" (Diverges "no-format-specifiers") ]
+      pin "corpus: format specifier in a hole" "let s = $\"{1:N2}\"\n" (Diverges "no-format-specifiers")
+      pin "computation expressions" "let s = seq { 1 }\n" (Diverges "no-computation-expressions") ]
 
 [<Tests>]
 let fidelityTests =
