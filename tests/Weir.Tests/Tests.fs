@@ -2343,7 +2343,7 @@ let parallelTests =
                   "shared-session guard"
           }
           test "worker failure surfaces as the first error" {
-              Expect.throwsT<exn> (fun () -> run "[1; 0] |> Seq.pmap (fun x -> 10 / x)" |> ignore) "div by zero"
+              Expect.throws (fun () -> run "[1; 0] |> Seq.pmap (fun x -> 10 / x)" |> ignore) "div by zero"
           } ]
 
 let fileTests =
