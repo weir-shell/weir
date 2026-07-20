@@ -5,7 +5,7 @@
 set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
-SKILL="$(dirname "$0")/../skills/weir/SKILL.md"
+DOCS=("$(dirname "$0")/../skills/weir/SKILL.md" "$(dirname "$0")/../docs/GUIDE.md")
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -17,13 +17,13 @@ trap 'rm -rf "$work"' EXIT
     git -c user.email=ci@ci -c user.name=ci commit -qm seed
 )
 
-# extract blocks: emit "<kind>\t<file>" pairs
-mapfile -t blocks < <(awk -v out="$work" '
+# extract blocks from every doc: emit "<kind>\t<file>" pairs
+mapfile -t blocks < <(cat "${DOCS[@]}" | awk -v out="$work" '
     /^```weir-error$/ { kind="err"; n++; f=out"/block-"n".weir"; printf "" > f; inblock=1; print kind"\t"f; next }
     /^```weir$/       { kind="ok";  n++; f=out"/block-"n".weir"; printf "" > f; inblock=1; print kind"\t"f; next }
     /^```$/           { inblock=0; next }
     inblock           { print $0 >> f }
-' "$SKILL")
+')
 
 [ "${#blocks[@]}" -gt 0 ] || { echo "skill-doc FAIL: no blocks extracted" >&2; exit 1; }
 

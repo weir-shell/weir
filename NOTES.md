@@ -1,5 +1,29 @@
 # Spike Notes
 
+## The user guide — doc-tested from birth (2026-07-20)
+
+User asked "guide or too early?" — answered not-too-early on two
+grounds: the rot antidote already exists (doc-tested fenced blocks;
+the guide churns WITH the language in CI instead of rotting behind
+it), and the language just crossed guide-shaped completeness
+(functions, branching, ranges, processes, parallelism, show/fail).
+
+docs/GUIDE.md: a tour in 10 sections, 10 executable blocks; the
+skill-doc harness generalized over both docs (19 blocks total).
+README.md grew from one line to a real front page (its example
+hand-verified once; prose-fenced deliberately — the guide carries the
+CI-pinned blocks). Scope guard from the agent plan honored: SKILL.md
+stays terse and agent-shaped; the guide is the separate human
+artifact.
+
+The writing-as-audit prediction held on the first run: the guide's
+functions example used \" escapes inside an interpolation hole —
+not weir (holes take plain nested strings) — and the harness rejected
+the guide before the guide could teach the error. Also quietly
+satisfying: the parallelism example opens with a line-head string
+list, legal only since the [-head fix.
+
+
 ## Worker sessions fork — cd allowed in parallel (2026-07-20)
 
 User question ("shouldn't we have nested sessions for parallel so cd
