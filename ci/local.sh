@@ -7,8 +7,11 @@ cd "$(dirname "$0")/.."
 
 docker build -t weir-ci ci/
 
+# :z relabels the bind mount for SELinux hosts (Fedora et al.) — without
+# it the container sees an EMPTY /work and every dotnet invocation fails
+# with a misleading MSB1003/MSB1009; harmless no-op elsewhere
 docker run --rm \
-    -v "$PWD":/work \
+    -v "$PWD":/work:z \
     -v weir-nuget:/root/.nuget \
     -w /work \
     weir-ci \

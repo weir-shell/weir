@@ -16,6 +16,9 @@ Then mark the package public in Codeberg → Packages → weir-ci → settings, 
 the runner can pull without credentials.
 
 Notes:
+- SELinux hosts (Fedora): the repo bind mount needs the `:z` relabel —
+  `ci/local.sh` bakes it in. An empty `/work` with MSB1003/MSB1009 is
+  the symptom of a missing label, not an SDK problem.
 - Forgejo's act-based runner injects node into job containers, so JS actions
   (`actions/checkout`) need nothing extra in the image.
 - The image is toolchain-only, deliberately not coupled to the repo (no NuGet
