@@ -472,6 +472,65 @@ let private piterImpl: Value =
                 VUnit
             | v -> unreachable $"the checker rejects 'piter' on {formatValue v}"))
 
+let private existsImpl: Value =
+    VBuiltin(fun pred ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                VBool(
+                    items
+                    |> Seq.exists (fun v ->
+                        match apply pred v with
+                        | VBool b -> b
+                        | r -> unreachable $"the checker rejects a non-bool predicate: {formatValue r}")
+                )
+            | v -> unreachable $"the checker rejects 'exists' on {formatValue v}"))
+
+let private forallImpl: Value =
+    VBuiltin(fun pred ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                VBool(
+                    items
+                    |> Seq.forall (fun v ->
+                        match apply pred v with
+                        | VBool b -> b
+                        | r -> unreachable $"the checker rejects a non-bool predicate: {formatValue r}")
+                )
+            | v -> unreachable $"the checker rejects 'forall' on {formatValue v}"))
+
+let private containsImpl: Value =
+    VBuiltin(fun needle ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items -> VBool(items |> Seq.exists (fun v -> v = needle))
+            | v -> unreachable $"the checker rejects 'contains' on {formatValue v}"))
+
+let private itemImpl: Value =
+    VBuiltin(fun n ->
+        VBuiltin(fun s ->
+            match n, s with
+            | VInt i, VSeq items -> items |> Seq.item (int i)
+            | _ -> unreachable "the checker rejects 'item' on these arguments"))
+
+let private tryItemImpl: Value =
+    VBuiltin(fun n ->
+        VBuiltin(fun s ->
+            match n, s with
+            | VInt i, VSeq items ->
+                match items |> Seq.indexed |> Seq.tryFind (fun (j, _) -> int64 j = i) with
+                | Some(_, v) -> VUnion("Some", Some v)
+                | None -> VUnion("None", None)
+            | _ -> unreachable "the checker rejects 'tryItem' on these arguments"))
+
+let private skipImpl: Value =
+    VBuiltin(fun n ->
+        VBuiltin(fun s ->
+            match n, s with
+            | VInt i, VSeq items -> VSeq(items |> Seq.skip (int i))
+            | _ -> unreachable "the checker rejects 'skip' on these arguments"))
+
 let private seqMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
@@ -490,6 +549,12 @@ let private seqMembers: (string * Ty * Value) list =
       "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
       "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
       "pairwise", TFun(TSeq tA, TSeq(TNamed("Pair", [ tA ]))), pairwiseImpl
+      "exists", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), existsImpl
+      "forall", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), forallImpl
+      "item", TFun(TInt, TFun(TSeq tA, tA)), itemImpl
+      "tryItem", TFun(TInt, TFun(TSeq tA, TNamed("Option", [ tA ]))), tryItemImpl
+      "skip", TFun(TInt, TFun(TSeq tA, TSeq tA)), skipImpl
+      "contains", TFun(tA, TFun(TSeq tA, TBool)), containsImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
 
 let private strMembers: (string * Ty * Value) list =
@@ -513,6 +578,36 @@ let private strMembers: (string * Ty * Value) list =
 let private optionMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
       "defaultTo", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl ]
+
+// Args — script-only scanners over the invocation argv (Session.ScriptArgs;
+// empty in the REPL by design). Long-only flags: empty short form.
+let private argsFlagImpl: Value =
+    VBuiltin(fun l ->
+        VBuiltin(fun sh ->
+            match l, sh with
+            | VStr long, VStr short ->
+                VBool(
+                    Session.ScriptArgs |> List.contains long
+                    || (short <> "" && Session.ScriptArgs |> List.contains short)
+                )
+            | _ -> unreachable "the checker rejects 'Args.flag' on these arguments"))
+
+let private argsValueImpl: Value =
+    VBuiltin(fun l ->
+        match l with
+        | VStr flag ->
+            let rec find =
+                function
+                | f :: v :: _ when f = flag -> VUnion("Some", Some(VStr v))
+                | _ :: rest -> find rest
+                | [] -> VUnion("None", None)
+
+            find Session.ScriptArgs
+        | v -> unreachable $"the checker rejects 'Args.value' on {formatValue v}")
+
+let private argsMembers: (string * Ty * Value) list =
+    [ "flag", TFun(TStr, TFun(TStr, TBool)), argsFlagImpl
+      "value", TFun(TStr, TNamed("Option", [ TStr ])), argsValueImpl ]
 
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
@@ -550,7 +645,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
       "Option", optionMembers
-      "File", fileMembers ]
+      "File", fileMembers
+      "Args", argsMembers ]
 
 let private bareAliases: Set<string> =
     Set
@@ -623,6 +719,13 @@ let private printImpl: Value =
             VUnit
         | v -> unreachable $"the checker rejects 'print' on {formatValue v}")
 
+// run p a IS cmd p a |> print — composed from the exact same impls, so
+// every lifecycle guarantee (tree-kill, raise-at-force, stderr
+// passthrough, streaming) is inherited, and byte-identity is by
+// construction (pinned anyway).
+let private runImpl: Value =
+    VBuiltin(fun prog -> VBuiltin(fun argv -> apply printImpl (apply (apply cmdImpl prog) argv)))
+
 let commandCallable: Set<string> = Set [ "cd" ]
 
 let bareAliasHomes: Map<string, string> =
@@ -645,10 +748,12 @@ let typeEnv: TypeEnv =
         |> Map.add "print" Check.printScheme
         |> Map.add "printerr" Check.printScheme
         |> Map.add "show" Check.showScheme
+        |> Map.add "run" (generalize (TFun(TStr, TFun(TSeq TStr, TUnit))))
       Modules =
         moduleTable
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
         |> Map.ofList
+        |> Map.change "Seq" (Option.map (Map.add "contains" Check.containsScheme))
       Types =
         Map
             [ fileRow.Name, Record fileRow
@@ -668,6 +773,10 @@ let valueEnv: Env =
         moduleTable
         |> List.collect (fun (m, members) -> members |> List.map (fun (n, _, v) -> $"{m}.{n}", v))
 
-    ("print", printImpl) :: ("printerr", printerrImpl) :: ("show", showImpl) :: flat
+    ("print", printImpl)
+    :: ("printerr", printerrImpl)
+    :: ("show", showImpl)
+    :: ("run", runImpl)
+    :: flat
     @ mangled
     |> Map.ofList

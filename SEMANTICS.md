@@ -19,6 +19,19 @@ weir rejects rather than guesses.
   strings with `\" \\ \n \t` escapes, `true`/`false`, and seq
   literals `[a; b; c]` (homogeneous; elements evaluate eagerly, once — unlike
   pipelines; `[]` is polymorphic `seq<'a>`).
+- **Indexers** (2026-07-20): `xs[i]` desugars to `Seq.item i xs`
+  (raising; `tryItem` is the safe sibling). The F# 6 dotless-indexing
+  whitespace rule applies verbatim: NO space = indexing, a space =
+  application of a list literal (`Seq.sum [1; 2]` unchanged) —
+  immediacy is decided by span adjacency, so the atoms' whitespace
+  handling is untouched. Chains (`m[1][0]`), field composition
+  (`row[0].Name`), sigil composition (`$(git branch)[0]`), and the
+  underscore shorthand (`_[0]` = `fun x -> x[0]`, extending `_.Field`)
+  all follow from the desugar. weir note vs F#: F#'s `seq` has no
+  indexer (only list/array) — weir's one sequence type takes it,
+  a permissiveness in weir's favor recorded here rather than in the
+  divergence table (verdict-invisible: both languages accept the
+  translated shapes).
 - **Range literals**: `[a..b]` inclusive ascending, `[a..step..b]` stepped;
   descending only via an explicit negative step (`[10.. -1 ..1]` — the
   range positions are the one place a negative int literal exists; weir
@@ -151,6 +164,59 @@ quantity semantics now.
   left out of the family by accident of history). `+` alone stays an
   error: int-or-string is a guess weir refuses to make — anchor one
   side. Named as an F# divergence (F# defaults `+` to int).
+- **The command district** (2026-07-20, sequel plan): line-end `!`
+  announces that the indented lines below are COMMAND LINES, one per
+  line — the assembler wraps each as `!(line)` and joins with `;`
+  ("the marker distributes itself"); everything downstream is shipped
+  machinery. District lines are command-mode text exactly (splices,
+  quotes, in-line pipes; leading-`|` lines continue the previous
+  command); expressions/`let`/nested sigils inside are errors with
+  named messages; extent is strictly-deeper, closing at-or-left of the
+  marker (a dedented `else` rejoins its `if`; blank lines end the
+  statement as everywhere). Budget note: shipped at 2× the assembler
+  line budget on human review — the metric lesson is recorded in
+  NOTES (line count proxies the real target, parallel-invariant
+  logic; the district REPROCESSES closing lines through the one rule
+  set instead of duplicating rules per mode). **The sugars ledger** —
+  command-in-expression has exactly these spellings: `$()`/`!()`
+  atoms (anywhere an expression goes), bare-command let-RHS (capture,
+  least ink where legal), and the `!` district (runs of effects);
+  computed program names use `run`/`cmd`.
+- **Command-mode sigils** (2026-07-20): `$(chain)` captures a command
+  chain's value in expression position; `!(chain)` desugars to
+  `(chain) |> print` — eager, streaming, raising, unit. DESUGAR-ONLY:
+  zero new AST nodes, zero checker surface. Interior grammar is
+  IDENTICAL to a statement-level chain (segments, splices, pipes,
+  `| complete`, command-callable heads — the explicit sigil makes
+  intent unambiguous where the bare let-RHS could not). Heads resolve
+  at CHECK time — a typo'd program inside `!()` fails before line one,
+  which bash's `$()` cannot do. Nesting rides splices (balanced
+  parens; depth unrestricted). Bash priors: `$()` ALIGNS (recorded —
+  priors that help get named too); `!()` diverges (bang-sigil row;
+  invisible to the F# oracle, carried by behavioral pins). Computed
+  program names keep `run`/`cmd` (spliced heads parked). The
+  eager-unit anti-idiom (`let cleanup = if ...`) is replaced by bare
+  `if` statements.
+- **Block effect sequencing** (2026-07-20, PLAN-sequencing-and-args
+  Session 2): `e1 ; e2` is an expression — every element but the last
+  must be UNIT (hard error, the statement rule's discipline inside
+  expressions). The assembler joins same-indent block siblings with
+  `;` (non-pipe, non-let lines; let-closure `" in "` takes priority and
+  sequencing resumes after) — F# light syntax's other half, same
+  token-insertion technique as block lets. **Stop-and-report
+  amendment**: the blessed lowest-precedence `;` collided with the
+  flat-join model at the flagship shape — `if c then run1 ; run2`
+  would have sequenced the runs OUTSIDE the if, silently
+  unconditional. `;` is therefore GREEDY in body positions (then/else,
+  arm and lambda bodies, let-in bodies, parens): it binds into the
+  block, matching the source shape it assembles from; sequencing after
+  an `if` requires parenthesizing the if. Named divergence vs F#
+  verbose grouping (semicolon-greedy-bodies); the oracle referees the
+  block shapes as Same (F# light accepts them natively — the fidelity
+  gain the plan predicted). The other boundary: `;` in a COMMAND line
+  stays a literal argv word (the no-injection pin) with a check-time
+  warning naming the fix (semicolon-command-argv row — a bash-prior
+  divergence, invisible to the F# oracle by construction).
 - **`let f x y = e` defines a curried function** (2026-07-20 — the
   corpus-mining session's top yield became a feature the same day, on
   agent-prior evidence: F#'s most common line shape). Pure parser
@@ -204,6 +270,16 @@ quantity semantics now.
   family — command args and interpolation holes stay str/int/bool.
   Invisible interactively: the REPL and `-e` show nothing for a unit
   result (no `() : unit` trailer after `print`), F# FSI's `it` manner.
+- **`run : string -> seq<string> -> unit`** (2026-07-20) IS
+  `cmd prog argv |> print`, composed from those exact impls — every
+  lifecycle guarantee inherited, byte-identity by construction and
+  pinned. Exists for intent (`print`-ing a `git push` reads wrong) and
+  as the block effect atom. `completed` remains the spelling when the
+  exit code is data. **`Args.flag`/`Args.value`** are script-only argv
+  scanners (empty-string short form for long-only flags, pinned);
+  `Seq.contains/exists/forall/item/tryItem/skip` complete the access
+  family — `contains` requires equatable elements (sentinel customer
+  three; ledger in NOTES).
 - **`show : 'a -> string`** (2026-07-20; resolves the collision parked
   in the unit-print plan, choosing the builtin over widening `print` —
   print's data-plane contract stays intact). The debugging renderer:
@@ -486,6 +562,9 @@ quantity semantics now.
   left stream (which must be `seq<string>`) into the right command's stdin.
   Piping into the shell is just `xs | sh -c "..."` now; `into` remains
   the expression-position spelling.
+- **Neighboring asymmetry, named so it does not read as caprice**
+  (2026-07-20): `Seq.skip` RAISES past the end (at enumeration) while
+  `Seq.first`/`take` TRUNCATE — both F#-inherited behaviors.
 - **Partiality convention (FINAL)**: a raising name plus a `try`-prefixed
   sibling returning `Option<'a>`. Pairs: `head`/`tryHead`, `toInt`/`tryToInt`;
   Option-native: `tryFind`, `tryIndexOf`; raising-only (documented bounds):

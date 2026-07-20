@@ -363,6 +363,9 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
                 | None -> tryArms rest
 
         tryArms arms
+    | TESeq(a, b) ->
+        eval env a |> ignore
+        eval env b
     | TEIf(cond, thn, els) ->
         match eval env cond, els with
         | VBool true, _ -> eval env thn

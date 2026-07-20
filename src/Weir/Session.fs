@@ -28,3 +28,7 @@ let exitWorker () : unit = localCwd.Value <- None
 
 let resolve (path: string) : string =
     System.IO.Path.GetFullPath(System.IO.Path.Combine(Cwd(), path))
+
+// script argv, for the Args module scanners (script-only semantics:
+// the REPL leaves this empty)
+let mutable ScriptArgs: string list = []

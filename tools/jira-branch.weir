@@ -1,0 +1,36 @@
+#!/usr/bin/env weir
+// jira-branch: pick an issue, branch, empty-commit. --clean resets first.
+// The nu-translation origin script — final form: the cleanup is a
+// command district (line-end ! + bare command lines, zero per-line tax).
+
+type Issue = { Key: string; Title: string }
+
+let clean = Args.flag "--clean" "-c"
+
+let branch = git rev-parse --abbrev-ref HEAD | Seq.head
+
+if clean then !
+    git checkout main
+    git pull
+    git branch -D $branch
+
+let query = "(status = 'Requires Spec' OR status = 'To Do') AND (assignee = currentUser() OR creator = currentUser())"
+
+let picked =
+    jira issue list --jql $query --plain --columns key,summary --no-headers --order-by key --reverse
+    | fzf --no-sort
+    | Seq.head
+
+let fields = picked |> Str.split "\t"
+
+let issue =
+    { Key = fields[0];
+      Title = fields[1] }
+
+git switch -c (issue.Key)
+git commit --allow-empty -m $"{issue.Key} {issue.Title}"
+
+let app = issue.Title |> Str.split " " |> Seq.head
+
+let json = [issue] |> to json
+File.write "lock.tmp.fsx" json

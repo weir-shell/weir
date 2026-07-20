@@ -266,6 +266,109 @@ expect "worker sessions fork: worker two" "/etc" "$out"
 expect "worker sessions fork: parent untouched" "after: /tmp" "$out"
 rm -rf "$forkdir"
 
+out_run=$($BIN -e 'run "sh" ["-c"; "printf a\\nb\\n"]')
+out_print=$($BIN -e 'cmd "sh" ["-c"; "printf a\\nb\\n"] |> print')
+[ "$out_run" = "$out_print" ] || fail "run must be byte-identical to cmd |> print (run=[$out_run] print=[$out_print])"
+echo "e2e ok: run is the cmd|>print desugar, byte-identical"
+
+if $BIN -e 'run "sh" ["-c"; "exit 4"]' 2>/dev/null; then
+    fail "run must raise on nonzero exit"
+fi
+echo "e2e ok: run raises on nonzero exit"
+
+seqdir=$(mktemp -d)
+cat > "$seqdir/seq.weir" <<'WEOF'
+let go = 1 > 0
+
+let steps =
+    if go then
+        run "sh" ["-c"; "echo one"]
+        run "sh" ["-c"; "echo two"]
+        print "three"
+
+let skipped =
+    if 1 > 2 then
+        run "sh" ["-c"; "echo never"]
+        print "never"
+
+print "after"
+WEOF
+out=$($BIN "$seqdir/seq.weir")
+for needle in one two three after; do
+    expect "block sequencing: $needle" "$needle" "$out"
+done
+if echo "$out" | grep -qF "never"; then fail "false branch must not run its block"; fi
+echo "e2e ok: false branch skips the whole sequenced block"
+
+errout=$($BIN -e 'git add -A ; git push' 2>&1 >/dev/null || true)
+echo "$errout" | grep -qF "does not chain" || fail "semicolon boundary warning missing: $errout"
+echo "e2e ok: bash-semicolon prior-bleed warned"
+rm -rf "$seqdir"
+
+sigdir=$(mktemp -d)
+cat > "$sigdir/sig.weir" <<'WEOF'
+let go = 1 > 0
+
+if go then
+    !(sh -c "echo eff-one")
+    !(sh -c "echo eff-two")
+
+if 1 > 2 then
+    !(sh -c "echo never-a")
+    !(sh -c "echo never-b")
+
+let captured = $(sh -c "echo x && echo y") |> Seq.length
+print $"captured: {captured}"
+
+let code = $(sh -c "exit 5" | complete)
+print $"code: {code.ExitCode}"
+WEOF
+out=$($BIN "$sigdir/sig.weir")
+for needle in eff-one eff-two "captured: 2" "code: 5"; do
+    expect "sigils: $needle" "$needle" "$out"
+done
+if echo "$out" | grep -qF "never"; then fail "false branch ran its sigil block"; fi
+echo "e2e ok: sigil composition (assembler x if x capture x complete)"
+
+if $BIN -e '!(weir-no-such-program-zz)' 2>/dev/null; then
+    fail "typo'd program inside a sigil must fail at check time"
+fi
+echo "e2e ok: sigil heads resolve at check time"
+rm -rf "$sigdir"
+
+distdir=$(mktemp -d)
+cat > "$distdir/d.weir" <<'WEOF'
+let go = 1 > 0
+
+if go then !
+    sh -c "echo dist-one"
+    // comments are transparent inside districts
+    sh -c "echo dist-two"
+
+if 1 > 2 then !
+    sh -c "echo dist-never"
+
+print "dist-after"
+WEOF
+out=$($BIN "$distdir/d.weir")
+for needle in dist-one dist-two dist-after; do
+    expect "district: $needle" "$needle" "$out"
+done
+if echo "$out" | grep -qF "dist-never"; then fail "false-branch district ran"; fi
+echo "e2e ok: district effect counts, both branch ways, comments transparent"
+
+cat > "$distdir/span.weir" <<'WEOF'
+let n = 3
+
+if 1 > 0 then !
+    sh -c "echo a"
+    echo (n |> Seq.length)
+WEOF
+errout=$($BIN "$distdir/span.weir" 2>&1) && fail "bad splice in district must fail"
+echo "$errout" | grep -qE "span.weir:5:" || fail "district splice error must point at line 5: $errout"
+echo "e2e ok: district span translation points at the district line"
+rm -rf "$distdir"
+
 cat > "$scriptdir/perr.weir" <<'WEOF'
 let x =
     1 +* 2

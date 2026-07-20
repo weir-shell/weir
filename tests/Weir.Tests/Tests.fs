@@ -2351,6 +2351,236 @@ let parallelTests =
               Expect.throws (fun () -> run "[1; 0] |> Seq.pmap (fun x -> 10 / x)" |> ignore) "div by zero"
           } ]
 
+let seqAccessTests =
+    testList
+        "Seq access family and Args"
+        [ test "contains, exists, forall" {
+              expectValue "[1; 2; 3] |> Seq.contains 2" (VBool true)
+              expectValue "Seq.contains 9 [1; 2]" (VBool false)
+              expectValue "[1; 2] |> Seq.exists (fun x -> x > 1)" (VBool true)
+              expectValue "[1; 2] |> Seq.forall (fun x -> x > 1)" (VBool false)
+          }
+          test "contains needs equatable elements (sentinel customer three)" {
+              let terr = checkErr "let f = fun x -> x in [f] |> Seq.contains f"
+              Expect.stringContains (formatError terr) "equatable" ""
+
+              let terr2 = checkErr "Seq.contains (fun x -> x) [fun y -> y]"
+              Expect.stringContains (formatError terr2) "equatable" "full-application shape too"
+          }
+          test "item and tryItem are the partiality pair" {
+              expectValue "[\"a\"; \"b\"] |> Seq.item 1" (VStr "b")
+              expectValue "[1] |> Seq.tryItem 5" (VUnion("None", None))
+              expectValue "[1] |> Seq.tryItem 0" (VUnion("Some", Some(VInt 1L)))
+              Expect.throws (fun () -> run "[1] |> Seq.item 5" |> ignore) "item raises"
+          }
+          test "skip is lazy and raises past the end at enumeration" {
+              expectValue "[1; 2; 3] |> Seq.skip 1 |> Seq.sum" (VInt 5L)
+              Expect.throws (fun () -> run "[1] |> Seq.skip 3 |> Seq.toList" |> ignore) "F#-faithful raise"
+          }
+          test "Args scanners read the script argv" {
+              Weir.Session.ScriptArgs <- [ "-c"; "--out"; "r.txt" ]
+
+              try
+                  expectValue "Args.flag \"--clean\" \"-c\"" (VBool true)
+                  expectValue "Args.flag \"--verbose\" \"\"" (VBool false)
+                  expectValue "Args.value \"--out\"" (VUnion("Some", Some(VStr "r.txt")))
+                  expectValue "Args.value \"--missing\"" (VUnion("None", None))
+              finally
+                  Weir.Session.ScriptArgs <- []
+          } ]
+
+let sequencingTests =
+    testList
+        "Block sequencing"
+        [ test "explicit semicolon sequences" { expectValue "(print \"x\" ; 41 + 1)" (VInt 42L) }
+          test "non-unit first is the tailored error" {
+              let terr = checkErr "1 ; print \"no\""
+              Expect.stringContains (formatError terr) "must be unit" ""
+          }
+          test "greedy bodies: semicolon binds INTO then (named divergence)" {
+              // (if false then print "no") never sequences the tail here:
+              expectValue "let c = false in (if c then print \"a\" ; print \"b\") ; 7" (VInt 7L)
+          }
+          test "assembler: same-indent siblings sequence" {
+              match Weir.Script.assemble [ 1, "let w ="; 2, "    print \"a\""; 3, "    print \"b\"" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let w = print \"a\" ; print \"b\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "assembler: let-close beats sibling; sequence resumes after" {
+              match
+                  Weir.Script.assemble [ 1, "let w ="; 2, "    let a = 1"; 3, "    print \"x\""; 4, "    print \"y\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let w = let a = 1 in print \"x\" ; print \"y\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "assembler: pipes stay inert to the sibling rule" {
+              match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.length" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let x = ls |> Seq.length" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "command-mode semicolon argv warns (bash prior-bleed)" {
+              match Weir.Parser.parseLine cmdResolver "git add -A ; git push" with
+              | Ok(SCmd e) ->
+                  match Weir.Check.typecheck env e with
+                  | Ok te ->
+                      let ws = Weir.Check.warnings env te
+                      Expect.exists ws (fun w -> w.Message.Contains "does not chain") "warned"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          } ]
+
+let sigilTests =
+    testList
+        "Command sigils"
+        [ test "capture sigil parses to the command chain (realResolver)" {
+              match Weir.Parser.parseLine realResolver "let b = $(git branch) |> Seq.length" with
+              | Ok(SLet("b", { Kind = EPipe({ Kind = ECmd("git", _) }, _) })) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "effect sigil desugars to chain |> print" {
+              match Weir.Parser.parseLine realResolver "!(git status)" with
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _) }, { Kind = EVar "print" }) }) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "sigils x interpolation: holes never open command mode" {
+              // $"{...}" holes are expression holes; a bareword there is unbound
+              match Weir.Parser.parseLine realResolver "print $\"x{git}y\"" with
+              | Ok(SExpr _) -> ()
+              | other -> failtest $"unexpected: {other}"
+
+              let terr = checkErr "$\"x{git}y\""
+              Expect.stringContains (formatError terr) "unbound" "git is not a command in a hole"
+          }
+          test "sigils x greedy-semicolon: single-line grouping is body-scoped" {
+              match Weir.Parser.parseLine realResolver "if 1 > 2 then !(git status) ; !(git branch)" with
+              | Ok(SExpr { Kind = EIf(_, { Kind = ESeq _ }, None) }) -> ()
+              | other -> failtest $"both effects must sit INSIDE the then-branch, got {other}"
+          }
+          test "sigils x complete outside: parse error, statement spelling exists" {
+              match Weir.Parser.parseLine realResolver "$(git status) | complete" with
+              | Error _ -> ()
+              | Ok s -> failtest $"'| complete' is a command-suffix desugar; got {s}"
+          }
+          test "sigils x complete inside: uniform interior grammar composes" {
+              match Weir.Parser.parseLine realResolver "let r = $(git status | complete)" with
+              | Ok(SLet("r", { Kind = EApp _ })) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "sigils x strict mode: grammar, not resolution" {
+              // the sigil works in strict scripts; interior expr stages qualify
+              match Weir.Parser.parseLine realResolver "let x = $(git branch | Seq.map Str.trim)" with
+              | Ok(SLet _) -> ()
+              | other -> failtest $"unexpected: {other}"
+          } ]
+
+let districtTests =
+    testList
+        "Command district"
+        [ test "marker distributes: district equals the single-line form" {
+              match Weir.Script.assemble [ 1, "if go then !"; 2, "    git pull"; 3, "    git push" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "if go then !(git pull) ; !(git push)" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "pipe-headed district lines continue the previous command" {
+              match Weir.Script.assemble [ 1, "if go then !"; 2, "    git branch"; 3, "    | Seq.map Str.trim" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "if go then !(git branch | Seq.map Str.trim)" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "district x else: dedent to marker indent rejoins the if" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let m ="
+                        2, "    if c then !"
+                        3, "        git pull"
+                        4, "    else print \"x\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let m = if c then !(git pull) else print \"x\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "district x pending let: closing line still closes the let" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let w ="
+                        2, "    let r ="
+                        3, "        if c then !"
+                        4, "            git pull"
+                        5, "    r" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let w = let r = if c then !(git pull) in r" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "MECHANISM PIN: a closing line is reprocessed exactly once (no duplicated segments)" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let w ="
+                        2, "    let r ="
+                        3, "        if c then !"
+                        4, "            git pull"
+                        5, "    r" ]
+              with
+              | Ok [ ll ] ->
+                  let line5 = ll.Segments |> List.filter (fun (_, n, _) -> n = 5)
+                  Expect.hasLength line5 1 "one span-table entry for the district-closing let-closing line"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "MECHANISM PIN: assembler recursion bounded by nesting, not file length" {
+              // 500 sequential districts with deep dedents must not overflow
+              let lines =
+                  [ for i in 1..500 do
+                        yield "let go = 1 > 0"
+                        yield "if go then !"
+                        yield "    git status"
+                        yield "" ]
+                  |> List.mapi (fun i l -> i + 1, l)
+
+              match Weir.Script.assemble lines with
+              | Ok lls -> Expect.equal (List.length lls) 1000 "all statements assembled"
+              | Error e -> failtest e
+          }
+          test "district errors: hint, contract, empty block" {
+              match Weir.Script.assemble [ 1, "if go then !"; 2, "    !(git pull)" ] with
+              | Error msg -> Expect.stringContains msg "drop the !(" "sigil-inside hint"
+              | other -> failtest $"unexpected: {other}"
+
+              match Weir.Script.assemble [ 1, "if go then !"; 2, "    let x = 1" ] with
+              | Error msg -> Expect.stringContains msg "bind values outside" "commands-only contract"
+              | other -> failtest $"unexpected: {other}"
+
+              match Weir.Script.assemble [ 1, "if go then !"; 2, "print \"no\"" ] with
+              | Error msg -> Expect.stringContains msg "needs an indented block" "armed but empty"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "district x uneven indent: one command per line error" {
+              match Weir.Script.assemble [ 1, "if go then !"; 2, "    git pull"; 3, "        extra" ] with
+              | Error msg -> Expect.stringContains msg "one per line" ""
+              | other -> failtest $"unexpected: {other}"
+          } ]
+
+let indexerTests =
+    testList
+        "Indexers"
+        [ test "xs[i] desugars to Seq.item" { expectValue "[\"a\"; \"b\"][1]" (VStr "b") }
+          test "chains and composes with fields and sigils" {
+              expectValue "[[1; 2]; [3; 4]][1][0]" (VInt 3L)
+              expectValue "(ls |> Seq.toList)[0].Name" (VStr "a.txt")
+          }
+          test "the whitespace rule: space means application (F# 6 dotless precedent)" {
+              expectValue "Seq.sum [1; 2]" (VInt 3L)
+              expectParse "f [0]" "(f [0])"
+              expectParse "f[0]" "((Seq.item 0) f)"
+          }
+          test "underscore shorthand extends to indexing" {
+              expectValue "[[\"a\"; \"b\"]] |> Seq.map _[0]" (VSeq [ VStr "a" ])
+          }
+          test "out of range raises; tryItem is the safe form" {
+              Expect.throws (fun () -> run "[1][9]" |> ignore) "raises"
+              expectValue "[1] |> Seq.tryItem 9" (VUnion("None", None))
+          }
+          test "non-seq targets are ordinary type errors" {
+              let terr = checkErr "5[0]"
+              Expect.stringContains (formatError terr) "expected seq" ""
+          } ]
+
 let fileTests =
     testSequenced
     <| testList
@@ -2582,5 +2812,10 @@ let allTests =
           fmtTests
           paramSugarTests
           showTests
+          seqAccessTests
+          sequencingTests
+          sigilTests
+          districtTests
+          indexerTests
           parallelTests
           fileTests ]

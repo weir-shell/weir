@@ -30,6 +30,7 @@ and TypedKind =
     | TERecord of record: string * fields: (string * TypedExpr) list
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
+    | TESeq of first: TypedExpr * rest: TypedExpr
     | TEFrom of format: string * rowDef: RecordDef
     | TETo of format: string
     | TEList of items: TypedExpr list
@@ -292,6 +293,21 @@ let showScheme: Scheme =
     { Forall = Set.singleton "__show"
       Ty = TFun(TVar "__show", TStr) }
 
+// Seq.contains — sentinel customer three (ledger in NOTES): the element
+// type must be EQUATABLE, or [f] |> Seq.contains g would typecheck while
+// == on functions is banned. The scheme doubles as a normal generic for
+// unintercepted shapes (bare member value); the evidenced shapes get the
+// check.
+let containsScheme: Scheme =
+    { Forall = Set.singleton "__contains"
+      Ty = TFun(TVar "__contains", TFun(TSeq(TVar "__contains"), TBool)) }
+
+let private isContainsSentinel (env: TypeEnv) =
+    env.Modules
+    |> Map.tryFind "Seq"
+    |> Option.bind (Map.tryFind "contains")
+    |> (=) (Some containsScheme)
+
 let private isShowBuiltin (env: TypeEnv) =
     Map.tryFind "show" env.Values = Some showScheme
 
@@ -552,6 +568,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEUnit
               Ty = TUnit
               Span = expr.Span }
+    | ESeq(first, rest) ->
+        result {
+            let! tfirst = infer ctx env first
+
+            match resolve ctx tfirst.Ty with
+            | TUnit ->
+                let! trest = infer ctx env rest
+
+                return
+                    { Kind = TESeq(tfirst, trest)
+                      Ty = trest.Ty
+                      Span = expr.Span }
+            | ty ->
+                return!
+                    err
+                        first.Span
+                        $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it"
+        }
     | EVar "show" when isShowBuiltin env ->
         // bare-value position: the defaulted form, like print
         Ok
@@ -629,6 +663,33 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         let head, args = spine expr
 
         match head.Kind, args with
+        | EField({ Kind = EVar "Seq" }, "contains", fspan), [ needle; source ] when isContainsSentinel env ->
+            result {
+                let elemTy = TVar(freshName ctx "a")
+                let! tneedle = infer ctx env needle
+                do! bind ctx env needle.Span elemTy tneedle.Ty
+                let! tsource = infer ctx env source
+                do! bind ctx env source.Span (TSeq elemTy) tsource.Ty
+                let resolved = finalTy ctx elemTy
+
+                if not (isEquatable env Set.empty resolved) then
+                    return! err needle.Span $"Seq.contains needs equatable elements; these are {formatTy resolved}"
+                else
+                    let thead =
+                        { Kind = TEVar "Seq.contains"
+                          Ty = TFun(resolved, TFun(TSeq resolved, TBool))
+                          Span = fspan }
+
+                    let t1 =
+                        { Kind = TEApp(thead, tneedle)
+                          Ty = TFun(TSeq resolved, TBool)
+                          Span = fspan }
+
+                    return
+                        { Kind = TEApp(t1, tsource)
+                          Ty = TBool
+                          Span = expr.Span }
+            }
         | EVar "show", [ arg ] when isShowBuiltin env ->
             result {
                 let! targ = infer ctx env arg
@@ -693,6 +754,35 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 { Kind = TEPipe(targ, tcmd)
                   Ty = TSeq TStr
                   Span = expr.Span }
+        }
+    | EPipe(arg, { Kind = EApp({ Kind = EField({ Kind = EVar "Seq" }, "contains", fspan) }, needle) }) when
+        isContainsSentinel env
+        ->
+        result {
+            let! targ = infer ctx env arg
+            let elemTy = TVar(freshName ctx "a")
+            do! bind ctx env arg.Span (TSeq elemTy) targ.Ty
+            let! tneedle = infer ctx env needle
+            do! bind ctx env needle.Span elemTy tneedle.Ty
+            let resolved = finalTy ctx elemTy
+
+            if not (isEquatable env Set.empty resolved) then
+                return! err needle.Span $"Seq.contains needs equatable elements; these are {formatTy resolved}"
+            else
+                let thead =
+                    { Kind = TEVar "Seq.contains"
+                      Ty = TFun(resolved, TFun(TSeq resolved, TBool))
+                      Span = fspan }
+
+                let tfn =
+                    { Kind = TEApp(thead, tneedle)
+                      Ty = TFun(TSeq resolved, TBool)
+                      Span = fspan }
+
+                return
+                    { Kind = TEPipe(targ, tfn)
+                      Ty = TBool
+                      Span = expr.Span }
         }
     | EPipe(arg, ({ Kind = EVar "show" } as showExpr)) when isShowBuiltin env ->
         result {
@@ -1199,6 +1289,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
                 |> List.map (fun (p, g, b) -> p, g |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
             )
         | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
+        | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
         | leaf -> leaf
 
     { te with
@@ -1341,7 +1432,22 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TEFrom _
         | TETo _ -> ()
         | TEList items -> items |> List.iter walk
-        | TECmd(_, args) -> args |> List.iter walk
+        | TECmd(_, args) ->
+            args |> List.iter walk
+
+            // the bash prior-bleed: `git add -A ; git push` hands git a
+            // literal ';' argv word (the standing no-injection pin) — warn,
+            // never block (a quoted ";" argument is legitimate)
+            for a in args do
+                match a.Kind with
+                | TEStr ";" ->
+                    acc.Add
+                        { Span = a.Span
+                          Message =
+                            "';' does not chain commands in weir — put commands on separate lines "
+                            + "(sequence unit expressions with ';' in expression position; "
+                            + "if you meant a literal ';' argument, ignore this)" }
+                | _ -> ()
         | TEInterp parts ->
             parts
             |> List.iter (function
@@ -1351,6 +1457,9 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
             walk cond
             walk thn
             els |> Option.iter walk
+        | TESeq(a, b) ->
+            walk a
+            walk b
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
 

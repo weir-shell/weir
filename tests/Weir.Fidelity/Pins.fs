@@ -99,7 +99,15 @@ let pins =
           "let f = fun x -> x + 1\nlet s = $\"{f}\"\n"
           (Diverges "interp-scalar-only")
       pin "corpus: format specifier in a hole" "let s = $\"{1:N2}\"\n" (Diverges "no-format-specifiers")
-      pin "computation expressions" "let s = seq { 1 }\n" (Diverges "no-computation-expressions") ]
+      pin "computation expressions" "let s = seq { 1 }\n" (Diverges "no-computation-expressions")
+
+      // --- block sequencing (Session 2): the fidelity GAIN pins ---
+      pinT
+          "sequenced effect block under if"
+          "let go = 1 > 0\nlet w =\n    if go then\n        print \"a\"\n        print \"b\"\n"
+          "let go = 1 > 0\nlet w =\n    if go then\n        printf \"a\"\n        printf \"b\"\n"
+          Same
+      pinT "explicit semicolon sequencing" "let u = (print \"x\" ; 1)\n" "let u = (printf \"x\" ; 1)\n" Same ]
 
 [<Tests>]
 let fidelityTests =

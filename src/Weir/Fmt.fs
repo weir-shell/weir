@@ -37,6 +37,9 @@ let private collectBareUses (e: Expr) : (Span * string) list =
             walk c
             walk t
             e |> Option.iter walk
+        | ESeq(a, b) ->
+            walk a
+            walk b
         | EList items -> items |> List.iter walk
         | ECmd(_, args) -> args |> List.iter walk
         | EInterp parts ->
@@ -153,6 +156,8 @@ let formatLines (body: string list) : Result<string list, string> =
     | Ok originalLogical ->
 
         let mutable stack: (int * int) list = [] // originalIndent, depth
+        // district: Some(markerOrigIndent, markerDepth) while inside a ! block
+        let mutable district: (int * int) option = None
 
         let formatted =
             body
@@ -171,26 +176,37 @@ let formatLines (body: string list) : Result<string list, string> =
                     let indent = code |> Seq.takeWhile ((=) ' ') |> Seq.length
                     let piece = code.TrimStart()
 
-                    let depth =
-                        if piece.StartsWith "|" then
-                            if List.isEmpty stack then
-                                if indent = 0 then 0 else 1
+                    match district with
+                    | Some(m, mDepth) when indent > m ->
+                        // district lines: verbatim text at marker+1 depth
+                        String.replicate ((mDepth + 1) * 4) " " + content
+                    | _ ->
+
+                        district <- None
+
+                        let depth =
+                            if piece.StartsWith "|" then
+                                if List.isEmpty stack then
+                                    if indent = 0 then 0 else 1
+                                else
+                                    List.length stack + 1
+                            elif indent = 0 then
+                                stack <- []
+                                0
                             else
-                                List.length stack + 1
-                        elif indent = 0 then
-                            stack <- []
-                            0
-                        else
-                            match stack with
-                            | (k, d) :: rest when indent = k ->
-                                stack <- rest
-                                d
-                            | _ -> List.length stack + 1
+                                match stack with
+                                | (k, d) :: rest when indent = k ->
+                                    stack <- rest
+                                    d
+                                | _ -> List.length stack + 1
 
-                    if not (piece.StartsWith "|") && indent > 0 && piece.StartsWith "let " then
-                        stack <- (indent, depth) :: stack
+                        if not (piece.StartsWith "|") && indent > 0 && piece.StartsWith "let " then
+                            stack <- (indent, depth) :: stack
 
-                    String.replicate (depth * 4) " " + content)
+                        if piece = "!" || piece.EndsWith " !" then
+                            district <- Some(indent, depth)
+
+                        String.replicate (depth * 4) " " + content)
 
         let renumbered =
             formatted

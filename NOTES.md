@@ -1,5 +1,168 @@
 # Spike Notes
 
+## Indexers — xs[i] (2026-07-20)
+
+User ask, F# 6 precedent applied verbatim: `xs[i]` = `Seq.item i xs`
+(desugar-only, zero checker surface); NO space = indexing, space =
+application of a list (`Seq.sum [1; 2]` untouched). The immediacy
+check needed no atom refactoring: spans record positions before
+trailing whitespace, so the suffix parser compares the current
+position against the target's span end — the postfixAtom rewrite is
+a recursive suffix loop (fields and indexes interleave; chains,
+row[0].Name, $(...)[0] all compose). The `_.Field` shorthand
+generalized to `_[0]` for free. jira-branch: the Seq.item lines are
+now fields[0]/fields[1]. 471 tests; suites/batteries/timing hold.
+
+
+## The command district — line-end ! blocks (2026-07-20)
+
+PLAN-command-district executed with one human-reviewed budget
+amendment. 465 + 37 tests; battery +5 e2e pins; timing holds. The
+flagship: the jira-branch cleanup is now marker + three bare command
+lines — zero per-line spelling tax.
+
+**The budget amendment and its metric lesson (as directed at review)**:
+the assembler diff came in at net +84 against the ~40 clause — 2×.
+Stopped and reported per the clause; keep was granted on the reasoned
+review: line count is a PROXY — the clause's real target is
+|-inertness-class murk, parallel invariant logic reimplementing the
+assembler's rules per-mode. The district does the architectural
+opposite: closing lines are REPROCESSED through the one rule set (the
+recursive `go`), which is where the overshoot lives (restructuring
+amplification + F# record plumbing; district logic proper ≈35-40).
+A 2× diff of clean reprocessing beats an in-budget diff of duplicated
+rules. Future assembler budgets: report net-new-logic vs restructuring
+amplification as separate numbers — the reviewer's distinction,
+pre-computed. The stop itself was correct both times it has fired;
+the clause routes exactly this judgment to a human.
+
+**Keep conditions, discharged**: the composition battery went green
+(not retroactively granted) including the two mechanism pins the
+reprocess owes — a district-closing let-closing line yields exactly
+ONE span-table entry (double-processing is the mechanism's native bug
+class), and assembler recursion is bounded by nesting (a
+500-district file assembles; `go` recurses at most once per line,
+district→normal).
+
+**The marker rejection ledger** (the real payload, per the plan —
+`do` is the one someone will propose again):
+- `do`: false friend — F#'s `do` opens EXPRESSION blocks; the district
+  is commands-only; borrowing F# syntax to mean something F#'s doesn't
+  is the inverted-prior class, unrefereeable by the oracle.
+- `>>>`: one keystroke from `>>`, a redirect shape under a
+  "no redirects" teaching.
+- `sh`: would resurrect the exact confusion the sh-builtin removal
+  fixed (the district is WEIR command mode — check-time PATH, typed
+  splices — not /bin/sh).
+- `!` wins: the plural of `!(...)` — one glyph, one concept; already
+  claimed by the family; prior-inert at line end.
+
+**Single-logical-line forcing argument** (recorded with the sigil
+labels): (1) district classification must not need paren-balance
+lookahead; (2) command text is the one place newline-join changes
+meaning silently (whitespace IS argv separation); (3) the typed
+escapes exist (`run` for long argv, statement-level pipes for long
+chains). The unclosed-sigil errors name both outs.
+
+District x else resolved by INHERITANCE: a dedented else at marker
+indent rejoins its if (pinned); col-0 if/else remains the standing
+multiline boundary, unchanged by districts.
+
+
+## Command-mode sigils — !(...) and $(...) (2026-07-20)
+
+PLAN-command-sigils executed. 457 + 37 tests; battery +6 pins; timing
+holds. ZERO checker surface, confirmed — both sigils are pure parser
+desugars ($() = the chain expression; !() = chain |> print), exactly
+the plan's model; no stop-and-report needed.
+
+- The resolver reached the expression grammar via a ThreadLocal
+  ambient (parseLine sets/resets) — threading it through every parser
+  signature would have been a rewrite; parallel test runs stay
+  isolated (the worker-fork precedent).
+- Uniform-interior paid immediately: `$(git status | complete)` binds
+  the Completed record with no extra machinery — but the completeMarker
+  needed its lookahead extended to the sigil closer (it demanded
+  pipe-or-eof; `)` is now legal after `complete`).
+- The composition-pin battery (the greedy-`;` lesson, mandated by the
+  plan) is in: sigils x assembler (bare-if blocks, both branch ways,
+  effect-counted in e2e), x greedy-`;` (single-line grouping pinned
+  body-scoped), x interpolation (holes never open command mode),
+  x complete (outside = parse error; inside composes), x strict.
+- jira-branch final form: the cleanup is a bare `if clean then` with
+  three `!(...)` lines — the spelling tax is two characters per
+  command. The branch line stays BARE (`let branch = git rev-parse ...
+  | Seq.head`) per user review: bare wins wherever legal (least ink);
+  $() earns its keep where bare cannot go (expressions, holes, nested
+  splices) — the docs teach that position, replacing the earlier
+  canonical-$() wording.
+- Forward archaeology as blessed: greedy-`;` protected flat blocks of
+  BARE expressions; sigil atoms self-delimit, so the divergence
+  protects a shrinking idiom — if its confusion metric ever fires,
+  the revisit is cheaper now. Recorded, no action.
+
+
+## Sequencing-and-args Session 2 — block effect sequencing (2026-07-20)
+
+450 + 37 tests; battery green; the jira-branch cleanup now reads as
+three `run` lines under one `if` — the plan's done-when, verbatim.
+
+**STOP-AND-REPORT (the plan's own clause, exercised on the precedence
+decision, not the assembler budget)**: the blessed lowest-precedence
+`;` and the assembler sibling rule COLLIDED at the flagship shape —
+flat-joining `if clean then run1 ; run2` with lowest-`;` parses the
+runs OUTSIDE the if: silently unconditional cleanup, the worst
+possible failure mode. Options were paren-wrapping sibling groups in
+the assembler (over budget, murky invariants — the |-inertness class)
+or making `;` GREEDY in body positions so it binds into blocks.
+Shipped greedy: the flat text then means what the block-shaped source
+says. Cost: F# VERBOSE grouping (`(if c then a); b` for a single-line
+`if c then a ; b`) is now a named divergence (semicolon-greedy-bodies)
+— parenthesize the if to sequence after it. The oracle Same pins
+cover the block shapes (F# light accepts them natively; verdicts
+agree) — grouping itself is invisible to a shapes-only oracle, so the
+divergence is carried by tests and the row, stated explicitly.
+
+Assembler budget: the sibling rule landed in ~6 lines (lastIndent in
+the fold state + one match arm) — well under the 30-line clause.
+Sequencing semantics ride ESeq (e1 ⇐ unit, tailored error); pipes and
+let-closure are inert/priority exactly as planned. The `;`-command
+warning fires on the pinned `git add -A ; git push` shape at CHECK
+time (runtime bash-parity preserved — the argv still passes).
+
+Also collected en route (Session 1 notes hold): the multi-line record
+separator friction stands as a candidate rider — NOT taken into this
+session either (scope discipline; it is a record-context rule, not a
+sibling rule).
+
+
+## Sequencing-and-args Session 1 — the library bits (2026-07-20)
+
+PLAN-sequencing-and-args Session 1 executed. 443 tests; battery +2
+pins; timing holds. The origin script (tools/jira-branch.weir) is the
+committed acceptance test: flag check and field access are one call
+each, verified end to end with jira/fzf stand-ins.
+
+- Seq.contains/exists/forall/item/tryItem/skip + Args.flag/value +
+  run, per the blessed decisions. `run` is literally
+  `apply printImpl (apply (apply cmdImpl p) a)` — the shared-path
+  decision implemented as composition, byte-identity pinned in e2e.
+- **Sentinel ledger (the blessed bookkeeping entry)**: hand-rolled
+  type-class instances now number three — equatable (`==`, `<>`,
+  `Seq.contains`), showable (`show`), comparable (`sortBy`,
+  runtime-checked only). Loophole noted: `contains` checks equatability
+  on the evidenced shapes (piped, full application); a bare
+  `Seq.contains` member value stays generic — same weakening as
+  print's defaulted bare form. Qualified types stay parked; this entry
+  is the accumulating evidence base.
+- Acceptance-test yield (the pattern held): multi-line RECORD literals
+  lose field separators in assembly — F# separates fields by newline,
+  weir joins with a space; trailing `;` is the spelling
+  (skill-lined + telemetry-logged). A record-field insertion rule is
+  a named candidate rider for Session 2's assembler work — same
+  technique, distinct context — NOT improvised into scope.
+
+
 ## The user guide — doc-tested from birth (2026-07-20)
 
 User asked "guide or too early?" — answered not-too-early on two

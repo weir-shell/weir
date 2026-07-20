@@ -24,6 +24,12 @@ stops being true fails the build.
 - Command lines (`git add -A`, `tar xf x.tgz | ...`) stream their output.
 - EVERY other statement must be unit: bind values (`let x = ...`) or
   print them (`expr |> print`). A discarded value is a check error.
+- Effect blocks: same-indent lines sequence (each but the last must be
+  unit) — `if clean then` + indented `run`/`print`/`fail` lines works.
+  Explicit form: `e1 ; e2`. `;` binds INTO if/match bodies (block-
+  shaped): to sequence AFTER an if, parenthesize it.
+- `;` does NOT chain commands: in a command line it is a literal argv
+  word (you get a warning). One command per line.
 - `print` takes string, int, bool, or `seq<string>`. For records,
   unions, options and debugging: `show x` renders ANY value (except
   functions) as a REPL-shaped string — `print (show row)`,
@@ -42,6 +48,17 @@ git ls-files | Seq.first 1
 ```weir-error
 // a discarded value is a check error, before anything runs
 "this string goes nowhere"
+```
+
+```weir
+let ok = 1 > 0
+
+if ok then
+    !(sh -c "echo step-one")
+    print "step-two"
+
+let branches = $(git branch) |> Seq.length
+print $"branches: {branches}"
 ```
 
 ## Syntax that differs from your priors
@@ -120,6 +137,12 @@ let v = match 1 with | 0 -> 0 | _ -> 1
 print "unreached"
 ```
 
+```weir-error
+// district lines are commands only — bind values outside the block
+if 1 > 0 then !
+    let x = 1
+```
+
 ## Commands and processes
 
 - Bareword heads run externals: `git status` works at a statement head.
@@ -137,6 +160,21 @@ print "unreached"
 - Typed output: `git status --porcelain | from porcelain` gives rows
   with `Path`/`Staged`/`Unstaged`/`Status`; `... | from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
+- `!` runs commands: parens for one inline (`!(git pull)`), LINE-END
+  `!` for a block below — indented bare command lines, one per line
+  (no expressions, no `let`, no nested `!()` inside; leading `|`
+  continues a pipeline):
+
+  `if clean then !`
+  + indented `git checkout main` / `git pull` lines.
+- Command sigils work ANYWHERE in expressions: `$(git branch)` captures
+  output (`seq<string>`, pipes onward); `!(git push)` runs-and-streams
+  (unit, raises on nonzero). On a top-level `let` RHS prefer the bare
+  chain (`let b = git branch | Seq.head`); sigils are for positions
+  bare cannot reach. The block effect idiom:
+  `if clean then` + indented `!(...)` lines. Interiors are ordinary
+  command chains (splices, pipes, `| complete`). `!` is NOT bash
+  history/extglob and `;` still does not chain inside them.
 - A top-level `let` RHS takes command lines: `let files = git ls-files`
   binds `seq<string>`; `let r = git status | complete` binds the
   record. Externals only — builtins stay functions there
@@ -146,6 +184,17 @@ print "unreached"
   grammar; quote `"in"` to pass it.
 - `Seq.pairwise` gives adjacent pairs as `{ Fst; Snd }` records:
   `xs |> Seq.pairwise |> Seq.map (fun p -> p.Snd - p.Fst)`.
+- Element access: `xs[0]` (raises; = `Seq.item 0 xs`; F# 6 whitespace
+  rule — `f [0]` WITH a space is applying a list) / `Seq.tryItem`
+  (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
+  Membership: `Seq.contains x xs` (equatable elements),
+  `Seq.exists`/`Seq.forall` with predicates.
+- Flags: `Args.flag "--clean" "-c"` (bool; `""` short form if none),
+  `Args.value "--out"` (Option of the next token). Script-only.
+- `run "git" ["push"]` runs a program from expression positions:
+  streams like a command line, raises on nonzero, returns unit.
+- Multi-line record literals need `;` at each field line end (fields
+  do not separate by newline).
 - Blank lines END statements — never leave one inside an indented
   block (the error will say so).
 

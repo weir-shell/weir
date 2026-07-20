@@ -31,6 +31,16 @@ type Resolver =
       IsExternal: string -> bool
       ExternalNames: unit -> seq<string> }
 
+// Sigil interiors ($(...) / !(...)) need the resolver inside the
+// expression grammar, which is otherwise resolver-free. parseLine sets
+// this per call; ThreadLocal keeps parallel test runs isolated.
+let private ambientResolver =
+    new System.Threading.ThreadLocal<Resolver>(fun () ->
+        { IsKnown = (fun _ -> true)
+          IsCommandCallable = (fun _ -> false)
+          IsExternal = (fun _ -> false)
+          ExternalNames = fun () -> Seq.empty })
+
 let private isIdentStart c = isLetter c || c = '_'
 let private isIdentCont c = isLetter c || isDigit c || c = '_'
 
@@ -63,6 +73,15 @@ let private ident = identSpanned |>> fst
 let private expr, private exprRef = createParserForwardedToRef<Expr, unit> ()
 
 let private mkExpr (kind, span) = { Kind = kind; Span = span }
+
+// e1 ; e2 — block sequencing. Deployed at BODY positions (then/else,
+// arm and lambda bodies, let-in bodies, parens, statements) and GREEDY
+// there: `if c then a ; b` sequences INSIDE the then-branch, matching
+// the block-shaped source it assembles from. This diverges from F#
+// VERBOSE grouping (named divergence row) — the alternative made
+// assembled if-blocks silently unconditional (see the Session-2
+// stop-and-report in NOTES).
+let private seqExpr, private seqExprRef = createParserForwardedToRef<Expr, unit> ()
 
 let private intLit =
     spanned (
@@ -107,7 +126,7 @@ let private unitLit =
     spanned (attempt (pchar '(' >>. ws >>. pchar ')') >>% EUnit) |>> mkExpr .>> ws
 
 let private parens =
-    spanned (pchar '(' >>. ws >>. expr .>> pchar ')')
+    spanned (pchar '(' >>. ws >>. seqExpr .>> pchar ')')
     |>> fun (inner, span) -> { inner with Span = span }
     .>> ws
 
@@ -199,27 +218,104 @@ let private interpLit =
     spanned (pstring "$\"" >>. many interpPart .>> pchar '"' |>> EInterp) |>> mkExpr
     .>> ws
 
+// Command-mode sigils: explicit, delimited guest entry for command
+// chains in expression position. Interior grammar is IDENTICAL to a
+// statement-level chain (cmdLine — same segments, splices, pipes,
+// | complete, bareword heads incl. command-callables; the sigil makes
+// the intent unambiguous, unlike the bare let-RHS which excludes
+// builtins). $(chain) captures the value; !(chain) desugars to
+// (chain) |> print — eager, streaming, raising, unit.
+let private sigilChain, private sigilChainRef =
+    createParserForwardedToRef<Expr, unit> ()
+
+let private captureSigil =
+    spanned (
+        pstring "$(" >>. ws >>. sigilChain
+        .>> (pchar ')'
+             <?> "')' — close the sigil on this line, or bind with 'let x = <command>' at statement level")
+    )
+    |>> fun (chain, span) -> { chain with Span = span }
+    .>> ws
+
+let private effectSigil =
+    spanned (
+        pstring "!(" >>. ws >>. sigilChain
+        .>> (pchar ')'
+             <?> "')' — close the sigil on this line, or use line-end '!' for a block of commands")
+    )
+    |>> (fun (chain, span) ->
+        { Kind = EPipe(chain, { Kind = EVar "print"; Span = span })
+          Span = span })
+    .>> ws
+
 let private atom =
-    choice [ intLit; strLit; interpLit; unitLit; parens; recordLit; listLit; wordAtom ]
+    choice
+        [ intLit
+          strLit
+          interpLit
+          captureSigil
+          effectSigil
+          unitLit
+          parens
+          recordLit
+          listLit
+          wordAtom ]
 
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 
-let private postfixAtom =
-    atom .>>. many fieldSuffix
-    |>> fun (target, fields) ->
-        let applied =
-            fields
-            |> List.fold
-                (fun t (name, fspan) ->
-                    { Kind = EField(t, name, fspan)
-                      Span = Span.union t.Span fspan })
-                target
+// xs[i] desugars to Seq.item i xs — F# 6 dotless-indexing whitespace
+// rule: NO space = indexing; a space means application (f [1; 2] stays
+// an application of a list). Immediacy is checked against the target's
+// span end (spans record positions before trailing whitespace).
+let private indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
+    let span =
+        { Start = target.Span.Start
+          End = endPos }
 
-        match target.Kind, fields with
-        | EVar "_", _ :: _ ->
-            { Kind = ELambda("_", applied)
-              Span = applied.Span }
-        | _ -> applied
+    let seqItem =
+        { Kind = EField({ Kind = EVar "Seq"; Span = span }, "item", span)
+          Span = span }
+
+    { Kind =
+        EApp(
+            { Kind = EApp(seqItem, idx)
+              Span = span },
+            target
+        )
+      Span = span }
+
+let private postfixAtom =
+    let rec suffixes (target: Expr) : Parser<Expr, unit> =
+        let fieldNext =
+            attempt fieldSuffix
+            >>= fun (name, fspan) ->
+                suffixes
+                    { Kind = EField(target, name, fspan)
+                      Span = Span.union target.Span fspan }
+
+        let indexNext =
+            attempt (
+                getPosition
+                >>= fun p ->
+                    if int p.Line = target.Span.End.Line && int p.Column = target.Span.End.Col then
+                        pchar '[' >>. ws >>. expr .>> pchar ']' .>>. getPosition .>> ws
+                        |>> fun (idx, endP) -> indexDesugar target idx (pos endP)
+                    else
+                        fail "whitespace before [ means application"
+            )
+            >>= suffixes
+
+        fieldNext <|> indexNext <|> preturn target
+
+    atom
+    >>= fun target ->
+        suffixes target
+        |>> fun applied ->
+            match target.Kind with
+            | EVar "_" when applied <> target ->
+                { Kind = ELambda("_", applied)
+                  Span = applied.Span }
+            | _ -> applied
 
 rangeTermRef.Value <-
     choice
@@ -240,7 +336,7 @@ let private appChain =
           Span = Span.union f.Span a.Span })
 
 let private lambda =
-    pipe3 getPosition (keyword "fun" >>. ident .>> str_ws "->") expr (fun p param body ->
+    pipe3 getPosition (keyword "fun" >>. ident .>> str_ws "->") seqExpr (fun p param body ->
         { Kind = ELambda(param, body)
           Span = { Start = pos p; End = body.Span.End } })
 
@@ -260,7 +356,7 @@ let private letIn =
         getPosition
         (keyword "let" >>. ident .>>. many ident .>> str_ws "=" .>>. expr
          .>> keyword "in")
-        expr
+        seqExpr
         (fun p ((name, ps), value) body ->
             { Kind = ELet(name, curryParams ps value, body)
               Span = { Start = pos p; End = body.Span.End } })
@@ -363,7 +459,7 @@ let private toExpr =
     |>> fun (fmt, span) -> { Kind = ETo fmt; Span = span }
 
 let private matchArm =
-    pat .>>. opt (keyword "when" >>. expr) .>> str_ws "->" .>>. expr
+    pat .>>. opt (keyword "when" >>. expr) .>> str_ws "->" .>>. seqExpr
     |>> fun ((p, guard), body) -> p, guard, body
 
 let private matchExpr =
@@ -384,8 +480,8 @@ let private ifExpr =
     pipe4
         getPosition
         (keyword "if" >>. expr)
-        (keyword "then" >>. expr)
-        (opt (keyword "else" >>. expr))
+        (keyword "then" >>. seqExpr)
+        (opt (keyword "else" >>. seqExpr))
         (fun p cond thn els ->
             let endPos = (els |> Option.defaultValue thn).Span.End
 
@@ -395,6 +491,26 @@ let private ifExpr =
 opp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
 segOpp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
 exprRef.Value <- opp.ExpressionParser
+
+seqExprRef.Value <-
+    expr .>>. many (attempt (str_ws ";" >>. expr))
+    |>> fun (first, rest) ->
+        match rest with
+        | [] -> first
+        | _ ->
+            let all = first :: rest
+
+            List.foldBack
+                (fun e acc ->
+                    match acc with
+                    | None -> Some e
+                    | Some tail ->
+                        Some
+                            { Kind = ESeq(e, tail)
+                              Span = Span.union e.Span tail.Span })
+                all
+                None
+            |> Option.get
 
 let private segExpr = segOpp.ExpressionParser
 
@@ -432,7 +548,7 @@ let private cmdArgWith (stopAtIn: bool) =
         else
             spanned (cmdWord |>> EStr) |>> mkExpr .>> ws
 
-    choice [ strLit; singleQuoted; interpLit; spliceVar; parens; bareword ]
+    choice [ strLit; singleQuoted; interpLit; captureSigil; spliceVar; parens; bareword ]
 
 let private cmdArg = cmdArgWith false
 
@@ -507,7 +623,7 @@ let private completeMarker =
     attempt (
         spanned (pstring "complete" .>> notFollowedBy (satisfy cmdWordChar))
         .>> ws
-        .>> lookAhead (choice [ pipeSep |>> ignore; eof ])
+        .>> lookAhead (choice [ pipeSep |>> ignore; pchar ')' |>> ignore; eof ])
     )
     |>> fun (_, span) -> CompleteMarker span
 
@@ -554,6 +670,8 @@ let private cmdLineWith (builtinHeads: bool) (argP: Parser<Expr, unit>) (r: Reso
         | Result.Error m -> failFatally m
 
 let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg r
+
+sigilChainRef.Value <- fun stream -> (cmdLineWith true cmdArg ambientResolver.Value) stream
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
 // command-callable builtins (cd) stay ordinary functions there — found as a
@@ -638,7 +756,7 @@ let private stmtWith (r: Resolver) =
             [ typeDecl .>> eof
               topLet r
               cmdLine r .>> eof |>> SCmd
-              expr .>> eof |>> SExpr ]
+              seqExpr .>> eof |>> SExpr ]
 
 let private noExternals =
     { IsKnown = fun _ -> true
@@ -647,9 +765,14 @@ let private noExternals =
       ExternalNames = fun () -> Seq.empty }
 
 let parseLine (r: Resolver) (input: string) : Result<Stmt, string> =
-    match run (stmtWith r) input with
-    | Success(s, _, _) -> Result.Ok s
-    | Failure(msg, _, _) -> Result.Error msg
+    ambientResolver.Value <- r
+
+    try
+        match run (stmtWith r) input with
+        | Success(s, _, _) -> Result.Ok s
+        | Failure(msg, _, _) -> Result.Error msg
+    finally
+        ambientResolver.Value <- noExternals
 
 let parseStmt (input: string) : Result<Stmt, string> = parseLine noExternals input
 

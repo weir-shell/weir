@@ -165,6 +165,35 @@ full F#.
 
 `fail "reason"` stops the script with a located error and exit 1.
 `printerr` is `print` to stderr — diagnostics there, data on stdout.
+Effect steps sequence inside blocks — same-indent lines, each but the
+last unit-typed. Command sigils bring full command chains into
+expressions: `$(...)` captures output, `!(...)` runs-and-streams
+(unit, raises on nonzero):
+
+```weir
+let ready = 1 > 0
+
+if ready then !
+    sh -c "echo preparing"
+    sh -c "echo prepared"
+
+if ready then
+    !(sh -c "echo inline-form")
+    print "mixed with expressions"
+
+let latest = git log -1 "--format=%h" | Seq.head
+print $"at {latest}"
+
+let tagged = $"at {$(git log -1 "--format=%h") |> Seq.head}"
+```
+
+A top-level `let` RHS takes a bare command chain directly
+(`let branch = git rev-parse HEAD | Seq.head`) — prefer that where it
+is legal; `$()` is for everywhere bare cannot go (inside expressions,
+holes, nested splices). `run`/`cmd` remain the spellings when the
+program NAME is computed. And do not bind an `if`-effect block to a
+`let`: the binding is eagerly evaluated unit — a bare `if` statement
+says what it means.
 
 ```weir
 printerr "starting"

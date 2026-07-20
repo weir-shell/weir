@@ -56,10 +56,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
         Error
             $"line {letLine}: this let needs a body — a blank line ends the statement; keep the block's lines contiguous"
 
-    let close (current: (LogicalLine * (int * int) list) option) acc =
+    // district = (markerIndent, markerLine, districtIndent option): armed by a
+    // line-end `!`, activated by the first deeper line; each district line
+    // wraps as !(line), joined with ; — the marker distributes itself.
+    let close (current: (LogicalLine * (int * int) list * int * (int * int * int option) option) option) acc =
         match current with
-        | Some(_, (_, letLine) :: _) -> noBody letLine
-        | Some(ll, []) ->
+        | Some(_, _, _, Some(_, mLine, None)) ->
+            Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
+        | Some(_, (_, letLine) :: _, _, _) -> noBody letLine
+        | Some(ll, [], _, _) ->
             Ok(
                 { ll with
                     Segments = List.rev ll.Segments }
@@ -68,6 +73,16 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
         | None -> Ok acc
 
     let isLetHead (piece: string) = piece.StartsWith "let "
+
+    let isMarker (piece: string) = piece = "!" || piece.EndsWith " !"
+
+    let districtLineCheck lineNo (piece: string) =
+        if piece.StartsWith "!(" then
+            Error $"line {lineNo}: already inside a command block; drop the !(...)"
+        elif isLetHead piece then
+            Error $"line {lineNo}: district lines are commands; bind values outside the block"
+        else
+            Ok()
 
     let folded =
         numbered
@@ -78,7 +93,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 | Ok(current, acc, blankSinceHead) ->
                     if raw.Trim() = "" then
                         match current with
-                        | Some(_, (_, letLine) :: _) -> noBodyBlank letLine
+                        | Some(_, _, _, Some(_, mLine, None)) ->
+                            Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
+                        | Some(_, (_, letLine) :: _, _, _) -> noBodyBlank letLine
                         | _ -> close current acc |> Result.map (fun acc -> None, acc, true)
                     elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' then
                         let indent = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
@@ -93,34 +110,106 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         $"line {lineNo}: continuation after a blank line has no statement to continue"
                                 else
                                     Error $"line {lineNo}: continuation without a statement"
-                            | Some(ll, stack) ->
+                            | Some(ll, stack, lastIndent, district) ->
                                 let piece = raw.Substring indent
 
-                                let closed =
-                                    if piece.StartsWith "|" then
-                                        match stack with
-                                        | (k, letLine) :: _ when indent <= k -> noBody letLine
-                                        | _ -> Ok(stack, " ")
-                                    else
-                                        match stack with
-                                        | (k, letLine) :: _ when indent < k -> noBody letLine
-                                        | (k, _) :: rest when indent = k -> Ok(rest, " in ")
-                                        | _ -> Ok(stack, " ")
+                                let rec go (ll: LogicalLine, stack, lastIndent, district) =
+                                    match district with
+                                    | Some(m, mLine, None) when indent > m ->
+                                        districtLineCheck lineNo piece
+                                        |> Result.map (fun () ->
+                                            let joinedStart = ll.Text.Length - 1 + 2
 
-                                closed
-                                |> Result.map (fun (stack, sep) ->
-                                    let stack = if isLetHead piece then (indent, lineNo) :: stack else stack
+                                            Some(
+                                                { ll with
+                                                    Text =
+                                                        ll.Text.Substring(0, ll.Text.Length - 1) + "!(" + piece + ")"
+                                                    Segments = (joinedStart, lineNo, indent) :: ll.Segments },
+                                                stack,
+                                                indent,
+                                                Some(m, mLine, Some indent)
+                                            ),
+                                            acc,
+                                            blankSinceHead)
+                                    | Some(_, mLine, None) ->
+                                        Error
+                                            $"line {mLine}: line-end '!' needs an indented block of command lines below it"
+                                    | Some(m, mLine, Some d) when indent > m ->
+                                        if piece.StartsWith "|" then
+                                            let joinedStart = ll.Text.Length
 
-                                    let joinedStart = ll.Text.Length + sep.Length
+                                            Ok(
+                                                Some(
+                                                    { ll with
+                                                        Text =
+                                                            ll.Text.Substring(0, ll.Text.Length - 1)
+                                                            + " "
+                                                            + piece
+                                                            + ")"
+                                                        Segments = (joinedStart, lineNo, indent) :: ll.Segments },
+                                                    stack,
+                                                    indent,
+                                                    district
+                                                ),
+                                                acc,
+                                                blankSinceHead
+                                            )
+                                        elif indent = d then
+                                            districtLineCheck lineNo piece
+                                            |> Result.map (fun () ->
+                                                let joinedStart = ll.Text.Length + 5
 
-                                    Some(
-                                        { ll with
-                                            Text = ll.Text + sep + piece
-                                            Segments = (joinedStart, lineNo, indent) :: ll.Segments },
-                                        stack
-                                    ),
-                                    acc,
-                                    blankSinceHead)
+                                                Some(
+                                                    { ll with
+                                                        Text = ll.Text + " ; !(" + piece + ")"
+                                                        Segments = (joinedStart, lineNo, indent) :: ll.Segments },
+                                                    stack,
+                                                    indent,
+                                                    district
+                                                ),
+                                                acc,
+                                                blankSinceHead)
+                                        else
+                                            Error
+                                                $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
+                                    | Some _ ->
+                                        // at or left of the marker: the district closes;
+                                        // reprocess this line under the normal rules
+                                        go (ll, stack, lastIndent, None)
+                                    | None ->
+                                        let closed =
+                                            if piece.StartsWith "|" then
+                                                match stack with
+                                                | (k, letLine) :: _ when indent <= k -> noBody letLine
+                                                | _ -> Ok(stack, " ")
+                                            else
+                                                match stack with
+                                                | (k, letLine) :: _ when indent < k -> noBody letLine
+                                                | (k, _) :: rest when indent = k -> Ok(rest, " in ")
+                                                // same-indent sibling = block sequencing
+                                                | _ when indent = lastIndent -> Ok(stack, " ; ")
+                                                | _ -> Ok(stack, " ")
+
+                                        closed
+                                        |> Result.map (fun (stack, sep) ->
+                                            let stack = if isLetHead piece then (indent, lineNo) :: stack else stack
+
+                                            let district = if isMarker piece then Some(indent, lineNo, None) else None
+
+                                            let joinedStart = ll.Text.Length + sep.Length
+
+                                            Some(
+                                                { ll with
+                                                    Text = ll.Text + sep + piece
+                                                    Segments = (joinedStart, lineNo, indent) :: ll.Segments },
+                                                stack,
+                                                indent,
+                                                district
+                                            ),
+                                            acc,
+                                            blankSinceHead)
+
+                                go (ll, stack, lastIndent, district)
                     else
                         close current acc
                         |> Result.map (fun acc ->
@@ -128,7 +217,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 { Text = raw
                                   Head = lineNo
                                   Segments = [ (0, lineNo, 0) ] },
-                                []
+                                [],
+                                0,
+                                (if isMarker (raw.TrimEnd()) then
+                                     Some(0, lineNo, None)
+                                 else
+                                     None)
                             ),
                             acc,
                             false))
@@ -183,6 +277,8 @@ let private baseEnvs (mode: Mode) (scriptArgs: string list) =
                         line <- Console.In.ReadLine()
                 })
         )
+
+    Session.ScriptArgs <- scriptArgs
 
     let valueEnv =
         valueEnv

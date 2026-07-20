@@ -43,3 +43,7 @@ argument that killed the subtractive fork.
 | no-anonymous-records | pending | {| A = 1 |} and undeclared record literals | reject (exact declared field set) | accept | one telemetry hit; SEMANTICS: rows close on discharge |
 | no-destructuring-binders | pending | let (a, b) = ... , fun (x, y) -> | reject | accept | tied to the tuples decision |
 | no-elif | pending | elif keyword | reject (else if chains) | accept | trivial; no demand |
+| semicolon-command-argv | different | `;` inside a command line (bash chains; weir passes literal argv + warns) | argv word + warning | n/a (bash prior, not F#) | SEMANTICS: sequencing; the no-injection pin |
+| semicolon-greedy-bodies | different | `if c then a ; b` groups INSIDE the body (F# verbose groups outside) | body-scoped | trailing | SEMANTICS: sequencing — flat-joined blocks made verbose grouping silently wrong |
+| bang-sigil | different | `!(cmd chain)` runs-and-streams (bash: extglob/history `!`) | effect sigil, unit | n/a (bash prior; invisible to the F# oracle) | SEMANTICS: sigils |
+| capture-sigil-aligns | different | `$(cmd chain)` captures output — the bash prior HELPS here (recorded per the == archaeology precedent: priors that help get named too) | capture, typed seq<string> | n/a (bash prior) | SEMANTICS: sigils |

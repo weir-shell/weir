@@ -38,6 +38,7 @@ and ExprKind =
     | ERecord of fields: (string * Span * Expr) list
     | EMatch of scrutinee: Expr * arms: (Pattern * Expr option * Expr) list
     | EIf of cond: Expr * thn: Expr * els: Expr option
+    | ESeq of first: Expr * rest: Expr
     | EFrom of format: string * tyName: string option
     | ETo of format: string
     | EList of items: Expr list
