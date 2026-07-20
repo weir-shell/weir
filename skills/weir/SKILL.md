@@ -145,6 +145,9 @@ if 1 > 0 then !
 
 ## Commands and processes
 
+- Interactive TTY tools (fzf-class) work in command pipelines — they
+  draw on /dev/tty while stdio pipes; a user cancel (exit 130) RAISES
+  like any nonzero exit, aborting the script at the fault.
 - Bareword heads run externals: `git status` works at a statement head.
   Builtins shadow PATH (`ls` is typed rows); `^ls` forces the external.
 - Splice values into commands: `$name` for bindings, `(expr)` for

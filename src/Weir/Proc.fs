@@ -48,7 +48,17 @@ let lines (prog: string) (args: string list) (input: seq<string> option) : seq<s
 
             if p.ExitCode <> 0 then
                 let shown = String.concat " " (prog :: args)
-                failwith $"command failed with exit code {p.ExitCode}: {shown}"
+                let signalNote =
+                    // 128+N = terminated by signal N; name the common ones so a
+                    // cancelled fzf reads as a cancel, not a mystery number
+                    match p.ExitCode with
+                    | 130 -> " (SIGINT — interrupted/cancelled)"
+                    | 143 -> " (SIGTERM — terminated)"
+                    | 137 -> " (SIGKILL — killed)"
+                    | c when c > 128 && c < 165 -> $" (signal {c - 128})"
+                    | _ -> ""
+
+                failwith $"command failed with exit code {p.ExitCode}{signalNote}: {shown}"
         finally
             try
                 p.Kill true

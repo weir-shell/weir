@@ -48,3 +48,13 @@ skill lines and targeted hints).
   spelling. Candidate: record-field `;`-insertion, same technique as
   Session 2's sibling rule but a distinct context. Logged, not
   improvised.
+- 2026-07-20 | jira-branch, real terminal | fzf interactivity VERIFIED
+  (parked item discharged): ran, drew UI, returned cancel. Weir raised
+  at the cancel (exit 130) before any git mutation; the nu original
+  marched past it into `git switch -c ''` — error-at-a-distance, the
+  exact failure class weir's raise-at-force kills. Verdict: weir more
+  correct. NEW friction: graceful-cancel has no spelling — `| complete`
+  is single-segment, so the exit of a chain's LAST stage cannot be
+  reified (want: tolerate cancel, exit 0 silently). Candidate shapes:
+  chain-level complete, or completed-with-stdin. Logged, not
+  improvised.
