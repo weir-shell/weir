@@ -232,6 +232,12 @@ out=$(cd "$scriptdir" && git init -q 2>/dev/null; cd "$scriptdir" && $BIN show.w
 echo "$out" | grep -qF "Staged = " || fail "show must render the porcelain row: $out"
 echo "e2e ok: show renders typed rows on the AOT binary"
 
+start=$(date +%s%N)
+$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if (completed "sh" ["-c"; "sleep 0.3"]).ExitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
+elapsed_ms=$(( ($(date +%s%N) - start) / 1000000 ))
+[ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
+echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
+
 cat > "$scriptdir/perr.weir" <<'WEOF'
 let x =
     1 +* 2

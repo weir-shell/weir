@@ -414,6 +414,16 @@ quantity semantics now.
   variable is in scope to default, and a freshly-instantiated
   outer-binding variable defaulted by a splice is local to the line's
   ctx. Nothing defaulted survives to be generalized at another type.
+- **Data parallelism, not concurrency machinery**: `Seq.pmap` /
+  `Seq.piter` (2026-07-20) fan a function out over a seq —
+  ProcessorCount degree, EAGER, results in input order, first worker
+  error rethrown. Parallelism is an implementation detail of a
+  combinator (Array.Parallel precedent; xargs -P with types): no new
+  types, no coloring, blocking semantics — which is exactly why it
+  does not contradict the async rejection below. `cd` inside a worker
+  fails loudly (the session cwd is shared — the single-threaded-session
+  invariant is guarded, not trusted); interleaved worker output is
+  line-atomic and owned by the user, as with any parallel tool.
 - **Async/task machinery is REJECTED, permanently** (2026-07-20, user
   decision): a scripting shell's concurrency model is processes and
   pipelines — spawn, stream, complete. Weir will not grow async/await,

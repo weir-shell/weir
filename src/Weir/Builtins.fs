@@ -112,6 +112,8 @@ let private intoImpl: Value =
 let private cdImpl: Value =
     VBuiltin(fun v ->
         match v with
+        | VStr path when Session.inParallel.Value ->
+            failwith "cd is not allowed inside parallel workers (the session cwd is shared)"
         | VStr path ->
             let home =
                 System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
@@ -427,6 +429,48 @@ let private rangeImpl: Value =
                     )
                 | _ -> unreachable "the checker rejects non-int range bounds")))
 
+// Data parallelism, NOT concurrency machinery (see the async rejection):
+// eager, input-order results, ProcessorCount degree, first worker error
+// rethrown. Output interleaving from piter workers is line-atomic and
+// owned by the user, as with any parallel tool.
+let private runParallel (f: Value) (items: seq<Value>) : Value array =
+    let arr = Seq.toArray items
+    let out = Array.zeroCreate arr.Length
+
+    try
+        System.Threading.Tasks.Parallel.For(
+            0,
+            arr.Length,
+            fun i ->
+                Session.inParallel.Value <- true
+
+                try
+                    out[i] <- apply f arr[i]
+                finally
+                    Session.inParallel.Value <- false
+        )
+        |> ignore
+    with :? System.AggregateException as ae ->
+        raise (ae.Flatten().InnerExceptions[0])
+
+    out
+
+let private pmapImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items -> VSeq(runParallel f items :> seq<Value>)
+            | v -> unreachable $"the checker rejects 'pmap' on {formatValue v}"))
+
+let private piterImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                runParallel f items |> ignore
+                VUnit
+            | v -> unreachable $"the checker rejects 'piter' on {formatValue v}"))
+
 let private seqMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
@@ -441,6 +485,8 @@ let private seqMembers: (string * Ty * Value) list =
       "length", TFun(TSeq tA, TInt), seqLengthImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
+      "pmap", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), pmapImpl
+      "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
       "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
       "pairwise", TFun(TSeq tA, TSeq(TNamed("Pair", [ tA ]))), pairwiseImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]

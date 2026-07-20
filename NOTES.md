@@ -1,5 +1,28 @@
 # Spike Notes
 
+## Seq.pmap / Seq.piter — data parallelism (2026-07-20)
+
+User question ("could we have parallelism though? think of
+Array.parallel") answered yes with the line drawn precisely: the async
+rejection covered concurrency MACHINERY (colored types, await,
+schedulers); pmap/piter are combinators whose parallelism is an
+implementation detail — no new types, blocking, eager, input-order
+results, ProcessorCount degree, first worker error rethrown
+(AggregateException unwrapped). Shell-native want: xargs -P with
+types. Border row updated so the rejection and the combinators read
+as one position.
+
+The landmine was Session.Cwd: the single-threaded-session invariant is
+now GUARDED, not trusted — cd inside a worker raises "cd is not
+allowed inside parallel workers" via a ThreadLocal flag set around
+each worker item. Interleaved piter output is line-atomic, user-owned
+(documented, as with any parallel tool). Wall-clock e2e pin: 4x300ms
+sleeps under 900ms on the AOT binary (measured 311ms locally). One
+amusing scope self-collision: the first timing probe used `ignore` —
+which weir deliberately parked; the unit-shaped spelling
+(if ... then print) was the honest fix.
+
+
 ## The F# border classified — rejected vs pending (2026-07-20)
 
 User question exposed the gap: divergences.md named oracle-refereed

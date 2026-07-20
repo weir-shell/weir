@@ -2325,6 +2325,27 @@ let showTests =
           }
           test "a let shadows the show builtin" { expectValue "let show = fun x -> x in show 9" (VInt 9L) } ]
 
+let parallelTests =
+    testList
+        "Data parallelism"
+        [ test "pmap preserves input order" {
+              expectValue "[3; 1; 2] |> Seq.pmap (fun x -> x * 10)" (VSeq [ VInt 30L; VInt 10L; VInt 20L ])
+          }
+          test "pmap is eager and reusable" {
+              expectValue "let r = [1; 2] |> Seq.pmap (fun x -> x + 1) in (r |> Seq.sum) + (r |> Seq.sum)" (VInt 10L)
+          }
+          test "piter runs every element and returns unit" {
+              expectValue "[1; 2; 3] |> Seq.piter (fun n -> if n > 99 then print \"never\")" VUnit
+          }
+          test "cd inside a worker fails loudly" {
+              Expect.throwsT<exn>
+                  (fun () -> run "[1] |> Seq.pmap (fun x -> cd \"/tmp\")" |> ignore)
+                  "shared-session guard"
+          }
+          test "worker failure surfaces as the first error" {
+              Expect.throwsT<exn> (fun () -> run "[1; 0] |> Seq.pmap (fun x -> 10 / x)" |> ignore) "div by zero"
+          } ]
+
 let fileTests =
     testSequenced
     <| testList
@@ -2556,4 +2577,5 @@ let allTests =
           fmtTests
           paramSugarTests
           showTests
+          parallelTests
           fileTests ]
