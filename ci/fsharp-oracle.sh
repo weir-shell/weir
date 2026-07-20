@@ -4,4 +4,4 @@
 # FCS restore is heavy, so CI should cache the NuGet package dir.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-dotnet test tests/Weir.Fidelity
+dotnet test tests/Weir.Fidelity/Weir.Fidelity.fsproj
