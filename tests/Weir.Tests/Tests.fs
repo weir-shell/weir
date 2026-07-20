@@ -949,7 +949,7 @@ let session2Tests =
 
                   Expect.equal out [ VStr "g1.txt g2.txt" ] ""
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
                   Directory.Delete(dir, true)
           }
           test "injection attempt is inert through cmd" {
@@ -959,7 +959,7 @@ let session2Tests =
               try
                   Expect.equal (run "let d = cd \"/tmp\" in cmd \"pwd\" []" |> forceSeq) [ VStr "/tmp" ] ""
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "cd changes the spawn cwd for sh" {
               try
@@ -968,7 +968,7 @@ let session2Tests =
                       [ VStr "/tmp" ]
                       ""
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "pwd builtin tracks Session.Cwd lazily" {
               try
@@ -977,7 +977,7 @@ let session2Tests =
                       [ VStr "/tmp" ]
                       "pwd re-reads Session.Cwd per enumeration"
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "cd on a missing directory fails at runtime" {
               Expect.throws (fun () -> run "cd \"/definitely/not/here\"" |> ignore) ""
@@ -986,11 +986,11 @@ let session2Tests =
               try
                   Expect.equal
                       (run "let a = cd \"/tmp\" in cd \"..\"" |> ignore
-                       Weir.Session.Cwd)
+                       Weir.Session.Cwd())
                       "/"
                       ""
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "cmd not found raises with a clear message" {
               Expect.throws (fun () -> run "cmd \"weir-no-such-prog\" []" |> forceSeq |> ignore) ""
@@ -1178,11 +1178,11 @@ let cdTests =
                       match typecheck env e with
                       | Ok te ->
                           Expect.equal (eval valueEnv te) (VStr "/tmp") "returns new cwd"
-                          Expect.equal Weir.Session.Cwd "/tmp" "session mutated"
+                          Expect.equal (Weir.Session.Cwd()) "/tmp" "session mutated"
                       | Error terr -> failtest (formatError terr)
                   | other -> failtest $"unexpected: {other}"
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "bare cd goes home" {
               try
@@ -1196,7 +1196,7 @@ let cdTests =
                       | Error terr -> failtest (formatError terr)
                   | other -> failtest $"unexpected: {other}"
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "cd to a missing directory reports the resolved absolute path" {
               try
@@ -1209,13 +1209,13 @@ let cdTests =
                       | Error terr -> failtest (formatError terr)
                   | other -> failtest $"unexpected: {other}"
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "expression-mode cd is unchanged" {
               try
                   expectValue "let d = cd \"/tmp\" in d" (VStr "/tmp")
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           } ]
 
 let diagnoseTests =
@@ -1265,7 +1265,7 @@ let session3Tests =
                       "let p = pwd |> toList in let d = cd \"/tmp\" in p |> first 1"
                       (VSeq [ VStr(System.IO.Directory.GetCurrentDirectory()) ])
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "toList forces effects exactly once" {
               let marker =
@@ -2326,7 +2326,8 @@ let showTests =
           test "a let shadows the show builtin" { expectValue "let show = fun x -> x in show 9" (VInt 9L) } ]
 
 let parallelTests =
-    testList
+    testSequenced
+    <| testList
         "Data parallelism"
         [ test "pmap preserves input order" {
               expectValue "[3; 1; 2] |> Seq.pmap (fun x -> x * 10)" (VSeq [ VInt 30L; VInt 10L; VInt 20L ])
@@ -2337,10 +2338,14 @@ let parallelTests =
           test "piter runs every element and returns unit" {
               expectValue "[1; 2; 3] |> Seq.piter (fun n -> if n > 99 then print \"never\")" VUnit
           }
-          test "cd inside a worker fails loudly" {
-              Expect.throwsT<exn>
-                  (fun () -> run "[1] |> Seq.pmap (fun x -> cd \"/tmp\")" |> ignore)
-                  "shared-session guard"
+          test "cd inside a worker is worker-local (forked session)" {
+              let before = Weir.Session.Cwd()
+
+              expectValue
+                  "[\"/\"; \"/tmp\"] |> Seq.pmap (fun d -> let x = cd d in pwd |> Seq.head)"
+                  (VSeq [ VStr "/"; VStr "/tmp" ])
+
+              Expect.equal (Weir.Session.Cwd()) before "parent session untouched after the join"
           }
           test "worker failure surfaces as the first error" {
               Expect.throws (fun () -> run "[1; 0] |> Seq.pmap (fun x -> 10 / x)" |> ignore) "div by zero"
@@ -2376,7 +2381,7 @@ let fileTests =
 
                   Expect.isTrue (File.Exists expected) "written under Session.Cwd"
               finally
-                  Weir.Session.Cwd <- System.IO.Directory.GetCurrentDirectory()
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
                   Directory.Delete(dir, true)
           }
           test "read of a missing file raises" {

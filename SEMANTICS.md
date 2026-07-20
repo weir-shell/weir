@@ -420,10 +420,16 @@ quantity semantics now.
   error rethrown. Parallelism is an implementation detail of a
   combinator (Array.Parallel precedent; xargs -P with types): no new
   types, no coloring, blocking semantics — which is exactly why it
-  does not contradict the async rejection below. `cd` inside a worker
-  fails loudly (the session cwd is shared — the single-threaded-session
-  invariant is guarded, not trusted); interleaved worker output is
-  line-atomic and owned by the user, as with any parallel tool.
+  does not contradict the async rejection below. **Workers fork the
+  session** (2026-07-20, same day the guard shipped — user question
+  upgraded it to semantics; session-as-value arriving incrementally):
+  each worker inherits the parent cwd at fan-out, `cd` inside a worker
+  is worker-local, and the fork dies at the join — the root session is
+  untouched. Named caveat (read-at-force-time is unchanged): a lazy
+  stream built in a worker but forced after the join resolves against
+  the JOINER's session — force inside the worker (`Seq.head`,
+  `Seq.toList`) when the worker's cd matters. Interleaved worker output
+  is line-atomic and owned by the user, as with any parallel tool.
 - **Async/task machinery is REJECTED, permanently** (2026-07-20, user
   decision): a scripting shell's concurrency model is processes and
   pipelines — spawn, stream, complete. Weir will not grow async/await,
@@ -543,7 +549,8 @@ quantity semantics now.
   single shared helper `Session.resolve` — the same one used by spawns'
   working directories, `cd`, and PATH probes, so every filesystem touch
   agrees on what "relative" means.
-- **`Session.Cwd` is the only working directory.** Every spawn sets it as the
+- **The root session's cwd is the only PERSISTENT working directory**
+  (worker forks above are ephemeral). Every spawn sets it as the
   child's working directory (read at force time, not bind time);
   `Environment.CurrentDirectory` is never touched (AOT/global-state hygiene,
   honest under future concurrency). `cd : string -> string` mutates it

@@ -238,6 +238,25 @@ elapsed_ms=$(( ($(date +%s%N) - start) / 1000000 ))
 [ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
 echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
 
+forkdir=$(mktemp -d)
+cat > "$forkdir/fork.weir" <<'WEOF'
+let a = cd "/tmp"
+
+let workers =
+    ["/"; "/etc"]
+    |> Seq.pmap (fun d ->
+        let x = cd d
+        pwd |> Seq.head)
+
+workers |> Seq.iter print
+print $"after: {pwd |> Seq.head}"
+WEOF
+out=$($BIN "$forkdir/fork.weir")
+expect "worker sessions fork: worker one" "/" "$out"
+expect "worker sessions fork: worker two" "/etc" "$out"
+expect "worker sessions fork: parent untouched" "after: /tmp" "$out"
+rm -rf "$forkdir"
+
 cat > "$scriptdir/perr.weir" <<'WEOF'
 let x =
     1 +* 2

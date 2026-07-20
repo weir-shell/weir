@@ -18,7 +18,7 @@ let file (name: string) (bytes: int64) (readOnly: bool) : Value =
 let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
-            DirectoryInfo(Session.Cwd).GetFiles()
+            DirectoryInfo(Session.Cwd()).GetFiles()
             |> Seq.map (fun f -> file f.Name f.Length f.IsReadOnly))
     )
 
@@ -112,8 +112,6 @@ let private intoImpl: Value =
 let private cdImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VStr path when Session.inParallel.Value ->
-            failwith "cd is not allowed inside parallel workers (the session cwd is shared)"
         | VStr path ->
             let home =
                 System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
@@ -131,12 +129,12 @@ let private cdImpl: Value =
             if not (Directory.Exists resolved) then
                 failwith $"cd: no such directory: {resolved}"
 
-            Session.Cwd <- resolved
+            Session.setCwd resolved
             VStr resolved
         | v -> unreachable $"the checker rejects 'cd' on {formatValue v}")
 
 let private pwdImpl: Value =
-    VSeq(Seq.delay (fun () -> Seq.singleton (VStr Session.Cwd)))
+    VSeq(Seq.delay (fun () -> Seq.singleton (VStr(Session.Cwd()))))
 
 let private headImpl: Value =
     VBuiltin(fun v ->
@@ -436,18 +434,21 @@ let private rangeImpl: Value =
 let private runParallel (f: Value) (items: seq<Value>) : Value array =
     let arr = Seq.toArray items
     let out = Array.zeroCreate arr.Length
+    // fork the ambient session: workers inherit the parent cwd; cd inside
+    // a worker is worker-local and dies at the join
+    let parentCwd = Session.Cwd()
 
     try
         System.Threading.Tasks.Parallel.For(
             0,
             arr.Length,
             fun i ->
-                Session.inParallel.Value <- true
+                Session.enterWorker parentCwd
 
                 try
                     out[i] <- apply f arr[i]
                 finally
-                    Session.inParallel.Value <- false
+                    Session.exitWorker ()
         )
         |> ignore
     with :? System.AggregateException as ae ->

@@ -62,7 +62,10 @@ git ls-files | Seq.first 1
 - No async/task/await — processes and pipelines are the concurrency
   model. A task that truly needs async belongs in full F#, not weir.
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
-  ordered results) / `Seq.piter` for effects. No `cd` inside workers.
+  ordered results) / `Seq.piter` for effects. Workers fork the session:
+  `cd` inside a worker is worker-local and gone at the join — force
+  worker output inside the worker (`Seq.head`/`Seq.toList`) if its cd
+  matters.
 - No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
   Ranges are lazy; `[a; b; c]` lists are eager.

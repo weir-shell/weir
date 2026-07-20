@@ -1,5 +1,28 @@
 # Spike Notes
 
+## Worker sessions fork — cd allowed in parallel (2026-07-20)
+
+User question ("shouldn't we have nested sessions for parallel so cd
+would be allowed?") upgraded the same-day cd guard from prohibition to
+SEMANTICS: pmap/piter workers fork the ambient session — inherit the
+parent cwd at fan-out, worker-local cd, fork dies at the join, root
+untouched. This is the "session-as-value is the future shape" note
+from the original thread-safety question, arriving incrementally:
+Session.Cwd became a function over root + ThreadLocal override
+(setCwd writes the layer it reads), nested pmap forks the WORKER's
+session correctly for free. The make -C-style use case works:
+dirs |> Seq.piter (fun d -> let x = cd d in ...).
+
+Named caveat carried forward, not hidden: read-at-force-time is
+unchanged, so a lazy stream built in a worker but forced after the
+join resolves against the joiner's session — force inside the worker
+when the cd matters (documented in SEMANTICS + skill). The cd guard
+and its pin retired; fork-isolation pinned in unit (parent cwd
+compared across the call) and e2e (workers print /, /etc; parent
+prints /tmp after). parallelTests now testSequenced (they mutate the
+root session via cd).
+
+
 ## Seq.pmap / Seq.piter — data parallelism (2026-07-20)
 
 User question ("could we have parallelism though? think of

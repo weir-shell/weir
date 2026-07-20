@@ -10,7 +10,7 @@ let lines (prog: string) (args: string list) (input: seq<string> option) : seq<s
         for a in args do
             psi.ArgumentList.Add a
 
-        psi.WorkingDirectory <- Session.Cwd
+        psi.WorkingDirectory <- Session.Cwd()
         psi.UseShellExecute <- false
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- false
@@ -70,7 +70,7 @@ let complete (prog: string) (args: string list) (input: seq<string> option) : in
     for a in args do
         psi.ArgumentList.Add a
 
-    psi.WorkingDirectory <- Session.Cwd
+    psi.WorkingDirectory <- Session.Cwd()
     psi.UseShellExecute <- false
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError <- true
