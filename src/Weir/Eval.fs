@@ -6,6 +6,10 @@ open Weir.Check
 
 let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 
+// Exit.code's carrier: an intentional exit, not an error — the runner
+// returns the code silently instead of printing a located message.
+exception ExitRequest of code: int
+
 [<CustomEquality; NoComparison>]
 type Value =
     | VInt of int64

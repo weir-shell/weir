@@ -143,7 +143,7 @@ let formatLines (body: string list) : Result<string list, string> =
     // trailing whitespace is never significant (strings are single-line and
     // close with a quote), so both equivalence passes compare TrimEnd'd code
     let commentOnly (raw: string) =
-        raw.Trim() <> "" && (Script.stripComment raw).Trim() = ""
+        Script.classifyLine raw = Script.LineKind.CommentOnly
 
     let numbered =
         body
@@ -155,7 +155,13 @@ let formatLines (body: string list) : Result<string list, string> =
     | Error e -> Error $"cannot format: {e} (fix errors first)"
     | Ok originalLogical ->
 
-        let mutable stack: (int * int) list = [] // originalIndent, depth
+        // open indent levels, deepest first — the general structural model
+        // (2026-07-20): any deeper line opens a level, a line AT a level
+        // returns to it, col-0 resets. Depth preserves every relational
+        // comparison the assembler makes (=, <, >), so re-assembly is
+        // join-for-join identical; the old let-only stack flattened if/match
+        // bodies to depth 1 and tripped the safety check on legal input.
+        let mutable levels: int list = []
         // district: Some(markerOrigIndent, markerDepth) while inside a ! block
         let mutable district: (int * int) option = None
 
@@ -166,7 +172,7 @@ let formatLines (body: string list) : Result<string list, string> =
                 let content = raw.TrimStart().TrimEnd()
 
                 if raw.Trim() = "" then
-                    stack <- []
+                    levels <- []
                     ""
                 elif code.Trim() = "" then
                     // comment-only: transparent to assembly (2026-07-20);
@@ -185,25 +191,15 @@ let formatLines (body: string list) : Result<string list, string> =
                         district <- None
 
                         let depth =
-                            if piece.StartsWith "|" then
-                                if List.isEmpty stack then
-                                    if indent = 0 then 0 else 1
-                                else
-                                    List.length stack + 1
-                            elif indent = 0 then
-                                stack <- []
+                            if indent = 0 then
+                                levels <- []
                                 0
                             else
-                                match stack with
-                                | (k, d) :: rest when indent = k ->
-                                    stack <- rest
-                                    d
-                                | _ -> List.length stack + 1
+                                let kept = levels |> List.filter (fun k -> k < indent)
+                                levels <- indent :: kept
+                                List.length kept + 1
 
-                        if not (piece.StartsWith "|") && indent > 0 && piece.StartsWith "let " then
-                            stack <- (indent, depth) :: stack
-
-                        if piece = "!" || piece.EndsWith " !" then
+                        if (Script.classifyPiece piece).IsMarker then
                             district <- Some(indent, depth)
 
                         String.replicate (depth * 4) " " + content)

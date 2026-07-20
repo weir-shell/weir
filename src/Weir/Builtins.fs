@@ -668,13 +668,24 @@ let private fileMembers: (string * Ty * Value) list =
           | VStr path -> VBool(File.Exists(Session.resolve path))
           | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
 
+// fail keeps exit-1 (message-carrying); Exit.code n is the propagation
+// spelling — same unit typing, no checker surface (bicep receipt).
+let private exitMembers: (string * Ty * Value) list =
+    [ "code",
+      TFun(TInt, TUnit),
+      VBuiltin(fun v ->
+          match v with
+          | VInt n -> raise (ExitRequest(int n))
+          | v -> unreachable $"the checker rejects 'Exit.code' on {formatValue v}") ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
       "Option", optionMembers
       "File", fileMembers
       "Args", argsMembers
-      "Env", envMembers ]
+      "Env", envMembers
+      "Exit", exitMembers ]
 
 let private bareAliases: Set<string> =
     Set

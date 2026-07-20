@@ -44,7 +44,8 @@ argument that killed the subtractive fork.
 | no-destructuring-binders | pending | let (a, b) = ... , fun (x, y) -> | reject | accept | tied to the tuples decision |
 | no-elif | pending | elif keyword | reject (else if chains) | accept | trivial; no demand |
 | semicolon-command-argv | different | `;` inside a command line (bash chains; weir passes literal argv + warns) | argv word + warning | n/a (bash prior, not F#) | SEMANTICS: sequencing; the no-injection pin |
-| semicolon-greedy-bodies | different | `if c then a ; b` groups INSIDE the body (F# verbose groups outside) | body-scoped | trailing | SEMANTICS: sequencing — flat-joined blocks made verbose grouping silently wrong |
+| semicolon-greedy-bodies | different | single-line-TYPED `if c then a ; b` groups INSIDE the body (F# verbose groups outside); multi-line siblings group F#-faithfully since the offside close (2026-07-20) | body-scoped | trailing | SEMANTICS: sequencing — greedy survives only where the sigil-era continuation join needs it; the assembler paren-wraps compounds at same-level siblings |
+| record-fields-ignore-indent | different | inside an open `{ }` weir is indentation-blind (col-0 fields legal); F# offside rejects | brace mode | none | SEMANTICS: records — record continuations are expression context, the assembler tracks braces not columns |
 | bang-sigil | different | `!(cmd chain)` runs-and-streams (bash: extglob/history `!`) | effect sigil, unit | n/a (bash prior; invisible to the F# oracle) | SEMANTICS: sigils |
 | capture-sigil-aligns | different | `$(cmd chain)` captures output — the bash prior HELPS here (recorded per the == archaeology precedent: priors that help get named too) | capture, typed seq<string> | n/a (bash prior) | SEMANTICS: sigils |
 | comment-boundary | different | // mid-token is NOT a comment (https://... barewords); comment needs line start or preceding whitespace | url survives | 1// c is a comment | SEMANTICS: comments; nuget receipt |

@@ -1692,7 +1692,7 @@ let multilineTests =
               | Ok [ ll ] ->
                   Expect.equal
                       ll.Text
-                      "let x = let v = match h with | Some n -> n | None -> 0 in v + 1"
+                      "let x = let v = (match h with | Some n -> n | None -> 0) in v + 1"
                       "the plain indent rule, no |-special-casing needed"
               | other -> failtest $"unexpected: {other}"
           }
@@ -2398,6 +2398,194 @@ let seqAccessTests =
                   Weir.Session.ScriptArgs <- []
           } ]
 
+let scannerTests =
+    testList
+        "Scanner & classifier contract"
+        [ // the quote-aware scanner, pinned through its consumers
+          test "escaped quote inside a string hides //" {
+              Expect.equal (Weir.Script.stripComment "print \"a\\\" // x\"") "print \"a\\\" // x\"" ""
+          }
+          test "single quotes hide //" { Expect.equal (Weir.Script.stripComment "echo 'a // b'") "echo 'a // b'" "" }
+          test "comment after a closed string cuts" {
+              Expect.equal (Weir.Script.stripComment "print \"x\" // cut") "print \"x\" " ""
+          }
+          test "bareword URL survives (boundary rule)" {
+              Expect.equal (Weir.Script.stripComment "curl https://x//y") "curl https://x//y" ""
+          }
+          test "mid-token // is not a comment" {
+              Expect.equal (Weir.Script.stripComment "let x = 1// c") "let x = 1// c" ""
+          }
+          test "classifyLine: blank, comment-only (indented too), code" {
+              Expect.equal (Weir.Script.classifyLine "   ") Weir.Script.LineKind.Blank ""
+              Expect.equal (Weir.Script.classifyLine "  // note") Weir.Script.LineKind.CommentOnly ""
+              Expect.equal (Weir.Script.classifyLine "let x = 1 // t") Weir.Script.LineKind.Code ""
+          }
+          test "classifyPiece: kinds are exclusive, prefix-guarded" {
+              Expect.equal (Weir.Script.classifyPiece "let x = 1").Kind Weir.Script.PieceKind.LetHead ""
+              Expect.equal (Weir.Script.classifyPiece "| x -> 1").Kind Weir.Script.PieceKind.PipeHead ""
+              Expect.equal (Weir.Script.classifyPiece "else 2").Kind Weir.Script.PieceKind.ElseHead ""
+              Expect.equal (Weir.Script.classifyPiece "elsewhere ()").Kind Weir.Script.PieceKind.Plain ""
+              Expect.equal (Weir.Script.classifyPiece "letter x").Kind Weir.Script.PieceKind.Plain ""
+          }
+          test "classifyPiece: marker and compound overlap on `if c then !`" {
+              let c = Weir.Script.classifyPiece "if c then !"
+              Expect.isTrue c.IsMarker ""
+              Expect.isTrue c.OpensCompound ""
+          }
+          test "classifyPiece: brace deltas ignore strings and interp holes" {
+              Expect.equal (Weir.Script.classifyPiece "{ Name = $\"a{1}b\"").BraceDelta 1 ""
+              Expect.equal (Weir.Script.classifyPiece "awk '{print}' f").BraceDelta 0 ""
+              Expect.equal (Weir.Script.classifyPiece "{ X = \"}\" }").BraceDelta 0 ""
+          }
+          test "parse failure carries its column as data (no regex scrape)" {
+              match Weir.Parser.parseLineFull cmdResolver "let = 3" with
+              | Error f ->
+                  match f.Col with
+                  | Some col -> Expect.stringContains f.Message $"Col: {col}" "position data matches message text"
+                  | None -> failtest "expected a column"
+              | Ok s -> failtest $"unexpected: {s}"
+          } ]
+
+let offsideTests =
+    testList
+        "Offside close & record continuations"
+        [ // the bicep bite: a sibling at the if's own indent closes it
+          test "offside close: sibling at head indent wraps the if" {
+              match Weir.Script.assemble [ 1, "let t ="; 2, "    if c then fail \"u\""; 3, "    { Name = s }" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let t = (if c then fail \"u\") ; { Name = s }" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "offside close: the silent variant no longer swallows" {
+              match
+                  Weir.Script.assemble [ 1, "let f c ="; 2, "    if c then printerr \"a\""; 3, "    printerr \"b\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f c = (if c then printerr \"a\") ; printerr \"b\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "else extends the compound instead of closing it" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f c ="
+                        2, "    if c then printerr \"a\""
+                        3, "    else printerr \"b\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f c = if c then printerr \"a\" else printerr \"b\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "sibling after else closes the whole if/else" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f c ="
+                        2, "    if c then a"
+                        3, "    else b"
+                        4, "    printerr \"z\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f c = (if c then a else b) ; printerr \"z\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "deeper siblings still join INTO the body (the greedy protectorate)" {
+              match Weir.Script.assemble [ 1, "if c then"; 2, "    eff1"; 3, "    eff2" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "if c then eff1 ; eff2" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "nested dedent closes through both levels" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f x ="
+                        2, "    if c then"
+                        3, "        eff1"
+                        4, "        eff2"
+                        5, "    printerr \"z\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f x = (if c then eff1 ; eff2) ; printerr \"z\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "sequential ifs: first closes, second stays open at statement end" {
+              match Weir.Script.assemble [ 1, "let f c ="; 2, "    if a then x"; 3, "    if b then y" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f c = (if a then x) ; if b then y" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "match closes at a sibling too" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="
+                        2, "    match x with"
+                        3, "    | A -> printerr \"a\""
+                        4, "    printerr \"z\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let v = (match x with | A -> printerr \"a\") ; printerr \"z\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "district x offside: closing sibling wraps the marker's if" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f t ="
+                        2, "    if c then !"
+                        3, "        git pull"
+                        4, "    print \"x\"" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f t = (if c then !(git pull)) ; print \"x\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "record continuation: bare fields get separators" {
+              match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "      Count = 2 }" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\" ; Count = 2 }" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "record continuation: trailing ; means no double separator" {
+              match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\";"; 3, "    Count = 2 }" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\"; Count = 2 }" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "record continuation: sibling rule inert inside braces (same indent as {)" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let t ="
+                        2, "    { Name = \"a\""
+                        3, "    Count = 2"
+                        4, "    Tag = \"x\" }" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\" ; Count = 2 ; Tag = \"x\" }" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "record continuation: col-0 close is legal inside a brace" {
+              match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "}" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\" }" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "interp-hole braces do not count (scanner is string-aware)" {
+              match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = $\"i{1}b\""; 3, "      Count = 2 }" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = $\"i{1}b\" ; Count = 2 }" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "blank inside an open brace is the located record error" {
+              match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "" ] with
+              | Error e -> Expect.stringContains e "record literal" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "EOF inside an open brace is the located record error" {
+              match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\"" ] with
+              | Error e -> Expect.stringContains e "record literal" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "district lines never enter brace mode (commands are not records)" {
+              match Weir.Script.assemble [ 1, "if c then !"; 2, "    awk \"{print}\" f"; 3, "    git pull" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "if c then !(awk \"{print}\" f) ; !(git pull)" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "Exit.code types like fail: int -> unit" {
+              match Weir.Parser.parseLine cmdResolver "Exit.code 3" with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck env e with
+                  | Ok te -> Expect.equal (Weir.Types.formatTy te.Ty) "unit" ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "Exit.code rejects a string" {
+              let terr = checkErr "Exit.code \"boom\""
+              Expect.stringContains (formatError terr) "int" ""
+          } ]
+
 let sequencingTests =
     testList
         "Block sequencing"
@@ -2420,6 +2608,19 @@ let sequencingTests =
                   Weir.Script.assemble [ 1, "let w ="; 2, "    let a = 1"; 3, "    print \"x\""; 4, "    print \"y\"" ]
               with
               | Ok [ ll ] -> Expect.equal ll.Text "let w = let a = 1 in print \"x\" ; print \"y\"" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "function RHS takes a sequenced body (bicep receipt)" {
+              match Weir.Parser.parseLine cmdResolver "let f x = printerr \"a\" ; printerr \"b\"" with
+              | Ok(SLet("f", { Kind = ELambda("x", { Kind = ESeq _ }) })) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "let-in value takes a sequence; in still closes it" {
+              expectValue "let u = print \"a\" ; print \"b\" in 5" (VInt 5L)
+          }
+          test "no-params let RHS falls through to sequence" {
+              match Weir.Parser.parseLine cmdResolver "let u = printerr \"a\" ; printerr \"b\"" with
+              | Ok(SLet("u", { Kind = ESeq _ })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "assembler: pipes stay inert to the sibling rule" {
@@ -2515,7 +2716,7 @@ let districtTests =
                         4, "            git pull"
                         5, "    r" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let w = let r = if c then !(git pull) in r" ""
+              | Ok [ ll ] -> Expect.equal ll.Text "let w = let r = (if c then !(git pull)) in r" ""
               | other -> failtest $"unexpected: {other}"
           }
           test "MECHANISM PIN: a closing line is reprocessed exactly once (no duplicated segments)" {
@@ -2905,6 +3106,8 @@ let allTests =
           showTests
           seqAccessTests
           sequencingTests
+          offsideTests
+          scannerTests
           sigilTests
           districtTests
           indexerTests

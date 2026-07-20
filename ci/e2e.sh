@@ -619,4 +619,111 @@ if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
 fi
 echo "e2e ok: forced unknown command rejected"
 
+# --- grammar consolidation (2026-07-20): offside close, record
+# continuations, Exit.code — the bicep translation's shapes verbatim
+
+gdir=$(mktemp -d)
+
+cat > "$gdir/guard.weir" <<'WEOF'
+type T = { Name: string }
+
+let target =
+    let stack = "web"
+    if stack == "" then fail "usage"
+    { Name = stack }
+
+print target.Name
+WEOF
+out=$($BIN "$gdir/guard.weir")
+expect "offside close: guard-fail then record result" "web" "$out"
+
+cat > "$gdir/silent.weir" <<'WEOF'
+let f c =
+    if c then printerr "then-arm"
+    printerr "sibling"
+
+f false
+WEOF
+out=$($BIN "$gdir/silent.weir" 2>&1)
+expect "offside close: same-level sibling escapes the then-branch" "sibling" "$out"
+
+cat > "$gdir/else.weir" <<'WEOF'
+let f c =
+    if c then printerr "a"
+    else printerr "b"
+
+f false
+WEOF
+out=$($BIN "$gdir/else.weir" 2>&1)
+expect "same-indent else extends the if" "b" "$out"
+
+cat > "$gdir/rec.weir" <<'WEOF'
+type T = { Name: string; Count: int }
+
+let t =
+    { Name = "a"
+      Count = 2 }
+
+print $"{t.Name}{t.Count}"
+WEOF
+out=$($BIN "$gdir/rec.weir")
+expect "record continuation, bare fields" "a2" "$out"
+
+cat > "$gdir/rec2.weir" <<'WEOF'
+type T = { Name: string; Count: int }
+
+let t =
+    { Name = "b";
+      Count = 3 }
+
+print $"{t.Name}{t.Count}"
+WEOF
+out=$($BIN "$gdir/rec2.weir")
+expect "record continuation, trailing-; spelling (no double separator)" "b3" "$out"
+
+cat > "$gdir/broken.weir" <<'WEOF'
+type T = { Name: string }
+
+let t =
+    { Name = "a"
+
+print t.Name
+WEOF
+errout=$($BIN "$gdir/broken.weir" 2>&1 || true)
+echo "$errout" | grep -qF "record literal" || fail "open-brace error must name the record: $errout"
+echo "e2e ok: blank inside an open brace errors, naming the brace"
+
+cat > "$gdir/exit.weir" <<'WEOF'
+let r = sh -c "exit 4" | complete
+if r.ExitCode <> 0 then Exit.code (r.ExitCode)
+print "unreached-on-failure"
+WEOF
+rc=0; $BIN "$gdir/exit.weir" >/dev/null 2>&1 || rc=$?
+[ $rc -eq 4 ] || fail "Exit.code must propagate the child's code (got $rc)"
+echo "e2e ok: Exit.code propagates through complete"
+
+out=$($BIN "$gdir/exit.weir" 2>&1 || true)
+[ -z "$out" ] || fail "Exit.code is an intentional exit — no error message (got: $out)"
+echo "e2e ok: Exit.code exits silently"
+
+cat > "$gdir/fmtfix.weir" <<'WEOF'
+let ok = 1 == 1
+
+let f t =
+    printerr "q"
+    if ok then
+        printerr "login"
+        printerr "deploy"
+    else printerr "plain"
+
+f true
+WEOF
+$BIN fmt --check "$gdir/fmtfix.weir" >/dev/null 2>&1 || fail "fmt must accept multi-line if/else in a function body"
+echo "e2e ok: fmt roundtrips the if/else repro"
+
+$BIN fmt --check examples/bicep-deploy.weir >/dev/null 2>&1 || fail "fmt must accept the bicep translation"
+echo "e2e ok: fmt accepts the bicep origin script"
+
+rm -rf "$gdir"
+
 echo "e2e battery: all green"

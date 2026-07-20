@@ -98,7 +98,7 @@ let weirVerdict (src: string) : Verdict =
         src.Replace("\r\n", "\n").Split('\n')
         |> Array.toList
         |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> not (raw.Trim() <> "" && (Weir.Script.stripComment raw).Trim() = ""))
+        |> List.filter (fun (_, raw) -> Weir.Script.classifyLine raw <> Weir.Script.LineKind.CommentOnly)
         |> List.map (fun (n, raw) -> n, Weir.Script.stripComment raw)
 
     match Weir.Script.assemble lines with

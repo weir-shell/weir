@@ -75,7 +75,10 @@ type Verdict =
 
 type Score = { Name: string; Points: int }
 
-let s = { Name = "a"; Points = 12 }
+let s =
+    { Name = "a"
+      Points = 12 }
+
 let v = if s.Points > 10 then Pass s.Points else Fail
 
 print (show v)
@@ -117,6 +120,21 @@ let tier =
     | _ -> "small"
 
 print tier
+```
+
+Blocks read like F#: a line at the same indent as an `if` (or `match`)
+is a sibling, not part of its body — so a guard line before a block's
+result works the way it looks:
+
+```weir
+type Target = { Name: string }
+
+let target =
+    let stack = "web"
+    if stack == "" then fail "usage"
+    { Name = stack }
+
+print target.Name
 ```
 
 ## Commands and processes
@@ -164,6 +182,17 @@ full F#.
 ## Failing and diagnosing
 
 `fail "reason"` stops the script with a located error and exit 1.
+`Exit.code n` exits with a specific code, silently — the propagation
+spelling for a child's failure. There is no try/finally: to clean up
+whether a step failed or not, reify the fallible middle with
+`| complete`, run the cleanup, then propagate:
+
+```weir
+let r = sh -c "exit 0" | complete
+sh -c "echo cleanup runs either way"
+if r.ExitCode <> 0 then Exit.code (r.ExitCode)
+```
+
 `printerr` is `print` to stderr — diagnostics there, data on stdout.
 Effect steps sequence inside blocks — same-indent lines, each but the
 last unit-typed. Command sigils bring full command chains into

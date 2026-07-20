@@ -56,6 +56,23 @@ let pins =
           "let x =\n    let a = 1\n\n    a + 1\n"
           (Diverges "blank-line-ends-statement")
 
+      // --- offside close & record continuations (2026-07-20) ---
+      pin "multi-line if/else as a let body" "let x =\n    if true then 1\n    else 2\n" Same
+      pinT
+          "sibling at the if's indent runs unconditionally"
+          "let f c =\n    if c then printerr \"a\"\n    printerr \"b\"\n"
+          "let f c =\n    if c then eprintfn \"a\"\n    eprintfn \"b\"\n"
+          Same
+      pin
+          "multi-line record, bare fields (F# light syntax)"
+          "type T = { Name: string; Count: int }\nlet t =\n    { Name = \"a\"\n      Count = 2 }\n"
+          Same
+      pin "F#-rejects-this: EOF inside an open brace" "type T = { Name: string }\nlet t =\n    { Name = \"a\"\n" Same
+      pin
+          "record field at column 0 (weir braces ignore indent)"
+          "type T = { Name: string; Count: int }\nlet t =\n    { Name = \"a\"\nCount = 2 }\n"
+          (Diverges "record-fields-ignore-indent")
+
       // --- let ... in ---
       pin "explicit let-in one-liner" "let y = let x = 1 in x + 1\n" Same
 

@@ -50,7 +50,9 @@ let private evalOnce (input: string) : int =
                     Console.WriteLine $"{Eval.formatValue v} : {formatTy te.Ty}"
 
                 0
-            with ex ->
+            with
+            | Eval.ExitRequest code -> code
+            | ex ->
                 Console.Error.WriteLine $"error: {ex.Message}"
                 1
 

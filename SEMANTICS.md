@@ -217,6 +217,42 @@ quantity semantics now.
   stays a literal argv word (the no-injection pin) with a check-time
   warning naming the fix (semicolon-command-argv row — a bash-prior
   divergence, invisible to the F# oracle by construction).
+- **The offside close** (2026-07-20, PLAN-grammar-consolidation — the
+  bicep translation's bite fired the greedy-`;` revisit metric): the
+  assembler tracks open `if`/`match`-headed pieces as an offside
+  stack; a sibling arriving at a head's indent or SHALLOWER closes
+  that compound by paren-wrapping it (a balanced, line-structural
+  unit), so same-level siblings sequence AFTER the conditional while
+  deeper lines still join into its body, where greedy grouping is
+  exactly right. `else` and `|` pieces extend a compound instead of
+  closing it (same-indent `else` used to be a parse error — the fmt
+  refusal's root). The review's discovery: the bite class had a
+  SILENT member — a same-level sibling after `if c then eff` was
+  swallowed into the then-branch, conditional execution the user
+  never wrote. Multi-line shapes now group F#-faithfully
+  (oracle-pinned); greedy `;` survives only in single-line-typed
+  bodies and continuation joins (semicolon-greedy-bodies row amended).
+  Candidate (b) — reverting to lowest-`;` — died on layer separation:
+  it needs parens INSIDE pieces at `then`/`else`/`->` positions,
+  grammar-interior surgery the assembler must never do.
+- **Multi-line record literals** (2026-07-20, same session, receipt
+  count 2): inside an open `{ }` the assembler is in record-
+  continuation mode — a line break after a field is a separator (with
+  or without a trailing `;`), the sibling/let/district rules are
+  inert (records are expressions, not effect blocks), and closing
+  `}` may sit at any column including 0. Blank line or EOF with the
+  brace open is a located error naming the brace. The brace counter
+  is string-aware (stripComment's scanner rules), so interpolation
+  holes and quoted command args never count. Weir is
+  indentation-blind inside braces where F# still applies offside
+  (record-fields-ignore-indent row). RECORDS ONLY — list literals
+  stay single-line until their own receipt arrives.
+- **`Exit.code n` propagates an exit code** (2026-07-20, bicep
+  receipt: the F# original's `exit code`): `int -> unit`, typed like
+  `fail` (no checker surface); raises an intentional-exit carrier the
+  runner returns SILENTLY — `fail` keeps exit-1 with a located
+  message, `Exit.code` is the propagation spelling
+  (`if r.ExitCode <> 0 then Exit.code (r.ExitCode)`).
 - **`let f x y = e` defines a curried function** (2026-07-20 — the
   corpus-mining session's top yield became a feature the same day, on
   agent-prior evidence: F#'s most common line shape). Pure parser

@@ -205,8 +205,17 @@ if 1 > 0 then !
   through; comments need line start or a preceding space.
 - `run "git" ["push"]` runs a program from expression positions:
   streams like a command line, raises on nonzero, returns unit.
-- Multi-line record literals need `;` at each field line end (fields
-  do not separate by newline).
+- Multi-line record literals separate fields by newline, F#-style
+  (trailing `;` also fine); a blank line inside an open `{` is an
+  error. Braces ignore indentation.
+- Blocks are offside, F#-style: a line at an `if`/`match`'s OWN indent
+  is a sibling (runs after, unconditionally); only deeper lines are
+  the body. Guard lines before a block result work:
+  `if x == "" then fail "usage"` then the result line at same indent.
+- `Exit.code n` exits with code n silently (propagation:
+  `if r.ExitCode <> 0 then Exit.code (r.ExitCode)`); `fail "msg"` is
+  the message-carrying exit-1. No try/finally — for cleanup-always,
+  reify with `| complete`, clean up, then propagate.
 - Blank lines END statements — never leave one inside an indented
   block (the error will say so).
 

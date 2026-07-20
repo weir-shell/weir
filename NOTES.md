@@ -1,5 +1,94 @@
 # Spike Notes
 
+## Assembler formalization — the boundary question (2026-07-20)
+
+"Shouldn't the assembler be part of the parser?" NO, on record so it
+is not re-asked from scratch: the text-pre-pass architecture is the
+reframe that won the multi-line gate (zero parser changes, expression
+suite green by construction); it is how F# itself implements light
+syntax (token insertion outside the grammar proper); every layered
+feature since — block lets, siblings, districts, the offside close —
+landed under budget clauses a small inspectable layer made possible;
+and both grammar incidents (|-inertness, greedy-;) were RULE errors,
+not LAYER errors — the same rules inside the parser would have been
+the same bugs, harder to see. What the question correctly detected:
+the layer had outgrown its shape — StartsWith classifications, TWO
+quote-aware mini-lexers (stripComment's, then braceDelta's copy born
+in the consolidation session hours earlier), hand-audited span
+offsets (`+ 5`, `- 1 + 2`), and a regex scraping FParsec's error
+text. Formalized IN PLACE: one scanner (foldOutsideStrings), one
+classifier (classifyLine + classifyPiece — two granularities because
+consumers genuinely operate at two; `if c then !` needs marker AND
+compound flags, which an exclusive enum cannot say), one join algebra
+(applyJoin owns each insertion string and derives joinedStart from
+it), structured parse failures (ParseFailure.Col from FParsec's own
+ParserError — the regex deleted). Behavior-preserving proven the
+strong way: zero pin edits across 500 held pins + oracle + e2e span
+positions. Sequencing inverted from the proposal (this landed AFTER
+consolidation): the plan's success test — "the consolidation diff
+touches the classifier, not raw string logic" — inverts to
+archaeology: consolidation DID add raw string logic (braceDelta,
+isCompoundHead/isElse), and this session absorbed it same-day.
+
+RULE for future sessions: new line-shape logic goes in classify /
+the scanner / Join — a StartsWith or quote-state loop in the fold is
+a review flag.
+
+
+## Greedy-`;` design review — the offside close (2026-07-20)
+
+The bicep bite reopened greedy-`;` per its own revisit metric. The
+review's discovery upgrades the finding: the bite class has a SILENT
+member. Today `let f c =` over `if c then printerr "a"` + same-indent
+`printerr "b"` swallows b INTO the then-branch — conditional execution
+the user never wrote, no diagnostic (repro kept as a pin). Same-indent
+`else` also fails today (`; else` from the sibling rule) — the fmt
+refusal's likely root. So the seam was wrong three ways, one cause:
+flattening erases the offside boundary between "deeper than the if"
+(body) and "same level as the if" (sibling).
+
+Candidates weighed: (b) revert to lowest-`;` — F#-faithful grammar,
+retires the divergence row, but the collision shape (deeper effect
+siblings under `then`) then needs parens INSIDE pieces at `then` /
+`else` / `->` positions — grammar-interior surgery the assembler is
+forbidden by its own layer separation; district-exclusivity cannot
+cover expression effects (printerr blocks). (a) keep greedy, restore
+the boundary at the assembler: an `if`/`match`-headed piece CLOSES
+(paren-wraps, a balanced line-structural unit) when a sibling arrives
+at its head indent or shallower; `else` and `|` pieces extend instead
+of closing. Deeper siblings still join into the body, where greedy
+grouping is exactly right.
+
+SHIPPED as the offside close (paren-wrap at piece granularity;
+else/| extend). The revisit-metric arc closed: shipped-under-collision
+(sequencing session) → first bite (bicep) → review → the collision
+model itself was the bug (flattening erased the offside boundary), so
+BOTH candidates' framing was wrong and the fix keeps greedy while
+making multi-line grouping F#-faithful. fmt's refusal shared the root
+(let-only depth model) — fixed with the general indent-level stack.
+DECIDED: (a). Multi-line shapes now group F#-faithfully (oracle-
+pinned); the semicolon-greedy-bodies row AMENDS to single-line-typed
+`;` only. Forward archaeology: the sigil session predicted this
+revisit would be cheaper post-sigils — true, but not for the predicted
+reason: sigils shrank nothing here; the reprocess-and-piece machinery
+the district built made the compound stack a natural extension.
+
+
+## Function-body sequencing — seqExpr in let-RHS (2026-07-20)
+
+The bicep-script translation (the first F#-to-weir translation with
+command-running FUNCTIONS, not just top-level flow) hit a parse error
+on its very first shape: `let quality t =` over sibling effect lines.
+The assembler correctly produced `let quality t = a ; b` — but both
+let-RHS positions still parsed `expr`, not `seqExpr`: the sequencing
+session wired `;` into then/else/arms/lambdas/parens/statements and
+missed the binding positions. Two-token fix (topLet rhsP both
+branches, letIn value); `in` still closes a let-in because elements
+stop at keywords. 3 pins (function RHS, let-in value, no-params
+fallthrough past cmdLineLetRhs). Full translation receipts in
+NOTES-agent.md — shEnv/child-env is the headline.
+
+
 ## Typed Env — Env.load Config (2026-07-20)
 
 PLAN-typed-env executed. 478 tests (tripwires suite-inclusive, run

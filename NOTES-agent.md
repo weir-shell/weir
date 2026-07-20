@@ -66,3 +66,46 @@ skill lines and targeted hints).
   (F# divergence row comment-boundary, oracle-pinned). Translation
   verdict: weir's header spelling (interpolated argv strings) beats
   nu's bracket-list header syntax; curl replaces the http builtin.
+- 2026-07-20 | F# bicep-script translation (deploy/snapshot/quality)
+  | The dbt plan{} discovery half was NOT translated (user waiver:
+  "do not rewrite dbt"); everything else runs, verified with stubbed
+  az/bicep/curl including the OIDC login path (curl | from json Oidc
+  typed the token fetch cleanly). Receipts, strongest first:
+  (1) shEnv — per-target env files around child processes had to be
+  spelled `sh -c "set -a; . file.env; cmd"`. The typed boundary drops
+  to bash EXACTLY where the F# original had `shEnv (p.LoadEnv())`.
+  This is the arrived receipt for parked Env.set — but the shape the
+  script wants is child-env injection (`Env.with`?), not session
+  mutation. Plan-worthy.
+  (2) use!-disposal (azure logout) — no try/finally means
+  cleanup-on-error has no spelling; logout runs on the success path
+  only. Second entry in the error-handling ledger after chain-tail
+  exit reification.
+  (3) `exit code` — fail is exit-1 only; the original propagated
+  specific codes from Errors.
+  (4) `App of stack * env` (two-value CLI option) — reshaped to
+  --stack/--env flags; Args has no multi-value options (and no
+  subcommand notion; args[0] matching was fine).
+  (5) multi-line record separators struck AGAIN (double-`;` when the
+  sibling rule joins field lines that already end in `;`) — candidate
+  count now 2. Workaround: one logical line via continuation indent.
+  (6) greedy-`;` pulled a record sibling into `if ... then fail`
+  inside a block let — the named divergence's first real bite;
+  restructured to top-level statements. FIX SHIPPED this session for
+  the blocker found first: function bodies of effect lines
+  (`let quality t =` + sibling commands) failed to parse — seqExpr
+  was missing from the let-RHS and let-in value positions (3 pins).
+  (7) weir fmt refuses the translated script: minimal repro is a
+  multi-line if/else INSIDE a function body (`let f t =` over an
+  indented if-block) — the reformat changes the parse and the safety
+  check correctly leaves the file unchanged (exit 3). Formatter bug,
+  new since function bodies can sequence; needs a fix session.
+- 2026-07-20 | FIXES SHIPPED for the bicep receipts (grammar
+  consolidation session): the offside close (kills receipt 6 AND the
+  silent conditional-swallow found during review), multi-line record
+  continuations (receipt 5, both spellings), Exit.code (receipt 3),
+  fmt if/else roundtrip (receipt 7, general indent-level model), and
+  the cleanup idiom documented in GUIDE (receipt 2's answer — a
+  finally-shaped feature stays parked pending repeat receipts against
+  the idiom). Still open: shEnv/child-env (receipt 1, own plan),
+  two-value CLI options (receipt 4, unranked).

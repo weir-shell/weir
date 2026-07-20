@@ -4,17 +4,23 @@ open System
 open Weir.Ast
 open Weir.Types
 
-let stripComment (line: string) : string =
+// The quote-aware scanner — the ONE string-state primitive (2026-07-20
+// formalization). Folds f over the characters that sit OUTSIDE string
+// literals: double quotes honor backslash escapes, single quotes close
+// at the next single quote. Every line-shape rule that must ignore
+// string interiors (comment cut, brace depth) consumes this scanner;
+// a second inline quote state machine is a review flag.
+let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a =
+    let mutable st = init
     let mutable i = 0
     let mutable inDouble = false
     let mutable inSingle = false
-    let mutable cut = -1
 
-    while i < line.Length && cut < 0 do
-        let c = line[i]
+    while i < s.Length do
+        let c = s[i]
 
         if inDouble then
-            if c = '\\' && i + 1 < line.Length then
+            if c = '\\' && i + 1 < s.Length then
                 i <- i + 1
             elif c = '"' then
                 inDouble <- false
@@ -25,19 +31,99 @@ let stripComment (line: string) : string =
             inDouble <- true
         elif c = '\'' then
             inSingle <- true
-        elif
-            c = '/'
-            && i + 1 < line.Length
-            && line[i + 1] = '/'
-            // comment only at line start or after whitespace: bareword URLs
-            // (https://...) live in command lines (nuget-script receipt)
-            && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
-        then
-            cut <- i
+        else
+            st <- f st i c
 
         i <- i + 1
 
+    st
+
+let stripComment (line: string) : string =
+    // comment only at line start or after whitespace: bareword URLs
+    // (https://...) live in command lines (nuget-script receipt)
+    let cut =
+        foldOutsideStrings
+            (fun cut i c ->
+                if
+                    cut < 0
+                    && c = '/'
+                    && i + 1 < line.Length
+                    && line[i + 1] = '/'
+                    && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
+                then
+                    i
+                else
+                    cut)
+            -1
+            line
+
     if cut >= 0 then line.Substring(0, cut) else line
+
+// net { vs } outside strings — interpolation holes sit inside the
+// quotes, so their braces never count; clamping to >= 0 happens at the
+// consumer (stray command-arg } must not poison the statement)
+let private braceDelta (s: string) : int =
+    foldOutsideStrings
+        (fun d _ c ->
+            (if c = '{' then d + 1
+             elif c = '}' then d - 1
+             else d))
+        0
+        s
+
+// --- the line classifier: one derivation, three consumers -----------
+// (assembler fold, fmt's block logic, the oracle's weirVerdict mirror
+// — previously each re-derived these by StartsWith/Trim and agreed by
+// discipline; now they agree by construction)
+
+/// Whole-line classification, pre-assembly: the statement filter.
+[<RequireQualifiedAccess>]
+type LineKind =
+    | Blank
+    | CommentOnly
+    | Code
+
+let classifyLine (raw: string) : LineKind =
+    if raw.Trim() = "" then
+        LineKind.Blank
+    elif (stripComment raw).Trim() = "" then
+        LineKind.CommentOnly
+    else
+        LineKind.Code
+
+/// Piece classification, inside assembly: the join/structure decisions.
+/// Kind is exclusive; IsMarker and OpensCompound are orthogonal flags —
+/// `if c then !` is a compound head AND arms a district.
+[<RequireQualifiedAccess>]
+type PieceKind =
+    | PipeHead
+    | ElseHead
+    | LetHead
+    | Plain
+
+type PieceClass =
+    { Kind: PieceKind
+      IsMarker: bool
+      OpensCompound: bool
+      IsBangSigil: bool
+      ClosesBrace: bool
+      BraceDelta: int }
+
+let classifyPiece (piece: string) : PieceClass =
+    { Kind =
+        if piece.StartsWith "|" then
+            PieceKind.PipeHead
+        elif piece = "else" || piece.StartsWith "else " then
+            PieceKind.ElseHead
+        elif piece.StartsWith "let " then
+            PieceKind.LetHead
+        else
+            PieceKind.Plain
+      IsMarker = piece = "!" || piece.EndsWith " !"
+      OpensCompound = piece.StartsWith "if " || piece.StartsWith "match "
+      IsBangSigil = piece.StartsWith "!("
+      ClosesBrace = piece.StartsWith "}"
+      BraceDelta = braceDelta piece }
 
 type LogicalLine =
     { Text: string
@@ -54,6 +140,64 @@ type LogicalLine =
 // follow the plain indent rules, so a dedented arm inside a block is the
 // same "needs a body" error F# gives the shape. Every pending let must be
 // closed before the statement ends.
+// Pending-statement state. Compounds is the offside stack: each open
+// if/match-headed piece as (headIndent, textStart). A sibling arriving
+// at or left of a head closes that compound by paren-wrapping it — a
+// balanced, line-structural unit — so same-level siblings sequence
+// AFTER the conditional while deeper lines still join into its body,
+// where greedy `;` grouping is exactly right. `else` and `|` pieces
+// extend a compound instead of closing it. BraceDepth > 0 puts the
+// assembler in record-continuation mode: line breaks separate fields,
+// every other joining rule is inert (records are expressions).
+type private Pend =
+    { LL: LogicalLine
+      Lets: (int * int) list
+      LastIndent: int
+      District: (int * int * int option) option
+      Compounds: (int * int) list
+      BraceDepth: int
+      BraceLine: int }
+
+// The join algebra: every way a continuation line attaches to the
+// pending statement, its inserted text in ONE place. joinedStart
+// derives from the same strings, so span arithmetic cannot drift from
+// the insertion (the hand-audited `+ 5` / `- 1 + 2` offsets retired).
+type private Join =
+    | JIn // let-close: text + " in " + piece
+    | JSibling // sequencing (and record field separators): " ; "
+    | JSpace // plain continuation: " "
+    | JDistrictOpen // strip the armed "!", wrap: stem + "!(" + piece + ")"
+    | JDistrictSibling // text + " ; !(" + piece + ")"
+    | JDistrictPipe // reopen the wrap: stem + " " + piece + ")"
+
+let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) (indent: int) : LogicalLine =
+    let text, joinedStart =
+        match j with
+        | JIn ->
+            let sep = " in "
+            ll.Text + sep + piece, ll.Text.Length + sep.Length
+        | JSibling ->
+            let sep = " ; "
+            ll.Text + sep + piece, ll.Text.Length + sep.Length
+        | JSpace ->
+            let sep = " "
+            ll.Text + sep + piece, ll.Text.Length + sep.Length
+        | JDistrictOpen ->
+            let stem = ll.Text.Substring(0, ll.Text.Length - 1)
+            let opener = "!("
+            stem + opener + piece + ")", stem.Length + opener.Length
+        | JDistrictSibling ->
+            let sep = " ; !("
+            ll.Text + sep + piece + ")", ll.Text.Length + sep.Length
+        | JDistrictPipe ->
+            let stem = ll.Text.Substring(0, ll.Text.Length - 1)
+            let sep = " "
+            stem + sep + piece + ")", stem.Length + sep.Length
+
+    { ll with
+        Text = text
+        Segments = (joinedStart, lineNo, indent) :: ll.Segments }
+
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
     let noBody letLine =
         Error
@@ -63,33 +207,40 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
         Error
             $"line {letLine}: this let needs a body — a blank line ends the statement; keep the block's lines contiguous"
 
-    // district = (markerIndent, markerLine, districtIndent option): armed by a
-    // line-end `!`, activated by the first deeper line; each district line
-    // wraps as !(line), joined with ; — the marker distributes itself.
-    let close (current: (LogicalLine * (int * int) list * int * (int * int * int option) option) option) acc =
+    let braceOpen braceLine =
+        Error $"line {braceLine}: this record literal's {{ is still open when the statement ends — close the brace"
+
+    let close (current: Pend option) acc =
         match current with
-        | Some(_, _, _, Some(_, mLine, None)) ->
+        | Some p when p.BraceDepth > 0 -> braceOpen p.BraceLine
+        | Some { District = Some(_, mLine, None) } ->
             Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
-        | Some(_, (_, letLine) :: _, _, _) -> noBody letLine
-        | Some(ll, [], _, _) ->
+        | Some { Lets = (_, letLine) :: _ } -> noBody letLine
+        | Some p ->
             Ok(
-                { ll with
-                    Segments = List.rev ll.Segments }
+                { p.LL with
+                    Segments = List.rev p.LL.Segments }
                 :: acc
             )
         | None -> Ok acc
 
-    let isLetHead (piece: string) = piece.StartsWith "let "
-
-    let isMarker (piece: string) = piece = "!" || piece.EndsWith " !"
-
-    let districtLineCheck lineNo (piece: string) =
-        if piece.StartsWith "!(" then
+    let districtLineCheck lineNo (cls: PieceClass) =
+        if cls.IsBangSigil then
             Error $"line {lineNo}: already inside a command block; drop the !(...)"
-        elif isLetHead piece then
+        elif cls.Kind = PieceKind.LetHead then
             Error $"line {lineNo}: district lines are commands; bind values outside the block"
         else
             Ok()
+
+    // paren-wrap the compound starting at textStart; later segment
+    // starts shift by the inserted "(" (remaining compounds all start
+    // earlier — pops run deepest-first — so they never shift)
+    let wrapFrom (ll: LogicalLine) (ts: int) =
+        { ll with
+            Text = ll.Text.Substring(0, ts) + "(" + ll.Text.Substring ts + ")"
+            Segments =
+                ll.Segments
+                |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i) }
 
     let folded =
         numbered
@@ -98,13 +249,19 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 match state with
                 | Error e -> Error e
                 | Ok(current, acc, blankSinceHead) ->
+                    let inOpenBrace =
+                        match current with
+                        | Some p -> p.BraceDepth > 0
+                        | None -> false
+
                     if raw.Trim() = "" then
                         match current with
-                        | Some(_, _, _, Some(_, mLine, None)) ->
+                        | Some p when p.BraceDepth > 0 -> braceOpen p.BraceLine
+                        | Some { District = Some(_, mLine, None) } ->
                             Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
-                        | Some(_, (_, letLine) :: _, _, _) -> noBodyBlank letLine
+                        | Some { Lets = (_, letLine) :: _ } -> noBodyBlank letLine
                         | _ -> close current acc |> Result.map (fun acc -> None, acc, true)
-                    elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' then
+                    elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' || inOpenBrace then
                         let indent = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
 
                         if raw.Substring(0, indent).Contains '\t' then
@@ -117,120 +274,165 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         $"line {lineNo}: continuation after a blank line has no statement to continue"
                                 else
                                     Error $"line {lineNo}: continuation without a statement"
-                            | Some(ll, stack, lastIndent, district) ->
+                            | Some p ->
                                 let piece = raw.Substring indent
+                                let cls = classifyPiece piece
 
-                                let rec go (ll: LogicalLine, stack, lastIndent, district) =
-                                    match district with
-                                    | Some(m, mLine, None) when indent > m ->
-                                        districtLineCheck lineNo piece
-                                        |> Result.map (fun () ->
-                                            let joinedStart = ll.Text.Length - 1 + 2
+                                let rec go (p: Pend) =
+                                    if p.BraceDepth > 0 then
+                                        // record continuation: a line break after a
+                                        // field is a separator (with or without `;`)
+                                        let prev = p.LL.Text.TrimEnd()
 
-                                            Some(
-                                                { ll with
-                                                    Text =
-                                                        ll.Text.Substring(0, ll.Text.Length - 1) + "!(" + piece + ")"
-                                                    Segments = (joinedStart, lineNo, indent) :: ll.Segments },
-                                                stack,
-                                                indent,
-                                                Some(m, mLine, Some indent)
-                                            ),
+                                        let join =
+                                            if prev.EndsWith "{" || prev.EndsWith ";" || cls.ClosesBrace then
+                                                JSpace
+                                            else
+                                                JSibling
+
+                                        Ok(
+                                            Some
+                                                { p with
+                                                    LL = applyJoin join p.LL piece lineNo indent
+                                                    LastIndent = indent
+                                                    BraceDepth = max 0 (p.BraceDepth + cls.BraceDelta) },
                                             acc,
-                                            blankSinceHead)
-                                    | Some(_, mLine, None) ->
-                                        Error
-                                            $"line {mLine}: line-end '!' needs an indented block of command lines below it"
-                                    | Some(m, mLine, Some d) when indent > m ->
-                                        if piece.StartsWith "|" then
-                                            let joinedStart = ll.Text.Length
-
-                                            Ok(
-                                                Some(
-                                                    { ll with
-                                                        Text =
-                                                            ll.Text.Substring(0, ll.Text.Length - 1)
-                                                            + " "
-                                                            + piece
-                                                            + ")"
-                                                        Segments = (joinedStart, lineNo, indent) :: ll.Segments },
-                                                    stack,
-                                                    indent,
-                                                    district
-                                                ),
-                                                acc,
-                                                blankSinceHead
-                                            )
-                                        elif indent = d then
-                                            districtLineCheck lineNo piece
+                                            blankSinceHead
+                                        )
+                                    else
+                                        match p.District with
+                                        | Some(m, mLine, None) when indent > m ->
+                                            districtLineCheck lineNo cls
                                             |> Result.map (fun () ->
-                                                let joinedStart = ll.Text.Length + 5
-
-                                                Some(
-                                                    { ll with
-                                                        Text = ll.Text + " ; !(" + piece + ")"
-                                                        Segments = (joinedStart, lineNo, indent) :: ll.Segments },
-                                                    stack,
-                                                    indent,
-                                                    district
-                                                ),
+                                                Some
+                                                    { p with
+                                                        LL = applyJoin JDistrictOpen p.LL piece lineNo indent
+                                                        LastIndent = indent
+                                                        District = Some(m, mLine, Some indent) },
                                                 acc,
                                                 blankSinceHead)
-                                        else
+                                        | Some(_, mLine, None) ->
                                             Error
-                                                $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
-                                    | Some _ ->
-                                        // at or left of the marker: the district closes;
-                                        // reprocess this line under the normal rules
-                                        go (ll, stack, lastIndent, None)
-                                    | None ->
-                                        let closed =
-                                            if piece.StartsWith "|" then
-                                                match stack with
-                                                | (k, letLine) :: _ when indent <= k -> noBody letLine
-                                                | _ -> Ok(stack, " ")
+                                                $"line {mLine}: line-end '!' needs an indented block of command lines below it"
+                                        | Some(m, _, Some d) when indent > m ->
+                                            if cls.Kind = PieceKind.PipeHead then
+                                                Ok(
+                                                    Some
+                                                        { p with
+                                                            LL = applyJoin JDistrictPipe p.LL piece lineNo indent
+                                                            LastIndent = indent },
+                                                    acc,
+                                                    blankSinceHead
+                                                )
+                                            elif indent = d then
+                                                districtLineCheck lineNo cls
+                                                |> Result.map (fun () ->
+                                                    Some
+                                                        { p with
+                                                            LL = applyJoin JDistrictSibling p.LL piece lineNo indent
+                                                            LastIndent = indent },
+                                                    acc,
+                                                    blankSinceHead)
                                             else
-                                                match stack with
+                                                Error
+                                                    $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
+                                        | Some _ ->
+                                            // at or left of the marker: the district closes;
+                                            // reprocess this line under the normal rules
+                                            go { p with District = None }
+                                        | None ->
+                                            if cls.Kind = PieceKind.PipeHead || cls.Kind = PieceKind.ElseHead then
+                                                // arms, pipeline stages, and else extend the
+                                                // current piece: no sibling `;`, no offside close
+                                                match p.Lets with
+                                                | (k, letLine) :: _ when indent <= k -> noBody letLine
+                                                | _ ->
+                                                    Ok(
+                                                        Some
+                                                            { p with
+                                                                LL = applyJoin JSpace p.LL piece lineNo indent
+                                                                LastIndent = indent },
+                                                        acc,
+                                                        blankSinceHead
+                                                    )
+                                            else
+                                                match p.Lets with
                                                 | (k, letLine) :: _ when indent < k -> noBody letLine
-                                                | (k, _) :: rest when indent = k -> Ok(rest, " in ")
-                                                // same-indent sibling = block sequencing
-                                                | _ when indent = lastIndent -> Ok(stack, " ; ")
-                                                | _ -> Ok(stack, " ")
+                                                | _ ->
+                                                    // the offside close: siblings at or left of an
+                                                    // open if/match head wrap it shut
+                                                    let rec closeCompounds ll compounds closedHead =
+                                                        match compounds with
+                                                        | (h, ts) :: rest when indent <= h ->
+                                                            closeCompounds (wrapFrom ll ts) rest (Some h)
+                                                        | _ -> ll, compounds, closedHead
 
-                                        closed
-                                        |> Result.map (fun (stack, sep) ->
-                                            let stack = if isLetHead piece then (indent, lineNo) :: stack else stack
+                                                    let ll, compounds, closedHead =
+                                                        closeCompounds p.LL p.Compounds None
 
-                                            let district = if isMarker piece then Some(indent, lineNo, None) else None
+                                                    let siblingLevel =
+                                                        match closedHead with
+                                                        | Some h -> h
+                                                        | None -> p.LastIndent
 
-                                            let joinedStart = ll.Text.Length + sep.Length
+                                                    let lets, join =
+                                                        match p.Lets with
+                                                        | (k, _) :: rest when indent = k -> rest, JIn
+                                                        // same-indent sibling = block sequencing
+                                                        | _ when indent = siblingLevel -> p.Lets, JSibling
+                                                        | _ -> p.Lets, JSpace
 
-                                            Some(
-                                                { ll with
-                                                    Text = ll.Text + sep + piece
-                                                    Segments = (joinedStart, lineNo, indent) :: ll.Segments },
-                                                stack,
-                                                indent,
-                                                district
-                                            ),
-                                            acc,
-                                            blankSinceHead)
+                                                    let lets =
+                                                        if cls.Kind = PieceKind.LetHead then
+                                                            (indent, lineNo) :: lets
+                                                        else
+                                                            lets
 
-                                go (ll, stack, lastIndent, district)
+                                                    let district =
+                                                        if cls.IsMarker then Some(indent, lineNo, None) else None
+
+                                                    let joined = applyJoin join ll piece lineNo indent
+
+                                                    let compounds =
+                                                        if cls.OpensCompound then
+                                                            // the piece starts where the join put it:
+                                                            // its segment is the newest entry
+                                                            let (js, _, _) = List.head joined.Segments
+                                                            (indent, js) :: compounds
+                                                        else
+                                                            compounds
+
+                                                    Ok(
+                                                        Some
+                                                            { p with
+                                                                LL = joined
+                                                                Lets = lets
+                                                                LastIndent = indent
+                                                                District = district
+                                                                Compounds = compounds
+                                                                BraceDepth = max 0 cls.BraceDelta
+                                                                BraceLine = lineNo },
+                                                        acc,
+                                                        blankSinceHead
+                                                    )
+
+                                go p
                     else
+                        let cls = classifyPiece (raw.TrimEnd())
+
                         close current acc
                         |> Result.map (fun acc ->
-                            Some(
-                                { Text = raw
-                                  Head = lineNo
-                                  Segments = [ (0, lineNo, 0) ] },
-                                [],
-                                0,
-                                (if isMarker (raw.TrimEnd()) then
-                                     Some(0, lineNo, None)
-                                 else
-                                     None)
-                            ),
+                            Some
+                                { LL =
+                                    { Text = raw
+                                      Head = lineNo
+                                      Segments = [ (0, lineNo, 0) ] }
+                                  Lets = []
+                                  LastIndent = 0
+                                  District = (if cls.IsMarker then Some(0, lineNo, None) else None)
+                                  Compounds = []
+                                  BraceDepth = max 0 cls.BraceDelta
+                                  BraceLine = lineNo },
                             acc,
                             false))
             (Ok(None, [], false))
@@ -372,7 +574,7 @@ let run (path: string) (scriptArgs: string list) : int =
             let assembled =
                 body
                 |> List.mapi (fun i l -> bodyOffset + i + 1, l)
-                |> List.filter (fun (_, raw) -> not (raw.Trim() <> "" && (stripComment raw).Trim() = ""))
+                |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
                 |> List.map (fun (n, raw) -> n, stripComment raw)
                 |> assemble
 
@@ -401,16 +603,14 @@ let run (path: string) (scriptArgs: string list) : int =
                             match state with
                             | Error e -> Error e
                             | Ok(tenv, acc) ->
-                                match Parser.parseLine r ll.Text with
-                                | Error msg ->
+                                match Parser.parseLineFull r ll.Text with
+                                | Error f ->
                                     let locatedMsg =
-                                        let m = System.Text.RegularExpressions.Regex.Match(msg, @"Ln: 1 Col: (\d+)")
-
-                                        if m.Success then
-                                            let physLine, physCol = translate ll (int m.Groups[1].Value)
-                                            $"{path}:{physLine}:{physCol}: parse error:\n{msg}"
-                                        else
-                                            located path ll.Head msg
+                                        match f.Col with
+                                        | Some col ->
+                                            let physLine, physCol = translate ll col
+                                            $"{path}:{physLine}:{physCol}: parse error:\n{f.Message}"
+                                        | None -> located path ll.Head f.Message
 
                                     Error locatedMsg
                                 | Ok(SType decl) ->
@@ -469,21 +669,27 @@ let run (path: string) (scriptArgs: string list) : int =
                             | CLet(name, te) ->
                                 try
                                     exec (Map.add name (Eval.eval venv te) venv) tail
-                                with ex ->
+                                with
+                                | Eval.ExitRequest code -> code
+                                | ex ->
                                     Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
                                     1
                             | CCmd te ->
                                 try
                                     printResult (Eval.eval venv te)
                                     exec venv tail
-                                with ex ->
+                                with
+                                | Eval.ExitRequest code -> code
+                                | ex ->
                                     Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
                                     1
                             | CExpr te ->
                                 try
                                     Eval.eval venv te |> ignore
                                     exec venv tail
-                                with ex ->
+                                with
+                                | Eval.ExitRequest code -> code
+                                | ex ->
                                     Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
                                     1
 

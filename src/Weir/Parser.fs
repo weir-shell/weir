@@ -354,7 +354,7 @@ let private curryParams (ps: string list) (value: Expr) : Expr =
 let private letIn =
     pipe3
         getPosition
-        (keyword "let" >>. ident .>>. many ident .>> str_ws "=" .>>. expr
+        (keyword "let" >>. ident .>>. many ident .>> str_ws "=" .>>. seqExpr
          .>> keyword "in")
         seqExpr
         (fun p ((name, ps), value) body ->
@@ -746,7 +746,14 @@ let private topLet (r: Resolver) =
         >>= fun (name, ps) ->
             // command mode never sits under a lambda (splice-soundness
             // invariant), so a param-ful let takes an expression RHS only
-            let rhsP = if List.isEmpty ps then cmdLineLetRhs r <|> expr else expr
+            // RHS takes sequenced blocks too (function bodies of effect
+            // lines — the bicep-script receipt)
+            let rhsP =
+                if List.isEmpty ps then
+                    cmdLineLetRhs r <|> seqExpr
+                else
+                    seqExpr
+
             rhsP .>> eof |>> fun rhs -> SLet(name, curryParams ps rhs)
     )
 
@@ -764,15 +771,32 @@ let private noExternals =
       IsExternal = fun _ -> false
       ExternalNames = fun () -> Seq.empty }
 
-let parseLine (r: Resolver) (input: string) : Result<Stmt, string> =
+// Structured failure: the position travels as DATA (2026-07-20
+// formalization — the runner used to regex `Ln: 1 Col: (\d+)` out of
+// FParsec's message text, a silent break waiting on any FParsec
+// update). Message text is unchanged; Col is Some only for the
+// single-logical-line case the runner translates.
+type ParseFailure = { Message: string; Col: int option }
+
+let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
 
     try
         match run (stmtWith r) input with
         | Success(s, _, _) -> Result.Ok s
-        | Failure(msg, _, _) -> Result.Error msg
+        | Failure(msg, err, _) ->
+            let col =
+                if err.Position.Line = 1L then
+                    Some(int err.Position.Column)
+                else
+                    None
+
+            Result.Error { Message = msg; Col = col }
     finally
         ambientResolver.Value <- noExternals
+
+let parseLine (r: Resolver) (input: string) : Result<Stmt, string> =
+    parseLineFull r input |> Result.mapError _.Message
 
 let parseStmt (input: string) : Result<Stmt, string> = parseLine noExternals input
 

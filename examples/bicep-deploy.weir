@@ -1,0 +1,71 @@
+#!/usr/bin/env weir
+// bicep deploy/snapshot/quality — translated from the F#/dbt script.
+// Reshapes: subcommands via args matching; App-of-(stack, env) tuple ->
+// --stack/--env flags; dbt plan{} discovery NOT translated (pass the
+// target explicitly); shEnv -> sh -c env-file sourcing; use!-logout ->
+// logout on success path only (no try/finally in weir).
+
+type Target = { Name: string; BicepPath: string; Stack: string; Env: string }
+type XrEnv = { XR_AZURE_GITHUB_AUTH: Option<int>; XR_ACTION_ON_UNMANAGE: Option<string> }
+type TokenEnv = { ACTIONS_ID_TOKEN_REQUEST_TOKEN: string; ACTIONS_ID_TOKEN_REQUEST_URL: string }
+type Oidc = { value: string }
+
+let subcommand = args |> Seq.tryHead |> Option.defaultTo ""
+
+let xr = Env.load XrEnv
+let onUnmanage = xr.XR_ACTION_ON_UNMANAGE |> Option.defaultTo "detachAll"
+
+let header t = printerr $"== {t} =="
+
+// per-target env sourced around each child call (shEnv has no typed spelling yet)
+let inEnv t c = $"set -a; . ./bicep/envs/{t.Stack}-{t.Env}.env; {c}"
+
+let quality t =
+    header $"bicep quality: {t.Name}"
+    !(sh -c (inEnv t $"bicep lint {t.BicepPath}"))
+    !(sh -c (inEnv t $"bicep snapshot --mode validate {t.BicepPath} --subscription-id $AZURE_SUBSCRIPTION_ID --resource-group $AZURE_DEFAULTS_GROUP"))
+    printerr "OK"
+
+let snapshot t =
+    header $"bicep snapshot: {t.Name}"
+    !(sh -c (inEnv t $"bicep snapshot {t.BicepPath} --subscription-id $AZURE_SUBSCRIPTION_ID --resource-group $AZURE_DEFAULTS_GROUP"))
+    printerr "OK"
+
+let deployStack t =
+    header $"bicep deploy: {t.Name}"
+    !(sh -c (inEnv t $"az stack group create --yes --output=table --name {t.Name} --parameters {t.BicepPath} --action-on-unmanage {onUnmanage} --deny-settings-mode none"))
+
+let azureLogin t =
+    header "azure login"
+    let tok = Env.load TokenEnv
+    let oidc =
+        $(curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | from json Oidc)
+        |> Seq.head
+    !(sh -c (inEnv t $"export OIDC_TOKEN={oidc.value}; az login --output table --federated-token $OIDC_TOKEN --service-principal --username $AZURE_CLIENT_ID --tenant $AZURE_TENANT_ID; az account set --subscription $AZURE_SUBSCRIPTION_ID"))
+
+let deploy t =
+    quality t
+    if (xr.XR_AZURE_GITHUB_AUTH |> Option.defaultTo 0) == 1 then
+        azureLogin t
+        deployStack t
+        !(sh -c "az logout")
+    else deployStack t
+
+let usage = "usage: bicep.weir <deploy|snapshot|quality> --stack S --env E"
+
+let stack = Args.value "--stack" |> Option.defaultTo ""
+let env = Args.value "--env" |> Option.defaultTo ""
+
+if stack == "" || env == "" then fail usage
+
+let target =
+    { Name = $"{stack}-{env}-apps"
+        BicepPath = $"bicep/apps/stacks/{stack}/{env}.bicepparam"
+        Stack = stack
+        Env = env }
+
+match subcommand with
+| c when c == "deploy" -> deploy target
+| c when c == "snapshot" -> snapshot target
+| c when c == "quality" -> quality target
+| _ -> fail usage
