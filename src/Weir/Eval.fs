@@ -274,6 +274,11 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     | PCase _, VUnion _ -> None
     | PCase _, v -> unreachable $"the checker rejects constructor patterns on {formatValue v}"
 
+let private wrapOpt (ty: Ty) (v: Value) : Value =
+    match ty with
+    | TNamed("Option", _) -> VUnion("Some", Some v)
+    | _ -> v
+
 let rec eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
     | TEInt n -> VInt(int64 n)
@@ -363,6 +368,43 @@ let rec eval (env: Env) (te: TypedExpr) : Value =
                 | None -> tryArms rest
 
         tryArms arms
+    | TEEnvLoad def ->
+        // snapshot at force time; collect every problem, raise ONCE
+        let problems = ResizeArray<string>()
+
+        let fields =
+            def.Fields
+            |> List.map (fun (name, ty) ->
+                let raw = System.Environment.GetEnvironmentVariable name
+
+                let value =
+                    match ty, raw with
+                    | TNamed("Option", _), null -> VUnion("None", None)
+                    | _, null ->
+                        problems.Add $"{name} is missing"
+                        VUnit
+                    | (TStr | TNamed("Option", [ TStr ])), v -> wrapOpt ty (VStr v)
+                    | (TInt | TNamed("Option", [ TInt ])), v ->
+                        match System.Int64.TryParse v with
+                        | true, n -> wrapOpt ty (VInt n)
+                        | _ ->
+                            problems.Add $"{name} is not an int ('{v}')"
+                            VUnit
+                    | (TBool | TNamed("Option", [ TBool ])), v ->
+                        match v with
+                        | "true" -> wrapOpt ty (VBool true)
+                        | "false" -> wrapOpt ty (VBool false)
+                        | _ ->
+                            problems.Add $"{name} is not a bool ('{v}'; exactly true or false)"
+                            VUnit
+                    | _ -> unreachable "the checker rejects non-scalar Env.load fields"
+
+                name, value)
+
+        if problems.Count > 0 then
+            failwith ($"Env.load {def.Name}: " + String.concat "; " problems)
+
+        VRecord(def.Name, Map.ofList fields)
     | TESeq(a, b) ->
         eval env a |> ignore
         eval env b

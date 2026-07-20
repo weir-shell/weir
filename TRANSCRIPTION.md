@@ -187,6 +187,20 @@ bool pattern pre-binds to bool (defaulting precedent). Exhaustiveness:
 guarded arms never count (coverage or terminal reachability); bool
 scrutinee is exhaustive iff unguarded true AND false appear.
 
+## Post-anchor addenda (typed-env session, 2026-07-20)
+
+### Env.load T (bespoke arm — from-json's first expression-position sibling)
+    shape: (Env.load) tyName   [Env unshadowed, module present]
+    Γ_types(tyName) = record(∅, fields)    ∀(f, τf): τf ∈ {str, int,
+    bool, Option⟨str|int|bool⟩}
+    ──────────────────────────────────────────────────────────────
+    Γ ⊢ Env.load tyName ⇒ tyName    [TEEnvLoad def]
+The type-name-in-special-position machinery is EFrom's (monomorphic-
+record guard included), relocated; no new resolution concepts. Runtime
+is boundary validation (collect-then-raise-once), joining the existing
+failure class; TEEnvLoad is inert to finalize/warnings (carries a
+RecordDef, no types to walk).
+
 ## Flags summary (pre-read findings)
 
 1. instantiate: two jobs (rename + R installation).

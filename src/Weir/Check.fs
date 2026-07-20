@@ -31,6 +31,7 @@ and TypedKind =
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
     | TESeq of first: TypedExpr * rest: TypedExpr
+    | TEEnvLoad of def: RecordDef
     | TEFrom of format: string * rowDef: RecordDef
     | TETo of format: string
     | TEList of items: TypedExpr list
@@ -663,6 +664,38 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         let head, args = spine expr
 
         match head.Kind, args with
+        | EField({ Kind = EVar "Env" }, "load", _), [ arg ] when
+            not (Map.containsKey "Env" env.Values) && Map.containsKey "Env" env.Modules
+            ->
+            // Env.load T — the third typed-boundary instance (porcelain,
+            // from json, env). Imitates from-json's type-name-in-special-
+            // position resolution, relocated to expression position.
+            (match arg.Kind with
+             | EVar tyName ->
+                 match Map.tryFind tyName env.Types with
+                 | Some(Record def) when def.Params.IsEmpty ->
+                     let loadable ty =
+                         match ty with
+                         | TStr
+                         | TInt
+                         | TBool
+                         | TNamed("Option", [ TStr | TInt | TBool ]) -> true
+                         | _ -> false
+
+                     match def.Fields |> List.tryFind (fun (_, ft) -> not (loadable ft)) with
+                     | Some(bad, badTy) ->
+                         err
+                             arg.Span
+                             $"Env.load fields must be string, int, bool, or Option of these; '{bad}' is {formatTy badTy}"
+                     | None ->
+                         Ok
+                             { Kind = TEEnvLoad def
+                               Ty = TNamed(tyName, [])
+                               Span = expr.Span }
+                 | Some(Record def) -> err arg.Span $"Env.load needs a monomorphic record; '{tyName}' is generic"
+                 | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
+                 | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
+             | _ -> err arg.Span "Env.load takes a record type name, e.g. Env.load Config")
         | EField({ Kind = EVar "Seq" }, "contains", fspan), [ needle; source ] when isContainsSentinel env ->
             result {
                 let elemTy = TVar(freshName ctx "a")
@@ -1290,6 +1323,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
             )
         | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
+        | TEEnvLoad _ -> te.Kind
         | leaf -> leaf
 
     { te with
@@ -1460,6 +1494,7 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TESeq(a, b) ->
             walk a
             walk b
+        | TEEnvLoad _ -> ()
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
 

@@ -2590,6 +2590,88 @@ let indexerTests =
               Expect.stringContains (formatError terr) "expected seq" ""
           } ]
 
+let envLoadTests =
+    testSequenced
+    <| testList
+        "Typed Env"
+        [ test "all-good load with every scalar and Option" {
+              System.Environment.SetEnvironmentVariable("WT_S", "hello")
+              System.Environment.SetEnvironmentVariable("WT_I", "42")
+              System.Environment.SetEnvironmentVariable("WT_B", "false")
+              System.Environment.SetEnvironmentVariable("WT_O", null)
+
+              try
+                  let e2 =
+                      env
+                      |> declare "type WtCfg = { WT_S: string; WT_I: int; WT_B: bool; WT_O: Option<int> }"
+
+                  match Weir.Check.typecheck e2 (parse "Env.load WtCfg") with
+                  | Ok te ->
+                      Expect.equal te.Ty (TNamed("WtCfg", [])) "typed statically"
+
+                      match eval valueEnv te with
+                      | VRecord(_, fs) ->
+                          Expect.equal fs["WT_I"] (VInt 42L) "int parsed"
+                          Expect.equal fs["WT_B"] (VBool false) "bool parsed"
+                          Expect.equal fs["WT_O"] (VUnion("None", None)) "absent Option is None"
+                      | v -> failtest $"unexpected {formatValue v}"
+                  | Error terr -> failtest (formatError terr)
+              finally
+                  for n in [ "WT_S"; "WT_I"; "WT_B" ] do
+                      System.Environment.SetEnvironmentVariable(n, null)
+          }
+          test "problems collect into ONE boundary error (incl. TRUE and 1 rejected)" {
+              System.Environment.SetEnvironmentVariable("WT_I", "abc")
+              System.Environment.SetEnvironmentVariable("WT_B", "TRUE")
+
+              try
+                  let e2 =
+                      env |> declare "type WtBad = { WT_I: int; WT_B: bool; WT_MISSING_ZZ: string }"
+
+                  match Weir.Check.typecheck e2 (parse "Env.load WtBad") with
+                  | Ok te ->
+                      let ex = Expect.throwsC (fun () -> eval valueEnv te |> ignore) id
+                      Expect.stringContains ex.Message "WT_I is not an int" "int problem"
+                      Expect.stringContains ex.Message "WT_B is not a bool" "exact-bool problem"
+                      Expect.stringContains ex.Message "WT_MISSING_ZZ is missing" "missing problem"
+                  | Error terr -> failtest (formatError terr)
+              finally
+                  for n in [ "WT_I"; "WT_B" ] do
+                      System.Environment.SetEnvironmentVariable(n, null)
+          }
+          test "present-but-garbage Option is an error, not None" {
+              System.Environment.SetEnvironmentVariable("WT_OI", "xyz")
+
+              try
+                  let e2 = env |> declare "type WtOpt = { WT_OI: Option<int> }"
+
+                  match Weir.Check.typecheck e2 (parse "Env.load WtOpt") with
+                  | Ok te -> Expect.throws (fun () -> eval valueEnv te |> ignore) "garbage is not absence"
+                  | Error terr -> failtest (formatError terr)
+              finally
+                  System.Environment.SetEnvironmentVariable("WT_OI", null)
+          }
+          test "non-scalar fields rejected at CHECK time" {
+              let e2 =
+                  env
+                  |> declare "type WtSeq = { XS: seq<string> }"
+                  |> declare "type WtNest = { P: Point }"
+
+              for bad in [ "Env.load WtSeq"; "Env.load WtNest" ] do
+                  match Weir.Check.typecheck e2 (parse bad) with
+                  | Error terr -> Expect.stringContains (formatError terr) "must be string, int, bool" bad
+                  | Ok _ -> failtest $"{bad} should be rejected"
+          }
+          test "from-json-family errors: generic, union, unknown, non-type" {
+              Expect.stringContains (formatError (checkErr "Env.load Proc")) "union" ""
+              Expect.stringContains (formatError (checkErr "Env.load Nonesuch")) "unknown type" ""
+              Expect.stringContains (formatError (checkErr "Env.load double")) "unknown type" ""
+          }
+          test "value-shadowed Env falls through to normal rules" {
+              let terr = checkErr "let Env = 1 in Env.load Point"
+              Expect.stringContains (formatError terr) "field" "field access on int, not the loader"
+          } ]
+
 let fileTests =
     testSequenced
     <| testList
@@ -2826,5 +2908,6 @@ let allTests =
           sigilTests
           districtTests
           indexerTests
+          envLoadTests
           parallelTests
           fileTests ]

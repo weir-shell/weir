@@ -48,6 +48,7 @@ let lines (prog: string) (args: string list) (input: seq<string> option) : seq<s
 
             if p.ExitCode <> 0 then
                 let shown = String.concat " " (prog :: args)
+
                 let signalNote =
                     // 128+N = terminated by signal N; name the common ones so a
                     // cancelled fzf reads as a cancel, not a mystery number

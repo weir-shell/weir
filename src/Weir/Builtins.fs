@@ -609,6 +609,11 @@ let private argsMembers: (string * Ty * Value) list =
     [ "flag", TFun(TStr, TFun(TStr, TBool)), argsFlagImpl
       "value", TFun(TStr, TNamed("Option", [ TStr ])), argsValueImpl ]
 
+let envVarDef: RecordDef =
+    { Name = "EnvVar"
+      Params = []
+      Fields = [ "Name", TStr; "Value", TStr ] }
+
 // Env — process environment, the shell's other ambient input. Receipt:
 // the nuget http-get translation (2026-07-20), the long-predicted gap.
 let private envMembers: (string * Ty * Value) list =
@@ -620,7 +625,16 @@ let private envMembers: (string * Ty * Value) list =
               match System.Environment.GetEnvironmentVariable name with
               | null -> VUnion("None", None)
               | value -> VUnion("Some", Some(VStr value))
-          | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}") ]
+          | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}")
+      "vars",
+      TSeq(TNamed(envVarDef.Name, [])),
+      VSeq(
+          Seq.delay (fun () ->
+              System.Environment.GetEnvironmentVariables()
+              |> Seq.cast<System.Collections.DictionaryEntry>
+              |> Seq.map (fun e ->
+                  VRecord(envVarDef.Name, Map [ "Name", VStr(string e.Key); "Value", VStr(string e.Value) ])))
+      ) ]
 
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
@@ -774,7 +788,8 @@ let typeEnv: TypeEnv =
               changeDef.Name, Record changeDef
               completedDef.Name, Record completedDef
               groupDef.Name, Record groupDef
-              pairDef.Name, Record pairDef ] }
+              pairDef.Name, Record pairDef
+              envVarDef.Name, Record envVarDef ] }
 
 let typeEnvStrict: TypeEnv =
     { typeEnv with

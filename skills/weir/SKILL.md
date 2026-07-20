@@ -194,8 +194,13 @@ if 1 > 0 then !
   `Seq.exists`/`Seq.forall` with predicates.
 - Flags: `Args.flag "--clean" "-c"` (bool; `""` short form if none),
   `Args.value "--out"` (Option of the next token). Script-only.
-- Environment: `Env.get "NAME"` (Option<string>); there is no `$NAME`
-  expansion in commands — interpolate: `-H $"token {key}"`.
+- Environment: `Env.get "NAME"` (Option<string>) for one var;
+  `Env.load Config` for typed config — declare
+  `type Config = { PORT: int; DEBUG: bool; TOKEN: Option<string> }`
+  (field names = env-var names VERBATIM; scalars + Option only; bool
+  is exactly true/false), load once, typed thereafter; every missing/
+  garbage field reported in ONE error. `Env.vars` lists everything.
+  No `$NAME` expansion in commands — interpolate: `-H $"token {key}"`.
 - `//` mid-token is NOT a comment: bareword URLs (`https://...`) pass
   through; comments need line start or a preceding space.
 - `run "git" ["push"]` runs a program from expression positions:
@@ -239,6 +244,13 @@ git status --porcelain | from porcelain | Seq.map _.Path
 ```weir
 printerr "starting up"
 print (if ([1; 2] |> Seq.length) == 2 then "ok" else "wrong")
+```
+
+```weir
+type HomeCfg = { HOME: string; WEIR_ABSENT_ZZ: Option<string> }
+
+let cfg = Env.load HomeCfg
+print $"home={cfg.HOME} extra={show cfg.WEIR_ABSENT_ZZ}"
 ```
 
 ```weir-error

@@ -427,7 +427,18 @@ quantity semantics now.
   weir). **`Env.get : string -> Option<string>`** reads the process
   environment (same receipt — the long-predicted gap's arrival);
   there is deliberately no `$NAME` expansion in command text
-  (splices and interpolation are the typed spellings). Line one `#!` is skipped by the runner; `#` at line head is
+  (splices and interpolation are the typed spellings).
+- **`Env.load T`** (2026-07-20) — the third typed-boundary instance
+  (porcelain, from json, env): declare a monomorphic record whose
+  field names are env-var names VERBATIM (no case mapping —
+  conventions guess at deployments; verbatim is inspectable), fields
+  scalars or Option-of-scalar (bool is EXACTLY true/false — 1/yes
+  rejected; Option: absent = None, garbage = still an error). Reads
+  are a SNAPSHOT at force; the record is plain data after (no
+  pwd-style liveness). All problems collect into ONE boundary error —
+  the existing runtime failure class, no new member. `Env.vars` is
+  the untyped floor (builtin-owned EnvVar rows). `Env.set` parked:
+  the ambient-state decision, no receipt. Line one `#!` is skipped by the runner; `#` at line head is
   reserved for directives.
 - **The statement rule**: *command-mode lines stream; every expression
   computes a value; values are bound or printed.* A pure expression

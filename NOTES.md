@@ -1,5 +1,25 @@
 # Spike Notes
 
+## Typed Env — Env.load Config (2026-07-20)
+
+PLAN-typed-env executed. 478 tests (tripwires suite-inclusive, run
+twice); battery +2 e2e pins; timing holds. The checker gained ONE
+bespoke arm exactly per the plan's model — EFrom's type-name
+resolution relocated to expression position, monomorphic-record guard
+and message family included; no new type-system concepts, so no
+stop-and-report. TRANSCRIPTION addendum in-session per the
+measurement-surface rule; TEEnvLoad is inert to finalize/warnings
+(carries a RecordDef, not types).
+
+The distinction the e2e pin names: field-TYPE violations (seq/record/
+union fields) are CHECK-time; missing/garbage values are the BOUNDARY
+class at force — so an effect before the load legitimately runs
+(pinned with a proof-file, the inverse of the check-first pin).
+Collect-then-raise proven with a three-problem environment reporting
+all three in one message. The exact-bool decision (true/false only;
+TRUE and 1 rejected) pinned in the battery.
+
+
 ## Indexers — xs[i] (2026-07-20)
 
 User ask, F# 6 precedent applied verbatim: `xs[i]` = `Seq.item i xs`

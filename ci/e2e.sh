@@ -369,6 +369,31 @@ echo "$errout" | grep -qE "span.weir:5:" || fail "district splice error must poi
 echo "e2e ok: district span translation points at the district line"
 rm -rf "$distdir"
 
+envdir=$(mktemp -d)
+cat > "$envdir/cfg.weir" <<'WEOF'
+type Config = { WEIR_E2E_PORT: int; WEIR_E2E_DEBUG: bool; WEIR_E2E_OPT: Option<string> }
+
+let cfg = Env.load Config
+print $"port={cfg.WEIR_E2E_PORT} debug={cfg.WEIR_E2E_DEBUG} opt={show cfg.WEIR_E2E_OPT}"
+WEOF
+out=$(WEIR_E2E_PORT=9000 WEIR_E2E_DEBUG=true $BIN "$envdir/cfg.weir")
+expect "Env.load: typed config from a controlled environment" "port=9000 debug=true opt=None" "$out"
+
+cat > "$envdir/bad.weir" <<'WEOF'
+type Config = { WEIR_E2E_PORT: int; WEIR_E2E_MISSING_ZZ: string }
+
+sh -c "touch env-proof"
+
+let cfg = Env.load Config
+print "unreached"
+WEOF
+errout=$(cd "$envdir" && WEIR_E2E_PORT=abc $BIN bad.weir 2>&1) && fail "bad environment must fail"
+echo "$errout" | grep -qF "not an int ('abc')" || fail "collected error missing int problem: $errout"
+echo "$errout" | grep -qF "WEIR_E2E_MISSING_ZZ is missing" || fail "collected error missing absent var: $errout"
+[ -e "$envdir/env-proof" ] || fail "boundary errors are RUNTIME class: earlier effects legitimately ran"
+echo "e2e ok: Env.load collects all problems in one boundary error (runtime class — check-time is the field-TYPE rule)"
+rm -rf "$envdir"
+
 cat > "$scriptdir/perr.weir" <<'WEOF'
 let x =
     1 +* 2
