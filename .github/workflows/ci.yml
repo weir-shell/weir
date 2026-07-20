@@ -14,10 +14,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Test
-        run: dotnet test
+        run: dotnet test tests/Weir.Tests
 
       - name: Test again (flake detection)
-        run: dotnet test
+        run: dotnet test tests/Weir.Tests
 
       - name: Publish AOT
         run: ./publish.sh

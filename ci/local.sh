@@ -12,4 +12,4 @@ docker run --rm \
     -v weir-nuget:/root/.nuget \
     -w /work \
     weir-ci \
-    bash -ec 'dotnet test && dotnet test && ./publish.sh && ci/e2e.sh && ci/skill-doc.sh && ci/fsharp-oracle.sh && ci/timing.sh'
+    bash -ec 'dotnet test tests/Weir.Tests && dotnet test tests/Weir.Tests && ./publish.sh && ci/e2e.sh && ci/skill-doc.sh && ci/fsharp-oracle.sh && ci/timing.sh'
