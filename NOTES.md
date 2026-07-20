@@ -1,5 +1,23 @@
 # Spike Notes
 
+## The F# border classified — rejected vs pending (2026-07-20)
+
+User question exposed the gap: divergences.md named oracle-refereed
+shapes but never distinguished "decided against" from "nobody built
+it", and the pending absences lived scattered in plan parks. The
+artifact now carries a status column — different / rejected / pending
+— and grew from 13 rows to 26, adding the major absences that had no
+entry because no pin touched them (floats, chars, exceptions,
+ascription, user modules, anonymous records, destructuring, OO,
+imperative loops, elif). Honesty rule applied while classifying:
+where no decision was ever made, status is pending even when absence
+feels intentional (block comments, unary minus); rejected requires a
+citable rationale. SEMANTICS gained "The F# border" section as the
+pointer; the skill file routes agents to the table. The id-coupling
+tripwire fired during the rework itself (a renamed id broke its pin —
+the artifact and battery cannot drift apart).
+
+
 ## show — the debugging renderer (2026-07-20)
 
 The collision parked in PLAN-unit-and-print ("first dogfood complaint

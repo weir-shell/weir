@@ -192,4 +192,5 @@ print "unreached"
   feature), write bash — and append one line to NOTES-agent.md:
   date | task shape | the gap that forced bash.
 - NEVER invent weir syntax. If unsure a feature exists, check this
-  file; if absent here, assume absent, fall back, log.
+  file; if absent here, assume absent, fall back, log. The full
+  rejected-vs-pending border with F# is tests/fidelity/divergences.md.

@@ -572,6 +572,22 @@ quantity semantics now.
   — operators yield values, never functions, so the shape is always
   wrong.
 
+## The F# border — rejected vs pending (2026-07-20)
+
+The single enumeration of weir's border with F# is
+`tests/fidelity/divergences.md` (machine-read by the oracle; this
+section is the pointer, not a copy). Every row carries a **status**:
+`different` (weir has a deliberate equivalent — the fidelity
+divergences proper), `rejected` (absent BY DESIGN, rationale
+required), or `pending` (absent and undecided — reopens on evidence,
+usually the agent telemetry; agents treat pending as absent). The
+discipline: moving a row between statuses is a decision and gets
+archaeology; a rejected row without a rationale ref fails review; a
+pending row that accumulates telemetry hits is the roadmap asking.
+Precedents through the statuses already: no-let-param-sugar went
+pending→fixed-in-weir (retired from the table); no-mutation went
+implied→rejected when the sugar made `let mutable` parse strangely.
+
 ## Backlog (ordered by day-one impact)
 
 0. **Block effect-sequencing** (`print "a"` mid-block — F#'s other half of

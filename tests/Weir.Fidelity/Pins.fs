@@ -80,7 +80,7 @@ let pins =
       pin "tuple literal" "let p = (1, 2)\n" (Diverges "no-tuples")
       pin "starred union payload" "type T = A of int * string\n" (Diverges "single-payload-unions")
       pin "discarded value statement" "\"orphan\"\n" (Diverges "statement-rule")
-      pin "block comment" "(* block *)\nlet x = 1\n" (Diverges "line-comments-only")
+      pin "block comment" "(* block *)\nlet x = 1\n" (Diverges "block-comments")
       pin "printfn" "printfn \"hi\"\n" (Diverges "no-printf-family")
       pin "mutable binding" "let mutable x = 1\n" (Diverges "no-mutation")
       pin "let rec" "let rec f = 1\n" (Diverges "no-let-rec")
