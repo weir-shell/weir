@@ -101,6 +101,8 @@ let pins =
       pin "corpus: format specifier in a hole" "let s = $\"{1:N2}\"\n" (Diverges "no-format-specifiers")
       pin "computation expressions" "let s = seq { 1 }\n" (Diverges "no-computation-expressions")
 
+      pin "mid-token // is not a comment (weir: URL survival)" "let x = 1// c\n" (Diverges "comment-boundary")
+
       // --- block sequencing (Session 2): the fidelity GAIN pins ---
       pinT
           "sequenced effect block under if"

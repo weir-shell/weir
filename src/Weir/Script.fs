@@ -25,7 +25,14 @@ let stripComment (line: string) : string =
             inDouble <- true
         elif c = '\'' then
             inSingle <- true
-        elif c = '/' && i + 1 < line.Length && line[i + 1] = '/' then
+        elif
+            c = '/'
+            && i + 1 < line.Length
+            && line[i + 1] = '/'
+            // comment only at line start or after whitespace: bareword URLs
+            // (https://...) live in command lines (nuget-script receipt)
+            && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
+        then
             cut <- i
 
         i <- i + 1

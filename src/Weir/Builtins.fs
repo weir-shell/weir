@@ -609,6 +609,19 @@ let private argsMembers: (string * Ty * Value) list =
     [ "flag", TFun(TStr, TFun(TStr, TBool)), argsFlagImpl
       "value", TFun(TStr, TNamed("Option", [ TStr ])), argsValueImpl ]
 
+// Env — process environment, the shell's other ambient input. Receipt:
+// the nuget http-get translation (2026-07-20), the long-predicted gap.
+let private envMembers: (string * Ty * Value) list =
+    [ "get",
+      TFun(TStr, TNamed("Option", [ TStr ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr name ->
+              match System.Environment.GetEnvironmentVariable name with
+              | null -> VUnion("None", None)
+              | value -> VUnion("Some", Some(VStr value))
+          | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}") ]
+
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
       TFun(TStr, TSeq TStr),
@@ -646,7 +659,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Str", strMembers
       "Option", optionMembers
       "File", fileMembers
-      "Args", argsMembers ]
+      "Args", argsMembers
+      "Env", envMembers ]
 
 let private bareAliases: Set<string> =
     Set

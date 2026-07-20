@@ -194,6 +194,10 @@ if 1 > 0 then !
   `Seq.exists`/`Seq.forall` with predicates.
 - Flags: `Args.flag "--clean" "-c"` (bool; `""` short form if none),
   `Args.value "--out"` (Option of the next token). Script-only.
+- Environment: `Env.get "NAME"` (Option<string>); there is no `$NAME`
+  expansion in commands — interpolate: `-H $"token {key}"`.
+- `//` mid-token is NOT a comment: bareword URLs (`https://...`) pass
+  through; comments need line start or a preceding space.
 - `run "git" ["push"]` runs a program from expression positions:
   streams like a command line, raises on nonzero, returns unit.
 - Multi-line record literals need `;` at each field line end (fields

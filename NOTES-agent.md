@@ -58,3 +58,11 @@ skill lines and targeted hints).
   reified (want: tolerate cancel, exit 0 silently). Candidate shapes:
   chain-level complete, or completed-with-stdin. Logged, not
   improvised.
+- 2026-07-20 | nuget http-get translation | TWO receipts in one line:
+  (1) env-var access — the launch-day predicted gap arrived as a user
+  task; Env.get shipped same session (Option<string>, no $NAME
+  expansion — interpolation is the spelling). (2) the comment stripper
+  ATE a bareword URL at `//` — fixed to whitespace-boundary comments
+  (F# divergence row comment-boundary, oracle-pinned). Translation
+  verdict: weir's header spelling (interpolated argv strings) beats
+  nu's bracket-list header syntax; curl replaces the http builtin.

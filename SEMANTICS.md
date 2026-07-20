@@ -420,8 +420,14 @@ quantity semantics now.
   in-less nested `let` (still `let ... in` inside expressions),
   indentation-delimited scope, multi-line REPL input. Full design and
   gate verdict: DESIGN-multiline.md.
-- **Comments are `//` to end of line** (string-aware; applies to script
-  lines). Line one `#!` is skipped by the runner; `#` at line head is
+- **Comments are `//` to end of line** (string-aware), starting only at
+  line start or after whitespace (2026-07-20, the nuget receipt: a
+  bareword `https://...` in a command line must survive; F# divergence
+  row comment-boundary — `1// c` is a comment in F#, a parse error in
+  weir). **`Env.get : string -> Option<string>`** reads the process
+  environment (same receipt — the long-predicted gap's arrival);
+  there is deliberately no `$NAME` expansion in command text
+  (splices and interpolation are the typed spellings). Line one `#!` is skipped by the runner; `#` at line head is
   reserved for directives.
 - **The statement rule**: *command-mode lines stream; every expression
   computes a value; values are bound or printed.* A pure expression

@@ -2201,6 +2201,15 @@ let agentFindingsTests =
               Expect.stringContains (formatError terr) "parenthesize the pipeline" "actionable"
               expectValue "([1; 2] |> Seq.length) == 2" (VBool true)
           }
+          test "mid-token // is not a comment (URLs in command lines)" {
+              Expect.equal
+                  (Weir.Script.stripComment "curl https://x.y/z // real comment")
+                  "curl https://x.y/z "
+                  "URL survives, trailing comment stripped"
+
+              Expect.equal (Weir.Script.stripComment "let x = 1 // c") "let x = 1 " "spaced comment works"
+              Expect.equal (Weir.Script.stripComment "// full line") "" "line-start comment works"
+          }
           test "comment-only lines are transparent to assembly (runner-level filter)" {
               // assemble itself never sees them; pin the filter contract:
               // whitespace-only survives as blank, comment-only is dropped

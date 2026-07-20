@@ -47,3 +47,4 @@ argument that killed the subtractive fork.
 | semicolon-greedy-bodies | different | `if c then a ; b` groups INSIDE the body (F# verbose groups outside) | body-scoped | trailing | SEMANTICS: sequencing — flat-joined blocks made verbose grouping silently wrong |
 | bang-sigil | different | `!(cmd chain)` runs-and-streams (bash: extglob/history `!`) | effect sigil, unit | n/a (bash prior; invisible to the F# oracle) | SEMANTICS: sigils |
 | capture-sigil-aligns | different | `$(cmd chain)` captures output — the bash prior HELPS here (recorded per the == archaeology precedent: priors that help get named too) | capture, typed seq<string> | n/a (bash prior) | SEMANTICS: sigils |
+| comment-boundary | different | // mid-token is NOT a comment (https://... barewords); comment needs line start or preceding whitespace | url survives | 1// c is a comment | SEMANTICS: comments; nuget receipt |
