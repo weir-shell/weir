@@ -11,7 +11,6 @@
 
   <ItemGroup>
     <PackageReference Include="FParsec" Version="1.1.1" />
-    <PackageReference Include="ReadLine" Version="2.0.1" />
   </ItemGroup>
 
   <ItemGroup>

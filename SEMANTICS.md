@@ -249,12 +249,12 @@ quantity semantics now.
   indentation-blind inside braces where F# still applies offside
   (record-fields-ignore-indent row). RECORDS ONLY — list literals
   stay single-line until their own receipt arrives.
-- **`Exit.code n` propagates an exit code** (2026-07-20, bicep
+- **`exit n` propagates an exit code** (2026-07-20, bicep
   receipt: the F# original's `exit code`): `int -> unit`, typed like
   `fail` (no checker surface); raises an intentional-exit carrier the
   runner returns SILENTLY — `fail` keeps exit-1 with a located
-  message, `Exit.code` is the propagation spelling
-  (`if r.ExitCode <> 0 then Exit.code (r.ExitCode)`).
+  message, `exit` is the propagation spelling
+  (`if r.ExitCode <> 0 then exit (r.ExitCode)`).
 - **`let f x y = e` defines a curried function** (2026-07-20 — the
   corpus-mining session's top yield became a feature the same day, on
   agent-prior evidence: F#'s most common line shape). Pure parser

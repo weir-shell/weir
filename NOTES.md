@@ -1,5 +1,25 @@
 # Spike Notes
 
+## Three out-of-band asks: exit, Ctrl+D, usage (2026-07-21)
+
+(1) `Exit.code` renamed to bare `exit` — F#-parity (`exit : int ->
+'a` exists there; oracle Same pin added), the Exit module retired,
+every pin/doc migrated. (2) The REPL's ReadLine NuGet package is
+GONE, replaced by an owned ~150-line editor: Ctrl+D on an empty line
+is EOF (exit 0), Ctrl+C cancels the LINE and keeps the session (bash
+semantics — TreatControlCAsInput makes ^C a key, not a signal),
+history/arrows/Home/End/^A^E^U^K, and tab completion via
+Complete.suggest with common-prefix extension. Debug tale worth
+keeping: the old lib "swallowing" Ctrl+D sent us probing .NET's
+ReadKey (which delivers ^D fine as Key=D+Control) — and the final
+"still broken" was the TEST harness counting a zombie as alive
+(kill(pid,0) succeeds on zombies; waitpid told the truth). The
+editor was correct for two rounds of debugging. Last non-FParsec
+dependency deleted. (3) Usage text rewritten to the real surface
+(REPL/script/-e/check/fmt/lsp — the obsolete [run] form dropped from
+the text; the arm still accepts it).
+
+
 ## Live-testing receipts: check assumes commands; the resolver goes per-statement (2026-07-21)
 
 The user's first real editing session delivered two receipts within

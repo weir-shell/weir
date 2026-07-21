@@ -15,41 +15,182 @@ let private initial =
 
 let private currentEnv = ref initial.TypeEnv
 
-type private Completer() =
-    let mutable separators = [| ' '; '('; ')' |]
-
-    interface IAutoCompleteHandler with
-        member _.Separators
-            with get () = separators
-            and set v = separators <- v
-
-        member _.GetSuggestions(text, index) =
-            Complete.suggest currentEnv.Value text index |> List.toArray
-
 let private historyFile =
     Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".weir_history")
 
-let private setupLineEditor () =
-    ReadLine.HistoryEnabled <- true
-    ReadLine.AutoCompletionHandler <- Completer()
+// ---------------------------------------------------------------------------
+// The owned line editor (2026-07-21): replaced the ReadLine package —
+// it swallowed Ctrl+D with no hook, and the REPL wants bash key
+// semantics: Ctrl+C cancels the LINE, Ctrl+D on an empty line exits
+// (EOF). Owning ~150 lines also drops the last non-FParsec dependency.
 
+let private history = ResizeArray<string>()
+
+let private loadHistory () =
     if File.Exists historyFile then
-        ReadLine.AddHistory(File.ReadAllLines historyFile)
+        history.AddRange(File.ReadAllLines historyFile)
+
+let private wordStartAt (text: string) (pos: int) =
+    let mutable i = pos
+
+    while i > 0
+          && (Char.IsLetterOrDigit text[i - 1] || text[i - 1] = '_' || text[i - 1] = '.') do
+        i <- i - 1
+
+    i
+
+/// returns None on EOF (Ctrl+D at an empty line)
+let private readLineTty () : string option =
+    Console.Write prompt
+    let buf = Text.StringBuilder()
+    let mutable pos = 0
+    let mutable histIdx = history.Count // one past the end = the new line
+    let mutable draft = ""
+
+    let redraw () =
+        Console.Write("\r" + prompt + buf.ToString() + "\x1b[K")
+        let back = buf.Length - pos
+
+        if back > 0 then
+            Console.Write $"\x1b[{back}D"
+
+    let setLine (s: string) =
+        buf.Clear().Append(s) |> ignore
+        pos <- buf.Length
+        redraw ()
+
+    let mutable result: string option option = None
+
+    while result.IsNone do
+        let k = Console.ReadKey(intercept = true)
+        let ctrl = k.Modifiers.HasFlag ConsoleModifiers.Control
+
+        match k.Key with
+        | ConsoleKey.Enter ->
+            Console.WriteLine()
+            result <- Some(Some(buf.ToString()))
+        // some terminals deliver control chords as bare KeyChars —
+        // match the codes as well as the (Key, Modifier) pairs
+        | _ when k.KeyChar = '\u0004' ->
+            if buf.Length = 0 then
+                Console.WriteLine()
+                result <- Some None
+            elif pos < buf.Length then
+                buf.Remove(pos, 1) |> ignore
+                redraw ()
+        | _ when k.KeyChar = '\u0003' ->
+            Console.WriteLine "^C"
+            result <- Some(Some "")
+        | ConsoleKey.D when ctrl ->
+            if buf.Length = 0 then
+                Console.WriteLine()
+                result <- Some None // EOF
+            elif pos < buf.Length then
+                buf.Remove(pos, 1) |> ignore // readline delete-char
+                redraw ()
+        | ConsoleKey.C when ctrl ->
+            // cancel the line, keep the session
+            Console.WriteLine "^C"
+            result <- Some(Some "")
+        | ConsoleKey.Backspace ->
+            if pos > 0 then
+                buf.Remove(pos - 1, 1) |> ignore
+                pos <- pos - 1
+                redraw ()
+        | ConsoleKey.LeftArrow when pos > 0 ->
+            pos <- pos - 1
+            Console.Write "\x1b[1D"
+        | ConsoleKey.RightArrow when pos < buf.Length ->
+            pos <- pos + 1
+            Console.Write "\x1b[1C"
+        | ConsoleKey.Home ->
+            pos <- 0
+            redraw ()
+        | ConsoleKey.End ->
+            pos <- buf.Length
+            redraw ()
+        | ConsoleKey.A when ctrl ->
+            pos <- 0
+            redraw ()
+        | ConsoleKey.E when ctrl ->
+            pos <- buf.Length
+            redraw ()
+        | ConsoleKey.U when ctrl ->
+            buf.Remove(0, pos) |> ignore
+            pos <- 0
+            redraw ()
+        | ConsoleKey.K when ctrl ->
+            buf.Remove(pos, buf.Length - pos) |> ignore
+            redraw ()
+        | ConsoleKey.UpArrow ->
+            if histIdx > 0 then
+                if histIdx = history.Count then
+                    draft <- buf.ToString()
+
+                histIdx <- histIdx - 1
+                setLine history[histIdx]
+        | ConsoleKey.DownArrow ->
+            if histIdx < history.Count then
+                histIdx <- histIdx + 1
+                setLine (if histIdx = history.Count then draft else history[histIdx])
+        | ConsoleKey.Tab ->
+            let text = buf.ToString()
+            let ws = wordStartAt text pos
+            let suggestions = Complete.suggest currentEnv.Value text ws
+
+            (match suggestions with
+             | [] -> ()
+             | [ one ] ->
+                 let replaced = text.Substring(0, ws) + one + text.Substring pos
+                 buf.Clear().Append(replaced) |> ignore
+                 pos <- ws + one.Length
+                 redraw ()
+             | many ->
+                 // extend to the common prefix; list on a second Tab-worth
+                 let prefix =
+                     many
+                     |> List.reduce (fun a b ->
+                         let n = Seq.zip a b |> Seq.takeWhile (fun (x, y) -> x = y) |> Seq.length
+                         a.Substring(0, n))
+
+                 if prefix.Length > pos - ws then
+                     let replaced = text.Substring(0, ws) + prefix + text.Substring pos
+                     buf.Clear().Append(replaced) |> ignore
+                     pos <- ws + prefix.Length
+                     redraw ()
+                 else
+                     Console.WriteLine()
+                     Console.WriteLine(String.concat "  " (many |> List.truncate 24))
+                     redraw ())
+        | _ when k.KeyChar >= ' ' ->
+            buf.Insert(pos, k.KeyChar) |> ignore
+            pos <- pos + 1
+            redraw ()
+        | _ -> ()
+
+    result |> Option.defaultValue None
+
+let private setupLineEditor () =
+    Console.TreatControlCAsInput <- true // Ctrl+C is a KEY (cancel line), not SIGINT
+    loadHistory ()
 
 let private readInput () =
     if Console.IsInputRedirected then
         Console.Write prompt
         Console.ReadLine()
     else
-        let line = ReadLine.Read prompt
+        match readLineTty () with
+        | None -> null // EOF: the loop's exit condition
+        | Some line ->
+            if line.Trim() <> "" then
+                history.Add line
 
-        if line <> null && line.Trim() <> "" then
-            try
-                File.AppendAllText(historyFile, line + Environment.NewLine)
-            with _ ->
-                ()
+                try
+                    File.AppendAllText(historyFile, line + Environment.NewLine)
+                with _ ->
+                    ()
 
-        line
+            line
 
 let private underline (span: Span) : string =
     String(' ', prompt.Length + span.Start.Col - 1)

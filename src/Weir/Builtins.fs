@@ -774,15 +774,14 @@ let private fileMembers: (string * Ty * Value) list =
           | VStr path -> VBool(File.Exists(Session.resolve path))
           | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
 
-// fail keeps exit-1 (message-carrying); Exit.code n is the propagation
-// spelling — same unit typing, no checker surface (bicep receipt).
-let private exitMembers: (string * Ty * Value) list =
-    [ "code",
-      TFun(TInt, TUnit),
-      VBuiltin(fun v ->
-          match v with
-          | VInt n -> raise (ExitRequest(int n))
-          | v -> unreachable $"the checker rejects 'Exit.code' on {formatValue v}") ]
+// fail keeps exit-1 (message-carrying); `exit n` is the propagation
+// spelling (renamed from Exit.code 2026-07-21 for F#-parity — F# has
+// exit : int -> 'a; same unit typing here, no checker surface).
+let private exitImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VInt n -> raise (ExitRequest(int n))
+        | v -> unreachable $"the checker rejects 'exit' on {formatValue v}")
 
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
@@ -790,8 +789,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Option", optionMembers
       "File", fileMembers
       "Args", argsMembers
-      "Env", envMembers
-      "Exit", exitMembers ]
+      "Env", envMembers ]
 
 let private bareAliases: Set<string> =
     Set
@@ -885,6 +883,7 @@ let private entries: (string * Ty * Value) list =
       "not", TFun(TBool, TBool), notImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
       "fail", TFun(TStr, TUnit), failImpl
+      "exit", TFun(TInt, TUnit), exitImpl
       "cmdEnv", TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TSeq TStr))), cmdEnvImpl
       "completedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))),

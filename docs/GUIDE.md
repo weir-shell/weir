@@ -233,7 +233,7 @@ full F#.
 ## Failing and diagnosing
 
 `fail "reason"` stops the script with a located error and exit 1.
-`Exit.code n` exits with a specific code, silently — the propagation
+`exit n` exits with a specific code, silently — the propagation
 spelling for a child's failure. There is no try/finally: to clean up
 whether a step failed or not, reify the fallible middle with
 `| complete`, run the cleanup, then propagate:
@@ -241,7 +241,7 @@ whether a step failed or not, reify the fallible middle with
 ```weir
 let r = sh -c "exit 0" | complete
 sh -c "echo cleanup runs either way"
-if r.ExitCode <> 0 then Exit.code (r.ExitCode)
+if r.ExitCode <> 0 then exit (r.ExitCode)
 ```
 
 `printerr` is `print` to stderr — diagnostics there, data on stdout.

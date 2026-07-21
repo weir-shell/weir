@@ -3233,16 +3233,16 @@ let offsideTests =
               | Ok [ ll ] -> Expect.equal ll.Text "if c then !(awk \"{print}\" f) ; !(git pull)" ""
               | other -> failtest $"unexpected: {other}"
           }
-          test "Exit.code types like fail: int -> unit" {
-              match Weir.Parser.parseLine cmdResolver "Exit.code 3" with
+          test "exit types like fail: int -> unit" {
+              match Weir.Parser.parseLine cmdResolver "exit 3" with
               | Ok(SExpr e) ->
                   match Weir.Check.typecheck env e with
                   | Ok te -> Expect.equal (Weir.Types.formatTy te.Ty) "unit" ""
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
-          test "Exit.code rejects a string" {
-              let terr = checkErr "Exit.code \"boom\""
+          test "exit rejects a string" {
+              let terr = checkErr "exit \"boom\""
               Expect.stringContains (formatError terr) "int" ""
           } ]
 

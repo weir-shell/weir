@@ -86,7 +86,13 @@ let main argv =
     | "run" :: path :: rest -> Script.run path rest
     | path :: rest when not (path.StartsWith "-") -> Script.run path rest
     | _ ->
-        Console.Error.WriteLine
-            "usage: weir [-e <expression>] [run] <script> [args...] | weir fmt [--check|--qualify] <script>"
+        Console.Error.WriteLine(
+            "usage: weir                                    the REPL\n"
+            + "       weir <script> [args...]                 run a script\n"
+            + "       weir -e <expression>                    evaluate one expression\n"
+            + "       weir check [--json] <script>            diagnostics only (no evaluation)\n"
+            + "       weir fmt [--check|--qualify] <script>   canonical formatter\n"
+            + "       weir lsp                                language server (stdio)"
+        )
 
         2

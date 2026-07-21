@@ -971,13 +971,13 @@ out=$($BIN "$hdir/rec-nested.weir")
 expect "record continuation nested (record in record)" "outer42" "$out"
 
 # ExitRequest insurance: all eval entry points return the code silently
-rc=0; out=$($BIN -e 'Exit.code 6' 2>&1) || rc=$?
-[ $rc -eq 6 ] && [ -z "$out" ] || fail "-e Exit.code must exit 6 silently (rc=$rc out=$out)"
-echo "e2e ok: -e entry point honors Exit.code"
+rc=0; out=$($BIN -e 'exit 6' 2>&1) || rc=$?
+[ $rc -eq 6 ] && [ -z "$out" ] || fail "-e exit must exit 6 silently (rc=$rc out=$out)"
+echo "e2e ok: -e entry point honors exit"
 
-rc=0; out=$(echo 'Exit.code 4' | $BIN 2>&1 >/dev/null) || rc=$?
-[ $rc -eq 4 ] || fail "REPL entry point must honor Exit.code (rc=$rc out=$out)"
-echo "e2e ok: REPL entry point honors Exit.code"
+rc=0; out=$(echo 'exit 4' | $BIN 2>&1 >/dev/null) || rc=$?
+[ $rc -eq 4 ] || fail "REPL entry point must honor exit (rc=$rc out=$out)"
+echo "e2e ok: REPL entry point honors exit"
 
 rm -rf "$hdir"
 
@@ -1099,7 +1099,7 @@ echo "e2e ok: dotenv rejection names the sh escape"
 rm -rf "$edir"
 
 # --- grammar consolidation (2026-07-20): offside close, record
-# continuations, Exit.code — the bicep translation's shapes verbatim
+# continuations, exit — the bicep translation's shapes verbatim
 
 gdir=$(mktemp -d)
 
@@ -1174,16 +1174,16 @@ echo "e2e ok: blank inside an open brace errors, naming the brace"
 
 cat > "$gdir/exit.weir" <<'WEOF'
 let r = sh -c "exit 4" | complete
-if r.ExitCode <> 0 then Exit.code (r.ExitCode)
+if r.ExitCode <> 0 then exit (r.ExitCode)
 print "unreached-on-failure"
 WEOF
 rc=0; $BIN "$gdir/exit.weir" >/dev/null 2>&1 || rc=$?
-[ $rc -eq 4 ] || fail "Exit.code must propagate the child's code (got $rc)"
-echo "e2e ok: Exit.code propagates through complete"
+[ $rc -eq 4 ] || fail "exit must propagate the child's code (got $rc)"
+echo "e2e ok: exit propagates through complete"
 
 out=$($BIN "$gdir/exit.weir" 2>&1 || true)
-[ -z "$out" ] || fail "Exit.code is an intentional exit — no error message (got: $out)"
-echo "e2e ok: Exit.code exits silently"
+[ -z "$out" ] || fail "exit is an intentional exit — no error message (got: $out)"
+echo "e2e ok: exit exits silently"
 
 cat > "$gdir/fmtfix.weir" <<'WEOF'
 let ok = 1 == 1

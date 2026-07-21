@@ -97,6 +97,9 @@ let pins =
           "let r = [1] |> Seq.sortBy (fun n -> fun x -> x + n)\n"
           Same
 
+      // --- exit (renamed from Exit.code 2026-07-21 — F#-parity) ---
+      pin "exit is F#'s exit (statement position)" "let go () = exit 3\n" Same
+
       // --- literal patterns + () thunks (2026-07-21) ---
       pin "int literal patterns with catch-all" "let v =\n    match 1 with\n    | 0 -> 10\n    | _ -> 20\n" Same
       pin "uppercase value binding rejected (the casing law)" "let Foo = 1\n" (Diverges "lowercase-binds")
