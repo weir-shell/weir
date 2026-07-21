@@ -7,7 +7,7 @@ type Ty =
     | TUnit
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
-    | TTuple of elements: Ty list // arity 2+ (2026-07-21, the reversal)
+    | TTuple of elements: Ty list // arity 2+ [D:tuples-reversal]
     | TNamed of name: string * args: Ty list
     | TVar of name: string
     | TRowVar of name: string * fields: (string * Ty) list
@@ -59,7 +59,7 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TBool
     | TUnit -> Set.empty
 
-// The closed class family (2026-07-20, PLAN-type-classes Session A).
+// The closed class family [D:inferred-type-classes].
 // Compiler-owned, structural, no user instances; fully erased after
 // checking — a constraint never reaches the value domain.
 [<RequireQualifiedAccess>]

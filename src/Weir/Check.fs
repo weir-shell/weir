@@ -397,8 +397,8 @@ let showScheme: Scheme =
       Cs = Map [ "a", Set [ Cls.Show ] ]
       Ty = TFun(TVar "a", TStr) }
 
-// Seq.contains — sentinel customer three, RETIRED (2026-07-20, Session
-// A): the sentinel arms are gone; this is now an ordinary constrained
+// Seq.contains — sentinel customer three, RETIRED
+// [D:inferred-type-classes]: the sentinel arms are gone; this is now an ordinary constrained
 // scheme `Eq a => a -> seq<a> -> bool` served by the normal
 // instantiate/apply path. The retirement is the proof the class
 // machinery is real.
@@ -576,7 +576,7 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
 // tuples composed — bound against the RHS type, so components resolve
 // by unification. Refutable kinds (literals, constructors) are the
 // located check error the plan's contract names.
-// The casing law (2026-07-21): lowercase binds, uppercase declares.
+// The casing law [D:lowercase-binds]: lowercase binds, uppercase declares.
 // Applied at every binder position; fields and match patterns are
 // deliberately untouched.
 let casingError (span: Span) (name: string) : Result<'a, TypeError> =
@@ -646,7 +646,7 @@ let rec private isIrrefutablePat (p: Pattern) =
     | PStr _
     | PCase _ -> false
 
-// Exhaustiveness is a HARD ERROR (decided 2026-07-18; it was a warning).
+// Exhaustiveness is a HARD ERROR [D:exhaustiveness-hard-error].
 // Only unguarded arms count — a guarded arm can fail at runtime. Coverage is
 // RECURSIVE through union payloads (Some (Some x) / Some None / None is
 // exhaustive), so precision matches the severity: a hard error must not
@@ -714,8 +714,8 @@ let private exhaustive
     let unguarded =
         arms |> List.choose (fun (p, g) -> if g.IsNone then Some p else None)
 
-    // reachability is coverage's dual and the same severity (user
-    // decision 2026-07-21): an unguarded irrefutable arm ends the match,
+    // reachability is coverage's dual and the same severity
+    // [D:unreachable-arm-hard-error]: an unguarded irrefutable arm ends the match,
     // so arms after it are dead — and under the casing law a typo'd
     // constructor silently becomes a variable binder that swallows the
     // match, hence the hint against the scrutinee's cases
@@ -1780,7 +1780,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                             Values = values }
             }
 
-// Exhaustiveness moved into the checker as a hard error (2026-07-18);
+// Exhaustiveness moved into the checker as a hard error [D:exhaustiveness-hard-error];
 let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
     let acc = ResizeArray<Warning>()
 
@@ -1846,7 +1846,7 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
             walk scrutinee
 
             // reachability lives in `exhaustive` as a hard error
-            // (2026-07-21): dead arms are coverage's dual, same severity
+            // [D:unreachable-arm-hard-error]: dead arms are coverage's dual
             arms
             |> List.iter (fun (_, g, b) ->
                 g |> Option.iter walk

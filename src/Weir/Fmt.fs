@@ -139,7 +139,7 @@ let qualifyFile (path: string) : int =
         0
 
 // ---------------------------------------------------------------------------
-// weir fmt <script> — the canonical formatter, v1 (2026-07-18).
+// weir fmt <script> — the canonical formatter, v1 [D:fmt-v1].
 // Scope: leading-indent normalization (4 spaces per structural depth, using
 // the same pending-let structure the assembler tracks) and trailing-
 // whitespace stripping. Comments and token spacing are preserved verbatim —
@@ -164,15 +164,15 @@ let formatLines (body: string list) : Result<string list, string> =
     | Ok originalLogical ->
 
         // open indent levels, deepest first — the general structural model
-        // (2026-07-20): any deeper line opens a level, a line AT a level
+        // [D:fmt-depth-model]: any deeper line opens a level, a line AT a level
         // returns to it, col-0 resets. Depth preserves every relational
         // comparison the assembler makes (=, <, >), so re-assembly is
         // join-for-join identical; the old let-only stack flattened if/match
         // bodies to depth 1 and tripped the safety check on legal input.
         let mutable levels: int list = []
         // open record braces (columns in the FORMATTED text): fields
-        // align at top+2 — the house style (2026-07-21; the general
-        // depth model had drifted them to depth*4)
+        // align at top+2 — the house style [D:fmt-brace-plus-2] (the
+        // general depth model had drifted them to depth*4)
         let mutable braces: int list = []
         // district: Some(markerOrigIndent, markerDepth) while inside a ! block
         let mutable district: (int * int) option = None
@@ -188,7 +188,7 @@ let formatLines (body: string list) : Result<string list, string> =
                     braces <- []
                     ""
                 elif code.Trim() = "" then
-                    // comment-only: transparent to assembly (2026-07-20);
+                    // comment-only: transparent to assembly [D:comment-transparency];
                     // keep it verbatim and leave formatter state alone
                     raw.TrimEnd()
                 else

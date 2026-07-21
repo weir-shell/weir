@@ -1,5 +1,12 @@
 # weir repo — agent instructions
 
+## Decision comments
+
+- Comments citing a decision use `[D:key]` from DECISIONS.md (a keyed
+  index pointing at NOTES/SEMANTICS/divergences/PROCESS — never a
+  fourth prose store) plus a half-line local why. No dates in
+  comments; dates live in the index. New decision = new index row.
+
 ## Scripting policy
 
 - Write scripts in weir (read `skills/weir/SKILL.md` first), not bash.

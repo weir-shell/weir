@@ -26,7 +26,7 @@ let private evalOnce (input: string) : int =
           Head = 1
           Segments = [ (0, 1, 0) ] }
 
-    // the ONE pipeline (2026-07-21): -e is a consumer; non-expression
+    // the ONE pipeline [D:one-pipeline]: -e is a consumer; non-expression
     // kinds are rejected AFTER checking, so an ill-typed let reports
     // its real error rather than the form message (reported delta)
     match Script.checkStatement false (fun _ -> resolver) typeEnv ll with

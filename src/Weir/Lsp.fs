@@ -1,6 +1,6 @@
 module Weir.Lsp
 
-// weir lsp — v1 (2026-07-21, LSP chain 3/3): diagnostics, hover,
+// weir lsp — v1 [D:lsp-v1]: diagnostics, hover,
 // completion over stdio JSON-RPC.
 //
 // AOT path DECISION (reported per the plan's gate): the hand-rolled
@@ -25,7 +25,7 @@ open Weir.Check
 // (JsonSerializer<T> over F# records), not on this. The first
 // hand-rolled reader was over-conservative AND wrong on surrogate
 // pairs (didChange carries whole documents as JSON strings; emoji in
-// a script would have corrupted it) — corrected 2026-07-21.
+// a script would have corrupted it) — corrected same day [D:lsp-v1].
 
 open System.Text.Json
 
@@ -466,7 +466,7 @@ let run () : int =
                             // [wordStart, cursor) with the suggestion — without
                             // it, micro appends the raw label after a dot
                             // (Env.Env.fromFile) and its prefix filter hides
-                            // results inside parens (user report, 2026-07-21)
+                            // results inside parens (user report [D:completion-textedit])
                             for label in items |> List.distinct |> List.truncate 200 do
                                 w.WriteStartObject()
                                 w.WriteString("label", label)

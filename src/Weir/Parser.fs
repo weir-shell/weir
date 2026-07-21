@@ -87,8 +87,8 @@ let private mkExpr (kind, span) = { Kind = kind; Span = span }
 // stop-and-report in NOTES).
 let private seqExpr, private seqExprRef = createParserForwardedToRef<Expr, unit> ()
 
-// comma is the tuple constructor at F#'s precedence (2026-07-21, the
-// bare-comma amendment): below `;` (weir-only cell, decided — `a, b ; c`
+// comma is the tuple constructor at F#'s precedence [D:bare-comma]:
+// below `;` (weir-only cell, decided — `a, b ; c`
 // is `(a, b) ; c`), above `|>` (`xs |> f, ys |> g` groups F#-identically).
 // Command mode is untouched by construction: barewords keep their commas.
 let private commaExpr, private commaExprRef =
@@ -156,7 +156,7 @@ let private dotdot = pstring ".." .>> ws
 // Range endpoints/steps are simple expressions only (literals, idents, field
 // access, parenthesized anything) — reject-rather-than-guess. The attempt on
 // fieldSuffix keeps the first dot of '..' out of field-access parsing. The
-// negative-literal form predates general prefix minus (2026-07-21) and stays:
+// negative-literal form predates general prefix minus [D:prefix-minus] and stays:
 // range steps allow the SPACED form ([10.. -1 ..1]) that adjacency rejects.
 // rangeTerm is a forward ref: it needs atom, which needs listLit.
 let private negIntLit =
@@ -238,7 +238,7 @@ let private interpLit =
 // the intent unambiguous, unlike the bare let-RHS which excludes
 // builtins). $(chain) captures the value; !(chain) desugars to
 // (chain) |> print — eager, streaming, raising, unit.
-// Layer 1 (2026-07-20): sigils take an optional env slot between glyph
+// Layer 1 [D:env-sugar-layers]: sigils take an optional env slot between glyph
 // and paren — $e(...) / !e(...), e : seq<EnvVar>, applied to EVERY
 // spawn in the interior chain (segments and | complete alike, threaded
 // at construction). The ident must be GLUED to both glyph and paren;
@@ -279,7 +279,7 @@ let private effectSigil =
           Span = span })
     .>> ws
 
-// prefix minus (landed 2026-07-21 on the loc.weir friction receipt;
+// prefix minus [D:prefix-minus] (the loc.weir friction receipt;
 // retires the no-unary-minus pending row). F#'s adjacency rule, which
 // the ORACLE corrected mid-landing: `-` is prefix when the previous
 // char cannot end an operand (start, space, `(`, `[`, `{`, `=`, ...)
@@ -404,7 +404,7 @@ let private appChain =
         { Kind = EApp(f, a)
           Span = Span.union f.Span a.Span })
 
-// Binder patterns (2026-07-21, PLAN-pattern-binders): params are plain
+// Binder patterns [D:pattern-binders]: params are plain
 // idents, `()`, or PARENTHESIZED irrefutable patterns (F# also requires
 // the parens in param position). Refutability is a CHECK error.
 let private binderParam, private binderParamRef =
@@ -426,8 +426,8 @@ let private lambda =
         { Kind = kind
           Span = { Start = pos p; End = body.Span.End } })
 
-// let f x y = e desugars to nested lambdas (corpus-driven feature,
-// 2026-07-20: the top mining yield — F#'s most common line shape).
+// let f x y = e desugars to nested lambdas [D:let-param-sugar]
+// (corpus-driven: the top mining yield — F#'s most common line shape).
 // Params are plain idents OR () — the unit param pins its type in the
 // checker (the name "()" is unforgeable through declarations); other
 // pattern params stay rejected.
@@ -516,7 +516,7 @@ let private patWord =
     )
     .>> ws
 
-// literal patterns (2026-07-20 plan, session 1): int and string pin
+// literal patterns [D:literal-patterns]: int and string pin
 // the scrutinee; () is the irrefutable unit pattern
 let private patLit =
     choice
@@ -732,7 +732,7 @@ let private commandSegment
         spanned (opt (pchar '^') .>>. cmdWord) .>> ws
         >>= fun ((forced, w), span) ->
             if w[0] = '[' then
-                // '[' never heads a command (decided 2026-07-18): a line-head
+                // '[' never heads a command [D:bracket-heads-expression]: a line-head
                 // string list would otherwise resolve to /usr/bin/[. The
                 // external is still reachable as cmd "[" [...].
                 if forced.IsSome then
@@ -897,7 +897,7 @@ tySynRef.Value <-
               | w ->
                   ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
                   |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
-    // t1 * t2 [* ...] is a tuple type (2026-07-21) — star was unclaimed
+    // t1 * t2 [* ...] is a tuple type [D:tuples-reversal] — star was unclaimed
     // in type syntax since the measure removal
     |> fun atom ->
         sepBy1 atom (attempt (str_ws "*"))
@@ -989,8 +989,8 @@ let private noExternals =
       IsExternal = fun _ -> false
       ExternalNames = fun () -> Seq.empty }
 
-// Structured failure: the position travels as DATA (2026-07-20
-// formalization — the runner used to regex `Ln: 1 Col: (\d+)` out of
+// Structured failure: the position travels as DATA
+// [D:structured-parse-failure] — the runner used to regex `Ln: 1 Col: (\d+)` out of
 // FParsec's message text, a silent break waiting on any FParsec
 // update). Message text is unchanged; Col is Some only for the
 // single-logical-line case the runner translates.

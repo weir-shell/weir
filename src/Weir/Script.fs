@@ -4,8 +4,8 @@ open System
 open Weir.Ast
 open Weir.Types
 
-// The quote-aware scanner — the ONE string-state primitive (2026-07-20
-// formalization). Folds f over the characters that sit OUTSIDE string
+// The quote-aware scanner — the ONE string-state primitive
+// [D:one-scanner]. Folds f over the characters that sit OUTSIDE string
 // literals: double quotes honor backslash escapes, single quotes close
 // at the next single quote. Every line-shape rule that must ignore
 // string interiors (comment cut, brace depth) consumes this scanner;
@@ -102,7 +102,7 @@ type PieceKind =
     | Plain
 
 /// Line-end district markers: bare `!` or the Layer-2 env header `!name`
-/// (2026-07-20 — the marker distributes `!name(...)` over the block).
+/// ([D:env-sugar-layers] — the marker distributes `!name(...)` over the block).
 [<RequireQualifiedAccess>]
 type MarkerKind =
     | NoMarker
@@ -419,7 +419,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         // the separator goes BEFORE a field-start line
                                         // (`Ident =`), never before a value continuation —
                                         // a field's value may open on the next line (the
-                                        // fixture-diversity sweep's first catch, 2026-07-20)
+                                        // fixture-diversity sweep's first catch — PROCESS.md)
                                         let join =
                                             if
                                                 cls.StartsField && not (prev.EndsWith "{") && not (prev.EndsWith ";")
@@ -725,8 +725,8 @@ let discardError (ty: Ty) : string option =
     | ty -> Some $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
 
 // ---------------------------------------------------------------------------
-// The checked-statement pipeline — ONE owner (2026-07-21, the oracle-
-// mirror incident's fix): parse -> statement dispatch -> check ->
+// The checked-statement pipeline — ONE owner [D:one-pipeline] (the
+// oracle-mirror incident's fix): parse -> statement dispatch -> check ->
 // statement-rule gate, physical spans computed INSIDE. The script
 // runner, the REPL, -e, and the oracle's weirVerdict mirror all call
 // this; a fifth consumer (weir check / the LSP) starts here. Consumers
@@ -787,11 +787,11 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
 // commands by construction (`let cat = ...` then `cat x` is an
 // application; ^cat forces the binary). The old once-built resolver
 // left script names unknown and correct only by accident (found via
-// weir check's assume-command rule, 2026-07-21).
+// weir check's assume-command rule [D:assume-resolver]).
 // FParsec dumps embed the ASSEMBLED logical line — never what the user
 // wrote. Strip every snippet+caret block, keep the diagnostic text, and
-// translate embedded positions to physical line/col (2026-07-21, user:
-// "show the unassembled — that is what the user expects in 100% cases").
+// translate embedded positions to physical line/col [D:clean-parse-dump]
+// (user: "show the unassembled — that is what the user expects in 100% cases").
 let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     let lines = msg.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
@@ -943,7 +943,7 @@ let checkStatement
     | Ok(SLet(name, e)) ->
         // SLet carries the name as a bare string, so re-derive its own
         // columns from the statement text (grammar: ws `let` ws name) —
-        // the RHS span put the casing squiggle on the value (2026-07-21)
+        // the RHS span put the casing squiggle on the value [D:squiggle-on-binder]
         let nameSpan =
             let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+")
 
@@ -994,7 +994,7 @@ let checkStatement
 
 // ---------------------------------------------------------------------------
 // weir check [--json] — the agent-facing diagnostics core and LSP v1's
-// payload generator (2026-07-21, LSP chain 2/3). Check-everything, no
+// payload generator [D:check-lsp-chain]. Check-everything, no
 // evaluation BY CONSTRUCTION (this function cannot reach Eval).
 // Statement-level error RECOVERY: a failed statement records its diag
 // and checking continues with the env unchanged, so a multi-error file
@@ -1041,12 +1041,12 @@ let private codeOf (parse: bool) (msg: string) : string =
 
 // AOT-safe JSON writing: Utf8JsonWriter (reflection-free, the write
 // twin of the JsonDocument reader) — escaping is the library's job,
-// never string interpolation's (corrected 2026-07-21 on user review;
+// never string interpolation's (corrected on user review;
 // the reflection SERIALIZER stays banned, the writer never was).
 // UnsafeRelaxedJsonEscaping: "unsafe" means HTML-embedding only —
 // these payloads are LSP/CLI, never HTML; the default encoder's
 // \u0022-style quote escaping is valid but trips naive clients
-// (micro's plugin rendered it mangled — user report, 2026-07-21)
+// (micro's plugin rendered it mangled — user report [D:json-relaxed-escaping])
 let private jsonWriterOptions =
     System.Text.Json.JsonWriterOptions(Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping)
 
@@ -1110,9 +1110,9 @@ let analyzeLines
     // hard resolution — same pipeline, explicitly different resolver
     // input (the gateExprs pattern), the verdict difference pinned.
     // Receipt: editing bicep-deploy.weir without az/bicep installed
-    // cascaded into parse errors (user report, 2026-07-21).
+    // cascaded into parse errors (user report [D:assume-resolver]).
 
-    // ASSEMBLY RECOVERY (2026-07-21): a single mid-edit line that breaks
+    // ASSEMBLY RECOVERY [D:assembly-recovery]: a single mid-edit line that breaks
     // assembly must not erase the whole document's knowledge (types,
     // bindings, completion env). Drop the offending line — the error
     // names it — and retry, keeping each drop as a diagnostic. The
@@ -1293,8 +1293,8 @@ let run (path: string) (scriptArgs: string list) : int =
 
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
 
-            // comment-only lines are TRANSPARENT (F#-faithful, fixed
-            // 2026-07-20 — they used to strip to blank and end statements)
+            // comment-only lines are TRANSPARENT [D:comment-transparency]
+            // (they used to strip to blank and end statements)
             let assembled =
                 body
                 |> List.mapi (fun i l -> bodyOffset + i + 1, l)
