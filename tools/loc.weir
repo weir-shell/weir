@@ -1,0 +1,13 @@
+#!/usr/bin/env weir
+// LOC per tracked file, largest first, with a repo total.
+
+let counts =
+    git ls-files
+    | Seq.map (fun f -> (f, File.read f |> Seq.length))
+    | Seq.toList
+
+counts
+    |> Seq.sortBy (fun (_, n) -> 0 - n)
+    |> Seq.iter (fun (f, n) -> print $"{n}\t{f}")
+
+print $"total:\t{counts |> Seq.map (fun (_, n) -> n) |> Seq.sum}"
