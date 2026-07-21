@@ -21,28 +21,38 @@ let private evalOnce (input: string) : int =
             input
         |> Option.iter (fun h -> Console.Error.WriteLine $"hint: {h}")
 
-    match Parser.parseLine resolver input with
-    | Error msg ->
-        Console.Error.WriteLine msg
+    let ll: Script.LogicalLine =
+        { Text = input
+          Head = 1
+          Segments = [ (0, 1, 0) ] }
+
+    // the ONE pipeline (2026-07-21): -e is a consumer; non-expression
+    // kinds are rejected AFTER checking, so an ill-typed let reports
+    // its real error rather than the form message (reported delta)
+    match Script.checkStatement false resolver typeEnv ll with
+    | Error d ->
+        (if d.Parse then
+             Console.Error.WriteLine d.Message
+         else
+             match d.Span with
+             | Some sp -> Console.Error.WriteLine(Check.formatError { Span = sp; Message = d.Message })
+             | None -> Console.Error.WriteLine d.Message)
+
         printHint ()
         1
-    | Ok(SLetPat _) ->
-        Console.Error.WriteLine "-e evaluates one expression; use 'let (x, y) = ... in ...'"
-        1
-    | Ok(SType _) ->
-        Console.Error.WriteLine "-e takes an expression, not a declaration"
-        1
-    | Ok(SLet _) ->
-        Console.Error.WriteLine "-e takes an expression, not a let statement"
-        1
-    | Ok(SExpr e)
-    | Ok(SCmd e) ->
-        match Check.typecheck typeEnv e with
-        | Error terr ->
-            Console.Error.WriteLine(Check.formatError terr)
-            printHint ()
+    | Ok chk ->
+        match chk.Kind with
+        | Script.KType _ ->
+            Console.Error.WriteLine "-e takes an expression, not a declaration"
             1
-        | Ok te ->
+        | Script.KLet _ ->
+            Console.Error.WriteLine "-e takes an expression, not a let statement"
+            1
+        | Script.KLetPat _ ->
+            Console.Error.WriteLine "-e evaluates one expression; use 'let (x, y) = ... in ...'"
+            1
+        | Script.KExpr te
+        | Script.KCmd te ->
             for w in Check.warnings typeEnv te do
                 Console.Error.WriteLine(Check.formatWarning w)
 
@@ -64,6 +74,9 @@ let main argv =
     match Array.toList argv with
     | [ "-e"; input ] -> evalOnce input
     | [] -> Weir.Repl.run ()
+    | [ "lsp" ] -> Lsp.run ()
+    | [ "check"; path ] -> Script.checkOnly false path
+    | [ "check"; "--json"; path ] -> Script.checkOnly true path
     | [ "fmt"; "--qualify"; path ] -> Fmt.qualifyFile path
     | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
     | [ "fmt"; path ] -> Fmt.formatFile false path

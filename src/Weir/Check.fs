@@ -281,6 +281,9 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // record/union ordering (no receipts; the message names it)
             | Cls.Ord, (TInt | TStr | TBool) -> true
             | Cls.Ord, _ -> false
+            // vars and row vars are consumed by the outer match arms;
+            // the compiler cannot see that through this nesting
+            | _, (TVar _ | TRowVar _) -> true
 
     if ok Set.empty ty0 then
         Ok()

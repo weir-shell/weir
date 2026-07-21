@@ -80,7 +80,7 @@ let pins =
           "let same x y = x = y\nlet r = same 1 1\n"
           Same
       pinT
-          "generic equality rejected at functions (both sides)"
+          "generic equality rejected at functions (both sides) — the mirror-drift incident pin, now a REGRESSION GUARD (one-pipeline, 2026-07-21: the mirror calls checkStatement, drift is unconstructible)"
           "let same x y = x == y\nlet r = same (fun a -> a) (fun a -> a)\n"
           "let same x y = x = y\nlet r = same (fun (a: int) -> a) (fun (a: int) -> a)\n"
           Same

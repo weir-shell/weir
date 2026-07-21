@@ -619,6 +619,54 @@ if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
 fi
 echo "e2e ok: forced unknown command rejected"
 
+# --- weir lsp v1 (2026-07-21, LSP chain 3/3) ---------------------------
+
+if command -v python3 >/dev/null 2>&1; then
+    WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-e2e.py" || fail "lsp integration probes"
+    echo "e2e ok: lsp diagnostics/hover/completion over stdio"
+else
+    # no silent caps: name what was skipped
+    echo "e2e SKIP: python3 absent — lsp integration probes NOT run" >&2
+fi
+
+# --- weir check [--json] (2026-07-21, LSP chain 2/3) -------------------
+
+ckdir=$(mktemp -d)
+
+cat > "$ckdir/multi.weir" <<'WEOF'
+let Foo = 1
+
+nats == nats
+WEOF
+out=$($BIN check "$ckdir/multi.weir") && fail "check must exit 1 on errors" || true
+echo "$out" | grep -qF "[casing-law]" || fail "casing code missing: $out"
+echo "$out" | grep -qF "[eq]" || fail "second independent error missing (recovery): $out"
+echo "e2e ok: weir check reports ALL errors, located and coded"
+
+out=$($BIN check --json "$ckdir/multi.weir" || true)
+echo "$out" | grep -qF '"code":"casing-law"' || fail "json code field: $out"
+echo "$out" | grep -qF '"line":1' || fail "json line field: $out"
+echo "e2e ok: weir check --json carries file/line/col/code"
+
+printf 'print "clean"\n' > "$ckdir/clean.weir"
+out=$($BIN check "$ckdir/clean.weir"); rc=$?
+[ $rc -eq 0 ] && [ -z "$out" ] || fail "clean file must exit 0 silently (rc=$rc out=$out)"
+echo "e2e ok: clean file exits 0 silently"
+
+cat > "$ckdir/warn.weir" <<'WEOF'
+git add -A ; git push
+WEOF
+rc=0; out=$($BIN check "$ckdir/warn.weir") || rc=$?
+[ $rc -eq 0 ] || fail "warnings-only must exit 0 (rc=$rc)"
+echo "$out" | grep -qF "warning" || fail "warning severity missing: $out"
+echo "e2e ok: warnings appear with severity warning and exit 0 (decided)"
+
+rc=0; $BIN check "$ckdir/multi.weir" >/dev/null 2>&1 || rc=$?
+[ $rc -eq 1 ] || fail "error exit must be 1 (got $rc)"
+echo "e2e ok: check exits 1 on errors"
+
+rm -rf "$ckdir"
+
 # --- the casing law (2026-07-21) ---------------------------------------
 
 errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)

@@ -29,6 +29,7 @@
     <Compile Include="Prelude.fs" />
     <Compile Include="Script.fs" />
     <Compile Include="Fmt.fs" />
+    <Compile Include="Lsp.fs" />
     <Compile Include="Repl.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

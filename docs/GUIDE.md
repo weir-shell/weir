@@ -283,6 +283,15 @@ if 1 > 2 then fail "impossible"
 print "done"
 ```
 
+## Editor setup
+
+Syntax highlighting for micro lives in `editors/micro/weir.yaml`; the
+same directory's README wires `weir lsp` into micro's lsp plugin. Any
+LSP-capable editor works: `weir lsp` speaks stdio JSON-RPC and serves
+diagnostics (same codes as `weir check --json`), hover types, and
+completion from the same pipeline the runner uses. For agent loops
+and CI, `weir check --json file.weir` is the no-editor spelling.
+
 ## Where weir ends
 
 The complete border with F# — what is deliberately different, what is

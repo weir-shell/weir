@@ -621,6 +621,345 @@ let discardError (ty: Ty) : string option =
         )
     | ty -> Some $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
 
+// ---------------------------------------------------------------------------
+// The checked-statement pipeline — ONE owner (2026-07-21, the oracle-
+// mirror incident's fix): parse -> statement dispatch -> check ->
+// statement-rule gate, physical spans computed INSIDE. The script
+// runner, the REPL, -e, and the oracle's weirVerdict mirror all call
+// this; a fifth consumer (weir check / the LSP) starts here. Consumers
+// agreeing "by discipline, not construction" is the drift class this
+// retires.
+
+type CheckedKind =
+    | KType of Decl
+    | KLet of name: string * scheme: Scheme * te: Check.TypedExpr
+    | KLetPat of binder: Pattern * schemes: (string * Scheme) list * te: Check.TypedExpr
+    | KCmd of te: Check.TypedExpr
+    | KExpr of te: Check.TypedExpr
+
+[<RequireQualifiedAccess>]
+type StmtTag =
+    | Type
+    | Let
+    | LetPat
+    | Cmd
+    | Expr
+
+type StmtDiag =
+    { PhysLine: int
+      PhysCol: int
+      PhysEnd: (int * int) option // physical end of the span, when known
+      Tag: StmtTag option // None for parse failures (kind unknown)
+      HasCol: bool // false only for col-less parse failures
+      Span: Span option // None for parse failures
+      Parse: bool // parse error (FParsec text) vs type error (message)
+      Message: string
+      // the runner prints warnings even when the discard gate then
+      // errors (standing behavior) — they travel with the diag
+      Warnings: (int * int * string) list }
+
+type CheckedStatement =
+    { Kind: CheckedKind
+      Env: TypeEnv // the env AFTER this statement (bindings added)
+      Warnings: (int * int * string) list } // physical line, col, message
+
+// gateExprs: scripts apply the statement rule (values must be bound or
+// printed); the REPL and -e ECHO values instead — the same pipeline,
+// one explicit switch, never a re-derivation
+let checkStatement
+    (gateExprs: bool)
+    (r: Parser.Resolver)
+    (tenv: TypeEnv)
+    (ll: LogicalLine)
+    : Result<CheckedStatement, StmtDiag> =
+    let typed (tag: StmtTag) (terr: Check.TypeError) =
+        let physLine, physCol = translate ll terr.Span.Start.Col
+
+        { PhysLine = physLine
+          PhysCol = physCol
+          PhysEnd = Some(translate ll terr.Span.End.Col)
+          Tag = Some tag
+          HasCol = true
+          Span = Some terr.Span
+          Parse = false
+          Message = terr.Message
+          Warnings = [] }
+
+    let warningsOf te =
+        [ for w in Check.warnings tenv te do
+              let physLine, physCol = translate ll w.Span.Start.Col
+              physLine, physCol, w.Message ]
+
+    match Parser.parseLineFull r ll.Text with
+    | Error f ->
+        let physLine, physCol, hasCol =
+            match f.Col with
+            | Some col ->
+                let l, c = translate ll col
+                l, c, true
+            | None -> ll.Head, 1, false
+
+        Error
+            { PhysLine = physLine
+              PhysCol = physCol
+              PhysEnd = None
+              Tag = None
+              HasCol = hasCol
+              Span = None
+              Parse = true
+              Message = f.Message
+              Warnings = [] }
+    | Ok(SType decl) ->
+        match Check.checkDecl tenv decl with
+        | Error terr -> Error(typed StmtTag.Type terr)
+        | Ok tenv' ->
+            Ok
+                { Kind = KType decl
+                  Env = tenv'
+                  Warnings = [] }
+    | Ok(SLetPat(pat, e)) ->
+        match Check.typecheckBinder tenv pat e with
+        | Error terr -> Error(typed StmtTag.LetPat terr)
+        | Ok(te, schemes) ->
+            Ok
+                { Kind = KLetPat(pat, schemes, te)
+                  Env =
+                    { tenv with
+                        Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
+                  Warnings = warningsOf te }
+    | Ok(SLet(name, e)) ->
+        match
+            Check.checkBinderName e.Span name
+            |> Result.bind (fun () -> Check.typecheckWith tenv e)
+        with
+        | Error terr -> Error(typed StmtTag.Let terr)
+        | Ok(te, cs) ->
+            let scheme = generalizeWith cs te.Ty
+
+            Ok
+                { Kind = KLet(name, scheme, te)
+                  Env =
+                    { tenv with
+                        Values = Map.add name scheme tenv.Values }
+                  Warnings = warningsOf te }
+    | Ok(SCmd e) ->
+        match Check.typecheck tenv e with
+        | Error terr -> Error(typed StmtTag.Cmd terr)
+        | Ok te ->
+            Ok
+                { Kind = KCmd te
+                  Env = tenv
+                  Warnings = warningsOf te }
+    | Ok(SExpr e) ->
+        match Check.typecheck tenv e with
+        | Error terr -> Error(typed StmtTag.Expr terr)
+        | Ok te ->
+            match (if gateExprs then discardError te.Ty else None) with
+            | Some msg ->
+                Error
+                    { typed StmtTag.Expr { Span = e.Span; Message = msg } with
+                        Warnings = warningsOf te }
+            | None ->
+                Ok
+                    { Kind = KExpr te
+                      Env = tenv
+                      Warnings = warningsOf te }
+
+// ---------------------------------------------------------------------------
+// weir check [--json] — the agent-facing diagnostics core and LSP v1's
+// payload generator (2026-07-21, LSP chain 2/3). Check-everything, no
+// evaluation BY CONSTRUCTION (this function cannot reach Eval).
+// Statement-level error RECOVERY: a failed statement records its diag
+// and checking continues with the env unchanged, so a multi-error file
+// reports every independent error. Codes are SEEDED from the message
+// families (structured codes at error origin are the parked upgrade).
+
+type Diagnostic =
+    { File: string
+      Line: int
+      Col: int
+      EndLine: int option
+      EndCol: int option
+      Severity: string // "error" | "warning"
+      Code: string
+      Message: string }
+
+let private codeOf (parse: bool) (msg: string) : string =
+    if parse then
+        "parse"
+    elif msg.StartsWith "binding names start lowercase" then
+        "casing-law"
+    elif msg.Contains "discards it" then
+        "discard"
+    elif msg.StartsWith "a sequenced expression must be unit" then
+        "seq-unit"
+    elif msg.StartsWith "this pattern can fail" then
+        "refutable-binder"
+    elif msg.StartsWith "match is not exhaustive" || msg.Contains "needs a catch-all" then
+        "non-exhaustive"
+    elif msg.StartsWith "cannot sort by this key" then
+        "ord-key"
+    elif msg.Contains "equatable" || msg.Contains "cannot be compared" then
+        "eq"
+    elif msg.Contains "cannot render functions" then
+        "show-fn"
+    elif msg.StartsWith "unbound variable" then
+        "unbound"
+    elif msg.Contains "nothing determines" then
+        "ambiguous-constraint"
+    else
+        "check"
+
+// AOT-safe JSON writing: Utf8JsonWriter (reflection-free, the write
+// twin of the JsonDocument reader) — escaping is the library's job,
+// never string interpolation's (corrected 2026-07-21 on user review;
+// the reflection SERIALIZER stays banned, the writer never was).
+let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
+    use ms = new IO.MemoryStream()
+    use w = new System.Text.Json.Utf8JsonWriter(ms)
+    build w
+    w.Flush()
+    Text.Encoding.UTF8.GetString(ms.ToArray())
+
+let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
+    w.WriteStartObject()
+    w.WriteString("file", d.File)
+    w.WriteNumber("line", d.Line)
+    w.WriteNumber("col", d.Col)
+
+    match d.EndLine, d.EndCol with
+    | Some el, Some ec ->
+        w.WriteNumber("endLine", el)
+        w.WriteNumber("endCol", ec)
+    | _ -> ()
+
+    w.WriteString("severity", d.Severity)
+    w.WriteString("code", d.Code)
+    w.WriteString("message", d.Message)
+    w.WriteEndObject()
+
+// full analysis for tooling (the LSP re-frames this): diagnostics AND
+// the successfully-checked statements with their logical lines — plus
+// the initial env, so consumers can pick the in-scope env per position
+let analyzeLines
+    (path: string)
+    (rawLines: string list)
+    : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv =
+    let afterShebang, shebangOffset =
+        match rawLines with
+        | first :: rest when first.StartsWith "#!" -> rest, 1
+        | _ -> rawLines, 0
+
+    let body, bodyOffset =
+        match afterShebang with
+        | first :: rest when first.Trim() = "#loose" -> rest, shebangOffset + 1
+        | _ -> afterShebang, shebangOffset
+
+    let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+
+    let typeEnv0, _ = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+
+    let typeEnv0 =
+        { typeEnv0 with
+            Values =
+                typeEnv0.Values
+                |> Map.add "args" (generalize (TSeq TStr))
+                |> Map.add "stdin" (generalize (TSeq TStr)) }
+
+    Extern.refresh ()
+    let r = resolver typeEnv0
+
+    let assembled =
+        numbered
+        |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, stripComment raw)
+        |> assemble
+
+    match assembled with
+    | Error msg ->
+        let line =
+            match msg.Split(' ') |> Array.tryItem 1 with
+            | Some tok ->
+                tok.TrimEnd(':')
+                |> fun t ->
+                    (match System.Int32.TryParse t with
+                     | true, n -> n
+                     | false, _ -> 1)
+            | None -> 1
+
+        [ { File = path
+            Line = line
+            Col = 1
+            EndLine = None
+            EndCol = None
+            Severity = "error"
+            Code = "assembly"
+            Message = msg } ],
+        [],
+        typeEnv0
+    | Ok logicalLines ->
+        let diags = ResizeArray<Diagnostic>()
+        let stmts = ResizeArray<LogicalLine * CheckedStatement>()
+
+        let warn (wl, wc, wm) =
+            diags.Add
+                { File = path
+                  Line = wl
+                  Col = wc
+                  EndLine = None
+                  EndCol = None
+                  Severity = "warning"
+                  Code = "warning"
+                  Message = wm }
+
+        let mutable tenv = typeEnv0
+
+        for ll in logicalLines do
+            match checkStatement true r tenv ll with
+            | Ok chk ->
+                chk.Warnings |> List.iter warn
+                stmts.Add(ll, chk)
+                tenv <- chk.Env
+            | Error d ->
+                d.Warnings |> List.iter warn
+
+                diags.Add
+                    { File = path
+                      Line = d.PhysLine
+                      Col = d.PhysCol
+                      EndLine = d.PhysEnd |> Option.map fst
+                      EndCol = d.PhysEnd |> Option.map snd
+                      Severity = "error"
+                      Code = codeOf d.Parse d.Message
+                      Message = d.Message }
+
+        List.ofSeq diags, List.ofSeq stmts, typeEnv0
+
+let checkOnly (json: bool) (path: string) : int =
+    if not (IO.File.Exists path) then
+        Console.Error.WriteLine $"weir: no such script: {path}"
+        2
+    else
+        let rawLines = IO.File.ReadAllLines path |> Array.toList
+        let diags, _, _ = analyzeLines path rawLines
+
+        if json then
+            Console.WriteLine(
+                jsonBuild (fun w ->
+                    w.WriteStartArray()
+                    diags |> List.iter (writeDiag w)
+                    w.WriteEndArray())
+            )
+        else
+            for d in diags do
+                let sev = if d.Severity = "warning" then "warning" else "error"
+                Console.WriteLine $"{d.File}:{d.Line}:{d.Col}: {sev} [{d.Code}]: {d.Message}"
+
+        if diags |> List.exists (fun d -> d.Severity = "error") then
+            1
+        else
+            0
+
 let run (path: string) (scriptArgs: string list) : int =
     if not (IO.File.Exists path) then
         Console.Error.WriteLine $"weir: no such script: {path}"
@@ -670,18 +1009,6 @@ let run (path: string) (scriptArgs: string list) : int =
                 1
             | Ok logicalLines ->
 
-                let typedErr (ll: LogicalLine) (terr: Check.TypeError) =
-                    let physLine, physCol = translate ll terr.Span.Start.Col
-                    $"{path}:{physLine}:{physCol}: type error: {terr.Message}"
-
-                // Warnings were silently dropped by the runner until the
-                // bool-branching session (found via a warning-less
-                // non-exhaustive match in -e); they go to stderr, located.
-                let printWarnings (ll: LogicalLine) (te: Check.TypedExpr) =
-                    for w in Check.warnings typeEnv0 te do
-                        let physLine, physCol = translate ll w.Span.Start.Col
-                        Console.Error.WriteLine $"{path}:{physLine}:{physCol}: warning: {w.Message}"
-
                 let checkedProgram =
                     logicalLines
                     |> List.fold
@@ -689,62 +1016,34 @@ let run (path: string) (scriptArgs: string list) : int =
                             match state with
                             | Error e -> Error e
                             | Ok(tenv, acc) ->
-                                match Parser.parseLineFull r ll.Text with
-                                | Error f ->
+                                match checkStatement true r tenv ll with
+                                | Error d ->
+                                    for wl, wc, wm in d.Warnings do
+                                        Console.Error.WriteLine $"{path}:{wl}:{wc}: warning: {wm}"
+
                                     let locatedMsg =
-                                        match f.Col with
-                                        | Some col ->
-                                            let physLine, physCol = translate ll col
-                                            $"{path}:{physLine}:{physCol}: parse error:\n{f.Message}"
-                                        | None -> located path ll.Head f.Message
+                                        if d.Parse then
+                                            if d.HasCol then
+                                                $"{path}:{d.PhysLine}:{d.PhysCol}: parse error:\n{d.Message}"
+                                            else
+                                                located path d.PhysLine d.Message
+                                        else
+                                            $"{path}:{d.PhysLine}:{d.PhysCol}: type error: {d.Message}"
 
                                     Error locatedMsg
-                                | Ok(SType decl) ->
-                                    match Check.checkDecl tenv decl with
-                                    | Error terr -> Error(typedErr ll terr)
-                                    | Ok tenv' -> Ok(tenv', (ll.Head, CType decl) :: acc)
-                                | Ok(SLetPat(pat, e)) ->
-                                    match Check.typecheckBinder tenv pat e with
-                                    | Error terr -> Error(typedErr ll terr)
-                                    | Ok(te, schemes) ->
-                                        printWarnings ll te
+                                | Ok chk ->
+                                    for wl, wc, wm in chk.Warnings do
+                                        Console.Error.WriteLine $"{path}:{wl}:{wc}: warning: {wm}"
 
-                                        let tenv' =
-                                            { tenv with
-                                                Values =
-                                                    schemes
-                                                    |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
+                                    let stmt =
+                                        match chk.Kind with
+                                        | KType decl -> CType decl
+                                        | KLet(name, _, te) -> CLet(name, te)
+                                        | KLetPat(pat, _, te) -> CLetPat(pat, te)
+                                        | KCmd te -> CCmd te
+                                        | KExpr te -> CExpr te
 
-                                        Ok(tenv', (ll.Head, CLetPat(pat, te)) :: acc)
-                                | Ok(SLet(name, e)) ->
-                                    match
-                                        Check.checkBinderName e.Span name
-                                        |> Result.bind (fun () -> Check.typecheckWith tenv e)
-                                    with
-                                    | Error terr -> Error(typedErr ll terr)
-                                    | Ok(te, cs) ->
-                                        printWarnings ll te
-
-                                        let tenv' =
-                                            { tenv with
-                                                Values = Map.add name (generalizeWith cs te.Ty) tenv.Values }
-
-                                        Ok(tenv', (ll.Head, CLet(name, te)) :: acc)
-                                | Ok(SCmd e) ->
-                                    match Check.typecheck tenv e with
-                                    | Error terr -> Error(typedErr ll terr)
-                                    | Ok te ->
-                                        printWarnings ll te
-                                        Ok(tenv, (ll.Head, CCmd te) :: acc)
-                                | Ok(SExpr e) ->
-                                    match Check.typecheck tenv e with
-                                    | Error terr -> Error(typedErr ll terr)
-                                    | Ok te ->
-                                        printWarnings ll te
-
-                                        match discardError te.Ty with
-                                        | Some msg -> Error(typedErr ll { Span = e.Span; Message = msg })
-                                        | None -> Ok(tenv, (ll.Head, CExpr te) :: acc))
+                                    Ok(chk.Env, (ll.Head, stmt) :: acc))
                         (Ok(typeEnv0, []))
 
                 match checkedProgram with

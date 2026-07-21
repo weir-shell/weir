@@ -24,10 +24,28 @@ $BIN -e '1 + 1' > /dev/null # warm the fs cache
 expr_ms=$(median 'ls |> where (fun f -> f.Bytes > 1048576) |> first 5')
 cmd_ms=$(median 'echo hi | first 1')
 
+# whole-file check on a representative script — this median is the LSP's
+# per-keystroke budget (chain 2/3, 2026-07-21): no-incrementality is
+# licensed by this number staying single-digit-ish
+check_ms=$(for _ in $(seq 1 15); do
+    start=$(date +%s%N)
+    $BIN check "$(dirname "$0")/../examples/repo-report.weir" > /dev/null
+    end=$(date +%s%N)
+    echo $(((end - start) / 1000000))
+done | sort -n | awk '{a[NR]=$1} END {print a[int(NR/2)+1]}')
+
+CHECK_MAX_MS="${WEIR_MAX_CHECK_MS:-40}"
+
 echo "expression line median: ${expr_ms}ms (max ${EXPR_MAX_MS}ms)"
 echo "command-mode median:    ${cmd_ms}ms (max ${CMD_MAX_MS}ms)"
+echo "whole-file check median: ${check_ms}ms (max ${CHECK_MAX_MS}ms)"
 
 status=0
+
+if [ "$check_ms" -gt "$CHECK_MAX_MS" ]; then
+    echo "timing FAIL: whole-file check ${check_ms}ms > ${CHECK_MAX_MS}ms" >&2
+    status=1
+fi
 
 if [ "$expr_ms" -gt "$EXPR_MAX_MS" ]; then
     echo "timing FAIL: expression line ${expr_ms}ms > ${EXPR_MAX_MS}ms" >&2

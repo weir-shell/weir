@@ -206,6 +206,10 @@ if 1 > 0 then !
   `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
   params). Refutable patterns in binders are errors — use match.
   Bare `a, b` is a tuple at F#'s precedence (`f x, y` is `(f x), y`).
+- Iterate with `weir check file.weir` (all errors, located, coded) or
+  `weir check --json file.weir` (structured: file/line/col/code/
+  severity) BEFORE running — no evaluation happens, by construction.
+  Stranded-script reports should cite the error codes.
 - Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
   uppercase is types/modules/constructors. Record fields keep their
   names: `let region = cfg.AWS_REGION`.

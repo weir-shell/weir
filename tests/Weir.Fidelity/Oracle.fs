@@ -124,40 +124,12 @@ let weirVerdict (src: string) : Verdict =
             match env with
             | Error() -> Error()
             | Ok tenv ->
-                match Weir.Parser.parseLine resolver ll.Text with
+                // the ONE pipeline function (2026-07-21): the mirror can no
+                // longer drift from the runner by construction — the incident
+                // class this file caused is retired here
+                match Weir.Script.checkStatement true resolver tenv ll with
                 | Error _ -> Error()
-                | Ok(Weir.Ast.SType decl) ->
-                    match Weir.Check.checkDecl tenv decl with
-                    | Error _ -> Error()
-                    | Ok tenv' -> Ok tenv'
-                | Ok(Weir.Ast.SLetPat(pat, e)) ->
-                    (match Weir.Check.typecheckBinder tenv pat e with
-                     | Error _ -> Error()
-                     | Ok(_, schemes) ->
-                         Ok
-                             { tenv with
-                                 Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values })
-                | Ok(Weir.Ast.SLet(name, e)) ->
-                    match
-                        Weir.Check.checkBinderName e.Span name
-                        |> Result.bind (fun () -> Weir.Check.typecheckWith tenv e)
-                    with
-                    | Error _ -> Error()
-                    | Ok(te, cs) ->
-                        Ok
-                            { tenv with
-                                Values = Map.add name (generalizeWith cs te.Ty) tenv.Values }
-                | Ok(Weir.Ast.SCmd e) ->
-                    match Weir.Check.typecheck tenv e with
-                    | Error _ -> Error()
-                    | Ok _ -> Ok tenv
-                | Ok(Weir.Ast.SExpr e) ->
-                    match Weir.Check.typecheck tenv e with
-                    | Error _ -> Error()
-                    | Ok te ->
-                        match Weir.Script.discardError te.Ty with
-                        | Some _ -> Error()
-                        | None -> Ok tenv
+                | Ok chk -> Ok chk.Env
 
         match logicalLines |> List.fold step (Ok typeEnv0) with
         | Ok _ -> Accept

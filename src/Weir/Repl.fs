@@ -80,23 +80,6 @@ let private printHint (state: State) (line: string) =
         line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
-let private tryRun
-    (state: State)
-    (e: Expr)
-    : Result<Check.TypedExpr * Map<string, Set<Cls>> * Eval.Value * string, string * Span option> =
-    match Check.typecheckWith state.TypeEnv e with
-    | Error terr -> Error(Check.formatError terr, Some terr.Span)
-    | Ok(te, cs) ->
-        try
-            let v = Eval.eval state.Values te
-            Ok(te, cs, v, Eval.formatValue v)
-        with
-        | Eval.ExitRequest _ ->
-            // intentional exit, not an eval error — the run loop turns it
-            // into the process exit code (the fifth-site pin's fix)
-            reraise ()
-        | ex -> Error($"error: {ex.Message}", None)
-
 let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
 
@@ -108,18 +91,36 @@ let rec private loop (state: State) =
         Extern.refresh ()
 
         let next =
-            match Parser.parseLine (resolver state) line with
-            | Error msg ->
-                Console.WriteLine msg
+            // the ONE pipeline (2026-07-21): the REPL is a consumer, not a
+            // replica — a single-line LogicalLine feeds checkStatement
+            let ll: Script.LogicalLine =
+                { Text = line
+                  Head = 1
+                  Segments = [ (0, 1, 0) ] }
+
+            match Script.checkStatement false (resolver state) state.TypeEnv ll with
+            | Error d when d.Parse ->
+                Console.WriteLine d.Message
                 printHint state line
                 state
-            | Ok(SType decl) ->
-                match Check.checkDecl state.TypeEnv decl with
-                | Error terr ->
-                    Console.WriteLine(underline terr.Span)
-                    Console.WriteLine(Check.formatError terr)
-                    state
-                | Ok typeEnv ->
+            | Error d ->
+                d.Span |> Option.iter (underline >> Console.WriteLine)
+
+                (match d.Span with
+                 | Some sp -> Console.WriteLine(Check.formatError { Span = sp; Message = d.Message })
+                 | None -> Console.WriteLine d.Message)
+
+                // hint only where the pre-pipeline REPL hinted (expression
+                // and let forms; type/binder-pattern errors stayed bare)
+                (match d.Tag with
+                 | Some(Script.StmtTag.Let | Script.StmtTag.Expr | Script.StmtTag.Cmd) when d.Span.IsSome ->
+                     printHint state line
+                 | _ -> ())
+
+                state
+            | Ok chk ->
+                match chk.Kind with
+                | Script.KType decl ->
                     let ctors =
                         match decl.Body with
                         | DUnion cases -> Eval.constructorValues cases
@@ -127,18 +128,12 @@ let rec private loop (state: State) =
 
                     Console.WriteLine $"type {decl.Name} declared"
 
-                    { TypeEnv = typeEnv
+                    { TypeEnv = chk.Env
                       Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
-            | Ok(SLetPat(pat, e)) ->
-                match Check.typecheckBinder state.TypeEnv pat e with
-                | Error terr ->
-                    Console.WriteLine(underline terr.Span)
-                    Console.WriteLine(Check.formatError terr)
-                    state
-                | Ok(te, schemes) ->
+                | Script.KLetPat(pat, schemes, te) ->
                     printWarnings state te
 
-                    try
+                    (try
                         let v = Eval.eval state.Values te
                         let bindings = Eval.bindPattern pat v
 
@@ -147,59 +142,45 @@ let rec private loop (state: State) =
                         for n, sch in schemes do
                             Console.WriteLine $"{n} : {formatTy sch.Ty}"
 
-                        { TypeEnv =
-                            { state.TypeEnv with
-                                Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) state.TypeEnv.Values }
+                        { TypeEnv = chk.Env
                           Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
-                    with
-                    | Eval.ExitRequest _ -> reraise ()
-                    | ex ->
-                        Console.WriteLine $"error: {ex.Message}"
+                     with
+                     | Eval.ExitRequest _ -> reraise ()
+                     | ex ->
+                         Console.WriteLine $"error: {ex.Message}"
+                         state)
+                | Script.KLet(name, _, te) ->
+                    printWarnings state te
+
+                    (try
+                        let v = Eval.eval state.Values te
+
+                        if v <> Eval.VUnit then
+                            Console.WriteLine $"{name} : {formatTy te.Ty} = {Eval.formatValue v}"
+
+                        { TypeEnv = chk.Env
+                          Values = Map.add name v state.Values }
+                     with
+                     | Eval.ExitRequest _ -> reraise ()
+                     | ex ->
+                         Console.WriteLine $"error: {ex.Message}"
+                         state)
+                | Script.KExpr te
+                | Script.KCmd te ->
+                    printWarnings state te
+
+                    (try
+                        let v = Eval.eval state.Values te
+
+                        if v <> Eval.VUnit then
+                            Console.WriteLine $"{Eval.formatValue v} : {formatTy te.Ty}"
+
                         state
-            | Ok(SLet(name, e)) when (Check.checkBinderName e.Span name |> Result.isError) ->
-                (match Check.checkBinderName e.Span name with
-                 | Error terr ->
-                     Console.WriteLine(Check.formatError terr)
-                     state
-                 | Ok() -> state)
-            | Ok(SLet(name, e)) ->
-                match tryRun state e with
-                | Error(msg, span) ->
-                    span |> Option.iter (underline >> Console.WriteLine)
-                    Console.WriteLine msg
-
-                    if span.IsSome then
-                        printHint state line
-
-                    state
-                | Ok(te, cs, v, formatted) ->
-                    printWarnings state te
-
-                    if v <> Eval.VUnit then
-                        Console.WriteLine $"{name} : {formatTy te.Ty} = {formatted}"
-
-                    { TypeEnv =
-                        { state.TypeEnv with
-                            Values = Map.add name (generalizeWith cs te.Ty) state.TypeEnv.Values }
-                      Values = Map.add name v state.Values }
-            | Ok(SExpr e)
-            | Ok(SCmd e) ->
-                match tryRun state e with
-                | Error(msg, span) ->
-                    span |> Option.iter (underline >> Console.WriteLine)
-                    Console.WriteLine msg
-
-                    if span.IsSome then
-                        printHint state line
-
-                    state
-                | Ok(te, cs, v, formatted) ->
-                    printWarnings state te
-
-                    if v <> Eval.VUnit then
-                        Console.WriteLine $"{formatted} : {formatTy te.Ty}"
-
-                    state
+                     with
+                     | Eval.ExitRequest _ -> reraise ()
+                     | ex ->
+                         Console.WriteLine $"error: {ex.Message}"
+                         state)
 
         loop next
 

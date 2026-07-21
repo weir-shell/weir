@@ -1,5 +1,75 @@
 # Spike Notes
 
+## weir check + weir lsp — the chain lands (2026-07-21, chain 2+3/3)
+
+Session 2: `weir check [--json]` with statement-level RECOVERY (a
+failed statement records its diag and checking continues env-
+unchanged — a multi-error file reports every independent error),
+codes seeded from the message families (casing-law, discard,
+seq-unit, refutable-binder, non-exhaustive, ord-key, eq, show-fn,
+unbound, ambiguous-constraint, parse, assembly), hand-rolled
+AOT-safe JSON, warnings-as-exit-0 (decided, matching the runner).
+The whole-file check median PINNED AT 10ms — the LSP's per-keystroke
+license.
+
+Session 3: `weir lsp` v1 — diagnostics/hover/completion over stdio.
+AOT path: the hand-rolled JSON-RPC loop, taken BY PREDICTION (the
+plan's gate pre-authorized it; Ionide.LanguageServerProtocol carries
+a reflection serializer, exactly what the trimmer discipline bans).
+CORRECTED same-day on user review: the hand-rolled JSON READER was
+over-conservative AND buggy — the AOT ban covers reflection
+SERIALIZERS, not System.Text.Json's JsonDocument DOM (reflection-
+free, trim-annotated), and the hand-rolled reader mishandled
+surrogate pairs (didChange carries whole documents as JSON strings;
+emoji in a script would have corrupted it). Reader swapped to
+JsonDocument, unicode round-trip probe added, binary 6.5MB, timing
+unchanged. WRITING followed on the next review round:
+Utf8JsonWriter (the DOM reader's write twin, equally AOT-safe) now
+builds every dynamic payload — escaping is the library's job on BOTH
+sides; hand-rolled JSON survives only as one constant capabilities
+blob behind WriteRawValue. The full lesson, one line: the AOT ban is
+on reflection SERIALIZERS; both halves of System.Text.Json's
+imperative API were always allowed. NO incrementality, on
+purpose: whole-file re-check per didChange under the 10ms license;
+the server's only state is document TEXT (stale-cache bugs refused
+by construction). Hover = smallest typed node at the position, with
+the let-name fallback showing the generalized scheme; completion
+re-plumbs Complete.suggest (the REPL's sources) + PATH commands at
+line head. Integration probes speak the real protocol against the
+AOT binary (python3-driven, loudly skipped if absent).
+
+The arc that closes: week one asked whether fsautocomplete could
+serve weir; the answer then was "your checker is the brain and FCS
+cannot be it." This week the checker IS the brain of an LSP — through
+the same single pipeline function every other consumer uses, built
+three days after that function's absence caused the mirror incident.
+The answer is cashed.
+
+
+## One pipeline — the mirror incident's fix (2026-07-21, LSP chain 1/3)
+
+The incident: the oracle's weirVerdict mirror kept a pre-class
+generalization and OVER-ACCEPTED a shape the runner rejects — its own
+fidelity pin caught it (type classes Session A). The diagnosis was
+structural: FOUR consumers (runner, REPL, -e, mirror) re-derived the
+statement pipeline and agreed by discipline. The fix is the
+formalization pattern one layer up: Script.checkStatement owns
+parse → dispatch → check → statement-rule gate, physical spans
+computed inside; consumers render and evaluate, never re-derive. One
+explicit switch (gateExprs) distinguishes scripts (statement rule)
+from echoing consumers (REPL/-e) — caught during the rebase when the
+gate would have killed `-e '1 + 2'`; a switch is a parameter, a
+re-derivation would have been the disease again. Zero pin edits
+across 621 unit / 145 e2e / 63 oracle — the behavior-preservation
+contract held; the incident pin is annotated as a regression guard
+(drift is now unconstructible). Reported deltas, both unpinned and
+both improvements: -e reports a let RHS's REAL type error instead of
+the form message (kinds are judged after checking now), and the
+REPL's casing error gained the same underline as every other type
+error. Dead code retired: the REPL's tryRun. Sessions 2 (weir check
+--json) and 3 (weir lsp) consume this function next.
+
+
 ## The casing law — lowercase binds, uppercase declares (2026-07-21)
 
 The mini-session that closed the casing triple: constructors
