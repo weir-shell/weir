@@ -73,7 +73,7 @@ if stack == "" || env == "" then fail usage
 let target =
     { BicepPath = $"bicep/apps/stacks/{stack}/{env}.bicepparam"
       Stack = stack
-      Env = env 
+      Env = env
       Name = $"{stack}-{env}-apps" }
 
 match subcommand with
