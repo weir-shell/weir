@@ -698,6 +698,28 @@ echo "e2e ok: check exits 1 on errors"
 
 rm -rf "$ckdir"
 
+# --- runner missing-command diagnosis (2026-07-21: FParsec's primary
+# error buried the real cause and showed assembler-joined text) ---
+
+mdir=$(mktemp -d)
+printf 'not-a-real-tool-xyz --flag\n' > "$mdir/m.weir"
+rc=0; errout=$($BIN "$mdir/m.weir" 2>&1) || rc=$?
+[ $rc -eq 1 ] || fail "missing command must fail the runner (rc=$rc)"
+echo "$errout" | grep -qF "unknown command 'not-a-real-tool-xyz'" || fail "diagnosis must name the command: $errout"
+echo "$errout" | grep -qF "Expecting:" && fail "FParsec dump must not appear for missing commands: $errout"
+echo "e2e ok: runner names the missing command, no parser dump"
+
+cat > "$mdir/syn.weir" <<'WEOF'
+let x =
+    1 +
+    +
+WEOF
+errout=$($BIN "$mdir/syn.weir" 2>&1 || true)
+echo "$errout" | grep -qF "assembled logical line" || fail "multi-line parse dumps must carry the assembly note: $errout"
+echo "e2e ok: assembled-text note on multi-line parse dumps"
+
+rm -rf "$mdir"
+
 # --- every repo script must CHECK (2026-07-21: test-counts.weir had
 # been broken since the pairwise re-type and nothing noticed — scripts
 # rot silently unless gated; cmd-not-found warnings are fine, errors

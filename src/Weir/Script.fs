@@ -750,6 +750,19 @@ type CheckedStatement =
 // gateExprs: scripts apply the statement rule (values must be bound or
 // printed); the REPL and -e ECHO values instead — the same pipeline,
 // one explicit switch, never a re-derivation
+// assume only COMMAND-SHAPED words (letter-initial, ident chars +
+// dashes; never keywords, never dotted): the expression grammar must
+// keep claiming Env.load, from-adapters, and punctuation heads
+let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
+    { resolver tenv with
+        IsExternal =
+            fun n ->
+                Extern.exists n
+                || (n.Length > 0
+                    && System.Char.IsLetter n[0]
+                    && not (Parser.isKeyword n)
+                    && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
+
 // mkR builds the resolver FROM THE CURRENT ENV per statement, so
 // script-defined names are known at parse time — bindings shadow PATH
 // commands by construction (`let cat = ...` then `cat x` is an
@@ -784,23 +797,79 @@ let checkStatement
 
     match Parser.parseLineFull r ll.Text with
     | Error f ->
-        let physLine, physCol, hasCol =
-            match f.Col with
-            | Some col ->
-                let l, c = translate ll col
-                l, c, true
-            | None -> ll.Head, 1, false
+        // FParsec's primary error is often IRRELEVANT when the real cause
+        // is an unresolvable command head (the backtrack note buries it).
+        // Retry under the assume-resolver: if that parses, the failure IS
+        // missing commands — name them precisely instead of the dump.
+        let missingHeads =
+            match Parser.parseLineFull (assumeResolver tenv) ll.Text with
+            | Error _ -> []
+            | Ok stmt ->
+                let e =
+                    match stmt with
+                    | SLet(_, e)
+                    | SLetPat(_, e)
+                    | SExpr e
+                    | SCmd e -> Some e
+                    | SType _ -> None
 
-        Error
-            { PhysLine = physLine
-              PhysCol = physCol
-              PhysEnd = None
-              Tag = None
-              HasCol = hasCol
-              Span = None
-              Parse = true
-              Message = f.Message
-              Warnings = [] }
+                let rec heads (e: Expr) =
+                    (match e.Kind with
+                     | ECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                     | _ -> [])
+                    @ (exprChildren e |> List.collect heads)
+
+                e |> Option.map heads |> Option.defaultValue []
+
+        match missingHeads with
+        | (prog, span) :: rest ->
+            let physLine, physCol = translate ll span.Start.Col
+
+            let others =
+                match rest |> List.map fst |> List.distinct |> List.filter ((<>) prog) with
+                | [] -> ""
+                | more ->
+                    let joined = String.concat ", " more
+                    $" (also missing: {joined})"
+
+            Error
+                { PhysLine = physLine
+                  PhysCol = physCol
+                  PhysEnd = Some(translate ll span.End.Col)
+                  Tag = None
+                  HasCol = true
+                  Span = Some span
+                  Parse = true
+                  Message =
+                    $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or run it through sh -c"
+                  Warnings = [] }
+        | [] ->
+            let physLine, physCol, hasCol =
+                match f.Col with
+                | Some col ->
+                    let l, c = translate ll col
+                    l, c, true
+                | None -> ll.Head, 1, false
+
+            // multi-line statements are shown as their ASSEMBLED logical
+            // line — say so, or the ` ; `/` in ` insertions read as
+            // phantom source text
+            let note =
+                if List.length ll.Segments > 1 then
+                    "\n(note: shown as the assembled logical line — ' ; ' and ' in ' are inserted by multi-line assembly)"
+                else
+                    ""
+
+            Error
+                { PhysLine = physLine
+                  PhysCol = physCol
+                  PhysEnd = None
+                  Tag = None
+                  HasCol = hasCol
+                  Span = None
+                  Parse = true
+                  Message = f.Message + note
+                  Warnings = [] }
     | Ok(SType decl) ->
         match Check.checkDecl tenv decl with
         | Error terr -> Error(typed StmtTag.Type terr)
@@ -936,19 +1005,6 @@ let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
     w.WriteString("code", d.Code)
     w.WriteString("message", d.Message)
     w.WriteEndObject()
-
-// assume only COMMAND-SHAPED words (letter-initial, ident chars +
-// dashes; never keywords, never dotted): the expression grammar must
-// keep claiming Env.load, from-adapters, and punctuation heads
-let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
-    { resolver tenv with
-        IsExternal =
-            fun n ->
-                Extern.exists n
-                || (n.Length > 0
-                    && System.Char.IsLetter n[0]
-                    && not (Parser.isKeyword n)
-                    && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
 
 // full analysis for tooling (the LSP re-frames this): diagnostics AND
 // the successfully-checked statements with their logical lines — plus

@@ -1,5 +1,25 @@
 # Spike Notes
 
+## Runner missing-command diagnosis; a masking confession (2026-07-21)
+
+User critique of the runner's missing-tool error, both barrels
+correct: FParsec's PRIMARY error was irrelevant (the real cause —
+"not an external command" — sat in the backtrack note), and the dump
+showed the ASSEMBLED logical line (` ; `/` in ` insertions the user
+never wrote). Fix, in the one pipeline so every consumer gets it: on
+parse failure, RETRY under the assume-resolver — if that parses, the
+failure IS missing command heads; name them precisely ("unknown
+command 'bicep' — not found on PATH...", located at the head, all
+missing heads listed). Genuine syntax errors keep the dump but now
+carry a note naming the assembled-line rendering. CONFESSION for the
+masking ledger (the class's fifth member): the diagnosis code sat
+UNBUILT through several debugging rounds — an FS3373 error was
+masked by a mis-piped error count, and every probe ran the stale
+binary; two full fsi bisection rounds "proved" impossible facts
+before a forced rebuild surfaced the truth. The verify rule (exit
+code first, count second) exists for exactly this and was skipped.
+
+
 ## The deeper sweep — idioms rot, keywords don't (2026-07-21)
 
 The user caught the docs sweep's blind spot twice in one message: the
