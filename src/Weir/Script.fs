@@ -814,9 +814,18 @@ let private codeOf (parse: bool) (msg: string) : string =
 // twin of the JsonDocument reader) — escaping is the library's job,
 // never string interpolation's (corrected 2026-07-21 on user review;
 // the reflection SERIALIZER stays banned, the writer never was).
+// UnsafeRelaxedJsonEscaping: "unsafe" means HTML-embedding only —
+// these payloads are LSP/CLI, never HTML; the default encoder's
+// \u0022-style quote escaping is valid but trips naive clients
+// (micro's plugin rendered it mangled — user report, 2026-07-21)
+let private jsonWriterOptions =
+    System.Text.Json.JsonWriterOptions(
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    )
+
 let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
     use ms = new IO.MemoryStream()
-    use w = new System.Text.Json.Utf8JsonWriter(ms)
+    use w = new System.Text.Json.Utf8JsonWriter(ms, jsonWriterOptions)
     build w
     w.Flush()
     Text.Encoding.UTF8.GetString(ms.ToArray())

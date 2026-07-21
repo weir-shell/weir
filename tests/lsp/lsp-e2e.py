@@ -11,6 +11,8 @@ def send(obj):
     proc.stdin.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
     proc.stdin.flush()
 
+RAW_FRAMES = []
+
 def read_msg():
     length = None
     while True:
@@ -22,7 +24,9 @@ def read_msg():
             length = int(line.split(b":")[1])
         elif line == b"":
             break
-    return json.loads(proc.stdout.read(length))
+    body = proc.stdout.read(length)
+    RAW_FRAMES.append(body)
+    return json.loads(body)
 
 def expect(cond, why):
     if not cond:
@@ -96,6 +100,10 @@ send({"jsonrpc": "2.0", "method": "textDocument/didChange",
                  "contentChanges": [{"text": 'let s = "\U0001F600 \u4e2d\u6587"\n\nprint s\n'}]}})
 diag = read_msg()
 expect(diag["params"]["diagnostics"] == [], f"unicode text must check clean: {diag}")
+
+# relaxed escaping: quotes in messages are \" — never \u0022 (the
+# default encoder's HTML-tuned escaping mangled in micro; user report)
+expect(all(b"\\u0022" not in f for f in RAW_FRAMES), "u0022 escapes present in frames")
 
 send({"jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": {}})
 read_msg()
