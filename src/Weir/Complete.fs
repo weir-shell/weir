@@ -87,15 +87,27 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                         |> Option.map snd)
                     headTy
 
-            match finalTy |> Option.bind (recordFields env) with
+            let render (fields: string list) =
+                let stem = word.Substring(0, word.Length - prefix.Length)
+
+                fields
+                |> List.filter (fun f -> f.StartsWith prefix)
+                |> List.sort
+                |> List.map (fun f -> stem + f)
+
+            match finalTy with
+            | Some ty ->
+                // resolved head: fields if a record, NOTHING if a known
+                // non-record (the nats pin — the fallback must not fire)
+                match recordFields env ty with
+                | Some fields -> render (fields |> List.map fst)
+                | None -> []
             | None ->
-                // UNRESOLVED head: lambda/function params are never in
+                // UNRESOLVABLE head: lambda/function params are never in
                 // the env, and a mid-edit statement has no typed tree.
                 // Nominal records make the fallback high-signal — offer
                 // every declared record's fields (user report,
                 // 2026-07-21: `t.` in a function body completed nothing)
-                let stem = word.Substring(0, word.Length - prefix.Length)
-
                 env.Types
                 |> Map.toList
                 |> List.collect (fun (_, def) ->
@@ -103,17 +115,7 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                     | Record d -> d.Fields |> List.map fst
                     | Union _ -> [])
                 |> List.distinct
-                |> List.filter (fun f -> f.StartsWith prefix)
-                |> List.sort
-                |> List.map (fun f -> stem + f)
-            | Some fields ->
-                let stem = word.Substring(0, word.Length - prefix.Length)
-
-                fields
-                |> List.map fst
-                |> List.filter (fun f -> f.StartsWith prefix)
-                |> List.sort
-                |> List.map (fun f -> stem + f)
+                |> render
     elif before.EndsWith "from json" then
         env.Types
         |> Map.toList
