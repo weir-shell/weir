@@ -156,9 +156,9 @@ let private dotdot = pstring ".." .>> ws
 // Range endpoints/steps are simple expressions only (literals, idents, field
 // access, parenthesized anything) — reject-rather-than-guess. The attempt on
 // fieldSuffix keeps the first dot of '..' out of field-access parsing. The
-// negative-literal form exists for descending steps ([10.. -1 ..1]); weir has
-// no unary minus elsewhere. rangeTerm is a forward ref: it needs atom, which
-// needs listLit.
+// negative-literal form predates general prefix minus (2026-07-21) and stays:
+// range steps allow the SPACED form ([10.. -1 ..1]) that adjacency rejects.
+// rangeTerm is a forward ref: it needs atom, which needs listLit.
 let private negIntLit =
     spanned (
         pchar '-' >>. many1Satisfy isDigit
@@ -279,9 +279,45 @@ let private effectSigil =
           Span = span })
     .>> ws
 
+// prefix minus (landed 2026-07-21 on the loc.weir friction receipt;
+// retires the no-unary-minus pending row). F#'s adjacency rule, which
+// the ORACLE corrected mid-landing: `-` is prefix when the previous
+// char cannot end an operand (start, space, `(`, `[`, `{`, `=`, ...)
+// AND the operand is glued to the glyph. In an application chain that
+// makes `f -1` mean `f (-1)` — application, NOT the subtraction the
+// folklore promised — while `x-1`, `x - 1` stay infix. Desugars to
+// `0 - e`, so typing and eval are untouched.
+let private postfixAtomFwd, private postfixAtomFwdRef =
+    createParserForwardedToRef<Expr, unit> ()
+
+let private negAtom =
+    attempt (
+        // the trailing '-': `--` is ONE operator token in F# (unknown,
+        // rejected) — prefix minus never rides a preceding minus, which
+        // also keeps `tool --flag` lines parse-failing into the
+        // missing-command diagnosis instead of silently typechecking
+        previousCharSatisfiesNot (fun c ->
+            Char.IsLetterOrDigit c
+            || c = '_'
+            || c = ')'
+            || c = ']'
+            || c = '}'
+            || c = '"'
+            || c = '\''
+            || c = '-')
+        >>. getPosition
+        .>> pchar '-'
+        .>> notFollowedBy (anyOf " \t>")
+        .>>. postfixAtomFwd
+        |>> fun (p, e) ->
+            { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
+              Span = { Start = pos p; End = e.Span.End } }
+    )
+
 let private atom =
     choice
-        [ intLit
+        [ negAtom
+          intLit
           strLit
           interpLit
           captureSigil
@@ -359,6 +395,8 @@ rangeTermRef.Value <-
                       { Kind = EField(t, name, fspan)
                         Span = Span.union t.Span fspan })
                   target ]
+
+postfixAtomFwdRef.Value <- postfixAtom
 
 let private appChain =
     many1 postfixAtom

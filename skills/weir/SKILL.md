@@ -222,8 +222,10 @@ if 1 > 0 then !
 - Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
   uppercase is types/modules/constructors. Record fields keep their
   names: `let region = cfg.AWS_REGION`.
-  No tuple ordering (sortBy keys stay scalar). Records remain the
-  spelling for anything with NAMES.
+  No tuple ordering (sortBy/sortByDescending keys stay scalar).
+  Records remain the spelling for anything with NAMES. Prefix minus
+  follows F#'s adjacency rule: `-n`, `2 * -3`, and `f -1` (passes -1
+  as the ARGUMENT) are prefix; `x-1` and `x - 1` are subtraction.
 - Element access: `xs[0]` (raises; = `Seq.item 0 xs`; F# 6 whitespace
   rule — `f [0]` WITH a space is applying a list) / `Seq.tryItem`
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.

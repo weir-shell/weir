@@ -7,7 +7,7 @@ let counts =
     | Seq.toList
 
 counts
-    |> Seq.sortBy (fun (_, n) -> 0 - n)
+    |> Seq.sortByDescending (fun (_, n) -> n)
     |> Seq.iter (fun (f, n) -> print $"{n}\t{f}")
 
 print $"total:\t{counts |> Seq.map (fun (_, n) -> n) |> Seq.sum}"

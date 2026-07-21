@@ -50,7 +50,7 @@ staged
 print "largest files:"
 
 ls
-    |> Seq.sortBy (fun f -> 0 - f.Bytes)
+    |> Seq.sortByDescending _.Bytes
     |> Seq.first 3
     |> Seq.map (fun f -> $"  {f.Name} ({f.Bytes} bytes)")
     |> print

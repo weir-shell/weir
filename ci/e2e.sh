@@ -20,7 +20,8 @@ fail() {
 
 expect() {
     local desc="$1" needle="$2" out="$3"
-    echo "$out" | grep -qF "$needle" || fail "$desc — expected to find: $needle in: $out"
+    # -- so needles may start with '-' (e.g. "-6 : int")
+    echo "$out" | grep -qF -- "$needle" || fail "$desc — expected to find: $needle in: $out"
     echo "e2e ok: $desc"
 }
 
@@ -773,6 +774,12 @@ echo "e2e ok: all repo scripts check clean"
 errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
+
+# prefix minus + sortByDescending (2026-07-21, loc.weir friction)
+out=$($BIN -e '2 * -3')
+expect "prefix minus at operand position" "-6 : int" "$out"
+out=$($BIN -e '[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.toList')
+expect "sortByDescending orders down" "[3; 2; 1]" "$out"
 
 # the squiggle sits ON the name, not the RHS (user report, 2026-07-21)
 errout=$($BIN -e 'let Total = 1 + 2' 2>&1 || true)

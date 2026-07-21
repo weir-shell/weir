@@ -39,7 +39,8 @@ argument that killed the subtractive fork.
 | unreachable-arm-hard-error | different | an arm after an unguarded catch-all is a HARD ERROR, located at the catch-all with a constructor hint for variable binders (F# warns FS0026 on the dead arm and accepts) | reject | accept + warning | SEMANTICS: branching — user decision 2026-07-21; coverage's dual, and the casing-law footgun (a typo'd constructor becomes a catch-all binder) caught at its source |
 <!-- no-literal-patterns RETIRED 2026-07-21: literal patterns landed (int/string/(); literals never complete a match — F#'s rule, oracle Same). The guard idiom remains legal, no longer the only spelling. -->
 | no-let-rec | pending | let rec (reserved word) | reject | accept | recursion unserved; pipelines cover iteration |
-| no-unary-minus | pending | negative literals outside ranges | reject | accept | 0 - x idiom; ranges have the literal |
+<!-- no-unary-minus RETIRED 2026-07-21: prefix minus landed on the loc.weir friction receipt (descending sort spelled `0 - n`). F#'s adjacency rule exactly — and the oracle corrected the folklore mid-landing: `f -1` is APPLICATION of -1 in F# (pinned Same), `x-1`/`x - 1` stay subtraction, `1 -2` is int-applied-to-int (both reject). Negative literal patterns already worked. -->
+
 | no-format-specifiers | pending | format specifiers in holes ($"{x:N2}") | reject | accept | decided out of interp v1; no demand logged |
 | block-comments | pending | (* ... *) | reject | accept | // decided over #; (* *) never decided, no demand |
 | no-floats | pending | float literals and arithmetic | reject | accept | SEMANTICS: "no floats yet" |

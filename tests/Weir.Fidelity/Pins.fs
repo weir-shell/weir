@@ -116,6 +116,14 @@ let pins =
           "dead arm after a catch-all: weir hard-errors, F# warns FS0026+accepts"
           "type T = A of int | B\nlet v =\n    match B with\n    | x -> 1\n    | B -> 2\n"
           (Diverges "unreachable-arm-hard-error")
+
+      // --- prefix minus (2026-07-21) — the no-unary-minus row retires.
+      // The oracle overturned the folklore mid-landing: F# parses
+      // `f -1` as APPLICATION of -1 (adjacency), not subtraction ---
+      pin "negative literal at operand position" "let x = -5\n" Same
+      pin "prefix minus binds above * (both compilers)" "let x = 2 * -3\n" Same
+      pin "f -1 applies the negative literal (both compilers)" "let f n = n + 1\nlet r = f -1\n" Same
+      pin "F#-rejects-this: 1 -2 is int applied to int" "let r = 1 -2\n" Same
       pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
       pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same
 
@@ -172,7 +180,7 @@ let pins =
       pin "printfn" "printfn \"hi\"\n" (Diverges "no-printf-family")
       pin "mutable binding" "let mutable x = 1\n" (Diverges "no-mutation")
       pin "let rec" "let rec f = 1\n" (Diverges "no-let-rec")
-      pin "negative literal outside a range" "let n = -1\n" (Diverges "no-unary-minus")
+      pin "negative literal outside a range" "let n = -1\n" Same
 
       // --- corpus-born pins (dotnet/fsharp @ 5928e91, ComponentTests mining) ---
       pin "let parameter sugar (corpus-born feature, 2026-07-20)" "let f x = x + 1\n" Same

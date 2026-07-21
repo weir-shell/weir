@@ -242,6 +242,22 @@ let private sortByImpl: Value =
                 )
             | v -> unreachable $"the checker rejects 'sortBy' on {formatValue v}"))
 
+// reversed comparison args keep Seq.sortWith's stability, matching
+// F#'s sortByDescending (equal keys stay in input order)
+let private sortByDescImpl: Value =
+    VBuiltin(fun keyf ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                VSeq(
+                    Seq.delay (fun () ->
+                        items
+                        |> Seq.map (fun item -> apply keyf item, item)
+                        |> Seq.sortWith (fun (k1, _) (k2, _) -> scalarCompare "sortByDescending" k2 k1)
+                        |> Seq.map snd)
+                )
+            | v -> unreachable $"the checker rejects 'sortByDescending' on {formatValue v}"))
+
 let private splitImpl: Value =
     VBuiltin(fun sep ->
         VBuiltin(fun subject ->
@@ -552,6 +568,7 @@ let private seqMembers: (string * Ty * Value) list =
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
       "length", TFun(TSeq tA, TInt), seqLengthImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
+      "sortByDescending", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByDescImpl
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
       "pmap", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), pmapImpl
       "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
@@ -953,6 +970,7 @@ let typeEnv: TypeEnv =
         |> Map.ofList
         |> Map.change "Seq" (Option.map (Map.add "contains" Check.containsScheme))
         |> Map.change "Seq" (Option.map (Map.add "sortBy" sortByScheme))
+        |> Map.change "Seq" (Option.map (Map.add "sortByDescending" sortByScheme))
       Types =
         Map
             [ fileRow.Name, Record fileRow

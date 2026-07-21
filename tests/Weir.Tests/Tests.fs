@@ -266,6 +266,27 @@ let evalTests =
           }
           test "arithmetic and pipes: 1 + 2 |> double" { expectValue "1 + 2 |> double" (VInt 6) }
           test "precedence: 1 + 2 * 3" { expectValue "1 + 2 * 3" (VInt 7) }
+          // prefix minus (2026-07-21): F#'s placement — operand
+          // positions only, adjacency required, infix wins after a term
+          test "prefix minus: negative literal" { expectValue "-5" (VInt -5) }
+          test "prefix minus binds above *" { expectValue "2 * -3" (VInt -6) }
+          test "prefix minus on a binding" { expectValue "let n = 3 in -n + 1" (VInt -2) }
+          test "f -1 applies the negative literal (adjacency, oracle-corrected)" {
+              expectValue "let f x = x + 1 in f -1" (VInt 0)
+          }
+          test "1 -2 is application of an int (rejected, as F# rejects it)" {
+              let terr = checkErr "1 -2"
+              Expect.stringContains terr.Message "not a function" ""
+          }
+          test "1 - 2 and 1-2 stay subtraction" {
+              expectValue "1 - 2" (VInt -1)
+              expectValue "1-2" (VInt -1)
+          }
+          test "prefix minus needs adjacency: '- 5' is not an operand" {
+              match Weir.Parser.parseExpr "(- 5)" with
+              | Error _ -> ()
+              | Ok _ -> failtest "expected a parse error for spaced prefix minus"
+          }
           test "pipe chain" { expectValue "1 + 2 |> double |> double" (VInt 12) }
           test "pipe into lambda" { expectValue "5 |> fun x -> x * x" (VInt 25) }
           test "let-in" { expectValue "let x = 5 in x * 2" (VInt 10) }
@@ -431,7 +452,9 @@ let warningTests =
               Expect.stringContains terr.Message "unreachable" ""
           }
           test "mid-match variable binder errors at the cause with a constructor hint" {
-              let terr = checkErr "match Running 5 with | zStopped -> 1 | Running n -> n | Stopped -> 0"
+              let terr =
+                  checkErr "match Running 5 with | zStopped -> 1 | Running n -> n | Stopped -> 0"
+
               Expect.stringContains terr.Message "'zStopped' binds as a variable" ""
               Expect.stringContains terr.Message "2 arms below are unreachable" ""
               Expect.stringContains terr.Message "Did you mean 'Stopped'?" ""
@@ -1083,7 +1106,9 @@ let commandModeTests =
           test "slashed program resolves as external" { expectCmd "./build.sh --flag" "(cmd ./build.sh \"--flag\")" }
           test "caret forces PATH over a builtin shadow" { expectCmd "^ls -la" "(cmd ls \"-la\")" }
           test "builtin shadows PATH: ls -la is expression mode" {
-              Expect.equal (show (parseCmd "ls -la")) "(- ls la)" "parses as subtraction"
+              // adjacency (2026-07-21): `-la` is a prefix-minus argument
+              // now, exactly F#'s parse; still an error + the ^ls hint
+              Expect.equal (show (parseCmd "ls -la")) "(ls (- 0 la))" "parses as application of -la"
               Expect.stringContains (checkErr "ls - la").Message "unbound variable 'la'" ""
           }
           test "command pipes into expression stage" {
@@ -1427,6 +1452,23 @@ let stringTests =
           }
           test "Seq.sortBy on a non-scalar key raises with a clear message" {
               Expect.throws (fun () -> run "ls |> Seq.sortBy (fun f -> f)" |> forceSeq |> ignore) ""
+          }
+          test "Seq.sortByDescending reverses the key order" {
+              Expect.equal
+                  (run "[1; 3; 2] |> Seq.sortByDescending (fun x -> x)" |> forceSeq)
+                  [ VInt 3; VInt 2; VInt 1 ]
+                  ""
+          }
+          test "Seq.sortByDescending is stable on equal keys" {
+              Expect.equal
+                  (run "[\"bb\"; \"a\"; \"cc\"; \"d\"] |> Seq.sortByDescending Str.length"
+                   |> forceSeq)
+                  [ VStr "bb"; VStr "cc"; VStr "a"; VStr "d" ]
+                  ""
+          }
+          test "Seq.sortByDescending shares sortBy's Ord constraint" {
+              let terr = checkErr "[(1, 2)] |> Seq.sortByDescending (fun x -> x)"
+              Expect.stringContains terr.Message "cannot be ordered" ""
           }
           test "the git-branch idiom composes point-free" {
               expectValue
