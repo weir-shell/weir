@@ -1324,10 +1324,22 @@ let run (path: string) (scriptArgs: string list) : int =
                                             else
                                                 located path d.PhysLine d.Message
                                         else
+                                            // same source-line treatment as parse
+                                            // errors, with the span underlined
+                                            let src = rawByLine |> Map.tryFind d.PhysLine |> Option.defaultValue ""
+
+                                            let width =
+                                                match d.PhysEnd with
+                                                | Some(el, ec) when el = d.PhysLine -> max 1 (ec - d.PhysCol)
+                                                | _ -> 1
+
+                                            let underline =
+                                                Color.red c (String(' ', max 0 (d.PhysCol - 1)) + String('^', width))
+
                                             Color.bold c $"{path}:{d.PhysLine}:{d.PhysCol}"
                                             + ": "
                                             + Color.red c "type error"
-                                            + $": {d.Message}"
+                                            + $":\n{src}\n{underline}\n{d.Message}"
 
                                     Error locatedMsg
                                 | Ok chk ->

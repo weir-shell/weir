@@ -41,7 +41,21 @@ let private evalOnce (input: string) : int =
              Console.Error.WriteLine d.Message
          else
              match d.Span with
-             | Some sp -> Console.Error.WriteLine(Check.formatError { Span = sp; Message = d.Message })
+             | Some _ ->
+                 Console.Error.WriteLine input
+
+                 let width =
+                     match d.PhysEnd with
+                     | Some(el, ec) when el = d.PhysLine -> max 1 (ec - d.PhysCol)
+                     | _ -> 1
+
+                 Console.Error.WriteLine(
+                     Script.Color.red
+                         Script.Color.onStderr.Value
+                         (String(' ', max 0 (d.PhysCol - 1)) + String('^', width))
+                 )
+
+                 Console.Error.WriteLine $"type error: {d.Message}"
              | None -> Console.Error.WriteLine d.Message)
 
         printHint ()

@@ -720,6 +720,18 @@ echo "$errout" | grep -q "\^" || fail "parse errors must carry a caret: $errout"
 echo "$errout" | grep -qF " ; " && fail "assembled text must never appear: $errout"
 echo "e2e ok: parse errors show unassembled source with caret"
 
+# type errors show the source line with the SPAN underlined, same
+# treatment as parse errors (user report, 2026-07-21)
+cat > "$mdir/terr.weir" <<'WEOF'
+let workdir = "x"
+print workdirx
+WEOF
+errout=$($BIN "$mdir/terr.weir" 2>&1 || true)
+echo "$errout" | grep -qF "print workdirx" || fail "type errors must show the source line: $errout"
+echo "$errout" | grep -qF "^^^^^^^^" || fail "type errors must underline the span: $errout"
+echo "$errout" | grep -qF "Did you mean 'workdir'" || fail "the hint must survive the new renderer: $errout"
+echo "e2e ok: type errors underline the offending span"
+
 # a dangling `let ` used to render FParsec's empty error set as
 # "Unknown Error(s)" — the ident parser was unlabeled (2026-07-21)
 errout=$($BIN -e 'let ' 2>&1 || true)
