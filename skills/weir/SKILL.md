@@ -73,14 +73,18 @@ print $"branches: {branches}"
 - Records need a declared type with the exact field set (no width
   subtyping, no anonymous records): `{ Fst = a; Snd = b }` needs
   `type Pair = { Fst: int; Snd: int }`.
-- Union cases take ONE payload: `Case of int`, never `Case of int * int`.
+- Union cases carry tuple payloads for multi-value: `Case of int * string`;
+  match with `| Case (n, s) ->`.
 - `let f x y = ...` defines a curried function (desugars to nested
-  `fun`). Params are plain idents — no `()`, no patterns, no type
-  annotations — and a param-ful let cannot take a command-line RHS.
+  `fun`). Params are idents, `()`, or PARENTHESIZED irrefutable
+  patterns (`let dist (x, y) = ...`) — no type annotations — and a
+  param-ful let cannot take a command-line RHS.
 - `+` on two unknown params cannot infer (int-or-string): anchor one
   side (`x + 0`) or take data in. All single-typing operators
   (`- * / > <`) default to int; `let rec` and `mutable` are reserved
-  words with no meaning.
+  words with no meaning. But `==`, `show`, and `Seq.sortBy` ARE
+  generic (inferred constraints): `let same x y = x == y` works at any
+  equatable type — rejected only at functions/seqs, at the USE site.
 - Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in
   constructors) but int/string literals NEVER complete a match alone —
   add a `_`/var arm or it is a hard error. Guards remain legal.

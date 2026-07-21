@@ -30,15 +30,20 @@ let health =
 let status =
     match health with
     | Clean -> "status: clean"
+    | Dirty 1 -> "status: dirty (one change)"
     | Dirty n when n > 10 -> $"status: dirty ({n} changes — commit soon?)"
     | Dirty n -> $"status: dirty ({n} changes)"
 
 print status
 
+// a bare-comma destructuring binder: two views of the same rows
+let staged, unstaged = changes |> Seq.where _.Staged, changes |> Seq.where _.Unstaged
+
+print $"counts: {staged |> Seq.length} staged, {unstaged |> Seq.length} unstaged"
+
 print "staged:"
 
-changes
-    |> Seq.where _.Staged
+staged
     |> Seq.map (fun c -> $"  {c.Path}")
     |> print
 

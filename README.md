@@ -21,6 +21,13 @@ if changes |> Seq.isEmpty then print "clean" else
 - **Parallel fan-out**: `Seq.pmap`/`Seq.piter` with per-worker session
   forks; no async machinery, ever -- that want is the graduation
   signal to full F#.
+- **Inferred constraints, zero runtime type checks**: `==`, `show`,
+  and `Seq.sortBy` are generic (`let same x y = x == y` works at any
+  equatable type); every check is static.
+- **Tooling from the same pipeline the runner uses**: `weir check
+  [--json]` (located, coded diagnostics; no evaluation), `weir lsp`
+  (diagnostics/hover/completion over stdio), a micro syntax +
+  LSP config in `editors/`, and a REPL with completion and history.
 
 Start with [docs/GUIDE.md](docs/GUIDE.md) -- every example in it is
 executed in CI against the release binary. The language rulebook with

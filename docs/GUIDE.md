@@ -20,12 +20,18 @@ Three properties, in the order they matter:
 
 ## Running weir
 
-- `weir` — the REPL (bare names allowed, values echo back).
+- `weir` — the REPL: bare names allowed, values echo back, tab
+  completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits.
 - `weir -e '1 + 2'` — one expression.
 - `weir script.weir args...` — run a script; `#!/usr/bin/env weir`
   works. Scripts are STRICT: library calls are module-qualified
   (`Seq.map`, `Str.trim`, `Option.defaultTo`, `File.read`).
+- `weir check script.weir` — every diagnostic, located and coded, no
+  evaluation; `--json` for tools and agent loops. Commands missing
+  from PATH are warnings here (the runner treats them as errors), so
+  scripts for uninstalled tools stay editable.
 - `weir fmt script.weir` — canonical formatter (`--check` for CI).
+- `weir lsp` — the language server (see Editor setup below).
 
 ## First script
 
@@ -101,11 +107,24 @@ let id x = x
 print $"{double 21} and {id "strings too"}"
 ```
 
-Two deliberate limits you will meet: a bare parameter cannot be
-*applied* as a function (`let apply f x = f x` is rejected —
-polymorphism flows from typed builtins, not lambda guessing), and `+`
-on two unknowns cannot infer (int or string?) — anchor one side:
-`x + 0`.
+Equality, rendering, and sorting are GENERIC through inferred
+constraints — the classic helper shapes just work, and reject at the
+use site when they cannot:
+
+```weir
+let same x y = x == y
+
+print $"{same 1 1} {same "a" "b"}"
+```
+
+Binding names start lowercase (the casing law): uppercase is for
+types, modules, and constructors. Two deliberate limits you will
+meet: a bare parameter cannot be *applied* as a function
+(`let apply f x = f x` is rejected — polymorphism flows from typed
+builtins, not lambda guessing), and `+` on two unknowns cannot infer
+(int or string?) — anchor one side: `x + 0`. Unit params make thunks:
+`let cleanup () = ...` runs at `cleanup ()`, and `cleanup 5` is a
+type error.
 
 ## Branching
 
@@ -297,8 +316,9 @@ and CI, `weir check --json file.weir` is the no-editor spelling.
 The complete border with F# — what is deliberately different, what is
 rejected by design, what is merely pending — lives in
 `tests/fidelity/divergences.md`, machine-verified against the real F#
-compiler in CI. The short version: no tuples (records), no mutation,
-no exceptions (values and `fail`), no OO, no async. When a task
+compiler in CI. The short version: no mutation, no exceptions (values
+and `fail`/`exit`), no OO, no async, no user type classes (the three
+built-in constraint families are closed). When a task
 outgrows a shell, the graduation path is full F# — weir points there
 on purpose.
 

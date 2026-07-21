@@ -59,15 +59,20 @@ weir rejects rather than guesses.
   higher-order functions flow from typed builtins (which push parameter types
   into lambdas). Consequence: the standard occurs-check cycle constructions are
   unreachable. Changing this rule reopens soundness checklist §1.1.
-- **Equality is never polymorphic** (interaction of two rules): `==` rejects
-  unresolved variables, and generalization happens at `let` — so
-  `let eq = fun a -> fun b -> a == b` is rejected *at the definition*, not
-  instantiated per use. If you read only the generalization bullet you might
-  expect `eq` to work; the governing principle above is why it doesn't.
+- **Equality IS polymorphic through inferred constraints** (SUPERSEDED
+  2026-07-21, type classes Session A — the original rule read "`==`
+  rejects unresolved variables", making `let eq a b = a == b` a
+  definition-time error): the constraint now RIDES the variable
+  (`Eq a => a -> a -> bool`) and rejection moves to the USE site
+  (functions/seqs) or to statement end if nothing determines the type.
+  The reject-don't-guess posture survived; only its timing moved. See
+  the type-classes section.
 - **Generic declarations**: `type Option<'a> = Some of 'a | None` and
   `type Pair<'a> = { Fst: 'a; Snd: 'a }` — unions and records both take type
-  parameters. Cases carry a **single payload** (no tuple payloads — weir has
-  no product types; wrap in a record). Applied types unify argument-wise with
+  parameters. Cases carry one payload, which may be a TUPLE
+  (`Case of int * string` — legal since the tuples reversal,
+  2026-07-21; the original single-payload rule was the no-tuples
+  rule's corollary and retired with it). Applied types unify argument-wise with
   an occurs check through arguments; arity is validated at declaration.
 - **Constructors are generalized schemes** (`Some : forall 'a. 'a ->
   Option<'a>`), instantiated fresh per use with the same deep-copy discipline
