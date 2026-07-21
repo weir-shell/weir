@@ -1822,15 +1822,38 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
             // Only unguarded arms participate in coverage; guarded arms can fail.
             let unguarded (p: Pattern, g: TypedExpr option, _) = if g.IsNone then Some p else None
 
+            // Warn at the CAUSE, not the symptoms: a mid-match catch-all
+            // gets one warning naming the arms it kills — under the casing
+            // law a typo'd constructor silently becomes a variable binder
+            // (`| zClean ->`), so the variable form also hints against the
+            // scrutinee's cases (user report, 2026-07-21)
             match arms |> List.tryFindIndex armIrrefutable with
-            | Some i ->
-                arms
-                |> List.skip (i + 1)
-                |> List.iter (fun (p, _, _) ->
-                    acc.Add
-                        { Span = p.PSpan
-                          Message = "this match arm is unreachable" })
-            | None -> ()
+            | Some i when i < List.length arms - 1 ->
+                let p, _, _ = arms[i]
+                let later = List.length arms - i - 1
+
+                let tail =
+                    if later = 1 then
+                        "the arm below is unreachable"
+                    else
+                        $"the {later} arms below are unreachable"
+
+                let msg =
+                    match p.PKind with
+                    | PVar name ->
+                        let hint =
+                            match scrutinee.Ty with
+                            | TNamed(tyName, _) ->
+                                match Map.tryFind tyName env.Types with
+                                | Some(Union def) -> didYouMean name (List.map fst def.Cases)
+                                | _ -> ""
+                            | _ -> ""
+
+                        $"'{name}' binds as a variable, so this arm matches every value — {tail}{hint}"
+                    | _ -> $"this pattern matches every value — {tail}"
+
+                acc.Add { Span = p.PSpan; Message = msg }
+            | _ -> ()
 
     walk te
     List.ofSeq acc

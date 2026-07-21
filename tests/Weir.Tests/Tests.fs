@@ -431,6 +431,14 @@ let warningTests =
               Expect.hasLength ws 1 ""
               Expect.stringContains ws[0].Message "unreachable" ""
           }
+          test "mid-match variable binder warns at the cause with a constructor hint" {
+              let ws = warningsOf "match Running 5 with | zStopped -> 1 | Running n -> n | Stopped -> 0"
+              Expect.hasLength ws 1 ""
+              Expect.stringContains ws[0].Message "'zStopped' binds as a variable" ""
+              Expect.stringContains ws[0].Message "2 arms below are unreachable" ""
+              Expect.stringContains ws[0].Message "Did you mean 'Stopped'?" ""
+              Expect.equal ws[0].Span.Start.Col 24 "warning sits on the binder arm, not the dead arms"
+          }
           test "match on a non-union: a variable arm is the catch-all" {
               Expect.isEmpty (warningsOf "match 5 with | n -> n") ""
               expectValue "match 5 with | n -> n + 1" (VInt 6L)

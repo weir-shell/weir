@@ -442,7 +442,7 @@ let x = match 1 == 1 with | _ -> 1 | true -> 2
 print $"{x}"
 WEOF
 errout=$($BIN "$scriptdir/warn.weir" 2>&1 >/dev/null)
-echo "$errout" | grep -qF "warning: this match arm is unreachable" || fail "runner must surface warnings: $errout"
+echo "$errout" | grep -qF "unreachable" || fail "runner must surface warnings: $errout"
 out=$($BIN "$scriptdir/warn.weir" 2>/dev/null)
 expect "warnings do not block execution" "1" "$out"
 
