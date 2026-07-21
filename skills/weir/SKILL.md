@@ -46,6 +46,12 @@ git ls-files | Seq.first 1
 ```
 
 ```weir-error
+// the casing law: binders start lowercase
+let Total = 1 + 2
+print "unreached"
+```
+
+```weir-error
 // a discarded value is a check error, before anything runs
 "this string goes nowhere"
 ```
@@ -64,8 +70,9 @@ print $"branches: {branches}"
 ## Syntax that differs from your priors
 
 - Equality is `==` (never `=`). `=` is for `let` and record fields only.
-- No tuples — wrap in records: `{ Fst = a; Snd = b }` needs a declared
-  `type Pair = { Fst: int; Snd: int }` (exact field set, no width subtyping).
+- Records need a declared type with the exact field set (no width
+  subtyping, no anonymous records): `{ Fst = a; Snd = b }` needs
+  `type Pair = { Fst: int; Snd: int }`.
 - Union cases take ONE payload: `Case of int`, never `Case of int * int`.
 - `let f x y = ...` defines a curried function (desugars to nested
   `fun`). Params are plain idents — no `()`, no patterns, no type
@@ -128,10 +135,12 @@ let x = match 1 == 1 with | true -> 1
 print $"{x}"
 ```
 
-```weir-error
-// tuples do not exist
+```weir
+// tuples landed 2026-07-21 (flipped from must-fail; extractor proved it)
 let p = (1, 2)
-print "unreached"
+
+match p with
+| (a, b) -> print $"{a + b}"
 ```
 
 ```weir
@@ -191,8 +200,17 @@ if 1 > 0 then !
   or inside expressions — there use `cmd "git" ["status"; "--porcelain"]`
   (prog + argv list). A bareword `in` on a let RHS ends the command
   grammar; quote `"in"` to pass it.
-- `Seq.pairwise` gives adjacent pairs as `{ Fst; Snd }` records:
-  `xs |> Seq.pairwise |> Seq.map (fun p -> p.Snd - p.Fst)`.
+- Tuples: `(a, b)` literals, `int * string` types, `| (x, y) ->`
+  patterns (arity 2+). `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.
+  Destructure ANYWHERE irrefutable: `let x, y = pair`,
+  `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
+  params). Refutable patterns in binders are errors — use match.
+  Bare `a, b` is a tuple at F#'s precedence (`f x, y` is `(f x), y`).
+- Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
+  uppercase is types/modules/constructors. Record fields keep their
+  names: `let region = cfg.AWS_REGION`.
+  No tuple ordering (sortBy keys stay scalar). Records remain the
+  spelling for anything with NAMES.
 - Element access: `xs[0]` (raises; = `Seq.item 0 xs`; F# 6 whitespace
   rule — `f [0]` WITH a space is applying a list) / `Seq.tryItem`
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
@@ -243,7 +261,7 @@ print $"tracked: {files |> Seq.length}"
 let deltas =
     [10; 13; 11]
     |> Seq.pairwise
-    |> Seq.map (fun p -> $"{p.Snd - p.Fst}")
+    |> Seq.map (fun p -> match p with | (a, b) -> $"{b - a}")
 
 deltas |> print
 

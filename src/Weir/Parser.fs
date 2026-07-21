@@ -83,6 +83,13 @@ let private mkExpr (kind, span) = { Kind = kind; Span = span }
 // stop-and-report in NOTES).
 let private seqExpr, private seqExprRef = createParserForwardedToRef<Expr, unit> ()
 
+// comma is the tuple constructor at F#'s precedence (2026-07-21, the
+// bare-comma amendment): below `;` (weir-only cell, decided — `a, b ; c`
+// is `(a, b) ; c`), above `|>` (`xs |> f, ys |> g` groups F#-identically).
+// Command mode is untouched by construction: barewords keep their commas.
+let private commaExpr, private commaExprRef =
+    createParserForwardedToRef<Expr, unit> ()
+
 let private intLit =
     spanned (
         many1Satisfy isDigit .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
@@ -126,12 +133,14 @@ let private unitLit =
     spanned (attempt (pchar '(' >>. ws >>. pchar ')') >>% EUnit) |>> mkExpr .>> ws
 
 let private parens =
+    // (e) groups; tuples come from the comma INSIDE seqExpr (the
+    // bare-comma amendment moved the comma into the expression grammar)
     spanned (pchar '(' >>. ws >>. seqExpr .>> pchar ')')
     |>> fun (inner, span) -> { inner with Span = span }
     .>> ws
 
 let private fieldAssign =
-    identSpanned .>> str_ws "=" .>>. expr |>> fun ((n, s), v) -> n, s, v
+    identSpanned .>> str_ws "=" .>>. commaExpr |>> fun ((n, s), v) -> n, s, v
 
 let private recordLit =
     spanned (pchar '{' >>. ws >>. sepBy1 fieldAssign (str_ws ";") .>> pchar '}' |>> ERecord)
@@ -192,7 +201,7 @@ let private listLit =
                 [ rangeBody
                   .>> (pchar ']' <?> "']' (complex range endpoints need parentheses: [a..(f x)])")
                   |>> Choice1Of2
-                  sepBy expr (str_ws ";") .>> pchar ']' |>> Choice2Of2 ]
+                  sepBy commaExpr (str_ws ";") .>> pchar ']' |>> Choice2Of2 ]
     )
     |>> buildBracket
     .>> ws
@@ -353,14 +362,26 @@ let private appChain =
         { Kind = EApp(f, a)
           Span = Span.union f.Span a.Span })
 
-// Params are plain idents OR () — the unit param pins its type in the
-// checker (the name "()" is unforgeable through declarations); other
-// pattern params stay rejected.
-let private paramIdent = ident <|> (pstring "()" .>> ws >>% "()")
+// Binder patterns (2026-07-21, PLAN-pattern-binders): params are plain
+// idents, `()`, or PARENTHESIZED irrefutable patterns (F# also requires
+// the parens in param position). Refutability is a CHECK error.
+let private binderParam, private binderParamRef =
+    createParserForwardedToRef<Pattern, unit> ()
+
+// let-binder: a full pattern, bare commas allowed at the top
+// (`let x, y = ...` — the closed binder grammar makes the comma free)
+let private binderPat, private binderPatRef =
+    createParserForwardedToRef<Pattern, unit> ()
 
 let private lambda =
-    pipe3 getPosition (keyword "fun" >>. paramIdent .>> str_ws "->") seqExpr (fun p param body ->
-        { Kind = ELambda(param, body)
+    pipe3 getPosition (keyword "fun" >>. binderParam .>> str_ws "->") seqExpr (fun p param body ->
+        let kind =
+            match param.PKind with
+            | PVar n -> ELambda(n, body)
+            | PUnit -> ELambda("()", body)
+            | _ -> ELambdaPat(param, body)
+
+        { Kind = kind
           Span = { Start = pos p; End = body.Span.End } })
 
 // let f x y = e desugars to nested lambdas (corpus-driven feature,
@@ -369,23 +390,42 @@ let private lambda =
 // checker (the name "()" is unforgeable through declarations); other
 // pattern params stay rejected.
 
-let private curryParams (ps: string list) (value: Expr) : Expr =
+let private curryParams (ps: Pattern list) (value: Expr) : Expr =
     List.foldBack
-        (fun p body ->
-            { Kind = ELambda(p, body)
-              Span = value.Span })
+        (fun (p: Pattern) body ->
+            let kind =
+                match p.PKind with
+                | PVar n -> ELambda(n, body)
+                | PUnit -> ELambda("()", body)
+                | _ -> ELambdaPat(p, body)
+
+            { Kind = kind; Span = value.Span })
         ps
         value
 
 let private letIn =
-    pipe3
-        getPosition
-        (keyword "let" >>. ident .>>. many paramIdent .>> str_ws "=" .>>. seqExpr
-         .>> keyword "in")
-        seqExpr
-        (fun p ((name, ps), value) body ->
-            { Kind = ELet(name, curryParams ps value, body)
-              Span = { Start = pos p; End = body.Span.End } })
+    let patForm =
+        attempt (
+            keyword "let" >>. binderPat .>> str_ws "="
+            >>= fun b ->
+                match b.PKind with
+                | PVar _
+                | PCase(_, None) -> fail "plain binder takes the ident path"
+                | _ -> preturn b
+        )
+
+    choice
+        [ pipe3 getPosition (patForm .>>. seqExpr .>> keyword "in") seqExpr (fun p (binder, value) body ->
+              { Kind = ELetPat(binder, value, body)
+                Span = { Start = pos p; End = body.Span.End } })
+          pipe3
+              getPosition
+              (keyword "let" >>. ident .>>. many binderParam .>> str_ws "=" .>>. seqExpr
+               .>> keyword "in")
+              seqExpr
+              (fun p ((name, ps), value) body ->
+                  { Kind = ELet(name, curryParams ps value, body)
+                    Span = { Start = pos p; End = body.Span.End } }) ]
 
 let private binOp op l r =
     { Kind = EBinOp(op, l, r)
@@ -445,10 +485,20 @@ let private patLit =
           spanned (between (pchar '"') (pchar '"') (manyChars stringChar)) .>> ws
           |>> fun (s, span) -> { PKind = PStr s; PSpan = span } ]
 
+let private patParens =
+    between (str_ws "(") (str_ws ")") (sepBy1 pat (str_ws ","))
+    |>> function
+        | [ one ] -> one
+        | many ->
+            { PKind = PTuple many
+              PSpan =
+                { Start = (List.head many).PSpan.Start
+                  End = (List.last many).PSpan.End } }
+
 let private patAtom =
     choice
         [ patLit
-          between (str_ws "(") (str_ws ")") pat
+          patParens
           patWord
           |>> fun (w, span) ->
               let kind =
@@ -463,7 +513,7 @@ let private patAtom =
 patRef.Value <-
     choice
         [ patLit
-          between (str_ws "(") (str_ws ")") pat
+          patParens
           patWord
           >>= fun (w, span) ->
               if w = "_" then
@@ -481,6 +531,24 @@ patRef.Value <-
                         PSpan = { Start = span.Start; End = e } }
               else
                   preturn { PKind = PVar w; PSpan = span } ]
+
+
+binderParamRef.Value <-
+    choice
+        [ spanned (pstring "()") .>> ws
+          |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
+          identSpanned |>> fun (n, span) -> { PKind = PVar n; PSpan = span }
+          patParens ]
+
+binderPatRef.Value <-
+    sepBy1 pat (str_ws ",")
+    |>> function
+        | [ one ] -> one
+        | many ->
+            { PKind = PTuple many
+              PSpan =
+                { Start = (List.head many).PSpan.Start
+                  End = (List.last many).PSpan.End } }
 
 let private fromExpr =
     spanned (
@@ -534,8 +602,19 @@ opp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; a
 segOpp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
 exprRef.Value <- opp.ExpressionParser
 
+commaExprRef.Value <-
+    expr .>>. many (attempt (str_ws "," >>. expr))
+    |>> fun (first, rest) ->
+        match rest with
+        | [] -> first
+        | _ ->
+            let all = first :: rest
+
+            { Kind = ETuple all
+              Span = Span.union first.Span (List.last all).Span }
+
 seqExprRef.Value <-
-    expr .>>. many (attempt (str_ws ";" >>. expr))
+    commaExpr .>>. many (attempt (str_ws ";" >>. commaExpr))
     |>> fun (first, rest) ->
         match rest with
         | [] -> first
@@ -773,6 +852,13 @@ tySynRef.Value <-
               | w ->
                   ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
                   |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
+    // t1 * t2 [* ...] is a tuple type (2026-07-21) — star was unclaimed
+    // in type syntax since the measure removal
+    |> fun atom ->
+        sepBy1 atom (attempt (str_ws "*"))
+        |>> function
+            | [ one ] -> one
+            | many -> TTuple many
 
 let private fieldDecl = ident .>> str_ws ":" .>>. tySyn
 
@@ -815,7 +901,7 @@ let private typeDecl =
 // barewords.
 let private topLet (r: Resolver) =
     attempt (
-        keyword "let" >>. ident .>>. many paramIdent .>> str_ws "="
+        keyword "let" >>. ident .>>. many binderParam .>> str_ws "="
         >>= fun (name, ps) ->
             // command mode never sits under a lambda (splice-soundness
             // invariant), so a param-ful let takes an expression RHS only
@@ -834,6 +920,20 @@ let private stmtWith (r: Resolver) =
     ws
     >>. choice
             [ typeDecl .>> eof
+              // destructuring let statement (pattern binder, expression RHS);
+              // fully attempt-wrapped so `let (x, y) = v in body` backtracks
+              // to the expression grammar's letIn form
+              attempt (
+                  (keyword "let" >>. binderPat .>> str_ws "="
+                   >>= fun b ->
+                       match b.PKind with
+                       | PVar _
+                       | PCase(_, None) -> fail "plain binder takes the ident path"
+                       | _ -> preturn b)
+                  .>>. seqExpr
+                  .>> eof
+              )
+              |>> SLetPat
               topLet r
               cmdLine r .>> eof |>> SCmd
               seqExpr .>> eof |>> SExpr ]

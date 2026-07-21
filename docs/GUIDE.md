@@ -65,8 +65,13 @@ big |> print
 [1..10] |> Seq.where (fun n -> n > 7) |> Seq.iter (fun n -> print $"{n}")
 ```
 
-Records and unions are declared with exact field sets; union cases
-carry one payload:
+Tuples cover transient pairs — `(a, b)` literals (bare `a, b` works
+at F#'s precedence), `int * string` types, `| (x, y) ->` patterns,
+destructuring binders (`let host, port = target`,
+`Seq.map (fun (k, v) -> ...)`) — but the moment a shape needs NAMES,
+declare a record: `p.Host` reads, `let (h, _) = p` re-derives. Records and unions are
+declared with exact field sets; union cases
+carry tuple payloads when multi-value:
 
 ```weir
 type Verdict =

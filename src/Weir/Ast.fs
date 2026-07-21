@@ -18,6 +18,7 @@ and PatternKind =
     | PInt of int64
     | PStr of string
     | PUnit
+    | PTuple of Pattern list
     | PCase of ctor: string * arg: Pattern option
 
 type InterpPart<'e> =
@@ -45,6 +46,9 @@ and ExprKind =
     | EFrom of format: string * tyName: string option
     | ETo of format: string
     | EList of items: Expr list
+    | ETuple of items: Expr list
+    | ELetPat of binder: Pattern * value: Expr * body: Expr
+    | ELambdaPat of binder: Pattern * body: Expr
     | ECmd of prog: string * args: Expr list * env: Expr option
     | EInterp of parts: InterpPart<Expr> list
 
@@ -60,6 +64,7 @@ type Decl =
 
 type Stmt =
     | SLet of name: string * value: Expr
+    | SLetPat of binder: Pattern * value: Expr
     | SExpr of Expr
     | SCmd of Expr
     | SType of Decl

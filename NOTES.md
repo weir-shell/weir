@@ -1,5 +1,95 @@
 # Spike Notes
 
+## The casing law — lowercase binds, uppercase declares (2026-07-21)
+
+The mini-session that closed the casing triple: constructors
+uppercase (standing since generics), modules uppercase, and now
+binders lowercase — stated once in SEMANTICS. The user's challenge
+during the design discussion mattered and is preserved in the row:
+the sentinel guards were NEVER this law's payoff (print/show defend
+LOWERCASE shadowing, which stays legal; Env.load's guard stays for
+the still-declarable constructor collision `type T = Env of int`).
+The honest payoff: the binders-session PCase fall-through hack is
+unrepresentable, value-shadows-module is grammar-dead, and binder
+patterns get intent-aware diagnosis (unknown uppercase → casing
+hint; known constructor → match hint — the env-lookup disambiguator
+the single-case park will inherit). The row calls itself the
+strictness family's first STYLISTIC member rather than borrowing the
+others' safety story. Migration grep: zero hits — the convention was
+exactly as strong as assumed.
+
+
+## Pattern binders + the bare-comma amendment (2026-07-21)
+
+The no-pattern-binders row's arc COMPLETES: "destructuring is the
+real scope" (the retired no-tuples row's own words) → the gap named
+when a user probe hit it → this session. Everything in the plan's
+forms block runs; the F#-negative is the row's remaining content
+(refutable binders: F# warns-accepts, weir hard-errors — the
+strictness family again). The bare-comma amendment took FULL F#
+precedence rather than a let-RHS context hack, and its archaeology
+addresses the parens-only rule's two original reasons: argv safety
+holds by construction (pinned from both sides — expression commas
+build tuples, command barewords keep commas), and the `f x, y`
+footgun is imported knowingly. The comma×`;` cell (weir-only, no F#
+to copy) decided: comma TIGHTER, so a sequenced tuple is the
+familiar discard error, not a tuple of sequences. Two session
+catches worth their pins: (1) uppercase idents (`let Seq = ...`)
+initially routed into the pattern path as constructor patterns —
+value shadowing broke until bare PCase fell through to the ident
+path; (2) the check-mode ELambdaPat twin was MISSED first — piped
+tuple lambdas lost the pushed element type and hole-defaulting fired
+early ("expected int, got string" on a correct program); the e2e
+battery caught it, and the bidirectional-twin lesson is flagged in
+TRANSCRIPTION (flag 7: three lambda-arm duplicates now; helper on a
+fourth). Observed, pre-existing, out of scope: interp holes on
+unresolved vars default to string BEFORE a later pipe could resolve
+them (`1 |> (fun k -> $"{k}")` errors) — logged as a defaulting-
+order edge for a future look.
+
+
+## REVERSAL: tuples land; "records are the product" retires (2026-07-21)
+
+The named decision, dated: the generics session promoted "weir has no
+product types; records with named fields are the product story" to a
+rules bullet, and Seq.pairwise shipped its {Fst; Snd} Pair record
+under that rule. WHAT HELD: the two-value CLI reshape was absorbed
+cleanly by the one-flag-per-value idiom; ad-hoc pair records never
+proliferated (Pair stayed pairwise's private shape); nothing in the
+telemetry shows record-noise pain. WHAT PRESSURED: F# fidelity —
+tuples are pervasive in the corpus and in agent priors (the
+no-tuples divergence rows are among the most agent-visible, with
+standing SKILL must-fail blocks); one anonymous-record bleed hit;
+and the predicted {Fst; Snd} want for zip stood as the argument the
+plan named. THE DIRECTION: user-opened ("ok go with tuples now"),
+receipts thin and said so — the reversal ships on direction, not
+evidence weight, and this entry is the honesty. THE SCOPE: F#
+semantics bounded — types, literals, patterns, arity 2+; NO
+lexicographic Ord (divergence row, with record-ordering if ever); NO
+splice/Env.load/json membership; multi-payload constructors
+un-restrict (the single-payload rule was this rule's corollary and
+retires with it); Seq.zip ships WITH (the customer); pairwise
+re-types to tuples (breaking, migrated with this archaeology).
+RATIONALE SURVIVES AS STYLE: records remain the taught product for
+named data; tuples are for transient pairs — the original decision
+becomes a GUIDE paragraph instead of a grammar rule.
+
+COMPLETION (same day): tuples were BORING, as the plan's model
+demanded — the stop-and-report clause never fired; TTuple is one
+more structural case in every walk, the class predicates took it
+componentwise (Ord rejected by its existing catch-all — zero new
+rules), and multi-payload constructors cost NOTHING (a tuple payload
+is just a payload). json/splices stayed closed via existing
+whitelists — reject-don't-guess held without new code. THREE rows
+retired (no-tuples, no-literal-patterns' sibling single-payload-
+unions, plus the SKILL must-fail flips, extractor-proven); THREE
+rows born (no-tuple-ord, tuple-exhaustiveness-bounded,
+no-pattern-params — the honest edges of the bounded scope). The
+corpus re-mine was SKIPPED: WEIR_CORPUS_DIR absent in this
+environment (time-box zero; noted, not silently dropped). Pairwise
+migrated to seq<'a * 'a> with the {Fst; Snd} Pair record deleted.
+
+
 ## Literal patterns + () thunks (2026-07-21, Session 1 of the plan)
 
 The strongest-receipts item shipped first, as sequenced. Literal

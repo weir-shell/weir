@@ -540,6 +540,7 @@ type Mode =
 
 type private CheckedStmt =
     | CLet of name: string * te: Check.TypedExpr
+    | CLetPat of binder: Weir.Ast.Pattern * te: Check.TypedExpr
     | CExpr of te: Check.TypedExpr
     | CCmd of te: Check.TypedExpr
     | CType of decl: Decl
@@ -702,8 +703,24 @@ let run (path: string) (scriptArgs: string list) : int =
                                     match Check.checkDecl tenv decl with
                                     | Error terr -> Error(typedErr ll terr)
                                     | Ok tenv' -> Ok(tenv', (ll.Head, CType decl) :: acc)
+                                | Ok(SLetPat(pat, e)) ->
+                                    match Check.typecheckBinder tenv pat e with
+                                    | Error terr -> Error(typedErr ll terr)
+                                    | Ok(te, schemes) ->
+                                        printWarnings ll te
+
+                                        let tenv' =
+                                            { tenv with
+                                                Values =
+                                                    schemes
+                                                    |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
+
+                                        Ok(tenv', (ll.Head, CLetPat(pat, te)) :: acc)
                                 | Ok(SLet(name, e)) ->
-                                    match Check.typecheckWith tenv e with
+                                    match
+                                        Check.checkBinderName e.Span name
+                                        |> Result.bind (fun () -> Check.typecheckWith tenv e)
+                                    with
                                     | Error terr -> Error(typedErr ll terr)
                                     | Ok(te, cs) ->
                                         printWarnings ll te
@@ -751,6 +768,15 @@ let run (path: string) (scriptArgs: string list) : int =
                                     | DRecord _ -> venv
 
                                 exec venv' tail
+                            | CLetPat(pat, te) ->
+                                try
+                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                                    exec (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) tail
+                                with
+                                | Eval.ExitRequest code -> code
+                                | ex ->
+                                    Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                    1
                             | CLet(name, te) ->
                                 try
                                     exec (Map.add name (Eval.eval venv te) venv) tail

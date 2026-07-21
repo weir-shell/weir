@@ -1577,13 +1577,13 @@ let moduleTests =
               expectValue "[1; 2; 3] |> Seq.length" (VInt 3)
               Expect.stringContains (checkErr "length \"abc\"").Message "use Seq.length or Str.length" ""
           }
-          test "three-way precedence: value shadow wins over module" {
-              Expect.stringContains
-                  (checkErr "let Seq = { X = 1; Y = 2 } in Seq.map").Message
-                  "Point has no field 'map'"
-                  ""
-
-              expectValue "let Seq = { X = 1; Y = 2 } in Seq.X" (VInt 1)
+          test "three-way precedence: the shadow case is grammar-dead (casing law, 2026-07-21)" {
+              // was: value shadow wins over module (`let Seq = {...}`).
+              // The casing law rejects the binder, so the module can no
+              // longer be shadowed by construction; the EField precedence
+              // code stays as defensive depth.
+              let terr = checkErr "let Seq = 1 in Seq"
+              Expect.stringContains (formatError terr) "binding names start lowercase" ""
           }
           test "bare module name errors with member guidance" {
               Expect.stringContains (checkErr "Seq").Message "'Seq' is a module" ""
@@ -2177,10 +2177,13 @@ let agentFindingsTests =
               | Ok(SCmd { Kind = ECmd("git", args, _) }) -> Expect.hasLength args 3 "log, in, h"
               | other -> failtest $"expected a command statement, got {other}"
           }
-          test "pairwise types and evaluates" {
-              Expect.equal (checkOk "[1; 2] |> Seq.pairwise").Ty (TSeq(TNamed("Pair", [ TInt ]))) "type"
+          test "pairwise re-typed to tuples (2026-07-21, the reversal; was Pair {Fst;Snd})" {
+              Expect.equal (checkOk "[1; 2] |> Seq.pairwise").Ty (TSeq(TTuple [ TInt; TInt ])) "type"
 
-              expectValue "[10; 13; 11] |> Seq.pairwise |> Seq.map (fun p -> p.Snd - p.Fst) |> Seq.sum" (VInt 1L)
+              expectValue
+                  "[10; 13; 11] |> Seq.pairwise |> Seq.map (fun p -> match p with | (a, b) -> b - a) |> Seq.sum"
+                  (VInt 1L)
+
               expectValue "[1] |> Seq.pairwise |> Seq.isEmpty" (VBool true)
           }
           test "fail raises with the message" {
@@ -2242,14 +2245,14 @@ let paramSugarTests =
               | Ok(SLet(_, { Kind = ELambda(_, { Kind = EApp _ }) })) -> ()
               | other -> failtest $"expected expression-mode application (which then fails check), got {other}"
           }
-          test "unit params legal since 2026-07-21 (was: rejected in v1 sugar); pattern params stay out" {
+          test "unit and PARENTHESIZED pattern params legal (binders session completed the arc)" {
               match Weir.Parser.parseExpr "let f () = 1 in f" with
               | Ok { Kind = ELet(_, { Kind = ELambda("()", _) }, _) } -> ()
               | other -> failtest $"unit param should desugar to the pinned () lambda, got {other}"
 
-              match Weir.Parser.parseExpr "let f (x, y) = 1 in f" with
-              | Error _ -> ()
-              | Ok _ -> failtest "pattern params are still not in the sugar"
+              match Weir.Parser.parseExpr "let f (x, y) = x in f" with
+              | Ok { Kind = ELet(_, { Kind = ELambdaPat({ PKind = PTuple _ }, _) }, _) } -> ()
+              | other -> failtest $"tuple param should desugar to ELambdaPat, got {other}"
           }
           test "HOF restriction unchanged through the sugar" {
               let terr = checkErr "let apply f x = f x in apply double 1"
@@ -2579,6 +2582,204 @@ let childEnvTests =
 
               Expect.equal got (VStr "$HOME") ""
               System.IO.File.Delete f
+          } ]
+
+let casingTests =
+    testList
+        "The casing law (lowercase binds)"
+        [ test "every binder position rejects uppercase (POSITIONS ride)" {
+              for bad in
+                  [ "let Foo = 1 in Foo"
+                    "let Foo x = x in Foo"
+                    "fun X -> X"
+                    "let f X = X in f"
+                    "let (A, b) = (1, 2) in b"
+                    "let API, x = (1, 2) in x" ] do
+                  Expect.stringContains (checkErr bad).Message "binding names start lowercase" bad
+          }
+          test "underscore-leading is lowercase-class; bare _ is the wildcard" {
+              expectValue "let _x = 5 in _x" (VInt 5L)
+              expectValue "let _ = 42 in 1" (VInt 1L)
+          }
+          test "the AWS_REGION shape: field accepted, binding rejected, lowercase rebind accepted" {
+              let e2 = env |> declare "type Cfg = { AWS_REGION: string }"
+
+              let ok =
+                  parse "let cfg = { AWS_REGION = \"eu\" } in let region = cfg.AWS_REGION in region"
+
+              match Weir.Check.typecheck e2 ok with
+              | Ok te -> Expect.equal (formatTy te.Ty) "string" ""
+              | Error terr -> failtest (formatError terr)
+
+              let bad =
+                  parse "let cfg = { AWS_REGION = \"eu\" } in let AWS_REGION = cfg.AWS_REGION in 1"
+
+              match Weir.Check.typecheck e2 bad with
+              | Ok _ -> failtest "uppercase binding must reject"
+              | Error terr -> Expect.stringContains terr.Message "binding names start lowercase" ""
+          }
+          test "match patterns untouched: uppercase is still a constructor" {
+              expectValue "match Running 1 with | Running n -> n | Stopped -> 0" (VInt 1L)
+          }
+          test "() param is not a casing case" { expectValue "(fun () -> 7) ()" (VInt 7L) } ]
+
+let binderTests =
+    testList
+        "Pattern binders & bare comma"
+        [ test "all six form-examples (the plan's forms block)" {
+              expectValue "let (x, y) = (1, 2) in x + y" (VInt 3L)
+              expectValue "let x, y = 1, 2 in x + y" (VInt 3L)
+              expectValue "let (k, _) = (\"key\", 99) in k" (VStr "key")
+              expectValue "let k, _ = (\"key\", 99) in k" (VStr "key")
+              expectValue "let ((a, b), c) = ((1, 2), 3) in a + b + c" (VInt 6L)
+              expectValue "(\"a\", 1) |> (fun (k, v) -> k)" (VStr "a")
+          }
+          test "param sugar with a tuple param" {
+              expectValue "let swap (x, y) = (y, x) in match swap (1, 2) with | (a, b) -> a" (VInt 2L)
+          }
+          test "refutable binders are check errors naming match" {
+              for bad in
+                  [ "let (Some x) = Some 1 in x"
+                    "let 1, y = 1, 2 in y"
+                    "let (true, y) = (true, 2) in y" ] do
+                  Expect.stringContains (checkErr bad).Message "this pattern can fail; use match" bad
+          }
+          test "per-name generalization: one component polymorphic, one ground" {
+              expectValue "let (f, n) = ((fun x -> x), 3) in (if f true then f n else 0)" (VInt 3L)
+          }
+          test "class constraints ride the right component" {
+              // eq lands on g's var only; h stays free of it
+              expectValue "let (g, h) = ((fun x -> x == x), (fun y -> y)) in g 1 && g \"s\"" (VBool true)
+
+              let terr = checkErr "let (g, h) = ((fun x -> x == x), 1) in g print"
+              Expect.stringContains (formatError terr) "equatable" ""
+          }
+          test "unit component pins" {
+              let terr = checkErr "let ((), n) = (1, 2) in n"
+              Expect.stringContains (formatError terr) "expected" ""
+          }
+          test "let _ = discards explicitly (irrefutable wildcard binder)" {
+              expectValue "let _ = 42 in \"kept\"" (VStr "kept")
+          }
+          test "arity mismatch through the binder is located" {
+              let terr = checkErr "let (a, b, c) = (1, 2) in a"
+              Expect.stringContains (formatError terr) "expected" ""
+          }
+          test "command-mode RHS under a pattern binder is a type error, not a parse cliff" {
+              let terr = checkErr "let (a, b) = pwd in a"
+              Expect.stringContains (formatError terr) "expected" ""
+          }
+          // --- the bare-comma composition matrix ---
+          test "comma x semicolon: a, b ; c groups (a, b) first (decided cell)" {
+              // `;` looser than `,`: the seq's FIRST element is the tuple —
+              // non-unit first element is the sequencing hard error
+              let terr = checkErr "(1, 2) ; 3"
+              Expect.stringContains (formatError terr) "must be unit" ""
+
+              expectValue "print \"x\" ; (1, 2)" (VTuple [ VInt 1L; VInt 2L ])
+          }
+          test "comma x pipes: F# grouping (xs |> f, ys |> g)" {
+              expectValue "match ([1] |> Seq.length, [1; 2] |> Seq.length) with | (a, b) -> a + b" (VInt 3L)
+          }
+          test "comma x match arms and if branches" {
+              expectValue "match (if 1 > 0 then 1, 2 else 3, 4) with | (a, b) -> a" (VInt 1L)
+          }
+          test "bare tuple statement is the discard error" {
+              match Weir.Parser.parseStmt "1, 2" with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck Weir.Builtins.typeEnv e with
+                  | Ok te ->
+                      match Weir.Script.discardError te.Ty with
+                      | Some msg -> Expect.stringContains msg "discards" ""
+                      | None -> failtest "tuple statement must hit the discard rule"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "assembler: let ( and let x, open block lets (classifier pin)" {
+              match Weir.Script.assemble [ 1, "let (a, b) ="; 2, "    (1, 2)"; 3, "a" ] with
+              | Ok [ ll; _ ] -> Expect.equal ll.Text "let (a, b) = (1, 2)" ""
+              | other -> failtest $"unexpected: {other}"
+          } ]
+
+let tupleTests =
+    testList
+        "Tuples (the reversal)"
+        [ test "literal, type, and pattern round-trip" {
+              expectValue "let p = (1, \"two\") in match p with | (n, s) -> $\"{n}-{s}\"" (VStr "1-two")
+          }
+          test "arity 3 and nesting" {
+              expectValue "match (1, (2, 3), \"x\") with | (a, (b, c), s) -> $\"{a + b + c}{s}\"" (VStr "6x")
+          }
+          test "position sweep: tuple in list, record field, seq, splice-reject" {
+              expectValue "[(1, 2); (3, 4)] |> Seq.length" (VInt 2L)
+
+              let terr = checkErr "cmd \"echo\" [(1, 2)]"
+              Expect.stringContains (formatError terr) "" ""
+          }
+          test "tuple types in declarations: record field and multi-payload constructor" {
+              let e2 = env |> declare "type Point = { At: int * int }"
+              let expr = parse "let p = { At = (1, 2) } in match p.At with | (x, y) -> x + y"
+
+              match Weir.Check.typecheck e2 expr with
+              | Ok te -> Expect.equal (formatTy te.Ty) "int" ""
+              | Error terr -> failtest (formatError terr)
+          }
+          test "multi-payload constructors un-restricted (the corollary retires)" {
+              let e2 = env |> declare "type Msg = | Move of int * int | Stop"
+
+              let expr = parse "match Move (3, 4) with | Move (x, y) -> x + y | Stop -> 0"
+
+              match Weir.Check.typecheck e2 expr with
+              | Ok te -> Expect.equal (formatTy te.Ty) "int" ""
+              | Error terr -> failtest (formatError terr)
+          }
+          test "tuples x classes: Eq componentwise, deep reject" {
+              expectValue "(1, \"a\") == (1, \"a\")" (VBool true)
+              expectValue "(1, (2, 3)) == (1, (2, 4))" (VBool false)
+
+              let terr = checkErr "(1, print) == (1, print)"
+              Expect.stringContains (formatError terr) "not defined for" ""
+          }
+          test "tuples x classes: Show renders, Ord rejects" {
+              expectValue "show (1, (2, \"x\"))" (VStr "(1, (2, \"x\"))")
+
+              let terr = checkErr "[(1, 2)] |> Seq.sortBy (fun x -> x)"
+              Expect.stringContains (formatError terr) "cannot sort by this key" ""
+          }
+          test "tuples x generalization: fun x -> (x, x) freshens" {
+              expectValue
+                  "let dup x = (x, x) in match (dup 1, dup \"a\") with | ((a, _), (s, _)) -> $\"{a}{s}\""
+                  (VStr "1a")
+          }
+          test "tuples x rows: a tuple-typed row field flows" {
+              let e2 = env |> declare "type Point = { At: int * int }"
+
+              let expr =
+                  parse "let getAt = fun r -> r.At in match getAt { At = (5, 6) } with | (x, y) -> x * y"
+
+              match Weir.Check.typecheck e2 expr with
+              | Ok te -> Expect.equal (formatTy te.Ty) "int" ""
+              | Error terr -> failtest (formatError terr)
+          }
+          test "tuples x exhaustiveness: refutable tuple arm needs a catch-all (bounded rule)" {
+              let terr = checkErr "match (1, 2) with | (0, _) -> \"z\" | (1, _) -> \"o\""
+              Expect.stringContains (formatError terr) "catch-all" ""
+
+              expectValue "match (1, 2) with | (0, _) -> \"z\" | _ -> \"other\"" (VStr "other")
+          }
+          test "tuple arity mismatch is located" {
+              let terr = checkErr "match (1, 2) with | (a, b, c) -> a"
+              Expect.stringContains (formatError terr) "elements" ""
+          }
+          test "Seq.zip: tuples' customer" {
+              expectValue
+                  "[\"a\"; \"b\"] |> Seq.zip [1; 2] |> Seq.map (fun p -> match p with | (n, s) -> $\"{s}{n}\") |> Seq.head"
+                  (VStr "a1")
+          }
+          test "pairwise re-typed migration shape" {
+              expectValue
+                  "[10; 13] |> Seq.pairwise |> Seq.map (fun p -> match p with | (a, b) -> b - a) |> Seq.head"
+                  (VInt 3L)
           } ]
 
 let literalThunkTests =
@@ -3327,9 +3528,13 @@ let envLoadTests =
               Expect.stringContains (formatError (checkErr "Env.load Nonesuch")) "unknown type" ""
               Expect.stringContains (formatError (checkErr "Env.load double")) "unknown type" ""
           }
-          test "value-shadowed Env falls through to normal rules" {
+          test "Env is unshadowable by binding (casing law flip; ctor collision still guarded)" {
+              // was: value-shadowed Env falls through to normal rules.
+              // let-shadowing is now rejected at the binder; the Env.load
+              // unshadowed-guard stays for the constructor-collision case
+              // (type T = Env of int remains declarable).
               let terr = checkErr "let Env = 1 in Env.load Point"
-              Expect.stringContains (formatError terr) "field" "field access on int, not the loader"
+              Expect.stringContains (formatError terr) "binding names start lowercase" ""
           } ]
 
 let fileTests =
@@ -3567,6 +3772,9 @@ let allTests =
           sequencingTests
           offsideTests
           productMatrixTests
+          casingTests
+          binderTests
+          tupleTests
           literalThunkTests
           typeClassTests
           typeClassBTests

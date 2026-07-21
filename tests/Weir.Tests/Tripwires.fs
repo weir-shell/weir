@@ -115,6 +115,16 @@ let tripwires =
               // this stops erroring, the arm was replaced with plain sugar.
               Expect.stringContains (checkErr "let cleanup = fun () -> 1 in cleanup 5").Message "expected unit" ""
           }
+          test "binder generalization respects env-free vars (per-name scoop)" {
+              // the tuple component ties to the enclosing lambda's y — its
+              // var is env-free and must NOT generalize through the binder;
+              // the second use at string errors. The destructuring analog
+              // of the transitive-reachability tripwire.
+              Expect.stringContains
+                  (checkErr "fun y -> let (g, _) = ((fun x -> x == y), 1) in (g 1) && (g \"s\")").Message
+                  "expected int, got string"
+                  ""
+          }
           test "constraint instantiation is per-use (deep-copy discipline)" {
               // first use at int succeeds; second at functions fails — if
               // constraint state were shared between instantiations, the

@@ -26,6 +26,9 @@ let private evalOnce (input: string) : int =
         Console.Error.WriteLine msg
         printHint ()
         1
+    | Ok(SLetPat _) ->
+        Console.Error.WriteLine "-e evaluates one expression; use 'let (x, y) = ... in ...'"
+        1
     | Ok(SType _) ->
         Console.Error.WriteLine "-e takes an expression, not a declaration"
         1

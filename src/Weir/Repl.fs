@@ -129,6 +129,39 @@ let rec private loop (state: State) =
 
                     { TypeEnv = typeEnv
                       Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+            | Ok(SLetPat(pat, e)) ->
+                match Check.typecheckBinder state.TypeEnv pat e with
+                | Error terr ->
+                    Console.WriteLine(underline terr.Span)
+                    Console.WriteLine(Check.formatError terr)
+                    state
+                | Ok(te, schemes) ->
+                    printWarnings state te
+
+                    try
+                        let v = Eval.eval state.Values te
+                        let bindings = Eval.bindPattern pat v
+
+                        // one destructuring line reports each binding on its
+                        // own line — matching what two lets would have shown
+                        for n, sch in schemes do
+                            Console.WriteLine $"{n} : {formatTy sch.Ty}"
+
+                        { TypeEnv =
+                            { state.TypeEnv with
+                                Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) state.TypeEnv.Values }
+                          Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+                    with
+                    | Eval.ExitRequest _ -> reraise ()
+                    | ex ->
+                        Console.WriteLine $"error: {ex.Message}"
+                        state
+            | Ok(SLet(name, e)) when (Check.checkBinderName e.Span name |> Result.isError) ->
+                (match Check.checkBinderName e.Span name with
+                 | Error terr ->
+                     Console.WriteLine(Check.formatError terr)
+                     state
+                 | Ok() -> state)
             | Ok(SLet(name, e)) ->
                 match tryRun state e with
                 | Error(msg, span) ->

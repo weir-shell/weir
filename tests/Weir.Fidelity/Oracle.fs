@@ -130,8 +130,18 @@ let weirVerdict (src: string) : Verdict =
                     match Weir.Check.checkDecl tenv decl with
                     | Error _ -> Error()
                     | Ok tenv' -> Ok tenv'
+                | Ok(Weir.Ast.SLetPat(pat, e)) ->
+                    (match Weir.Check.typecheckBinder tenv pat e with
+                     | Error _ -> Error()
+                     | Ok(_, schemes) ->
+                         Ok
+                             { tenv with
+                                 Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values })
                 | Ok(Weir.Ast.SLet(name, e)) ->
-                    match Weir.Check.typecheckWith tenv e with
+                    match
+                        Weir.Check.checkBinderName e.Span name
+                        |> Result.bind (fun () -> Weir.Check.typecheckWith tenv e)
+                    with
                     | Error _ -> Error()
                     | Ok(te, cs) ->
                         Ok

@@ -282,3 +282,48 @@ the arm's reason (an unconstrained fresh param would generalize and
 `cleanup 5` would typecheck; tripwired). Eval is untouched for
 params (the "()" name is unreferenceable); pattern eval adds literal
 equality and the always-match unit pattern.
+
+## Addendum — tuples (2026-07-21, the reversal)
+
+TTuple is ONE MORE STRUCTURAL CASE, as the plan's model demanded —
+the stop-and-report clause never fired. Walks extended: formatTy,
+tyVars, finalTy, occurs, instantiate (rowNames + rename),
+substParams, bind (arity-checked componentwise), validateTy, and the
+class demand (Eq/Show componentwise; Ord falls to its existing
+everything-else-rejects arm — no new rule). ETuple/TETuple/VTuple
+and PTuple are the same shape at each layer; tuple patterns bind
+componentwise with located arity mismatches. Exhaustiveness uses the
+BOUNDED rule: only an all-irrefutable tuple arm completes
+(tuple-exhaustiveness-bounded row; F#'s per-component product
+analysis is out of scope, widen on receipts). Multi-payload
+constructors are free: `of int * string` is just a tuple payload —
+the single-payload restriction was the no-tuples rule's corollary
+and retired with it, zero constructor-machinery changes. json stays
+closed by the existing field whitelist (reject-don't-guess held
+without new code); splices likewise. Params remain idents-or-() —
+`fun (a, b) ->` is a named divergence, destructure via match.
+
+## Addendum — irrefutable-pattern binders + bare comma (2026-07-21)
+
+Binders (let statements, let-in, lambda/sugar params) take
+irrefutable patterns via binderShape: fresh vars at leaves, TUnit at
+(), tuples composed — BOUND against the RHS/domain type, so
+components resolve by unification (no checkPattern reuse needed;
+refutable kinds are the located "this pattern can fail; use match").
+Per-name generalization (generalizeBinding): each bound name's type
+generalizes INDEPENDENTLY against the env, constraints scooped per
+name from the shared ctx — the env-free containment tripwire has a
+binder twin. TWO arms per lambda form: infer AND check-mode — the
+check-mode ELambdaPat twin was missed first and caught by the e2e
+battery (a piped tuple lambda lost the pushed element type and
+interp-hole defaulting fired early; the bidirectional-twin lesson is
+now on record: every new binder/lambda form lands in BOTH modes or
+the pipe path silently degrades). Bare comma: commaExpr sits between
+`;` and `|>` (F#'s precedence; the `;`-relative cell is weir-only
+and decided: `,` tighter). Command mode untouched by construction —
+barewords keep commas (pinned from both sides).
+
+Flag 7 (new): the infer/check lambda-arm duplication now has THREE
+instances (ELambda, ELambda "()", ELambdaPat) — flag 5's
+duplication note extends; a shared helper is the formalization
+candidate if a fourth form arrives.

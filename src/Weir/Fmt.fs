@@ -41,6 +41,11 @@ let private collectBareUses (e: Expr) : (Span * string) list =
             walk a
             walk b
         | EList items -> items |> List.iter walk
+        | ETuple items -> items |> List.iter walk
+        | ELetPat(_, v, b) ->
+            walk v
+            walk b
+        | ELambdaPat(_, b) -> walk b
         | ECmd(_, args, envO) ->
             args |> List.iter walk
             envO |> Option.iter walk
@@ -64,6 +69,7 @@ let qualifyLine (r: Parser.Resolver) (line: string) : string * int =
             | SExpr e
             | SCmd e -> collectBareUses e
             | SLet(_, e) -> collectBareUses e
+            | SLetPat(_, e) -> collectBareUses e
             | SType _ -> []
 
         let applicable =

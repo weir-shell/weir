@@ -99,12 +99,43 @@ let pins =
 
       // --- literal patterns + () thunks (2026-07-21) ---
       pin "int literal patterns with catch-all" "let v =\n    match 1 with\n    | 0 -> 10\n    | _ -> 20\n" Same
+      pin "uppercase value binding rejected (the casing law)" "let Foo = 1\n" (Diverges "lowercase-binds")
+      pin "underscore-leading binding accepted both sides" "let _keep = 1\n" Same
+      pin
+          "unknown uppercase pattern: weir errors, F# binds a var (FS0049 warn)"
+          "type T = A of int | B\nlet v =\n    match B with\n    | Foo -> 1\n    | _ -> 2\n"
+          (Diverges "uppercase-pattern-is-ctor")
       pin
           "literal arms never exhaust: weir hard-errors, F# warns+accepts"
           "let v =\n    match 1 with\n    | 0 -> 10\n    | 1 -> 20\n"
           (Diverges "exhaustiveness-hard-error")
       pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
       pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same
+
+      // --- tuples (2026-07-21, the reversal) — the no-tuples rows retire ---
+      pin "tuple literal, type, pattern" "let p = (1, \"a\")\nlet v =\n    match p with\n    | (n, s) -> n\n" Same
+      pin "multi-payload constructor" "type Msg = | Move of int * int | Stop\nlet m = Move (1, 2)\n" Same
+      pinT
+          "tuple equality (componentwise, both compilers)"
+          "let b = (1, \"a\") == (1, \"a\")\n"
+          "let b = (1, \"a\") = (1, \"a\")\n"
+          Same
+      pin
+          "tuple ordering: weir rejects, F# compares lexicographically"
+          "let r = [(2, 1); (1, 2)] |> Seq.sortBy (fun x -> x)\n"
+          (Diverges "no-tuple-ord")
+      pin
+          "bool-component tuple arms: weir demands catch-all, F# products"
+          "let v =\n    match (true, 1) with\n    | (true, _) -> 1\n    | (false, _) -> 2\n"
+          (Diverges "tuple-exhaustiveness-bounded")
+      // 2026-07-21: the binder shapes SHIPPED — both pins flip Same
+      pin "pattern params (row content moved to refutable binders)" "let f = fun (a, b) -> a\n" Same
+      pin "destructuring let (shipped; the row's arc completes)" "let p = (1, 2)\nlet x, y = p\n" Same
+      pin "bare-comma tuple at full precedence" "let t = 1, 2\n" Same
+      pin
+          "refutable binder: F# warns-accepts, weir rejects (the row's remaining content)"
+          "let x = Some 1\nlet (Some y) = x\n"
+          (Diverges "no-pattern-binders")
 
       // --- let ... in ---
       pin "explicit let-in one-liner" "let y = let x = 1 in x + 1\n" Same
@@ -127,8 +158,8 @@ let pins =
       // --- named divergences, refereed from both sides ---
       pinT "equality spelling: == vs =" "let b = 1 == 1\n" "let b = 1 == 1\n" (Diverges "double-equals")
       pinT "binding-only =: F# equality rejected by weir" "let b = 1 = 1\n" "let b = 1 = 1\n" (Diverges "double-equals")
-      pin "tuple literal" "let p = (1, 2)\n" (Diverges "no-tuples")
-      pin "starred union payload" "type T = A of int * string\n" (Diverges "single-payload-unions")
+      pin "tuple literal (row RETIRED 2026-07-21 — the reversal)" "let p = (1, 2)\n" Same
+      pin "starred union payload (single-payload rule retired with tuples)" "type T = A of int * string\n" Same
       pin "discarded value statement" "\"orphan\"\n" (Diverges "statement-rule")
       pin "block comment" "(* block *)\nlet x = 1\n" (Diverges "block-comments")
       pin "printfn" "printfn \"hi\"\n" (Diverges "no-printf-family")

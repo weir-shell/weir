@@ -355,21 +355,20 @@ let groupDef: RecordDef =
       Params = [ "k"; "v" ]
       Fields = [ "Key", TVar "k"; "Items", TSeq(TVar "v") ] }
 
-let pairDef: RecordDef =
-    { Name = "Pair"
-      Params = [ "a" ]
-      Fields = [ "Fst", TVar "a"; "Snd", TVar "a" ] }
-
+// Pair {Fst; Snd} RETIRED with the tuples reversal (2026-07-21):
+// pairwise re-typed to seq<'a * 'a>, zip lands as tuples' customer.
 let private pairwiseImpl: Value =
     VBuiltin(fun s ->
         match s with
-        | VSeq items ->
-            VSeq(
-                items
-                |> Seq.pairwise
-                |> Seq.map (fun (a, b) -> VRecord(pairDef.Name, Map [ "Fst", a; "Snd", b ]))
-            )
+        | VSeq items -> VSeq(items |> Seq.pairwise |> Seq.map (fun (a, b) -> VTuple [ a; b ]))
         | v -> unreachable $"the checker rejects 'pairwise' on {formatValue v}")
+
+let private zipImpl: Value =
+    VBuiltin(fun s1 ->
+        VBuiltin(fun s2 ->
+            match s1, s2 with
+            | VSeq a, VSeq b -> VSeq(Seq.zip a b |> Seq.map (fun (x, y) -> VTuple [ x; y ]))
+            | _ -> unreachable "the checker rejects 'zip' on these arguments"))
 
 let private groupByImpl: Value =
     VBuiltin(fun keyf ->
@@ -557,7 +556,8 @@ let private seqMembers: (string * Ty * Value) list =
       "pmap", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), pmapImpl
       "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
       "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
-      "pairwise", TFun(TSeq tA, TSeq(TNamed("Pair", [ tA ]))), pairwiseImpl
+      "pairwise", TFun(TSeq tA, TSeq(TTuple [ tA; tA ])), pairwiseImpl
+      "zip", TFun(TSeq tA, TFun(TSeq tB, TSeq(TTuple [ tA; tB ]))), zipImpl
       "exists", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), existsImpl
       "forall", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), forallImpl
       "item", TFun(TInt, TFun(TSeq tA, tA)), itemImpl
@@ -960,7 +960,6 @@ let typeEnv: TypeEnv =
               changeDef.Name, Record changeDef
               completedDef.Name, Record completedDef
               groupDef.Name, Record groupDef
-              pairDef.Name, Record pairDef
               envVarDef.Name, Record envVarDef ] }
 
 let typeEnvStrict: TypeEnv =

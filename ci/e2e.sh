@@ -619,6 +619,88 @@ if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
 fi
 echo "e2e ok: forced unknown command rejected"
 
+# --- the casing law (2026-07-21) ---------------------------------------
+
+errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
+echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
+echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
+
+# --- pattern binders + bare comma (2026-07-21) -------------------------
+
+pbdir=$(mktemp -d)
+
+cat > "$pbdir/binders.weir" <<'WEOF'
+let hosts = ["alpha"; "beta"]
+
+let pairs = hosts |> Seq.zip [1; 2]
+
+pairs
+    |> Seq.map (fun (n, h) -> $"{h}:{n}")
+    |> print
+
+let first, rest = pairs |> Seq.head, pairs |> Seq.skip 1
+
+match first with
+| (n, h) -> print $"head {h}"
+
+print $"rest {rest |> Seq.length}"
+
+let (k, _) = ("only-the-key", 99)
+
+print k
+WEOF
+out=$(cd "$pbdir" && $BIN binders.weir)
+expect "zip consumer with tuple lambda params (the customer)" "alpha:1" "$out"
+expect "bare-comma binder + bare-comma RHS at full precedence" "rest 1" "$out"
+expect "wildcard component" "only-the-key" "$out"
+
+errout=$($BIN -e 'let (Some x) = Some 1 in x' 2>&1 || true)
+echo "$errout" | grep -qF "this pattern can fail; use match" || fail "refutable binder must name match: $errout"
+echo "e2e ok: refutable binders reject with the contract message"
+
+# comma stays argv-inert in command mode (the guard from the amendment)
+out=$($BIN -e '$(echo cols=key,summary) |> Seq.head')
+expect "command-mode commas stay bareword characters" "cols=key,summary" "$out"
+
+rm -rf "$pbdir"
+
+# --- tuples (2026-07-21): the reversal, end to end ---------------------
+
+tudir=$(mktemp -d)
+
+cat > "$tudir/tup.weir" <<'WEOF'
+type Route = | Hop of string * int | Stay
+
+let hops = ["a"; "b"; "c"] |> Seq.zip [1; 2; 3]
+
+hops
+    |> Seq.map (fun p -> match p with | (n, s) -> $"{s}{n}")
+    |> print
+
+let r = Hop ("gw", 2)
+
+match r with
+| Hop (host, cost) -> print $"{host}:{cost}"
+| Stay -> print "stay"
+
+let deltas =
+    [10; 13; 11]
+    |> Seq.pairwise
+    |> Seq.map (fun p -> match p with | (a, b) -> $"{b - a}")
+
+deltas |> print
+WEOF
+out=$(cd "$tudir" && $BIN tup.weir)
+expect "zip + tuple match in a script" "a1" "$out"
+expect "multi-payload constructor round-trip" "gw:2" "$out"
+expect "pairwise re-typed migration shape" "3" "$out"
+
+errout=$($BIN -e '[(1, 2)] |> Seq.sortBy (fun x -> x)' 2>&1 || true)
+echo "$errout" | grep -qF "cannot be ordered" || fail "tuple sort keys must reject: $errout"
+echo "e2e ok: no tuple ordering (divergence-pinned)"
+
+rm -rf "$tudir"
+
 # --- literal patterns + () thunks (2026-07-21) ------------------------
 
 ldir=$(mktemp -d)

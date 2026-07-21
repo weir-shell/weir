@@ -302,6 +302,61 @@ quantity semantics now.
   and `cleanup 5` would typecheck (tripwired). `()` is also an
   irrefutable match pattern. Params are plain idents or `()`;
   pattern params stay out.
+- **Tuples** (2026-07-21 — the REVERSAL of records-are-the-product;
+  archaeology in NOTES): types `int * string`, literals `(a, b)`,
+  patterns `| (x, y) ->`, arity 2+, nested. Componentwise Eq and
+  Show through the classes; NO ordering (no-tuple-ord row — sortBy
+  keys stay scalar). Multi-payload constructors are legal (`Case of
+  int * string` — the single-payload rule was the corollary and
+  retired with it). NOT spliceable, NOT Env.load field types, NOT
+  json (the field whitelist already rejects — reject-don't-guess).
+  Exhaustiveness is bounded: only an all-irrefutable tuple arm
+  completes a match (tuple-exhaustiveness-bounded row). Params stay
+  idents-or-`()`: `fun (a, b) ->` is a named divergence
+  (no-pattern-params); components come out via match. STYLE (the
+  reversed decision's rationale, surviving as a rule): records for
+  anything with NAMES; tuples for transient pairs — returns, zip,
+  pairwise, patterns.
+- **The casing law: lowercase binds, uppercase declares** (2026-07-21,
+  mini-session). Binders start lowercase at EVERY position — both let
+  forms, lambda params, param sugar, pattern-binder components — with
+  the hint naming the record-field escape (`let region =
+  cfg.AWS_REGION`; fields keep free casing for the Env.load verbatim
+  contract). Match patterns are deliberately untouched (uppercase
+  remains a constructor there — the law's mirror half, standing since
+  generics; module names complete the triple). Value-shadows-module
+  is now GRAMMAR-DEAD (`let Seq = ...` rejects at the binder; the
+  EField precedence logic stays as defensive depth), and the
+  binders-session PCase fall-through hack became unrepresentable. An
+  unknown uppercase name in a binder pattern gets the casing hint; a
+  KNOWN constructor gets "this pattern can fail; use match" (intent-
+  aware diagnosis). Honesty note, in the divergence row's own words:
+  this is the strictness family's first STYLISTIC member — the
+  payoff is disjoint name classes, not a prevented bug class. The
+  constructor-vs-module collision (type T = Env of int) remains
+  DECLARABLE — the Env.load unshadowed-guard stays for exactly that
+  case (the sentinel guards were never this law's payoff; they
+  defend LOWERCASE shadowing, which stays legal).
+- **Irrefutable-pattern binders + bare comma** (2026-07-21,
+  PLAN-pattern-binders): destructuring lets (`let x, y = ...`,
+  `let (x, y) = ...`, nested with parens, `_` and `()` components,
+  `let _ =` explicit discard) and PARENTHESIZED pattern params
+  (`fun (k, v) ->`, `let dist (x, y) =` — parens required, as F#).
+  Refutable patterns in binder position are a HARD ERROR ("this
+  pattern can fail; use match") where F# warns-accepts — the
+  no-pattern-binders row's remaining content; its shipped shapes are
+  Same, completing the arc the retired no-tuples row opened
+  ("destructuring is the real scope"). One statement binds MULTIPLE
+  names; generalization is PER NAME (constraints scooped per name;
+  one component can be polymorphic while another is ground — pinned).
+  BARE COMMA amendment: `,` is the tuple constructor at F#'s
+  precedence — below `|>`, and (weir-only cell, decided) ABOVE `;`,
+  so `a, b ; c` is `(a, b) ; c`. The tuples session's parens-only
+  rule is AMENDED with its two original reasons addressed: command
+  argv is untouched by construction (barewords keep commas, pinned
+  both sides), and the `f x, y` precedence footgun is imported
+  KNOWINGLY, F#-faithful. REPL: one destructuring line reports each
+  binding on its own line.
 - `_.Field` is sugar for `fun x -> x.Field` (parser-level desugar; requires at
   least one field, like F#).
 - Constructor names must start uppercase; that is what distinguishes

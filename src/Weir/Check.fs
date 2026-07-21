@@ -36,6 +36,9 @@ and TypedKind =
     | TETo of format: string
     | TEList of items: TypedExpr list
     | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
+    | TETuple of TypedExpr list
+    | TELetPat of binder: Pattern * value: TypedExpr * body: TypedExpr
+    | TELambdaPat of binder: Pattern * body: TypedExpr
     | TEInterp of parts: InterpPart<TypedExpr> list
 
 type private ResultBuilder() =
@@ -70,6 +73,7 @@ let private substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
         | TVar v -> Map.tryFind v m |> Option.defaultValue ty
         | TFun(a, b) -> TFun(go a, go b)
         | TSeq t -> TSeq(go t)
+        | TTuple ts -> TTuple(ts |> List.map go)
         | TNamed(n, targs) -> TNamed(n, targs |> List.map go)
         | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (f, t) -> f, go t))
         | t -> t
@@ -117,6 +121,7 @@ let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
         match resolve ctx ty with
         | TFun(a, b) -> TFun(go seen a, go seen b)
         | TSeq t -> TSeq(go seen t)
+        | TTuple ts -> TTuple(ts |> List.map (go seen))
         | TNamed(n, args) -> TNamed(n, args |> List.map (go seen))
         | TRowVar(r, _) when seen.Contains r -> TRowVar(r, [])
         | TRowVar(r, _) ->
@@ -148,6 +153,7 @@ let private occurs (ctx: Ctx) (v: string) (ty: Ty) : bool =
                    |> Map.exists (fun _ (t, _) -> go t))
         | TFun(a, b) -> go a || go b
         | TSeq t -> go t
+        | TTuple ts -> ts |> List.exists go
         | TNamed(_, args) -> args |> List.exists go
         | _ -> false
 
@@ -162,6 +168,7 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
             | TRowVar(r, fields) -> fields |> List.fold (fun acc (_, t) -> acc + rowNames t) (Set.singleton r)
             | TFun(a, b) -> rowNames a + rowNames b
             | TSeq t -> rowNames t
+            | TTuple ts -> ts |> List.fold (fun acc t -> acc + rowNames t) Set.empty
             | _ -> Set.empty
 
         let rows = rowNames sch.Ty
@@ -188,6 +195,7 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                 | None -> TRowVar(r, fields')
             | TFun(a, b) -> TFun(rename a, rename b)
             | TSeq t -> TSeq(rename t)
+            | TTuple ts -> TTuple(ts |> List.map rename)
             | TNamed(n, args) -> TNamed(n, args |> List.map rename)
             | t -> t
 
@@ -261,11 +269,13 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // Eq: no function or seq anywhere, recursively
             | Cls.Eq, (TInt | TStr | TBool | TUnit) -> true
             | Cls.Eq, (TFun _ | TSeq _) -> false
+            | Cls.Eq, TTuple ts -> ts |> List.forall (ok seen)
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
             | Cls.Show, (TInt | TStr | TBool | TUnit) -> true
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
+            | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
             | Cls.Show, TNamed(n, targs) -> decompose n targs
             // Ord: int | string | bool EXACTLY — no decomposition, no
             // record/union ordering (no receipts; the message names it)
@@ -308,6 +318,8 @@ let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actu
     | t, (TRowVar _ as rv) -> err span $"expected {formatTy (finalTy ctx rv)}, got {formatTy (finalTy ctx t)}"
     | TFun(e1, e2), TFun(a1, a2) -> bind ctx env span e1 a1 |> Result.bind (fun () -> bind ctx env span e2 a2)
     | TSeq e, TSeq a -> bind ctx env span e a
+    | TTuple es, TTuple asx when List.length es = List.length asx ->
+        allOk (List.zip es asx) (fun (x, y) -> bind ctx env span x y)
     | e, a -> mismatch span (finalTy ctx e) (finalTy ctx a)
 
 and private dischargeRow
@@ -522,6 +534,18 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
         match ty with
         | TUnit -> Ok []
         | ty -> err p.PSpan $"'()' patterns need a unit scrutinee; this one has type {formatTy ty}"
+    | PTuple ps ->
+        match ty with
+        | TTuple ts when List.length ps = List.length ts ->
+            List.zip ps ts
+            |> List.fold
+                (fun acc (subP, subTy) ->
+                    acc
+                    |> Result.bind (fun bs -> checkPattern env subTy subP |> Result.map (fun b -> bs @ b)))
+                (Ok [])
+        | TTuple ts ->
+            err p.PSpan $"this tuple pattern has {List.length ps} elements; the scrutinee has {List.length ts}"
+        | ty -> err p.PSpan $"tuple patterns need a tuple scrutinee; this one has type {formatTy ty}"
     | PCase(ctor, argPat) ->
         match ty with
         | TNamed(typeName, targs) ->
@@ -545,11 +569,75 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
             | None -> err p.PSpan $"unknown type '{typeName}'"
         | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
-let private isIrrefutablePat (p: Pattern) =
+// A binder pattern's SHAPE: fresh vars at the leaves, TUnit at (),
+// tuples composed — bound against the RHS type, so components resolve
+// by unification. Refutable kinds (literals, constructors) are the
+// located check error the plan's contract names.
+// The casing law (2026-07-21): lowercase binds, uppercase declares.
+// Applied at every binder position; fields and match patterns are
+// deliberately untouched.
+let casingError (span: Span) (name: string) : Result<'a, TypeError> =
+    err
+        span
+        ($"binding names start lowercase; uppercase names are types, modules, and constructors"
+         + $" — bind '{name.ToLowerInvariant()}' (a record field keeps its name: let region = cfg.AWS_REGION)")
+
+let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
+    if name.Length > 0 && System.Char.IsUpper name[0] then
+        casingError span name
+    else
+        Ok()
+
+let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty * (string * Ty) list, TypeError> =
+    match p.PKind with
+    | PVar n ->
+        checkBinderName p.PSpan n
+        |> Result.map (fun () ->
+            let t = TVar(freshName ctx "a")
+            t, [ n, t ])
+    | PWildcard -> Ok(TVar(freshName ctx "a"), [])
+    | PUnit -> Ok(TUnit, [])
+    | PTuple ps ->
+        ps
+        |> List.fold
+            (fun acc sub ->
+                acc
+                |> Result.bind (fun (ts, bs) -> binderShape ctx env sub |> Result.map (fun (t, b) -> t :: ts, bs @ b)))
+            (Ok([], []))
+        |> Result.map (fun (ts, bs) -> TTuple(List.rev ts), bs)
+    | PCase(ctor, _) when not (Map.containsKey ctor env.Values) ->
+        // an unknown uppercase name in a binder is the casing law's
+        // case (a function/name spelled uppercase), not refutability
+        casingError p.PSpan ctor
+    | PBool _
+    | PInt _
+    | PStr _
+    | PCase _ -> err p.PSpan "this pattern can fail; use match"
+
+// per-name generalization for destructuring binders: each bound name's
+// type generalizes INDEPENDENTLY against the env (constraints scooped
+// per name from the shared ctx)
+let private generalizeBinding (ctx: Ctx) (env: TypeEnv) (name: string, ty: Ty) : string * Scheme =
+    let final = finalTy ctx ty
+    let fa = tyVars final - envFreeVars ctx env
+
+    let cs =
+        fa
+        |> Set.toList
+        |> List.choose (fun v ->
+            Map.tryFind v ctx.Cons
+            |> Option.map (fun ps -> v, ps |> List.map _.Cls |> Set.ofList))
+        |> Map.ofList
+
+    ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
+    name, { Forall = fa; Cs = cs; Ty = final }
+
+let rec private isIrrefutablePat (p: Pattern) =
     match p.PKind with
     | PWildcard
     | PVar _
     | PUnit -> true
+    | PTuple ps -> ps |> List.forall isIrrefutablePat
     | PBool _
     | PInt _
     | PStr _
@@ -606,6 +694,11 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
         | TStr ->
             // literal patterns never complete a match alone (F#'s rule,
             // oracle-pinned): a var or wildcard arm must close it
+            [ "_" ]
+        | TTuple _ ->
+            // bounded rule: only an all-irrefutable tuple arm (or _/var)
+            // completes; per-component product analysis is out of scope
+            // (tuple-exhaustiveness-bounded divergence row)
             [ "_" ]
         | _ -> []
 
@@ -709,6 +802,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, value, body) ->
         result {
+            do! checkBinderName expr.Span name
             let! tvalue = infer ctx env value
             let valueTy = finalTy ctx tvalue.Ty
 
@@ -740,6 +834,38 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
+    | ELambdaPat(pat, body) ->
+        result {
+            let! shape, binds = binderShape ctx env pat
+            let! tbody = infer ctx (bindParams env binds) body
+
+            return
+                { Kind = TELambdaPat(pat, tbody)
+                  Ty = TFun(shape, tbody.Ty)
+                  Span = expr.Span }
+        }
+    | ELetPat(pat, value, body) ->
+        result {
+            // binder judged FIRST: casing/refutability errors beat any
+            // error inside the value (the binder is what the user wrote)
+            let! shape, binds = binderShape ctx env pat
+            let! tvalue = infer ctx env value
+            do! bind ctx env pat.PSpan shape tvalue.Ty
+
+            let schemes = binds |> List.map (generalizeBinding ctx env)
+
+            let! tbody =
+                infer
+                    ctx
+                    { env with
+                        Values = schemes |> List.fold (fun vs (n, s) -> Map.add n s vs) env.Values }
+                    body
+
+            return
+                { Kind = TELetPat(pat, tvalue, tbody)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
     | ELambda("()", body) ->
         // the unit param PINS its type — desugaring to an unconstrained
         // fresh var would generalize (`cleanup 5` would typecheck); the
@@ -754,6 +880,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | ELambda(param, body) ->
         result {
+            do! checkBinderName expr.Span param
             let paramTy = TVar(freshName ctx "a")
             let! tbody = infer ctx (bindParams env [ param, paramTy ]) body
 
@@ -1079,6 +1206,21 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = TStr
                   Span = expr.Span }
         }
+    | ETuple items ->
+        result {
+            let! titems =
+                items
+                |> List.fold
+                    (fun acc it -> acc |> Result.bind (fun ts -> infer ctx env it |> Result.map (fun t -> t :: ts)))
+                    (Ok [])
+
+            let titems = List.rev titems
+
+            return
+                { Kind = TETuple titems
+                  Ty = TTuple(titems |> List.map _.Ty)
+                  Span = expr.Span }
+        }
     | EList items ->
         result {
             match items with
@@ -1258,8 +1400,23 @@ and private checkSpine
 
 and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeError> =
     match expr.Kind, resolve ctx expected with
+    | ELambdaPat(pat, body), TFun(dom, cod) ->
+        // check-mode twin of the infer arm: the binder shape binds against
+        // the PUSHED domain before the body runs, so piped element types
+        // reach the components ahead of any hole defaulting
+        result {
+            let! shape, binds = binderShape ctx env pat
+            do! bind ctx env pat.PSpan shape dom
+            let! tbody = check ctx (bindParams env binds) body cod
+
+            return
+                { Kind = TELambdaPat(pat, tbody)
+                  Ty = TFun(dom, tbody.Ty)
+                  Span = expr.Span }
+        }
     | ELambda(param, body), TFun(dom, cod) ->
         result {
+            do! checkBinderName expr.Span param
             let env' = bindParams env [ param, dom ]
 
             let! tbody =
@@ -1281,6 +1438,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         err expr.Span $"expected {formatTy t}, got a function"
     | ELet(name, value, body), _ ->
         result {
+            do! checkBinderName expr.Span name
             let! tvalue = infer ctx env value
             let valueTy = finalTy ctx tvalue.Ty
 
@@ -1345,6 +1503,9 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
         | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
+        | TETuple items -> TETuple(items |> List.map (finalizeExpr ctx))
+        | TELetPat(p, v, b) -> TELetPat(p, finalizeExpr ctx v, finalizeExpr ctx b)
+        | TELambdaPat(p, b) -> TELambdaPat(p, finalizeExpr ctx b)
         | TECmd(prog, args, envO) ->
             TECmd(prog, args |> List.map (finalizeExpr ctx), envO |> Option.map (finalizeExpr ctx))
         | TEInterp parts ->
@@ -1376,6 +1537,40 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
 // AMBIGUOUS (no defaulting, no ambiguity resolution): error asking
 // for context, the reject-don't-guess posture one step later than the
 // old at-the-operator rule.
+// The statement-level destructuring binder: check the RHS, bind the
+// binder shape against it, generalize per name. Residual/ambiguous
+// constraints follow typecheckWith's boundary rule.
+let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExpr * (string * Scheme) list, TypeError> =
+    let ctx = newCtx ()
+
+    match binderShape ctx env pat with
+    | Error e -> Error e
+    | Ok(shape, binds) ->
+        match infer ctx env expr with
+        | Error e -> Error e
+        | Ok te ->
+            match bind ctx env pat.PSpan shape te.Ty with
+            | Error e -> Error e
+            | Ok() ->
+                let schemes = binds |> List.map (generalizeBinding ctx env)
+                let te = finalizeExpr ctx te
+
+                let stranded =
+                    ctx.Cons
+                    |> Map.toList
+                    |> List.tryPick (fun (v, ps) ->
+                        match resolve ctx (TVar v) with
+                        | TVar _
+                        | TRowVar _ -> ps |> List.tryHead
+                        | _ -> None)
+
+                match stranded with
+                | Some p ->
+                    err
+                        p.Span
+                        "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
+                | None -> Ok(te, schemes)
+
 let typecheckWith (env: TypeEnv) (expr: Expr) : Result<TypedExpr * Map<string, Set<Cls>>, TypeError> =
     let ctx = newCtx ()
 
@@ -1425,6 +1620,7 @@ let rec private validateTy
     | TBool
     | TUnit -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
+    | TTuple ts -> allOk ts (validateTy env selfName selfArity allowed span)
     | TFun(a, b) ->
         Result.bind
             (fun () -> validateTy env selfName selfArity allowed span b)
@@ -1544,6 +1740,11 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TEFrom _
         | TETo _ -> ()
         | TEList items -> items |> List.iter walk
+        | TETuple items -> items |> List.iter walk
+        | TELetPat(_, v, b) ->
+            walk v
+            walk b
+        | TELambdaPat(_, b) -> walk b
         | TECmd(_, args, envO) ->
             args |> List.iter walk
             envO |> Option.iter walk

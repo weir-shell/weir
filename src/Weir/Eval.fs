@@ -19,7 +19,9 @@ type Value =
     | VRecord of record: string * fields: Map<string, Value>
     | VUnion of case: string * payload: Value option
     | VSeq of items: seq<Value>
+    | VTuple of items: Value list
     | VClosure of param: string * body: TypedExpr * env: Env
+    | VClosurePat of binder: Pattern * body: TypedExpr * env: Env
     | VBuiltin of (Value -> Value)
 
     override this.Equals(other) =
@@ -33,7 +35,9 @@ type Value =
             | VRecord(n1, f1), VRecord(n2, f2) -> n1 = n2 && f1 = f2
             | VUnion(c1, p1), VUnion(c2, p2) -> c1 = c2 && p1 = p2
             | VSeq a, VSeq b -> obj.ReferenceEquals(a, b) || List.ofSeq a = List.ofSeq b
+            | VTuple a, VTuple b -> a = b
             | VClosure(p1, b1, e1), VClosure(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
+            | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
             | VBuiltin f, VBuiltin g -> obj.ReferenceEquals(f, g)
             | _ -> false
         | _ -> false
@@ -47,7 +51,9 @@ type Value =
         | VRecord(n, _) -> hash n
         | VUnion(c, _) -> hash c
         | VSeq _ -> 0
+        | VTuple items -> hash (List.length items)
         | VClosure(p, _, _) -> hash p
+        | VClosurePat(p, _, _) -> hash p
         | VBuiltin f -> LanguagePrimitives.PhysicalHash f
 
 and Env = Map<string, Value>
@@ -86,8 +92,10 @@ let rec formatValue (v: Value) : string =
         let ellipsis = if shown.Length > 20 then "; ..." else ""
         $"[{body}{ellipsis}]"
     | VClosure _ -> "<fun>"
+    | VClosurePat _ -> "<fun>"
     | VBuiltin _ -> "<builtin>"
     | VUnit -> "()"
+    | VTuple items -> "(" + (items |> List.map formatValue |> String.concat ", ") + ")"
 
 // The line-per-element renderer. Both consumers — the print builtin and the
 // runner's command-statement streaming — must call this one function; the
@@ -278,10 +286,24 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     | PStr s, VStr v -> if s = v then Some [] else None
     | PStr _, v -> unreachable $"the checker rejects string patterns on {formatValue v}"
     | PUnit, _ -> Some []
+    | PTuple ps, VTuple vs when List.length ps = List.length vs ->
+        List.zip ps vs
+        |> List.fold
+            (fun acc (subP, subV) -> acc |> Option.bind (fun bs -> tryBind subP subV |> Option.map (fun b -> bs @ b)))
+            (Some [])
+    | PTuple _, v -> unreachable $"the checker rejects tuple patterns on {formatValue v}"
     | PCase(ctor, None), VUnion(case, None) -> if ctor = case then Some [] else None
     | PCase(ctor, Some argPat), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
     | PCase _, VUnion _ -> None
     | PCase _, v -> unreachable $"the checker rejects constructor patterns on {formatValue v}"
+
+
+// binder patterns are irrefutable by checking, so the bind always
+// succeeds — the None arm is the standard checker-guarantee marker
+let bindPattern (p: Pattern) (v: Value) : (string * Value) list =
+    match tryBind p v with
+    | Some bs -> bs
+    | None -> unreachable $"the checker guarantees binder patterns match; got {formatValue v}"
 
 let private wrapOpt (ty: Ty) (v: Value) : Value =
     match ty with
@@ -318,6 +340,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | Some v -> v
         | None -> unreachable $"the checker rejects unbound variable '{name}'"
     | TELet(name, value, body) -> eval (Map.add name (eval env value) env) body
+    | TELetPat(pat, value, body) ->
+        let bindings = bindPattern pat (eval env value)
+        eval (bindings |> List.fold (fun m (n, v) -> Map.add n v m) env) body
+    | TELambdaPat(pat, body) -> VClosurePat(pat, body, env)
     | TELambda(param, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
     | TEPipe(arg, { Kind = TECmd(prog, cargs, cenvO) }) ->
@@ -358,6 +384,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
     | TEList items -> VSeq(items |> List.map (eval env))
+    | TETuple items -> VTuple(items |> List.map (eval env))
     | TECmd(prog, args, cenvO) ->
         let argv = args |> List.map (fun a -> scalarString "command argument" (eval env a))
 
@@ -453,6 +480,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
     | VClosure(param, body, closureEnv) -> eval (Map.add param arg closureEnv) body
+    | VClosurePat(pat, body, closureEnv) ->
+        let bindings = bindPattern pat arg
+        eval (bindings |> List.fold (fun m (n, v) -> Map.add n v m) closureEnv) body
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 

@@ -7,6 +7,7 @@ type Ty =
     | TUnit
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
+    | TTuple of elements: Ty list // arity 2+ (2026-07-21, the reversal)
     | TNamed of name: string * args: Ty list
     | TVar of name: string
     | TRowVar of name: string * fields: (string * Ty) list
@@ -32,6 +33,14 @@ let rec formatTy (ty: Ty) : string =
 
         $"{dom} -> {formatTy codomain}"
     | TSeq element -> $"seq<{formatTy element}>"
+    | TTuple elements ->
+        let part (t: Ty) =
+            match t with
+            | TFun _
+            | TTuple _ -> $"({formatTy t})"
+            | _ -> formatTy t
+
+        elements |> List.map part |> String.concat " * "
     | TNamed(name, []) -> name
     | TNamed(name, args) ->
         let argStr = args |> List.map formatTy |> String.concat ", "
@@ -43,6 +52,7 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TRowVar(r, fields) -> fields |> List.fold (fun acc (_, t) -> acc + tyVars t) (Set.singleton r)
     | TFun(a, b) -> tyVars a + tyVars b
     | TSeq t -> tyVars t
+    | TTuple ts -> ts |> List.fold (fun acc t -> acc + tyVars t) Set.empty
     | TNamed(_, args) -> args |> List.fold (fun acc t -> acc + tyVars t) Set.empty
     | TInt
     | TStr
