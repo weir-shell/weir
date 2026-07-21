@@ -30,7 +30,8 @@ argument that killed the subtractive fork.
 | no-imperative-loops | rejected | for / while | reject (pipelines + ranges are iteration) | accept | SKILL: iteration; comprehension-for is separately pending |
 | no-tuples | pending | tuple literals and types | reject | accept | deferred at review pending prior-bleed evidence; destructuring is the real scope |
 | single-payload-unions | pending | union case with a starred payload | reject | accept | record-wrapping today; reopens with tuples |
-| no-literal-patterns | pending | int/string literal patterns in match | reject | accept | corpus-mined; when-guard is the spelling |
+| exhaustiveness-hard-error | different | a non-exhaustive match is a HARD ERROR (F# warns and accepts) | reject | accept + warning | SEMANTICS: branching — user decision 2026-07-18; surfaced as an oracle divergence by the literal-pattern pins (2026-07-21) |
+<!-- no-literal-patterns RETIRED 2026-07-21: literal patterns landed (int/string/(); literals never complete a match — F#'s rule, oracle Same). The guard idiom remains legal, no longer the only spelling. -->
 | no-let-rec | pending | let rec (reserved word) | reject | accept | recursion unserved; pipelines cover iteration |
 | no-unary-minus | pending | negative literals outside ranges | reject | accept | 0 - x idiom; ranges have the literal |
 | no-format-specifiers | pending | format specifiers in holes ($"{x:N2}") | reject | accept | decided out of interp v1; no demand logged |

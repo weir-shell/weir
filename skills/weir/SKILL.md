@@ -74,8 +74,11 @@ print $"branches: {branches}"
   side (`x + 0`) or take data in. All single-typing operators
   (`- * / > <`) default to int; `let rec` and `mutable` are reserved
   words with no meaning.
-- No literal patterns: `match n with | 0 -> ...` does not parse; use a
-  guard (`| x when x == 0 -> ...`) or bool match.
+- Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in
+  constructors) but int/string literals NEVER complete a match alone —
+  add a `_`/var arm or it is a hard error. Guards remain legal.
+- Params are plain idents OR `()` (a unit param: `let cleanup () =`;
+  `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency
   model. A task that truly needs async belongs in full F#, not weir.
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
@@ -131,10 +134,13 @@ let p = (1, 2)
 print "unreached"
 ```
 
-```weir-error
-// literal patterns do not exist; use a when-guard
+```weir
+// literal patterns landed 2026-07-21 (this block flipped from
+// must-fail — the doc-test extractor proves the edit)
 let v = match 1 with | 0 -> 0 | _ -> 1
-print "unreached"
+let cleanup () = printerr "cleaning"
+cleanup ()
+print $"{v}"
 ```
 
 ```weir-error

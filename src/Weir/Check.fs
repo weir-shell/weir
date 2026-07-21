@@ -510,6 +510,18 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
         match ty with
         | TBool -> Ok []
         | ty -> err p.PSpan $"bool patterns need a bool scrutinee; this one has type {formatTy ty}"
+    | PInt _ ->
+        match ty with
+        | TInt -> Ok []
+        | ty -> err p.PSpan $"int literal patterns need an int scrutinee; this one has type {formatTy ty}"
+    | PStr _ ->
+        match ty with
+        | TStr -> Ok []
+        | ty -> err p.PSpan $"string literal patterns need a string scrutinee; this one has type {formatTy ty}"
+    | PUnit ->
+        match ty with
+        | TUnit -> Ok []
+        | ty -> err p.PSpan $"'()' patterns need a unit scrutinee; this one has type {formatTy ty}"
     | PCase(ctor, argPat) ->
         match ty with
         | TNamed(typeName, targs) ->
@@ -536,8 +548,11 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
 let private isIrrefutablePat (p: Pattern) =
     match p.PKind with
     | PWildcard
-    | PVar _ -> true
+    | PVar _
+    | PUnit -> true
     | PBool _
+    | PInt _
+    | PStr _
     | PCase _ -> false
 
 // Exhaustiveness is a HARD ERROR (decided 2026-07-18; it was a warning).
@@ -587,6 +602,11 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                   "true"
               if not (pats |> List.exists (fun p -> p.PKind = PBool false)) then
                   "false" ]
+        | TInt
+        | TStr ->
+            // literal patterns never complete a match alone (F#'s rule,
+            // oracle-pinned): a var or wildcard arm must close it
+            [ "_" ]
         | _ -> []
 
 let private exhaustive
@@ -718,6 +738,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             return
                 { Kind = TELet(name, tvalue, tbody)
                   Ty = tbody.Ty
+                  Span = expr.Span }
+        }
+    | ELambda("()", body) ->
+        // the unit param PINS its type — desugaring to an unconstrained
+        // fresh var would generalize (`cleanup 5` would typecheck); the
+        // "()" name is unforgeable, and no binding is added
+        result {
+            let! tbody = infer ctx env body
+
+            return
+                { Kind = TELambda("()", tbody)
+                  Ty = TFun(TUnit, tbody.Ty)
                   Span = expr.Span }
         }
     | ELambda(param, body) ->
@@ -1081,6 +1113,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 match resolve ctx tscrutinee.Ty with
                 | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPBool) ->
                     bind ctx env scrutinee.Span TBool tscrutinee.Ty
+                | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPInt) ->
+                    bind ctx env scrutinee.Span TInt tscrutinee.Ty
+                | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPStr) ->
+                    bind ctx env scrutinee.Span TStr tscrutinee.Ty
+                | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPUnit) ->
+                    bind ctx env scrutinee.Span TUnit tscrutinee.Ty
                 | _ -> Ok()
 
             let scrutTy = resolve ctx tscrutinee.Ty

@@ -15,6 +15,9 @@ and PatternKind =
     | PWildcard
     | PVar of string
     | PBool of bool
+    | PInt of int64
+    | PStr of string
+    | PUnit
     | PCase of ctor: string * arg: Pattern option
 
 type InterpPart<'e> =

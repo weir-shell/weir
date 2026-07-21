@@ -1,5 +1,25 @@
 # Spike Notes
 
+## Literal patterns + () thunks (2026-07-21, Session 1 of the plan)
+
+The strongest-receipts item shipped first, as sequenced. Literal
+patterns landed with F#'s completion rule; the retirement flipped a
+corpus pin to Same (among the most agent-visible divergences gone)
+and SURFACED a divergence that had never been pinned: weir's
+exhaustiveness-is-hard-error vs F#'s warning — the oracle refused
+the naive Same pin and the new exhaustiveness-hard-error row records
+what was implicitly true since bool branching. The thunk arm is the
+session's honesty case: `()` params are a CHECKER touch, not sugar
+(the generalization trap is tripwired as the arm's reason). The
+thunk receipt had NOT arrived — opened by user choice with the plan,
+on record. One old pin flipped with archaeology ("unit params are
+not in the v1 sugar" → the desugar-shape pin); the SKILL must-fail
+block flipped to must-pass and the doc-test extractor proved the
+edit, the mechanism working as designed. Tuples (Session 2+) remain
+gated-open: type classes landed, so the structural gate is
+satisfied whenever the user calls it.
+
+
 ## The sentinel ledger CLOSES — type classes Session C (2026-07-21)
 
 The arc, written as the measure-arc's counterpart: OPENED (unit/print

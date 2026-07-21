@@ -290,6 +290,18 @@ quantity semantics now.
   the line. Blank lines
   still end the statement (named divergence from F#, inherited from the
   multi-line rules).
+- **Literal patterns and () params** (2026-07-21, PLAN-literals-
+  thunks Session 1): int and string literal patterns (`| 0 ->`,
+  `| "yes" ->`, nested in constructors) with F#'s completion rule —
+  literals never exhaust a match; a var/wildcard arm closes it (the
+  severity stays weir's hard error: exhaustiveness-hard-error row).
+  The guard idiom remains legal, no longer the only spelling
+  (no-literal-patterns row RETIRED). `()` is a unit PARAM
+  (`let cleanup () = ...`, `fun () -> ...`) that PINS its type —
+  checker arm, not sugar: an unconstrained param would generalize
+  and `cleanup 5` would typecheck (tripwired). `()` is also an
+  irrefutable match pattern. Params are plain idents or `()`;
+  pattern params stay out.
 - `_.Field` is sugar for `fun x -> x.Field` (parser-level desugar; requires at
   least one field, like F#).
 - Constructor names must start uppercase; that is what distinguishes

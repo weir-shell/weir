@@ -105,7 +105,9 @@ on two unknowns cannot infer (int or string?) — anchor one side:
 ## Branching
 
 `if` is an expression; `else` is optional only when the then-branch is
-unit. `match` has bool patterns, constructor patterns, and `when`
+unit. `match` has literal patterns (`| 0 ->`, `| "yes" ->` — int/string
+literals never complete a match alone; close with `_` or a var),
+bool patterns, constructor patterns, and `when`
 guards — and a non-exhaustive match is a hard error, not a warning.
 
 ```weir
@@ -115,6 +117,7 @@ if n > 2 then print "big"
 
 let tier =
     match n with
+    | 0 -> "empty"
     | x when x > 100 -> "huge"
     | x when x > 2 -> "medium"
     | _ -> "small"

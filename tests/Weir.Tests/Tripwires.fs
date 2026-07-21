@@ -108,6 +108,13 @@ let tripwires =
               // receipts (records/unions ordering is parked, message-named)
               Expect.stringContains (checkErr "ls |> Seq.sortBy (fun f -> f)").Message "cannot sort" ""
           }
+          test "() params pin unit — the generalization trap (why the checker arm exists)" {
+              // desugaring () to an unconstrained fresh param would
+              // generalize to forall a. a -> ... and `cleanup 5` would
+              // typecheck; the ELambda \"()\" arm pins TUnit instead. If
+              // this stops erroring, the arm was replaced with plain sugar.
+              Expect.stringContains (checkErr "let cleanup = fun () -> 1 in cleanup 5").Message "expected unit" ""
+          }
           test "constraint instantiation is per-use (deep-copy discipline)" {
               // first use at int succeeds; second at functions fails — if
               // constraint state were shared between instantiations, the

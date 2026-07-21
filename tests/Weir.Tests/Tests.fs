@@ -2242,10 +2242,14 @@ let paramSugarTests =
               | Ok(SLet(_, { Kind = ELambda(_, { Kind = EApp _ }) })) -> ()
               | other -> failtest $"expected expression-mode application (which then fails check), got {other}"
           }
-          test "unit and pattern params rejected" {
+          test "unit params legal since 2026-07-21 (was: rejected in v1 sugar); pattern params stay out" {
               match Weir.Parser.parseExpr "let f () = 1 in f" with
+              | Ok { Kind = ELet(_, { Kind = ELambda("()", _) }, _) } -> ()
+              | other -> failtest $"unit param should desugar to the pinned () lambda, got {other}"
+
+              match Weir.Parser.parseExpr "let f (x, y) = 1 in f" with
               | Error _ -> ()
-              | Ok _ -> failtest "unit params are not in the v1 sugar"
+              | Ok _ -> failtest "pattern params are still not in the sugar"
           }
           test "HOF restriction unchanged through the sugar" {
               let terr = checkErr "let apply f x = f x in apply double 1"
@@ -2575,6 +2579,57 @@ let childEnvTests =
 
               Expect.equal got (VStr "$HOME") ""
               System.IO.File.Delete f
+          } ]
+
+let literalThunkTests =
+    testList
+        "Literal patterns & () thunks"
+        [ test "int literal patterns dispatch" {
+              expectValue "match 1 with | 0 -> \"zero\" | 1 -> \"one\" | _ -> \"many\"" (VStr "one")
+          }
+          test "string literal patterns dispatch" {
+              expectValue "match \"slow\" with | \"fast\" -> 1 | \"slow\" -> 2 | _ -> 0" (VInt 2L)
+          }
+          test "negative int literal patterns" {
+              expectValue "match 0 - 1 with | -1 -> \"neg\" | _ -> \"pos\"" (VStr "neg")
+          }
+          test "exhaustiveness: literals NEVER complete a match alone (F#'s rule)" {
+              let terr = checkErr "match 1 with | 0 -> \"a\" | 1 -> \"b\""
+              Expect.stringContains (formatError terr) "catch-all" ""
+
+              let terr2 = checkErr "match \"x\" with | \"x\" -> 1"
+              Expect.stringContains (formatError terr2) "catch-all" ""
+          }
+          test "exhaustiveness: literal + var arm is clean" {
+              let te = checkOk "match 5 with | 0 -> \"z\" | n -> $\"n{n}\""
+              Expect.equal (formatTy te.Ty) "string" ""
+          }
+          test "position sweep: literals nested in constructor patterns" {
+              expectValue "match Some 3 with | Some 3 -> \"hit\" | Some _ -> \"other\" | None -> \"none\"" (VStr "hit")
+          }
+          test "literal pins an unresolved scrutinee (defaulting family)" {
+              let te = checkOk "let f x = match x with | 0 -> \"z\" | _ -> \"n\" in f"
+              Expect.stringContains (formatTy te.Ty) "int -> string" ""
+          }
+          test "conflicting literal kinds error at the bind" {
+              let terr = checkErr "let f x = match x with | 0 -> 1 | \"s\" -> 2 | _ -> 3 in f"
+              Expect.stringContains (formatError terr) "need a string scrutinee" ""
+          }
+          test "guard idiom remains legal alongside literals" {
+              expectValue "match 7 with | 0 -> \"z\" | n when n > 5 -> \"big\" | _ -> \"small\"" (VStr "big")
+          }
+          test "() param types the thunk: unit -> body" {
+              let te = checkOk "let cleanup () = 42 in cleanup"
+              Expect.equal (formatTy te.Ty) "unit -> int" ""
+          }
+          test "() param in a bare lambda" { expectValue "(fun () -> 9) ()" (VInt 9L) }
+          test "() pattern is irrefutable and exhaustive alone" { expectValue "match () with | () -> \"u\"" (VStr "u") }
+          test "mixed params: idents and () together through the sugar" {
+              expectValue "let f x () y = x + 0 + y in f 1 () 2" (VInt 3L)
+          }
+          test "thunk shadowing: () param adds no binding" {
+              // the "()" name is unforgeable; body sees the OUTER x
+              expectValue "let x = 5 in let f () = x in f ()" (VInt 5L)
           } ]
 
 let typeClassTests =
@@ -3512,6 +3567,7 @@ let allTests =
           sequencingTests
           offsideTests
           productMatrixTests
+          literalThunkTests
           typeClassTests
           typeClassBTests
           typeClassCTests

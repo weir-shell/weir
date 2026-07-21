@@ -97,6 +97,15 @@ let pins =
           "let r = [1] |> Seq.sortBy (fun n -> fun x -> x + n)\n"
           Same
 
+      // --- literal patterns + () thunks (2026-07-21) ---
+      pin "int literal patterns with catch-all" "let v =\n    match 1 with\n    | 0 -> 10\n    | _ -> 20\n" Same
+      pin
+          "literal arms never exhaust: weir hard-errors, F# warns+accepts"
+          "let v =\n    match 1 with\n    | 0 -> 10\n    | 1 -> 20\n"
+          (Diverges "exhaustiveness-hard-error")
+      pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
+      pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same
+
       // --- let ... in ---
       pin "explicit let-in one-liner" "let y = let x = 1 in x + 1\n" Same
 
@@ -132,9 +141,9 @@ let pins =
       pin "HOF param application" "let apply f x = f x\n" (Diverges "no-hof-inference")
       pin "operator on two unresolved params" "let add x y = x + y\n" (Diverges "no-operator-defaulting")
       pin
-          "corpus: literal int pattern"
+          "corpus: literal int pattern (row RETIRED 2026-07-21 — the fidelity gain)"
           "let v =\n    match 1 with\n    | 0 -> 0\n    | _ -> 1\n"
-          (Diverges "no-literal-patterns")
+          Same
       pin
           "corpus: function-valued interpolation hole"
           "let f = fun x -> x + 1\nlet s = $\"{f}\"\n"

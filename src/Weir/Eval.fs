@@ -273,6 +273,11 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     | PVar name, _ -> Some [ name, v ]
     | PBool b, VBool v -> if b = v then Some [] else None
     | PBool _, v -> unreachable $"the checker rejects bool patterns on {formatValue v}"
+    | PInt n, VInt v -> if n = v then Some [] else None
+    | PInt _, v -> unreachable $"the checker rejects int patterns on {formatValue v}"
+    | PStr s, VStr v -> if s = v then Some [] else None
+    | PStr _, v -> unreachable $"the checker rejects string patterns on {formatValue v}"
+    | PUnit, _ -> Some []
     | PCase(ctor, None), VUnion(case, None) -> if ctor = case then Some [] else None
     | PCase(ctor, Some argPat), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
     | PCase _, VUnion _ -> None

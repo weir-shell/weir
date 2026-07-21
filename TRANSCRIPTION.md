@@ -265,3 +265,20 @@ generics.
 
 Flag 6: dischargeRow has three jobs braided (subst, class
 discharge, field binds).
+
+## Addendum — literal patterns and () params (2026-07-21)
+
+Pattern kinds gain PInt/PStr/PUnit. checkPattern pins the scrutinee
+per kind (mismatch = located error); the EMatch defaulting family
+extends (unresolved scrutinee + literal arms → bind the literal's
+type — same precedent as bool). Exhaustiveness: int/string literal
+arms NEVER complete (missing "_" unless an irrefutable arm exists —
+F#'s rule; the weir-vs-F# difference is only error-vs-warning
+severity, now a named divergence row); PUnit is irrefutable alone.
+
+ELambda gains ONE bespoke arm: param "()" (unforgeable name) types
+the param as TUnit and binds NOTHING — the generalization trap is
+the arm's reason (an unconstrained fresh param would generalize and
+`cleanup 5` would typecheck; tripwired). Eval is untouched for
+params (the "()" name is unreferenceable); pattern eval adds literal
+equality and the always-match unit pattern.

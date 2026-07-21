@@ -353,14 +353,22 @@ let private appChain =
         { Kind = EApp(f, a)
           Span = Span.union f.Span a.Span })
 
+// Params are plain idents OR () — the unit param pins its type in the
+// checker (the name "()" is unforgeable through declarations); other
+// pattern params stay rejected.
+let private paramIdent = ident <|> (pstring "()" .>> ws >>% "()")
+
 let private lambda =
-    pipe3 getPosition (keyword "fun" >>. ident .>> str_ws "->") seqExpr (fun p param body ->
+    pipe3 getPosition (keyword "fun" >>. paramIdent .>> str_ws "->") seqExpr (fun p param body ->
         { Kind = ELambda(param, body)
           Span = { Start = pos p; End = body.Span.End } })
 
 // let f x y = e desugars to nested lambdas (corpus-driven feature,
 // 2026-07-20: the top mining yield — F#'s most common line shape).
-// Params are plain idents; unit/pattern params stay rejected.
+// Params are plain idents OR () — the unit param pins its type in the
+// checker (the name "()" is unforgeable through declarations); other
+// pattern params stay rejected.
+
 let private curryParams (ps: string list) (value: Expr) : Expr =
     List.foldBack
         (fun p body ->
@@ -372,7 +380,7 @@ let private curryParams (ps: string list) (value: Expr) : Expr =
 let private letIn =
     pipe3
         getPosition
-        (keyword "let" >>. ident .>>. many ident .>> str_ws "=" .>>. seqExpr
+        (keyword "let" >>. ident .>>. many paramIdent .>> str_ws "=" .>>. seqExpr
          .>> keyword "in")
         seqExpr
         (fun p ((name, ps), value) body ->
@@ -423,9 +431,24 @@ let private patWord =
     )
     .>> ws
 
+// literal patterns (2026-07-20 plan, session 1): int and string pin
+// the scrutinee; () is the irrefutable unit pattern
+let private patLit =
+    choice
+        [ attempt (spanned (pstring "()") .>> ws)
+          |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
+          attempt (spanned (opt (pchar '-') .>>. many1Satisfy isDigit) .>> ws)
+          >>= fun ((neg, digits), span) ->
+              match System.Int64.TryParse((if neg.IsSome then "-" else "") + digits) with
+              | true, n -> preturn { PKind = PInt n; PSpan = span }
+              | false, _ -> failFatally $"int literal out of range (64-bit): {digits}"
+          spanned (between (pchar '"') (pchar '"') (manyChars stringChar)) .>> ws
+          |>> fun (s, span) -> { PKind = PStr s; PSpan = span } ]
+
 let private patAtom =
     choice
-        [ between (str_ws "(") (str_ws ")") pat
+        [ patLit
+          between (str_ws "(") (str_ws ")") pat
           patWord
           |>> fun (w, span) ->
               let kind =
@@ -439,7 +462,8 @@ let private patAtom =
 
 patRef.Value <-
     choice
-        [ between (str_ws "(") (str_ws ")") pat
+        [ patLit
+          between (str_ws "(") (str_ws ")") pat
           patWord
           >>= fun (w, span) ->
               if w = "_" then
@@ -791,7 +815,7 @@ let private typeDecl =
 // barewords.
 let private topLet (r: Resolver) =
     attempt (
-        keyword "let" >>. ident .>>. many ident .>> str_ws "="
+        keyword "let" >>. ident .>>. many paramIdent .>> str_ws "="
         >>= fun (name, ps) ->
             // command mode never sits under a lambda (splice-soundness
             // invariant), so a param-ful let takes an expression RHS only

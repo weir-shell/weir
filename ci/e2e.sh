@@ -619,6 +619,38 @@ if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
 fi
 echo "e2e ok: forced unknown command rejected"
 
+# --- literal patterns + () thunks (2026-07-21) ------------------------
+
+ldir=$(mktemp -d)
+
+cat > "$ldir/lit.weir" <<'WEOF'
+let cleanup () = printerr "cleaning up"
+
+let classify n =
+    match n with
+    | 0 -> "none"
+    | 1 -> "one"
+    | n -> $"many ({n})"
+
+let mode = args |> Seq.tryHead |> Option.defaultTo "count"
+
+match mode with
+| "count" -> print (classify 1)
+| "reset" -> print (classify 0)
+| _ -> fail "unknown mode"
+
+cleanup ()
+WEOF
+out=$(cd "$ldir" && $BIN lit.weir 2>&1)
+expect "literal patterns dispatch in a script (int + string matches)" "one" "$out"
+expect "the () thunk defers its effect to the call" "cleaning up" "$out"
+
+errout=$($BIN -e 'match 1 with | 0 -> "a" | 1 -> "b"' 2>&1 || true)
+echo "$errout" | grep -qF "catch-all" || fail "literal-only match must hard-error: $errout"
+echo "e2e ok: literal arms never exhaust (hard error, F#-divergence-pinned)"
+
+rm -rf "$ldir"
+
 # --- type classes Session C (2026-07-21): hardening products
 
 cdir=$(mktemp -d)
