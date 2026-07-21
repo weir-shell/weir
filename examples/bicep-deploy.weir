@@ -79,5 +79,5 @@ let target =
 match subcommand with
 | "deploy" -> deploy target
 | "snapshot" -> snapshot target
-| c when c == "quality" -> quality target
+| "quality" -> quality target
 | _ -> fail usage

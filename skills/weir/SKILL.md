@@ -71,8 +71,9 @@ print $"branches: {branches}"
 
 - Equality is `==` (never `=`). `=` is for `let` and record fields only.
 - Records need a declared type with the exact field set (no width
-  subtyping, no anonymous records): `{ Fst = a; Snd = b }` needs
-  `type Pair = { Fst: int; Snd: int }`.
+  subtyping, no anonymous records): `{ Host = h; Port = p }` needs
+  `type Endpoint = { Host: string; Port: int }`. For a transient
+  pair with no names, use a tuple instead.
 - Union cases carry tuple payloads for multi-value: `Case of int * string`;
   match with `| Case (n, s) ->`.
 - `let f x y = ...` defines a curried function (desugars to nested

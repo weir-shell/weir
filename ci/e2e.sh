@@ -698,6 +698,18 @@ echo "e2e ok: check exits 1 on errors"
 
 rm -rf "$ckdir"
 
+# --- every repo script must CHECK (2026-07-21: test-counts.weir had
+# been broken since the pairwise re-type and nothing noticed — scripts
+# rot silently unless gated; cmd-not-found warnings are fine, errors
+# are not) ---
+
+for scr in "$(dirname "$0")"/../examples/*.weir "$(dirname "$0")"/../tools/*.weir; do
+    rc=0
+    out=$($BIN check "$scr" 2>&1) || rc=$?
+    [ $rc -eq 0 ] || fail "repo script no longer checks: $scr — $out"
+done
+echo "e2e ok: all repo scripts check clean"
+
 # --- the casing law (2026-07-21) ---------------------------------------
 
 errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)

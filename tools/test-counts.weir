@@ -25,4 +25,4 @@ print "deltas (newer minus older):"
 
 counts
     |> Seq.pairwise
-    |> Seq.iter (fun p -> print $"  {p.Fst.Label}: {p.Fst.Count - p.Snd.Count}")
+    |> Seq.iter (fun (newer, older) -> print $"  {newer.Label}: {newer.Count - older.Count}")

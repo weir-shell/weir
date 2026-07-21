@@ -1,5 +1,24 @@
 # Spike Notes
 
+## The deeper sweep — idioms rot, keywords don't (2026-07-21)
+
+The user caught the docs sweep's blind spot twice in one message: the
+bicep dispatch still used one `| c when c == "quality"` guard arm
+(the sweep grepped for stale KEYWORDS, not obsolete IDIOMS), and
+"check deeper" surfaced the real casualty — tools/test-counts.weir
+had been BROKEN since the pairwise re-type (`p.Fst` on what is now a
+tuple) because no repo script was CI-checked. Fixes: the guard arm
+converted to a literal pattern; test-counts repaired with the very
+feature that broke it (`fun (newer, older) ->` tuple param); SKILL's
+record example de-Pair'd (it taught the tuple-shaped-record
+anti-pattern); jira's record literal to bare-field canon; and the
+INSTITUTIONAL fix — e2e now runs `weir check` over every script in
+examples/ and tools/, so scripts cannot rot silently again
+(cmd-not-found warnings pass, errors fail). Lesson for the ledger:
+a doc sweep must grep for the OLD IDIOM each new feature obsoletes,
+not just the old names.
+
+
 ## Open rows meet nominal records; cursor-local repair (2026-07-21)
 
 Fourth round of the completion thread, and the deepest: the user

@@ -24,7 +24,7 @@ let picked =
 let fields = picked |> Str.split "\t"
 
 let issue =
-    { Key = fields[0];
+    { Key = fields[0]
       Title = fields[1] }
 
 git switch -c (issue.Key)
