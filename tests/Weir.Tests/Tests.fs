@@ -426,18 +426,19 @@ let warningTests =
               Expect.isEmpty (warningsOf "match Running 5 with | Running n -> n | Stopped -> 0") ""
           }
           test "wildcard covers everything" { Expect.isEmpty (warningsOf "match Running 5 with | _ -> 0") "" }
-          test "arm after a catch-all warns as unreachable" {
-              let ws = warningsOf "match Running 5 with | _ -> 0 | Stopped -> 1"
-              Expect.hasLength ws 1 ""
-              Expect.stringContains ws[0].Message "unreachable" ""
+          test "arm after a catch-all is a hard error" {
+              let terr = checkErr "match Running 5 with | _ -> 0 | Stopped -> 1"
+              Expect.stringContains terr.Message "unreachable" ""
           }
-          test "mid-match variable binder warns at the cause with a constructor hint" {
-              let ws = warningsOf "match Running 5 with | zStopped -> 1 | Running n -> n | Stopped -> 0"
-              Expect.hasLength ws 1 ""
-              Expect.stringContains ws[0].Message "'zStopped' binds as a variable" ""
-              Expect.stringContains ws[0].Message "2 arms below are unreachable" ""
-              Expect.stringContains ws[0].Message "Did you mean 'Stopped'?" ""
-              Expect.equal ws[0].Span.Start.Col 24 "warning sits on the binder arm, not the dead arms"
+          test "mid-match variable binder errors at the cause with a constructor hint" {
+              let terr = checkErr "match Running 5 with | zStopped -> 1 | Running n -> n | Stopped -> 0"
+              Expect.stringContains terr.Message "'zStopped' binds as a variable" ""
+              Expect.stringContains terr.Message "2 arms below are unreachable" ""
+              Expect.stringContains terr.Message "Did you mean 'Stopped'?" ""
+              Expect.equal terr.Span.Start.Col 24 "error sits on the binder arm, not the dead arms"
+          }
+          test "guarded irrefutable arm keeps later arms reachable" {
+              Expect.isEmpty (warningsOf "match Running 5 with | n when 1 > 2 -> 0 | _ -> 1") ""
           }
           test "match on a non-union: a variable arm is the catch-all" {
               Expect.isEmpty (warningsOf "match 5 with | n -> n") ""
@@ -2135,9 +2136,8 @@ let boolBranchTests =
               Expect.isEmpty (warningsOf "match Running 5 with | n when 1 > 2 -> 0 | Running n -> n | Stopped -> 9") ""
           }
           test "unguarded catch-all still flags later arms" {
-              let ws = warningsOf "match Running 5 with | _ -> 0 | Stopped -> 1"
-              Expect.hasLength ws 1 ""
-              Expect.stringContains ws[0].Message "unreachable" ""
+              let terr = checkErr "match Running 5 with | _ -> 0 | Stopped -> 1"
+              Expect.stringContains terr.Message "unreachable" ""
           }
           test "F#-rejects-this: malformed conditionals" {
               for bad in [ "if 1 > 2"; "if then 1 else 2"; "else 3"; "1 when 2" ] do

@@ -112,6 +112,10 @@ let pins =
           "literal arms never exhaust: weir hard-errors, F# warns+accepts"
           "let v =\n    match 1 with\n    | 0 -> 10\n    | 1 -> 20\n"
           (Diverges "exhaustiveness-hard-error")
+      pin
+          "dead arm after a catch-all: weir hard-errors, F# warns FS0026+accepts"
+          "type T = A of int | B\nlet v =\n    match B with\n    | x -> 1\n    | B -> 2\n"
+          (Diverges "unreachable-arm-hard-error")
       pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
       pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same
 

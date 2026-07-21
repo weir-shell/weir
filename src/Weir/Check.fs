@@ -714,18 +714,53 @@ let private exhaustive
     let unguarded =
         arms |> List.choose (fun (p, g) -> if g.IsNone then Some p else None)
 
-    if unguarded |> List.exists isIrrefutablePat then
-        Ok()
-    else
-        match scrutTy with
-        | TNamed _
-        | TBool ->
-            match missingCases env scrutTy unguarded with
-            | [] -> Ok()
-            | missing ->
-                let missingList = String.concat ", " missing
-                err span $"match is not exhaustive; missing: {missingList}"
-        | ty -> err span $"match on {formatTy ty} needs a catch-all pattern"
+    // reachability is coverage's dual and the same severity (user
+    // decision 2026-07-21): an unguarded irrefutable arm ends the match,
+    // so arms after it are dead — and under the casing law a typo'd
+    // constructor silently becomes a variable binder that swallows the
+    // match, hence the hint against the scrutinee's cases
+    let deadArms =
+        arms
+        |> List.tryFindIndex (fun (p, g) -> g.IsNone && isIrrefutablePat p)
+        |> Option.filter (fun i -> i < List.length arms - 1)
+
+    match deadArms with
+    | Some i ->
+        let p, _ = arms[i]
+        let later = List.length arms - i - 1
+
+        let tail =
+            if later = 1 then
+                "the arm below is unreachable"
+            else
+                $"the {later} arms below are unreachable"
+
+        match p.PKind with
+        | PVar name ->
+            let hint =
+                match scrutTy with
+                | TNamed(tyName, _) ->
+                    match Map.tryFind tyName env.Types with
+                    | Some(Union def) -> didYouMean name (List.map fst def.Cases)
+                    | _ -> ""
+                | _ -> ""
+
+            err p.PSpan $"'{name}' binds as a variable, so this arm matches every value — {tail}{hint}"
+        | _ -> err p.PSpan $"this pattern matches every value — {tail}"
+    | None ->
+
+        if unguarded |> List.exists isIrrefutablePat then
+            Ok()
+        else
+            match scrutTy with
+            | TNamed _
+            | TBool ->
+                match missingCases env scrutTy unguarded with
+                | [] -> Ok()
+                | missing ->
+                    let missingList = String.concat ", " missing
+                    err span $"match is not exhaustive; missing: {missingList}"
+            | ty -> err span $"match on {formatTy ty} needs a catch-all pattern"
 
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
@@ -1746,12 +1781,8 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
             }
 
 // Exhaustiveness moved into the checker as a hard error (2026-07-18);
-// this pass keeps only advisory findings: unreachable arms.
 let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
     let acc = ResizeArray<Warning>()
-
-    // A guarded arm never guarantees a match, whatever its pattern.
-    let armIrrefutable (p: Pattern, guard: TypedExpr option, _: TypedExpr) = guard.IsNone && isIrrefutablePat p
 
     let rec walk (te: TypedExpr) =
         match te.Kind with
@@ -1814,46 +1845,12 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
 
+            // reachability lives in `exhaustive` as a hard error
+            // (2026-07-21): dead arms are coverage's dual, same severity
             arms
             |> List.iter (fun (_, g, b) ->
                 g |> Option.iter walk
                 walk b)
-
-            // Only unguarded arms participate in coverage; guarded arms can fail.
-            let unguarded (p: Pattern, g: TypedExpr option, _) = if g.IsNone then Some p else None
-
-            // Warn at the CAUSE, not the symptoms: a mid-match catch-all
-            // gets one warning naming the arms it kills — under the casing
-            // law a typo'd constructor silently becomes a variable binder
-            // (`| zClean ->`), so the variable form also hints against the
-            // scrutinee's cases (user report, 2026-07-21)
-            match arms |> List.tryFindIndex armIrrefutable with
-            | Some i when i < List.length arms - 1 ->
-                let p, _, _ = arms[i]
-                let later = List.length arms - i - 1
-
-                let tail =
-                    if later = 1 then
-                        "the arm below is unreachable"
-                    else
-                        $"the {later} arms below are unreachable"
-
-                let msg =
-                    match p.PKind with
-                    | PVar name ->
-                        let hint =
-                            match scrutinee.Ty with
-                            | TNamed(tyName, _) ->
-                                match Map.tryFind tyName env.Types with
-                                | Some(Union def) -> didYouMean name (List.map fst def.Cases)
-                                | _ -> ""
-                            | _ -> ""
-
-                        $"'{name}' binds as a variable, so this arm matches every value — {tail}{hint}"
-                    | _ -> $"this pattern matches every value — {tail}"
-
-                acc.Add { Span = p.PSpan; Message = msg }
-            | _ -> ()
 
     walk te
     List.ofSeq acc

@@ -133,6 +133,10 @@ unit. `match` has literal patterns (`| 0 ->`, `| "yes" ->` — int/string
 literals never complete a match alone; close with `_` or a var),
 bool patterns, constructor patterns, and `when`
 guards — and a non-exhaustive match is a hard error, not a warning.
+So is its dual, an arm made unreachable by a catch-all above it:
+remember a lowercase pattern *binds*, so a typo'd constructor is a
+catch-all, and weir stops it with a did-you-mean instead of silently
+matching everything.
 
 ```weir
 let n = [1; 2; 3] |> Seq.length

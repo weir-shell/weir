@@ -438,13 +438,24 @@ echo "$errout" | grep -qF "not exhaustive" || fail "exhaustiveness error text mi
 echo "e2e ok: non-exhaustive match is a hard check error"
 
 cat > "$scriptdir/warn.weir" <<'WEOF'
+echo one ; two
+print "ran"
+WEOF
+errout=$($BIN "$scriptdir/warn.weir" 2>&1 >/dev/null)
+echo "$errout" | grep -qF "does not chain commands" || fail "runner must surface warnings: $errout"
+out=$($BIN "$scriptdir/warn.weir" 2>/dev/null)
+expect "warnings do not block execution" "ran" "$out"
+
+# unreachable arms are HARD errors, coverage's dual (2026-07-21: the
+# casing-law footgun — a typo'd constructor becomes a catch-all binder)
+cat > "$scriptdir/dead.weir" <<'WEOF'
 let x = match 1 == 1 with | _ -> 1 | true -> 2
 print $"{x}"
 WEOF
-errout=$($BIN "$scriptdir/warn.weir" 2>&1 >/dev/null)
-echo "$errout" | grep -qF "unreachable" || fail "runner must surface warnings: $errout"
-out=$($BIN "$scriptdir/warn.weir" 2>/dev/null)
-expect "warnings do not block execution" "1" "$out"
+rc=0; errout=$($BIN "$scriptdir/dead.weir" 2>&1) || rc=$?
+[ $rc -eq 1 ] || fail "unreachable arm must be a hard error (rc=$rc)"
+echo "$errout" | grep -qF "unreachable" || fail "unreachable-arm error missing: $errout"
+echo "e2e ok: unreachable arm is a hard error"
 
 cat > "$scriptdir/noelse.weir" <<'WEOF'
 if 1 > 2 then "x"
@@ -453,9 +464,9 @@ errout=$($BIN "$scriptdir/noelse.weir" 2>&1) && fail "non-unit no-else should be
 echo "$errout" | grep -qF "add an else" || fail "tailored no-else error missing: $errout"
 echo "e2e ok: non-unit no-else rejected with the tailored fix"
 
-errout=$($BIN -e 'match 1 == 1 with | _ -> 1 | true -> 2' 2>&1 >/dev/null)
-echo "$errout" | grep -qF "unreachable" || fail "-e must surface warnings: $errout"
-echo "e2e ok: -e surfaces warnings (unreachable arm)"
+errout=$($BIN -e 'echo a ; b' 2>&1 >/dev/null)
+echo "$errout" | grep -qF "does not chain commands" || fail "-e must surface warnings: $errout"
+echo "e2e ok: -e surfaces warnings (';' argv nudge)"
 
 if $BIN -e 'match 1 == 1 with | true -> 1' 2>/dev/null; then
     fail "-e must hard-reject a non-exhaustive match"

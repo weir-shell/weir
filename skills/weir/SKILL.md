@@ -106,7 +106,9 @@ print $"branches: {branches}"
 - `match` supports `| true ->` / `| false ->`, `when` guards, and
   constructor patterns. **A non-exhaustive match is a hard error**, and
   guarded arms don't count as coverage — always include an unguarded
-  catch-all or cover every case.
+  catch-all or cover every case. The dual is also a hard error: an
+  unguarded catch-all with arms below it (a lowercase name like
+  `| clean ->` BINDS — a typo'd constructor swallows the match).
 - `let x = e in body` inline; in multi-line scripts an indented `let`
   line closes at the next line of the same indent (F# light syntax).
 - String/seq ops are data-last for piping: `Seq.where (Str.contains "err")`.

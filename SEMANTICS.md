@@ -133,8 +133,13 @@ quantity semantics now.
   (`Some (Some x) / Some None / None` is exhaustive), only unguarded
   arms count, and the precision matters because a hard error must not
   reject genuinely-total matches. Consequence: every accepted match is
-  total — the match-failure runtime class no longer exists. The
-  warnings channel keeps advisory findings only (unreachable arms). Grammar note: `-`
+  total — the match-failure runtime class no longer exists.
+  Reachability is coverage's dual and the same severity (2026-07-21,
+  upgraded from a warning on a live footgun): an arm below an unguarded
+  catch-all is a HARD error, reported AT the catch-all — under the
+  casing law a typo'd constructor (`| zClean ->`) silently becomes a
+  variable binder that swallows the match, so the variable form hints
+  against the scrutinee's cases. Grammar note: `-`
   no longer matches when followed by `>`, so guard expressions sit
   naturally before `->`. Keywords if/then/else/when joined the reserved
   set — and therefore can never be command heads. Warnings surfacing:
