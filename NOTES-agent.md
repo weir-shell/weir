@@ -11,6 +11,11 @@ skill lines and targeted hints).
 
 ## friction
 
+- 2026-07-21 | loc report | no `elif`: wrote it reflexively in a
+  cascade; `else if`/match-with-guards cover it, but the parse error
+  points at `then` rather than naming `elif`. Also no `Seq.last` —
+  spelled `Seq.skip (n - 1) |> Seq.head` for the extension split.
+
 - 2026-07-18 | skill-file authoring | let-RHS command mode: wrote
   `let files = git ls-files` reflexively; the doc-test rejected it on
   first run. The parked let-RHS extension now has agent evidence.
