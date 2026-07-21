@@ -1,5 +1,97 @@
 # Spike Notes
 
+## The sentinel ledger CLOSES — type classes Session C (2026-07-21)
+
+The arc, written as the measure-arc's counterpart: OPENED (unit/print
+session — print's ∀__print scheme, the first hand-rolled capability
+check, ledgered instead of generalized) → THREE CUSTOMERS accrued
+(print/printerr, show, Seq.contains; sortBy's runtime rule counted as
+the shadow fourth) → MACHINERY (qualified types over the existing
+Damas-Milner, built when the design was on file and the user opened
+it by fiat) → RETIRED (==, contains, show, sortBy all ordinary
+constrained schemes; the print family alone remains a sentinel BY
+DESIGN — the splice boundary is deliberately narrower than Show).
+Where the measure arc is the precedent for CANCELLING speculative
+checker machinery, this one is the precedent for building it: the
+ledger accrued real customers first, the design waited on file, and
+the machinery landed with zero existing-pin edits in A, one amended
+pin in B, zero in C. Session C's matrix ran all green EXCEPT for one
+scope CORRECTION (no code change): fn-typed record fields are
+reachable via generic instantiation, so the Eq battery now pins the
+Box<fn> rejection Session A had reasoned unreachable. Products
+pinned across generic unions/records, rows (double instantiation,
+mergeRows movement), nested generalization escape, match guards, the
+print sentinel, splices, and pmap workers. TRANSCRIPTION's A/B
+addenda consolidated into one section. The qualified-types question
+that opened with the ledger is ANSWERED and closed.
+
+
+## Type classes Session B — Show + Ord; the runtime check dies (2026-07-21)
+
+Machine-regime again (standing choice from A). The headline landed
+exactly as the plan wrote it: sortBy's runtime scalar-key rule is
+replaced by a static Ord constraint, and the e2e proves the stronger
+property — a script with an effect BEFORE a bad-key sortBy runs ZERO
+effects (check-first). scalarCompare's failwith is now an
+unreachable-marker; "zero runtime type checks" is fully true for the
+first time. Show retired with all THREE of its sentinel arms
+(bare-default included: bare-value show now stays generic with Show
+riding — one pin amended with archaeology, the only churn). Show ≠
+Eq structurally after all (seqs render but do not compare), so the
+one-predicate consolidation note from the plan is moot — the classes
+diverged at birth, vindicating keeping them distinct. Ord's
+no-decomposition rule got its own tripwire (FileRow: all fields
+orderable, record still rejected). Oracle: both flagship shapes
+Same — including the generic sort helper, which F# also
+constraint-infers. Session C (hardening: classes x rows x generics
+product battery, ledger closure) remains.
+
+
+## Type classes Session A — Eq, machine-regime-only (2026-07-20)
+
+Opened by fiat (recorded; the trigger had not fired) and run
+MACHINE-REGIME-ONLY by explicit user choice: no human read of the
+constraint core — this is the deferral experiment's boldest test, in
+those words. The tax paid in its place: the class battery (14 pins),
+two new tripwires (ambient-constraint containment — the class analog
+of transitive reachability — and per-use freshness), the
+TRANSCRIPTION addendum with the new judgment surface and flag 6, the
+suite run twice, oracle Same pins, and effect-level e2e. The
+machinery landed inside the stop-and-report budget: Scheme + Ctx +
+demand/discharge + the four audited arms; zero parser/eval/value
+touches (erasure held). ZERO existing-pin edits — the == re-type
+keeps concrete failure messages verbatim and the sentinel arms'
+deletion is invisible to every pinned shape. Session-caught drift:
+the ORACLE's runner mirror kept the old constraint-less
+generalization and mis-verdicted a fidelity pin — the pin itself
+caught it (weir=Accept claimed, mirror said Accept for a shape the
+real runner rejects... inverted: the mirror over-accepted). The
+mirror is a fourth statement-pipeline consumer that agrees by
+discipline, not construction — logged as a formalization candidate
+(unify the runner and mirror on one checked-statement function).
+Retired: sentinel customer three (Seq.contains). Sessions B (Show/
+Ord — the runtime check dies) and C (hardening) remain.
+
+
+## Type classes: design filed ahead of trigger (2026-07-20)
+
+PLAN-type-classes.md is ON FILE, not opened — the district precedent
+applied to the biggest parked item: settle the design while the
+evidence ledger honestly shows the trigger unfired (sentinel ledger:
+three builtin customers — Eq via ==/Seq.contains, Show via show, Ord
+via sortBy's runtime rule — and ZERO user-code generic-equality
+receipts). What the filing bought: the scope correction is now on
+paper (generics exist; this is qualified types OVER them), the
+rows×classes rules are pre-decided (the novel surface), the
+stop-and-report budget is drawn (static filter only — any runtime
+constraint presence is a model violation), and the read-regime
+question is isolated as the ONE decision requiring explicit user
+blessing before Session A (scoped constraint-core read, the plan's
+lean, vs machine-regime-only as the deferral experiment's boldest
+test). Session A's trigger remains: a user-code receipt, or recorded
+fiat.
+
+
 ## Hardening sweep — the postmortem pays out (2026-07-20)
 
 The silent-swallow postmortem, run through the deferral experiment's

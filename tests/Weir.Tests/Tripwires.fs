@@ -89,4 +89,31 @@ let tripwires =
                   match typecheck e2 e with
                   | Ok _ -> ()
                   | Error terr -> failtest $"sibling instantiations interfered: {formatError terr}"
+          }
+          test "class constraints on env-free vars stay ambient (Session A, checklist 3.x analog)" {
+              // g's parameter unifies with the enclosing lambda's y — an
+              // env-free var. The Eq constraint from == must NOT be scooped
+              // into g's scheme (the var is not generalized), so g stays
+              // monomorphic and the second use at string errors. If this
+              // stops erroring, constraint scooping over-generalized — the
+              // class analog of the transitive-reachability tripwire.
+              Expect.stringContains
+                  (checkErr "fun y -> let g = fun x -> x == y in (g 1) && (g \"s\")").Message
+                  "expected int, got string"
+                  ""
+          }
+          test "Ord never decomposes (Session B): orderable fields do not make a record orderable" {
+              // Ord is int|string|bool EXACTLY — if this stops erroring,
+              // someone added structural Ord decomposition without the
+              // receipts (records/unions ordering is parked, message-named)
+              Expect.stringContains (checkErr "ls |> Seq.sortBy (fun f -> f)").Message "cannot sort" ""
+          }
+          test "constraint instantiation is per-use (deep-copy discipline)" {
+              // first use at int succeeds; second at functions fails — if
+              // constraint state were shared between instantiations, the
+              // first's solution would leak into (or corrupt) the second
+              Expect.stringContains
+                  (checkErr "let same = fun x -> fun y -> x == y in (same 1 1) && (same print print)").Message
+                  "requires equatable values"
+                  ""
           } ]

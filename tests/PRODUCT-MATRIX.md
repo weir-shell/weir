@@ -48,3 +48,29 @@ the triage protocol:
    three sites return different shapes (exec fold, int main arm,
    Result loop) and a shared protect() would obscure more than it
    insures. The known-seam risk note stands in PROCESS.md's index.
+
+## Axis 2: class constraints × existing machinery (Session C, 2026-07-21)
+
+Written FIRST, per the composition-product rule. Decisions on the new
+axis: Eq/Show/Ord demand rules, constraint scooping (generalization),
+instantiation freshening, row riding/discharge, the ambiguity rule.
+Products against: generic unions/records, rows, nested
+generalization, match guards, the print sentinel, splices, parallel
+combinators. POSITIONS.md note: classes add NO expression form or
+token — no position sweep required; the exclusion is this sentence.
+
+| product | cell |
+|---------|------|
+| Eq × generic unions (deep) | NEW — `Option<Option<int>>` accepts; function payload rejects through two levels |
+| Eq × generic records | NEW + FINDING — a fn-typed field is UNREACHABLE by declaration but REACHABLE via generic instantiation (`Box<'a>` at `{ V = print }`); Eq must reject through it. Session A's "unreachable" scope note was WRONG for generics — this cell is the correction |
+| classes × rows × double instantiation | NEW — one row-constrained scheme, two records: clean record passes, seq-carrying record rejects, both from the same scheme |
+| constraint × mergeRows | EXISTS (unit hook) + NEW behavioral — two constrained rows unify; the moved constraint still fires |
+| constraint escape through nested generalization | NEW — inner constrained scheme, outer scoop: `Eq` climbs to the outer scheme and rejects at the outer use site |
+| ambiguity × let (constraint off the value type) | EXISTS — "nothing determines" pin (A) |
+| classes × match guards | NEW — `==` in a `when` guard demands through the scrutinee |
+| classes × print sentinel | NEW — `print (show x)` composes; print's scalar rule untouched by Show |
+| classes × splices | NEW — a constrained helper's result in a command splice |
+| classes × pmap | NEW (e2e) — constrained closure across workers; erasure means nothing crosses threads but values |
+| classes × districts/assembler | N/A — classes are checker-only; no line-shape surface |
+| Ord × decomposition | EXISTS — tripwire (B) |
+| Show/Eq shared var | EXISTS — B battery (strictest class decides) |

@@ -210,3 +210,58 @@ RecordDef, no types to walk).
 5. ELet/check-ELet duplicate the generalization computation.
 (The first edition's §4/measure content: retired — see the NOTES
 measure-removal arc.)
+
+## Class constraints (consolidated — Sessions A/B/C, 2026-07-21)
+
+Machine-regime feature (no human read at any session — the deferral
+experiment's boldest test, NOTES has the arc). Closed class family
+{Eq, Show, Ord}: compiler-owned, structural, inferred, fully erased.
+
+    demand:  Γ; C ⊢ K τ           (K ∈ {Eq, Show, Ord})
+      τ = α                        → C := C ∪ {α : K}
+      τ = ρ (row var)              → C := C ∪ {ρ : K}   (rides; the
+                                     row's discharge re-demands)
+      Eq:   {int,str,bool,unit} ⊤ ; fun,seq ⊥ ; N⟨τ̄⟩ decompose
+      Show: {int,str,bool,unit} ⊤ ; fun ⊥ ; seq⟨σ⟩ → K σ ;
+            N⟨τ̄⟩ decompose         (Show ⊃ Eq: seqs render)
+      Ord:  {int,str,bool} ⊤ ; ALL else ⊥ — no decomposition
+            (tripwired: orderable fields ≠ orderable record)
+      decompose is cycle-keyed on formatTy; failure formats the
+      ORIGINAL demanded τ at the DEMANDING span (legacy message
+      families kept verbatim for Eq/Show; Ord speaks the plan's
+      error contract).
+
+    discharge (the ONLY solve trigger; nothing backtracks):
+      bind α := τ        → demand C(α) against τ
+      mergeRows ρ1 → ρ2  → C(ρ1) moves to ρ2      (product-pinned)
+      dischargeRow ρ → N → demand C(ρ) against N (before field binds
+                           — substitute-before-recurse extends to
+                           the discharge: it must see the nominal)
+
+    generalize (both ELet arms + statement boundary):
+      Forall = fv(τ) − envFree;  Cs = C↾Forall;  C := C ∖ Forall
+      — env-free constraints stay AMBIENT (tripwired); nested
+      escape climbs to the outer scheme (product-pinned)
+
+    instantiate: mapping α→α′ freshens Cs(α) onto α′, instantiation
+      span = new demanding site, describe per class (deep-copy and
+      per-use independence tripwired)
+
+    statement boundary (typecheckWith): pending on α ∈ fv(τ_result)
+      → residue (Script/REPL/oracle-mirror generalize via
+      generalizeWith — the mirror drifted first, its own pin caught
+      it); α ∉ fv(τ_result) → ambiguity error (no defaulting).
+
+    Erasure: Cs never reaches finalize, TypedExpr, or the value
+    domain (products pinned across splices and pmap workers). The
+    sole runtime type check (sortBy's scalar keys) is DEAD —
+    check-first e2e: bad key ⇒ zero effects.
+
+Reachability correction (Session C matrix): fn-typed record fields
+are undeclarable but REACHABLE via generic instantiation
+(Box⟨'a⟩ at { V = print }) — Eq decomposition must and does reject
+through them; Session A's "unreachable" scope note was wrong for
+generics.
+
+Flag 6: dischargeRow has three jobs braided (subst, class
+discharge, field binds).

@@ -131,12 +131,12 @@ let weirVerdict (src: string) : Verdict =
                     | Error _ -> Error()
                     | Ok tenv' -> Ok tenv'
                 | Ok(Weir.Ast.SLet(name, e)) ->
-                    match Weir.Check.typecheck tenv e with
+                    match Weir.Check.typecheckWith tenv e with
                     | Error _ -> Error()
-                    | Ok te ->
+                    | Ok(te, cs) ->
                         Ok
                             { tenv with
-                                Values = Map.add name (generalize te.Ty) tenv.Values }
+                                Values = Map.add name (generalizeWith cs te.Ty) tenv.Values }
                 | Ok(Weir.Ast.SCmd e) ->
                     match Weir.Check.typecheck tenv e with
                     | Error _ -> Error()

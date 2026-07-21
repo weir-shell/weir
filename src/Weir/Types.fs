@@ -49,11 +49,40 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TBool
     | TUnit -> Set.empty
 
-type Scheme = { Forall: Set<string>; Ty: Ty }
+// The closed class family (2026-07-20, PLAN-type-classes Session A).
+// Compiler-owned, structural, no user instances; fully erased after
+// checking — a constraint never reaches the value domain.
+[<RequireQualifiedAccess>]
+type Cls =
+    | Eq
+    | Show
+    | Ord
 
-let generalize (ty: Ty) : Scheme = { Forall = tyVars ty; Ty = ty }
+// Cs: constraints on quantified vars — `Eq a => a -> a -> bool` is
+// { Forall = {a}; Cs = [a, {Eq}]; Ty = a -> a -> bool }.
+type Scheme =
+    { Forall: Set<string>
+      Cs: Map<string, Set<Cls>>
+      Ty: Ty }
 
-let mono (ty: Ty) : Scheme = { Forall = Set.empty; Ty = ty }
+let generalize (ty: Ty) : Scheme =
+    { Forall = tyVars ty
+      Cs = Map.empty
+      Ty = ty }
+
+// generalization with the checker's constraint residue: only
+// constraints on vars actually quantified ride into the scheme
+let generalizeWith (cs: Map<string, Set<Cls>>) (ty: Ty) : Scheme =
+    let fa = tyVars ty
+
+    { Forall = fa
+      Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
+      Ty = ty }
+
+let mono (ty: Ty) : Scheme =
+    { Forall = Set.empty
+      Cs = Map.empty
+      Ty = ty }
 
 type RecordDef =
     { Name: string

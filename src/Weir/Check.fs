@@ -76,15 +76,25 @@ let private substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
 
     go ty
 
+// A pending class constraint on an unresolved type/row var: the
+// demanding site's span and message formatter travel with it, so a
+// later discharge failure reads at the place that demanded it.
+type private Pending =
+    { Cls: Cls
+      Span: Span
+      Describe: Ty -> string }
+
 type private Ctx =
     { mutable Fresh: int
       mutable Subst: Map<string, Ty>
-      mutable Rows: Map<string, Map<string, Ty * Span>> }
+      mutable Rows: Map<string, Map<string, Ty * Span>>
+      mutable Cons: Map<string, Pending list> }
 
 let private newCtx () =
     { Fresh = 0
       Subst = Map.empty
-      Rows = Map.empty }
+      Rows = Map.empty
+      Cons = Map.empty }
 
 let private freshName (ctx: Ctx) (prefix: string) : string =
     ctx.Fresh <- ctx.Fresh + 1
@@ -181,11 +191,100 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
             | TNamed(n, args) -> TNamed(n, args |> List.map rename)
             | t -> t
 
+        // constraints freshen WITH the vars (deep-copy discipline): the
+        // instantiation site's span becomes the demanding site
+        for KeyValue(v, clss) in sch.Cs do
+            match Map.tryFind v mapping with
+            | Some v' ->
+                let ps =
+                    clss
+                    |> Set.toList
+                    |> List.map (fun cls ->
+                        { Cls = cls
+                          Span = span
+                          Describe =
+                            match cls with
+                            | Cls.Eq ->
+                                fun t ->
+                                    $"this use requires equatable values, got {formatTy t} — sequences and functions cannot be compared with '=='"
+                            | Cls.Show -> fun t -> $"show cannot render functions; this is {formatTy t}"
+                            | Cls.Ord ->
+                                fun t ->
+                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, string, or bool" })
+
+                ctx.Cons <- Map.add v' (ps @ (Map.tryFind v' ctx.Cons |> Option.defaultValue [])) ctx.Cons
+            | None -> ()
+
         rename sch.Ty
 
 let private envFreeVars (ctx: Ctx) (env: TypeEnv) : Set<string> =
     env.Values
     |> Map.fold (fun acc _ sch -> acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall)) Set.empty
+
+// The class solver (Session A: Eq only). Concrete types run the shape
+// predicate; applied constructors decompose structurally; bare vars
+// (and row vars) carry the constraint forward — bind discharges them
+// the moment they resolve. Failure formats the ORIGINAL demanded type
+// (matching the pre-class message families). Fully erased: no runtime
+// presence — the stop-and-report budget's hard line.
+let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<unit, TypeError> =
+    let pend (name: string) =
+        ctx.Cons <- Map.add name (p :: (Map.tryFind name ctx.Cons |> Option.defaultValue [])) ctx.Cons
+
+    let rec ok (seen: Set<string>) (ty: Ty) : bool =
+        match resolve ctx ty with
+        | TVar v ->
+            pend v
+            true
+        | TRowVar(r, _) ->
+            // rides the row; discharges when the row does (all fields
+            // then satisfy the class, recursively)
+            pend r
+            true
+        | t ->
+            let decompose (n: string) (targs: Ty list) =
+                let key = formatTy t
+
+                seen.Contains key
+                || (match Map.tryFind n env.Types with
+                    | Some(Record def) ->
+                        def.Fields
+                        |> List.forall (fun (_, ft) -> ok (Set.add key seen) (substParams def.Params targs ft))
+                    | Some(Union def) ->
+                        def.Cases
+                        |> List.forall (fun (_, payload) ->
+                            payload
+                            |> Option.forall (fun pt -> ok (Set.add key seen) (substParams def.Params targs pt)))
+                    | None -> false)
+
+            match p.Cls, t with
+            // Eq: no function or seq anywhere, recursively
+            | Cls.Eq, (TInt | TStr | TBool | TUnit) -> true
+            | Cls.Eq, (TFun _ | TSeq _) -> false
+            | Cls.Eq, TNamed(n, targs) -> decompose n targs
+            // Show: no function anywhere; seqs render fine
+            | Cls.Show, (TInt | TStr | TBool | TUnit) -> true
+            | Cls.Show, TFun _ -> false
+            | Cls.Show, TSeq elem -> ok seen elem
+            | Cls.Show, TNamed(n, targs) -> decompose n targs
+            // Ord: int | string | bool EXACTLY — no decomposition, no
+            // record/union ordering (no receipts; the message names it)
+            | Cls.Ord, (TInt | TStr | TBool) -> true
+            | Cls.Ord, _ -> false
+
+    if ok Set.empty ty0 then
+        Ok()
+    else
+        err p.Span (p.Describe(finalTy ctx ty0))
+
+// vars discharge their pendings the moment they resolve — no trial
+// resolution exists anywhere in the checker, so a discharge is final
+let private dischargeCons (ctx: Ctx) (env: TypeEnv) (v: string) (t: Ty) : Result<unit, TypeError> =
+    match Map.tryFind v ctx.Cons with
+    | None -> Ok()
+    | Some ps ->
+        ctx.Cons <- Map.remove v ctx.Cons
+        allOk ps (fun p -> demand ctx env p t)
 
 let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actual: Ty) : Result<unit, TypeError> =
     let expected = resolve ctx expected
@@ -199,7 +298,7 @@ let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actu
             err span $"cannot construct the infinite type '{v} = {formatTy (finalTy ctx t)}"
         else
             ctx.Subst <- Map.add v t ctx.Subst
-            Ok()
+            dischargeCons ctx env v t
     | TNamed(n1, a1), TNamed(n2, a2) when n1 = n2 && List.length a1 = List.length a2 ->
         allOk (List.zip a1 a2) (fun (x, y) -> bind ctx env span x y)
     | TRowVar(r, _), TNamed(n, targs)
@@ -226,12 +325,15 @@ and private dischargeRow
 
         ctx.Subst <- Map.add r (TNamed(name, targs)) ctx.Subst
 
-        allOk constraints (fun (field, (ft, fspan)) ->
-            match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
-            | Some(_, declTy) -> bind ctx env fspan (substParams def.Params targs declTy) ft
-            | None ->
-                let hint = didYouMean field (List.map fst def.Fields)
-                err fspan $"{name} has no field '{field}'{hint}")
+        dischargeCons ctx env r (TNamed(name, targs))
+        |> Result.bind (fun () ->
+
+            allOk constraints (fun (field, (ft, fspan)) ->
+                match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
+                | Some(_, declTy) -> bind ctx env fspan (substParams def.Params targs declTy) ft
+                | None ->
+                    let hint = didYouMean field (List.map fst def.Fields)
+                    err fspan $"{name} has no field '{field}'{hint}"))
     | Some(Union _) -> err span $"{name} is a union; only records have fields"
     | None -> err span $"unknown type '{name}'"
 
@@ -242,6 +344,14 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
         let fields1 = Map.tryFind r1 ctx.Rows |> Option.defaultValue Map.empty
         ctx.Subst <- Map.add r1 (TRowVar(r2, [])) ctx.Subst
 
+        match Map.tryFind r1 ctx.Cons with
+        | Some ps ->
+            ctx.Cons <-
+                ctx.Cons
+                |> Map.remove r1
+                |> Map.add r2 (ps @ (Map.tryFind r2 ctx.Cons |> Option.defaultValue []))
+        | None -> ()
+
         allOk (Map.toList fields1) (fun (field, (ft, fspan)) ->
             let fields2 = Map.tryFind r2 ctx.Rows |> Option.defaultValue Map.empty
 
@@ -251,87 +361,37 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
                 ctx.Rows <- Map.add r2 (Map.add field (ft, fspan) fields2) ctx.Rows
                 Ok())
 
-let rec private isEquatable (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
-    match ty with
-    | TInt
-    | TStr
-    | TBool
-    | TUnit -> true
-    | TFun _
-    | TSeq _
-    | TVar _
-    | TRowVar _ -> false
-    | TNamed(n, targs) ->
-        let key = formatTy ty
-
-        seen.Contains key
-        || (match Map.tryFind n env.Types with
-            | Some(Record def) ->
-                def.Fields
-                |> List.forall (fun (_, ft) -> isEquatable env (Set.add key seen) (substParams def.Params targs ft))
-            | Some(Union def) ->
-                def.Cases
-                |> List.forall (fun (_, payload) ->
-                    payload
-                    |> Option.forall (fun pt -> isEquatable env (Set.add key seen) (substParams def.Params targs pt)))
-            | None -> false)
-
 // The sentinel scheme registered for the print builtin. The quantified name
 // is unforgeable through declarations (ctx-fresh names are aN/rN), so a
 // structural comparison against this scheme is exactly "print, unshadowed".
 let printScheme: Scheme =
     { Forall = Set.singleton "__print"
+      Cs = Map.empty
       Ty = TFun(TVar "__print", TUnit) }
 
 let private isPrintFamily (env: TypeEnv) (name: string) =
     (name = "print" || name = "printerr")
     && Map.tryFind name env.Values = Some printScheme
 
-// show : 'a -> string — the debugging renderer (REPL-shaped, lossy).
-// Same sentinel discipline as print; showable = no function anywhere in
-// the type, recursively.
+// show : Show a => a -> string — the debugging renderer (REPL-shaped,
+// lossy). Sentinel RETIRED (Session B): an ordinary constrained scheme
+// on the normal instantiate/apply path; showable = no function
+// anywhere, recursively (seqs render fine — Show is wider than Eq).
 let showScheme: Scheme =
-    { Forall = Set.singleton "__show"
-      Ty = TFun(TVar "__show", TStr) }
+    { Forall = Set.singleton "a"
+      Cs = Map [ "a", Set [ Cls.Show ] ]
+      Ty = TFun(TVar "a", TStr) }
 
-// Seq.contains — sentinel customer three (ledger in NOTES): the element
-// type must be EQUATABLE, or [f] |> Seq.contains g would typecheck while
-// == on functions is banned. The scheme doubles as a normal generic for
-// unintercepted shapes (bare member value); the evidenced shapes get the
-// check.
+// Seq.contains — sentinel customer three, RETIRED (2026-07-20, Session
+// A): the sentinel arms are gone; this is now an ordinary constrained
+// scheme `Eq a => a -> seq<a> -> bool` served by the normal
+// instantiate/apply path. The retirement is the proof the class
+// machinery is real.
 let containsScheme: Scheme =
-    { Forall = Set.singleton "__contains"
-      Ty = TFun(TVar "__contains", TFun(TSeq(TVar "__contains"), TBool)) }
+    { Forall = Set.singleton "a"
+      Cs = Map [ "a", Set [ Cls.Eq ] ]
+      Ty = TFun(TVar "a", TFun(TSeq(TVar "a"), TBool)) }
 
-let private isContainsSentinel (env: TypeEnv) =
-    env.Modules
-    |> Map.tryFind "Seq"
-    |> Option.bind (Map.tryFind "contains")
-    |> (=) (Some containsScheme)
-
-let private isShowBuiltin (env: TypeEnv) =
-    Map.tryFind "show" env.Values = Some showScheme
-
-let rec private hasFunction (env: TypeEnv) (seen: Set<string>) (ty: Ty) : bool =
-    match ty with
-    | TFun _ -> true
-    | TSeq t -> hasFunction env seen t
-    | TRowVar(_, fields) -> fields |> List.exists (snd >> hasFunction env seen)
-    | TNamed(n, targs) ->
-        let key = formatTy ty
-
-        not (seen.Contains key)
-        && (match Map.tryFind n env.Types with
-            | Some(Record def) ->
-                def.Fields
-                |> List.exists (fun (_, ft) -> hasFunction env (Set.add key seen) (substParams def.Params targs ft))
-            | Some(Union def) ->
-                def.Cases
-                |> List.exists (fun (_, payload) ->
-                    payload
-                    |> Option.exists (fun pt -> hasFunction env (Set.add key seen) (substParams def.Params targs pt)))
-            | None -> false)
-    | _ -> false
 
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with
@@ -371,6 +431,19 @@ let rec private typeBinOp
         )
     | _, TVar _, ((TInt | TStr | TBool) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
     | _, ((TInt | TStr | TBool) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
+    | ("==" | "<>"), a, b ->
+        // Eq via the class solver (Session A): concrete failures keep the
+        // pre-class message verbatim; unresolved operands now DEFER (the
+        // constraint rides the var) instead of rejecting at the operator
+        bind ctx env opSpan a b
+        |> Result.bind (fun () ->
+            let p =
+                { Cls = Cls.Eq
+                  Span = opSpan
+                  Describe =
+                    fun t -> $"'{op}' is not defined for {formatTy t}; sequences and functions cannot be compared" }
+
+            demand ctx env p a |> Result.map (fun () -> TBool))
     | _, TVar _, TVar _ -> err opSpan $"cannot infer the operand types of '{op}'; pipe data in or use concrete values"
     | _, TRowVar _, _
     | _, _, TRowVar _ -> err opSpan $"operator '{op}' is not defined for records"
@@ -379,15 +452,6 @@ let rec private typeBinOp
     | ("*" | "/"), TInt, TInt -> Ok(TInt)
     | (">" | "<" | ">=" | "<="), TInt, TInt -> Ok TBool
     | ("&&" | "||"), TBool, TBool -> Ok TBool
-    | ("==" | "<>"), a, b ->
-        bind ctx env opSpan a b
-        |> Result.bind (fun () ->
-            let resolved = finalTy ctx a
-
-            if isEquatable env Set.empty resolved then
-                Ok TBool
-            else
-                err opSpan $"'{op}' is not defined for {formatTy resolved}; sequences and functions cannot be compared")
     | _, (TInt as a), (TInt as b) when a <> b -> mismatch r.Span a b
     | _, a, b when a <> b ->
         let shorthandHint =
@@ -587,12 +651,6 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         first.Span
                         $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it"
         }
-    | EVar "show" when isShowBuiltin env ->
-        // bare-value position: the defaulted form, like print
-        Ok
-            { Kind = TEVar "show"
-              Ty = TFun(TStr, TStr)
-              Span = expr.Span }
     | EVar(("print" | "printerr") as pname) when isPrintFamily env pname ->
         // Bare-value position (e.g. Seq.iter print): the defaulted form.
         Ok
@@ -635,8 +693,20 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let valueTy = finalTy ctx tvalue.Ty
 
             let scheme =
-                { Forall = tyVars valueTy - envFreeVars ctx env
-                  Ty = valueTy }
+                let fa = tyVars valueTy - envFreeVars ctx env
+
+                let cs =
+                    fa
+                    |> Set.toList
+                    |> List.choose (fun v ->
+                        Map.tryFind v ctx.Cons
+                        |> Option.map (fun ps -> v, ps |> List.map _.Cls |> Set.ofList))
+                    |> Map.ofList
+
+                // scooped constraints move INTO the scheme
+                ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
+
+                { Forall = fa; Cs = cs; Ty = valueTy }
 
             let! tbody =
                 infer
@@ -696,51 +766,6 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                  | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
                  | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
              | _ -> err arg.Span "Env.load takes a record type name, e.g. Env.load Config")
-        | EField({ Kind = EVar "Seq" }, "contains", fspan), [ needle; source ] when isContainsSentinel env ->
-            result {
-                let elemTy = TVar(freshName ctx "a")
-                let! tneedle = infer ctx env needle
-                do! bind ctx env needle.Span elemTy tneedle.Ty
-                let! tsource = infer ctx env source
-                do! bind ctx env source.Span (TSeq elemTy) tsource.Ty
-                let resolved = finalTy ctx elemTy
-
-                if not (isEquatable env Set.empty resolved) then
-                    return! err needle.Span $"Seq.contains needs equatable elements; these are {formatTy resolved}"
-                else
-                    let thead =
-                        { Kind = TEVar "Seq.contains"
-                          Ty = TFun(resolved, TFun(TSeq resolved, TBool))
-                          Span = fspan }
-
-                    let t1 =
-                        { Kind = TEApp(thead, tneedle)
-                          Ty = TFun(TSeq resolved, TBool)
-                          Span = fspan }
-
-                    return
-                        { Kind = TEApp(t1, tsource)
-                          Ty = TBool
-                          Span = expr.Span }
-            }
-        | EVar "show", [ arg ] when isShowBuiltin env ->
-            result {
-                let! targ = infer ctx env arg
-                let argTy = finalTy ctx targ.Ty
-
-                if hasFunction env Set.empty argTy then
-                    return! err arg.Span $"show cannot render functions; this is {formatTy argTy}"
-                else
-                    let tshow =
-                        { Kind = TEVar "show"
-                          Ty = TFun(argTy, TStr)
-                          Span = head.Span }
-
-                    return
-                        { Kind = TEApp(tshow, targ)
-                          Ty = TStr
-                          Span = expr.Span }
-            }
         | EVar(("print" | "printerr") as pname), [ arg ] when isPrintFamily env pname ->
             result {
                 let! targ = infer ctx env arg
@@ -787,53 +812,6 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 { Kind = TEPipe(targ, tcmd)
                   Ty = TSeq TStr
                   Span = expr.Span }
-        }
-    | EPipe(arg, { Kind = EApp({ Kind = EField({ Kind = EVar "Seq" }, "contains", fspan) }, needle) }) when
-        isContainsSentinel env
-        ->
-        result {
-            let! targ = infer ctx env arg
-            let elemTy = TVar(freshName ctx "a")
-            do! bind ctx env arg.Span (TSeq elemTy) targ.Ty
-            let! tneedle = infer ctx env needle
-            do! bind ctx env needle.Span elemTy tneedle.Ty
-            let resolved = finalTy ctx elemTy
-
-            if not (isEquatable env Set.empty resolved) then
-                return! err needle.Span $"Seq.contains needs equatable elements; these are {formatTy resolved}"
-            else
-                let thead =
-                    { Kind = TEVar "Seq.contains"
-                      Ty = TFun(resolved, TFun(TSeq resolved, TBool))
-                      Span = fspan }
-
-                let tfn =
-                    { Kind = TEApp(thead, tneedle)
-                      Ty = TFun(TSeq resolved, TBool)
-                      Span = fspan }
-
-                return
-                    { Kind = TEPipe(targ, tfn)
-                      Ty = TBool
-                      Span = expr.Span }
-        }
-    | EPipe(arg, ({ Kind = EVar "show" } as showExpr)) when isShowBuiltin env ->
-        result {
-            let! targ = infer ctx env arg
-            let argTy = finalTy ctx targ.Ty
-
-            if hasFunction env Set.empty argTy then
-                return! err arg.Span $"show cannot render functions; this is {formatTy argTy}"
-            else
-                let tshow =
-                    { Kind = TEVar "show"
-                      Ty = TFun(argTy, TStr)
-                      Span = showExpr.Span }
-
-                return
-                    { Kind = TEPipe(targ, tshow)
-                      Ty = TStr
-                      Span = expr.Span }
         }
     | EPipe(arg, ({ Kind = EVar(("print" | "printerr") as pname) } as printExpr)) when isPrintFamily env pname ->
         result {
@@ -1269,8 +1247,20 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let valueTy = finalTy ctx tvalue.Ty
 
             let scheme =
-                { Forall = tyVars valueTy - envFreeVars ctx env
-                  Ty = valueTy }
+                let fa = tyVars valueTy - envFreeVars ctx env
+
+                let cs =
+                    fa
+                    |> Set.toList
+                    |> List.choose (fun v ->
+                        Map.tryFind v ctx.Cons
+                        |> Option.map (fun ps -> v, ps |> List.map _.Cls |> Set.ofList))
+                    |> Map.ofList
+
+                // scooped constraints move INTO the scheme
+                ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
+
+                { Forall = fa; Cs = cs; Ty = valueTy }
 
             let! tbody =
                 check
@@ -1341,9 +1331,47 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         Kind = kind
         Ty = finalTy ctx te.Ty }
 
-let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
+// typecheckWith: the statement-boundary rule for class constraints.
+// Residue = pendings still riding UNRESOLVED vars that appear in the
+// statement's final type — the caller's generalization scoops them
+// (generalizeWith). A pending on a var OUTSIDE the final type is
+// AMBIGUOUS (no defaulting, no ambiguity resolution): error asking
+// for context, the reject-don't-guess posture one step later than the
+// old at-the-operator rule.
+let typecheckWith (env: TypeEnv) (expr: Expr) : Result<TypedExpr * Map<string, Set<Cls>>, TypeError> =
     let ctx = newCtx ()
-    infer ctx env expr |> Result.map (finalizeExpr ctx)
+
+    match infer ctx env expr with
+    | Error e -> Error e
+    | Ok te ->
+        let te = finalizeExpr ctx te
+        let resultVars = tyVars te.Ty
+
+        let openCons =
+            ctx.Cons
+            |> Map.toList
+            |> List.collect (fun (v, ps) ->
+                match resolve ctx (TVar v) with
+                | TVar u
+                | TRowVar(u, _) -> ps |> List.map (fun p -> u, p)
+                | _ -> [])
+
+        match openCons |> List.tryFind (fun (u, _) -> not (resultVars.Contains u)) with
+        | Some(_, p) ->
+            err
+                p.Span
+                "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
+        | None ->
+            let residue =
+                openCons
+                |> List.groupBy fst
+                |> List.map (fun (u, ps) -> u, ps |> List.map (fun (_, p) -> p.Cls) |> Set.ofList)
+                |> Map.ofList
+
+            Ok(te, residue)
+
+let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
+    typecheckWith env expr |> Result.map fst
 
 let rec private validateTy
     (env: TypeEnv)
@@ -1434,6 +1462,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
 
                     let ctorScheme payload =
                         { Forall = allowed + tyVars (ctorTy payload)
+                          Cs = Map.empty
                           Ty = ctorTy payload }
 
                     let values =

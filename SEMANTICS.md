@@ -316,7 +316,9 @@ quantity semantics now.
   exit code is data. **`Args.flag`/`Args.value`** are script-only argv
   scanners (empty-string short form for long-only flags, pinned);
   `Seq.contains/exists/forall/item/tryItem/skip` complete the access
-  family — `contains` requires equatable elements (sentinel customer
+  family — `contains` requires equatable elements (the sentinel
+  ledger is CLOSED: retired into constrained schemes, PLAN-type-classes
+  executed; print alone stays a sentinel by design
   three; ledger in NOTES).
 - **`show : 'a -> string`** (2026-07-20; resolves the collision parked
   in the unit-print plan, choosing the builtin over widening `print` —
@@ -776,6 +778,31 @@ quantity semantics now.
   (`xs |> f == v`) is a targeted check error naming the precedence fix
   — operators yield values, never functions, so the shape is always
   wrong.
+
+## Type classes — Eq (Session A, 2026-07-20)
+
+Closed, compiler-owned, structural, INFERRED — qualified types over
+the existing Damas-Milner machinery, no user instances, no syntax:
+constraints attach silently from use (`let same x y = x == y` gets
+`Eq a =>` and works at any equatable type), ride generalization,
+freshen per instantiation, and are FULLY ERASED after checking.
+"Instances" are the promoted shape predicates (Eq = no function or
+seq anywhere, recursively). Failures locate at the DEMANDING site;
+concrete failures keep the pre-class message families verbatim. A
+constraint left on a type nothing determines is an ambiguity error
+(no defaulting; the reject-don't-guess posture one step later than
+the old at-the-operator rule). Rows x classes: Eq rides a row var
+and discharges when the row does. `Seq.contains` is now an ordinary
+constrained scheme — sentinel customer three RETIRED. Session B
+(2026-07-21): Show and Ord landed; `show : Show a => a -> string`
+(sentinel retired; Show is WIDER than Eq — seqs render, functions do
+not; bare-value show no longer defaults to string, it stays generic
+with Show riding) and `Seq.sortBy : Ord b => ...` (Ord = int | string
+| bool EXACTLY, no decomposition — a record of orderable fields is
+still not orderable, tripwired). THE SOLE RUNTIME TYPE CHECK DIED
+with sortBy's static constraint: "zero runtime type checks" is fully
+true for the first time (check-first e2e proves a bad key runs zero
+effects). The splice family is NOT Show and stays scalar-exact.
 
 ## The F# border — rejected vs pending (2026-07-20)
 

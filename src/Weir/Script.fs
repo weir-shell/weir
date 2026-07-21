@@ -703,14 +703,14 @@ let run (path: string) (scriptArgs: string list) : int =
                                     | Error terr -> Error(typedErr ll terr)
                                     | Ok tenv' -> Ok(tenv', (ll.Head, CType decl) :: acc)
                                 | Ok(SLet(name, e)) ->
-                                    match Check.typecheck tenv e with
+                                    match Check.typecheckWith tenv e with
                                     | Error terr -> Error(typedErr ll terr)
-                                    | Ok te ->
+                                    | Ok(te, cs) ->
                                         printWarnings ll te
 
                                         let tenv' =
                                             { tenv with
-                                                Values = Map.add name (generalize te.Ty) tenv.Values }
+                                                Values = Map.add name (generalizeWith cs te.Ty) tenv.Values }
 
                                         Ok(tenv', (ll.Head, CLet(name, te)) :: acc)
                                 | Ok(SCmd e) ->

@@ -80,13 +80,16 @@ let private printHint (state: State) (line: string) =
         line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
-let private tryRun (state: State) (e: Expr) : Result<Check.TypedExpr * Eval.Value * string, string * Span option> =
-    match Check.typecheck state.TypeEnv e with
+let private tryRun
+    (state: State)
+    (e: Expr)
+    : Result<Check.TypedExpr * Map<string, Set<Cls>> * Eval.Value * string, string * Span option> =
+    match Check.typecheckWith state.TypeEnv e with
     | Error terr -> Error(Check.formatError terr, Some terr.Span)
-    | Ok te ->
+    | Ok(te, cs) ->
         try
             let v = Eval.eval state.Values te
-            Ok(te, v, Eval.formatValue v)
+            Ok(te, cs, v, Eval.formatValue v)
         with
         | Eval.ExitRequest _ ->
             // intentional exit, not an eval error — the run loop turns it
@@ -136,7 +139,7 @@ let rec private loop (state: State) =
                         printHint state line
 
                     state
-                | Ok(te, v, formatted) ->
+                | Ok(te, cs, v, formatted) ->
                     printWarnings state te
 
                     if v <> Eval.VUnit then
@@ -144,7 +147,7 @@ let rec private loop (state: State) =
 
                     { TypeEnv =
                         { state.TypeEnv with
-                            Values = Map.add name (generalize te.Ty) state.TypeEnv.Values }
+                            Values = Map.add name (generalizeWith cs te.Ty) state.TypeEnv.Values }
                       Values = Map.add name v state.Values }
             | Ok(SExpr e)
             | Ok(SCmd e) ->
@@ -157,7 +160,7 @@ let rec private loop (state: State) =
                         printHint state line
 
                     state
-                | Ok(te, v, formatted) ->
+                | Ok(te, cs, v, formatted) ->
                     printWarnings state te
 
                     if v <> Eval.VUnit then

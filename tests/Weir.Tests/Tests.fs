@@ -2329,8 +2329,16 @@ let showTests =
               let nested = checkErr "let f = fun x -> x in show (Some f)"
               Expect.stringContains (formatError nested) "cannot render functions" "nested in a payload"
           }
-          test "bare value defaults to string -> string" {
-              Expect.equal (checkOk "Seq.map show").Ty (TFun(TSeq TStr, TSeq TStr)) ""
+          test "bare value stays generic with Show riding (was: defaulted to string)" {
+              // sentinel-era show defaulted its bare-value type to string;
+              // the constrained scheme (Session B) keeps it genuinely
+              // generic — the element type resolves from data, and Show
+              // rides until it does
+              expectValue "nats |> take 2 |> Seq.map show |> Seq.toList |> Seq.length" (VInt 2L)
+
+              match (checkOk "Seq.map show").Ty with
+              | TFun(TSeq(TVar _), TSeq TStr) -> ()
+              | ty -> failtest $"expected generic Show mapping, got {formatTy ty}"
           }
           test "a let shadows the show builtin" { expectValue "let show = fun x -> x in show 9" (VInt 9L) } ]
 
@@ -2567,6 +2575,217 @@ let childEnvTests =
 
               Expect.equal got (VStr "$HOME") ""
               System.IO.File.Delete f
+          } ]
+
+let typeClassTests =
+    testList
+        "Type classes: Eq (Session A)"
+        [ // the payoff shape: user code generic over equality
+          test "generic eq generalizes: Eq a => a -> a -> bool" {
+              expectValue "let same x y = x == y in same 1 1" (VBool true)
+          }
+          test "generic eq reused at a second type in one statement" {
+              expectValue "let same x y = x == y in same \"a\" \"a\" && same 2 2" (VBool true)
+          }
+          test "generic eq on records through the scheme" {
+              expectValue "let same x y = x == y in same (Running 1) (Running 1)" (VBool true)
+          }
+          test "instantiation at functions rejects at the USE site" {
+              let terr = checkErr "let same x y = x == y in same print printerr"
+              Expect.stringContains (formatError terr) "requires equatable values" ""
+          }
+          test "instantiation at seqs rejects" {
+              let terr = checkErr "let same x y = x == y in same nats nats"
+              Expect.stringContains (formatError terr) "requires equatable values" ""
+          }
+          test "concrete failures keep the pre-class message verbatim" {
+              Expect.stringContains (checkErr "nats == nats").Message "'==' is not defined for seq<int>" ""
+          }
+          test "Seq.contains is an ordinary constrained scheme now" {
+              expectValue "[1; 2] |> Seq.contains 2" (VBool true)
+          }
+          test "Seq.contains still rejects function elements (sentinel parity)" {
+              let terr = checkErr "[print] |> Seq.contains printerr"
+              Expect.stringContains (formatError terr) "equatable" ""
+          }
+          test "ambiguity: constraint on a type nothing determines is an error" {
+              let terr = checkErr "([Seq.head []] |> Seq.contains (Seq.head [])) && true"
+              Expect.stringContains (formatError terr) "nothing determines" ""
+          }
+          test "rows x Eq: row-level constraint discharges against a seq-carrying record (reject)" {
+              let holderEnv = env |> declare "type Holder = { S: seq<int> }"
+              let e = parse "let eqr = fun a -> fun b -> a == b in eqr { S = nats } { S = nats }"
+
+              match Weir.Check.typecheck holderEnv e with
+              | Ok _ -> failtest "expected rejection through the row discharge"
+              | Error terr -> Expect.stringContains terr.Message "requires equatable values" ""
+          }
+          test "rows x Eq: field-type constraint rides and solves at a good record" {
+              let e =
+                  parse "let eqn = fun a -> fun b -> a.Bytes == b.Bytes in eqn (ls |> Seq.head) (ls |> Seq.head)"
+
+              match Weir.Check.typecheck env e with
+              | Ok te -> Expect.equal (formatTy te.Ty) "bool" ""
+              | Error terr -> failtest (formatError terr)
+          }
+          test "rows x Eq x generalization: both a row and a class constraint survive the scheme" {
+              // eqn : Eq b => { r with Name: b } -> b -> bool  (shape-level check:
+              // accepted at FileRow.Name=string, rejected at a function)
+              let ok =
+                  parse "let eqn = fun a -> fun x -> a.Name == x in eqn (ls |> Seq.head) \"n\""
+
+              match Weir.Check.typecheck env ok with
+              | Ok te -> Expect.equal (formatTy te.Ty) "bool" ""
+              | Error terr -> failtest (formatError terr)
+          }
+          test "scheme text: constraints ride generalization (script-level SLet path)" {
+              // the Script path generalizes via generalizeWith — pin the scheme's Cs
+              match Weir.Parser.parseStmt "let same x y = x == y" with
+              | Ok(SLet(_, e)) ->
+                  match Weir.Check.typecheckWith env e with
+                  | Ok(te, cs) ->
+                      let sch = Weir.Types.generalizeWith cs te.Ty
+                      Expect.isTrue (sch.Cs |> Map.exists (fun _ s -> s.Contains Weir.Types.Cls.Eq)) "Eq rides"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "erasure: a constrained closure partially applies like any other" {
+              expectValue "let same x y = x == y in let s5 = same 5 in s5 5" (VBool true)
+          } ]
+
+let typeClassBTests =
+    testList
+        "Type classes: Show + Ord (Session B)"
+        [ test "generic show generalizes: Show a => a -> string" {
+              expectValue "let render x = show x in render 42" (VStr "42")
+          }
+          test "Show is wider than Eq: seqs render" {
+              expectValue "let render x = show x in (render [1; 2] |> Str.length) > 0" (VBool true)
+          }
+          test "Show rejects functions at the use site (legacy message kept)" {
+              let terr = checkErr "let render x = show x in render print"
+              Expect.stringContains (formatError terr) "cannot render functions" ""
+          }
+          test "Ord: string keys sort" {
+              expectValue "[\"b\"; \"a\"] |> Seq.sortBy (fun s -> s) |> Seq.head" (VStr "a")
+          }
+          test "Ord: record key is a CHECK-time error with the contract message" {
+              let terr = checkErr "ls |> Seq.sortBy (fun f -> f)"
+              Expect.stringContains (formatError terr) "cannot be ordered — keys are int, string, or bool" ""
+          }
+          test "Ord: function key rejects" {
+              let terr = checkErr "ls |> Seq.sortBy (fun f -> fun x -> x)"
+              Expect.stringContains (formatError terr) "cannot sort by this key" ""
+          }
+          test "Ord rides generalization: a sort helper stays generic" {
+              expectValue "let bykey k xs = xs |> Seq.sortBy k in [3; 1] |> bykey (fun n -> n) |> Seq.head" (VInt 1L)
+          }
+          test "Ord x rows: a row-typed key rejects when it discharges to a record" {
+              let terr =
+                  checkErr "let bad r = ls |> Seq.sortBy (fun _ -> r) in bad (ls |> Seq.head)"
+
+              Expect.stringContains (formatError terr) "cannot sort by this key" ""
+          }
+          test "Show x Eq on one var: both constraints ride and solve" {
+              expectValue "let f x y = (show x == show y) && x == y in f 1 1" (VBool true)
+          }
+          test "Show x Eq on one var: Eq's narrower rule still rejects seqs" {
+              // show accepts seqs, == does not — the var carries BOTH and
+              // the strictest class decides
+              let terr = checkErr "let f x y = (show x == show y) && x == y in f [1] [1]"
+              Expect.stringContains (formatError terr) "requires equatable values" ""
+          } ]
+
+let typeClassCTests =
+    testList
+        "Type classes: hardening (Session C)"
+        [ test "Eq x generic unions: two levels of Option accept" {
+              expectValue "let same x y = x == y in same (Some (Some 1)) (Some (Some 1))" (VBool true)
+          }
+          test "Eq x generic unions: function payload rejects through two levels" {
+              let terr =
+                  checkErr "let same x y = x == y in same (Some (Some print)) (Some (Some print))"
+
+              Expect.stringContains (formatError terr) "requires equatable values" ""
+          }
+          test "Eq x generic records: the reachability correction (fn field via instantiation)" {
+              // Session A scoped fn-field records as undeclarable; generic
+              // instantiation REACHES them — the matrix cell that corrected it
+              let boxEnv = env |> declare "type Box<'a> = { V: 'a }"
+
+              let e =
+                  parse "let same = fun x -> fun y -> x == y in same { V = print } { V = print }"
+
+              match Weir.Check.typecheck boxEnv e with
+              | Ok _ -> failtest "expected rejection through Box<fn>"
+              | Error terr -> Expect.stringContains terr.Message "requires equatable values" ""
+          }
+          test "Eq x generic records: clean instantiation decomposes and passes" {
+              let boxEnv = env |> declare "type Box<'a> = { V: 'a }"
+              let e = parse "let same = fun x -> fun y -> x == y in same { V = 1 } { V = 1 }"
+
+              match Weir.Check.typecheck boxEnv e with
+              | Ok te -> Expect.equal (formatTy te.Ty) "bool" ""
+              | Error terr -> failtest (formatError terr)
+          }
+          test "classes x rows: one row-constrained scheme, two verdicts" {
+              let holderEnv =
+                  env
+                  |> declare "type Holder = { S: seq<int> }"
+                  |> declare "type Flat = { N: int }"
+
+              let good = parse "let eqr = fun a -> fun b -> a == b in eqr { N = 1 } { N = 1 }"
+
+              match Weir.Check.typecheck holderEnv good with
+              | Ok te -> Expect.equal (formatTy te.Ty) "bool" "clean record passes"
+              | Error terr -> failtest (formatError terr)
+
+
+              let bad =
+                  parse "let eqr = fun a -> fun b -> a == b in eqr { S = nats } { S = nats }"
+
+              match Weir.Check.typecheck holderEnv bad with
+              | Ok _ -> failtest "seq-carrying record must reject"
+              | Error terr -> Expect.stringContains terr.Message "requires equatable values" ""
+          }
+          test "constraint x mergeRows: unified constrained rows still fire" {
+              let holderEnv = env |> declare "type Holder = { S: seq<int> }"
+
+              let e =
+                  parse "let f = fun a -> fun b -> (a == b) && (a == a) in f { S = nats } { S = nats }"
+
+              match Weir.Check.typecheck holderEnv e with
+              | Ok _ -> failtest "moved constraint must still reject"
+              | Error terr -> Expect.stringContains terr.Message "requires equatable values" ""
+          }
+          test "constraint escapes through nested generalization to the outer scheme" {
+              let outerOk =
+                  "let outer = fun x -> (let same = fun a -> fun b -> a == b in same x x) in outer 1"
+
+              expectValue outerOk (VBool true)
+
+              let terr =
+                  checkErr "let outer = fun x -> (let same = fun a -> fun b -> a == b in same x x) in outer print"
+
+              Expect.stringContains (formatError terr) "equatable" ""
+          }
+          test "classes x match guards: == in a when-guard demands through the scrutinee" {
+              expectValue
+                  "let pick x = match x with | v when v == 3 -> \"three\" | _ -> \"other\" in pick 3"
+                  (VStr "three")
+
+              let terr =
+                  checkErr "let pick x = match x with | v when v == x -> 1 | _ -> 0 in pick print"
+
+              Expect.stringContains (formatError terr) "equatable" ""
+          }
+          test "classes x print sentinel: composed, print's scalar rule untouched" {
+              let te = checkOk "print (show [1; 2])"
+              Expect.equal (formatTy te.Ty) "unit" ""
+
+              // Show did NOT widen print: a seq<int> still cannot go to print directly
+              let terr = checkErr "print [1]"
+              Expect.stringContains (formatError terr) "print" ""
           } ]
 
 let productMatrixTests =
@@ -3293,6 +3512,9 @@ let allTests =
           sequencingTests
           offsideTests
           productMatrixTests
+          typeClassTests
+          typeClassBTests
+          typeClassCTests
           childEnvTests
           scannerTests
           sigilTests

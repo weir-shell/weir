@@ -218,12 +218,15 @@ let private isEmptyImpl: Value =
         | VSeq items -> VBool(Seq.isEmpty items)
         | v -> unreachable $"the checker rejects 'isEmpty' on {formatValue v}")
 
+// The sole runtime type check DIED here (2026-07-21, Session B):
+// sortBy's key is statically Ord-constrained, so non-scalar keys are
+// CHECK-time errors and this comparison is total over what remains.
 let private scalarCompare (name: string) (a: Value) (b: Value) : int =
     match a, b with
     | VInt x, VInt y -> compare x y
     | VStr x, VStr y -> compare x y
     | VBool x, VBool y -> compare x y
-    | v, _ -> failwith $"{name}: keys must be ints, strings or bools, got {formatValue v}"
+    | v, _ -> unreachable $"the checker rejects '{name}' keys of {formatValue v}"
 
 let private sortByImpl: Value =
     VBuiltin(fun keyf ->
@@ -928,6 +931,13 @@ let bareAliasHomes: Map<string, string> =
                 None))
     |> Map.ofList
 
+// sortBy : Ord b => (a -> b) -> seq<a> -> seq<a> — the constraint that
+// killed the runtime scalar-key rule (sentinel-ledger customer four).
+let private sortByScheme: Scheme =
+    { Forall = Set [ "a"; "b" ]
+      Cs = Map [ "b", Set [ Cls.Ord ] ]
+      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a"))) }
+
 let typeEnv: TypeEnv =
     { Values =
         entries
@@ -943,6 +953,7 @@ let typeEnv: TypeEnv =
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
         |> Map.ofList
         |> Map.change "Seq" (Option.map (Map.add "contains" Check.containsScheme))
+        |> Map.change "Seq" (Option.map (Map.add "sortBy" sortByScheme))
       Types =
         Map
             [ fileRow.Name, Record fileRow

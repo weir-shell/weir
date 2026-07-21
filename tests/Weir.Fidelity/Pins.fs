@@ -73,6 +73,30 @@ let pins =
           "type T = { Name: string; Count: int }\nlet t =\n    { Name = \"a\"\nCount = 2 }\n"
           (Diverges "record-fields-ignore-indent")
 
+      // --- type classes: Eq (Session A, 2026-07-20) — the fidelity GAIN ---
+      pinT
+          "generic equality generalizes (F# equality constraint, inferred)"
+          "let same x y = x == y\nlet r = same 1 1\n"
+          "let same x y = x = y\nlet r = same 1 1\n"
+          Same
+      pinT
+          "generic equality rejected at functions (both sides)"
+          "let same x y = x == y\nlet r = same (fun a -> a) (fun a -> a)\n"
+          "let same x y = x = y\nlet r = same (fun (a: int) -> a) (fun (a: int) -> a)\n"
+          Same
+
+      // --- type classes: Show/Ord (Session B, 2026-07-21) ---
+      pinT
+          "generic sort helper (F# comparison constraint, inferred)"
+          "let bykey k xs = xs |> Seq.sortBy k\nlet r = [3; 1] |> bykey (fun n -> n)\n"
+          "let bykey k xs = xs |> Seq.sortBy k\nlet r = [3; 1] |> bykey (fun n -> n)\n"
+          Same
+      pinT
+          "sort by function key rejected (both compilers)"
+          "let r = [1] |> Seq.sortBy (fun n -> fun x -> x + n)\n"
+          "let r = [1] |> Seq.sortBy (fun n -> fun x -> x + n)\n"
+          Same
+
       // --- let ... in ---
       pin "explicit let-in one-liner" "let y = let x = 1 in x + 1\n" Same
 

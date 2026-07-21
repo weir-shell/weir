@@ -619,6 +619,86 @@ if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
 fi
 echo "e2e ok: forced unknown command rejected"
 
+# --- type classes Session C (2026-07-21): hardening products
+
+cdir=$(mktemp -d)
+
+cat > "$cdir/prod.weir" <<'WEOF'
+let same x y = x == y
+
+// classes x splices: a constrained helper's result in command argv
+echo verdict: (same 1 1)
+
+// classes x pmap: constrained closure across workers (erasure means
+// only values cross threads)
+let hits = [1; 2; 1] |> Seq.pmap (fun n -> same n 1) |> Seq.where (fun b -> b) |> Seq.length
+print $"hits {hits}"
+WEOF
+out=$(cd "$cdir" && $BIN prod.weir 2>&1)
+expect "classes x splices: constrained result in argv" "verdict: true" "$out"
+expect "classes x pmap: constrained closure across workers" "hits 2" "$out"
+
+rm -rf "$cdir"
+
+# --- type classes Session B (2026-07-21): Show + Ord — the runtime check dies
+
+bdir=$(mktemp -d)
+
+# THE HEADLINE: sortBy-on-record-key is rejected at CHECK time — the
+# effect before it must NOT run (check-first proves the runtime check
+# is gone, replaced by static Ord)
+cat > "$bdir/ord.weir" <<'WEOF'
+printerr "must-not-run"
+
+ls |> Seq.sortBy (fun f -> f) |> print
+WEOF
+errout=$($BIN "$bdir/ord.weir" 2>&1 || true)
+echo "$errout" | grep -qF "cannot sort by this key" || fail "record key must reject at check: $errout"
+echo "$errout" | grep -qF "must-not-run" && fail "check-first violated: the effect ran"
+echo "e2e ok: sortBy record key dies at CHECK time, zero effects (the headline)"
+
+cat > "$bdir/show.weir" <<'WEOF'
+let render x = show x
+
+print (render 42)
+print (render [1; 2])
+print (render (render 7))
+WEOF
+out=$($BIN "$bdir/show.weir")
+expect "generic show: one helper, int/seq/string" "42" "$out"
+
+out=$($BIN -e '[3; 1; 2] |> Seq.sortBy (fun n -> 0 - n) |> Seq.head'); rc=$?
+expect "Ord int keys still sort (descending trick)" "3 : int" "$out"
+
+rm -rf "$bdir"
+
+# --- type classes Session A (2026-07-20): Eq — sentinels retired
+
+tdir=$(mktemp -d)
+
+cat > "$tdir/eq.weir" <<'WEOF'
+type Pair = { A: int; B: int }
+
+let same x y = x == y
+
+let uniq xs =
+    xs |> Seq.where (fun x -> not ([x] |> Seq.contains x) == false) |> Seq.length
+
+print $"{same 1 2} {same "a" "a"} {same { A = 1; B = 2 } { A = 1; B = 2 }} {uniq [1; 2; 3]}"
+WEOF
+out=$(cd "$tdir" && $BIN eq.weir)
+expect "generic Eq: one helper, three types (the dedupe capability)" "false true true 3" "$out"
+
+errout=$($BIN -e 'let same x y = x == y in same print printerr' 2>&1 || true)
+echo "$errout" | grep -qF "requires equatable values" || fail "instantiation at functions must reject: $errout"
+echo "e2e ok: constrained scheme rejects at the demanding use site"
+
+errout=$($BIN -e '([Seq.head []] |> Seq.contains (Seq.head [])) && true' 2>&1 || true)
+echo "$errout" | grep -qF "nothing determines" || fail "ambiguity must error: $errout"
+echo "e2e ok: ambiguous constraint errors (no defaulting)"
+
+rm -rf "$tdir"
+
 # --- hardening sweep (2026-07-20): product-matrix effect counts,
 # fixture backfill, ExitRequest entry-point insurance
 
