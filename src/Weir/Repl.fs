@@ -30,6 +30,10 @@ let private loadHistory () =
     if File.Exists historyFile then
         history.AddRange(File.ReadAllLines historyFile)
 
+// Ctrl+Left/Right navigation; '.' stays a separator here (unlike
+// completion's wordStartAt) so field chains hop segment by segment
+let private isWordChar (c: char) = Char.IsLetterOrDigit c || c = '_'
+
 let private wordStartAt (text: string) (pos: int) =
     let mutable i = pos
 
@@ -97,6 +101,31 @@ let private readLineTty () : string option =
                 buf.Remove(pos - 1, 1) |> ignore
                 pos <- pos - 1
                 redraw ()
+        | ConsoleKey.LeftArrow when ctrl ->
+            // readline word-wise: skip separators, then the word
+            let t = buf.ToString()
+            let mutable p = pos
+
+            while p > 0 && not (isWordChar t[p - 1]) do
+                p <- p - 1
+
+            while p > 0 && isWordChar t[p - 1] do
+                p <- p - 1
+
+            pos <- p
+            redraw ()
+        | ConsoleKey.RightArrow when ctrl ->
+            let t = buf.ToString()
+            let mutable p = pos
+
+            while p < t.Length && not (isWordChar t[p]) do
+                p <- p + 1
+
+            while p < t.Length && isWordChar t[p] do
+                p <- p + 1
+
+            pos <- p
+            redraw ()
         | ConsoleKey.LeftArrow when pos > 0 ->
             pos <- pos - 1
             Console.Write "\x1b[1D"

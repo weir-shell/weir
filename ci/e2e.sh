@@ -666,9 +666,13 @@ rm -rf "$svdir"
 if command -v python3 >/dev/null 2>&1; then
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-e2e.py" || fail "lsp integration probes"
     echo "e2e ok: lsp diagnostics/hover/completion over stdio"
+
+    # --- REPL line editor under a pty (2026-07-21) ---------------------
+    python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
+    echo "e2e ok: repl Ctrl+Left/Right word navigation"
 else
     # no silent caps: name what was skipped
-    echo "e2e SKIP: python3 absent — lsp integration probes NOT run" >&2
+    echo "e2e SKIP: python3 absent — lsp + repl pty probes NOT run" >&2
 fi
 
 # --- weir check [--json] (2026-07-21, LSP chain 2/3) -------------------
