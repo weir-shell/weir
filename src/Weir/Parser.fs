@@ -88,8 +88,8 @@ let private mkExpr (kind, span) = { Kind = kind; Span = span }
 let private seqExpr, private seqExprRef = createParserForwardedToRef<Expr, unit> ()
 
 // comma is the tuple constructor at F#'s precedence [D:bare-comma]:
-// below `;` (weir-only cell, decided — `a, b ; c`
-// is `(a, b) ; c`), above `|>` (`xs |> f, ys |> g` groups F#-identically).
+// below `;` (`a, b ; c` is `(a, b) ; c`), above `|>`
+// (`xs |> f, ys |> g` groups F#-identically).
 // Command mode is untouched by construction: barewords keep their commas.
 let private commaExpr, private commaExprRef =
     createParserForwardedToRef<Expr, unit> ()
@@ -238,7 +238,7 @@ let private interpLit =
 // the intent unambiguous, unlike the bare let-RHS which excludes
 // builtins). $(chain) captures the value; !(chain) desugars to
 // (chain) |> print — eager, streaming, raising, unit.
-// Layer 1 [D:env-sugar-layers]: sigils take an optional env slot between glyph
+// [D:env-sugar-layers]: sigils take an optional env slot between glyph
 // and paren — $e(...) / !e(...), e : seq<EnvVar>, applied to EVERY
 // spawn in the interior chain (segments and | complete alike, threaded
 // at construction). The ident must be GLUED to both glyph and paren;
@@ -279,14 +279,11 @@ let private effectSigil =
           Span = span })
     .>> ws
 
-// prefix minus [D:prefix-minus] (the loc.weir friction receipt;
-// retires the no-unary-minus pending row). F#'s adjacency rule, which
-// the ORACLE corrected mid-landing: `-` is prefix when the previous
-// char cannot end an operand (start, space, `(`, `[`, `{`, `=`, ...)
-// AND the operand is glued to the glyph. In an application chain that
-// makes `f -1` mean `f (-1)` — application, NOT the subtraction the
-// folklore promised — while `x-1`, `x - 1` stay infix. Desugars to
-// `0 - e`, so typing and eval are untouched.
+// prefix minus [D:prefix-minus] — F#'s adjacency rule: `-` is prefix
+// when the previous char cannot end an operand (start, space, `(`,
+// `[`, `{`, `=`, ...) AND the operand is glued to the glyph. In an
+// application chain `f -1` means `f (-1)`; `x-1` and `x - 1` stay
+// infix. Desugars to `0 - e`, so typing and eval are untouched.
 let private postfixAtomFwd, private postfixAtomFwdRef =
     createParserForwardedToRef<Expr, unit> ()
 
@@ -426,8 +423,7 @@ let private lambda =
         { Kind = kind
           Span = { Start = pos p; End = body.Span.End } })
 
-// let f x y = e desugars to nested lambdas [D:let-param-sugar]
-// (corpus-driven: the top mining yield — F#'s most common line shape).
+// let f x y = e desugars to nested lambdas [D:let-param-sugar].
 // Params are plain idents OR () — the unit param pins its type in the
 // checker (the name "()" is unforgeable through declarations); other
 // pattern params stay rejected.
@@ -897,8 +893,7 @@ tySynRef.Value <-
               | w ->
                   ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
                   |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
-    // t1 * t2 [* ...] is a tuple type [D:tuples-reversal] — star was unclaimed
-    // in type syntax since the measure removal
+    // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]
     |> fun atom ->
         sepBy1 atom (attempt (str_ws "*"))
         |>> function
@@ -990,10 +985,8 @@ let private noExternals =
       ExternalNames = fun () -> Seq.empty }
 
 // Structured failure: the position travels as DATA
-// [D:structured-parse-failure] — the runner used to regex `Ln: 1 Col: (\d+)` out of
-// FParsec's message text, a silent break waiting on any FParsec
-// update). Message text is unchanged; Col is Some only for the
-// single-logical-line case the runner translates.
+// [D:structured-parse-failure]. Message text is unchanged; Col is
+// Some only for the single-logical-line case the runner translates.
 type ParseFailure = { Message: string; Col: int option }
 
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =

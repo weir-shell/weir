@@ -1,18 +1,11 @@
 module Weir.Lsp
 
-// weir lsp — v1 [D:lsp-v1]: diagnostics, hover,
-// completion over stdio JSON-RPC.
-//
-// AOT path DECISION (reported per the plan's gate): the hand-rolled
-// loop, taken by prediction — Ionide.LanguageServerProtocol carries a
-// reflection JSON serializer, exactly what the trimmer discipline
-// bans; v1 speaks six methods with flat payloads and needs ~200 lines.
-//
-// NO INCREMENTALITY, on purpose: whole-file re-check per didChange —
-// licensed by the pinned 10ms whole-file check median (the 6ms
-// discipline's dividend). The server owns NO type state between
-// checks: per-document TEXT is the only state (stale-cache bugs
-// refused by construction).
+// weir lsp — v1 [D:lsp-v1]: diagnostics, hover, completion over
+// stdio JSON-RPC. Hand-rolled loop (Ionide.LanguageServerProtocol
+// carries a reflection serializer the trimmer discipline bans).
+// Whole-file re-check per didChange; the server owns NO type state
+// between checks — per-document TEXT is the only state (stale-cache
+// bugs refused by construction).
 
 open System
 open Weir.Types
@@ -20,12 +13,9 @@ open Weir.Ast
 open Weir.Check
 
 // ---- JSON reading: System.Text.Json's DOM (JsonDocument) ----------
-// AOT-SAFE by design: the DOM reader is reflection-free and
-// trim-annotated — the plan's ban was on REFLECTION SERIALIZERS
-// (JsonSerializer<T> over F# records), not on this. The first
-// hand-rolled reader was over-conservative AND wrong on surrogate
-// pairs (didChange carries whole documents as JSON strings; emoji in
-// a script would have corrupted it) — corrected same day [D:lsp-v1].
+// AOT-SAFE by design [D:lsp-v1]: the DOM reader is reflection-free
+// and trim-annotated — the ban is on REFLECTION SERIALIZERS
+// (JsonSerializer<T> over F# records), not on this.
 
 open System.Text.Json
 
@@ -463,10 +453,9 @@ let run () : int =
                             w.WriteStartArray()
 
                             // textEdit with an explicit range: clients replace
-                            // [wordStart, cursor) with the suggestion — without
-                            // it, micro appends the raw label after a dot
-                            // (Env.Env.fromFile) and its prefix filter hides
-                            // results inside parens (user report [D:completion-textedit])
+                            // [wordStart, cursor) with the suggestion — bare
+                            // labels double-insert after dots and get
+                            // prefix-filtered inside parens [D:completion-textedit]
                             for label in items |> List.distinct |> List.truncate 200 do
                                 w.WriteStartObject()
                                 w.WriteString("label", label)

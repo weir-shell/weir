@@ -218,9 +218,9 @@ let private isEmptyImpl: Value =
         | VSeq items -> VBool(Seq.isEmpty items)
         | v -> unreachable $"the checker rejects 'isEmpty' on {formatValue v}")
 
-// The sole runtime type check DIED here [D:inferred-type-classes]:
-// sortBy's key is statically Ord-constrained, so non-scalar keys are
-// CHECK-time errors and this comparison is total over what remains.
+// sortBy's key is statically Ord-constrained
+// [D:inferred-type-classes], so this comparison is total over what
+// remains.
 let private scalarCompare (name: string) (a: Value) (b: Value) : int =
     match a, b with
     | VInt x, VInt y -> compare x y
@@ -371,8 +371,7 @@ let groupDef: RecordDef =
       Params = [ "k"; "v" ]
       Fields = [ "Key", TVar "k"; "Items", TSeq(TVar "v") ] }
 
-// Pair {Fst; Snd} RETIRED with the tuples reversal [D:tuples-reversal]:
-// pairwise re-typed to seq<'a * 'a>, zip lands as tuples' customer.
+// pairwise/zip produce tuples [D:tuples-reversal]
 let private pairwiseImpl: Value =
     VBuiltin(fun s ->
         match s with
@@ -736,8 +735,7 @@ let private envFromFileImpl: Value =
             )
         | v -> unreachable $"the checker rejects 'Env.fromFile' on {formatValue v}")
 
-// Env — process environment, the shell's other ambient input
-// [D:typed-env] (receipt: the nuget http-get translation).
+// Env — process environment [D:typed-env]
 let private envMembers: (string * Ty * Value) list =
     [ "get",
       TFun(TStr, TNamed("Option", [ TStr ])),
@@ -792,8 +790,8 @@ let private fileMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
 
 // fail keeps exit-1 (message-carrying); `exit n` is the propagation
-// spelling (renamed from Exit.code for F#-parity [D:exit-rename] — F# has
-// exit : int -> 'a; same unit typing here, no checker surface).
+// spelling [D:exit-rename] — unit-typed here (F#'s is 'a), no checker
+// surface.
 let private exitImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -854,8 +852,7 @@ let private printerrImpl: Value =
             VUnit
         | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
 
-// cmdEnv/runEnv — child-env injection [D:child-env-overlay],
-// explicit per call, overlay semantics via Proc.linesWith (lines IS
+// cmdEnv/runEnv [D:child-env-overlay] via Proc.linesWith (lines IS
 // linesWith [] — one spawn path by construction). The overlay seq is
 // forced inside the delay, so Env.fromFile boundary errors keep
 // raise-at-force semantics.

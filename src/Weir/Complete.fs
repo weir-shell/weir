@@ -27,7 +27,7 @@ let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
 // vars): the pipe source often mentions enclosing params
 // (`targetEnv t |> ...`) whose VALUES are unknown but irrelevant —
 // a known function's result type falls out of unification anyway
-// (user objection [D:hole-completion]: "we know targetEnv t's shape").
+// [D:hole-completion]
 let private holeNames (env: TypeEnv) (e: Weir.Ast.Expr) : string list =
     let acc = System.Collections.Generic.HashSet<string>()
 
@@ -134,9 +134,8 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                 // UNRESOLVABLE head: lambda/function params are never in
                 // the env, and a mid-edit statement has no typed tree.
                 // Nominal records make the fallback high-signal — offer
-                // every declared record's fields (user report
-                // [D:declared-fields-fallback]: `t.` in a function
-                // body completed nothing)
+                // every declared record's fields
+                // [D:declared-fields-fallback]
                 env.Types
                 |> Map.toList
                 |> List.collect (fun (_, def) ->
@@ -159,8 +158,8 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
         |> List.distinct
         |> List.sort
 
-// Error-recovery completion [D:repair-completion] ("in let quality t we know
-// what t is"): the caller REPAIRS the broken statement (dangling
+// Error-recovery completion [D:repair-completion]: the caller
+// REPAIRS the broken statement (dangling
 // `.prefix` blanked, closers appended) and this types the repaired
 // text — holes for stragglers — then reads the head identifier's
 // INFERRED type at its column. Row types from the statement's other
@@ -213,8 +212,7 @@ let fieldsAtRepaired
                 // an OPEN row (the `..` tail) is compatible with any
                 // declared record it fits inside — offer those records'
                 // FULL field sets too, so editing the one line that
-                // demanded a field does not hide it (user report
-                // [D:open-row-compat]: t. gave only the other lines' fields)
+                // demanded a field does not hide it [D:open-row-compat]
                 let known = fields |> List.map fst
 
                 let compatible =

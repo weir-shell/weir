@@ -397,11 +397,9 @@ let showScheme: Scheme =
       Cs = Map [ "a", Set [ Cls.Show ] ]
       Ty = TFun(TVar "a", TStr) }
 
-// Seq.contains — sentinel customer three, RETIRED
-// [D:inferred-type-classes]: the sentinel arms are gone; this is now an ordinary constrained
-// scheme `Eq a => a -> seq<a> -> bool` served by the normal
-// instantiate/apply path. The retirement is the proof the class
-// machinery is real.
+// Seq.contains — an ordinary constrained scheme
+// `Eq a => a -> seq<a> -> bool` [D:inferred-type-classes], served by
+// the normal instantiate/apply path.
 let containsScheme: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Eq ] ]
@@ -576,9 +574,8 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
 // tuples composed — bound against the RHS type, so components resolve
 // by unification. Refutable kinds (literals, constructors) are the
 // located check error the plan's contract names.
-// The casing law [D:lowercase-binds]: lowercase binds, uppercase declares.
-// Applied at every binder position; fields and match patterns are
-// deliberately untouched.
+// The casing law [D:lowercase-binds] applies at every binder
+// position; fields and match patterns are deliberately untouched.
 let casingError (span: Span) (name: string) : Result<'a, TypeError> =
     err
         span
@@ -646,12 +643,10 @@ let rec private isIrrefutablePat (p: Pattern) =
     | PStr _
     | PCase _ -> false
 
-// Exhaustiveness is a HARD ERROR [D:exhaustiveness-hard-error].
-// Only unguarded arms count — a guarded arm can fail at runtime. Coverage is
-// RECURSIVE through union payloads (Some (Some x) / Some None / None is
-// exhaustive), so precision matches the severity: a hard error must not
-// reject genuinely-total matches. Consequence: every accepted match is
-// total and the match-failure runtime class is gone.
+// Exhaustiveness [D:exhaustiveness-hard-error]. Only unguarded arms
+// count — a guarded arm can fail at runtime. Coverage is RECURSIVE
+// through union payloads (Some (Some x) / Some None / None is
+// exhaustive): a hard error must not reject genuinely-total matches.
 let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : string list =
     if pats |> List.exists isIrrefutablePat then
         []
@@ -714,11 +709,10 @@ let private exhaustive
     let unguarded =
         arms |> List.choose (fun (p, g) -> if g.IsNone then Some p else None)
 
-    // reachability is coverage's dual and the same severity
-    // [D:unreachable-arm-hard-error]: an unguarded irrefutable arm ends the match,
-    // so arms after it are dead — and under the casing law a typo'd
-    // constructor silently becomes a variable binder that swallows the
-    // match, hence the hint against the scrutinee's cases
+    // [D:unreachable-arm-hard-error]: an unguarded irrefutable arm
+    // ends the match, so arms after it are dead; a typo'd constructor
+    // becomes a variable binder under the casing law, hence the hint
+    // against the scrutinee's cases
     let deadArms =
         arms
         |> List.tryFindIndex (fun (p, g) -> g.IsNone && isIrrefutablePat p)
@@ -1780,7 +1774,8 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                             Values = values }
             }
 
-// Exhaustiveness moved into the checker as a hard error [D:exhaustiveness-hard-error];
+// Advisory findings only — coverage and reachability are checker
+// errors [D:exhaustiveness-hard-error].
 let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
     let acc = ResizeArray<Warning>()
 
@@ -1845,8 +1840,8 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
         | TEMatch(scrutinee, arms) ->
             walk scrutinee
 
-            // reachability lives in `exhaustive` as a hard error
-            // [D:unreachable-arm-hard-error]: dead arms are coverage's dual
+            // reachability is checked in `exhaustive`
+            // [D:unreachable-arm-hard-error]
             arms
             |> List.iter (fun (_, g, b) ->
                 g |> Option.iter walk

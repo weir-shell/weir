@@ -3,9 +3,7 @@ module Weir.Proc
 open System.Diagnostics
 open System.IO
 
-// Child-env overlay [D:child-env-overlay]: injected vars sit
-// ON TOP of the inherited environment — set/override those names,
-// inherit the rest, parent process untouched. `lines` IS the empty
+// Child-env overlay [D:child-env-overlay]: `lines` IS the empty
 // overlay, so cmd/cmdEnv share one path by construction.
 let linesWith
     (overlay: (string * string) list)

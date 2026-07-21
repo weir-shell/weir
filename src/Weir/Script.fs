@@ -7,9 +7,7 @@ open Weir.Types
 // The quote-aware scanner — the ONE string-state primitive
 // [D:one-scanner]. Folds f over the characters that sit OUTSIDE string
 // literals: double quotes honor backslash escapes, single quotes close
-// at the next single quote. Every line-shape rule that must ignore
-// string interiors (comment cut, brace depth) consumes this scanner;
-// a second inline quote state machine is a review flag.
+// at the next single quote.
 let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a =
     let mutable st = init
     let mutable i = 0
@@ -725,13 +723,10 @@ let discardError (ty: Ty) : string option =
     | ty -> Some $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
 
 // ---------------------------------------------------------------------------
-// The checked-statement pipeline — ONE owner [D:one-pipeline] (the
-// oracle-mirror incident's fix): parse -> statement dispatch -> check ->
-// statement-rule gate, physical spans computed INSIDE. The script
-// runner, the REPL, -e, and the oracle's weirVerdict mirror all call
-// this; a fifth consumer (weir check / the LSP) starts here. Consumers
-// agreeing "by discipline, not construction" is the drift class this
-// retires.
+// The checked-statement pipeline — ONE owner [D:one-pipeline]:
+// parse -> statement dispatch -> check -> statement-rule gate,
+// physical spans computed INSIDE. Every consumer (runner, REPL, -e,
+// check/LSP, the oracle mirror) calls this and only renders.
 
 type CheckedKind =
     | KType of Decl
@@ -785,13 +780,11 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
 // mkR builds the resolver FROM THE CURRENT ENV per statement, so
 // script-defined names are known at parse time — bindings shadow PATH
 // commands by construction (`let cat = ...` then `cat x` is an
-// application; ^cat forces the binary). The old once-built resolver
-// left script names unknown and correct only by accident (found via
-// weir check's assume-command rule [D:assume-resolver]).
+// application; ^cat forces the binary) [D:assume-resolver].
 // FParsec dumps embed the ASSEMBLED logical line — never what the user
-// wrote. Strip every snippet+caret block, keep the diagnostic text, and
-// translate embedded positions to physical line/col [D:clean-parse-dump]
-// (user: "show the unassembled — that is what the user expects in 100% cases").
+// wrote. Strip every snippet+caret block, keep the diagnostic text,
+// and translate embedded positions to physical line/col
+// [D:clean-parse-dump].
 let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     let lines = msg.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
@@ -942,8 +935,8 @@ let checkStatement
                   Warnings = warningsOf te }
     | Ok(SLet(name, e)) ->
         // SLet carries the name as a bare string, so re-derive its own
-        // columns from the statement text (grammar: ws `let` ws name) —
-        // the RHS span put the casing squiggle on the value [D:squiggle-on-binder]
+        // columns from the statement text (grammar: ws `let` ws name)
+        // [D:squiggle-on-binder]
         let nameSpan =
             let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+")
 
@@ -993,8 +986,7 @@ let checkStatement
                       Warnings = warningsOf te }
 
 // ---------------------------------------------------------------------------
-// weir check [--json] — the agent-facing diagnostics core and LSP v1's
-// payload generator [D:check-lsp-chain]. Check-everything, no
+// weir check [--json] [D:check-lsp-chain]. Check-everything, no
 // evaluation BY CONSTRUCTION (this function cannot reach Eval).
 // Statement-level error RECOVERY: a failed statement records its diag
 // and checking continues with the env unchanged, so a multi-error file
@@ -1041,12 +1033,10 @@ let private codeOf (parse: bool) (msg: string) : string =
 
 // AOT-safe JSON writing: Utf8JsonWriter (reflection-free, the write
 // twin of the JsonDocument reader) — escaping is the library's job,
-// never string interpolation's (corrected on user review;
-// the reflection SERIALIZER stays banned, the writer never was).
-// UnsafeRelaxedJsonEscaping: "unsafe" means HTML-embedding only —
-// these payloads are LSP/CLI, never HTML; the default encoder's
-// \u0022-style quote escaping is valid but trips naive clients
-// (micro's plugin rendered it mangled — user report [D:json-relaxed-escaping])
+// never string interpolation's. UnsafeRelaxedJsonEscaping: "unsafe"
+// means HTML-embedding only — these payloads are LSP/CLI, never HTML;
+// the default encoder's \u0022-style quote escaping is valid but
+// trips naive clients [D:json-relaxed-escaping]
 let private jsonWriterOptions =
     System.Text.Json.JsonWriterOptions(Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping)
 
@@ -1108,16 +1098,12 @@ let analyzeLines
     // script for uninstalled tools still parses; each head missing
     // from PATH becomes a WARNING (cmd-not-found). The RUNNER keeps
     // hard resolution — same pipeline, explicitly different resolver
-    // input (the gateExprs pattern), the verdict difference pinned.
-    // Receipt: editing bicep-deploy.weir without az/bicep installed
-    // cascaded into parse errors (user report [D:assume-resolver]).
+    // input (the gateExprs pattern), the verdict difference pinned
+    // [D:assume-resolver].
 
-    // ASSEMBLY RECOVERY [D:assembly-recovery]: a single mid-edit line that breaks
-    // assembly must not erase the whole document's knowledge (types,
-    // bindings, completion env). Drop the offending line — the error
-    // names it — and retry, keeping each drop as a diagnostic. The
-    // RUNNER keeps hard assembly failure; this is tooling-only, the
-    // same recovery philosophy as the statement level, one layer down.
+    // ASSEMBLY RECOVERY [D:assembly-recovery]: drop the line the
+    // error names and retry, keeping each drop as a diagnostic. The
+    // RUNNER keeps hard assembly failure; tooling-only.
     let assemblyDiags = ResizeArray<Diagnostic>()
 
     let rec assembleRecovering (attempts: int) (input: (int * string) list) =
@@ -1294,7 +1280,6 @@ let run (path: string) (scriptArgs: string list) : int =
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
 
             // comment-only lines are TRANSPARENT [D:comment-transparency]
-            // (they used to strip to blank and end statements)
             let assembled =
                 body
                 |> List.mapi (fun i l -> bodyOffset + i + 1, l)

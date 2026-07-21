@@ -59,9 +59,8 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TBool
     | TUnit -> Set.empty
 
-// The closed class family [D:inferred-type-classes].
-// Compiler-owned, structural, no user instances; fully erased after
-// checking — a constraint never reaches the value domain.
+// The closed class family [D:inferred-type-classes] — fully erased
+// after checking: a constraint never reaches the value domain.
 [<RequireQualifiedAccess>]
 type Cls =
     | Eq

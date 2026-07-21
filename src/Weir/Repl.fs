@@ -19,10 +19,8 @@ let private historyFile =
     Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".weir_history")
 
 // ---------------------------------------------------------------------------
-// The owned line editor [D:owned-line-editor]: replaced the ReadLine package —
-// it swallowed Ctrl+D with no hook, and the REPL wants bash key
-// semantics: Ctrl+C cancels the LINE, Ctrl+D on an empty line exits
-// (EOF). Owning ~150 lines also drops the last non-FParsec dependency.
+// The owned line editor [D:owned-line-editor]: bash key semantics —
+// Ctrl+C cancels the LINE, Ctrl+D on an empty line is EOF.
 
 let private history = ResizeArray<string>()
 
@@ -261,8 +259,8 @@ let rec private loop (state: State) =
         Extern.refresh ()
 
         let next =
-            // the ONE pipeline [D:one-pipeline]: the REPL is a consumer, not a
-            // replica — a single-line LogicalLine feeds checkStatement
+            // [D:one-pipeline]: a single-line LogicalLine feeds
+            // checkStatement; the REPL only renders
             let ll: Script.LogicalLine =
                 { Text = line
                   Head = 1
