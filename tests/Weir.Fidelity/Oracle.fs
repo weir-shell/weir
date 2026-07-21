@@ -127,7 +127,15 @@ let weirVerdict (src: string) : Verdict =
                 // the ONE pipeline function (2026-07-21): the mirror can no
                 // longer drift from the runner by construction — the incident
                 // class this file caused is retired here
-                match Weir.Script.checkStatement true resolver tenv ll with
+                match
+                    Weir.Script.checkStatement
+                        true
+                        (fun te ->
+                            { resolver with
+                                IsKnown = fun n -> Map.containsKey n te.Values || Map.containsKey n te.Modules })
+                        tenv
+                        ll
+                with
                 | Error _ -> Error()
                 | Ok chk -> Ok chk.Env
 

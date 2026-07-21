@@ -98,7 +98,7 @@ let rec private loop (state: State) =
                   Head = 1
                   Segments = [ (0, 1, 0) ] }
 
-            match Script.checkStatement false (resolver state) state.TypeEnv ll with
+            match Script.checkStatement false (fun _ -> resolver state) state.TypeEnv ll with
             | Error d when d.Parse ->
                 Console.WriteLine d.Message
                 printHint state line

@@ -1606,6 +1606,39 @@ let typecheckWith (env: TypeEnv) (expr: Expr) : Result<TypedExpr * Map<string, S
 
             Ok(te, residue)
 
+// the typed tree's child list — tooling walks (LSP hover, command-head
+// collection) share this instead of re-deriving the case list
+let childExprs (te: TypedExpr) : TypedExpr list =
+    match te.Kind with
+    | TEInt _
+    | TEStr _
+    | TEBool _
+    | TEUnit
+    | TEVar _
+    | TEEnvLoad _
+    | TEFrom _
+    | TETo _ -> []
+    | TELet(_, v, b) -> [ v; b ]
+    | TELetPat(_, v, b) -> [ v; b ]
+    | TELambda(_, b) -> [ b ]
+    | TELambdaPat(_, b) -> [ b ]
+    | TEApp(f, a) -> [ f; a ]
+    | TEPipe(a, f) -> [ a; f ]
+    | TEField(t, _) -> [ t ]
+    | TEBinOp(_, l, r) -> [ l; r ]
+    | TERecord(_, fields) -> fields |> List.map snd
+    | TEMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
+    | TEIf(cnd, t, e) -> cnd :: t :: Option.toList e
+    | TESeq(a, b) -> [ a; b ]
+    | TEList items -> items
+    | TETuple items -> items
+    | TECmd(_, args, envO) -> args @ Option.toList envO
+    | TEInterp parts ->
+        parts
+        |> List.choose (function
+            | IExpr e -> Some e
+            | IStr _ -> None)
+
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map fst
 

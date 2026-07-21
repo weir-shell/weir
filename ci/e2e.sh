@@ -619,6 +619,37 @@ if $BIN -e '^weir-definitely-not-a-command' 2>/dev/null; then
 fi
 echo "e2e ok: forced unknown command rejected"
 
+# --- check-vs-run on missing commands + binding-shadows-PATH (2026-07-21)
+
+svdir=$(mktemp -d)
+
+cat > "$svdir/missing.weir" <<'WEOF'
+definitely-not-a-real-tool --flag arg
+WEOF
+rc=0; out=$($BIN check "$svdir/missing.weir") || rc=$?
+[ $rc -eq 0 ] || fail "check must exit 0 on missing-command scripts (got $rc)"
+echo "$out" | grep -qF "[cmd-not-found]" || fail "cmd-not-found warning missing: $out"
+rc=0; $BIN "$svdir/missing.weir" >/dev/null 2>&1 || rc=$?
+[ $rc -ne 0 ] || fail "the RUNNER must still reject missing commands"
+echo "e2e ok: check warns where run errors (DELIBERATE, the editing-without-tools rule)"
+
+# per-statement resolver: script bindings shadow PATH commands
+cat > "$svdir/shadow.weir" <<'WEOF'
+let cat = 1
+
+cat "anything"
+WEOF
+rc=0; errout=$($BIN "$svdir/shadow.weir" 2>&1) || rc=$?
+[ $rc -ne 0 ] || fail "shadowed cat must not run the binary"
+echo "$errout" | grep -qF "not a function" || fail "expected an application type error: $errout"
+echo "e2e ok: script bindings shadow PATH commands (per-statement resolver)"
+
+out=$($BIN -e '$(^cat /etc/hostname) |> Seq.length')
+echo "$out" | grep -qE "[0-9]" || fail "^cat must still force the binary: $out"
+echo "e2e ok: ^ still forces the real binary through a shadow"
+
+rm -rf "$svdir"
+
 # --- weir lsp v1 (2026-07-21, LSP chain 3/3) ---------------------------
 
 if command -v python3 >/dev/null 2>&1; then

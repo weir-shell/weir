@@ -209,6 +209,8 @@ if 1 > 0 then !
 - Iterate with `weir check file.weir` (all errors, located, coded) or
   `weir check --json file.weir` (structured: file/line/col/code/
   severity) BEFORE running — no evaluation happens, by construction.
+  check WARNS on commands missing from PATH (cmd-not-found, exit 0)
+  where run ERRORS — scripts for uninstalled tools stay editable.
   Stranded-script reports should cite the error codes.
 - Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
   uppercase is types/modules/constructors. Record fields keep their

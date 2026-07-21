@@ -1,5 +1,41 @@
 # Spike Notes
 
+## Live-testing receipts: check assumes commands; the resolver goes per-statement (2026-07-21)
+
+The user's first real editing session delivered two receipts within
+minutes — the LSP chain's acceptance test working as intended.
+
+(1) CHECK-ONLY CONSUMERS ASSUME COMMANDS: editing bicep-deploy.weir
+without az/bicep installed cascaded into parse errors ("not an
+external command" in the backtrack), making the LSP useless for ops
+scripts — the exact demo. Decided (flagged, overridable): weir check
+and the LSP parse unknown COMMAND-SHAPED heads as commands and emit
+cmd-not-found WARNINGS (exit 0); the runner keeps hard resolution.
+Same pipeline, explicitly different resolver input — the gateExprs
+pattern again — with the deliberate verdict difference PINNED
+(check-warns-where-run-errors). Three narrowing rounds landed the
+assumption: everything → broke dotted names (Env.load became a
+command head); undotted → `{` hijacked a record RHS; final rule:
+letter-initial ident-with-dashes, never keywords (`from porcelain`
+must stay an adapter).
+
+(2) THE PER-STATEMENT RESOLVER — the assumption exposed a LATENT
+runner quirk: the parse resolver was built ONCE from the initial env,
+so script-defined names were unknown at parse time; the runner was
+correct only by accident (unknown + not-on-PATH falls to expression),
+and a binding named like a PATH binary did NOT shadow it (`let cat =
+1` then `cat x` ran the binary). checkStatement now takes a
+resolver FACTORY and builds from the CURRENT env per statement:
+bindings shadow PATH commands by construction (`^cat` still forces
+the binary — pinned both ways). This closes the value>module>external
+precedence rule's gap for script-defined names — the pin family that
+existed for builtins now holds everywhere.
+
+Also from the same session: UnsafeRelaxedJsonEscaping (the default
+encoder's \u0022 quote escaping mangled in micro's display) with a
+frame-level probe.
+
+
 ## weir check + weir lsp — the chain lands (2026-07-21, chain 2+3/3)
 
 Session 2: `weir check [--json]` with statement-level RECOVERY (a

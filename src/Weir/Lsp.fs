@@ -125,37 +125,6 @@ let private toLogical (stmts: (Script.LogicalLine * Script.CheckedStatement) lis
             else
                 None))
 
-let private children (te: TypedExpr) : TypedExpr list =
-    match te.Kind with
-    | TEInt _
-    | TEStr _
-    | TEBool _
-    | TEUnit
-    | TEVar _
-    | TEEnvLoad _
-    | TEFrom _
-    | TETo _ -> []
-    | TELet(_, v, b) -> [ v; b ]
-    | TELetPat(_, v, b) -> [ v; b ]
-    | TELambda(_, b) -> [ b ]
-    | TELambdaPat(_, b) -> [ b ]
-    | TEApp(f, a) -> [ f; a ]
-    | TEPipe(a, f) -> [ a; f ]
-    | TEField(t, _) -> [ t ]
-    | TEBinOp(_, l, r) -> [ l; r ]
-    | TERecord(_, fields) -> fields |> List.map snd
-    | TEMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
-    | TEIf(c, t, e) -> c :: t :: Option.toList e
-    | TESeq(a, b) -> [ a; b ]
-    | TEList items -> items
-    | TETuple items -> items
-    | TECmd(_, args, envO) -> args @ Option.toList envO
-    | TEInterp parts ->
-        parts
-        |> List.choose (function
-            | IExpr e -> Some e
-            | IStr _ -> None)
-
 let private teOf (chk: Script.CheckedStatement) =
     match chk.Kind with
     | Script.KType _ -> None
@@ -176,9 +145,9 @@ let private nodeAt (te: TypedExpr) (col: int) : TypedExpr option =
                 | Some b when (b.Span.End.Col - b.Span.Start.Col) <= (node.Span.End.Col - node.Span.Start.Col) -> Some b
                 | _ -> Some node
 
-            children node |> List.fold go best
+            Check.childExprs node |> List.fold go best
         else
-            children node |> List.fold go best
+            Check.childExprs node |> List.fold go best
 
     go None te
 

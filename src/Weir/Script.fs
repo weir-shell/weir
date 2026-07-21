@@ -666,12 +666,20 @@ type CheckedStatement =
 // gateExprs: scripts apply the statement rule (values must be bound or
 // printed); the REPL and -e ECHO values instead — the same pipeline,
 // one explicit switch, never a re-derivation
+// mkR builds the resolver FROM THE CURRENT ENV per statement, so
+// script-defined names are known at parse time — bindings shadow PATH
+// commands by construction (`let cat = ...` then `cat x` is an
+// application; ^cat forces the binary). The old once-built resolver
+// left script names unknown and correct only by accident (found via
+// weir check's assume-command rule, 2026-07-21).
 let checkStatement
     (gateExprs: bool)
-    (r: Parser.Resolver)
+    (mkR: TypeEnv -> Parser.Resolver)
     (tenv: TypeEnv)
     (ll: LogicalLine)
     : Result<CheckedStatement, StmtDiag> =
+    let r = mkR tenv
+
     let typed (tag: StmtTag) (terr: Check.TypeError) =
         let physLine, physCol = translate ll terr.Span.Start.Col
 
@@ -819,9 +827,7 @@ let private codeOf (parse: bool) (msg: string) : string =
 // \u0022-style quote escaping is valid but trips naive clients
 // (micro's plugin rendered it mangled — user report, 2026-07-21)
 let private jsonWriterOptions =
-    System.Text.Json.JsonWriterOptions(
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    )
+    System.Text.Json.JsonWriterOptions(Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping)
 
 let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
     use ms = new IO.MemoryStream()
@@ -876,7 +882,26 @@ let analyzeLines
                 |> Map.add "stdin" (generalize (TSeq TStr)) }
 
     Extern.refresh ()
-    let r = resolver typeEnv0
+
+    // CHECK-ONLY consumers assume unknown heads are commands, so a
+    // script for uninstalled tools still parses; each head missing
+    // from PATH becomes a WARNING (cmd-not-found). The RUNNER keeps
+    // hard resolution — same pipeline, explicitly different resolver
+    // input (the gateExprs pattern), the verdict difference pinned.
+    // Receipt: editing bicep-deploy.weir without az/bicep installed
+    // cascaded into parse errors (user report, 2026-07-21).
+    // assume only COMMAND-SHAPED words (letter-initial, ident chars +
+    // dashes; never keywords, never dotted): the expression grammar
+    // must keep claiming Env.load, from-adapters, and punctuation heads
+    let assumeResolver tenv =
+        { resolver tenv with
+            IsExternal =
+                fun n ->
+                    Extern.exists n
+                    || (n.Length > 0
+                        && System.Char.IsLetter n[0]
+                        && not (Parser.isKeyword n)
+                        && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
 
     let assembled =
         numbered
@@ -923,10 +948,37 @@ let analyzeLines
 
         let mutable tenv = typeEnv0
 
+        let rec cmdHeads (te: Check.TypedExpr) =
+            (match te.Kind with
+             | Check.TECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, te.Span ]
+             | _ -> [])
+            @ (Check.childExprs te |> List.collect cmdHeads)
+
         for ll in logicalLines do
-            match checkStatement true r tenv ll with
+            match checkStatement true assumeResolver tenv ll with
             | Ok chk ->
                 chk.Warnings |> List.iter warn
+
+                (match chk.Kind with
+                 | KType _ -> ()
+                 | KLet(_, _, te)
+                 | KLetPat(_, _, te)
+                 | KCmd te
+                 | KExpr te ->
+                     for prog, span in cmdHeads te do
+                         let wl, wc = translate ll span.Start.Col
+
+                         diags.Add
+                             { File = path
+                               Line = wl
+                               Col = wc
+                               EndLine = None
+                               EndCol = None
+                               Severity = "warning"
+                               Code = "cmd-not-found"
+                               Message =
+                                 $"command not found on PATH: {prog} — weir resolves commands at check time; the script runs once it is installed" })
+
                 stmts.Add(ll, chk)
                 tenv <- chk.Env
             | Error d ->
@@ -1001,7 +1053,6 @@ let run (path: string) (scriptArgs: string list) : int =
         | None ->
             let typeEnv0, valueEnv0 = baseEnvs mode scriptArgs
             Extern.refresh ()
-            let r = resolver typeEnv0
 
             // comment-only lines are TRANSPARENT (F#-faithful, fixed
             // 2026-07-20 — they used to strip to blank and end statements)
@@ -1025,7 +1076,7 @@ let run (path: string) (scriptArgs: string list) : int =
                             match state with
                             | Error e -> Error e
                             | Ok(tenv, acc) ->
-                                match checkStatement true r tenv ll with
+                                match checkStatement true resolver tenv ll with
                                 | Error d ->
                                     for wl, wc, wm in d.Warnings do
                                         Console.Error.WriteLine $"{path}:{wl}:{wc}: warning: {wm}"

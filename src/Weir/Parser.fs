@@ -25,6 +25,10 @@ let private keywords =
           "rec"
           "mutable" ]
 
+// the keyword set, exposed for tooling resolvers (weir check's
+// assume-command rule must never claim a keyword head)
+let isKeyword (w: string) = keywords.Contains w
+
 type Resolver =
     { IsKnown: string -> bool
       IsCommandCallable: string -> bool
