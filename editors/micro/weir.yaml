@@ -11,10 +11,6 @@ detect:
     header: "^#!.*\\bweir\\b"
 
 rules:
-    # ---- comments (weir rule: // at line start or after whitespace;
-    # bareword URLs in command lines stay uncolored) ----
-    - comment: "(^|[ \t])//.*$"
-
     # ---- shebang + directives (#loose is the only directive) ----
     - preproc: "^#!.*$"
     - preproc: "^#loose\\b"
@@ -100,4 +96,16 @@ rules:
     - constant.string:
         start: "(^|[ \t])'"
         end: "'"
+        rules: []
+
+    # ---- comments (weir rule: // at line start or after whitespace;
+    # bareword URLs in command lines stay uncolored). A REGION, and
+    # deliberately LAST: pattern rules overwrite earlier pattern
+    # matches, so a comment PATTERN gets its numbers/operators/types
+    # recolored by the rules after it — a region with no inner rules
+    # stays one color. Region openers win by line position, so a `//`
+    # inside a string never starts one. ----
+    - comment:
+        start: "(^|[ \t])//"
+        end: "$"
         rules: []
