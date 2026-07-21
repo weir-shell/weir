@@ -16,11 +16,17 @@ let ext f =
     else
         "(no extension)"
 
+let group f =
+    match ext f with
+    | ".fs" when Str.startsWith "src/" f -> ".fs (src)"
+    | ".fs" when Str.startsWith "tests/" f -> ".fs (tests)"
+    | e -> e
+
 let locOf items =
     items |> Seq.map (fun (_, n) -> n) |> Seq.sum
 
 counts
-    |> Seq.groupBy (fun (f, _) -> ext f)
+    |> Seq.groupBy (fun (f, _) -> group f)
     |> Seq.sortByDescending (fun g -> locOf g.Items)
     |> Seq.iter (fun g ->
         print $"== {g.Key} ({locOf g.Items})"
