@@ -1,0 +1,103 @@
+# micro editor syntax for weir.
+# Install: copy to ~/.config/micro/syntax/weir.yaml
+#
+# Kept in-repo so grammar sessions can amend it alongside the parser
+# (checked against the keyword set and scanner pins, 2026-07-21).
+
+filetype: weir
+
+detect:
+    filename: "\\.weir$"
+    header: "^#!.*\\bweir\\b"
+
+rules:
+    # ---- comments (weir rule: // at line start or after whitespace;
+    # bareword URLs in command lines stay uncolored) ----
+    - comment: "(^|[ \t])//.*$"
+
+    # ---- shebang + directives (#loose is the only directive) ----
+    - preproc: "^#!.*$"
+    - preproc: "^#loose\\b"
+
+    # ---- keywords (the parser's set, verified) ----
+    - statement: "\\b(let|in|if|then|else|when|match|with|fun|type|of)\\b"
+    - statement: "\\b(from|to)\\b"
+    # reserved (rejected by the parser, but color them so muscle-memory
+    # F# reads as "claimed", not "identifier")
+    - statement: "\\b(rec|mutable)\\b"
+    - constant.bool: "\\b(true|false)\\b"
+    - statement: "\\bnot\\b"
+
+    # ---- types / constructors / modules (the casing law:
+    # uppercase declares — one rule covers all three) ----
+    - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
+
+    # ---- numbers (int only; ranges lex as int .. int) ----
+    - constant.number: "\\b[0-9]+\\b"
+
+    # ---- command-mode sigils (plain and env-parameterized) ----
+    - special: "\\$\\("
+    - special: "!\\("
+    - special: "[$!][a-z_][A-Za-z0-9_]*\\("
+    # line-end district marker: a STANDALONE token (bare ! or !envname);
+    # `echo hello!` is argv, not a marker — hence the boundary
+    - special: "(^|[ \t])![A-Za-z_][A-Za-z0-9_]*$"
+    - special: "(^|[ \t])!$"
+    # PATH-force prefix
+    - special: "\\^[A-Za-z][A-Za-z0-9_.-]*"
+
+    # ---- splices in command lines (casing law: vars are lowercase) ----
+    - identifier.var: "\\$[a-z_][A-Za-z0-9_]*"
+
+    # ---- operators ----
+    - symbol.operator: "\\|>"
+    - symbol.operator: "(==|<>|<=|>=|->|\\.\\.|&&|\\|\\|)"
+    - symbol.operator: "[+\\-*/<>=;,]"
+    - symbol.operator: "\\|"
+
+    # ---- field-access shorthand ----
+    - special: "_\\.[A-Za-z][A-Za-z0-9_]*"
+    - special: "_\\["
+
+    # ---- interpolated strings, holes get real weir highlighting ----
+    - constant.string:
+        start: "\\$\""
+        end: "\""
+        skip: "\\\\."
+        rules:
+            - constant.specialChar: "\\\\."
+            # escaped braces MUST precede the hole region so {{ / }}
+            # never open one
+            - constant.specialChar: "\\{\\{|\\}\\}"
+            - special:
+                start: "\\{"
+                end: "\\}"
+                rules:
+                    - statement: "\\b(if|then|else|when|match|with|fun|let|in)\\b"
+                    - constant.bool: "\\b(true|false)\\b"
+                    - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
+                    - constant.number: "\\b[0-9]+\\b"
+                    - special: "_\\.[A-Za-z][A-Za-z0-9_]*"
+                    - symbol.operator: "\\|>"
+                    - symbol.operator: "(==|<>|<=|>=|->|\\.\\.)"
+                    - symbol.operator: "[+\\-*/<>=]"
+                    - identifier: "\\b[a-z_][A-Za-z0-9_]*\\b"
+
+    # ---- plain strings ----
+    - constant.string:
+        start: "\""
+        end: "\""
+        skip: "\\\\."
+        rules:
+            - constant.specialChar: "\\\\."
+
+    # ---- single-quoted strings (COMMAND-MODE; scanner-pinned:
+    # `echo 'a // b'` keeps its comment marker inside the quotes).
+    # The opener requires a preceding space/line-start so apostrophes
+    # in comments (GUIDE's, don't) never open a region; the cost is
+    # that a mid-word ' never opens one either, which matches command
+    # arg tokenization anyway. ----
+    - constant.string:
+        start: "(^|[ \t])'"
+        end: "'"
+        rules: []
