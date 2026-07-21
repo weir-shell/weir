@@ -1,5 +1,22 @@
 # Spike Notes
 
+## Completion for params — the declared-fields fallback (2026-07-21)
+
+Third live-testing receipt: `t.` inside a function body completed
+nothing — params live in the checker's scope, never the completion
+env, and the statement being TYPED is broken so no typed tree exists
+either. The weir-shaped fallback: records are nominal and declared,
+so an unresolvable dotted head offers EVERY declared record's fields
+(high-signal in small scripts; `_.` completes too as a bonus).
+HONEST LIMIT recorded: this is the union of all records, not the
+param's actual type — cursor-accurate param typing needs
+error-recovery parsing (analyze the broken statement with holes),
+which is the parked next step if the noise ever bites. Also this
+session: completion textEdit ranges (the doubling + micro's prefix
+filter) — the pattern across all three reports: every client
+disagreement became a frame-level pin.
+
+
 ## Three out-of-band asks: exit, Ctrl+D, usage (2026-07-21)
 
 (1) `Exit.code` renamed to bare `exit` — F#-parity (`exit : int ->

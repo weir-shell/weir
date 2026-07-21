@@ -88,7 +88,24 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                     headTy
 
             match finalTy |> Option.bind (recordFields env) with
-            | None -> []
+            | None ->
+                // UNRESOLVED head: lambda/function params are never in
+                // the env, and a mid-edit statement has no typed tree.
+                // Nominal records make the fallback high-signal — offer
+                // every declared record's fields (user report,
+                // 2026-07-21: `t.` in a function body completed nothing)
+                let stem = word.Substring(0, word.Length - prefix.Length)
+
+                env.Types
+                |> Map.toList
+                |> List.collect (fun (_, def) ->
+                    match def with
+                    | Record d -> d.Fields |> List.map fst
+                    | Union _ -> [])
+                |> List.distinct
+                |> List.filter (fun f -> f.StartsWith prefix)
+                |> List.sort
+                |> List.map (fun f -> stem + f)
             | Some fields ->
                 let stem = word.Substring(0, word.Length - prefix.Length)
 

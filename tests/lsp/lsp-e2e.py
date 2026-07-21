@@ -107,6 +107,18 @@ comp = read_msg()
 expect(any(c["label"] == "Seq" and "textEdit" in c for c in comp["result"]),
        f"paren-nested completion with textEdit: {comp['result'][:3]}")
 
+# param-dot fallback: lambda/function params are not in the env and
+# mid-edit statements have no typed tree — declared-record fields are
+# offered instead (t. inside a broken function body)
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": "type Target = { Stack: string; Env: string }\n\nlet quality t =\n    bicep lint (t.\n"}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 43, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 3, "character": 18}}})
+labels = [c["label"] for c in read_msg()["result"]]
+expect("t.Stack" in labels and "t.Env" in labels, f"param-dot fallback fields missing: {labels[:8]}")
+
 # completion at line head -> a PATH command appears
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": "gi\n"}]}})
