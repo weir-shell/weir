@@ -764,7 +764,7 @@ let completionTests =
               // n is an enclosing param (unbound here) - Seq.skip's result
               // type falls out of unification anyway (the targetEnv objection)
               let text = "Seq.skip n ls |> map (fun f -> f."
-              Expect.contains (suggest text (text.Length - 2)) "f.Path" ""
+              Expect.contains (suggest text (text.Length - 2)) "f.Name" ""
           }
           test "no fields on a non-record element" {
               let text = "nats |> map (fun x -> x."
