@@ -769,6 +769,48 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
 // application; ^cat forces the binary). The old once-built resolver
 // left script names unknown and correct only by accident (found via
 // weir check's assume-command rule, 2026-07-21).
+// FParsec dumps embed the ASSEMBLED logical line — never what the user
+// wrote. Strip every snippet+caret block, keep the diagnostic text, and
+// translate embedded positions to physical line/col (2026-07-21, user:
+// "show the unassembled — that is what the user expects in 100% cases").
+let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
+    let lines = msg.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+    let isCaret (l: string) =
+        l.Trim() <> "" && l.Trim() |> Seq.forall ((=) '^')
+
+    let translateErrorLine (l: string) : string option =
+        let m = System.Text.RegularExpressions.Regex.Match(l, @"Error in Ln: 1 Col: (\d+)")
+
+        if m.Success then
+            let pl, pc = translate ll (int m.Groups[1].Value)
+            Some($"at line {pl}, col {pc}:")
+        else
+            None
+
+    let rec go (first: bool) (acc: string list) (rest: string list) =
+        match rest with
+        | [] -> List.rev acc
+        | l :: tail ->
+            match translateErrorLine l with
+            | Some pos ->
+                // drop the snippet rows up to and including the caret
+                let indent = l |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+                let rec dropSnippet r =
+                    match r with
+                    | [] -> []
+                    | x :: xs when isCaret x -> xs
+                    | _ :: xs -> dropSnippet xs
+
+                // the FIRST position is the diag's own — consumers render
+                // it with the source line; only BACKTRACK positions stay
+                let acc' = if first then acc else (String(' ', indent) + pos) :: acc
+                go false acc' (dropSnippet tail)
+            | None -> go first (l :: acc) tail
+
+    go true [] lines |> List.filter (fun l -> l.Trim() <> "") |> String.concat "\n"
+
 let checkStatement
     (gateExprs: bool)
     (mkR: TypeEnv -> Parser.Resolver)
@@ -851,15 +893,6 @@ let checkStatement
                     l, c, true
                 | None -> ll.Head, 1, false
 
-            // multi-line statements are shown as their ASSEMBLED logical
-            // line — say so, or the ` ; `/` in ` insertions read as
-            // phantom source text
-            let note =
-                if List.length ll.Segments > 1 then
-                    "\n(note: shown as the assembled logical line — ' ; ' and ' in ' are inserted by multi-line assembly)"
-                else
-                    ""
-
             Error
                 { PhysLine = physLine
                   PhysCol = physCol
@@ -868,7 +901,7 @@ let checkStatement
                   HasCol = hasCol
                   Span = None
                   Parse = true
-                  Message = f.Message + note
+                  Message = cleanParseDump ll f.Message
                   Warnings = [] }
     | Ok(SType decl) ->
         match Check.checkDecl tenv decl with
@@ -1216,6 +1249,8 @@ let run (path: string) (scriptArgs: string list) : int =
             let typeEnv0, valueEnv0 = baseEnvs mode scriptArgs
             Extern.refresh ()
 
+            let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
+
             // comment-only lines are TRANSPARENT (F#-faithful, fixed
             // 2026-07-20 — they used to strip to blank and end statements)
             let assembled =
@@ -1246,7 +1281,12 @@ let run (path: string) (scriptArgs: string list) : int =
                                     let locatedMsg =
                                         if d.Parse then
                                             if d.HasCol then
-                                                $"{path}:{d.PhysLine}:{d.PhysCol}: parse error:\n{d.Message}"
+                                                // the ORIGINAL source line + caret — never
+                                                // the assembled text
+                                                let src = rawByLine |> Map.tryFind d.PhysLine |> Option.defaultValue ""
+
+                                                let caret = String(' ', max 0 (d.PhysCol - 1)) + "^"
+                                                $"{path}:{d.PhysLine}:{d.PhysCol}: parse error:\n{src}\n{caret}\n{d.Message}"
                                             else
                                                 located path d.PhysLine d.Message
                                         else

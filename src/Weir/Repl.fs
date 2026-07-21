@@ -241,6 +241,8 @@ let rec private loop (state: State) =
 
             match Script.checkStatement false (fun _ -> resolver state) state.TypeEnv ll with
             | Error d when d.Parse ->
+                // the input sits on the prompt line above — caret under it
+                Console.WriteLine(String(' ', prompt.Length + d.PhysCol - 1) + "^")
                 Console.WriteLine d.Message
                 printHint state line
                 state

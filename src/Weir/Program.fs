@@ -32,6 +32,8 @@ let private evalOnce (input: string) : int =
     match Script.checkStatement false (fun _ -> resolver) typeEnv ll with
     | Error d ->
         (if d.Parse then
+             Console.Error.WriteLine input
+             Console.Error.WriteLine(String(' ', max 0 (d.PhysCol - 1)) + "^")
              Console.Error.WriteLine d.Message
          else
              match d.Span with

@@ -715,8 +715,10 @@ let x =
     +
 WEOF
 errout=$($BIN "$mdir/syn.weir" 2>&1 || true)
-echo "$errout" | grep -qF "assembled logical line" || fail "multi-line parse dumps must carry the assembly note: $errout"
-echo "e2e ok: assembled-text note on multi-line parse dumps"
+echo "$errout" | grep -qF "    1 +" || fail "parse errors must show the ORIGINAL source line: $errout"
+echo "$errout" | grep -q "\^" || fail "parse errors must carry a caret: $errout"
+echo "$errout" | grep -qF " ; " && fail "assembled text must never appear: $errout"
+echo "e2e ok: parse errors show unassembled source with caret"
 
 rm -rf "$mdir"
 

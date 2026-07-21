@@ -1,5 +1,22 @@
 # Spike Notes
 
+## Parse errors show the unassembled source (2026-07-21)
+
+"Can't we just show the unassembled? that is not what the user
+expects in 100% cases" — correct, and the note was a band-aid.
+cleanParseDump strips every FParsec snippet+caret block (they embed
+the ASSEMBLED line), translates backtrack positions to physical
+line/col, and keeps only diagnostic text; consumers render the
+ORIGINAL source line with their own caret (runner from the raw file,
+REPL under the prompt, -e echoing the expression; LSP needs neither
+— editors show source). The first embedded position is dropped as
+redundant with the header. Validation came instantly and strangely:
+the new renderer showed `let x = /` for the bicep example — junk
+that turned out to REALLY be in the working tree (editor-testing
+stray lines, removed with notice), the renderer telling the truth on
+its first outing.
+
+
 ## Runner missing-command diagnosis; a masking confession (2026-07-21)
 
 User critique of the runner's missing-tool error, both barrels
