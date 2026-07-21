@@ -168,12 +168,12 @@ let parserTests =
           test "old measure literal gets the transition error" {
               for old in [ "1<mb>"; "1<mb> <= 2<mb>" ] do
                   match Weir.Parser.parseExpr old with
-                  | Error msg -> Expect.stringContains msg "measure literals were removed" "courtesy error"
+                  | Error msg -> Expect.stringContains msg "units of measure are not supported" "courtesy error"
                   | Ok _ -> failtest $"expected the transition error for {old}"
           }
           test "old measure type syntax gets the transition error" {
               match Weir.Parser.parseStmt "type T = { F: int<mb> }" with
-              | Error msg -> Expect.stringContains msg "measure literals were removed" "courtesy error"
+              | Error msg -> Expect.stringContains msg "units of measure are not supported" "courtesy error"
               | Ok _ -> failtest "expected the transition error"
           }
           test "leaf span is exact" {

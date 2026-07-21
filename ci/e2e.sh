@@ -36,7 +36,7 @@ if $BIN -e '1<mb> + 2<mb>' 2>/dev/null; then
     fail "old measure literal should be rejected"
 fi
 errout=$($BIN -e '1<mb>' 2>&1 || true)
-echo "$errout" | grep -qF "measure literals were removed" || fail "transition message missing: $errout"
+echo "$errout" | grep -qF "units of measure are not supported" || fail "transition message missing: $errout"
 echo "e2e ok: measure transition error"
 
 out=$($BIN -e 'cmd "echo" ["*"]')

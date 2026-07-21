@@ -105,7 +105,7 @@ measure-variable machinery existed — is recorded in full in NOTES.md
 ("Remove measures — the evidence-standard case study"), which is the
 mandatory prior reading if quantities-with-conversion ever returns as an
 evidenced plan. Old scripts using `1<mb>` or `int<m>` get a transition
-error ("measure literals were removed"); the recognizer retires at the
+error ("units of measure are not supported"); the recognizer retires at the
 1.0 grammar freeze. `FileRow.Size` (truncated megabytes) was deleted
 with the measures; `Bytes : int` is the survivor — field names carry
 quantity semantics now.

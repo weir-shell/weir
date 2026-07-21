@@ -99,7 +99,7 @@ let private intLit =
         many1Satisfy isDigit .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
         >>= fun (digits, m) ->
             match m, System.Int64.TryParse digits with
-            | Some _, _ -> failFatally "measure literals were removed (2026-07-18); use bare int"
+            | Some _, _ -> failFatally "units of measure are not supported; use bare int"
             | None, (true, n) -> preturn (EInt n)
             | None, (false, _) -> failFatally $"int literal out of range (64-bit): {digits}"
     )
@@ -887,7 +887,7 @@ tySynRef.Value <-
               | "int" ->
                   opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws
                   >>= (function
-                  | Some _ -> failFatally "measure literals were removed (2026-07-18); use bare int"
+                  | Some _ -> failFatally "units of measure are not supported; use bare int"
                   | None -> preturn TInt)
               | "string" -> ws >>% TStr
               | "bool" -> ws >>% TBool
