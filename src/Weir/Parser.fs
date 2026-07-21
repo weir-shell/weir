@@ -58,7 +58,7 @@ let private pos (p: Position) : Pos =
 let private spanned (p: Parser<'a, unit>) : Parser<'a * Span, unit> =
     pipe3 getPosition p getPosition (fun s x e -> x, { Start = pos s; End = pos e })
 
-let private rawWord = many1Satisfy2 isIdentStart isIdentCont
+let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
 
 let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws

@@ -720,6 +720,13 @@ echo "$errout" | grep -q "\^" || fail "parse errors must carry a caret: $errout"
 echo "$errout" | grep -qF " ; " && fail "assembled text must never appear: $errout"
 echo "e2e ok: parse errors show unassembled source with caret"
 
+# a dangling `let ` used to render FParsec's empty error set as
+# "Unknown Error(s)" — the ident parser was unlabeled (2026-07-21)
+errout=$($BIN -e 'let ' 2>&1 || true)
+echo "$errout" | grep -qF "Expecting: identifier" || fail "dangling let must expect an identifier: $errout"
+echo "$errout" | grep -qF "Unknown Error" && fail "empty FParsec error sets must not surface: $errout"
+echo "e2e ok: dangling let expects an identifier"
+
 rm -rf "$mdir"
 
 # --- every repo script must CHECK (2026-07-21: test-counts.weir had
