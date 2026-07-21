@@ -760,6 +760,12 @@ let completionTests =
 
               Expect.equal (suggest text (text.Length - 2)) [ "c.Path"; "c.Staged"; "c.Status"; "c.Unstaged" ] ""
           }
+          test "holes: unbound args in a known pipeline still type the element" {
+              // n is an enclosing param (unbound here) - Seq.skip's result
+              // type falls out of unification anyway (the targetEnv objection)
+              let text = "Seq.skip n ls |> map (fun f -> f."
+              Expect.contains (suggest text (text.Length - 2)) "f.Path" ""
+          }
           test "no fields on a non-record element" {
               let text = "nats |> map (fun x -> x."
               Expect.equal (suggest text (text.Length - 2)) [] ""

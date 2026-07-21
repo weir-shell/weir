@@ -119,6 +119,17 @@ send({"jsonrpc": "2.0", "id": 43, "method": "textDocument/completion",
 labels = [c["label"] for c in read_msg()["result"]]
 expect("t.Stack" in labels and "t.Env" in labels, f"param-dot fallback fields missing: {labels[:8]}")
 
+# holes: a known function applied to an out-of-scope param still
+# types the pipeline element exactly (targetEnv t |> ... -> EnvVar)
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let f t =\n    Env.fromFile t |> Seq.where (fun e -> e.\n'}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 44, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 1, "character": 44}}})
+labels = [c["label"] for c in read_msg()["result"]]
+expect(labels == ["e.Name", "e.Value"], f"hole inference should give exactly EnvVar fields: {labels}")
+
 # completion at line head -> a PATH command appears
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": "gi\n"}]}})

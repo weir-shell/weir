@@ -62,6 +62,38 @@ type Decl =
       Body: DeclBody
       Span: Span }
 
+// the expression tree's child list — tooling walks share this (the
+// TypedExpr twin lives in Check.childExprs)
+let exprChildren (e: Expr) : Expr list =
+    match e.Kind with
+    | EInt _
+    | EStr _
+    | EBool _
+    | EUnit
+    | EVar _
+    | EFrom _
+    | ETo _ -> []
+    | ELet(_, v, b) -> [ v; b ]
+    | ELetPat(_, v, b) -> [ v; b ]
+    | ELambda(_, b) -> [ b ]
+    | ELambdaPat(_, b) -> [ b ]
+    | EApp(f, x) -> [ f; x ]
+    | EPipe(x, f) -> [ x; f ]
+    | EField(t, _, _) -> [ t ]
+    | EBinOp(_, l, r) -> [ l; r ]
+    | ERecord fields -> fields |> List.map (fun (_, _, v) -> v)
+    | EMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
+    | EIf(c, t, e) -> c :: t :: Option.toList e
+    | ESeq(a, b) -> [ a; b ]
+    | EList items -> items
+    | ETuple items -> items
+    | ECmd(_, args, envO) -> args @ Option.toList envO
+    | EInterp parts ->
+        parts
+        |> List.choose (function
+            | IExpr e -> Some e
+            | IStr _ -> None)
+
 type Stmt =
     | SLet of name: string * value: Expr
     | SLetPat of binder: Pattern * value: Expr

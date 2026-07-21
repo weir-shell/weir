@@ -23,6 +23,25 @@ let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
         | _ -> None
     | _ -> None
 
+// unbound lowercase names in the prefix become HOLES (fresh type
+// vars): the pipe source often mentions enclosing params
+// (`targetEnv t |> ...`) whose VALUES are unknown but irrelevant —
+// a known function's result type falls out of unification anyway
+// (user objection, 2026-07-21: "we know targetEnv t's shape").
+let private holeNames (env: TypeEnv) (e: Weir.Ast.Expr) : string list =
+    let acc = System.Collections.Generic.HashSet<string>()
+
+    let rec walk (e: Weir.Ast.Expr) =
+        (match e.Kind with
+         | Weir.Ast.EVar n when n.Length > 0 && System.Char.IsLower n[0] && not (Map.containsKey n env.Values) ->
+             acc.Add n |> ignore
+         | _ -> ())
+
+        Weir.Ast.exprChildren e |> List.iter walk
+
+    walk e
+    List.ofSeq acc
+
 let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
     match text.LastIndexOf '|' with
     | -1 -> None
@@ -32,7 +51,16 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
         match Weir.Parser.parseExpr prefix with
         | Error _ -> None
         | Ok e ->
-            match Weir.Check.typecheck env e with
+            let envWithHoles =
+                holeNames env e
+                |> List.mapi (fun i n -> n, mono (TVar $"__hole{i}"))
+                |> List.fold
+                    (fun (te: TypeEnv) (n, sch) ->
+                        { te with
+                            Values = Map.add n sch te.Values })
+                    env
+
+            match Weir.Check.typecheck envWithHoles e with
             | Ok te ->
                 match te.Ty with
                 | TSeq elem -> Some elem
