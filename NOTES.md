@@ -1,5 +1,23 @@
 # Spike Notes
 
+## Open rows meet nominal records; cursor-local repair (2026-07-21)
+
+Fourth round of the completion thread, and the deepest: the user
+read the hover signature `{ BicepPath; Env; Stack; .. } -> unit` and
+asked whether the missing Name related to the `..` — exactly right.
+The open row only carries fields the OTHER lines demand; editing the
+one Name-demanding line removes Name from its own completion. Fix 1:
+ROW-RECORD COMPATIBILITY — an open row offers the full field set of
+every declared record it fits inside (field-subset with type
+agreement; TVar fields match anything). Fix 2: the repair's closers
+were appended at statement END, so mid-statement edits with an
+unterminated interp swallowed the REST of the statement into the
+string; a second candidate closes the dangling delimiters AT THE
+CURSOR (suffix preserved), tried first. The completion ladder's
+repair rung now handles first, middle, and last lines of a
+statement, with nominal enrichment on open rows.
+
+
 ## fmt field-drift + assembly recovery (2026-07-21, user bug report)
 
 Two bugs behind one report ("fmt says already formatted but Name is

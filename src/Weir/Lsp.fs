@@ -407,18 +407,28 @@ let run () : int =
                                                 // broke positions with scalar rules (printerr)
                                                 let span = head.Length + 1 + prefix.Length
 
-                                                let blanked =
-                                                    ll.Text.Substring(0, dotIdx - head.Length)
-                                                    + "\"\""
-                                                    + String(' ', max 0 (span - 2))
-                                                    + ll.Text.Substring(dotIdx + 1 + prefix.Length)
-
-                                                let full = blanked + Script.closers blanked
+                                                let before = ll.Text.Substring(0, dotIdx - head.Length)
+                                                let after = ll.Text.Substring(dotIdx + 1 + prefix.Length)
+                                                let filler = "\"\"" + String(' ', max 0 (span - 2))
 
                                                 let parse t =
                                                     Parser.parseLine (Script.assumeResolver env) t
 
-                                                Complete.fieldsAtRepaired parse env full head
+                                                // two repair candidates: close dangling
+                                                // delimiters AT THE CURSOR (mid-statement
+                                                // edits — the suffix stays outside the
+                                                // string), else at the END (last-line edits)
+                                                let candB =
+                                                    let prefixDone = before + filler
+                                                    prefixDone + Script.closers prefixDone + after
+
+                                                let candA =
+                                                    let blanked = before + filler + after
+                                                    blanked + Script.closers blanked
+
+                                                [ candB; candA ]
+                                                |> List.tryPick (fun cand ->
+                                                    Complete.fieldsAtRepaired parse env cand head)
                                                 |> Option.map (fun fields ->
                                                     fields
                                                     |> List.filter (fun f -> f.StartsWith prefix)

@@ -151,6 +151,18 @@ send({"jsonrpc": "2.0", "id": 46, "method": "textDocument/completion",
 labels = [c["label"] for c in read_msg()["result"]]
 expect(labels == ["t.Stack"], f"repair completion through an interp hole: {labels}")
 
+# open-row record compatibility: editing the very line that demanded
+# Name still offers Name (the row fits inside declared Target); and
+# mid-statement edits repair with cursor-local closers
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'type Target = { Name: string; Stack: string }\n\nlet quality t =\n    printerr $"q: {t.\n    printerr t.Stack\n'}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 47, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 3, "character": 21}}})
+labels = [c["label"] for c in read_msg()["result"]]
+expect(labels == ["t.Name", "t.Stack"], f"row-compat must restore the edited field: {labels}")
+
 # completion at line head -> a PATH command appears
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": "gi\n"}]}})

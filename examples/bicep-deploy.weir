@@ -25,7 +25,7 @@ let envVal t name =
     targetEnv t |> Seq.where (fun e -> e.Name == name) |> Seq.map _.Value |> Seq.head
 
 let quality t =
-    header $"bicep quality: {t.Name}"
+    header $"bicep quality: {t.Stack}"
     let e = targetEnv t
     !e
         bicep lint (t.BicepPath)
@@ -71,13 +71,13 @@ let env = Args.value "--env" |> Option.defaultTo ""
 if stack == "" || env == "" then fail usage
 
 let target =
-    { Name = $"{stack}-{env}-apps"
-      BicepPath = $"bicep/apps/stacks/{stack}/{env}.bicepparam"
+    { BicepPath = $"bicep/apps/stacks/{stack}/{env}.bicepparam"
       Stack = stack
-      Env = env }
+      Env = env 
+      Name = $"{stack}-{env}-apps" }
 
 match subcommand with
-| c when c == "deploy" -> deploy target
-| c when c == "snapshot" -> snapshot target
+| "deploy" -> deploy target
+| "snapshot" -> snapshot target
 | c when c == "quality" -> quality target
 | _ -> fail usage

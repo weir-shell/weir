@@ -208,5 +208,32 @@ let fieldsAtRepaired
                 find None te)
         |> Option.bind (fun ty ->
             match ty with
-            | TRowVar(_, fields) -> Some(fields |> List.map fst)
+            | TRowVar(_, fields) ->
+                // an OPEN row (the `..` tail) is compatible with any
+                // declared record it fits inside — offer those records'
+                // FULL field sets too, so editing the one line that
+                // demanded a field does not hide it (user report,
+                // 2026-07-21: t. gave only the other lines' fields)
+                let known = fields |> List.map fst
+
+                let compatible =
+                    env.Types
+                    |> Map.toList
+                    |> List.collect (fun (_, def) ->
+                        match def with
+                        | Record d ->
+                            let fits =
+                                fields
+                                |> List.forall (fun (f, ft) ->
+                                    match d.Fields |> List.tryFind (fst >> (=) f) with
+                                    | None -> false
+                                    | Some(_, rt) ->
+                                        (match ft with
+                                         | TVar _ -> true
+                                         | _ -> formatTy ft = formatTy rt))
+
+                            if fits then d.Fields |> List.map fst else []
+                        | Union _ -> [])
+
+                Some(known @ compatible |> List.distinct)
             | _ -> recordFields env ty |> Option.map (List.map fst))
