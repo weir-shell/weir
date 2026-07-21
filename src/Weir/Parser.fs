@@ -403,7 +403,10 @@ let private curryParams (ps: Pattern list) (value: Expr) : Expr =
                 | PUnit -> ELambda("()", body)
                 | _ -> ELambdaPat(p, body)
 
-            { Kind = kind; Span = value.Span })
+            // span covers the param (binder diagnostics point at it,
+            // not at the RHS the old value-only span implied)
+            { Kind = kind
+              Span = Span.union p.PSpan value.Span })
         ps
         value
 

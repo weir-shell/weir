@@ -770,6 +770,11 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# the squiggle sits ON the name, not the RHS (user report, 2026-07-21)
+errout=$($BIN -e 'let Total = 1 + 2' 2>&1 || true)
+echo "$errout" | grep -qF '    ^^^^^' || fail "casing squiggle must underline the binder name: $errout"
+echo "e2e ok: casing squiggle points at the binder"
+
 # --- pattern binders + bare comma (2026-07-21) -------------------------
 
 pbdir=$(mktemp -d)

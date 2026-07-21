@@ -941,8 +941,22 @@ let checkStatement
                         Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
                   Warnings = warningsOf te }
     | Ok(SLet(name, e)) ->
+        // SLet carries the name as a bare string, so re-derive its own
+        // columns from the statement text (grammar: ws `let` ws name) —
+        // the RHS span put the casing squiggle on the value (2026-07-21)
+        let nameSpan =
+            let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+")
+
+            if m.Success then
+                { Start = { Line = 1; Col = m.Length + 1 }
+                  End =
+                    { Line = 1
+                      Col = m.Length + 1 + name.Length } }
+            else
+                e.Span
+
         match
-            Check.checkBinderName e.Span name
+            Check.checkBinderName nameSpan name
             |> Result.bind (fun () -> Check.typecheckWith tenv e)
         with
         | Error terr -> Error(typed StmtTag.Let terr)
