@@ -33,7 +33,11 @@ let private evalOnce (input: string) : int =
     | Error d ->
         (if d.Parse then
              Console.Error.WriteLine input
-             Console.Error.WriteLine(String(' ', max 0 (d.PhysCol - 1)) + "^")
+
+             Console.Error.WriteLine(
+                 Script.Color.red Script.Color.onStderr.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
+             )
+
              Console.Error.WriteLine d.Message
          else
              match d.Span with
@@ -68,7 +72,7 @@ let private evalOnce (input: string) : int =
             with
             | Eval.ExitRequest code -> code
             | ex ->
-                Console.Error.WriteLine $"error: {ex.Message}"
+                Console.Error.WriteLine(Script.Color.red Script.Color.onStderr.Value "error" + $": {ex.Message}")
                 1
 
 [<EntryPoint>]

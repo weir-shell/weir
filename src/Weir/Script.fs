@@ -618,6 +618,25 @@ let translate (ll: LogicalLine) (col: int) : int * int =
 
     physLine, joinedIdx - segStart + physIndent + 1
 
+// ANSI color for interactive diagnostics: gated per stream on TTY,
+// NO_COLOR, and TERM=dumb — pipes and CI capture always get plain
+// text, so pinned messages never see escape codes.
+module Color =
+    let private enabled (redirected: bool) =
+        not redirected
+        && isNull (Environment.GetEnvironmentVariable "NO_COLOR")
+        && Environment.GetEnvironmentVariable "TERM" <> "dumb"
+
+    let onStdout = lazy enabled Console.IsOutputRedirected
+    let onStderr = lazy enabled Console.IsErrorRedirected
+
+    let private wrap (on: bool) (code: string) (s: string) =
+        if on then $"\x1b[{code}m{s}\x1b[0m" else s
+
+    let red on s = wrap on "31" s
+    let yellow on s = wrap on "33" s
+    let bold on s = wrap on "1" s
+
 type Mode =
     | Strict
     | Loose
@@ -1207,9 +1226,16 @@ let checkOnly (json: bool) (path: string) : int =
                     w.WriteEndArray())
             )
         else
+            let c = Color.onStdout.Value
+
             for d in diags do
-                let sev = if d.Severity = "warning" then "warning" else "error"
-                Console.WriteLine $"{d.File}:{d.Line}:{d.Col}: {sev} [{d.Code}]: {d.Message}"
+                let sev =
+                    if d.Severity = "warning" then
+                        Color.yellow c $"warning [{d.Code}]"
+                    else
+                        Color.red c $"error [{d.Code}]"
+
+                Console.WriteLine(Color.bold c $"{d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}")
 
         if diags |> List.exists (fun d -> d.Severity = "error") then
             1
@@ -1275,8 +1301,12 @@ let run (path: string) (scriptArgs: string list) : int =
                             | Ok(tenv, acc) ->
                                 match checkStatement true resolver tenv ll with
                                 | Error d ->
+                                    let c = Color.onStderr.Value
+
                                     for wl, wc, wm in d.Warnings do
-                                        Console.Error.WriteLine $"{path}:{wl}:{wc}: warning: {wm}"
+                                        Console.Error.WriteLine(
+                                            $"{path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
+                                        )
 
                                     let locatedMsg =
                                         if d.Parse then
@@ -1285,17 +1315,28 @@ let run (path: string) (scriptArgs: string list) : int =
                                                 // the assembled text
                                                 let src = rawByLine |> Map.tryFind d.PhysLine |> Option.defaultValue ""
 
-                                                let caret = String(' ', max 0 (d.PhysCol - 1)) + "^"
-                                                $"{path}:{d.PhysLine}:{d.PhysCol}: parse error:\n{src}\n{caret}\n{d.Message}"
+                                                let caret = Color.red c (String(' ', max 0 (d.PhysCol - 1)) + "^")
+
+                                                Color.bold c $"{path}:{d.PhysLine}:{d.PhysCol}"
+                                                + ": "
+                                                + Color.red c "parse error"
+                                                + $":\n{src}\n{caret}\n{d.Message}"
                                             else
                                                 located path d.PhysLine d.Message
                                         else
-                                            $"{path}:{d.PhysLine}:{d.PhysCol}: type error: {d.Message}"
+                                            Color.bold c $"{path}:{d.PhysLine}:{d.PhysCol}"
+                                            + ": "
+                                            + Color.red c "type error"
+                                            + $": {d.Message}"
 
                                     Error locatedMsg
                                 | Ok chk ->
+                                    let c = Color.onStderr.Value
+
                                     for wl, wc, wm in chk.Warnings do
-                                        Console.Error.WriteLine $"{path}:{wl}:{wc}: warning: {wm}"
+                                        Console.Error.WriteLine(
+                                            $"{path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
+                                        )
 
                                     let stmt =
                                         match chk.Kind with
@@ -1336,7 +1377,10 @@ let run (path: string) (scriptArgs: string list) : int =
                                 with
                                 | Eval.ExitRequest code -> code
                                 | ex ->
-                                    Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                    Console.Error.WriteLine(
+                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                    )
+
                                     1
                             | CLet(name, te) ->
                                 try
@@ -1344,7 +1388,10 @@ let run (path: string) (scriptArgs: string list) : int =
                                 with
                                 | Eval.ExitRequest code -> code
                                 | ex ->
-                                    Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                    Console.Error.WriteLine(
+                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                    )
+
                                     1
                             | CCmd te ->
                                 try
@@ -1353,7 +1400,10 @@ let run (path: string) (scriptArgs: string list) : int =
                                 with
                                 | Eval.ExitRequest code -> code
                                 | ex ->
-                                    Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                    Console.Error.WriteLine(
+                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                    )
+
                                     1
                             | CExpr te ->
                                 try
@@ -1362,7 +1412,10 @@ let run (path: string) (scriptArgs: string list) : int =
                                 with
                                 | Eval.ExitRequest code -> code
                                 | ex ->
-                                    Console.Error.WriteLine(located path lineNo $"error: {ex.Message}")
+                                    Console.Error.WriteLine(
+                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                    )
+
                                     1
 
                     exec valueEnv0 stmts

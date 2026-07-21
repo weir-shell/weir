@@ -199,7 +199,7 @@ let private underline (span: Span) : string =
 let private printWarnings (state: State) (te: Check.TypedExpr) =
     Check.warnings state.TypeEnv te
     |> List.iter (fun w ->
-        Console.WriteLine(underline w.Span)
+        Console.WriteLine(Script.Color.yellow Script.Color.onStdout.Value (underline w.Span))
         Console.WriteLine(Check.formatWarning w))
 
 let private resolver (state: State) : Parser.Resolver =
@@ -242,12 +242,16 @@ let rec private loop (state: State) =
             match Script.checkStatement false (fun _ -> resolver state) state.TypeEnv ll with
             | Error d when d.Parse ->
                 // the input sits on the prompt line above — caret under it
-                Console.WriteLine(String(' ', prompt.Length + d.PhysCol - 1) + "^")
+                Console.WriteLine(
+                    Script.Color.red Script.Color.onStdout.Value (String(' ', prompt.Length + d.PhysCol - 1) + "^")
+                )
+
                 Console.WriteLine d.Message
                 printHint state line
                 state
             | Error d ->
-                d.Span |> Option.iter (underline >> Console.WriteLine)
+                d.Span
+                |> Option.iter (underline >> Script.Color.red Script.Color.onStdout.Value >> Console.WriteLine)
 
                 (match d.Span with
                  | Some sp -> Console.WriteLine(Check.formatError { Span = sp; Message = d.Message })
@@ -290,7 +294,7 @@ let rec private loop (state: State) =
                      with
                      | Eval.ExitRequest _ -> reraise ()
                      | ex ->
-                         Console.WriteLine $"error: {ex.Message}"
+                         Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
                          state)
                 | Script.KLet(name, _, te) ->
                     printWarnings state te
@@ -306,7 +310,7 @@ let rec private loop (state: State) =
                      with
                      | Eval.ExitRequest _ -> reraise ()
                      | ex ->
-                         Console.WriteLine $"error: {ex.Message}"
+                         Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
                          state)
                 | Script.KExpr te
                 | Script.KCmd te ->
@@ -322,7 +326,7 @@ let rec private loop (state: State) =
                      with
                      | Eval.ExitRequest _ -> reraise ()
                      | ex ->
-                         Console.WriteLine $"error: {ex.Message}"
+                         Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
                          state)
 
         loop next
