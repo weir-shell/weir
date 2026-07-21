@@ -112,7 +112,19 @@ let private notify (method: string) (writeParams: Text.Json.Utf8JsonWriter -> un
 
 let private analyze (uri: string) (text: string) =
     let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
-    Script.analyzeLines uri lines
+    let diags, stmts, env0, lls = Script.analyzeLines uri lines
+    diags, stmts, env0, lls
+
+// find the containing logical line among ALL assembled lines
+let private logicalAt (lls: Script.LogicalLine list) (line: int) (col: int) =
+    lls
+    |> List.tryPick (fun ll ->
+        ll.Segments
+        |> List.tryPick (fun (js, physLine, indent) ->
+            if physLine = line && col > indent then
+                Some(ll, js + (col - 1 - indent) + 1)
+            else
+                None))
 
 // physical (1-based line, 1-based col) -> logical (LogicalLine, 1-based joined col)
 let private toLogical (stmts: (Script.LogicalLine * Script.CheckedStatement) list) (line: int) (col: int) =
@@ -196,7 +208,7 @@ let run () : int =
             Some(Text.Encoding.UTF8.GetString buf)
 
     let publishDiagnostics (uri: string) (text: string) =
-        let diags, _, _ = analyze uri text
+        let diags, _, _, _ = analyze uri text
 
         notify "textDocument/publishDiagnostics" (fun w ->
             w.WriteStartObject()
@@ -310,7 +322,7 @@ let run () : int =
                     let writeResult (w: Text.Json.Utf8JsonWriter) =
                         match docOf (), posOf () with
                         | Some(uri, text), Some(line, col) ->
-                            let _, stmts, _ = analyze uri text
+                            let _, stmts, _, _ = analyze uri text
 
                             match toLogical stmts line col with
                             | Some(_, chk, jcol) ->
@@ -342,7 +354,7 @@ let run () : int =
                     let writeResult (w: Text.Json.Utf8JsonWriter) =
                         match docOf (), posOf () with
                         | Some(uri, text), Some(line, col) ->
-                            let _, stmts, env0 = analyze uri text
+                            let _, stmts, env0, allLls = analyze uri text
 
                             // env in scope: after the last statement ABOVE the line
                             let env =
@@ -365,7 +377,64 @@ let run () : int =
 
                                 i
 
-                            let items = Complete.suggest env upto wordStart
+                            let word = upto.Substring wordStart
+
+                            // error-recovery path: a single-dot word whose
+                            // head is unknown — repair the (possibly broken)
+                            // containing statement and read the head's
+                            // inferred type from the typed tree
+                            let repaired =
+                                if word.Contains '.' && word.Split('.').Length = 2 then
+                                    let head = word.Substring(0, word.IndexOf '.')
+                                    let prefix = word.Substring(word.IndexOf '.' + 1)
+
+                                    if
+                                        head.Length > 0 && Char.IsLower head[0] && not (Map.containsKey head env.Values)
+                                    then
+                                        logicalAt allLls line col
+                                        |> Option.bind (fun (ll, jcol) ->
+                                            let dotIdx = jcol - 1 - prefix.Length - 1
+
+                                            if
+                                                dotIdx >= 0
+                                                && dotIdx < ll.Text.Length
+                                                && ll.Text[dotIdx] = '.'
+                                                && dotIdx >= head.Length
+                                                && ll.Text.Substring(dotIdx - head.Length, head.Length) = head
+                                            then
+                                                // blank the WHOLE head.prefix to a neutral
+                                                // "" — leaving a bare row-typed head behind
+                                                // broke positions with scalar rules (printerr)
+                                                let span = head.Length + 1 + prefix.Length
+
+                                                let blanked =
+                                                    ll.Text.Substring(0, dotIdx - head.Length)
+                                                    + "\"\""
+                                                    + String(' ', max 0 (span - 2))
+                                                    + ll.Text.Substring(dotIdx + 1 + prefix.Length)
+
+                                                let full = blanked + Script.closers blanked
+
+                                                let parse t =
+                                                    Parser.parseLine (Script.assumeResolver env) t
+
+                                                Complete.fieldsAtRepaired parse env full head
+                                                |> Option.map (fun fields ->
+                                                    fields
+                                                    |> List.filter (fun f -> f.StartsWith prefix)
+                                                    |> List.sort
+                                                    |> List.map (fun f -> head + "." + f))
+                                            else
+                                                None)
+                                    else
+                                        None
+                                else
+                                    None
+
+                            let items =
+                                match repaired with
+                                | Some fields when not fields.IsEmpty -> fields
+                                | _ -> Complete.suggest env upto wordStart
 
                             // line-head position: PATH commands join (the
                             // command-mode classifier's territory)

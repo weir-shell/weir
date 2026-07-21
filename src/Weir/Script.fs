@@ -182,6 +182,55 @@ type LogicalLine =
 // follow the plain indent rules, so a dedented arm inside a block is the
 // same "needs a body" error F# gives the shape. Every pending let must be
 // closed before the statement ends.
+// Unbalanced ( and { closers for a text fragment — the completion
+// repair path appends these so a mid-edit dangling line parses
+// (quote-aware via the one scanner, per the formalization rule).
+let closers (text: string) : string =
+    // one stack of expected closers models the full nesting: brackets
+    // in code, strings ('"' plain, '$' interp — closes with '"' but
+    // '{' opens a HOLE back into code land), single quotes, holes.
+    // Mid-edit dangling text closes correctly at any depth.
+    let mutable stack: char list = []
+    let mutable i = 0
+
+    while i < text.Length do
+        let c = text[i]
+
+        match stack with
+        | ('"' | '$') :: rest ->
+            if c = '\\' && i + 1 < text.Length then
+                i <- i + 1
+            elif c = '"' then
+                stack <- rest
+            elif c = '{' && List.head stack = '$' then
+                if i + 1 < text.Length && text[i + 1] = '{' then
+                    i <- i + 1
+                else
+                    stack <- '}' :: stack
+        | '\'' :: rest ->
+            if c = '\'' then
+                stack <- rest
+        | _ ->
+            if c = '"' then
+                stack <- (if i > 0 && text[i - 1] = '$' then '$' else '"') :: stack
+            elif c = '\'' then
+                stack <- '\'' :: stack
+            elif c = '(' then
+                stack <- ')' :: stack
+            elif c = '{' then
+                stack <- '}' :: stack
+            elif (c = ')' || c = '}') then
+                match stack with
+                | top :: rest when top = c -> stack <- rest
+                | _ -> ()
+
+        i <- i + 1
+
+    stack
+    |> List.map (fun c -> if c = '$' then '"' else c)
+    |> List.toArray
+    |> String
+
 // Pending-statement state. Compounds is the offside stack: each open
 // if/match-headed piece as (headIndent, textStart). A sibling arriving
 // at or left of a head closes that compound by paren-wrapping it — a
@@ -853,13 +902,26 @@ let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
     w.WriteString("message", d.Message)
     w.WriteEndObject()
 
+// assume only COMMAND-SHAPED words (letter-initial, ident chars +
+// dashes; never keywords, never dotted): the expression grammar must
+// keep claiming Env.load, from-adapters, and punctuation heads
+let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
+    { resolver tenv with
+        IsExternal =
+            fun n ->
+                Extern.exists n
+                || (n.Length > 0
+                    && System.Char.IsLetter n[0]
+                    && not (Parser.isKeyword n)
+                    && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
+
 // full analysis for tooling (the LSP re-frames this): diagnostics AND
 // the successfully-checked statements with their logical lines — plus
 // the initial env, so consumers can pick the in-scope env per position
 let analyzeLines
     (path: string)
     (rawLines: string list)
-    : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv =
+    : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv * LogicalLine list =
     let afterShebang, shebangOffset =
         match rawLines with
         | first :: rest when first.StartsWith "#!" -> rest, 1
@@ -890,18 +952,6 @@ let analyzeLines
     // input (the gateExprs pattern), the verdict difference pinned.
     // Receipt: editing bicep-deploy.weir without az/bicep installed
     // cascaded into parse errors (user report, 2026-07-21).
-    // assume only COMMAND-SHAPED words (letter-initial, ident chars +
-    // dashes; never keywords, never dotted): the expression grammar
-    // must keep claiming Env.load, from-adapters, and punctuation heads
-    let assumeResolver tenv =
-        { resolver tenv with
-            IsExternal =
-                fun n ->
-                    Extern.exists n
-                    || (n.Length > 0
-                        && System.Char.IsLetter n[0]
-                        && not (Parser.isKeyword n)
-                        && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
 
     let assembled =
         numbered
@@ -930,7 +980,8 @@ let analyzeLines
             Code = "assembly"
             Message = msg } ],
         [],
-        typeEnv0
+        typeEnv0,
+        []
     | Ok logicalLines ->
         let diags = ResizeArray<Diagnostic>()
         let stmts = ResizeArray<LogicalLine * CheckedStatement>()
@@ -994,7 +1045,7 @@ let analyzeLines
                       Code = codeOf d.Parse d.Message
                       Message = d.Message }
 
-        List.ofSeq diags, List.ofSeq stmts, typeEnv0
+        List.ofSeq diags, List.ofSeq stmts, typeEnv0, logicalLines
 
 let checkOnly (json: bool) (path: string) : int =
     if not (IO.File.Exists path) then
@@ -1002,7 +1053,7 @@ let checkOnly (json: bool) (path: string) : int =
         2
     else
         let rawLines = IO.File.ReadAllLines path |> Array.toList
-        let diags, _, _ = analyzeLines path rawLines
+        let diags, _, _, _ = analyzeLines path rawLines
 
         if json then
             Console.WriteLine(

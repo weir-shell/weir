@@ -1,5 +1,27 @@
 # Spike Notes
 
+## Error-recovery completion — the park opens on a user push (2026-07-21)
+
+"In let quality t we know what t is" — correct, and it opened the
+parked step in two rounds. Round 1 (pipelines): unbound names in the
+pipe-source prefix bind as HOLES (fresh vars) before inference — a
+known function's result type falls out of unification regardless of
+its argument (`targetEnv t |> Seq.where (fun e -> e.` → exactly
+EnvVar's fields). Round 2 (broken statements): REPAIR the dangling
+statement — blank the whole `head.prefix` to a neutral `""` (leaving
+a bare row-typed head broke scalar-rule positions: printerr), append
+closers, typecheck with holes, and read the head's type from ANY
+OTHER occurrence (a param's uses share one type; the cursor's own
+occurrence was just blanked). `closers` grew into a proper mode-stack
+mini-scan (brackets in code, strings, interp holes re-entering code
+land — it lives in Script with the scanner, per the formalization
+rule) after two naive versions corrupted on hole-nested strings. Now
+`printerr (t.` and `$"q: {t.` both complete to the body-inferred row
+EXACTLY. The completion ladder: resolved head → its fields;
+pipeline-with-holes → exact element; repairable statement → exact
+row; truly unknowable → declared-fields fallback.
+
+
 ## Completion for params — the declared-fields fallback (2026-07-21)
 
 Third live-testing receipt: `t.` inside a function body completed

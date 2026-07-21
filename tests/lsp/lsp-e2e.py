@@ -130,6 +130,27 @@ send({"jsonrpc": "2.0", "id": 44, "method": "textDocument/completion",
 labels = [c["label"] for c in read_msg()["result"]]
 expect(labels == ["e.Name", "e.Value"], f"hole inference should give exactly EnvVar fields: {labels}")
 
+# error-recovery completion: a BROKEN statement's other lines type the
+# param ("in let quality t we know what t is") — exact row fields, not
+# the fallback; works through interp holes and dangling parens
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": "let quality t =\n    printerr t.Stack\n    printerr (t.\n"}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 45, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 2, "character": 16}}})
+labels = [c["label"] for c in read_msg()["result"]]
+expect(labels == ["t.Stack"], f"repair completion must give the body-inferred row exactly: {labels}")
+
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let quality t =\n    printerr t.Stack\n    printerr $"q: {t.\n'}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 46, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 2, "character": 21}}})
+labels = [c["label"] for c in read_msg()["result"]]
+expect(labels == ["t.Stack"], f"repair completion through an interp hole: {labels}")
+
 # completion at line head -> a PATH command appears
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": "gi\n"}]}})

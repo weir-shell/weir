@@ -2419,6 +2419,19 @@ let seqAccessTests =
                   Weir.Session.ScriptArgs <- []
           } ]
 
+let closersTests =
+    testList
+        "Closers (the repair scanner)"
+        [ test "brackets, strings, interp holes at any nesting" {
+              Expect.equal (Weir.Script.closers "f (a") ")" ""
+              Expect.equal (Weir.Script.closers "{ A = (1") ")}" ""
+              Expect.equal (Weir.Script.closers "let x = \"open") "\"" ""
+              Expect.equal (Weir.Script.closers "printerr $\"q: {t") "}\"" ""
+              Expect.equal (Weir.Script.closers "$\"a{f (\"s\"") ")}\"" ""
+              Expect.equal (Weir.Script.closers "$\"esc {{ literal") "\"" ""
+              Expect.equal (Weir.Script.closers "balanced (x) done") "" ""
+          } ]
+
 let scannerTests =
     testList
         "Scanner & classifier contract"
@@ -3787,6 +3800,7 @@ let allTests =
           typeClassCTests
           childEnvTests
           scannerTests
+          closersTests
           sigilTests
           districtTests
           indexerTests

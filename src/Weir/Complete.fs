@@ -157,3 +157,56 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
         |> List.filter (fun n -> n.StartsWith word && n <> word)
         |> List.distinct
         |> List.sort
+
+// Error-recovery completion (2026-07-21 — "in let quality t we know
+// what t is"): the caller REPAIRS the broken statement (dangling
+// `.prefix` blanked, closers appended) and this types the repaired
+// text — holes for stragglers — then reads the head identifier's
+// INFERRED type at its column. Row types from the statement's other
+// uses of the param surface here.
+let fieldsAtRepaired
+    (parse: string -> Result<Weir.Ast.Stmt, string>)
+    (env: TypeEnv)
+    (repaired: string)
+    (head: string)
+    : string list option =
+    match parse repaired with
+    | Error _ -> None
+    | Ok stmt ->
+        let exprOf =
+            match stmt with
+            | Weir.Ast.SLet(_, e) -> Some e
+            | Weir.Ast.SLetPat(_, e) -> Some e
+            | Weir.Ast.SExpr e
+            | Weir.Ast.SCmd e -> Some e
+            | Weir.Ast.SType _ -> None
+
+        exprOf
+        |> Option.bind (fun e ->
+            let envH =
+                holeNames env e
+                |> List.mapi (fun i n -> n, mono (TVar $"__hole{i}"))
+                |> List.fold
+                    (fun (te: TypeEnv) (n, sch) ->
+                        { te with
+                            Values = Map.add n sch te.Values })
+                    env
+
+            match Weir.Check.typecheck envH e with
+            | Error _ -> None
+            | Ok te ->
+                // ANY occurrence serves: a param's uses share one type,
+                // and the cursor's own occurrence was blanked away
+                let rec find (best: Ty option) (node: Weir.Check.TypedExpr) =
+                    let best =
+                        match node.Kind with
+                        | Weir.Check.TEVar n when n = head -> Some node.Ty
+                        | _ -> best
+
+                    Weir.Check.childExprs node |> List.fold find best
+
+                find None te)
+        |> Option.bind (fun ty ->
+            match ty with
+            | TRowVar(_, fields) -> Some(fields |> List.map fst)
+            | _ -> recordFields env ty |> Option.map (List.map fst))

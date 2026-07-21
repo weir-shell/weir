@@ -22,7 +22,7 @@ let header t = printerr $"== {t} =="
 let targetEnv t = Env.fromFile $"bicep/envs/{t.Stack}-{t.Env}.env"
 
 let envVal t name =
-    targetEnv t |> Seq.where (fun e -> e.BicepPath == name) |> Seq.map _.Value |> Seq.head
+    targetEnv t |> Seq.where (fun e -> e.Name == name) |> Seq.map _.Value |> Seq.head
 
 let quality t =
     header $"bicep quality: {t.Name}"
