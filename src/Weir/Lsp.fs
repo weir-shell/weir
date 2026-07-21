@@ -383,9 +383,31 @@ let run () : int =
 
                             w.WriteStartArray()
 
+                            // textEdit with an explicit range: clients replace
+                            // [wordStart, cursor) with the suggestion — without
+                            // it, micro appends the raw label after a dot
+                            // (Env.Env.fromFile) and its prefix filter hides
+                            // results inside parens (user report, 2026-07-21)
                             for label in items |> List.distinct |> List.truncate 200 do
                                 w.WriteStartObject()
                                 w.WriteString("label", label)
+                                w.WritePropertyName "textEdit"
+                                w.WriteStartObject()
+                                w.WritePropertyName "range"
+                                w.WriteStartObject()
+                                w.WritePropertyName "start"
+                                w.WriteStartObject()
+                                w.WriteNumber("line", line - 1)
+                                w.WriteNumber("character", wordStart)
+                                w.WriteEndObject()
+                                w.WritePropertyName "end"
+                                w.WriteStartObject()
+                                w.WriteNumber("line", line - 1)
+                                w.WriteNumber("character", col - 1)
+                                w.WriteEndObject()
+                                w.WriteEndObject()
+                                w.WriteString("newText", label)
+                                w.WriteEndObject()
                                 w.WriteEndObject()
 
                             w.WriteEndArray()

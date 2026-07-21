@@ -83,6 +83,30 @@ comp = read_msg()
 labels = [c["label"] for c in comp["result"]]
 expect(any("Name" in l for l in labels), f"record fields missing: {labels[:10]}")
 
+# textEdit ranges: dot completion replaces the WHOLE dotted word (the
+# Env.Env.fromFile doubling), and paren-nested completion still offers
+# (micro's label-prefix filter needs textEdit to engage)
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": "let e = Env.\n"}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 41, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 12}}})
+comp = read_msg()
+item = comp["result"][0]
+expect(item["textEdit"]["range"]["start"]["character"] == 8
+       and item["textEdit"]["range"]["end"]["character"] == 12
+       and item["textEdit"]["newText"] == item["label"],
+       f"dot textEdit must span the dotted word: {item}")
+
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": "print (Se\n"}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 42, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 9}}})
+comp = read_msg()
+expect(any(c["label"] == "Seq" and "textEdit" in c for c in comp["result"]),
+       f"paren-nested completion with textEdit: {comp['result'][:3]}")
+
 # completion at line head -> a PATH command appears
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": "gi\n"}]}})
