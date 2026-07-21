@@ -1,5 +1,28 @@
 # Spike Notes
 
+## fmt field-drift + assembly recovery (2026-07-21, user bug report)
+
+Two bugs behind one report ("fmt says already formatted but Name is
+missing from completion; look at the record's indentation"):
+(1) fmt's general depth model was CANONICALIZING record fields to
+depth*4 (8 cols) instead of the house brace+2 alignment — and then
+truthfully reporting already-formatted, since the drifted layout was
+its own fixed point and assembly is indentation-blind inside braces
+(the safety check could not object). Fixed: fmt tracks open-brace
+columns (Script.braceStack, scanner-family) and aligns fields at
+top+2; repo files reformatted back to the hand style.
+(2) The completion regression's real cause was one layer below the
+last fix: an ASSEMBLY-breaking mid-edit state made analyzeLines
+return nothing — no statements, no types, builtins-only env — so
+completion lost Target entirely. Fixed with assembly RECOVERY:
+tooling drops the offending line (the error names it), retries up to
+10 times, and keeps each drop as an assembly diagnostic; the runner
+keeps hard failure. weir check now reports errors past an
+assembly-broken line too (pinned). The recovery ladder is now
+uniform: assembly-level drop -> statement-level continue ->
+repair-typing -> fallback.
+
+
 ## Error-recovery completion — the park opens on a user push (2026-07-21)
 
 "In let quality t we know what t is" — correct, and it opened the

@@ -72,9 +72,9 @@ if stack == "" || env == "" then fail usage
 
 let target =
     { Name = $"{stack}-{env}-apps"
-        BicepPath = $"bicep/apps/stacks/{stack}/{env}.bicepparam"
-        Stack = stack
-        Env = env }
+      BicepPath = $"bicep/apps/stacks/{stack}/{env}.bicepparam"
+      Stack = stack
+      Env = env }
 
 match subcommand with
 | c when c == "deploy" -> deploy target

@@ -2419,6 +2419,49 @@ let seqAccessTests =
                   Weir.Session.ScriptArgs <- []
           } ]
 
+let fmtRecordTests =
+    testList
+        "fmt: record field alignment"
+        [ test "fields align at brace+2, not depth*4 (the drift fix)" {
+              match
+                  Weir.Fmt.formatLines
+                      [ "let target ="
+                        "    { Name = \"a\""
+                        "        BicepPath = \"b\""
+                        "        Env = \"c\" }" ]
+              with
+              | Ok lines -> Expect.equal lines[2] "      BicepPath = \"b\"" ""
+              | Error e -> failtest e
+          }
+          test "nested record fields align under the inner brace" {
+              match
+                  Weir.Fmt.formatLines [ "let o ="; "    { Name = \"x\""; "      In = { V = 1"; "        W = 2 } }" ]
+              with
+              | Ok lines -> Expect.equal (lines[3].TrimEnd()) (String.replicate 13 " " + "W = 2 } }") ""
+              | Error e -> failtest e
+          } ]
+
+let assemblyRecoveryTests =
+    testList
+        "Assembly recovery (tooling)"
+        [ test "a broken line yields its diag AND later statements still analyze" {
+              let diags, stmts, _, _ =
+                  Weir.Script.analyzeLines
+                      "t.weir"
+                      [ "type T = { A: int }"
+                        ""
+                        "let go = 1 > 0"
+                        ""
+                        "if go then !"
+                        "nats == nats" ]
+              // the bare marker with no block is the assembly error; the
+              // == error after it must STILL be found, and earlier
+              // statements survive
+              Expect.exists diags (fun d -> d.Code = "assembly") "assembly diag present"
+              Expect.exists diags (fun d -> d.Code = "eq") "later statement still checked"
+              Expect.isTrue (stmts |> List.exists (fun (_, c) -> c.Env.Types.ContainsKey "T")) "types survive"
+          } ]
+
 let closersTests =
     testList
         "Closers (the repair scanner)"
@@ -3800,6 +3843,8 @@ let allTests =
           typeClassCTests
           childEnvTests
           scannerTests
+          fmtRecordTests
+          assemblyRecoveryTests
           closersTests
           sigilTests
           districtTests

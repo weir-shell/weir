@@ -231,6 +231,41 @@ let closers (text: string) : string =
     |> List.toArray
     |> String
 
+// Columns (0-based) of still-open record braces after folding a line
+// into the running stack — fmt aligns record fields at TOP+2
+// (quote-aware via the scanner family; lives here per the rule).
+let braceStack (prev: int list) (line: string) : int list =
+    let mutable stack = prev
+    let mutable inDouble = false
+    let mutable inSingle = false
+    let mutable i = 0
+
+    while i < line.Length do
+        let c = line[i]
+
+        if inDouble then
+            if c = '\\' && i + 1 < line.Length then
+                i <- i + 1
+            elif c = '"' then
+                inDouble <- false
+        elif inSingle then
+            if c = '\'' then
+                inSingle <- false
+        elif c = '"' then
+            inDouble <- true
+        elif c = '\'' then
+            inSingle <- true
+        elif c = '{' then
+            stack <- i :: stack
+        elif c = '}' then
+            match stack with
+            | _ :: rest -> stack <- rest
+            | [] -> ()
+
+        i <- i + 1
+
+    stack
+
 // Pending-statement state. Compounds is the offside stack: each open
 // if/match-headed piece as (headIndent, textStart). A sibling arriving
 // at or left of a head closes that compound by paren-wrapping it — a
@@ -953,36 +988,56 @@ let analyzeLines
     // Receipt: editing bicep-deploy.weir without az/bicep installed
     // cascaded into parse errors (user report, 2026-07-21).
 
-    let assembled =
+    // ASSEMBLY RECOVERY (2026-07-21): a single mid-edit line that breaks
+    // assembly must not erase the whole document's knowledge (types,
+    // bindings, completion env). Drop the offending line — the error
+    // names it — and retry, keeping each drop as a diagnostic. The
+    // RUNNER keeps hard assembly failure; this is tooling-only, the
+    // same recovery philosophy as the statement level, one layer down.
+    let assemblyDiags = ResizeArray<Diagnostic>()
+
+    let rec assembleRecovering (attempts: int) (input: (int * string) list) =
+        match assemble input with
+        | Ok lls -> lls
+        | Error msg when attempts > 0 ->
+            let line =
+                match msg.Split(' ') |> Array.tryItem 1 with
+                | Some tok ->
+                    tok.TrimEnd(':')
+                    |> fun t ->
+                        (match System.Int32.TryParse t with
+                         | true, n -> n
+                         | false, _ -> -1)
+                | None -> -1
+
+            assemblyDiags.Add
+                { File = path
+                  Line = (if line > 0 then line else 1)
+                  Col = 1
+                  EndLine = None
+                  EndCol = None
+                  Severity = "error"
+                  Code = "assembly"
+                  Message = msg }
+
+            if line > 0 && input |> List.exists (fun (n, _) -> n = line) then
+                assembleRecovering (attempts - 1) (input |> List.filter (fun (n, _) -> n <> line))
+            else
+                []
+        | Error _ -> []
+
+    let logicalLines =
         numbered
         |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
         |> List.map (fun (n, raw) -> n, stripComment raw)
-        |> assemble
+        |> assembleRecovering 10
 
-    match assembled with
-    | Error msg ->
-        let line =
-            match msg.Split(' ') |> Array.tryItem 1 with
-            | Some tok ->
-                tok.TrimEnd(':')
-                |> fun t ->
-                    (match System.Int32.TryParse t with
-                     | true, n -> n
-                     | false, _ -> 1)
-            | None -> 1
+    (let diags0 = List.ofSeq assemblyDiags
+     diags0 |> ignore)
 
-        [ { File = path
-            Line = line
-            Col = 1
-            EndLine = None
-            EndCol = None
-            Severity = "error"
-            Code = "assembly"
-            Message = msg } ],
-        [],
-        typeEnv0,
-        []
-    | Ok logicalLines ->
+    match Some logicalLines with
+    | None -> [], [], typeEnv0, []
+    | Some logicalLines ->
         let diags = ResizeArray<Diagnostic>()
         let stmts = ResizeArray<LogicalLine * CheckedStatement>()
 
@@ -1045,7 +1100,7 @@ let analyzeLines
                       Code = codeOf d.Parse d.Message
                       Message = d.Message }
 
-        List.ofSeq diags, List.ofSeq stmts, typeEnv0, logicalLines
+        List.ofSeq assemblyDiags @ List.ofSeq diags, List.ofSeq stmts, typeEnv0, logicalLines
 
 let checkOnly (json: bool) (path: string) : int =
     if not (IO.File.Exists path) then

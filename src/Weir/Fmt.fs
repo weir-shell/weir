@@ -170,6 +170,10 @@ let formatLines (body: string list) : Result<string list, string> =
         // join-for-join identical; the old let-only stack flattened if/match
         // bodies to depth 1 and tripped the safety check on legal input.
         let mutable levels: int list = []
+        // open record braces (columns in the FORMATTED text): fields
+        // align at top+2 — the house style (2026-07-21; the general
+        // depth model had drifted them to depth*4)
+        let mutable braces: int list = []
         // district: Some(markerOrigIndent, markerDepth) while inside a ! block
         let mutable district: (int * int) option = None
 
@@ -181,6 +185,7 @@ let formatLines (body: string list) : Result<string list, string> =
 
                 if raw.Trim() = "" then
                     levels <- []
+                    braces <- []
                     ""
                 elif code.Trim() = "" then
                     // comment-only: transparent to assembly (2026-07-20);
@@ -198,19 +203,29 @@ let formatLines (body: string list) : Result<string list, string> =
 
                         district <- None
 
-                        let depth =
-                            if indent = 0 then
-                                levels <- []
-                                0
-                            else
-                                let kept = levels |> List.filter (fun k -> k < indent)
-                                levels <- indent :: kept
-                                List.length kept + 1
+                        let formatted =
+                            match braces with
+                            | top :: _ ->
+                                // record continuation: align under the open
+                                // brace's first field (top + 2)
+                                String.replicate (top + 2) " " + content
+                            | [] ->
+                                let depth =
+                                    if indent = 0 then
+                                        levels <- []
+                                        0
+                                    else
+                                        let kept = levels |> List.filter (fun k -> k < indent)
+                                        levels <- indent :: kept
+                                        List.length kept + 1
 
-                        if ((Script.classifyPiece piece).Marker <> Script.MarkerKind.NoMarker) then
-                            district <- Some(indent, depth)
+                                if ((Script.classifyPiece piece).Marker <> Script.MarkerKind.NoMarker) then
+                                    district <- Some(indent, depth)
 
-                        String.replicate (depth * 4) " " + content)
+                                String.replicate (depth * 4) " " + content
+
+                        braces <- Script.braceStack braces formatted
+                        formatted)
 
         let renumbered =
             formatted
