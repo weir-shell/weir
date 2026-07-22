@@ -857,6 +857,28 @@ let private exhaustive
                     err span $"match is not exhaustive; missing: {missingList}"
             | ty -> err span $"match on {formatTy ty} needs a catch-all pattern"
 
+// [D:lambda-core] Flag 7 discharged: the five lambda arms (infer:
+// unit/name/pattern; check-mode: name/pattern) share ONE assembly
+// core — env extension, body typing, TFun construction. Each adapter
+// keeps only its judgment delta (domain source + body strategy).
+// Zero behavior change; the full battery is the regression harness.
+let private lambdaCore
+    (env: TypeEnv)
+    (span: Span)
+    (mkKind: TypedExpr -> TypedKind)
+    (dom: Ty)
+    (binds: (string * Ty) list)
+    (typeBody: TypeEnv -> Result<TypedExpr, TypeError>)
+    : Result<TypedExpr, TypeError> =
+    result {
+        let! tbody = typeBody (bindParams env binds)
+
+        return
+            { Kind = mkKind tbody
+              Ty = TFun(dom, tbody.Ty)
+              Span = span }
+    }
+
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
     | EInt n ->
@@ -970,12 +992,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | ELambdaPat(pat, body) ->
         result {
             let! shape, binds = binderShape ctx env pat
-            let! tbody = infer ctx (bindParams env binds) body
-
-            return
-                { Kind = TELambdaPat(pat, tbody)
-                  Ty = TFun(shape, tbody.Ty)
-                  Span = expr.Span }
+            return! lambdaCore env expr.Span (fun tb -> TELambdaPat(pat, tb)) shape binds (fun e -> infer ctx e body)
         }
     | ELetPat(pat, value, body) ->
         result {
@@ -1003,24 +1020,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // the unit param PINS its type — desugaring to an unconstrained
         // fresh var would generalize (`cleanup 5` would typecheck); the
         // "()" name is unforgeable, and no binding is added
-        result {
-            let! tbody = infer ctx env body
-
-            return
-                { Kind = TELambda("()", tbody)
-                  Ty = TFun(TUnit, tbody.Ty)
-                  Span = expr.Span }
-        }
+        lambdaCore env expr.Span (fun tb -> TELambda("()", tb)) TUnit [] (fun e -> infer ctx e body)
     | ELambda(param, body) ->
         result {
             do! checkBinderName expr.Span param
             let paramTy = TVar(freshName ctx "a")
-            let! tbody = infer ctx (bindParams env [ param, paramTy ]) body
 
-            return
-                { Kind = TELambda(param, tbody)
-                  Ty = TFun(paramTy, tbody.Ty)
-                  Span = expr.Span }
+            return!
+                lambdaCore env expr.Span (fun tb -> TELambda(param, tb)) paramTy [ param, paramTy ] (fun e ->
+                    infer ctx e body)
         }
     | EApp _ ->
         let head, args = spine expr
@@ -1637,38 +1645,29 @@ and private checkSpine
 and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeError> =
     match expr.Kind, resolve ctx expected with
     | ELambdaPat(pat, body), TFun(dom, cod) ->
-        // check-mode twin of the infer arm: the binder shape binds against
-        // the PUSHED domain before the body runs, so piped element types
-        // reach the components ahead of any hole defaulting
+        // check-mode twin: the binder shape binds against the PUSHED
+        // domain before the body runs, so piped element types reach
+        // the components ahead of any hole defaulting
         result {
             let! shape, binds = binderShape ctx env pat
             do! bind ctx env pat.PSpan shape dom
-            let! tbody = check ctx (bindParams env binds) body cod
-
-            return
-                { Kind = TELambdaPat(pat, tbody)
-                  Ty = TFun(dom, tbody.Ty)
-                  Span = expr.Span }
+            return! lambdaCore env expr.Span (fun tb -> TELambdaPat(pat, tb)) dom binds (fun e -> check ctx e body cod)
         }
     | ELambda(param, body), TFun(dom, cod) ->
         result {
             do! checkBinderName expr.Span param
-            let env' = bindParams env [ param, dom ]
 
-            let! tbody =
+            let typeBody e =
                 if hasVars ctx cod then
                     result {
-                        let! tbody = infer ctx env' body
+                        let! tbody = infer ctx e body
                         do! bind ctx env tbody.Span cod tbody.Ty
                         return tbody
                     }
                 else
-                    check ctx env' body cod
+                    check ctx e body cod
 
-            return
-                { Kind = TELambda(param, tbody)
-                  Ty = TFun(dom, tbody.Ty)
-                  Span = expr.Span }
+            return! lambdaCore env expr.Span (fun tb -> TELambda(param, tb)) dom [ param, dom ] typeBody
         }
     | ELambda _, (TInt | TStr | TBool | TSeq _ | TNamed _ as t) ->
         err expr.Span $"expected {formatTy t}, got a function"

@@ -91,6 +91,20 @@ let main argv =
     match Array.toList argv with
     | [ "-e"; input ] -> evalOnce input
     | [] -> Weir.Repl.run ()
+    | [ "--version" ] ->
+        // the build stamp [D:masking-mechanized] — harness gates
+        // compare this against git HEAD
+        let v =
+            match
+                System.Reflection.Assembly
+                    .GetEntryAssembly()
+                    .GetCustomAttributes(typeof<System.Reflection.AssemblyInformationalVersionAttribute>, false)
+            with
+            | [| :? System.Reflection.AssemblyInformationalVersionAttribute as a |] -> a.InformationalVersion
+            | _ -> "dev"
+
+        Console.WriteLine v
+        0
     | [ "lsp" ] -> Lsp.run ()
     | [ "check"; path ] -> Script.checkOnly false path
     | [ "check"; "--json"; path ] -> Script.checkOnly true path

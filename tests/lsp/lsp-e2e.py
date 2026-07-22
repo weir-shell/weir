@@ -4,6 +4,10 @@ binary. Invoked by ci/e2e.sh; exits nonzero with a reason on failure."""
 import json, os, subprocess, sys
 
 BIN = os.environ.get("WEIR_BIN", os.path.expanduser("~/.local/bin/weir"))
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+from harness import assert_fresh
+assert_fresh(BIN, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 proc = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
 def send(obj):

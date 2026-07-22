@@ -1,5 +1,34 @@
 # Spike Notes
 
+## The small-items sweep — two sessions, four retirements (2026-07-22)
+
+Session 1 (grammar+checker): ELIF landed as pure spelling after the
+precondition probe confirmed chained else-if already worked in both
+line models — no hidden second gap, so one keyword + one parser
+desugar + the assembler's else-family extension. The DEFAULTING-ORDER
+edge — the only wrong-rejection on the books — fixed by making
+splice/hole defaulting a finalization step at the statement boundary
+(ctx queue, resolved where stranded constraints error): the repro and
+its variants accept, still-unresolved holes still default to string,
+non-scalars still reject at the hole, and the soundness note
+re-verified SIMPLER (boundary defaulting runs pre-generalization and
+touches strictly fewer vars). Zero pin edits across both.
+
+Session 2 (infrastructure): MASKING MECHANIZED — publish stamps the
+git hash, `weir --version` prints it, e2e gates HARD on stamp==HEAD
+plus source mtimes (the old WARNING is now a refusal), both python
+probes gate through tests/lib/harness.py, and process census moved to
+waitpid-truth (the zombie lie pinned in the harness selftest, which
+also proves a deliberately-stale stub fails the gate). FLAG 7
+discharged deliberately early: five lambda arms over one core,
+adapters carrying only their judgment deltas — the TRANSCRIPTION
+surface shrank, zero behavior change on the full battery.
+
+The board after: no-elif retired, the wrong-rejection closed, the
+masking class closed (open since incident one), Flag 7 closed — with
+the re-mine follow-ups done, the emptiest board since the audit.
+
+
 ## fmt v2 — respace under the parse-shape guard (2026-07-22)
 
 The respace park opened on the user's update-example receipt (fmt

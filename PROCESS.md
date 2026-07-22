@@ -68,3 +68,16 @@ correctly carries none.
 - Receipts before features: parked items reopen on recorded
   triggers; user fiat can override, and the override is recorded as
   such (env-sugar layers).
+
+## Harness truth (stamps + waitpid)
+
+Harness assertions are claims too — a test harness that can report
+against a stale or lying substrate is a masked-failure factory.
+Mechanisms, not memory: the publish path stamps the git hash into the
+binary (`weir --version`), every executing harness gates on stamp ==
+HEAD plus source-mtime freshness before running anything, and process
+census uses waitpid-truth (a zombie is dead; `kill(pid, 0)` lies).
+Naming incidents: five members of the stale-artifact/masked-failure
+class, the fifth committed WITH the verify rule already on this page —
+a rule that depends on remembering fails; that is the definition of a
+rule that must become a mechanism.

@@ -368,3 +368,25 @@ checkScalarSplice's TVar arm is deleted, its effect reproduced at the
 boundary for vars inference left unresolved. Runs BEFORE
 generalization in the same ctx — the soundness condition's argument
 transfers (see SEMANTICS). Single job; no FLAG.
+
+## Consolidation — the lambda arms share one core (2026-07-22, [D:lambda-core])
+
+Flag 7 discharged (deliberately EARLY of the fourth-form rule: the
+ELambdaPat twin miss proved the class was already costing). The five
+arms' entries collapse to one core rule + adapter deltas:
+
+    lambdaCore: Γ+binds ⊢ body (per strategy) ⇒ τ_b
+                ⇒ TFun(dom, τ_b), kind per adapter
+
+    infer/unit:    dom = unit, binds = ∅ (the pin; name unforgeable)
+    infer/name:    dom = fresh a, binds = [x ↦ a], casing-checked
+    infer/pattern: dom = binderShape, binds from the shape
+    check/name:    dom = pushed; body checked against cod, with the
+                   hasVars-cod infer-then-bind fallback (unchanged)
+    check/pattern: dom = pushed, shape bound against it first
+
+The measurement surface SHRANK: five judgment renderings became one
+plus five one-line deltas. Zero behavior change (full battery green,
+zero pin edits); the check-mode unit-param asymmetry (no TUnit pin,
+relies on the pushed dom) is now VISIBLE in the adapter table rather
+than buried in twin arms.

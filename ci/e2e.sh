@@ -4,12 +4,26 @@ set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
-# stale-binary guard: the third time someone chased a phantom failure from
-# an outdated ~/.local/bin/weir earned this check
-if [ -d "$(dirname "$0")/../src/Weir" ] && [ -f "$BIN" ]; then
-    newer=$(find "$(dirname "$0")/../src/Weir" -path '*/obj' -prune -o -path '*/bin' -prune -o -name '*.fs' -newer "$BIN" -print -quit)
+# HARD stale-binary gates [D:masking-mechanized] — the fifth incident
+# proved a rule that depends on remembering fails; stamps make stale
+# results impossible rather than catchable.
+repo_root="$(dirname "$0")/.."
+if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --short HEAD >/dev/null 2>&1; then
+    head_hash=$(git -C "$repo_root" rev-parse --short HEAD)
+    stamp=$("$BIN" --version 2>/dev/null || echo none)
+    case "$stamp" in
+        "$head_hash"*) : ;;
+        *)
+            echo "STALE BINARY: $BIN stamps '$stamp', HEAD is '$head_hash' — rebuild with ./publish.sh" >&2
+            exit 1
+            ;;
+    esac
+fi
+if [ -d "$repo_root/src/Weir" ] && [ -f "$BIN" ]; then
+    newer=$(find "$repo_root/src/Weir" -path '*/obj' -prune -o -path '*/bin' -prune -o -name '*.fs' -newer "$BIN" -print -quit)
     if [ -n "$newer" ]; then
-        echo "WARNING: $BIN is older than $newer — run ./publish.sh first" >&2
+        echo "STALE BINARY: $BIN is older than $newer — rebuild with ./publish.sh" >&2
+        exit 1
     fi
 fi
 
@@ -677,6 +691,9 @@ rm -rf "$svdir"
 # --- weir lsp v1 (2026-07-21, LSP chain 3/3) ---------------------------
 
 if command -v python3 >/dev/null 2>&1; then
+    python3 "$(dirname "$0")/../tests/lib/harness-selftest.py" || fail "harness selftest (zombie truth / stamp gate)"
+    echo "e2e ok: harness library selftest (waitpid-truth + stamp gate)"
+
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-e2e.py" || fail "lsp integration probes"
     echo "e2e ok: lsp diagnostics/hover/completion over stdio"
 
