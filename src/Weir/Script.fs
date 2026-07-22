@@ -1184,6 +1184,13 @@ let analyzeLines
                      for prog, span in cmdHeads te do
                          let wl, wc = translate ll span.Start.Col
 
+                         // a near-miss BINDING bridges the check/run
+                         // verdict split: the runner reads this head in
+                         // expression mode and errors "unbound 'xx' —
+                         // did you mean 'xr'?"; check's command reading
+                         // must surface the same candidate
+                         let hint = didYouMean prog (Map.keys tenv.Values)
+
                          diags.Add
                              { File = path
                                Line = wl
@@ -1193,7 +1200,7 @@ let analyzeLines
                                Severity = "warning"
                                Code = "cmd-not-found"
                                Message =
-                                 $"command not found on PATH: {prog} — weir resolves commands at check time; the script runs once it is installed" })
+                                 $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed" })
 
                 stmts.Add(ll, chk)
                 tenv <- chk.Env

@@ -645,6 +645,18 @@ rc=0; $BIN "$svdir/missing.weir" >/dev/null 2>&1 || rc=$?
 [ $rc -ne 0 ] || fail "the RUNNER must still reject missing commands"
 echo "e2e ok: check warns where run errors (DELIBERATE, the editing-without-tools rule)"
 
+# a near-miss BINDING bridges the verdict split: check's command
+# reading names the candidate the runner's expression reading will name
+cat > "$svdir/nearmiss.weir" <<'WEOF'
+let target = "x"
+targt --flag
+WEOF
+out=$($BIN check "$svdir/nearmiss.weir" || true)
+echo "$out" | grep -qF "Did you mean 'target'?" || fail "cmd-not-found must hint the near-miss binding: $out"
+out=$($BIN check "$svdir/missing.weir")
+echo "$out" | grep -qF "Did you mean" && fail "no-near-miss heads must stay hint-free: $out"
+echo "e2e ok: cmd-not-found hints near-miss bindings only"
+
 # per-statement resolver: script bindings shadow PATH commands
 cat > "$svdir/shadow.weir" <<'WEOF'
 let cat = 1
