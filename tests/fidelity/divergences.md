@@ -35,22 +35,29 @@ argument that killed the subtractive fork.
 <!-- single-payload-unions RETIRED 2026-07-21: multi-payload constructors landed with tuples (the corollary retired with its rule). -->
 | lowercase-binds | different | binding names must start lowercase (F# accepts uppercase value bindings, style-discouraged) | reject | accept | SEMANTICS: the casing law — fourth member of the warning-vs-error strictness family and honestly its first STYLISTIC member: no silent-wrong-meaning bug is prevented at the binder itself; the payoff is disjoint name classes (pattern-position determinism, unshadowable modules by construction) |
 | uppercase-pattern-is-ctor | different | an uppercase identifier in a PATTERN is always a constructor (unknown = hard error + hint); F# resolves by scope and falls back to a VARIABLE binding with warning FS0049 | reject unknown | accept + warn (binds a var) | SEMANTICS: branching — the FS0049 trap (typo'd case silently becomes an irrefutable catch-all) made unrepresentable; the strictness family again |
-| exhaustiveness-hard-error | different | a non-exhaustive match is a HARD ERROR (F# warns and accepts) | reject | accept + warning | SEMANTICS: branching — user decision 2026-07-18; surfaced as an oracle divergence by the literal-pattern pins (2026-07-21) |
+| exhaustiveness-hard-error | different | a non-exhaustive match is a HARD ERROR (F# warns and accepts) | reject | accept + warning | SEMANTICS: branching — user decision 2026-07-18; surfaced as an oracle divergence by the literal-pattern pins (2026-07-21); corpus: 5928e91 |
 | unreachable-arm-hard-error | different | an arm after an unguarded catch-all is a HARD ERROR, located at the catch-all with a constructor hint for variable binders (F# warns FS0026 on the dead arm and accepts) | reject | accept + warning | SEMANTICS: branching — user decision 2026-07-21; coverage's dual, and the casing-law footgun (a typo'd constructor becomes a catch-all binder) caught at its source |
 <!-- no-literal-patterns RETIRED 2026-07-21: literal patterns landed (int/string/(); literals never complete a match — F#'s rule, oracle Same). The guard idiom remains legal, no longer the only spelling. -->
+| no-record-update | pending | `{ r with F = v }` copy-and-update (incl. F# 8 nested `{ o with I.X = v }`) | reject (rebuild the literal) | accept | corpus: 5928e91 (x2) — the re-mine's headline absence; top reopen candidate with no-elif |
+| ctor-pattern-scrutinee | different | constructor patterns need an already-resolved scrutinee type; F# infers a param's type FROM the pattern (`let f x = match x with | A -> ...`) | reject | accept | corpus: 5928e91; the pattern face of the no-annotations/funParams inference bound |
+| column-zero-statements | different | statements start at column 0; F# accepts uniformly-indented fragments | reject (continuation without a statement) | accept | corpus: 5928e91 (x5); the assembly law — blank-line-ends-statement's family |
+| record-field-comma-trap | different | `{ Name = "x", Age = 21 }` — F# silently makes the FIELD a tuple (the classic trap); weir rejects the shape | reject | accept (trap semantics) | corpus: 5928e91; strictness family, weir-safe direction |
+| no-arrays | pending | `[\| ... \|]` array literals | reject (seqs are the collection) | accept | corpus: 5928e91 |
+| no-access-modifiers | pending | `let internal/private ...` (the corpus hit also carried fsi's `;;`, an artifact not a feature) | reject | accept | corpus: 5928e91 |
+| no-auto-members | pending | compiler-generated union testers (`.IsA`/`.IsCaseB`) — the no-OO bound's corpus face | reject | accept | corpus: 5928e91 (x2) |
 | no-let-rec | pending | let rec (reserved word) | reject | accept | recursion unserved; pipelines cover iteration |
 <!-- no-unary-minus RETIRED 2026-07-21: prefix minus landed on the loc.weir friction receipt (descending sort spelled `0 - n`). F#'s adjacency rule exactly — and the oracle corrected the folklore mid-landing: `f -1` is APPLICATION of -1 in F# (pinned Same), `x-1`/`x - 1` stay subtraction, `1 -2` is int-applied-to-int (both reject). Negative literal patterns already worked. -->
 
 | no-format-specifiers | pending | format specifiers in holes ($"{x:N2}") | reject | accept | decided out of interp v1; no demand logged |
 | block-comments | pending | (* ... *) | reject | accept | // decided over #; (* *) never decided, no demand |
-| no-floats | pending | float literals and arithmetic | reject | accept | SEMANTICS: "no floats yet" |
+| no-floats | pending | float literals and arithmetic | reject | accept | SEMANTICS: "no floats yet"; corpus: 5928e91 |
 | no-chars | pending | char literals | reject | accept | no demand |
 | no-exceptions | pending | try/with/finally, raise | reject (fail exists; no catching) | accept | expected-findings cluster: error-handling-as-value |
 | no-type-ascription | pending | (e : ty) annotations | reject | accept | checklist 2.3: must re-verify, never relabel, when it lands |
 | no-user-modules | pending | module M = ... and imports | reject | accept | parked with trial-resolution design on file |
-| no-anonymous-records | pending | {| A = 1 |} and undeclared record literals | reject (exact declared field set) | accept | one telemetry hit; SEMANTICS: rows close on discharge |
+| no-anonymous-records | pending | {| A = 1 |} and undeclared record literals | reject (exact declared field set) | accept | one telemetry hit; corpus: 5928e91 (x2) |
 | no-destructuring-binders | pending | let (a, b) = ... , fun (x, y) -> | reject | accept | tied to the tuples decision |
-| no-elif | pending | elif keyword | reject (else if chains) | accept | trivial; no demand |
+| no-elif | pending | elif keyword | reject (`else if` chains work) | accept | DEMAND EXISTS now: corpus: 5928e91 (x2) + agent friction (NOTES-agent, loc.weir) — the re-mine's top reopen candidate with no-record-update |
 | semicolon-command-argv | different | `;` inside a command line (bash chains; weir passes literal argv + warns) | argv word + warning | n/a (bash prior, not F#) | SEMANTICS: sequencing; the no-injection pin |
 | redirect-argv | different | `>` / `>>` inside a command line (bash redirects; weir passes literal argv + warns with the File.write/File.append spelling) | argv word + warning | n/a (bash prior, not F#) | SEMANTICS: command mode — the streams stance; the semicolon row's family |
 | raw-single-line | different | `@"..."` and `"""..."""` raw strings are SINGLE-LINE (F# spans physical lines) — the assembler, fmt's refuse-on-mismatch argument, and the highlighter's swallow analysis all rest on strings closing before EOL | reject multi-line | accept | blank-line-ends-statement's family; PLAN-raw-strings |

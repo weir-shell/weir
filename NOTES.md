@@ -1,5 +1,36 @@
 # Spike Notes
 
+## The corpus re-mine — the four-wave debt paid (2026-07-22)
+
+Owed since tuples (WEIR_CORPUS_DIR absent then; noted, not dropped),
+paid with interest. Environment verified FIRST per plan: network up,
+sparse clone at the pinned 5928e91. Finding zero: the original
+mine's extraction/filter never survived its session — only the
+report did. tools/corpus-mine.py is now the committed artifact,
+calibrated to the published denominator (4253 extracted vs 4256;
+base filter 76 vs 78) with the four wave-rejects explicit, so the
+filter diff IS the language-growth record.
+
+The two prize numbers: ZERO GOLD holds over the widened set (weir
+accepts nothing F# rejects, now tested against tuple/pattern/
+composition/raw shapes), and disagreements FELL 24 -> 18 while the
+comparable set grew 34% (76 -> 102; agree-accepts 4 -> 9) — the
+waves converted disagreement to agreement at scale. All 18 bucketed;
+human residue after naming: zero.
+
+Seven new rows (the absence class delivered again): no-record-update
+(the headline — 2 hits incl. F# 8 nested I.X), column-zero-statements
+(5 hits — the assembly law vs F#'s uniform-indent tolerance; the ///
+doc comments in those snippets were innocent), ctor-pattern-scrutinee
+(the predicted unnamed find: params are not typed FROM patterns),
+no-auto-members, no-arrays, no-access-modifiers, and
+record-field-comma-trap (weir REJECTS the famous tuple-in-field trap
+— safe direction, strictness family). Corpus tags on four existing
+rows; no-elif upgraded from "no demand" to top reopen candidate
+(2 corpus hits + the loc.weir agent friction) alongside
+no-record-update.
+
+
 ## Raw strings: @"..." and """...""" (2026-07-22)
 
 PLAN-raw-strings, one session, probes FIRST — the folklore-vs-compiler

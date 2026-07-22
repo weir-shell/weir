@@ -73,7 +73,10 @@ print $"branches: {branches}"
 - Records need a declared type with the exact field set (no width
   subtyping, no anonymous records): `{ Host = h; Port = p }` needs
   `type Endpoint = { Host: string; Port: int }`. For a transient
-  pair with no names, use a tuple instead.
+  pair with no names, use a tuple instead. No copy-and-update
+  (`{ r with F = v }`) — rebuild the literal with the changed fields.
+  A comma between fields is a parse error (F# silently makes the
+  field a TUPLE there; weir refuses the trap).
 - Union cases carry tuple payloads for multi-value: `Case of int * string`;
   match with `| Case (n, s) ->`.
 - `let f x y = ...` defines a curried function (desugars to nested
@@ -125,6 +128,9 @@ print $"branches: {branches}"
   catch-all or cover every case. The dual is also a hard error: an
   unguarded catch-all with arms below it (a lowercase name like
   `| clean ->` BINDS — a typo'd constructor swallows the match).
+  Constructor patterns need a scrutinee whose type is already KNOWN —
+  params are not typed FROM patterns (`let f x = match x with
+  | A -> ...` is a check error; match on typed data).
 - `let x = e in body` inline; in multi-line scripts an indented `let`
   line closes at the next line of the same indent (F# light syntax).
 - String/seq ops are data-last for piping: `Seq.where (Str.contains "err")`.
