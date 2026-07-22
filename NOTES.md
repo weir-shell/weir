@@ -1,5 +1,30 @@
 # Spike Notes
 
+## Record update lands — the re-mine's headline cashed (2026-07-22)
+
+`{ r with F = v }` in all four planned forms: flat, multi-field,
+nested I.X, general-expression sources (unparenthesized application
+included — FCS-probed before code, per the folklore rule; the bare
+match source rejects with parens required, as guessed and verified).
+The corpus snippets that found the absence run VERBATIM as e2e.
+
+The plan's stop-and-report clause fired exactly as designed: the
+nested-sugar parser desugar wanted source duplication (double eval of
+effectful sources), so paths live in the AST and eval binds the
+source once — reported, resolved in-session, eval-once by
+construction. A probe-naming accident yielded a bonus FCS fact: F#'s
+name resolution captures a TYPE named like the path head and rejects;
+weir's field-only paths accept — update-path-plain, the designed
+weir-accepts row, pinned.
+
+The row-typed half is the weir-shaped win: an updater over an open
+row generalizes, and the result type IS the source's row variable
+(identity, tripwired on domain == codomain of the formatted scheme).
+One assembler ride-along: the brace-continuation sibling rule gained
+a with-header case. no-record-update retires with corpus archaeology;
+680 unit / 93 oracle / e2e green; check median 10ms.
+
+
 ## VS Code extension — the second editor, zero server changes (2026-07-22)
 
 The fsautocomplete question's answer, cashed: a second editor client

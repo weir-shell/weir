@@ -340,3 +340,17 @@ span respectively. No Δ: no ctx mutation, leaves bind `string`
 directly. The memo cache is the only state and is SHARED with eval —
 the arity the checker read and the instance eval matches are the same
 object (tripwired). Single job; no FLAG.
+
+## Addendum — copy-and-update (2026-07-22, [D:record-update])
+
+    Γ ⊢ e ⇒ τ ⊣ Δ    for each (path, v): walk(τ, path) ⇐ v ⊣ Δᵢ
+    ────────────────────────────────────────────────────────────
+    Γ ⊢ { e with path₁ = v₁; ... } ⇒ τ ⊣ Δ ∪ Δᵢ
+
+walk: TNamed hops declared fields (missing field = "cannot add"
+error); TVar promotes to a fresh row var then demands; TRowVar
+demands the field (reusing an existing demand's type). The RESULT is
+τ itself — the source's nominal type or its OWN row variable
+(identity; the generalization story rests on this, tripwired). Two
+jobs flagged: field walking and row promotion share the arm — split
+if a third path kind arrives.

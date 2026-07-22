@@ -134,6 +134,23 @@ let tripwires =
                   "requires equatable values"
                   ""
           }
+          test "update returns the SOURCE row, not a fresh one (record-update identity)" {
+              // the generalized-updater story rests on identity: if the
+              // update arm ever returns a fresh row, this formats as two
+              // DIFFERENT rows and updaters stop generalizing — reopen
+              // the row-identity question before proceeding
+              let ty =
+                  match Weir.Parser.parseExpr "fun r -> { r with N = r.N + 1 }" with
+                  | Error m -> failtest $"parse failed: {m}"
+                  | Ok e ->
+                      match typecheck env e with
+                      | Error terr -> failtest (formatError terr)
+                      | Ok te -> formatTy te.Ty
+
+              match ty.Split(" -> ") with
+              | [| dom; cod |] -> Expect.equal dom cod "domain and codomain are the same row"
+              | _ -> failtest $"unexpected type shape: {ty}"
+          }
           test "check and eval share ONE compiled regex per literal (regex-pattern arity honesty)" {
               // the arity the checker read and the instance eval matches
               // against are the same object BY CONSTRUCTION — replacing

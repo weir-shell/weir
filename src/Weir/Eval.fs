@@ -420,6 +420,21 @@ and eval (env: Env) (te: TypedExpr) : Value =
         VBuiltin(fun x -> apply g (apply f x))
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
+    | TEUpdate(src, updates) ->
+        // source evaluated ONCE [D:record-update]; nested paths overlay
+        let source = eval env src
+
+        updates
+        |> List.fold
+            (fun acc (path, tval) ->
+                let rec go (v: Value) (path: string list) : Value =
+                    match v, path with
+                    | VRecord(n, fs), [ f ] -> VRecord(n, Map.add f (eval env tval) fs)
+                    | VRecord(n, fs), f :: rest -> VRecord(n, Map.add f (go fs[f] rest) fs)
+                    | v, _ -> unreachable $"the checker rejects update on {formatValue v}"
+
+                go acc path)
+            source
     | TEList items -> VSeq(items |> List.map (eval env))
     | TETuple items -> VTuple(items |> List.map (eval env))
     | TECmd(prog, args, cenvO) ->

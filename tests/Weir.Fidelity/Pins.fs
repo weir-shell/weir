@@ -154,6 +154,46 @@ let pins =
       pin "interpolated verbatim $@ is parked" "let s = $@\"x{1}\"\n" (Diverges "no-interpolated-raw")
       pin "interpolated triple is parked" "let s = $\"\"\"x{1}\"\"\"\n" (Diverges "no-interpolated-raw")
 
+      // --- record update probes (PLAN-record-update) — BEFORE code, the
+      // folklore rule: every asserted F# grammar fact gets its verdict
+      // pin first; guesses flip to FCS's truth before implementation ---
+      pin
+          "record update: flat single field (corpus bbffe988 shape)"
+          "type R = { V: string; I: int }\nlet m = { V = \"\"; I = 0 }\nlet m1 = { m with V = \"m\" }\n"
+          Same
+      pin
+          "record update: multiple fields"
+          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with A = 3; B = 4 }\n"
+          Same
+      pin
+          "record update: nested I.X sugar (corpus 56d739b shape)"
+          "type Inner = { X: int }\ntype Outer = { I: Inner }\nlet o = { I = { X = 1 } }\nlet o2 = { o with I.X = 2 }\n"
+          Same
+      pin
+          "record update: parenthesized general-expression source"
+          "type R = { A: int }\nlet id2 r = r\nlet x = { A = 1 }\nlet y = { (id2 x) with A = 2 }\n"
+          Same
+      pin
+          "record update: unparenthesized application source"
+          "type R = { A: int }\nlet id2 r = r\nlet x = { A = 1 }\nlet y = { id2 x with A = 2 }\n"
+          Same
+      pin
+          "F#-rejects-this: update cannot add fields"
+          "type R = { A: int }\nlet r = { A = 1 }\nlet r2 = { r with New = 2 }\n"
+          Same
+      // weir field paths never consult TYPE names; F# name resolution
+      // captures a type named like the field and rejects — designed
+      // divergence, weir-accepts direction, rowed as update-path-plain
+      pin
+          "update paths ignore type names (weir accepts; F# captures the type)"
+          "type I = { X: int }\ntype O = { I: I }\nlet o = { I = { X = 1 } }\nlet o2 = { o with I.X = 2 }\n"
+          (Diverges "update-path-plain")
+
+      pin
+          "record update: bare match source (parens expected required)"
+          "type R = { A: int }\nlet x = { A = 1 }\nlet y = { match 1 with | _ -> x with A = 2 }\n"
+          Same
+
       // --- the Regex pattern (2026-07-22) — the first weir-only match form ---
       pin
           "the Regex match pattern: weir-only (F# has no built-in regex pattern)"

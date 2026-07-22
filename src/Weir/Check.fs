@@ -36,6 +36,7 @@ and TypedKind =
     | TETo of format: string
     | TEList of items: TypedExpr list
     | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
+    | TEUpdate of source: TypedExpr * updates: (string list * TypedExpr) list
     | TETuple of TypedExpr list
     | TELetPat of binder: Pattern * value: TypedExpr * body: TypedExpr
     | TELambdaPat of binder: Pattern * body: TypedExpr
@@ -1240,6 +1241,81 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = ty
                   Span = expr.Span }
         }
+    | EUpdate(source, updates) ->
+        // copy-and-update [D:record-update]. Result type IS the
+        // source's type — nominal stays nominal (update never adds
+        // fields), a row source keeps ITS OWN row variable (identity,
+        // not a fresh row), which is what lets a row-typed updater
+        // generalize. Paths walk nested records (the F# 8 I.X sugar);
+        // rows demand a field per hop, mirroring EField.
+        result {
+            let! tsource = infer ctx env source
+
+            match firstDup (updates |> List.map (fun (path, _) -> fst (List.head path))) with
+            | Some dup -> return! err expr.Span $"duplicate update of field '{dup}'"
+            | None ->
+
+                let rec updOne (ty: Ty) (path: (string * Span) list) (value: Expr) : Result<TypedExpr, TypeError> =
+                    match path with
+                    | [] -> infer ctx env value
+                    | (field, fieldSpan) :: rest ->
+                        match resolve ctx ty with
+                        | TNamed(typeName, targs) ->
+                            match Map.tryFind typeName env.Types with
+                            | Some(Record def) ->
+                                match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
+                                | Some(_, declared) ->
+                                    let fieldTy = substParams def.Params targs declared
+
+                                    if List.isEmpty rest then
+                                        check ctx env value fieldTy
+                                    else
+                                        updOne fieldTy rest value
+                                | None ->
+                                    let hint = didYouMean field (List.map fst def.Fields)
+
+                                    err
+                                        fieldSpan
+                                        $"record update cannot add fields: {typeName} has no field '{field}'{hint}"
+                            | Some(Union _) -> err fieldSpan $"{typeName} is a union; only records update"
+                            | None -> err fieldSpan $"unknown type '{typeName}'"
+                        | TVar v ->
+                            let r = freshName ctx "r"
+                            ctx.Subst <- Map.add v (TRowVar(r, [])) ctx.Subst
+                            updOne (TRowVar(r, [])) path value
+                        | TRowVar(r, _) ->
+                            let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
+
+                            let fieldTy =
+                                match Map.tryFind field existing with
+                                | Some(t, _) -> t
+                                | None ->
+                                    let t = TVar(freshName ctx "a")
+                                    ctx.Rows <- Map.add r (Map.add field (t, fieldSpan) existing) ctx.Rows
+                                    t
+
+                            if List.isEmpty rest then
+                                check ctx env value fieldTy
+                            else
+                                updOne fieldTy rest value
+                        | ty ->
+                            err fieldSpan $"only records have updatable fields; this expression has type {formatTy ty}"
+
+                let! tupdates =
+                    updates
+                    |> List.fold
+                        (fun acc (path, value) ->
+                            acc
+                            |> Result.bind (fun ts ->
+                                updOne tsource.Ty path value
+                                |> Result.map (fun tv -> (path |> List.map fst, tv) :: ts)))
+                        (Ok [])
+
+                return
+                    { Kind = TEUpdate(tsource, List.rev tupdates)
+                      Ty = tsource.Ty
+                      Span = expr.Span }
+        }
     | ERecord fields ->
         result {
             match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
@@ -1655,6 +1731,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEPipe(a, f) -> TEPipe(finalizeExpr ctx a, finalizeExpr ctx f)
         | TEField(t, f) -> TEField(finalizeExpr ctx t, f)
         | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
+        | TEUpdate(src, ups) -> TEUpdate(finalizeExpr ctx src, ups |> List.map (fun (p, v) -> p, finalizeExpr ctx v))
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
         | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
         | TETuple items -> TETuple(items |> List.map (finalizeExpr ctx))
@@ -1784,6 +1861,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEList items -> items
     | TETuple items -> items
     | TECmd(_, args, envO) -> args @ Option.toList envO
+    | TEUpdate(src, ups) -> src :: (ups |> List.map snd)
     | TEInterp parts ->
         parts
         |> List.choose (function

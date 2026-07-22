@@ -55,6 +55,9 @@ and ExprKind =
     | ELetPat of binder: Pattern * value: Expr * body: Expr
     | ELambdaPat of binder: Pattern * body: Expr
     | ECmd of prog: string * args: Expr list * env: Expr option
+    // copy-and-update [D:record-update]: paths carry nested sugar
+    // (I.X); the checker walks them, eval overlays — source ONCE
+    | EUpdate of source: Expr * updates: ((string * Span) list * Expr) list
     | EInterp of parts: InterpPart<Expr> list
 
 type DeclBody =
@@ -93,6 +96,7 @@ let exprChildren (e: Expr) : Expr list =
     | EList items -> items
     | ETuple items -> items
     | ECmd(_, args, envO) -> args @ Option.toList envO
+    | EUpdate(src, ups) -> src :: (ups |> List.map snd)
     | EInterp parts ->
         parts
         |> List.choose (function

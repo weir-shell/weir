@@ -29,6 +29,18 @@ weir rejects rather than guesses.
   of the literal KIND, never of position. `true`/`false`, and seq
   literals `[a; b; c]` (homogeneous; elements evaluate eagerly, once — unlike
   pipelines; `[]` is polymorphic `seq<'a>`).
+- **Copy-and-update** [D:record-update] (2026-07-22, the re-mine's
+  headline receipt): `{ r with F = v }` — multi-field `;`-separated,
+  nested `I.X` sugar (paths are FIELD paths only; F#'s type-name
+  capture is the update-path-plain row), general-expression sources
+  (unparenthesized application included; bare match/if need parens —
+  all FCS-probed before code). Update never ADDS fields. The result
+  type IS the source's type: nominal stays nominal, and a row source
+  keeps its OWN row variable — identity, not a fresh row — which is
+  what makes `let bump r = { r with N = r.N + 1 }` generalize. The
+  source evaluates ONCE (the plan's parser-desugar clause hit its
+  stop-and-report: a parser desugar duplicates the source expression,
+  so paths live in the AST and the checker walks them).
 - **Indexers** (2026-07-20): `xs[i]` desugars to `Seq.item i xs`
   (raising; `tryItem` is the safe sibling). The F# 6 dotless-indexing
   whitespace rule applies verbatim: NO space = indexing, a space =

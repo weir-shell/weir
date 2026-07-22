@@ -73,10 +73,13 @@ print $"branches: {branches}"
 - Records need a declared type with the exact field set (no width
   subtyping, no anonymous records): `{ Host = h; Port = p }` needs
   `type Endpoint = { Host: string; Port: int }`. For a transient
-  pair with no names, use a tuple instead. No copy-and-update
-  (`{ r with F = v }`) — rebuild the literal with the changed fields.
-  A comma between fields is a parse error (F# silently makes the
-  field a TUPLE there; weir refuses the trap).
+  pair with no names, use a tuple instead. Copy-and-update derives:
+  `{ r with F = v }` (multi-field `;`-separated; nested `I.X` sugar;
+  the source may be an expression — bare match/if need parens).
+  Update never ADDS fields, and a row-typed updater
+  (`let bump r = { r with N = r.N + 1 }`) generalizes to any record
+  with the field. A comma between fields is a parse error (F#
+  silently makes the field a TUPLE there; weir refuses the trap).
 - Union cases carry tuple payloads for multi-value: `Case of int * string`;
   match with `| Case (n, s) ->`.
 - `let f x y = ...` defines a curried function (desugars to nested
@@ -210,6 +213,22 @@ print ver
 // the Regex literal is raw-only — an ordinary string is rejected
 let x = match "a" with | Regex "(a)" v -> v | _ -> ""
 print x
+```
+
+```weir
+// copy-and-update: derive, don't re-literal
+type Cfg = { Host: string; Port: int }
+let base0 = { Host = "h"; Port = 80 }
+let tls = { base0 with Port = 443 }
+print $"{tls.Host}:{tls.Port}"
+```
+
+```weir-error
+// update never ADDS fields
+type Cfg2 = { Host: string }
+let c = { Host = "h" }
+let bad = { c with Hosts = "x" }
+print bad.Host
 ```
 
 ```weir-error

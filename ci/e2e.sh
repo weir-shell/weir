@@ -801,6 +801,44 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# record update (PLAN-record-update): the corpus snippets ARE the e2e
+upd=$(mktemp -d)
+cat > "$upd/corpus1.weir" <<'WEOF'
+type Model = { V: string; I: int }
+let m = { V = ""; I = 0 }
+let m1 = { m with V = "m" }
+
+type R = { M: Model }
+print m1.V
+WEOF
+out=$($BIN "$upd/corpus1.weir")
+expect "corpus bbffe988 verbatim: flat update" "m" "$out"
+
+cat > "$upd/corpus2.weir" <<'WEOF'
+type Inner = { X: int }
+type Outer = { I: Inner }
+let o = { I = { X = 1 } }
+let o2 = { o with I.X = 2 }
+print $"{o2.I.X} {o.I.X}"
+WEOF
+out=$($BIN "$upd/corpus2.weir")
+expect "corpus 56d739b verbatim: nested update, source untouched" "2 1" "$out"
+
+cat > "$upd/multiline.weir" <<'WEOF'
+type R = { A: int; B: int }
+let r = { A = 1; B = 2 }
+
+let r2 =
+    { r with
+        A = 10
+        B = 20 }
+
+print $"{r2.A + r2.B}"
+WEOF
+out=$($BIN "$upd/multiline.weir")
+expect "multi-line update rides the brace-continuation rule" "30" "$out"
+rm -rf "$upd"
+
 # raw strings (PLAN-raw-strings): both kinds on the AOT binary
 rawdir=$(mktemp -d)
 cat > "$rawdir/raw.weir" <<'WEOF'

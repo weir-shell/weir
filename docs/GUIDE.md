@@ -95,10 +95,18 @@ let s =
     { Name = "a"
       Points = 12 }
 
-let v = if s.Points > 10 then Pass s.Points else Fail
+let s2 = { s with Points = 13 }
+
+let v = if s2.Points > 10 then Pass s2.Points else Fail
 
 print (show v)
 ```
+
+Derive, don't re-literal: `{ s with Points = 13 }` copies with the
+named fields changed (multi-field with `;`, nested `{ o with I.X = v }`),
+never adds fields, and leaves the source untouched. An updater over
+an open row — `let bump r = { r with N = r.N + 1 }` — generalizes to
+any record carrying the field.
 
 ## Functions
 

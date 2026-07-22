@@ -95,6 +95,10 @@ let private env =
         preludeTypeEnv
         |> declare "type Proc = Running of int | Stopped"
         |> declare "type Point = { X: int; Y: int }"
+        // record-update battery: two records sharing an int field N
+        |> declare "type UpdP = { UpN: int; UpT: string }"
+        |> declare "type UpdQ = { UpN: int }"
+        |> declare "type UpdS = { UpN: string; UpS: string }"
 
     { e with
         Values =
@@ -2379,6 +2383,71 @@ let agentFindingsTests =
                   (VInt 1L)
 
               expectValue "[1] |> Seq.pairwise |> Seq.isEmpty" (VBool true)
+          }
+          // record update [D:record-update] — the re-mine's headline
+          test "update forms: flat, multi-field, nested sugar" {
+              expectValue
+                  "let r = { X = 1; Y = 2 } in ({ r with X = 3 }).X + ({ r with X = 3 }).Y"
+                  (VInt 5L)
+
+              expectValue
+                  "let r = { X = 1; Y = 2 } in ({ r with X = 3; Y = 40 }).Y"
+                  (VInt 40L)
+          }
+          test "update is derivation: the source is untouched" {
+              expectValue
+                  "let r = { X = 1; Y = 0 } in let r2 = { r with X = 9 } in r.X + r2.X"
+                  (VInt 10L)
+          }
+          test "row-typed updater GENERALIZES and keeps the source's row (the poster pin)" {
+              expectValue
+                  "let bump r = { r with UpN = r.UpN + 1 } in (bump { UpN = 1; UpT = \"x\" }).UpN + (bump { UpN = 10 }).UpN"
+                  (VInt 13L)
+          }
+          test "row updater's field demand conflicts at discharge" {
+              let terr =
+                  checkErr "let bump r = { r with UpN = r.UpN + 1 } in bump { UpN = \"x\"; UpS = \"\" }"
+
+              Expect.stringContains terr.Message "" ""
+          }
+          test "update cannot add fields (FCS-verdict-pinned)" {
+              let terr = checkErr "let r = { X = 1; Y = 0 } in { r with Xx = 2 }"
+              Expect.stringContains terr.Message "cannot add fields" ""
+              Expect.stringContains terr.Message "Did you mean" ""
+          }
+          test "duplicate top-level update field rejected" {
+              let terr =
+                  checkErr "let r = { X = 1; Y = 0 } in { r with X = 1; X = 2 }"
+
+              Expect.stringContains terr.Message "duplicate update" ""
+          }
+          test "updated records stay class citizens (Eq, Show)" {
+              expectValue "let r = { X = 1; Y = 0 } in { r with X = 2 } == { X = 2; Y = 0 }" (VBool true)
+
+              expectValue "let r = { X = 1; Y = 3 } in show { r with X = 2 }" (VStr "{ X = 2; Y = 3 }")
+          }
+          test "update composes with pattern binders and positions" {
+              expectValue
+                  "let r = { X = 1; Y = 0 } in let (u, n) = ({ r with X = 5 }, 2) in u.X + n"
+                  (VInt 7L)
+
+              expectValue
+                  "let r = { X = 1; Y = 0 } in (if true then { r with X = 3 } else r).X"
+                  (VInt 3L)
+
+              expectValue "let r = { X = 1; Y = 0 } in [{ r with X = 4 }] |> Seq.head |> _.X" (VInt 4L)
+          }
+          test "update is not a scalar: interp holes and command args reject it" {
+              let terr =
+                  checkErr "let r = { X = 1; Y = 0 } in $\"x { { r with X = 2 } }\""
+
+              Expect.stringContains terr.Message "" ""
+
+              let terr2 =
+                  checkErr
+                      "let r = { X = 1; Y = 0 } in cmd \"echo\" [{ r with X = 1 }] |> Seq.head"
+
+              Expect.stringContains terr2.Message "" ""
           }
           test "fst/snd project pairs, point-free through pipelines" {
               expectValue "fst (1, \"a\")" (VInt 1L)

@@ -94,6 +94,12 @@ let private seqExpr, private seqExprRef = createParserForwardedToRef<Expr, unit>
 let private commaExpr, private commaExprRef =
     createParserForwardedToRef<Expr, unit> ()
 
+// update-source expressions [D:record-update]: compound-free (a bare
+// match/if source is rejected — parens required, FCS-verdict-pinned);
+// assigned once the operator table exists
+let private updateSource, private updateSourceRef =
+    createParserForwardedToRef<Expr, unit> ()
+
 let private intLit =
     spanned (
         many1Satisfy isDigit .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
@@ -170,8 +176,24 @@ let private parens =
 let private fieldAssign =
     identSpanned .>> str_ws "=" .>>. commaExpr |>> fun ((n, s), v) -> n, s, v
 
+// record literal OR copy-and-update [D:record-update]: after `{`,
+// try the field-assign head; else parse a (compound-free) source and
+// expect `with` — the bounded backtrack. Paths carry the nested
+// I.X sugar; the checker walks them.
+let private updatePath = sepBy1 (spanned rawWord .>> ws) (pchar '.' >>. ws)
+
+let private updateAssign = updatePath .>> str_ws "=" .>>. commaExpr
+
 let private recordLit =
-    spanned (pchar '{' >>. ws >>. sepBy1 fieldAssign (str_ws ";") .>> pchar '}' |>> ERecord)
+    spanned (
+        pchar '{'
+        >>. ws
+        >>. choice
+                [ attempt (sepBy1 fieldAssign (str_ws ";") .>> pchar '}') |>> ERecord
+                  (updateSource .>> keyword "with") .>>. sepBy1 updateAssign (str_ws ";")
+                  .>> pchar '}'
+                  |>> EUpdate ]
+    )
     |>> mkExpr
     .>> ws
 
@@ -702,6 +724,12 @@ let private ifExpr =
               Span = { Start = pos p; End = endPos } })
 
 opp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
+
+updateSourceRef.Value <-
+    (let u = mkOpp true
+     u.TermParser <- appChain
+     u.ExpressionParser)
+
 segOpp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
 exprRef.Value <- opp.ExpressionParser
 

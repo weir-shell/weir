@@ -454,7 +454,13 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         // fixture-diversity sweep's first catch — PROCESS.md)
                                         let join =
                                             if
-                                                cls.StartsField && not (prev.EndsWith "{") && not (prev.EndsWith ";")
+                                                cls.StartsField
+                                                && not (prev.EndsWith "{")
+                                                && not (prev.EndsWith ";")
+                                                // an update header ends at `with`; the
+                                                // first field after it is not a sibling
+                                                // [D:record-update]
+                                                && not (prev.EndsWith " with")
                                             then
                                                 JSibling
                                             else
