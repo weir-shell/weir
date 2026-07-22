@@ -93,13 +93,19 @@ type private Ctx =
     { mutable Fresh: int
       mutable Subst: Map<string, Ty>
       mutable Rows: Map<string, Map<string, Ty * Span>>
-      mutable Cons: Map<string, Pending list> }
+      mutable Cons: Map<string, Pending list>
+      // splice/hole vars whose scalar defaulting is DEFERRED to the
+      // statement boundary [D:splice-default-last]: defaulting fired
+      // early once and rejected `1 |> (fun k -> $"{k}")` — order, not
+      // rule; the shape check defers with it
+      mutable PendingSplices: (string * Span * string) list }
 
 let private newCtx () =
     { Fresh = 0
       Subst = Map.empty
       Rows = Map.empty
-      Cons = Map.empty }
+      Cons = Map.empty
+      PendingSplices = [] }
 
 let private freshName (ctx: Ctx) (prefix: string) : string =
     ctx.Fresh <- ctx.Fresh + 1
@@ -1713,14 +1719,37 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (what: string) (arg: Exp
         let! targ = infer ctx env arg
 
         match resolve ctx targ.Ty with
-        | TVar _ ->
-            do! bind ctx env arg.Span TStr targ.Ty
+        | TVar v ->
+            // DEFER [D:splice-default-last]: the enclosing statement's
+            // inference may still resolve v (the pipe-into-lambda
+            // repro); default-or-reject happens at the boundary
+            ctx.PendingSplices <- (v, arg.Span, what) :: ctx.PendingSplices
             return targ
         | TStr
         | TInt
         | TBool -> return targ
         | ty -> return! err arg.Span $"{what} must be strings, ints or bools; this one is {formatTy ty}"
     }
+
+// the deferred splice resolution — runs at every statement boundary
+// (typecheckWith / typecheckBinder), BEFORE finalization walks:
+// still-unresolved holes default to string (the original rule, moved),
+// resolved-to-scalar holes pass, anything else gets the ORIGINAL
+// rejection at the hole's span [D:splice-default-last]
+let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) : Result<unit, TypeError> =
+    ctx.PendingSplices
+    |> List.rev
+    |> List.fold
+        (fun acc (v, span, what) ->
+            acc
+            |> Result.bind (fun () ->
+                match resolve ctx (TVar v) with
+                | TVar _ -> bind ctx env span TStr (TVar v)
+                | TStr
+                | TInt
+                | TBool -> Ok()
+                | ty -> err span $"{what} must be strings, ints or bools; this one is {formatTy ty}"))
+        (Ok())
 
 let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
     let kind =
@@ -1783,24 +1812,28 @@ let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExp
             match bind ctx env pat.PSpan shape te.Ty with
             | Error e -> Error e
             | Ok() ->
-                let schemes = binds |> List.map (generalizeBinding ctx env)
-                let te = finalizeExpr ctx te
 
-                let stranded =
-                    ctx.Cons
-                    |> Map.toList
-                    |> List.tryPick (fun (v, ps) ->
-                        match resolve ctx (TVar v) with
-                        | TVar _
-                        | TRowVar _ -> ps |> List.tryHead
-                        | _ -> None)
+                match resolvePendingSplices ctx env with
+                | Error e -> Error e
+                | Ok() ->
+                    let schemes = binds |> List.map (generalizeBinding ctx env)
+                    let te = finalizeExpr ctx te
 
-                match stranded with
-                | Some p ->
-                    err
-                        p.Span
-                        "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
-                | None -> Ok(te, schemes)
+                    let stranded =
+                        ctx.Cons
+                        |> Map.toList
+                        |> List.tryPick (fun (v, ps) ->
+                            match resolve ctx (TVar v) with
+                            | TVar _
+                            | TRowVar _ -> ps |> List.tryHead
+                            | _ -> None)
+
+                    match stranded with
+                    | Some p ->
+                        err
+                            p.Span
+                            "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
+                    | None -> Ok(te, schemes)
 
 let typecheckWith (env: TypeEnv) (expr: Expr) : Result<TypedExpr * Map<string, Set<Cls>>, TypeError> =
     let ctx = newCtx ()
@@ -1808,31 +1841,35 @@ let typecheckWith (env: TypeEnv) (expr: Expr) : Result<TypedExpr * Map<string, S
     match infer ctx env expr with
     | Error e -> Error e
     | Ok te ->
-        let te = finalizeExpr ctx te
-        let resultVars = tyVars te.Ty
+        match resolvePendingSplices ctx env with
+        | Error e -> Error e
+        | Ok() ->
 
-        let openCons =
-            ctx.Cons
-            |> Map.toList
-            |> List.collect (fun (v, ps) ->
-                match resolve ctx (TVar v) with
-                | TVar u
-                | TRowVar(u, _) -> ps |> List.map (fun p -> u, p)
-                | _ -> [])
+            let te = finalizeExpr ctx te
+            let resultVars = tyVars te.Ty
 
-        match openCons |> List.tryFind (fun (u, _) -> not (resultVars.Contains u)) with
-        | Some(_, p) ->
-            err
-                p.Span
-                "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
-        | None ->
-            let residue =
-                openCons
-                |> List.groupBy fst
-                |> List.map (fun (u, ps) -> u, ps |> List.map (fun (_, p) -> p.Cls) |> Set.ofList)
-                |> Map.ofList
+            let openCons =
+                ctx.Cons
+                |> Map.toList
+                |> List.collect (fun (v, ps) ->
+                    match resolve ctx (TVar v) with
+                    | TVar u
+                    | TRowVar(u, _) -> ps |> List.map (fun p -> u, p)
+                    | _ -> [])
 
-            Ok(te, residue)
+            match openCons |> List.tryFind (fun (u, _) -> not (resultVars.Contains u)) with
+            | Some(_, p) ->
+                err
+                    p.Span
+                    "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
+            | None ->
+                let residue =
+                    openCons
+                    |> List.groupBy fst
+                    |> List.map (fun (u, ps) -> u, ps |> List.map (fun (_, p) -> p.Cls) |> Set.ofList)
+                    |> Map.ofList
+
+                Ok(te, residue)
 
 // the typed tree's child list — tooling walks (LSP hover, command-head
 // collection) share this instead of re-deriving the case list

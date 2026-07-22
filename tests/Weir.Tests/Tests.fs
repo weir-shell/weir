@@ -2385,6 +2385,29 @@ let agentFindingsTests =
 
               Expect.stringContains terr2.Message "" ""
           }
+          // elif [D:elif] — pure spelling, desugar-pinned
+          test "elif desugars to nested if/else" {
+              Expect.equal (show (parse "if true then 1 elif false then 2 else 3")) "(if true 1 (if false 2 3))" ""
+
+              expectValue "if 1 > 2 then 1 elif 1 > 0 then 2 else 3" (VInt 2L)
+              expectValue "if 1 > 2 then 1 elif 2 > 3 then 2 elif 1 > 0 then 7 else 3" (VInt 7L)
+          }
+          test "elif honors the unit rule (trailing else optional on unit)" {
+              Expect.equal (checkOk "if 1 > 2 then print \"a\" elif 1 > 0 then print \"b\"").Ty TUnit ""
+          }
+          // splice defaulting at the boundary [D:splice-default-last]
+          test "the pipe-into-lambda hole types from the pipe (the wrong-rejection, fixed)" {
+              expectValue "1 |> (fun k -> $\"{k}\")" (VStr "1")
+              expectValue "[1; 2] |> Seq.map (fun k -> $\"n={k}\") |> Seq.head" (VStr "n=1")
+              expectValue "1 |> ((fun k -> $\"{k}\") >> Str.trim)" (VStr "1")
+          }
+          test "genuinely-unresolved holes still default to string" {
+              Expect.equal (formatTy (checkOk "fun k -> $\"{k}\"").Ty) "string -> string" ""
+          }
+          test "non-scalar holes still reject, at the hole" {
+              let terr = checkErr "ls |> Seq.head |> (fun r -> $\"{r}\")"
+              Expect.stringContains terr.Message "must be strings, ints or bools" ""
+          }
           // fmt v2 respace [D:fmt-respace]
           test "respaceLine: collapse, brace pad, semicolon tidy" {
               Expect.equal

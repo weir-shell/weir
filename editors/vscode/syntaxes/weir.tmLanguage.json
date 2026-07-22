@@ -47,7 +47,7 @@
       "name": "meta.preprocessor.weir"
     },
     "keywords": {
-      "match": "\\b(let|in|if|then|else|when|match|with|fun|type|of|from|to)\\b",
+      "match": "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of|from|to)\\b",
       "name": "keyword.control.weir"
     },
     "reserved": {
@@ -106,7 +106,7 @@
           "end": "\\}",
           "name": "meta.interpolation.weir",
           "patterns": [
-            { "match": "\\b(if|then|else|when|match|with|fun|let|in)\\b", "name": "keyword.control.weir" },
+            { "match": "\\b(if|then|elif|else|when|match|with|fun|let|in)\\b", "name": "keyword.control.weir" },
             { "include": "#bool" },
             { "include": "#types" },
             { "include": "#numbers" },

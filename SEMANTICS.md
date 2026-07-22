@@ -718,14 +718,21 @@ quantity semantics now.
   string). Programs containing `/` resolve against `Session.Cwd`; bare names
   resolve against PATH.
 - **Splice-defaulting soundness condition** (why "unresolved argv-position
-  types default to string" is harmless) — justification updated when
-  let-RHS command mode landed (2026-07-18; commands CAN now sit under a
-  generalizing top-level `let`): splices bind their variable to string
-  EAGERLY at check time, and command segments still exist only at line
-  top level — never under a lambda — so no monomorphic parameter
-  variable is in scope to default, and a freshly-instantiated
-  outer-binding variable defaulted by a splice is local to the line's
-  ctx. Nothing defaulted survives to be generalized at another type.
+  types default to string" is harmless) — RE-VERIFIED under
+  [D:splice-default-last] (2026-07-22): defaulting is now a
+  FINALIZATION step, not an eager bind. The early bind rejected the
+  correct `1 |> (fun k -> $"{k}")` — an ORDER bug (the hole
+  defaulted k before the pipe delivered int), the only
+  wrong-rejection on the books. Splice/hole vars now queue in ctx
+  and resolve at the statement boundary (typecheckWith /
+  typecheckBinder, the same point where stranded class constraints
+  error): resolved-to-scalar passes, still-unresolved defaults to
+  string (the original rule, moved), anything else gets the original
+  rejection at the hole's span. The soundness argument SURVIVES and
+  simplifies: defaulting at the boundary runs before generalization
+  in the same ctx, so nothing defaulted is generalized at another
+  type — and late defaulting can only default vars that inference
+  left untouched, strictly fewer than the eager bind touched.
 - **Data parallelism, not concurrency machinery**: `Seq.pmap` /
   `Seq.piter` (2026-07-20) fan a function out over a seq —
   ProcessorCount degree, EAGER, results in input order, first worker

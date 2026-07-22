@@ -58,7 +58,7 @@ argument that killed the subtractive fork.
 | no-user-modules | pending | module M = ... and imports | reject | accept | parked with trial-resolution design on file |
 | no-anonymous-records | pending | {| A = 1 |} and undeclared record literals | reject (exact declared field set) | accept | one telemetry hit; corpus: 5928e91 (x2) |
 | no-destructuring-binders | pending | let (a, b) = ... , fun (x, y) -> | reject | accept | tied to the tuples decision |
-| no-elif | pending | elif keyword | reject (`else if` chains work) | accept | DEMAND EXISTS now: corpus: 5928e91 (x2) + agent friction (NOTES-agent, loc.weir) — the re-mine's top reopen candidate with no-record-update |
+<!-- no-elif RETIRED 2026-07-22 (small-items sweep): elif landed as pure spelling over else-if (the precondition probe confirmed chains already worked single-line AND offside multi-line, so no hidden second gap). Demand receipts: corpus x2 + agent friction. -->
 | semicolon-command-argv | different | `;` inside a command line (bash chains; weir passes literal argv + warns) | argv word + warning | n/a (bash prior, not F#) | SEMANTICS: sequencing; the no-injection pin |
 | redirect-argv | different | `>` / `>>` inside a command line (bash redirects; weir passes literal argv + warns with the File.write/File.append spelling) | argv word + warning | n/a (bash prior, not F#) | SEMANTICS: command mode — the streams stance; the semicolon row's family |
 | raw-single-line | different | `@"..."` and `"""..."""` raw strings are SINGLE-LINE (F# spans physical lines) — the assembler, fmt's refuse-on-mismatch argument, and the highlighter's swallow analysis all rest on strings closing before EOL | reject multi-line | accept | blank-line-ends-statement's family; PLAN-raw-strings |

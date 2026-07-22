@@ -125,6 +125,8 @@ print $"branches: {branches}"
   Ranges are lazy; `[a; b; c]` lists are eager.
 - `if c then a else b` is an expression; `else` is mandatory unless the
   then-branch is unit (`if ok then print "yes"` is a valid statement).
+  `elif` chains as in F# (`if / elif / elif / else`) — pure spelling
+  for `else if`.
 - `match` supports `| true ->` / `| false ->`, `when` guards, and
   constructor patterns. **A non-exhaustive match is a hard error**, and
   guarded arms don't count as coverage — always include an unguarded

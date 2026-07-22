@@ -154,6 +154,20 @@ let pins =
       pin "interpolated verbatim $@ is parked" "let s = $@\"x{1}\"\n" (Diverges "no-interpolated-raw")
       pin "interpolated triple is parked" "let s = $\"\"\"x{1}\"\"\"\n" (Diverges "no-interpolated-raw")
 
+      // --- elif (small-items sweep; the no-elif row retires) ---
+      pin
+          "elif chains, F# semantics"
+          "let x = 10\nlet y =\n    if x > 100 then \"a\"\n    elif x > 5 then \"b\"\n    else \"c\"\n"
+          Same
+      pin "F#-rejects-this: elif without a preceding if" "let y = elif 1 > 0 then \"x\"\n" Same
+      pin
+          "F#-rejects-this: elif after else"
+          "let y =\n    if 1 > 2 then \"a\"\n    else \"b\"\n    elif 1 > 0 then \"c\"\n"
+          Same
+
+      // --- splice defaulting is a FINALIZATION step (small-items sweep) ---
+      pin "hole under a pipe-bound lambda types from the pipe" "let s = 1 |> (fun k -> $\"{k}\")\n" Same
+
       // --- record update probes (PLAN-record-update) — BEFORE code, the
       // folklore rule: every asserted F# grammar fact gets its verdict
       // pin first; guesses flip to FCS's truth before implementation ---

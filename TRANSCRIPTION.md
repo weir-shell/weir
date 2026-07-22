@@ -354,3 +354,17 @@ demands the field (reusing an existing demand's type). The RESULT is
 (identity; the generalization story rests on this, tripwired). Two
 jobs flagged: field walking and row promotion share the arm — split
 if a third path kind arrives.
+
+## Addendum — splice defaulting moved to the boundary (2026-07-22, [D:splice-default-last])
+
+    checkScalarSplice: TVar v ⇒ Δ.PendingSplices += (v, span, what)
+    boundary (typecheckWith / typecheckBinder, pre-generalization):
+      resolve(v) = TVar    ⇒ bind v := string   (the old rule, moved)
+      resolve(v) ∈ scalars ⇒ ok
+      else                 ⇒ the original rejection at the hole span
+
+Order-only change: no new judgment forms; the eager TStr bind in
+checkScalarSplice's TVar arm is deleted, its effect reproduced at the
+boundary for vars inference left unresolved. Runs BEFORE
+generalization in the same ctx — the soundness condition's argument
+transfers (see SEMANTICS). Single job; no FLAG.

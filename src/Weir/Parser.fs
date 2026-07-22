@@ -22,6 +22,7 @@ let private keywords =
           "then"
           "else"
           "when"
+          "elif"
           "rec"
           "mutable" ]
 
@@ -712,15 +713,31 @@ let private matchExpr =
                   End = lastBody.Span.End } })
 
 let private ifExpr =
-    pipe4
+    // elif is SPELLING [D:elif]: `elif c then e` desugars at parse to
+    // `else if c then e` — zero checker surface; the trailing else
+    // stays optional under the unit rule, F#'s chain exactly
+    pipe5
         getPosition
         (keyword "if" >>. expr)
         (keyword "then" >>. seqExpr)
+        (many ((keyword "elif" >>. expr) .>>. (keyword "then" >>. seqExpr)))
         (opt (keyword "else" >>. seqExpr))
-        (fun p cond thn els ->
-            let endPos = (els |> Option.defaultValue thn).Span.End
+        (fun p cond thn elifs els ->
+            let rec build clauses =
+                match clauses with
+                | [] -> els
+                | (c: Expr, t: Expr) :: rest ->
+                    let inner = build rest
+                    let e = (inner |> Option.defaultValue t).Span.End
 
-            { Kind = EIf(cond, thn, els)
+                    Some
+                        { Kind = EIf(c, t, inner)
+                          Span = { Start = c.Span.Start; End = e } }
+
+            let chained = build elifs
+            let endPos = (chained |> Option.defaultValue thn).Span.End
+
+            { Kind = EIf(cond, thn, chained)
               Span = { Start = pos p; End = endPos } })
 
 opp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]

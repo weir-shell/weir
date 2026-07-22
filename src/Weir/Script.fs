@@ -218,7 +218,13 @@ let classifyPiece (piece: string) : PieceClass =
     { Kind =
         if piece.StartsWith "|" then
             PieceKind.PipeHead
-        elif piece = "else" || piece.StartsWith "else " then
+        elif
+            piece = "else"
+            || piece.StartsWith "else "
+            // elif extends a compound exactly as else does [D:elif]
+            || piece = "elif"
+            || piece.StartsWith "elif "
+        then
             PieceKind.ElseHead
         elif piece.StartsWith "let " then
             PieceKind.LetHead

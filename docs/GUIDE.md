@@ -148,7 +148,7 @@ type error.
 ## Branching
 
 `if` is an expression; `else` is optional only when the then-branch is
-unit. `match` has literal patterns (`| 0 ->`, `| "yes" ->` — int/string
+unit; `elif` chains (it is spelling for `else if`). `match` has literal patterns (`| 0 ->`, `| "yes" ->` — int/string
 literals never complete a match alone; close with `_` or a var),
 bool patterns, constructor patterns, and `when`
 guards — and a non-exhaustive match is a hard error, not a warning.

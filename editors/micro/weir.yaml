@@ -19,7 +19,7 @@ rules:
 
     # ---- keywords (the parser's set, verified) ----
     # rule: keywords
-    - statement: "\\b(let|in|if|then|else|when|match|with|fun|type|of)\\b"
+    - statement: "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of)\\b"
     - statement: "\\b(from|to)\\b"
     # reserved (rejected by the parser, but color them so muscle-memory
     # F# reads as "claimed", not "identifier")
@@ -84,7 +84,7 @@ rules:
                 start: "\\{"
                 end: "\\}"
                 rules:
-                    - statement: "\\b(if|then|else|when|match|with|fun|let|in)\\b"
+                    - statement: "\\b(if|then|elif|else|when|match|with|fun|let|in)\\b"
                     - constant.bool: "\\b(true|false)\\b"
                     - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
                     - constant.number: "\\b[0-9]+\\b"
