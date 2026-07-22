@@ -75,7 +75,8 @@ Tuples cover transient pairs — `(a, b)` literals (bare `a, b` works
 at F#'s precedence), `int * string` types, `| (x, y) ->` patterns,
 destructuring binders (`let host, port = target`,
 `Seq.map (fun (k, v) -> ...)`) — but the moment a shape needs NAMES,
-declare a record: `p.Host` reads, `let (h, _) = p` re-derives. Records and unions are
+declare a record: `p.Host` reads, `let (h, _) = p` re-derives
+(`fst`/`snd` project pairs point-free). Records and unions are
 declared with exact field sets; union cases
 carry tuple payloads when multi-value:
 

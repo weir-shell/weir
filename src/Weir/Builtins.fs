@@ -600,6 +600,30 @@ let private strMembers: (string * Ty * Value) list =
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
       "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl ]
 
+// Path — string surgery over paths, System.IO.Path underneath.
+// extension keeps the dot and is "" when there is none; dir is "" at
+// the top (GetDirectoryName's null coerced); combine is prefix-first
+// (Path.combine dir name), matching Path.Combine — named combine, not
+// join, because bare `join` is Str.join's alias (last-wins map).
+let private pathCombineImpl: Value =
+    VBuiltin(fun a ->
+        VBuiltin(fun b ->
+            match a, b with
+            | VStr x, VStr y -> VStr(Path.Combine(x, y))
+            | _ -> unreachable "the checker rejects 'Path.combine' on these arguments"))
+
+let private pathMembers: (string * Ty * Value) list =
+    [ "extension", TFun(TStr, TStr), str1 "extension" Path.GetExtension
+      "fileName", TFun(TStr, TStr), str1 "fileName" Path.GetFileName
+      "stem", TFun(TStr, TStr), str1 "stem" Path.GetFileNameWithoutExtension
+      "dir",
+      TFun(TStr, TStr),
+      str1 "dir" (fun s ->
+          match Path.GetDirectoryName s with
+          | null -> ""
+          | d -> d)
+      "combine", TFun(TStr, TFun(TStr, TStr)), pathCombineImpl ]
+
 let private optionMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
       "defaultTo", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl ]
@@ -801,6 +825,7 @@ let private exitImpl: Value =
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
+      "Path", pathMembers
       "Option", optionMembers
       "File", fileMembers
       "Args", argsMembers
@@ -887,6 +912,20 @@ let private cmdEnvImpl: Value =
                     )
                 | _ -> unreachable "the checker rejects 'cmdEnv' on these arguments")))
 
+// fst/snd — F#'s pair projections; the pair-only typing (TTuple [a; b])
+// makes wider tuples a unification error, same as F#
+let private fstImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VTuple(a :: _) -> a
+        | v -> unreachable $"the checker rejects 'fst' on {formatValue v}")
+
+let private sndImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VTuple(_ :: b :: _) -> b
+        | v -> unreachable $"the checker rejects 'snd' on {formatValue v}")
+
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
       "nats", seqInt, natsImpl
@@ -895,6 +934,8 @@ let private entries: (string * Ty * Value) list =
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TSeq TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl
+      "fst", TFun(TTuple [ tA; tB ], tA), fstImpl
+      "snd", TFun(TTuple [ tA; tB ], tB), sndImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
       "fail", TFun(TStr, TUnit), failImpl
       "exit", TFun(TInt, TUnit), exitImpl

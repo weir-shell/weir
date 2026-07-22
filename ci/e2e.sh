@@ -775,6 +775,12 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# fst/snd + Path (loc.weir friction receipts)
+out=$($BIN -e '[(1, "b"); (2, "a")] |> Seq.sortBy snd |> Seq.map fst |> Seq.head')
+expect "fst/snd project pairs point-free" "2 : int" "$out"
+out=$($BIN -e 'Path.combine (Path.dir "a/b/c.fs") (Path.stem "a/b/c.fs")')
+expect "Path members compose" '"a/b/c"' "$out"
+
 # prefix minus + sortByDescending (2026-07-21, loc.weir friction)
 out=$($BIN -e '2 * -3')
 expect "prefix minus at operand position" "-6 : int" "$out"

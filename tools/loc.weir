@@ -7,23 +7,15 @@ let counts =
     | Seq.map (fun f -> (f, File.read f |> Seq.length))
     | Seq.toList
 
-let ext f =
-    let parts = Str.split "." f
-    let n = parts |> Seq.length
-    if n > 1 then
-        let last = parts |> Seq.skip (n - 1) |> Seq.head
-        $".{last}"
-    else
-        "(no extension)"
-
 let group f =
-    match ext f with
+    match Path.extension f with
+    | "" -> "(no extension)"
     | ".fs" when Str.startsWith "src/" f -> ".fs (src)"
     | ".fs" when Str.startsWith "tests/" f -> ".fs (tests)"
     | e -> e
 
 let locOf items =
-    items |> Seq.map (fun (_, n) -> n) |> Seq.sum
+    items |> Seq.map snd |> Seq.sum
 
 counts
     |> Seq.groupBy (fun (f, _) -> group f)
@@ -31,7 +23,7 @@ counts
     |> Seq.iter (fun g ->
         print $"== {g.Key} ({locOf g.Items})"
         g.Items
-            |> Seq.sortByDescending (fun (_, n) -> n)
+            |> Seq.sortByDescending snd
             |> Seq.iter (fun (f, n) -> print $"{n}\t{f}"))
 
 print $"total:\t{locOf counts}"

@@ -2242,6 +2242,24 @@ let agentFindingsTests =
 
               expectValue "[1] |> Seq.pairwise |> Seq.isEmpty" (VBool true)
           }
+          test "fst/snd project pairs, point-free through pipelines" {
+              expectValue "fst (1, \"a\")" (VInt 1L)
+              expectValue "snd (1, \"a\")" (VStr "a")
+              expectValue "[(\"a\", 2); (\"b\", 1)] |> Seq.sortByDescending snd |> Seq.map fst |> Seq.head" (VStr "a")
+          }
+          test "fst rejects wider tuples (pair-only, as F#)" {
+              let terr = checkErr "fst (1, 2, 3)"
+              Expect.stringContains terr.Message "int * int * int" ""
+          }
+          test "Path members: extension/fileName/stem/dir/join" {
+              expectValue "Path.extension \"ci/run.Dockerfile\"" (VStr ".Dockerfile")
+              expectValue "Path.extension \"ci/Dockerfile\"" (VStr "")
+              expectValue "Path.fileName \"a/b/c.fs\"" (VStr "c.fs")
+              expectValue "Path.stem \"a/b/c.fs\"" (VStr "c")
+              expectValue "Path.dir \"a/b/c.fs\"" (VStr "a/b")
+              expectValue "Path.dir \"c.fs\"" (VStr "")
+              expectValue "Path.combine \"ci\" \"e2e.sh\"" (VStr "ci/e2e.sh")
+          }
           test "fail raises with the message" {
               Expect.equal (checkOk "fail \"boom\"").Ty TUnit "unit-typed statement"
               Expect.throwsT<exn> (fun () -> run "fail \"boom\"" |> ignore) "raises"

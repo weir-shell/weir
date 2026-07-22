@@ -213,6 +213,10 @@ if 1 > 0 then !
   `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
   params). Refutable patterns in binders are errors — use match.
   Bare `a, b` is a tuple at F#'s precedence (`f x, y` is `(f x), y`).
+  `fst`/`snd` project PAIRS (wider tuples are a type error, as F#).
+- Paths: `Path.extension` (keeps the dot; `""` when none),
+  `Path.fileName`, `Path.stem`, `Path.dir` (`""` at the top),
+  `Path.combine dir name` — System.IO semantics.
 - Iterate with `weir check file.weir` (all errors, located, coded) or
   `weir check --json file.weir` (structured: file/line/col/code/
   severity) BEFORE running — no evaluation happens, by construction.
