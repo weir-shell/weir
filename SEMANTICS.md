@@ -157,10 +157,14 @@ quantity semantics now.
   against the ENGINE's capture count (non-capturing `(?:...)`
   excluded): `()` for 0, one name for 1, a tuple of names for n.
   Groups bind `string`. Refutable — never completes a match, banned
-  in binders. The pattern literal is RAW (backslashes belong to the
-  engine; only `\"` escapes the quote); expression-side patterns are
-  ordinary strings. Explicitly NOT active patterns: one bespoke
-  checker arm, and the user-active-pattern door stays closed.
+  in binders. The pattern literal is RAW: regex literals in pattern
+  position belong to the regex engine (only `\"` escapes); strings
+  everywhere remain strings — the boundary is WHO CONSUMES the
+  escapes, and it never depends on context within a position
+  (different literal kinds owning their own escape rules is
+  precedent: interpolated strings' `{{`/`}}`). Explicitly NOT active
+  patterns: one bespoke checker arm, and the user-active-pattern
+  door stays closed.
 - Comparison/boolean surface: `==`, `<>`, `>`, `<`, `>=`, `<=` (precedence 4),
   `&&` (3), `||` (2, lowest above pipe), all left-associative; `not` is a
   builtin `bool -> bool`. `<>` shares `==`'s equatability rule in full.

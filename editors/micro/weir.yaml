@@ -80,6 +80,10 @@ rules:
                     - identifier: "\\b[a-z_][A-Za-z0-9_]*\\b"
 
     # ---- plain strings ----
+    # NOTE: the `Regex "..."` pattern literal is its OWN literal kind
+    # (RAW — backslashes belong to the regex engine, only \" escapes)
+    # but paints as this string region, which is fine cosmetically.
+    # Do NOT "fix" the highlighting to imply string escapes inside it.
     - constant.string:
         start: "\""
         end: "\""
