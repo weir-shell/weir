@@ -64,12 +64,16 @@ lazy generators; `[a; b; c]` literals are eager values.
 let big =
     ls
     |> Seq.where (fun f -> f.Bytes > 1024)
-    |> Seq.map (fun f -> f.Name)
+    |> Seq.map (_.Name >> Path.stem)
 
 big |> print
 
 [1..10] |> Seq.where (fun n -> n > 7) |> Seq.iter (fun n -> print $"{n}")
 ```
+
+`_.Name` is field-access shorthand, and composing it with a `Path`
+helper (`extension`, `fileName`, `stem`, `dir`, `combine`) is the
+house spelling for filename surgery in a pipeline.
 
 Tuples cover transient pairs — `(a, b)` literals (bare `a, b` works
 at F#'s precedence), `int * string` types, `| (x, y) ->` patterns,

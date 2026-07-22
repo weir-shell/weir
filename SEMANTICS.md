@@ -15,7 +15,9 @@ weir rejects rather than guesses.
 
 - **Base types and literals**: `int`, `string`, `bool`,
   `seq<T>`, functions, declared records and unions. **No floats yet.**
-  Literals: unsigned digit runs (no negative literals — write `0 - 5`),
+  Literals: digit runs with prefix minus at operand positions
+  (F#'s adjacency rule [D:prefix-minus] — `-5`, `2 * -3`; `x-1` and
+  `x - 1` stay subtraction),
   strings with `\" \\ \n \t` escapes, `true`/`false`, and seq
   literals `[a; b; c]` (homogeneous; elements evaluate eagerly, once — unlike
   pipelines; `[]` is polymorphic `seq<'a>`).
@@ -33,9 +35,10 @@ weir rejects rather than guesses.
   divergence table (verdict-invisible: both languages accept the
   translated shapes).
 - **Range literals**: `[a..b]` inclusive ascending, `[a..step..b]` stepped;
-  descending only via an explicit negative step (`[10.. -1 ..1]` — the
-  range positions are the one place a negative int literal exists; weir
-  has no unary minus). Empty when `a > b` in the ascending form. Pure
+  descending only via an explicit negative step (`[10.. -1 ..1]`;
+  range positions predate general prefix minus [D:prefix-minus] and
+  additionally allow the SPACED negative that adjacency rejects
+  elsewhere). Empty when `a > b` in the ascending form. Pure
   parser sugar over `Seq.range : int -> int -> int -> seq<int>`
   (start/step/stop, qualified-only — computed ranges spell it out).
   **Named asymmetry**: *bracketed semicolon lists are eager values;
@@ -793,6 +796,13 @@ quantity semantics now.
   `groupBy : ('a -> 'b) -> seq<'a> -> seq<Group<'b, 'a>>` with builtin-owned
   `Group<'k, 'v> = { Key: 'k; Items: seq<'v> }`; keys share `sortBy`'s
   scalar-only runtime rule.)
+- **Friction landings from tools/loc.weir** (2026-07-22):
+  `Seq.sortByDescending` (sortBy's twin — same Ord constraint, stable,
+  reversed comparison); `fst`/`snd` (pair-only projections — wider
+  tuples are unification errors, F#'s rule); the `Path` module
+  (`extension`/`fileName`/`stem`/`dir`/`combine` over System.IO —
+  `combine`, not `join`, because bare `join` is Str.join's alias and
+  the alias-home map is last-wins).
 - Deferred with intent: `substring`/`indexOf` (they want Option — Session 3
   customers), padding, regex (its own design — match vs captures vs typed
   groups; a backlog entry, not a builtins-session improvisation).
