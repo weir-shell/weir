@@ -6,6 +6,9 @@ active-pattern idiom — adopted in spirit, redesigned against its known
 hole and weir's machinery.
 
 Completion addenda (2026-07-22):
+- SUPERSEDED (2026-07-22, PLAN-raw-strings): the positional raw
+  lexer below retired the same week — rawness moved to the literal
+  KIND (`@`/`"""`), and the Regex position became raw-ONLY by rider.
 - The RAW-literal decision, implied by the plan's own examples but
   unstated in prose: the pattern-position literal writes `(\w+)=(\d+)`
   (backslashes belong to the engine, only `\"` escapes); the
@@ -135,8 +138,8 @@ regex literal is fully analyzable at check time.
   receipts against the TAUGHT pipe idiom (stranded `=~` attempts or
   recurring word-order friction), not the itch alone. IF built, the
   design is pre-made: literal RHS compiled at check time (the
-  pattern form's machinery reused — the RAW literal kind, so its
-  backslashes belong to the engine; invalid regex is a check error),
+  pattern form's machinery reused — RAW-ONLY, `@"..."` or triple,
+  per PLAN-raw-strings' rider; invalid regex is a check error),
   typed `string -> string -> bool`, right-side literal-only, and NO
   capture side-channel ever (extraction stays the pattern form's
   job; groups-from-`=~` is how Perl's contextual mess starts).

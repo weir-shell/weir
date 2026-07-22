@@ -142,10 +142,22 @@ let pins =
       pin "F#-rejects-this: >> on a non-function LHS" "let r = 1 >> 2\n" Same
       pin "adjacent lexing: > comparison vs >> composition" "let a = 1 > 2\nlet f n = n + 1\nlet g = f >> f\n" Same
 
+      // --- raw strings (PLAN-raw-strings) — probes BEFORE code, per the
+      // folklore-vs-compiler rule; edge verdicts are ASKED, not recalled ---
+      pin "verbatim string with backslashes" "let s = @\"a\\nb\"\n" Same
+      pin "verbatim quote doubling" "let s = @\"x\"\"y\"\n" Same
+      pin "triple-quoted with a bare quote" "let s = \"\"\"a\"b\"\"\"\n" Same
+      pin "edge: quad-quote opener (\"\"\"\"a\"\"\")" "let s = \"\"\"\"a\"\"\"\n" Same
+      pin "edge: quad-quote closer (\"\"\"a\"\"\"\")" "let s = \"\"\"a\"\"\"\"\n" Same
+      pin "multi-line verbatim: weir is single-line" "let s = @\"a\nb\"\n" (Diverges "raw-single-line")
+      pin "multi-line triple: weir is single-line" "let s = \"\"\"a\nb\"\"\"\n" (Diverges "raw-single-line")
+      pin "interpolated verbatim $@ is parked" "let s = $@\"x{1}\"\n" (Diverges "no-interpolated-raw")
+      pin "interpolated triple is parked" "let s = $\"\"\"x{1}\"\"\"\n" (Diverges "no-interpolated-raw")
+
       // --- the Regex pattern (2026-07-22) — the first weir-only match form ---
       pin
           "the Regex match pattern: weir-only (F# has no built-in regex pattern)"
-          "let v =\n    match \"a1\" with\n    | Regex \"([a-z])(1)\" (a, b) -> a\n    | _ -> \"\"\n"
+          "let v =\n    match \"a1\" with\n    | Regex @\"([a-z])(1)\" (a, b) -> a\n    | _ -> \"\"\n"
           (Diverges "regex-pattern")
       pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
       pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same

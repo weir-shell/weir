@@ -181,13 +181,18 @@ print target.Name
 
 ## Matching text
 
+Raw strings carry patterns and paths without escape noise — F#'s two
+kinds, single-line: `@"..."` (backslashes literal, `""` embeds a
+quote) and `"""..."""` (no escapes at all, bare `"` fine inside).
+Rawness is a property of the literal kind, never of position.
+
 `Str.isMatch` is the condition idiom — pipe the subject so the
 sentence reads subject-first:
 
 ```weir
 let name = "test_parser"
 
-if name |> Str.isMatch "^test" then print "a test"
+if name |> Str.isMatch @"^test" then print "a test"
 ```
 
 For extraction, the `Regex` pattern matches and captures in one arm.
@@ -200,14 +205,16 @@ non-match in F#'s ParseRegex idiom is a located check error here.
 let line = "cache=42"
 
 match line with
-| Regex "(\w+)=(\d+)" (key, count) -> print $"{key} -> {count}"
+| Regex @"(\w+)=(\d+)" (key, count) -> print $"{key} -> {count}"
 | _ -> print "unparsed"
 ```
 
-Groups bind as strings (convert explicitly — `Str.tryToInt`); the
-pattern literal is raw (`\w`, never `\\w`); computed patterns live on
-the expression side (`Str.isMatch`, `Str.rmatch` — ordinary strings,
-ordinary escapes). And before reaching for regex on command output,
+Groups bind as strings (convert explicitly — `Str.tryToInt`). The
+`Regex` literal is RAW-ONLY — `@"..."`, or `"""..."""` for patterns
+containing quotes; an ordinary escaped string there is a check error,
+so the double-escape footgun cannot be written. Computed patterns
+live on the expression side (`Str.isMatch`, `Str.rmatch` — any
+string expression). And before reaching for regex on command output,
 check the typed adapters: `| from porcelain` beats a hand-rolled
 porcelain regex every time.
 

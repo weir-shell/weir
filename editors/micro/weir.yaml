@@ -79,11 +79,22 @@ rules:
                     - symbol.operator: "[+\\-*/<>=]"
                     - identifier: "\\b[a-z_][A-Za-z0-9_]*\\b"
 
+    # ---- raw strings: @ verbatim ("" = one quote, no escapes) and
+    # triple-quoted (no escapes at all). Defined BEFORE plain strings
+    # so the openers win the tie; no escape rules inside — that is
+    # the point of the kinds. ----
+    - constant.string:
+        start: "\"\"\""
+        end: "\"\"\""
+        rules: []
+    - constant.string:
+        start: "@\""
+        end: "\""
+        skip: "\"\""
+        rules:
+            - constant.specialChar: "\"\""
+
     # ---- plain strings ----
-    # NOTE: the `Regex "..."` pattern literal is its OWN literal kind
-    # (RAW — backslashes belong to the regex engine, only \" escapes)
-    # but paints as this string region, which is fine cosmetically.
-    # Do NOT "fix" the highlighting to imply string escapes inside it.
     - constant.string:
         start: "\""
         end: "\""

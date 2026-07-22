@@ -89,16 +89,22 @@ print $"branches: {branches}"
 - Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in
   constructors) but int/string literals NEVER complete a match alone —
   add a `_`/var arm or it is a hard error. Guards remain legal.
+- Raw strings, F#'s two kinds, both SINGLE-LINE: `@"..."` verbatim
+  (backslashes literal; `""` = one embedded quote) and `"""..."""`
+  (no escapes at all; bare `"` fine inside). Rawness belongs to the
+  literal KIND, never to position — a string means the same thing
+  everywhere.
 - The `Regex` pattern matches and extracts in one arm:
-  `| Regex "(\w+)=(\d+)" (k, v) ->`. Literal-only, compiled at CHECK
-  time (invalid regex = check error) and the binder arity must equal
-  the capture count — `()` for 0, one name for 1, a tuple for n
+  `| Regex @"(\w+)=(\d+)" (k, v) ->`. The literal is RAW-ONLY
+  (`@"..."` or `"""..."""` — an ordinary string there is a check
+  error; the double-escape footgun is unrepresentable). Compiled at
+  CHECK time (invalid regex = check error) and the binder arity must
+  equal the capture count — `()` for 0, one name for 1, a tuple for n
   (non-capturing `(?:...)` does not count). Groups bind as STRINGS;
-  convert in the arm. The literal is RAW — `\w` needs no doubling,
-  only `\"` escapes — and Regex arms never complete a match. Computed
+  convert in the arm. Regex arms never complete a match. Computed
   patterns live on the expression side: `Str.isMatch pat s` (bool),
-  `Str.rmatch pat s` (Option<seq<string>>) — ordinary strings there,
-  so `"\\.md$"`.
+  `Str.rmatch pat s` (Option<seq<string>>) — any string, and raw
+  literals read best: `Seq.where (Str.isMatch @"\.md$")`.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
   `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency
@@ -181,15 +187,29 @@ if 1 > 0 then !
 ```
 
 ```weir
+// raw strings: @ verbatim ("" = one quote) and triple-quoted (bare ")
+let path = @"a\raw\path"
+let quoted = """say "hi" ok"""
+print path
+print quoted
+```
+
+```weir
 // the Regex pattern: raw literal, arity-typed binder
-let ver = match "v2 ready" with | Regex "v(\d+)" v -> v | _ -> "0"
+let ver = match "v2 ready" with | Regex @"v(\d+)" v -> v | _ -> "0"
 print ver
+```
+
+```weir-error
+// the Regex literal is raw-only — an ordinary string is rejected
+let x = match "a" with | Regex "(a)" v -> v | _ -> ""
+print x
 ```
 
 ```weir-error
 // binder arity must equal the group count — a CHECK error, not a
 // silent runtime non-match
-let x = match "a" with | Regex "(\d+)-(\d+)" a -> a | _ -> ""
+let x = match "a" with | Regex @"(\d+)-(\d+)" a -> a | _ -> ""
 print x
 ```
 

@@ -572,13 +572,18 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
         match ty with
         | TStr -> Ok []
         | ty -> err p.PSpan $"string literal patterns need a string scrutinee; this one has type {formatTy ty}"
-    | PRegex(pat, litSpan, binder) ->
+    | PRegex(pat, litSpan, raw, binder) ->
         // check-time compilation [D:regex-pattern]: an invalid literal
         // is a check error, and the binder's arity must equal the
         // engine's own capture count (non-capturing groups excluded by
         // the engine's numbering) — the F# ParseRegex silent-non-match
         // hole, closed statically
         match ty with
+        | TStr when not raw ->
+            // the raw-only rider [D:raw-strings]: the double-escape
+            // footgun is unrepresentable at the one checked-regex
+            // position; the kind is rejected, casing-law-style
+            err litSpan "regex literals are raw: use @\"...\" (or \"\"\"...\"\"\" for patterns containing quotes)"
         | TStr ->
             match compileRegex pat with
             | Error msg -> err litSpan $"invalid regex: {msg}"

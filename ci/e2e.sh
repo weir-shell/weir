@@ -787,6 +787,39 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# raw strings (PLAN-raw-strings): both kinds on the AOT binary
+rawdir=$(mktemp -d)
+cat > "$rawdir/raw.weir" <<'WEOF'
+let path = @"a\raw\path"
+let quoted = """say "hi" ok"""
+
+print path
+print quoted
+
+match "cfg=7" with
+| Regex @"(\w+)=(\d+)" (k, v) -> print $"{k}/{v}"
+| _ -> print "no"
+
+match "a\"b" with
+| Regex """("[a-z])""" q -> print q
+| _ -> print "no"
+WEOF
+out=$($BIN "$rawdir/raw.weir")
+expect "verbatim survives byte-identically" 'a\raw\path' "$out"
+expect "triple carries bare quotes" 'say "hi" ok' "$out"
+expect "verbatim regex extracts" "cfg/7" "$out"
+expect "triple regex matches quoted fields" '"b' "$out"
+$BIN fmt --check "$rawdir/raw.weir" >/dev/null 2>&1 || fail "raw script must be fmt-stable"
+echo "e2e ok: fmt roundtrips raw strings"
+
+errout=$($BIN -e 'match "a" with | Regex "(a)" v -> v | _ -> ""' 2>&1 || true)
+echo "$errout" | grep -qF "regex literals are raw" || fail "the raw-only rider hint is missing: $errout"
+echo "e2e ok: the Regex position is raw-only"
+
+out=$($BIN -e 'echo (@"\n") | Seq.head')
+expect "verbatim splice is one literal argv entry" '\n' "$out"
+rm -rf "$rawdir"
+
 # the Regex pattern + Str match family (regex plan, 2026-07-22)
 redir=$(mktemp -d)
 cat > "$redir/logs.weir" <<'WEOF'
@@ -795,7 +828,7 @@ let lines = ["INFO 200 ok"; "WARN 500 boom"; "INFO 404 miss"; "garbage"]
 lines
     |> Seq.map (fun l ->
         match l with
-        | Regex "(\w+) (\d+)" (level, code) -> $"{level}:{code}"
+        | Regex @"(\w+) (\d+)" (level, code) -> $"{level}:{code}"
         | _ -> "unparsed")
     |> print
 
@@ -804,7 +837,7 @@ let errors =
     |> Seq.where (Str.isMatch "^WARN")
     |> Seq.map (fun l ->
         match l with
-        | Regex "(\d+)" code -> code |> Str.toInt
+        | Regex @"(\d+)" code -> code |> Str.toInt
         | _ -> 0)
     |> Seq.sum
 
@@ -817,7 +850,7 @@ expect "isMatch where-filter + extraction + toInt" "error-code sum: 500" "$out"
 
 cat > "$redir/badregex.weir" <<'WEOF'
 sh -c "touch regex-proof"
-let x = match "a" with | Regex "([" v -> v | _ -> ""
+let x = match "a" with | Regex @"([" v -> v | _ -> ""
 print x
 WEOF
 rc=0; errout=$(cd "$redir" && $BIN badregex.weir 2>&1) || rc=$?

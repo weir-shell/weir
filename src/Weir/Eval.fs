@@ -296,7 +296,7 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     | PCase(ctor, Some argPat), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
     | PCase _, VUnion _ -> None
     | PCase _, v -> unreachable $"the checker rejects constructor patterns on {formatValue v}"
-    | PRegex(pat, _, binder), VStr s ->
+    | PRegex(pat, _, _, binder), VStr s ->
         // the cached instance from check time [D:regex-pattern]; group
         // i binds leaf i (an unmatched optional group binds "")
         (match compileRegex pat with

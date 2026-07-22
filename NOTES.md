@@ -1,5 +1,42 @@
 # Spike Notes
 
+## Raw strings: @"..." and """...""" (2026-07-22)
+
+PLAN-raw-strings, one session, probes FIRST — the folklore-vs-compiler
+rule's first scheduled application worked exactly as designed: all
+four F# facts held (verbatim doubling, triple bare-quote, the
+quad-OPENER accepting with a leading-quote content), and the one
+genuinely unknown edge was ASKED, not recalled — FCS rejects the
+quad-closer (`"""a""""`), so weir's close-at-first-triple lexing is
+the compiler's own verdict, pinned before a line of implementation.
+
+The positional raw-regex rule retired the same week it shipped, with
+credit to the shout-if clause: the flag on the regex session's
+unstated decision drew the review that concluded rawness is a STRING
+property. The Regex position is now raw-ONLY by rider (ordinary
+strings rejected there on KIND, not content — the double-escape
+footgun unrepresentable), and the strings-uniform law holds: no
+string means different things in different positions.
+
+Candidate tombstones, re-askable only against this entry: single
+quotes (deleted from the highlighter once already for
+apostrophe-swallowing; dotenv's quoting is one adapter away), `~`
+(no prior, home-dir/=~ associations, the last free sigil is worth
+more unspent), backticks (weir-only kind with no referee; JS
+inverted the prior to "template string"; F# claims the glyph for
+double-backtick identifiers — honest credit: the 1:1-raw want was
+real and `"""` answers it in-house). The raw-string budget is two
+kinds because F#'s is.
+
+Scanner formalization paid a dividend on entry: braceStack turned
+out to be a verbatim THIRD quote machine and was rewritten over
+foldOutsideStrings in the same commit; the repair-path closers
+learned V/T states (suffixes "\"" and "\"\"\""). Single-line-only
+divergence rowed (raw-single-line); interpolated-raw parked with its
+row born accurate from the probe (no-interpolated-raw). Check median
+back at 10ms.
+
+
 ## The Regex pattern + Str match family (2026-07-22)
 
 The regex park opens per plan. `| Regex "lit" binder ->` — one bespoke

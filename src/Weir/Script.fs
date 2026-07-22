@@ -13,6 +13,11 @@ let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: strin
     let mutable i = 0
     let mutable inDouble = false
     let mutable inSingle = false
+    // raw kinds [D:raw-strings]: verbatim @"..." ("" = one quote, no
+    // escapes) and triple-quoted """...""" (no escapes at all,
+    // closes at the FIRST triple — FCS-verdict-pinned)
+    let mutable inVerbatim = false
+    let mutable inTriple = false
 
     while i < s.Length do
         let c = s[i]
@@ -25,6 +30,22 @@ let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: strin
         elif inSingle then
             if c = '\'' then
                 inSingle <- false
+        elif inVerbatim then
+            if c = '"' then
+                if i + 1 < s.Length && s[i + 1] = '"' then
+                    i <- i + 1
+                else
+                    inVerbatim <- false
+        elif inTriple then
+            if c = '"' && i + 2 < s.Length && s[i + 1] = '"' && s[i + 2] = '"' then
+                i <- i + 2
+                inTriple <- false
+        elif c = '@' && i + 1 < s.Length && s[i + 1] = '"' then
+            inVerbatim <- true
+            i <- i + 1
+        elif c = '"' && i + 2 < s.Length && s[i + 1] = '"' && s[i + 2] = '"' then
+            inTriple <- true
+            i <- i + 2
         elif c = '"' then
             inDouble <- true
         elif c = '\'' then
@@ -205,12 +226,31 @@ let closers (text: string) : string =
                     i <- i + 1
                 else
                     stack <- '}' :: stack
+        // raw kinds [D:raw-strings]: 'V' verbatim ("" stays inside),
+        // 'T' triple (closes only at """)
+        | 'V' :: rest ->
+            if c = '"' then
+                if i + 1 < text.Length && text[i + 1] = '"' then
+                    i <- i + 1
+                else
+                    stack <- rest
+        | 'T' :: rest ->
+            if c = '"' && i + 2 < text.Length && text[i + 1] = '"' && text[i + 2] = '"' then
+                i <- i + 2
+                stack <- rest
         | '\'' :: rest ->
             if c = '\'' then
                 stack <- rest
         | _ ->
-            if c = '"' then
-                stack <- (if i > 0 && text[i - 1] = '$' then '$' else '"') :: stack
+            if c = '"' && i + 2 < text.Length && text[i + 1] = '"' && text[i + 2] = '"' then
+                stack <- 'T' :: stack
+                i <- i + 2
+            elif c = '"' then
+                stack <-
+                    (if i > 0 && text[i - 1] = '@' then 'V'
+                     elif i > 0 && text[i - 1] = '$' then '$'
+                     else '"')
+                    :: stack
             elif c = '\'' then
                 stack <- '\'' :: stack
             elif c = '(' then
@@ -225,44 +265,32 @@ let closers (text: string) : string =
         i <- i + 1
 
     stack
-    |> List.map (fun c -> if c = '$' then '"' else c)
-    |> List.toArray
-    |> String
+    |> List.map (fun c ->
+        match c with
+        | '$'
+        | 'V' -> "\""
+        | 'T' -> "\"\"\""
+        | c -> string c)
+    |> String.concat ""
 
 // Columns (0-based) of still-open record braces after folding a line
 // into the running stack — fmt aligns record fields at TOP+2
 // (quote-aware via the scanner family; lives here per the rule).
 let braceStack (prev: int list) (line: string) : int list =
-    let mutable stack = prev
-    let mutable inDouble = false
-    let mutable inSingle = false
-    let mutable i = 0
-
-    while i < line.Length do
-        let c = line[i]
-
-        if inDouble then
-            if c = '\\' && i + 1 < line.Length then
-                i <- i + 1
-            elif c = '"' then
-                inDouble <- false
-        elif inSingle then
-            if c = '\'' then
-                inSingle <- false
-        elif c = '"' then
-            inDouble <- true
-        elif c = '\'' then
-            inSingle <- true
-        elif c = '{' then
-            stack <- i :: stack
-        elif c = '}' then
-            match stack with
-            | _ :: rest -> stack <- rest
-            | [] -> ()
-
-        i <- i + 1
-
-    stack
+    // rewritten over the ONE scanner when raw strings landed
+    // [D:raw-strings] — this was a verbatim third quote machine
+    foldOutsideStrings
+        (fun stack i c ->
+            if c = '{' then
+                i :: stack
+            elif c = '}' then
+                match stack with
+                | _ :: rest -> rest
+                | [] -> []
+            else
+                stack)
+        prev
+        line
 
 // Pending-statement state. Compounds is the offside stack: each open
 // if/match-headed piece as (headIndent, textStart). A sibling arriving

@@ -18,7 +18,15 @@ weir rejects rather than guesses.
   Literals: digit runs with prefix minus at operand positions
   (F#'s adjacency rule [D:prefix-minus] — `-5`, `2 * -3`; `x-1` and
   `x - 1` stay subtraction),
-  strings with `\" \\ \n \t` escapes, `true`/`false`, and seq
+  strings with `\" \\ \n \t` escapes — plus RAW strings, F#'s two
+  kinds [D:raw-strings], oracle probe-pinned BEFORE implementation:
+  `@"..."` verbatim (backslashes literal, `""` = one embedded quote)
+  and `"""..."""` (no escapes at all; closes at the FIRST `"""`, so a
+  trailing extra quote is an error — FCS's verdict on the quad edges).
+  Both are SINGLE-LINE (divergence row raw-single-line: the assembler,
+  fmt's refuse-on-mismatch argument, and the highlighter's swallow
+  analysis rest on strings closing before EOL). Rawness is a property
+  of the literal KIND, never of position. `true`/`false`, and seq
   literals `[a; b; c]` (homogeneous; elements evaluate eagerly, once — unlike
   pipelines; `[]` is polymorphic `seq<'a>`).
 - **Indexers** (2026-07-20): `xs[i]` desugars to `Seq.item i xs`
@@ -157,14 +165,17 @@ quantity semantics now.
   against the ENGINE's capture count (non-capturing `(?:...)`
   excluded): `()` for 0, one name for 1, a tuple of names for n.
   Groups bind `string`. Refutable — never completes a match, banned
-  in binders. The pattern literal is RAW: regex literals in pattern
-  position belong to the regex engine (only `\"` escapes); strings
-  everywhere remain strings — the boundary is WHO CONSUMES the
-  escapes, and it never depends on context within a position
-  (different literal kinds owning their own escape rules is
-  precedent: interpolated strings' `{{`/`}}`). Explicitly NOT active
-  patterns: one bespoke checker arm, and the user-active-pattern
-  door stays closed.
+  in binders. The literal is RAW-ONLY [D:raw-strings] — `@"..."` or
+  `"""..."""`; an ordinary escaped string in Regex position is a
+  check error with the hint. A KIND is rejected at one position,
+  casing-law-style — no string's MEANING varies by position, so the
+  strings-uniform law holds. (Archaeology: the original landing
+  shipped a positionally-raw lexer; the shout-if flag on that
+  unstated decision drew the review that concluded rawness is a
+  STRING property, and PLAN-raw-strings retired the positional rule
+  the same week — the clause worked, one exchange late.) Explicitly
+  NOT active patterns: one bespoke checker arm, and the
+  user-active-pattern door stays closed.
 - Comparison/boolean surface: `==`, `<>`, `>`, `<`, `>=`, `<=` (precedence 4),
   `&&` (3), `||` (2, lowest above pipe), all left-associative; `not` is a
   builtin `bool -> bool`. `<>` shares `==`'s equatability rule in full.

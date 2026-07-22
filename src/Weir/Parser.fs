@@ -121,6 +121,30 @@ let private strLit =
     |>> mkExpr
     .>> ws
 
+// raw strings [D:raw-strings] — F#'s two kinds, single-line, oracle
+// probe-pinned BEFORE implementation: @"..." verbatim (backslashes
+// literal, "" = one embedded quote) and """...""" (no escapes at
+// all; closes at the FIRST triple, so a trailing extra quote is an
+// error — FCS's verdict on the quad-closer edge).
+let private verbatimBody =
+    manyStrings (choice [ many1Satisfy (fun c -> c <> '"'); attempt (pstring "\"\"") >>% "\"" ])
+
+let private tripleBody =
+    manyStrings (
+        choice
+            [ many1Satisfy (fun c -> c <> '"')
+              attempt (pchar '"' .>> notFollowedBy (pstring "\"\"")) >>% "\"" ]
+    )
+
+let private verbatimLit =
+    spanned (pstring "@\"" >>. verbatimBody .>> pchar '"' |>> EStr) |>> mkExpr
+    .>> ws
+
+let private tripleLit =
+    spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"" |>> EStr)
+    |>> mkExpr
+    .>> ws
+
 let private wordAtom =
     attempt (
         spanned rawWord
@@ -315,6 +339,8 @@ let private atom =
     choice
         [ negAtom
           intLit
+          tripleLit
+          verbatimLit
           strLit
           interpLit
           captureSigil
@@ -530,6 +556,10 @@ let private patLit =
               match System.Int64.TryParse((if neg.IsSome then "-" else "") + digits) with
               | true, n -> preturn { PKind = PInt n; PSpan = span }
               | false, _ -> failFatally $"int literal out of range (64-bit): {digits}"
+          spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"") .>> ws
+          |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
+          spanned (pstring "@\"" >>. verbatimBody .>> pchar '"') .>> ws
+          |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
           spanned (between (pchar '"') (pchar '"') (manyChars stringChar)) .>> ws
           |>> fun (s, span) -> { PKind = PStr s; PSpan = span } ]
 
@@ -558,21 +588,18 @@ let private patAtom =
 
               { PKind = kind; PSpan = span } ]
 
-// The Regex literal is RAW [D:regex-pattern]: backslashes belong to
-// the regex engine (`"(\w+)"` needs no doubling); only `\"` escapes
-// the quote. Expression-side patterns (Str.isMatch) are ordinary
-// strings with ordinary escapes.
-let private regexLit =
-    spanned (
-        between
-            (pchar '"')
-            (pchar '"')
-            (manyStrings (
-                choice
-                    [ many1Satisfy (fun c -> c <> '"' && c <> '\\')
-                      pchar '\\' >>. anyChar |>> fun c -> if c = '"' then "\"" else "\\" + string c ]
-            ))
-    )
+// The positional raw-regex lexer RETIRED with PLAN-raw-strings
+// (2026-07-22): rawness is a property of the literal KIND, never of
+// position. The Regex position parses any string kind and tags it;
+// the checker enforces raw-only there [D:raw-strings].
+let private regexPatternLit =
+    choice
+        [ spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"")
+          |>> fun (p, sp) -> p, sp, true
+          spanned (pstring "@\"" >>. verbatimBody .>> pchar '"')
+          |>> fun (p, sp) -> p, sp, true
+          spanned (between (pchar '"') (pchar '"') (manyChars stringChar))
+          |>> fun (p, sp) -> p, sp, false ]
     .>> ws
 
 patRef.Value <-
@@ -590,9 +617,9 @@ patRef.Value <-
               elif w = "Regex" then
                   // bespoke pattern form, literal-only [D:regex-pattern]
                   choice
-                      [ regexLit .>>. patAtom
-                        |>> fun ((pat, litSpan), binder) ->
-                            { PKind = PRegex(pat, litSpan, binder)
+                      [ regexPatternLit .>>. patAtom
+                        |>> fun ((pat, litSpan, raw), binder) ->
+                            { PKind = PRegex(pat, litSpan, raw, binder)
                               PSpan =
                                 { Start = span.Start
                                   End = binder.PSpan.End } }

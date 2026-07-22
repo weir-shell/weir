@@ -24,7 +24,7 @@ and PatternKind =
     // NOT a general active-pattern mechanism. The literal is kept
     // verbatim (its backslashes belong to the regex engine); litSpan
     // aims check errors at the literal, not the whole pattern.
-    | PRegex of pattern: string * litSpan: Span * binder: Pattern
+    | PRegex of pattern: string * litSpan: Span * raw: bool * binder: Pattern
 
 type InterpPart<'e> =
     | IStr of string

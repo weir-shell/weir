@@ -503,68 +503,107 @@ let warningTests =
           }
           // the Regex pattern [D:regex-pattern] — arity typed at check time
           test "Regex pattern: arities 0/1/2 bind statically" {
-              expectValue "match \"# x\" with | Regex \"^#\" () -> \"comment\" | _ -> \"code\"" (VStr "comment")
-              expectValue "match \"v13\" with | Regex \"v(\\d+)\" v -> v | _ -> \"?\"" (VStr "13")
+              expectValue "match \"# x\" with | Regex @\"^#\" () -> \"comment\" | _ -> \"code\"" (VStr "comment")
+              expectValue "match \"v13\" with | Regex @\"v(\\d+)\" v -> v | _ -> \"?\"" (VStr "13")
 
               expectValue
-                  "match \"key=42\" with | Regex \"(\\w+)=(\\d+)\" (k, v) -> $\"{k}:{v}\" | _ -> \"no\""
+                  "match \"key=42\" with | Regex @\"(\\w+)=(\\d+)\" (k, v) -> $\"{k}:{v}\" | _ -> \"no\""
                   (VStr "key:42")
           }
           test "Regex pattern: non-capturing groups do not count" {
-              expectValue "match \"a-1\" with | Regex \"(?:\\w+)-(\\d+)\" n -> n | _ -> \"?\"" (VStr "1")
+              expectValue "match \"a-1\" with | Regex @\"(?:\\w+)-(\\d+)\" n -> n | _ -> \"?\"" (VStr "1")
           }
           test "Regex pattern: arity mismatch is a check error naming the count" {
-              let terr = checkErr "match \"x\" with | Regex \"(\\d+)-(\\d+)\" a -> a | _ -> \"?\""
+              let terr =
+                  checkErr "match \"x\" with | Regex @\"(\\d+)-(\\d+)\" a -> a | _ -> \"?\""
+
               Expect.stringContains terr.Message "2 capture group(s)" ""
               Expect.stringContains terr.Message "tuple of 2 names" ""
           }
           test "Regex pattern: invalid literal is a check error" {
-              let terr = checkErr "match \"x\" with | Regex \"([\" v -> v | _ -> \"?\""
+              let terr = checkErr "match \"x\" with | Regex @\"([\" v -> v | _ -> \"?\""
               Expect.stringContains terr.Message "invalid regex" ""
           }
           test "Regex pattern: non-match falls through; wildcard leaves skip binding" {
               expectValue
-                  "match \"nope\" with | Regex \"(\\d+)\" n -> n | Regex \"(\\w+)\" (w) -> w | _ -> \"?\""
+                  "match \"nope\" with | Regex @\"(\\d+)\" n -> n | Regex @\"(\\w+)\" (w) -> w | _ -> \"?\""
                   (VStr "nope")
 
-              expectValue "match \"a b\" with | Regex \"(\\w+) (\\w+)\" (a, _) -> a | _ -> \"?\"" (VStr "a")
+              expectValue "match \"a b\" with | Regex @\"(\\w+) (\\w+)\" (a, _) -> a | _ -> \"?\"" (VStr "a")
           }
           test "Regex pattern: optional group binds empty on absence" {
-              expectValue "match \"ab\" with | Regex \"(a)(x)?\" (a, x) -> $\"{a}|{x}\" | _ -> \"?\"" (VStr "a|")
+              expectValue "match \"ab\" with | Regex @\"(a)(x)?\" (a, x) -> $\"{a}|{x}\" | _ -> \"?\"" (VStr "a|")
           }
           test "Regex pattern: mixed with literal arms; guards compose" {
               expectValue
-                  "match \"v9\" with | \"\" -> \"empty\" | Regex \"v(\\d+)\" n when n == \"9\" -> \"nine\" | _ -> \"other\""
+                  "match \"v9\" with | \"\" -> \"empty\" | Regex @\"v(\\d+)\" n when n == \"9\" -> \"nine\" | _ -> \"other\""
                   (VStr "nine")
           }
           test "Regex pattern: nested in constructor payload and tuple position" {
-              expectValue "match Some \"v3\" with | Some (Regex \"v(\\d+)\" n) -> n | _ -> \"?\"" (VStr "3")
-              expectValue "match (\"k\", \"v3\") with | (_, Regex \"v(\\d+)\" n) -> n | _ -> \"?\"" (VStr "3")
+              expectValue "match Some \"v3\" with | Some (Regex @\"v(\\d+)\" n) -> n | _ -> \"?\"" (VStr "3")
+              expectValue "match (\"k\", \"v3\") with | (_, Regex @\"v(\\d+)\" n) -> n | _ -> \"?\"" (VStr "3")
           }
           test "Regex pattern: never completes a match (wildcard required)" {
-              let terr = checkErr "match \"x\" with | Regex \"(a)\" v -> v"
+              let terr = checkErr "match \"x\" with | Regex @\"(a)\" v -> v"
               Expect.stringContains terr.Message "catch-all" ""
           }
           test "Regex pattern: refutable, so banned in binders" {
-              let terr = checkErr "let (Regex \"(a)\" v) = \"abc\" in v"
+              let terr = checkErr "let (Regex @\"(a)\" v) = \"abc\" in v"
               Expect.stringContains terr.Message "this pattern can fail" ""
           }
           test "Regex pattern: duplicate binder names rejected" {
               let terr =
-                  checkErr "match \"a b\" with | Regex \"(\\w+) (\\w+)\" (a, a) -> a | _ -> \"?\""
+                  checkErr "match \"a b\" with | Regex @\"(\\w+) (\\w+)\" (a, a) -> a | _ -> \"?\""
 
               Expect.stringContains terr.Message "duplicate binder 'a'" ""
           }
           test "Regex pattern: groups are plain strings (Eq works, no class surprises)" {
-              expectValue "match \"v9\" with | Regex \"v(\\d+)\" n -> n == \"9\" | _ -> false" (VBool true)
+              expectValue "match \"v9\" with | Regex @\"v(\\d+)\" n -> n == \"9\" | _ -> false" (VBool true)
           }
           test "Regex pattern: needs a string scrutinee" {
-              let terr = checkErr "match 5 with | Regex \"(a)\" v -> v | _ -> \"?\""
+              let terr = checkErr "match 5 with | Regex @\"(a)\" v -> v | _ -> \"?\""
               Expect.stringContains terr.Message "string scrutinee" ""
           }
           test "the raw literal: backslashes belong to the regex (no doubling)" {
               // the source below contains a SINGLE backslash before w/d
-              expectValue "match \"k=1\" with | Regex \"(\\w+)=(\\d+)\" (k, _) -> k | _ -> \"?\"" (VStr "k")
+              expectValue "match \"k=1\" with | Regex @\"(\\w+)=(\\d+)\" (k, _) -> k | _ -> \"?\"" (VStr "k")
+          }
+          // raw strings [D:raw-strings] — F#'s semantics, probe-backed
+          test "raw strings: verbatim and triple semantics" {
+              expectValue "@\"a\\nb\" |> Str.length" (VInt 4L)
+              expectValue "@\"x\"\"y\"" (VStr "x\"y")
+              expectValue "\"\"\"a\"b\"\"\"" (VStr "a\"b")
+              // the quad-OPENER edge: content is a leading quote (FCS's verdict)
+              expectValue "\"\"\"\"a\"\"\"" (VStr "\"a")
+          }
+          test "raw strings: the quad-closer edge rejects (FCS's verdict)" {
+              match Weir.Parser.parseExpr "\"\"\"a\"\"\"\"" with
+              | Error _ -> ()
+              | Ok _ -> failtest "expected a parse error for the trailing extra quote"
+          }
+          test "raw strings across positions: pattern literal, list, tuple" {
+              expectValue "match @\"lit\" with | @\"lit\" -> 1 | _ -> 0" (VInt 1L)
+              expectValue "match \"\"\"q\"q\"\"\" with | \"\"\"q\"q\"\"\" -> 1 | _ -> 0" (VInt 1L)
+              expectValue "[@\"\\a\"; \"\"\"b\"\"\"] |> Seq.length" (VInt 2L)
+              expectValue "fst (@\"x\", 1)" (VStr "x")
+          }
+          test "Regex position is raw-only (the rider: kind, not content)" {
+              // even a no-backslash pattern requires the raw kind
+              let terr = checkErr "match \"a\" with | Regex \"(a)\" v -> v | _ -> \"\""
+              Expect.stringContains terr.Message "regex literals are raw" ""
+          }
+          test "the scanner: // inside raw strings is content" {
+              Expect.equal (Weir.Script.stripComment "let s = @\"x // y\"") "let s = @\"x // y\"" "verbatim"
+
+              Expect.equal
+                  (Weir.Script.stripComment "let s = \"\"\"x // y\"\"\" // real")
+                  "let s = \"\"\"x // y\"\"\" "
+                  "triple + a real comment after"
+          }
+          test "the repair closers understand raw kinds" {
+              Expect.equal (Weir.Script.closers "let s = @\"dangling") "\"" "verbatim closer"
+              Expect.equal (Weir.Script.closers "let s = \"\"\"dangling") "\"\"\"" "triple closer"
+              Expect.equal (Weir.Script.closers "let s = @\"a\"\"b") "\"" "doubled quote stays inside"
           }
           test "accepted matches are total: the runtime match-failure class is gone" {
               // the shapes that used to fail at runtime are now check errors
