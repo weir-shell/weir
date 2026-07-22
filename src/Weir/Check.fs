@@ -430,8 +430,31 @@ let rec private typeBinOp
         binding |> Result.bind (fun () -> typeBinOp ctx env opSpan op l r)
 
     match op, resolve ctx l.Ty, resolve ctx r.Ty with
-    // every operator with a UNIQUE typing defaults var-var operands; '+' alone
-    // stays an error (int-or-string is a guess weir refuses to make)
+    // composition [D:composition-operators] — fully parametric, typed
+    // like a builtin scheme: (a -> b) >> (b -> c) : a -> c, `<<`
+    // mirrored. FIRST in the match: the scalar-defaulting arms below
+    // must never touch function operands. A non-function LHS on `>>`
+    // gets the redirect-aware message (bash muscle memory).
+    | (">>" | "<<"), lt, _ ->
+        let a = TVar(freshName ctx "a")
+        let b = TVar(freshName ctx "b")
+        let c = TVar(freshName ctx "c")
+
+        match op, lt with
+        | ">>", (TFun _ | TVar _) ->
+            bind ctx env l.Span (TFun(a, b)) l.Ty
+            |> Result.bind (fun () -> bind ctx env r.Span (TFun(b, c)) r.Ty)
+            |> Result.map (fun () -> TFun(a, c))
+        | "<<", (TFun _ | TVar _) ->
+            bind ctx env l.Span (TFun(b, c)) l.Ty
+            |> Result.bind (fun () -> bind ctx env r.Span (TFun(a, b)) r.Ty)
+            |> Result.map (fun () -> TFun(a, c))
+        | ">>", ty ->
+            err
+                l.Span
+                ($"'>>' composes functions, and this expression has type {formatTy ty}; "
+                 + "to append command output to a file, pipe it: cmd | File.append \"out.txt\"")
+        | _, ty -> err l.Span $"'<<' composes functions, and this expression has type {formatTy ty}"
     | ("*" | "/" | "-" | ">" | "<" | ">=" | "<="), TVar _, TVar _ ->
         retryAfter (
             bind ctx env l.Span (TInt) l.Ty
@@ -1021,10 +1044,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | EPipe(_,
             { Kind = EBinOp(op, _, _)
-              Span = opSpan }) ->
-        // Operators yield values, never functions, so piping into an operator
-        // expression is always wrong — and usually a precedence surprise
-        // (agent-dogfooding finding).
+              Span = opSpan }) when op <> ">>" && op <> "<<" ->
+        // Scalar operators yield values, never functions, so piping into
+        // one is always wrong — and usually a precedence surprise
+        // (agent-dogfooding finding). Composition is the exception
+        // [D:composition-operators]: `xs |> f >> g` pipes into the
+        // composed FUNCTION, the F# idiom, and takes the general arm.
         err
             opSpan
             $"'{op}' binds tighter than '|>', so this parses as xs |> (a {op} b); parenthesize the pipeline: (xs |> f) {op} value"
@@ -1110,6 +1135,32 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EBinOp(op, left, right) ->
         result {
             let! tleft = infer ctx env left
+
+            // composition rejects a non-function LHS BEFORE the RHS is
+            // inferred: bash-append lines (`cmd >> file`) usually carry
+            // an unbound RHS, and the redirect hint must beat the
+            // "unbound variable" error. A PIPE on the left is the
+            // shared-precedence gotcha (`xs |> f >> g` is
+            // `(xs |> f) >> g`, F#'s parse) and gets the parenthesize
+            // hint instead [D:composition-operators]
+            do!
+                match op, resolve ctx tleft.Ty with
+                | (">>" | "<<"), (TFun _ | TVar _) -> Ok()
+                | (">>" | "<<"), ty ->
+                    match left.Kind with
+                    | EPipe _ ->
+                        err
+                            left.Span
+                            ($"'{op}' and '|>' share precedence, so this parses as (xs |> f) {op} g; "
+                             + $"parenthesize the composition: xs |> (f {op} g)")
+                    | _ when op = ">>" ->
+                        err
+                            left.Span
+                            ($"'>>' composes functions, and this expression has type {formatTy ty}; "
+                             + "to append command output to a file, pipe it: cmd | File.append \"out.txt\"")
+                    | _ -> err left.Span $"'<<' composes functions, and this expression has type {formatTy ty}"
+                | _ -> Ok()
+
             let! tright = infer ctx env right
             let! ty = typeBinOp ctx env expr.Span op tleft tright
 
@@ -1823,6 +1874,23 @@ let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
                             "';' does not chain commands in weir — put commands on separate lines "
                             + "(sequence unit expressions with ';' in expression position; "
                             + "if you meant a literal ';' argument, ignore this)" }
+                // the redirect family rides the same argv-word safety
+                // pin [D:composition-operators]: > / >> stay literal
+                // args; the hint names the File spelling
+                | TEStr ">" ->
+                    acc.Add
+                        { Span = a.Span
+                          Message =
+                            "'>' does not redirect in weir — pipe to File.write: "
+                            + "cmd | File.write \"out.txt\" "
+                            + "(if you meant a literal '>' argument, ignore this)" }
+                | TEStr ">>" ->
+                    acc.Add
+                        { Span = a.Span
+                          Message =
+                            "'>>' does not redirect in weir — pipe to File.append: "
+                            + "cmd | File.append \"out.txt\" "
+                            + "(if you meant a literal '>>' argument, ignore this)" }
                 | _ -> ()
         | TEInterp parts ->
             parts

@@ -112,6 +112,11 @@ print $"branches: {branches}"
 - `let x = e in body` inline; in multi-line scripts an indented `let`
   line closes at the next line of the same indent (F# light syntax).
 - String/seq ops are data-last for piping: `Seq.where (Str.contains "err")`.
+- `>>`/`<<` compose functions (`Seq.map (Str.trim >> Str.toLower)`).
+  `|>` and `>>` SHARE precedence (F#'s rule): `xs |> f >> g` is
+  `(xs |> f) >> g` — parenthesize the composition, `xs |> (f >> g)`.
+  A non-function left of `>>` is a type error with a File.append hint
+  (bash-append muscle memory).
 - Interpolation `$"text {expr}"`; `{{ }}` escape braces. No `printfn`,
   no `sprintf`, no `%d` (the checker will suggest `print`).
 
@@ -176,7 +181,9 @@ if 1 > 0 then !
   expressions — always single argv entries, never re-split, no injection.
 - No globs, no redirects, no `&&`, no `$VAR` env expansion — those
   characters pass through as literal argv (`echo a && b` prints
-  "a && b"). For bash semantics: `sh -c "the bash line"` (a command
+  "a && b"); `>`/`>>` additionally WARN with the File spelling
+  (redirection is `cmd | File.write "out.txt"` / `File.append`).
+  For bash semantics: `sh -c "the bash line"` (a command
   line; streams, completes, pipes like any command).
 - Nonzero exit RAISES when the stream is forced. To inspect instead:
   `somecmd args | complete` (command mode, single external segment)

@@ -480,8 +480,12 @@ quantity semantics now.
   keystroke).
 - **Deliberately excluded, chosen not improvised** (each passes through as a
   literal argument today, it does not error): no glob *expansion*, no
-  redirects (`>`), no env-var assignment prefix (`FOO=1 prog`), no `&&`/`;`
-  chaining in command mode. Also: `let`-headed lines are always expression
+  redirects (`>`/`>>` — argv words with a warning naming the File
+  spelling), no env-var assignment prefix (`FOO=1 prog`), no `&&`/`;`
+  chaining in command mode. Weir routes streams by application: `>`
+  means comparison and `>>` means composition everywhere they mean
+  anything; redirection is `File.write`/`File.append` at the end of a
+  pipe [D:composition-operators]. Also: `let`-headed lines are always expression
   mode (no command mode on the right of a top-level `let`), and expression
   mode never flows back into command mode (`ls |> git log` is an unbound
   variable, not a command).

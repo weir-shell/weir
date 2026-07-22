@@ -775,6 +775,32 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# composition + redirect hints (mini-plan; oracle refuted tighter-than-pipe)
+out=$($BIN -e '(Str.trim >> Str.length) "  ab  "')
+expect "composition point-free" "2 : int" "$out"
+errout=$($BIN -e '[1] |> Seq.map (fun x -> x) >> Seq.sum' 2>&1 || true)
+echo "$errout" | grep -qF "share precedence" || fail "the |>/>> gotcha hint is missing: $errout"
+errout=$($BIN -e 'ls >> x' 2>&1 || true)
+echo "$errout" | grep -qF "File.append" || fail "the loc.weir line must hint File.append: $errout"
+echo "e2e ok: composition works; the two >> mistakes get targeted hints"
+
+rdir=$(mktemp -d)
+cat > "$rdir/redir.weir" <<'WEOF'
+echo hi > out.txt
+echo hi >> out.txt
+WEOF
+errout=$(cd "$rdir" && $BIN redir.weir 2>&1 >/dev/null)
+echo "$errout" | grep -qF "File.write" || fail "command > must hint File.write: $errout"
+echo "$errout" | grep -qF "File.append" || fail "command >> must hint File.append: $errout"
+out=$(cd "$rdir" && $BIN redir.weir 2>/dev/null)
+expect "> stays a literal argv word (safety pin unchanged)" "hi > out.txt" "$out"
+expect ">> stays a literal argv word (safety pin unchanged)" "hi >> out.txt" "$out"
+rm -rf "$rdir"
+
+errout=$($BIN -e 'echo (Str.trim >> Str.length)' 2>&1 || true)
+echo "$errout" | grep -qF "command arguments must be" || fail "composed function as splice must hit the scalar rule: $errout"
+echo "e2e ok: composed function rejected as a command splice"
+
 # fst/snd + Path (loc.weir friction receipts)
 out=$($BIN -e '[(1, "b"); (2, "a")] |> Seq.sortBy snd |> Seq.map fst |> Seq.head')
 expect "fst/snd project pairs point-free" "2 : int" "$out"

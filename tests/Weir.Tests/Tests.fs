@@ -287,6 +287,40 @@ let evalTests =
               | Error _ -> ()
               | Ok _ -> failtest "expected a parse error for spaced prefix minus"
           }
+          // composition (mini-plan; the oracle refuted tighter-than-pipe)
+          test "forward and backward composition" {
+              expectValue "let inc n = n + 1 in (inc >> inc) 40" (VInt 42L)
+              expectValue "let inc n = n + 1 in (inc << inc) 40" (VInt 42L)
+              expectValue "(Str.trim >> Str.length) \"  ab  \"" (VInt 2L)
+          }
+          test "composition types through lambda params (operator-driven typing)" {
+              expectValue "let both f g = f >> g in (both (fun n -> n + 1) (fun n -> n * 2)) 5" (VInt 12L)
+          }
+          test "constraints flow through composition (Eq through >>)" {
+              expectValue "[0; 1] |> Seq.where ((fun x -> x == 0) >> not) |> Seq.head" (VInt 1L)
+          }
+          test "|> and >> share precedence: unparenthesized is the gotcha error" {
+              let terr = checkErr "[1; 2] |> Seq.map (fun x -> x) >> Seq.sum"
+              Expect.stringContains terr.Message "share precedence" ""
+              expectValue "[1; 2] |> (Seq.map (fun x -> x) >> Seq.sum)" (VInt 3L)
+          }
+          test ">> with a non-function LHS gets the File.append redirect hint" {
+              let terr = checkErr "ls >> Seq.length"
+              Expect.stringContains terr.Message "File.append" ""
+          }
+          test "<< with a non-function LHS names composition" {
+              let terr = checkErr "1 << 2"
+              Expect.stringContains terr.Message "'<<' composes functions" ""
+          }
+          test "adjacent lexing: > comparison vs >> composition" {
+              expectValue "1 > 2" (VBool false)
+              expectValue "let inc n = n + 1 in (inc >> inc) 0 > 1" (VBool true)
+          }
+          test ">> in expression positions: then-branch, arm, list element" {
+              expectValue "let inc n = n + 1 in (if true then inc >> inc else inc) 1" (VInt 3L)
+              expectValue "let inc n = n + 1 in (match 1 with | _ -> inc >> inc) 1" (VInt 3L)
+              expectValue "let inc n = n + 1 in ([inc >> inc] |> Seq.head) 1" (VInt 3L)
+          }
           test "pipe chain" { expectValue "1 + 2 |> double |> double" (VInt 12) }
           test "pipe into lambda" { expectValue "5 |> fun x -> x * x" (VInt 25) }
           test "let-in" { expectValue "let x = 5 in x * 2" (VInt 10) }

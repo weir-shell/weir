@@ -124,6 +124,23 @@ let pins =
       pin "prefix minus binds above * (both compilers)" "let x = 2 * -3\n" Same
       pin "f -1 applies the negative literal (both compilers)" "let f n = n + 1\nlet r = f -1\n" Same
       pin "F#-rejects-this: 1 -2 is int applied to int" "let r = 1 -2\n" Same
+
+      // --- composition >>/<< (mini-plan 2026-07-21) ---
+      pin "forward composition of let-functions" "let f n = n + 1\nlet g = f >> f\nlet r = g 40\n" Same
+      pin "backward composition" "let f n = n + 1\nlet g = f << f\nlet r = g 40\n" Same
+      // verdict-visible precedence — the oracle REFUTED tighter-than-
+      // pipe: F# parses `xs |> f >> g` as `(xs |> f) >> g` (shared
+      // infix class), both compilers reject it unparenthesized
+      pin
+          "F#-rejects-this: |> mixed with >> unparenthesized (shared precedence)"
+          "let r = [1; 2] |> Seq.map (fun x -> x) >> Seq.sum\n"
+          Same
+      pin
+          "the parenthesized composition pipes fine (both compilers)"
+          "let r = [1; 2] |> (Seq.map (fun x -> x) >> Seq.sum)\n"
+          Same
+      pin "F#-rejects-this: >> on a non-function LHS" "let r = 1 >> 2\n" Same
+      pin "adjacent lexing: > comparison vs >> composition" "let a = 1 > 2\nlet f n = n + 1\nlet g = f >> f\n" Same
       pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
       pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same
 

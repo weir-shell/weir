@@ -18,8 +18,8 @@ let locOf items =
     items |> Seq.map snd |> Seq.sum
 
 counts
-    |> Seq.groupBy (fun (f, _) -> group f)
-    |> Seq.sortByDescending (fun g -> locOf g.Items)
+    |> Seq.groupBy (fst >> group)
+    |> Seq.sortByDescending (_.Items >> locOf)
     |> Seq.iter (fun g ->
         print $"== {g.Key} ({locOf g.Items})"
         g.Items

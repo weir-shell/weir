@@ -104,9 +104,15 @@ lambdas). Bindings generalize: `id` below is genuinely polymorphic.
 ```weir
 let double n = n * 2
 let id x = x
+let quad = double >> double
 
-print $"{double 21} and {id "strings too"}"
+print $"{double 21} and {id "strings too"} and {quad 10}"
 ```
+
+`>>` / `<<` compose functions — `Seq.map (Str.trim >> Str.toLower)`
+is the point-free spelling. One precedence rule to know (it is F#'s):
+`|>` and `>>` share a level, so `xs |> f >> g` is `(xs |> f) >> g` —
+parenthesize the composition: `xs |> (f >> g)`.
 
 Equality, rendering, and sorting are GENERIC through inferred
 constraints — the classic helper shapes just work, and reject at the
@@ -174,8 +180,10 @@ print target.Name
 Bareword heads run externals; builtins shadow PATH (`^ls` forces the
 real one). Splice values with `$name` or `(expr)` — always single argv
 entries, never re-split, so there is no injection class. No globs, no
-`&&`, no `$VAR` expansion — for bash semantics, run bash:
-`sh -c "the bash line"`.
+`&&`, no `$VAR` expansion, no redirects — `>` and `>>` pass through as
+literal argv with a warning naming the weir spelling
+(`cmd | File.write "out.txt"` / `File.append`). For bash semantics,
+run bash: `sh -c "the bash line"`.
 
 ```weir
 let marker = "guide"

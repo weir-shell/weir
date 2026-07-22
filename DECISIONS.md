@@ -47,3 +47,4 @@ the old key, never an edit-in-place.
 | bracket-heads-expression | 2026-07-18 | `[` never heads a command (a line-head list would resolve to /usr/bin/[) | NOTES: "Review amendments: [ heads nothing; the sh builtin is gone" |
 | typed-env | 2026-07-20 | the Env module: Env.get / Env.vars / Env.load Config (typed, one aggregated error) | NOTES: "Typed Env — Env.load Config" |
 | prefix-minus | 2026-07-21 | prefix minus with F#'s adjacency rule; the oracle overturned the `f -1` subtraction folklore mid-landing; retires no-unary-minus | divergences.md retirement note; oracle pins in tests/Weir.Fidelity/Pins.fs |
+| composition-operators | 2026-07-22 | `>>`/`<<` compose functions at the PIPE's precedence (the oracle refuted the tighter-than-pipe folklore: `xs \| f >> g` needs parens, F#'s rule); command-line `>`/`>>` stay argv words WITH File.write/File.append hint warnings | divergences.md rows redirect-argv + no-heredoc; oracle pins in Pins.fs |

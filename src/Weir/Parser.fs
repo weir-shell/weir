@@ -488,6 +488,13 @@ let private mkOpp (withPipe: bool) =
     opp.AddOperator(InfixOperator("<>", ws, 4, Associativity.Left, binOp "<>"))
     opp.AddOperator(InfixOperator(">=", ws, 4, Associativity.Left, binOp ">="))
     opp.AddOperator(InfixOperator("<=", ws, 4, Associativity.Left, binOp "<="))
+    // composition [D:composition-operators] at the PIPE's level — the
+    // oracle refuted the tighter-than-pipe folklore: F# parses
+    // `xs |> f >> g` as `(xs |> f) >> g` (shared infix class), so the
+    // idiom needs parens: `xs |> (f >> g)`. OPP's operator trie keeps
+    // > / >= / >> apart.
+    opp.AddOperator(InfixOperator(">>", ws, 1, Associativity.Left, binOp ">>"))
+    opp.AddOperator(InfixOperator("<<", ws, 1, Associativity.Left, binOp "<<"))
     opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
     opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
     opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
