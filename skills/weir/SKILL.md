@@ -89,6 +89,16 @@ print $"branches: {branches}"
 - Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in
   constructors) but int/string literals NEVER complete a match alone —
   add a `_`/var arm or it is a hard error. Guards remain legal.
+- The `Regex` pattern matches and extracts in one arm:
+  `| Regex "(\w+)=(\d+)" (k, v) ->`. Literal-only, compiled at CHECK
+  time (invalid regex = check error) and the binder arity must equal
+  the capture count — `()` for 0, one name for 1, a tuple for n
+  (non-capturing `(?:...)` does not count). Groups bind as STRINGS;
+  convert in the arm. The literal is RAW — `\w` needs no doubling,
+  only `\"` escapes — and Regex arms never complete a match. Computed
+  patterns live on the expression side: `Str.isMatch pat s` (bool),
+  `Str.rmatch pat s` (Option<seq<string>>) — ordinary strings there,
+  so `"\\.md$"`.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
   `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency
@@ -168,6 +178,19 @@ print $"{v}"
 // district lines are commands only — bind values outside the block
 if 1 > 0 then !
     let x = 1
+```
+
+```weir
+// the Regex pattern: raw literal, arity-typed binder
+let ver = match "v2 ready" with | Regex "v(\d+)" v -> v | _ -> "0"
+print ver
+```
+
+```weir-error
+// binder arity must equal the group count — a CHECK error, not a
+// silent runtime non-match
+let x = match "a" with | Regex "(\d+)-(\d+)" a -> a | _ -> ""
+print x
 ```
 
 ## Commands and processes

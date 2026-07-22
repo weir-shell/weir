@@ -1018,6 +1018,10 @@ let private codeOf (parse: bool) (msg: string) : string =
         "non-exhaustive"
     elif msg.Contains "unreachable" then
         "unreachable-arm"
+    elif msg.StartsWith "invalid regex" then
+        "regex"
+    elif msg.StartsWith "this regex has" then
+        "regex-arity"
     elif msg.StartsWith "cannot sort by this key" then
         "ord-key"
     elif msg.Contains "equatable" || msg.Contains "cannot be compared" then

@@ -36,3 +36,13 @@ NOT expression positions (do not sweep, say why if asked):
   outside the block; districtLineCheck enforces)
 - type-declaration bodies — declaration grammar
 - `.env` files — data, parsed by Env.fromFile, never evaluated
+
+Pattern positions (added with the Regex pattern, 2026-07-22 — sweep
+these for any NEW pattern kind):
+
+- match-arm top level
+- nested in a tuple pattern
+- constructor payload (parens required, F#-style)
+- alongside `when` guards
+- binder position (let / lambda params) — refutable kinds REJECTED here
+- exhaustiveness interaction (does the kind ever complete a match?)

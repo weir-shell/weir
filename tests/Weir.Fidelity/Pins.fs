@@ -141,6 +141,12 @@ let pins =
           Same
       pin "F#-rejects-this: >> on a non-function LHS" "let r = 1 >> 2\n" Same
       pin "adjacent lexing: > comparison vs >> composition" "let a = 1 > 2\nlet f n = n + 1\nlet g = f >> f\n" Same
+
+      // --- the Regex pattern (2026-07-22) — the first weir-only match form ---
+      pin
+          "the Regex match pattern: weir-only (F# has no built-in regex pattern)"
+          "let v =\n    match \"a1\" with\n    | Regex \"([a-z])(1)\" (a, b) -> a\n    | _ -> \"\"\n"
+          (Diverges "regex-pattern")
       pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
       pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same
 

@@ -149,6 +149,18 @@ quantity semantics now.
   the runner and `-e` print check warnings to stderr (found during this
   session — they were silently dropped before; the REPL always showed
   them); warnings never block execution.
+- **The Regex pattern** [D:regex-pattern]: `| Regex "lit" binder ->` —
+  the first weir-only match form. Literal-only (computed patterns are
+  `Str.isMatch`/`Str.rmatch` on the expression side); compiled at
+  CHECK time against a literal-keyed cache shared with eval, so an
+  invalid regex is a check error and the binder arity is verified
+  against the ENGINE's capture count (non-capturing `(?:...)`
+  excluded): `()` for 0, one name for 1, a tuple of names for n.
+  Groups bind `string`. Refutable — never completes a match, banned
+  in binders. The pattern literal is RAW (backslashes belong to the
+  engine; only `\"` escapes the quote); expression-side patterns are
+  ordinary strings. Explicitly NOT active patterns: one bespoke
+  checker arm, and the user-active-pattern door stays closed.
 - Comparison/boolean surface: `==`, `<>`, `>`, `<`, `>=`, `<=` (precedence 4),
   `&&` (3), `||` (2, lowest above pipe), all left-associative; `not` is a
   builtin `bool -> bool`. `<>` shares `==`'s equatability rule in full.

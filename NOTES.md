@@ -1,5 +1,35 @@
 # Spike Notes
 
+## The Regex pattern + Str match family (2026-07-22)
+
+The regex park opens per plan. `| Regex "lit" binder ->` — one bespoke
+checker arm, NOT active patterns (door stated closed). The foil's hole
+closed as designed: the literal compiles at CHECK time (invalid regex
+is a located check error; e2e proves zero effects), and binder arity
+is verified against the ENGINE's capture count — GetGroupNumbers is
+the authority, so non-capturing groups are excluded for free. One
+Regex instance per literal in a check/eval-shared cache (tripwired on
+reference identity). Interpreted mode only; the AOT publish and
+battery confirm System.Text.RegularExpressions is trim-clean without
+RegexOptions.Compiled (the plan's verify-and-report item).
+
+One decision the plan implied but did not state: the pattern literal
+is RAW — `"(\w+)"` is written with single backslashes, only `\"`
+escapes — because the plan's own examples write it that way while the
+expression side (`Str.isMatch "\\.md$"`) uses ordinary strings. The
+asymmetry is deliberate and documented (SEMANTICS, SKILL, GUIDE).
+
+First weir-only match form (ledger row regex-pattern, oracle-pinned
+Diverges). Str.isMatch/Str.rmatch carry computed patterns with
+boundary-class runtime errors. Ceremony paid in full: 15 unit pins
+across the POSITIONS pattern sweep (nested tuple/constructor, guards,
+binder rejection, exhaustiveness, dup binders, optional groups),
+TRANSCRIPTION addendum, the cache tripwire, diagnostic codes
+regex/regex-arity, GUIDE's Matching-text section teaching the
+isMatch pipe idiom (the =~ park's precondition, shipped with v1).
+Check median 11ms — within the guard.
+
+
 ## Parse errors show the unassembled source (2026-07-21)
 
 "Can't we just show the unassembled? that is not what the user

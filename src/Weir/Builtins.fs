@@ -181,6 +181,34 @@ let private completedWith (overlay: (string * string) list) : Value =
 
 let private completedImpl: Value = completedWith []
 
+// the expression-side regex family [D:regex-pattern] — computed
+// patterns are fine here; an invalid runtime pattern joins the
+// boundary-validation class (raises at the call)
+let private compiledOrRaise (pat: string) =
+    match Weir.Check.compileRegex pat with
+    | Ok rx -> rx
+    | Error msg -> failwith $"invalid regex: {msg}"
+
+let private isMatchImpl: Value =
+    VBuiltin(fun patV ->
+        VBuiltin(fun subjectV ->
+            match patV, subjectV with
+            | VStr pat, VStr s -> VBool((compiledOrRaise pat).IsMatch s)
+            | _ -> unreachable "the checker rejects 'isMatch' on these arguments"))
+
+let private rmatchImpl: Value =
+    VBuiltin(fun patV ->
+        VBuiltin(fun subjectV ->
+            match patV, subjectV with
+            | VStr pat, VStr s ->
+                let m = (compiledOrRaise pat).Match s
+
+                if m.Success then
+                    VUnion("Some", Some(VSeq [ for i in 1 .. m.Groups.Count - 1 -> VStr m.Groups[i].Value ]))
+                else
+                    VUnion("None", None)
+            | _ -> unreachable "the checker rejects 'rmatch' on these arguments"))
+
 let private str1 (name: string) (f: string -> string) : Value =
     VBuiltin(fun v ->
         match v with
@@ -598,7 +626,9 @@ let private strMembers: (string * Ty * Value) list =
       "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
-      "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl ]
+      "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl
+      "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
+      "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl ]
 
 // Path — string surgery over paths, System.IO.Path underneath.
 // extension keeps the dot and is "" when there is none; dir is "" at

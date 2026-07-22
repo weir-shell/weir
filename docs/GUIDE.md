@@ -179,6 +179,38 @@ let target =
 print target.Name
 ```
 
+## Matching text
+
+`Str.isMatch` is the condition idiom — pipe the subject so the
+sentence reads subject-first:
+
+```weir
+let name = "test_parser"
+
+if name |> Str.isMatch "^test" then print "a test"
+```
+
+For extraction, the `Regex` pattern matches and captures in one arm.
+The literal is checked before line one runs: an invalid regex is a
+check error, and the binder must carry exactly as many names as the
+pattern has capture groups — the mismatch that is a silent runtime
+non-match in F#'s ParseRegex idiom is a located check error here.
+
+```weir
+let line = "cache=42"
+
+match line with
+| Regex "(\w+)=(\d+)" (key, count) -> print $"{key} -> {count}"
+| _ -> print "unparsed"
+```
+
+Groups bind as strings (convert explicitly — `Str.tryToInt`); the
+pattern literal is raw (`\w`, never `\\w`); computed patterns live on
+the expression side (`Str.isMatch`, `Str.rmatch` — ordinary strings,
+ordinary escapes). And before reaching for regex on command output,
+check the typed adapters: `| from porcelain` beats a hand-rolled
+porcelain regex every time.
+
 ## Commands and processes
 
 Bareword heads run externals; builtins shadow PATH (`^ls` forces the

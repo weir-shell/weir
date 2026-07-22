@@ -787,6 +787,49 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# the Regex pattern + Str match family (regex plan, 2026-07-22)
+redir=$(mktemp -d)
+cat > "$redir/logs.weir" <<'WEOF'
+let lines = ["INFO 200 ok"; "WARN 500 boom"; "INFO 404 miss"; "garbage"]
+
+lines
+    |> Seq.map (fun l ->
+        match l with
+        | Regex "(\w+) (\d+)" (level, code) -> $"{level}:{code}"
+        | _ -> "unparsed")
+    |> print
+
+let errors =
+    lines
+    |> Seq.where (Str.isMatch "^WARN")
+    |> Seq.map (fun l ->
+        match l with
+        | Regex "(\d+)" code -> code |> Str.toInt
+        | _ -> 0)
+    |> Seq.sum
+
+print $"error-code sum: {errors}"
+WEOF
+out=$($BIN "$redir/logs.weir")
+expect "Regex extraction over a log shape" "INFO:200" "$out"
+expect "non-matching lines fall to the catch-all" "unparsed" "$out"
+expect "isMatch where-filter + extraction + toInt" "error-code sum: 500" "$out"
+
+cat > "$redir/badregex.weir" <<'WEOF'
+sh -c "touch regex-proof"
+let x = match "a" with | Regex "([" v -> v | _ -> ""
+print x
+WEOF
+rc=0; errout=$(cd "$redir" && $BIN badregex.weir 2>&1) || rc=$?
+[ $rc -eq 1 ] || fail "invalid regex must fail the check (rc=$rc)"
+echo "$errout" | grep -qF "invalid regex" || fail "invalid-regex error missing: $errout"
+[ -e "$redir/regex-proof" ] && fail "check-first violated: effect ran before the regex error"
+echo "e2e ok: invalid regex fails before any effect"
+
+out=$($BIN check "$redir/badregex.weir" || true)
+echo "$out" | grep -qF "[regex]" || fail "regex diagnostic code missing: $out"
+rm -rf "$redir"
+
 # composition + redirect hints (mini-plan; oracle refuted tighter-than-pipe)
 out=$($BIN -e '(Str.trim >> Str.length) "  ab  "')
 expect "composition point-free" "2 : int" "$out"

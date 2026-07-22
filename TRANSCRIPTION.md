@@ -327,3 +327,16 @@ Flag 7 (new): the infer/check lambda-arm duplication now has THREE
 instances (ELambda, ELambda "()", ELambdaPat) — flag 5's
 duplication note extends; a shared helper is the formalization
 candidate if a fourth form arrives.
+
+## Addendum — the Regex pattern (2026-07-22, [D:regex-pattern])
+
+    lit compiles (memo: regexCache)    arity = |groups(rx)| - 1
+    binder b has shape unit/name/tuple with |leaves(b)| = arity
+    ──────────────────────────────────────────────────────────
+    Γ ⊢ᵖ Regex "lit" b ⇐ string ⇒ [n ↦ string | n ∈ names(b)]
+
+Compile failure and arity mismatch are errors at the literal/binder
+span respectively. No Δ: no ctx mutation, leaves bind `string`
+directly. The memo cache is the only state and is SHARED with eval —
+the arity the checker read and the instance eval matches are the same
+object (tripwired). Single job; no FLAG.

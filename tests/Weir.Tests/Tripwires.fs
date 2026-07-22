@@ -133,4 +133,13 @@ let tripwires =
                   (checkErr "let same = fun x -> fun y -> x == y in (same 1 1) && (same print print)").Message
                   "requires equatable values"
                   ""
+          }
+          test "check and eval share ONE compiled regex per literal (regex-pattern arity honesty)" {
+              // the arity the checker read and the instance eval matches
+              // against are the same object BY CONSTRUCTION — replacing
+              // the cache with per-site compilation reopens the
+              // arity/match agreement question [D:regex-pattern]
+              match Weir.Check.compileRegex "(x)(y)", Weir.Check.compileRegex "(x)(y)" with
+              | Ok a, Ok b -> Expect.isTrue (System.Object.ReferenceEquals(a, b)) "one instance per literal"
+              | _ -> failtest "compilation failed"
           } ]

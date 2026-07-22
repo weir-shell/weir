@@ -296,6 +296,33 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     | PCase(ctor, Some argPat), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
     | PCase _, VUnion _ -> None
     | PCase _, v -> unreachable $"the checker rejects constructor patterns on {formatValue v}"
+    | PRegex(pat, _, binder), VStr s ->
+        // the cached instance from check time [D:regex-pattern]; group
+        // i binds leaf i (an unmatched optional group binds "")
+        (match compileRegex pat with
+         | Error msg -> unreachable $"the checker rejects invalid regex literals: {msg}"
+         | Ok rx ->
+             let m = rx.Match s
+
+             if not m.Success then
+                 None
+             else
+                 let group (i: int) = VStr m.Groups[i].Value
+
+                 match binder.PKind with
+                 | PUnit
+                 | PWildcard -> Some []
+                 | PVar n -> Some [ n, group 1 ]
+                 | PTuple ps ->
+                     ps
+                     |> List.mapi (fun i sp -> sp, group (i + 1))
+                     |> List.choose (fun (sp, v) ->
+                         match sp.PKind with
+                         | PVar n -> Some(n, v)
+                         | _ -> None)
+                     |> Some
+                 | _ -> unreachable "the checker constrains Regex binders to unit/name/tuple")
+    | PRegex _, v -> unreachable $"the checker rejects Regex patterns on {formatValue v}"
 
 
 // binder patterns are irrefutable by checking, so the bind always

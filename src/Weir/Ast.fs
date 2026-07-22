@@ -20,6 +20,11 @@ and PatternKind =
     | PUnit
     | PTuple of Pattern list
     | PCase of ctor: string * arg: Pattern option
+    // the bespoke Regex pattern [D:regex-pattern] — one pattern kind,
+    // NOT a general active-pattern mechanism. The literal is kept
+    // verbatim (its backslashes belong to the regex engine); litSpan
+    // aims check errors at the literal, not the whole pattern.
+    | PRegex of pattern: string * litSpan: Span * binder: Pattern
 
 type InterpPart<'e> =
     | IStr of string

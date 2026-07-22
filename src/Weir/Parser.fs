@@ -558,6 +558,23 @@ let private patAtom =
 
               { PKind = kind; PSpan = span } ]
 
+// The Regex literal is RAW [D:regex-pattern]: backslashes belong to
+// the regex engine (`"(\w+)"` needs no doubling); only `\"` escapes
+// the quote. Expression-side patterns (Str.isMatch) are ordinary
+// strings with ordinary escapes.
+let private regexLit =
+    spanned (
+        between
+            (pchar '"')
+            (pchar '"')
+            (manyStrings (
+                choice
+                    [ many1Satisfy (fun c -> c <> '"' && c <> '\\')
+                      pchar '\\' >>. anyChar |>> fun c -> if c = '"' then "\"" else "\\" + string c ]
+            ))
+    )
+    .>> ws
+
 patRef.Value <-
     choice
         [ patLit
@@ -570,6 +587,17 @@ patRef.Value <-
                   preturn { PKind = PBool true; PSpan = span }
               elif w = "false" then
                   preturn { PKind = PBool false; PSpan = span }
+              elif w = "Regex" then
+                  // bespoke pattern form, literal-only [D:regex-pattern]
+                  choice
+                      [ regexLit .>>. patAtom
+                        |>> fun ((pat, litSpan), binder) ->
+                            { PKind = PRegex(pat, litSpan, binder)
+                              PSpan =
+                                { Start = span.Start
+                                  End = binder.PSpan.End } }
+                        failFatally
+                            "Regex patterns take a LITERAL string; computed patterns live on the expression side (Str.isMatch / Str.rmatch)" ]
               elif Char.IsUpper w[0] then
                   opt patAtom
                   |>> fun arg ->
