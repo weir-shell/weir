@@ -559,8 +559,16 @@ quantity semantics now.
   respected; `--check` exits 1 for CI gating. Safety property: the
   formatted body must re-assemble to identical logical lines or fmt
   refuses to write (trailing-whitespace-normalized comparison — never
-  significant, strings are single-line). Token respacing/re-flowing
-  needs trivia-preserving parsing — parked with evidence criteria.
+  significant, strings are single-line). V2 [D:fmt-respace]
+  (2026-07-22, on the update-example receipt): bounded intra-line
+  respace — collapse space runs, pad record braces, tidy `;` — under
+  a PARSE-SHAPE guard: each statement is parsed before and after
+  under Script.assumeResolver and must sexpr-match, or that statement
+  reverts to its pre-respace text. The guard is what makes command
+  argv sacred (`echo {a}` reverts; `"x" ; echo` tidies because quoted
+  tokenization provably keeps `;` separate). String interiors (all
+  four kinds), leading indent, and pre-comment alignment gaps are
+  untouched by construction. Re-FLOWING (line breaking) stays parked.
 - **Multi-line statements via logical-line reconstruction** (scripts
   only): a statement head starts at column 0; indented lines continue it
   and join with a single space; a blank line ends the statement; tabs in

@@ -801,6 +801,35 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# fmt v2 respace under the parse-shape guard (user receipt, 2026-07-22)
+fdir=$(mktemp -d)
+cat > "$fdir/ugly.weir" <<'WEOF'
+type Great = {Lomo: int; Bimbo: string}
+
+let lomo = {Lomo = 10; Bimbo = "yuck"}
+
+let l2 =  {    lomo with Lomo = 100}
+l2 |> show |> print
+WEOF
+before=$($BIN "$fdir/ugly.weir")
+$BIN fmt "$fdir/ugly.weir" >/dev/null 2>&1
+grep -qF 'type Great = { Lomo: int; Bimbo: string }' "$fdir/ugly.weir" || fail "respace missed the type decl"
+grep -qF 'let l2 = { lomo with Lomo = 100 }' "$fdir/ugly.weir" || fail "respace missed the update line"
+after=$($BIN "$fdir/ugly.weir")
+[ "$before" = "$after" ] || fail "respace changed behavior: $before vs $after"
+errout=$($BIN fmt "$fdir/ugly.weir" 2>&1)
+echo "$errout" | grep -qF "already formatted" || fail "respace must be idempotent: $errout"
+echo "e2e ok: fmt respaces braces/spacing, behavior-identical, idempotent"
+
+cat > "$fdir/guard.weir" <<'WEOF'
+echo {a}
+WEOF
+cp "$fdir/guard.weir" "$fdir/guard0.weir"
+$BIN fmt "$fdir/guard.weir" >/dev/null 2>&1 || true
+cmp -s "$fdir/guard.weir" "$fdir/guard0.weir" || fail "the shape guard must revert argv-brace lines"
+echo "e2e ok: the shape guard keeps command argv braces literal"
+rm -rf "$fdir"
+
 # record update (PLAN-record-update): the corpus snippets ARE the e2e
 upd=$(mktemp -d)
 cat > "$upd/corpus1.weir" <<'WEOF'

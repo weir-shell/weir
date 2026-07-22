@@ -1,5 +1,30 @@
 # Spike Notes
 
+## fmt v2 — respace under the parse-shape guard (2026-07-22)
+
+The respace park opened on the user's update-example receipt (fmt
+insisting "already formatted" over `{Lomo: int...}` / `=  {    lomo`).
+V1's byte-identity safety cannot hold when the formatter CHANGES
+bytes, so the invariant evolved: each statement parses before and
+after under Script.assumeResolver and must SEXPR-match, or that
+statement reverts. The sexpr renderer moved from the test suite into
+Ast (completing five node kinds and five pattern kinds it lacked) and
+is now shared by the parse pins and the guard — one shape language.
+
+The guard caught its own feature during the build: the first shape
+resolver used IsExternal = always-true, which claimed `{Lomo` as a
+command HEAD and made every let-RHS a command — every respaced record
+line "changed shape" and reverted. Switching to assumeResolver
+(command-SHAPED heads only) fixed it; the debug hook stays, env-gated
+(WEIR_FMT_DEBUG). The guard also showed judgment on day one: it
+ALLOWS `"x" ; echo` -> `"x"; echo` (quoted tokenization provably
+keeps `;` a separate argv word) while reverting `echo {a}` (padding
+would split the argv word). Pre-comment alignment gaps survive (an
+existing pin caught the collapse and the gap is now preserved).
+682 unit / e2e green incl. all prior fmt roundtrips (bicep, env
+district, raw strings).
+
+
 ## Record update lands — the re-mine's headline cashed (2026-07-22)
 
 `{ r with F = v }` in all four planned forms: flat, multi-field,

@@ -109,3 +109,89 @@ type Stmt =
     | SExpr of Expr
     | SCmd of Expr
     | SType of Decl
+
+// Span-free sexpr rendering — the parse-SHAPE language. Two consumers:
+// the test suite's parse pins and fmt's respace safety check (a
+// formatted statement must sexpr-match its original) [D:fmt-respace].
+let rec sexprPat (p: Pattern) : string =
+    match p.PKind with
+    | PWildcard -> "_"
+    | PBool b -> if b then "true" else "false"
+    | PInt n -> string n
+    | PStr s -> $"\"{s}\""
+    | PUnit -> "()"
+    | PVar x -> x
+    | PTuple ps -> "(" + (ps |> List.map sexprPat |> String.concat ", ") + ")"
+    | PCase(c, None) -> c
+    | PCase(c, Some arg) -> $"({c} {sexprPat arg})"
+    | PRegex(pat, _, _, binder) -> $"(regex \"{pat}\" {sexprPat binder})"
+
+let rec sexpr (e: Expr) : string =
+    match e.Kind with
+    | EInt n -> string n
+    | EStr s -> $"\"{s}\""
+    | EBool b -> if b then "true" else "false"
+    | EVar x -> x
+    | EUnit -> "()"
+    | ELet(n, v, b) -> $"(let {n} {sexpr v} {sexpr b})"
+    | ELetPat(p, v, b) -> $"(letpat {sexprPat p} {sexpr v} {sexpr b})"
+    | ELambda(p, b) -> $"(fun {p} {sexpr b})"
+    | ELambdaPat(p, b) -> $"(funpat {sexprPat p} {sexpr b})"
+    | EApp(f, a) -> $"({sexpr f} {sexpr a})"
+    | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"
+    | EField(t, f, _) -> $"{sexpr t}.{f}"
+    | EBinOp(op, l, r) -> $"({op} {sexpr l} {sexpr r})"
+    | ERecord fields ->
+        let body =
+            fields |> List.map (fun (n, _, v) -> $"{n} = {sexpr v}") |> String.concat "; "
+
+        "{" + body + "}"
+    | EUpdate(src, ups) ->
+        let body =
+            ups
+            |> List.map (fun (path, v) -> (path |> List.map fst |> String.concat ".") + $" = {sexpr v}")
+            |> String.concat "; "
+
+        "{" + sexpr src + " with " + body + "}"
+    | EMatch(scrut, arms) ->
+        let showArm (p, g, b) =
+            match g with
+            | None -> $"[{sexprPat p} -> {sexpr b}]"
+            | Some g -> $"[{sexprPat p} when {sexpr g} -> {sexpr b}]"
+
+        let armsStr = arms |> List.map showArm |> String.concat " "
+        $"(match {sexpr scrut} {armsStr})"
+    | EIf(c, t, None) -> $"(if {sexpr c} {sexpr t})"
+    | EIf(c, t, Some e) -> $"(if {sexpr c} {sexpr t} {sexpr e})"
+    | ESeq(a, b) -> $"(seq {sexpr a} {sexpr b})"
+    | EFrom(fmt, None) -> $"(from {fmt})"
+    | EFrom(fmt, Some ty) -> $"(from {fmt} {ty})"
+    | ETo fmt -> $"(to {fmt})"
+    | EList items ->
+        let body = items |> List.map sexpr |> String.concat "; "
+        $"[{body}]"
+    | ETuple items -> "(tuple " + (items |> List.map sexpr |> String.concat ", ") + ")"
+    | EInterp parts ->
+        let body =
+            parts
+            |> List.map (function
+                | IStr s -> $"\"{s}\""
+                | IExpr e -> "{" + sexpr e + "}")
+            |> String.concat ""
+
+        $"(interp {body})"
+    | ECmd(prog, [], None) -> $"(cmd {prog})"
+    | ECmd(prog, args, None) ->
+        let body = args |> List.map sexpr |> String.concat " "
+        $"(cmd {prog} {body})"
+    | ECmd(prog, args, Some envE) ->
+        let body = args |> List.map sexpr |> String.concat " "
+        $"(cmdenv {sexpr envE} {prog} {body})"
+
+let sexprStmt (s: Stmt) : string =
+    match s with
+    | SLet(n, e) -> $"(slet {n} {sexpr e})"
+    | SLetPat(p, e) -> $"(sletpat {sexprPat p} {sexpr e})"
+    | SExpr e -> $"(sexpr {sexpr e})"
+    | SCmd e -> $"(scmd {sexpr e})"
+    | SType d -> $"(stype {d.Name})"

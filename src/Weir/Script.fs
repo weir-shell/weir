@@ -78,6 +78,73 @@ let stripComment (line: string) : string =
 
     if cut >= 0 then line.Substring(0, cut) else line
 
+// In-string mask over a line — TRUE where a char sits inside any
+// string kind (plain/single/verbatim/triple). The scanner family's
+// third consumer face [D:fmt-respace]: respacing must never touch
+// string interiors.
+let private inStringMask (s: string) : bool[] =
+    let mask = Array.create s.Length false
+    let mutable outside = System.Collections.Generic.HashSet<int>()
+
+    foldOutsideStrings
+        (fun () i _ ->
+            outside.Add i |> ignore
+            ())
+        ()
+        s
+
+    for i in 0 .. s.Length - 1 do
+        mask[i] <- not (outside.Contains i)
+
+    mask
+
+// Canonical intra-line spacing [D:fmt-respace], bounded: collapse
+// space runs, pad record braces, tidy `;`. String interiors and
+// leading indent untouched. Fmt applies this under a PARSE-SHAPE
+// safety check — any statement whose sexpr changes reverts — so a
+// rule misfiring on a command line (argv `{x}`, literal `;`) can
+// never change meaning, only be skipped.
+let respaceLine (line: string) : string =
+    let mask = inStringMask line
+    let indent = line |> Seq.takeWhile ((=) ' ') |> Seq.length
+    let sb = System.Text.StringBuilder()
+
+    let lastEmitted () =
+        if sb.Length = 0 then ' ' else sb[sb.Length - 1]
+
+    let mutable i = 0
+
+    while i < line.Length do
+        let c = line[i]
+
+        if i < indent || mask[i] then
+            sb.Append c |> ignore
+        else
+            match c with
+            | ' ' when lastEmitted () = ' ' -> () // collapse runs
+            | '{' when
+                i + 1 < line.Length
+                && line[i + 1] <> ' '
+                && line[i + 1] <> '{'
+                && lastEmitted () <> '{'
+                ->
+                sb.Append "{ " |> ignore
+            | '}' when lastEmitted () <> ' ' -> sb.Append " }" |> ignore
+            | ';' ->
+                // no space before, one after
+                while sb.Length > indent && lastEmitted () = ' ' do
+                    sb.Remove(sb.Length - 1, 1) |> ignore
+
+                sb.Append ';' |> ignore
+
+                if i + 1 < line.Length && line[i + 1] <> ' ' then
+                    sb.Append ' ' |> ignore
+            | c -> sb.Append c |> ignore
+
+        i <- i + 1
+
+    sb.ToString()
+
 // net { vs } outside strings — interpolation holes sit inside the
 // quotes, so their braces never count; clamping to >= 0 happens at the
 // consumer (stray command-arg } must not poison the statement)

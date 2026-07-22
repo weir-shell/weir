@@ -13,61 +13,10 @@ let private parse input =
     | Ok e -> e
     | Error msg -> failtest $"parse failed: {msg}"
 
-let rec private show (e: Expr) : string =
-    match e.Kind with
-    | EInt n -> string n
-    | EStr s -> $"\"{s}\""
-    | EBool b -> if b then "true" else "false"
-    | EVar x -> x
-    | ELet(n, v, b) -> $"(let {n} {show v} {show b})"
-    | ELambda(p, b) -> $"(fun {p} {show b})"
-    | EApp(f, a) -> $"({show f} {show a})"
-    | EPipe(a, f) -> $"({show a} |> {show f})"
-    | EField(t, f, _) -> $"{show t}.{f}"
-    | EBinOp(op, l, r) -> $"({op} {show l} {show r})"
-    | ERecord fields ->
-        let body =
-            fields |> List.map (fun (n, _, v) -> $"{n} = {show v}") |> String.concat "; "
-
-        "{" + body + "}"
-    | EMatch(scrut, arms) ->
-        let showArm (p, g, b) =
-            match g with
-            | None -> $"[{showPat p} -> {show b}]"
-            | Some g -> $"[{showPat p} when {show g} -> {show b}]"
-
-        let armsStr = arms |> List.map showArm |> String.concat " "
-        $"(match {show scrut} {armsStr})"
-    | EIf(c, t, None) -> $"(if {show c} {show t})"
-    | EIf(c, t, Some e) -> $"(if {show c} {show t} {show e})"
-    | EFrom(fmt, None) -> $"(from {fmt})"
-    | EFrom(fmt, Some ty) -> $"(from {fmt} {ty})"
-    | ETo fmt -> $"(to {fmt})"
-    | EList items ->
-        let body = items |> List.map show |> String.concat "; "
-        $"[{body}]"
-    | EUnit -> "()"
-    | EInterp parts ->
-        let body =
-            parts
-            |> List.map (function
-                | IStr s -> $"\"{s}\""
-                | IExpr e -> "{" + show e + "}")
-            |> String.concat ""
-
-        $"(interp {body})"
-    | ECmd(prog, [], _) -> $"(cmd {prog})"
-    | ECmd(prog, args, _) ->
-        let body = args |> List.map show |> String.concat " "
-        $"(cmd {prog} {body})"
-
-and private showPat (p: Pattern) : string =
-    match p.PKind with
-    | PWildcard -> "_"
-    | PBool b -> if b then "true" else "false"
-    | PVar x -> x
-    | PCase(c, None) -> c
-    | PCase(c, Some arg) -> $"({c} {showPat arg})"
+// the span-free sexpr renderer moved to Ast (shared with fmt's
+// respace safety check [D:fmt-respace]); these aliases keep the pins
+let private show = Weir.Ast.sexpr
+let private showPat = Weir.Ast.sexprPat
 
 let private expectParse input expected =
     Expect.equal (show (parse input)) expected $"parse of '{input}'"
@@ -2386,18 +2335,12 @@ let agentFindingsTests =
           }
           // record update [D:record-update] — the re-mine's headline
           test "update forms: flat, multi-field, nested sugar" {
-              expectValue
-                  "let r = { X = 1; Y = 2 } in ({ r with X = 3 }).X + ({ r with X = 3 }).Y"
-                  (VInt 5L)
+              expectValue "let r = { X = 1; Y = 2 } in ({ r with X = 3 }).X + ({ r with X = 3 }).Y" (VInt 5L)
 
-              expectValue
-                  "let r = { X = 1; Y = 2 } in ({ r with X = 3; Y = 40 }).Y"
-                  (VInt 40L)
+              expectValue "let r = { X = 1; Y = 2 } in ({ r with X = 3; Y = 40 }).Y" (VInt 40L)
           }
           test "update is derivation: the source is untouched" {
-              expectValue
-                  "let r = { X = 1; Y = 0 } in let r2 = { r with X = 9 } in r.X + r2.X"
-                  (VInt 10L)
+              expectValue "let r = { X = 1; Y = 0 } in let r2 = { r with X = 9 } in r.X + r2.X" (VInt 10L)
           }
           test "row-typed updater GENERALIZES and keeps the source's row (the poster pin)" {
               expectValue
@@ -2416,8 +2359,7 @@ let agentFindingsTests =
               Expect.stringContains terr.Message "Did you mean" ""
           }
           test "duplicate top-level update field rejected" {
-              let terr =
-                  checkErr "let r = { X = 1; Y = 0 } in { r with X = 1; X = 2 }"
+              let terr = checkErr "let r = { X = 1; Y = 0 } in { r with X = 1; X = 2 }"
 
               Expect.stringContains terr.Message "duplicate update" ""
           }
@@ -2427,27 +2369,45 @@ let agentFindingsTests =
               expectValue "let r = { X = 1; Y = 3 } in show { r with X = 2 }" (VStr "{ X = 2; Y = 3 }")
           }
           test "update composes with pattern binders and positions" {
-              expectValue
-                  "let r = { X = 1; Y = 0 } in let (u, n) = ({ r with X = 5 }, 2) in u.X + n"
-                  (VInt 7L)
+              expectValue "let r = { X = 1; Y = 0 } in let (u, n) = ({ r with X = 5 }, 2) in u.X + n" (VInt 7L)
 
-              expectValue
-                  "let r = { X = 1; Y = 0 } in (if true then { r with X = 3 } else r).X"
-                  (VInt 3L)
+              expectValue "let r = { X = 1; Y = 0 } in (if true then { r with X = 3 } else r).X" (VInt 3L)
 
               expectValue "let r = { X = 1; Y = 0 } in [{ r with X = 4 }] |> Seq.head |> _.X" (VInt 4L)
           }
           test "update is not a scalar: interp holes and command args reject it" {
-              let terr =
-                  checkErr "let r = { X = 1; Y = 0 } in $\"x { { r with X = 2 } }\""
+              let terr = checkErr "let r = { X = 1; Y = 0 } in $\"x { { r with X = 2 } }\""
 
               Expect.stringContains terr.Message "" ""
 
               let terr2 =
-                  checkErr
-                      "let r = { X = 1; Y = 0 } in cmd \"echo\" [{ r with X = 1 }] |> Seq.head"
+                  checkErr "let r = { X = 1; Y = 0 } in cmd \"echo\" [{ r with X = 1 }] |> Seq.head"
 
               Expect.stringContains terr2.Message "" ""
+          }
+          // fmt v2 respace [D:fmt-respace]
+          test "respaceLine: collapse, brace pad, semicolon tidy" {
+              Expect.equal
+                  (Weir.Script.respaceLine "let l2 =  {    lomo with Lomo = 100}")
+                  "let l2 = { lomo with Lomo = 100 }"
+                  ""
+
+              Expect.equal
+                  (Weir.Script.respaceLine "type G = {Lomo: int; Bimbo: string}")
+                  "type G = { Lomo: int; Bimbo: string }"
+                  ""
+
+              Expect.equal (Weir.Script.respaceLine "let x = {A = {B = 1}}") "let x = { A = { B = 1 } }" ""
+              Expect.equal (Weir.Script.respaceLine "let a = 1 ;  print \"x\"") "let a = 1; print \"x\"" ""
+          }
+          test "respaceLine: string interiors and leading indent untouched" {
+              Expect.equal (Weir.Script.respaceLine "    print \"a  {  b\"") "    print \"a  {  b\"" "plain"
+              Expect.equal (Weir.Script.respaceLine "let s = @\"a  {  b\"") "let s = @\"a  {  b\"" "verbatim"
+
+              Expect.equal
+                  (Weir.Script.respaceLine "print $\"x{  1  }\"")
+                  "print $\"x{  1  }\""
+                  "interp hole is string turf"
           }
           test "fst/snd project pairs, point-free through pipelines" {
               expectValue "fst (1, \"a\")" (VInt 1L)

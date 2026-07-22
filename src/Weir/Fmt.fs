@@ -96,10 +96,13 @@ let qualifyFile (path: string) : int =
         0
 
 // ---------------------------------------------------------------------------
-// weir fmt <script> [D:fmt-v1]. Comments and token spacing are
-// preserved verbatim — respacing/re-flowing needs trivia-preserving
-// parsing (parked). Pipe-headed lines keep the column-0 shell style
-// if they use it.
+// weir fmt <script> [D:fmt-v1] + intra-line respace [D:fmt-respace]
+// (v2, on the update-example receipt): collapse space runs, pad
+// record braces, tidy `;` — under a PARSE-SHAPE safety check: each
+// respaced statement must sexpr-match its original (same permissive
+// resolver both sides) or that statement REVERTS to its pre-respace
+// text. Comments keep their text; re-flowing stays parked.
+// Pipe-headed lines keep the column-0 shell style if they use it.
 
 let formatLines (body: string list) : Result<string list, string> =
     // trailing whitespace is never significant (strings are single-line and
@@ -193,7 +196,62 @@ let formatLines (body: string list) : Result<string list, string> =
             if texts originalLogical <> texts formattedLogical then
                 Error "fmt safety check failed: reformatting would change the parse; file left unchanged"
             else
-                Ok formatted
+                // ---- v2: intra-line respace under the shape guard ----
+                // [D:fmt-respace] — a fixed permissive resolver on BOTH
+                // sides, so sexpr differences can only come from the
+                // respacing itself
+                // Script.assumeResolver: command-SHAPED heads only —
+                // an always-true IsExternal claimed `{Lomo` as a head
+                // and made every let-RHS a command (caught by the
+                // guard itself during this feature's own build)
+                let shapeResolver = Script.assumeResolver Builtins.typeEnv
+
+                let shape (text: string) =
+                    match Parser.parseLine shapeResolver text with
+                    | Ok stmt -> Some(sexprStmt stmt)
+                    | Error _ -> None
+
+                let respaced =
+                    formatted
+                    |> List.map (fun raw ->
+                        // respace the code only; the gap before a
+                        // trailing comment is ALIGNMENT and survives
+                        let code = Script.stripComment raw
+                        let codeTrim = code.TrimEnd()
+
+                        Script.respaceLine codeTrim
+                        + code.Substring codeTrim.Length
+                        + raw.Substring code.Length)
+
+                let renumbered2 =
+                    respaced
+                    |> List.mapi (fun i l -> i + 1, l)
+                    |> List.filter (fun (_, raw) -> not (commentOnly raw))
+                    |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
+
+                match Script.assemble renumbered2 with
+                | Error _ -> Ok formatted // respace broke assembly: revert wholesale
+                | Ok respacedLogical when List.length respacedLogical <> List.length formattedLogical -> Ok formatted
+                | Ok respacedLogical ->
+                    // statements whose shape changed (or was never
+                    // parseable) revert to their pre-respace lines
+                    let revertLines =
+                        List.zip formattedLogical respacedLogical
+                        |> List.collect (fun (o, n) ->
+                            match shape o.Text, shape n.Text with
+                            | Some a, Some b when a = b -> []
+                            | sa, sb ->
+                                if System.Environment.GetEnvironmentVariable "WEIR_FMT_DEBUG" <> null then
+                                    eprintfn "REVERT %A vs %A for %s ||| %s" sa sb o.Text n.Text
+
+                                n.Segments |> List.map (fun (_, pl, _) -> pl))
+                        |> Set.ofList
+
+                    let final =
+                        List.zip formatted respaced
+                        |> List.mapi (fun i (pre, post) -> if Set.contains (i + 1) revertLines then pre else post)
+
+                    Ok final
 
 let formatFile (checkOnly: bool) (path: string) : int =
     if not (System.IO.File.Exists path) then
