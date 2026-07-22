@@ -224,7 +224,7 @@ let private underline (span: Span) : string =
     + String('^', max 1 (span.End.Col - span.Start.Col))
 
 let private printWarnings (state: State) (te: Check.TypedExpr) =
-    Check.warnings state.TypeEnv te
+    Check.warnings te
     |> List.iter (fun w ->
         Console.WriteLine(Script.Color.yellow Script.Color.onStdout.Value (underline w.Span))
         Console.WriteLine(Check.formatWarning w))
@@ -261,10 +261,7 @@ let rec private loop (state: State) =
         let next =
             // [D:one-pipeline]: a single-line LogicalLine feeds
             // checkStatement; the REPL only renders
-            let ll: Script.LogicalLine =
-                { Text = line
-                  Head = 1
-                  Segments = [ (0, 1, 0) ] }
+            let ll = Script.singleLine line
 
             match Script.checkStatement false (fun _ -> resolver state) state.TypeEnv ll with
             | Error d when d.Parse ->

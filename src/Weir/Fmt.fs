@@ -3,59 +3,16 @@ module Weir.Fmt
 open Weir.Ast
 
 let private collectBareUses (e: Expr) : (Span * string) list =
+    // traversal via Ast.exprChildren (refactor sweep 2026-07-22 —
+    // this was a third hand-rolled walker); only EVar collects
     let acc = ResizeArray<Span * string>()
 
     let rec walk (e: Expr) =
-        match e.Kind with
-        | EVar name when Map.containsKey name Builtins.bareAliasHomes -> acc.Add(e.Span, name)
-        | EVar _
-        | EInt _
-        | EStr _
-        | EBool _
-        | EUnit -> ()
-        | ELet(_, v, b) ->
-            walk v
-            walk b
-        | ELambda(_, b) -> walk b
-        | EApp(f, a)
-        | EPipe(f, a) ->
-            walk f
-            walk a
-        | EField(t, _, _) -> walk t
-        | EBinOp(_, l, r) ->
-            walk l
-            walk r
-        | ERecord fields -> fields |> List.iter (fun (_, _, v) -> walk v)
-        | EMatch(s, arms) ->
-            walk s
+        (match e.Kind with
+         | EVar name when Map.containsKey name Builtins.bareAliasHomes -> acc.Add(e.Span, name)
+         | _ -> ())
 
-            arms
-            |> List.iter (fun (_, g, b) ->
-                g |> Option.iter walk
-                walk b)
-        | EIf(c, t, e) ->
-            walk c
-            walk t
-            e |> Option.iter walk
-        | ESeq(a, b) ->
-            walk a
-            walk b
-        | EList items -> items |> List.iter walk
-        | ETuple items -> items |> List.iter walk
-        | ELetPat(_, v, b) ->
-            walk v
-            walk b
-        | ELambdaPat(_, b) -> walk b
-        | ECmd(_, args, envO) ->
-            args |> List.iter walk
-            envO |> Option.iter walk
-        | EInterp parts ->
-            parts
-            |> List.iter (function
-                | IStr _ -> ()
-                | IExpr e -> walk e)
-        | EFrom _
-        | ETo _ -> ()
+        exprChildren e |> List.iter walk
 
     walk e
     List.ofSeq acc

@@ -1898,93 +1898,46 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
 
 // Advisory findings only — coverage and reachability are checker
 // errors [D:exhaustiveness-hard-error].
-let warnings (env: TypeEnv) (te: TypedExpr) : Warning list =
+let warnings (te: TypedExpr) : Warning list =
+    // one collection site (command argv nudges); traversal is
+    // childExprs' job — the hand-rolled 90-line walk retired in the
+    // refactor sweep (2026-07-22). The env param died with the
+    // reachability move into `exhaustive`.
     let acc = ResizeArray<Warning>()
 
     let rec walk (te: TypedExpr) =
-        match te.Kind with
-        | TEInt _
-        | TEStr _
-        | TEBool _
-        | TEUnit
-        | TEVar _ -> ()
-        | TELet(_, value, body) ->
-            walk value
-            walk body
-        | TELambda(_, body) -> walk body
-        | TEApp(a, b)
-        | TEPipe(a, b) ->
-            walk a
-            walk b
-        | TEField(target, _) -> walk target
-        | TEBinOp(_, l, r) ->
-            walk l
-            walk r
-        | TERecord(_, fields) -> fields |> List.iter (snd >> walk)
-        | TEFrom _
-        | TETo _ -> ()
-        | TEList items -> items |> List.iter walk
-        | TETuple items -> items |> List.iter walk
-        | TELetPat(_, v, b) ->
-            walk v
-            walk b
-        | TELambdaPat(_, b) -> walk b
-        | TECmd(_, args, envO) ->
-            args |> List.iter walk
-            envO |> Option.iter walk
+        (match te.Kind with
+         | TECmd(_, args, _) ->
+             // the bash prior-bleed family: ; does not chain, > / >>
+             // do not redirect — warn, never block (a quoted literal
+             // argument is legitimate)
+             for a in args do
+                 match a.Kind with
+                 | TEStr ";" ->
+                     acc.Add
+                         { Span = a.Span
+                           Message =
+                             "';' does not chain commands in weir — put commands on separate lines "
+                             + "(sequence unit expressions with ';' in expression position; "
+                             + "if you meant a literal ';' argument, ignore this)" }
+                 | TEStr ">" ->
+                     acc.Add
+                         { Span = a.Span
+                           Message =
+                             "'>' does not redirect in weir — pipe to File.write: "
+                             + "cmd | File.write \"out.txt\" "
+                             + "(if you meant a literal '>' argument, ignore this)" }
+                 | TEStr ">>" ->
+                     acc.Add
+                         { Span = a.Span
+                           Message =
+                             "'>>' does not redirect in weir — pipe to File.append: "
+                             + "cmd | File.append \"out.txt\" "
+                             + "(if you meant a literal '>>' argument, ignore this)" }
+                 | _ -> ()
+         | _ -> ())
 
-            // the bash prior-bleed: `git add -A ; git push` hands git a
-            // literal ';' argv word (the standing no-injection pin) — warn,
-            // never block (a quoted ";" argument is legitimate)
-            for a in args do
-                match a.Kind with
-                | TEStr ";" ->
-                    acc.Add
-                        { Span = a.Span
-                          Message =
-                            "';' does not chain commands in weir — put commands on separate lines "
-                            + "(sequence unit expressions with ';' in expression position; "
-                            + "if you meant a literal ';' argument, ignore this)" }
-                // the redirect family rides the same argv-word safety
-                // pin [D:composition-operators]: > / >> stay literal
-                // args; the hint names the File spelling
-                | TEStr ">" ->
-                    acc.Add
-                        { Span = a.Span
-                          Message =
-                            "'>' does not redirect in weir — pipe to File.write: "
-                            + "cmd | File.write \"out.txt\" "
-                            + "(if you meant a literal '>' argument, ignore this)" }
-                | TEStr ">>" ->
-                    acc.Add
-                        { Span = a.Span
-                          Message =
-                            "'>>' does not redirect in weir — pipe to File.append: "
-                            + "cmd | File.append \"out.txt\" "
-                            + "(if you meant a literal '>>' argument, ignore this)" }
-                | _ -> ()
-        | TEInterp parts ->
-            parts
-            |> List.iter (function
-                | IStr _ -> ()
-                | IExpr e -> walk e)
-        | TEIf(cond, thn, els) ->
-            walk cond
-            walk thn
-            els |> Option.iter walk
-        | TESeq(a, b) ->
-            walk a
-            walk b
-        | TEEnvLoad _ -> ()
-        | TEMatch(scrutinee, arms) ->
-            walk scrutinee
-
-            // reachability is checked in `exhaustive`
-            // [D:unreachable-arm-hard-error]
-            arms
-            |> List.iter (fun (_, g, b) ->
-                g |> Option.iter walk
-                walk b)
+        childExprs te |> List.iter walk
 
     walk te
     List.ofSeq acc

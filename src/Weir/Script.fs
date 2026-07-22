@@ -191,6 +191,12 @@ type LogicalLine =
       Head: int
       Segments: (int * int * int) list }
 
+// a one-physical-line LogicalLine — the REPL's and -e's spelling
+let singleLine (text: string) : LogicalLine =
+    { Text = text
+      Head = 1
+      Segments = [ (0, 1, 0) ] }
+
 // Block lets — F# light syntax at the assembly layer, the same way F#'s own
 // lexer implements it (token insertion at offside boundaries): a continuation
 // line beginning with `let` opens a binding; the next line at the SAME
@@ -667,6 +673,19 @@ type Mode =
     | Strict
     | Loose
 
+// shebang/#loose peeling — ONE derivation for the runner and the
+// check-side analyzeLines (refactor sweep 2026-07-22; they had
+// drifted-prone twin copies)
+let private scriptBody (rawLines: string list) : Mode * string list * int =
+    let afterShebang, shebangOffset =
+        match rawLines with
+        | first :: rest when first.StartsWith "#!" -> rest, 1
+        | _ -> rawLines, 0
+
+    match afterShebang with
+    | first :: rest when first.Trim() = "#loose" -> Loose, rest, shebangOffset + 1
+    | _ -> Strict, afterShebang, shebangOffset
+
 type private CheckedStmt =
     | CLet of name: string * te: Check.TypedExpr
     | CLetPat of binder: Weir.Ast.Pattern * te: Check.TypedExpr
@@ -873,7 +892,7 @@ let checkStatement
           Warnings = [] }
 
     let warningsOf te =
-        [ for w in Check.warnings tenv te do
+        [ for w in Check.warnings te do
               let physLine, physCol = translate ll w.Span.Start.Col
               physLine, physCol, w.Message ]
 
@@ -1103,16 +1122,7 @@ let analyzeLines
     (path: string)
     (rawLines: string list)
     : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv * LogicalLine list =
-    let afterShebang, shebangOffset =
-        match rawLines with
-        | first :: rest when first.StartsWith "#!" -> rest, 1
-        | _ -> rawLines, 0
-
-    let body, bodyOffset =
-        match afterShebang with
-        | first :: rest when first.Trim() = "#loose" -> rest, shebangOffset + 1
-        | _ -> afterShebang, shebangOffset
-
+    let _, body, bodyOffset = scriptBody rawLines
     let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
 
     let typeEnv0, _ = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
@@ -1290,15 +1300,7 @@ let run (path: string) (scriptArgs: string list) : int =
     else
         let rawLines = IO.File.ReadAllLines path |> Array.toList
 
-        let afterShebang, shebangOffset =
-            match rawLines with
-            | first :: rest when first.StartsWith "#!" -> rest, 1
-            | _ -> rawLines, 0
-
-        let mode, body, bodyOffset =
-            match afterShebang with
-            | first :: rest when first.Trim() = "#loose" -> Loose, rest, shebangOffset + 1
-            | _ -> Strict, afterShebang, shebangOffset
+        let mode, body, bodyOffset = scriptBody rawLines
 
         let directiveError =
             body

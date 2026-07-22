@@ -21,10 +21,7 @@ let private evalOnce (input: string) : int =
             input
         |> Option.iter (fun h -> Console.Error.WriteLine $"hint: {h}")
 
-    let ll: Script.LogicalLine =
-        { Text = input
-          Head = 1
-          Segments = [ (0, 1, 0) ] }
+    let ll = Script.singleLine input
 
     // [D:one-pipeline]: -e is a consumer; non-expression kinds are
     // rejected AFTER checking, so an ill-typed let reports its real
@@ -73,7 +70,7 @@ let private evalOnce (input: string) : int =
             1
         | Script.KExpr te
         | Script.KCmd te ->
-            for w in Check.warnings typeEnv te do
+            for w in Check.warnings te do
                 Console.Error.WriteLine(Check.formatWarning w)
 
             try

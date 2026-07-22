@@ -353,7 +353,7 @@ let rejectedAtCheckTests =
               checkErr "let add = fun a -> fun b -> a + b in add 1 2" |> ignore
           } ]
 
-let private warningsOf input = Weir.Check.warnings env (checkOk input)
+let private warningsOf input = Weir.Check.warnings (checkOk input)
 
 let declTests =
     testList
@@ -3561,7 +3561,7 @@ let sequencingTests =
               | Ok(SCmd e) ->
                   match Weir.Check.typecheck env e with
                   | Ok te ->
-                      let ws = Weir.Check.warnings env te
+                      let ws = Weir.Check.warnings te
                       Expect.exists ws (fun w -> w.Message.Contains "does not chain") "warned"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
