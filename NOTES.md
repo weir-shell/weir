@@ -1,5 +1,35 @@
 # Spike Notes
 
+## VS Code extension — the second editor, zero server changes (2026-07-22)
+
+The fsautocomplete question's answer, cashed: a second editor client
+landed with NO server diffs — the LSP as shipped (Session 3's stdio
+JSON-RPC) needed only glue (~40 lines of extension.ts on
+vscode-languageclient) and a TextMate port of the micro grammar.
+No protocol findings surfaced at build time; the interactive smoke
+(SMOKE.md) runs on a machine with VS Code — this container has none,
+so packaging + the protocol probes are the CI-side proof and the
+checklist is the committed record of the rest.
+
+Two plan-premise corrections, reported: the layout is editors/vscode/
+(plural — micro lives in editors/; the plan's editor/ was a typo),
+and the apostrophe "tombstone" is actually a LIVE guarded region in
+the micro file (command-mode single-quote strings with the
+space-before guard) — spec-equivalence means it PORTS, and did; the
+tombstone was the earlier unguarded version's deletion.
+
+The drift guard is mechanized: micro gained `# rule:` annotations
+(20), the tmLanguage repository keys are the same 20 ids, and e2e
+diffs the sets. Oniguruma extras used only to simplify existing
+micro guards (lookbehind for comment/district/single-quote openers;
+lookahead for the verbatim `"(?!")` end). Indent rules: NONE, decided
+against real editing feel — VS Code's keep-previous-indent default
+matches weir continuation style, and auto-indent guessing the
+offside/district grammar wrong is worse than neutral. autoClosingPairs
+carries `@"` (multi-char opens work); `"""` deliberately not paired —
+it fights the plain-quote pair mid-type.
+
+
 ## The corpus re-mine — the four-wave debt paid (2026-07-22)
 
 Owed since tuples (WEIR_CORPUS_DIR absent then; noted, not dropped),

@@ -360,6 +360,10 @@ print "done"
 
 ## Editor setup
 
+VS Code: `editors/vscode/` holds a sideloadable extension (client
+glue for `weir lsp` + a TextMate grammar ported rule-for-rule from
+the micro file; see its README for the build-and-install three-liner
+and the grammar maintenance rule).
 Syntax highlighting for micro lives in `editors/micro/weir.yaml`; the
 same directory's README wires `weir lsp` into micro's lsp plugin. Any
 LSP-capable editor works: `weir lsp` speaks stdio JSON-RPC and serves

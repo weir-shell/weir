@@ -680,6 +680,20 @@ if command -v python3 >/dev/null 2>&1; then
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-e2e.py" || fail "lsp integration probes"
     echo "e2e ok: lsp diagnostics/hover/completion over stdio"
 
+    # grammar drift guard: micro's '# rule:' annotations vs the
+    # tmLanguage repository keys — add to BOTH or neither
+    python3 - "$(dirname "$0")/.." <<'PYEOF' || fail "grammar inventories diverge (micro vs tmLanguage)"
+import json, re, sys
+root = sys.argv[1]
+micro = set(re.findall(r"^\s*# rule: ([\w-]+)$", open(f"{root}/editors/micro/weir.yaml").read(), re.M))
+tm = set(json.load(open(f"{root}/editors/vscode/syntaxes/weir.tmLanguage.json"))["repository"].keys())
+if micro != tm:
+    print("micro-only:", sorted(micro - tm), " tm-only:", sorted(tm - micro))
+    sys.exit(1)
+print(f"inventories match ({len(tm)} rules)")
+PYEOF
+    echo "e2e ok: grammar inventories match (micro == tmLanguage)"
+
     # --- REPL line editor under a pty (2026-07-21) ---------------------
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
     echo "e2e ok: repl Ctrl+Left/Right word navigation"

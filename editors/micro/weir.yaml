@@ -12,50 +12,65 @@ detect:
 
 rules:
     # ---- shebang + directives (#loose is the only directive) ----
+    # rule: shebang
     - preproc: "^#!.*$"
+    # rule: directive
     - preproc: "^#loose\\b"
 
     # ---- keywords (the parser's set, verified) ----
+    # rule: keywords
     - statement: "\\b(let|in|if|then|else|when|match|with|fun|type|of)\\b"
     - statement: "\\b(from|to)\\b"
     # reserved (rejected by the parser, but color them so muscle-memory
     # F# reads as "claimed", not "identifier")
+    # rule: reserved
     - statement: "\\b(rec|mutable)\\b"
+    # rule: bool
     - constant.bool: "\\b(true|false)\\b"
+    # rule: not
     - statement: "\\bnot\\b"
 
     # ---- types / constructors / modules (the casing law:
     # uppercase declares — one rule covers all three) ----
+    # rule: types
     - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
 
     # ---- numbers (int only; ranges lex as int .. int) ----
+    # rule: numbers
     - constant.number: "\\b[0-9]+\\b"
 
     # ---- command-mode sigils (plain and env-parameterized) ----
+    # rule: sigil-open
     - special: "\\$\\("
     - special: "!\\("
     - special: "[$!][a-z_][A-Za-z0-9_]*\\("
     # line-end district marker: a STANDALONE token (bare ! or !envname);
     # `echo hello!` is argv, not a marker — hence the boundary
+    # rule: district-marker
     - special: "(^|[ \t])![A-Za-z_][A-Za-z0-9_]*$"
     - special: "(^|[ \t])!$"
     # PATH-force prefix
+    # rule: force-prefix
     - special: "\\^[A-Za-z][A-Za-z0-9_.-]*"
 
     # ---- splices in command lines (casing law: vars are lowercase) ----
+    # rule: splice
     - identifier.var: "\\$[a-z_][A-Za-z0-9_]*"
 
     # ---- operators ----
+    # rule: operators
     - symbol.operator: "\\|>"
     - symbol.operator: "(==|<>|<=|>=|->|\\.\\.|&&|\\|\\|)"
     - symbol.operator: "[+\\-*/<>=;,]"
     - symbol.operator: "\\|"
 
     # ---- field-access shorthand ----
+    # rule: field-sugar
     - special: "_\\.[A-Za-z][A-Za-z0-9_]*"
     - special: "_\\["
 
     # ---- interpolated strings, holes get real weir highlighting ----
+    # rule: interp-string
     - constant.string:
         start: "\\$\""
         end: "\""
@@ -83,10 +98,12 @@ rules:
     # triple-quoted (no escapes at all). Defined BEFORE plain strings
     # so the openers win the tie; no escape rules inside — that is
     # the point of the kinds. ----
+    # rule: raw-triple
     - constant.string:
         start: "\"\"\""
         end: "\"\"\""
         rules: []
+    # rule: raw-verbatim
     - constant.string:
         start: "@\""
         end: "\""
@@ -95,6 +112,7 @@ rules:
             - constant.specialChar: "\"\""
 
     # ---- plain strings ----
+    # rule: plain-string
     - constant.string:
         start: "\""
         end: "\""
@@ -108,6 +126,7 @@ rules:
     # in comments (GUIDE's, don't) never open a region; the cost is
     # that a mid-word ' never opens one either, which matches command
     # arg tokenization anyway. ----
+    # rule: command-single-quote
     - constant.string:
         start: "(^|[ \t])'"
         end: "'"
@@ -120,6 +139,7 @@ rules:
     # recolored by the rules after it — a region with no inner rules
     # stays one color. Region openers win by line position, so a `//`
     # inside a string never starts one. ----
+    # rule: comment
     - comment:
         start: "(^|[ \t])//"
         end: "$"

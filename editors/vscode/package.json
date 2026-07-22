@@ -1,0 +1,63 @@
+{
+  "name": "weir",
+  "displayName": "weir",
+  "description": "Language support for weir, the typed shell — diagnostics, hover, and completion via `weir lsp`, plus TextMate colorization.",
+  "version": "0.1.0",
+  "publisher": "weir-local",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:weir"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "weir",
+        "aliases": [
+          "weir"
+        ],
+        "extensions": [
+          ".weir"
+        ],
+        "firstLine": "^#!.*\\bweir\\b",
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "weir",
+        "scopeName": "source.weir",
+        "path": "./syntaxes/weir.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "weir",
+      "properties": {
+        "weir.serverPath": {
+          "type": "string",
+          "default": "weir",
+          "description": "Path to the weir binary. Resolved from PATH by default; this setting is the escape hatch, not the default."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0"
+  }
+}
