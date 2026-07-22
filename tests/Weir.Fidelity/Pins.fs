@@ -154,6 +154,23 @@ let pins =
       pin "interpolated verbatim $@ is parked" "let s = $@\"x{1}\"\n" (Diverges "no-interpolated-raw")
       pin "interpolated triple is parked" "let s = $\"\"\"x{1}\"\"\"\n" (Diverges "no-interpolated-raw")
 
+      // --- Seq.fold + fun-sugar probes (PLAN-fold) — BEFORE code; the
+      // argument-order claim class bit once (composition precedence) ---
+      pin
+          "fold: state-first folder (verdict-visible via string state)"
+          "let n = Seq.fold (fun s x -> s + $\"{x}\") \"\" [ 1; 2 ]\n"
+          Same
+      // shape amended in-session: `a + b` hits weir's KNOWN
+      // +-on-unknowns limit (wrong reject reason); `b` isolates currying
+      pin "two-param lambda is CURRIED: partial application works" "let f = (fun a b -> b) 1\nlet s = f \"x\"\n" Same
+      pin "F#-rejects-this: a tupled lambda is not curried" "let g = fun (a, b) -> a + b\nlet n = g 1 2\n" Same
+      // shape amended in-session: the arithmetic-empty form hits the
+      // +-on-unknowns limit in weir's one-pass order (nothing anchors
+      // s or x — the documented anchor-one-side rule); the identity
+      // folder isolates the empty-seq acceptance claim
+      pin "fold over empty returns the initial state (acceptance)" "let n = Seq.fold (fun s x -> s) 7 []\n" Same
+      pin "duplicate lambda params: ask F#, do not recall" "let f = fun a a -> a\nlet n = f 1 2\n" Same
+
       // --- elif (small-items sweep; the no-elif row retires) ---
       pin
           "elif chains, F# semantics"

@@ -1658,14 +1658,22 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             do! checkBinderName expr.Span param
 
             let typeBody e =
-                if hasVars ctx cod then
-                    result {
-                        let! tbody = infer ctx e body
-                        do! bind ctx env tbody.Span cod tbody.Ty
-                        return tbody
-                    }
-                else
-                    check ctx e body cod
+                match body.Kind, resolve ctx cod with
+                // a NESTED lambda against a function cod pushes through
+                // — the inner domain may already be resolved (fold's
+                // piped element type), and the infer fallback would
+                // drop it [D:seq-fold]; found by the canonical
+                // `xs |> Seq.fold (fun s x -> s + x) 0` rejecting
+                | (ELambda _ | ELambdaPat _), TFun _ -> check ctx e body cod
+                | _ ->
+                    if hasVars ctx cod then
+                        result {
+                            let! tbody = infer ctx e body
+                            do! bind ctx env tbody.Span cod tbody.Ty
+                            return tbody
+                        }
+                    else
+                        check ctx e body cod
 
             return! lambdaCore env expr.Span (fun tb -> TELambda(param, tb)) dom [ param, dom ] typeBody
         }

@@ -818,6 +818,40 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# Seq.fold + fun-sugar (PLAN-fold): the git-subrepo receipt folds
+# verbatim — the port's blocker provably unblocked
+folddir=$(mktemp -d)
+cat > "$folddir/receipt.weir" <<'WEOF'
+// encode-subdir's escape loop, as a fold over replacement pairs
+let escaped =
+    [("~", "%7e"); ("^", "%5e"); (":", "%3a"); (" ", "%20")]
+    |> Seq.fold (fun s (from0, to0) -> Str.replace from0 to0 s) "a b~c:d"
+
+print escaped
+
+// the commit-walk shape: four accumulators in a Ctx record
+type Walk = { Prev: string; Ancestor: string; First: string; Kept: int }
+
+let walked =
+    ["c1 keep"; "c2 skip"; "c3 keep"]
+    |> Seq.fold
+        (fun w line ->
+            match line with
+            | Regex @"^(\w+) keep$" c -> { w with Prev = c; Ancestor = w.Prev; Kept = w.Kept + 1 }
+            | _ -> w)
+        { Prev = ""; Ancestor = ""; First = ""; Kept = 0 }
+
+print $"{walked.Prev} after {walked.Ancestor}, kept {walked.Kept}"
+
+// the inline-env receipt shape (three vars, Env.ofPairs)
+runEnv (Env.ofPairs [("GIT_AUTHOR_NAME", "n"); ("GIT_AUTHOR_EMAIL", "e"); ("GIT_AUTHOR_DATE", "d")]) "sh" ["-c"; "echo $GIT_AUTHOR_NAME/$GIT_AUTHOR_EMAIL"]
+WEOF
+out=$($BIN "$folddir/receipt.weir")
+expect "the encode-subdir escape fold" "a%20b%7ec%3ad" "$out"
+expect "the commit-walk accumulator-record fold" "c3 after c1, kept 2" "$out"
+expect "Env.ofPairs feeds runEnv (the inline-env receipt)" "n/e" "$out"
+rm -rf "$folddir"
+
 # fmt v2 respace under the parse-shape guard (user receipt, 2026-07-22)
 fdir=$(mktemp -d)
 cat > "$fdir/ugly.weir" <<'WEOF'

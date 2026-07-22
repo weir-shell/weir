@@ -461,21 +461,21 @@ let private binderParam, private binderParamRef =
 let private binderPat, private binderPatRef =
     createParserForwardedToRef<Pattern, unit> ()
 
-let private lambda =
-    pipe3 getPosition (keyword "fun" >>. binderParam .>> str_ws "->") seqExpr (fun p param body ->
-        let kind =
-            match param.PKind with
-            | PVar n -> ELambda(n, body)
-            | PUnit -> ELambda("()", body)
-            | _ -> ELambdaPat(param, body)
+// duplicate params reject in BOTH sugar positions (let and fun) —
+// FCS-verdict-pinned; explicit nested lambdas may still shadow
+// [D:fun-sugar]. The probe also caught let-sugar ACCEPTING dups (a
+// latent divergence, fixed here by the one-rule-two-positions law).
+let private rejectDupParams (ps: Pattern list) =
+    let names =
+        ps
+        |> List.choose (fun p ->
+            match p.PKind with
+            | PVar n -> Some n
+            | _ -> None)
 
-        { Kind = kind
-          Span = { Start = pos p; End = body.Span.End } })
-
-// let f x y = e desugars to nested lambdas [D:let-param-sugar].
-// Params are plain idents OR () — the unit param pins its type in the
-// checker (the name "()" is unforgeable through declarations); other
-// pattern params stay rejected.
+    match names |> List.groupBy id |> List.tryFind (fun (_, g) -> List.length g > 1) with
+    | Some(n, _) -> failFatally $"duplicate parameter '{n}'"
+    | None -> preturn ()
 
 let private curryParams (ps: Pattern list) (value: Expr) : Expr =
     List.foldBack
@@ -492,6 +492,26 @@ let private curryParams (ps: Pattern list) (value: Expr) : Expr =
               Span = Span.union p.PSpan value.Span })
         ps
         value
+
+let private lambda =
+    // fun a b -> e desugars to nested lambdas [D:fun-sugar] — the
+    // lambda-side twin of let-param sugar, same param set, same
+    // curryParams, zero checker surface
+    pipe3
+        getPosition
+        (keyword "fun" >>. many1 binderParam >>= fun ps -> rejectDupParams ps >>% ps
+         .>> str_ws "->")
+        seqExpr
+        (fun p ps body ->
+            let inner = curryParams ps body
+
+            { inner with
+                Span = { Start = pos p; End = body.Span.End } })
+
+// let f x y = e desugars to nested lambdas [D:let-param-sugar].
+// Params are plain idents OR () — the unit param pins its type in the
+// checker (the name "()" is unforgeable through declarations); other
+// pattern params stay rejected.
 
 let private letIn =
     let patForm =
@@ -510,7 +530,10 @@ let private letIn =
                 Span = { Start = pos p; End = body.Span.End } })
           pipe3
               getPosition
-              (keyword "let" >>. ident .>>. many binderParam .>> str_ws "=" .>>. seqExpr
+              ((keyword "let" >>. ident .>>. many binderParam
+                >>= fun (n, ps) -> rejectDupParams ps >>% (n, ps))
+               .>> str_ws "="
+               .>>. seqExpr
                .>> keyword "in")
               seqExpr
               (fun p ((name, ps), value) body ->
@@ -1050,17 +1073,19 @@ let private topLet (r: Resolver) =
     attempt (
         keyword "let" >>. ident .>>. many binderParam .>> str_ws "="
         >>= fun (name, ps) ->
-            // command mode never sits under a lambda (splice-soundness
-            // invariant), so a param-ful let takes an expression RHS only
-            // RHS takes sequenced blocks too (function bodies of effect
-            // lines — the bicep-script receipt)
-            let rhsP =
-                if List.isEmpty ps then
-                    cmdLineLetRhs r <|> seqExpr
-                else
-                    seqExpr
+            rejectDupParams ps
+            >>= fun () ->
+                // command mode never sits under a lambda (splice-soundness
+                // invariant), so a param-ful let takes an expression RHS only
+                // RHS takes sequenced blocks too (function bodies of effect
+                // lines — the bicep-script receipt)
+                let rhsP =
+                    if List.isEmpty ps then
+                        cmdLineLetRhs r <|> seqExpr
+                    else
+                        seqExpr
 
-            rhsP .>> eof |>> fun rhs -> SLet(name, curryParams ps rhs)
+                rhsP .>> eof |>> fun rhs -> SLet(name, curryParams ps rhs)
     )
 
 let private stmtWith (r: Resolver) =

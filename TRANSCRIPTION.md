@@ -390,3 +390,16 @@ plus five one-line deltas. Zero behavior change (full battery green,
 zero pin edits); the check-mode unit-param asymmetry (no TUnit pin,
 relies on the pushed dom) is now VISIBLE in the adapter table rather
 than buried in twin arms.
+
+## Addendum — fold's landing touched check-mode once (2026-07-22, [D:seq-fold])
+
+    check(ELambda(x, body), TFun(dom, cod)) where body is itself a
+    lambda and resolve(cod) = TFun ⇒ CHECK body against cod
+    (push-through); the hasVars infer-fallback applies otherwise.
+
+One-clause refinement, not a new arm: the fallback inferred nested
+lambda bodies and DROPPED an already-resolved inner domain (fold's
+piped element type) — the canonical `xs |> Seq.fold (fun s x ->
+s + x) 0` rejected. `fun a b ->` sugar itself added ZERO checker
+surface (pure parse desugar through curryParams — less than the
+budgeted adapter; reported per the stop-and-report clause's inverse).

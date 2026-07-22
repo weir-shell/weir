@@ -1,5 +1,31 @@
 # Spike Notes
 
+## Seq.fold + fun-sugar — the port unblocked (2026-07-22)
+
+The strongest receipt on file cashes: both git-subrepo blocker folds
+run verbatim on the AOT binary (the encode-subdir escape fold with a
+tuple-pattern folder; the commit-walk four-accumulator record fold —
+which is also the fold x record-update x rows product pin), and
+Env.ofPairs feeds runEnv for the three-var author shape. "Post-fold,
+a legitimate weir program" now holds in the report's own terms.
+
+The probes ruled twice. F# REJECTS duplicate lambda params — and the
+probe caught weir's let-param sugar silently ACCEPTING them (latent
+divergence, fixed in both positions by the one-rule-two-positions
+law). Three probe shapes were amended for wrong-reason rejects: weir
+has no `string` builtin (interp converts), and the +-on-unknowns
+limit collided with two shapes — the limits were already documented;
+the pins now isolate their claims.
+
+The real find: the canonical `xs |> Seq.fold (fun s x -> s + x) 0`
+REJECTED at first — check-mode's hasVars fallback inferred nested
+lambda bodies, dropping the already-resolved inner domain that the
+pipe had anchored. One-clause push-through (nested lambda vs TFun cod
+checks directly), zero pin movement. And the sugar needed NO checker
+adapter at all — pure parse desugar through curryParams, less than
+the budgeted flag-7 adapter.
+
+
 ## The small-items sweep — two sessions, four retirements (2026-07-22)
 
 Session 1 (grammar+checker): ELIF landed as pure spelling after the

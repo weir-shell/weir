@@ -857,6 +857,19 @@ quantity semantics now.
   (`extension`/`fileName`/`stem`/`dir`/`combine` over System.IO —
   `combine`, not `join`, because bare `join` is Str.join's alias and
   the alias-home map is last-wins).
+- **`Seq.fold`** [D:seq-fold] (2026-07-22, the git-subrepo receipt —
+  the strongest on file): `('a -> 'b -> 'a) -> 'a -> seq<'b> -> 'a`,
+  F#'s argument order FCS-probed before code (state-first folder;
+  data-last source pipes). STRICT — the running-total operator
+  consumes its source; an infinite source does not return (the
+  collect/complete family). Constraint-free by construction. The
+  landing surfaced and fixed a check-mode ordering loss (a NESTED
+  lambda against a function cod now pushes through instead of the
+  hasVars infer fallback — the piped element type reaches the inner
+  param). `fun a b ->` sugar [D:fun-sugar] rides: one rule, two
+  positions with let-param sugar (same pattern set, same
+  curryParams), and the probe caught let-sugar ACCEPTING duplicate
+  params where F# rejects — both positions now reject.
 - Deferred with intent: `substring`/`indexOf` (they want Option — Session 3
   customers), padding, regex (its own design — match vs captures vs typed
   groups; a backlog entry, not a builtins-session improvisation).

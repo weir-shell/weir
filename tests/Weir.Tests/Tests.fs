@@ -2408,6 +2408,46 @@ let agentFindingsTests =
               let terr = checkErr "ls |> Seq.head |> (fun r -> $\"{r}\")"
               Expect.stringContains terr.Message "must be strings, ints or bools" ""
           }
+          // Seq.fold + fun-sugar [D:seq-fold][D:fun-sugar]
+          test "fold: LEFT fold, order pinned on the non-commutative case" {
+              expectValue "[\"a\"; \"b\"] |> Seq.fold (fun s x -> s + x) \"\"" (VStr "ab")
+              expectValue "[1; 2] |> Seq.fold (fun s x -> s + x) 0" (VInt 3L)
+          }
+          test "fold: empty seq returns the initial state" { expectValue "Seq.fold (fun s x -> s) 7 []" (VInt 7L) }
+          test "fold: constraint-free — function-valued state checks" {
+              expectValue "let th = [1] |> Seq.fold (fun s x -> fun () -> x) (fun () -> 0) in th ()" (VInt 1L)
+          }
+          test "fold x record-update x rows: the accumulator-record shape" {
+              expectValue
+                  "let w = [1; 2; 3] |> Seq.fold (fun c x -> { c with X = c.X + x; Y = c.Y + 1 }) { X = 0; Y = 0 } in w.X + w.Y"
+                  (VInt 9L)
+          }
+          test "fun-sugar: two and three params, positions" {
+              expectValue "(fun a b -> b) 1 \"x\"" (VStr "x")
+              expectValue "(fun a b c -> c) 1 2 9" (VInt 9L)
+              expectValue "(if true then fun a b -> b else fun a b -> a) 1 2" (VInt 2L)
+          }
+          test "fun-sugar: () param mixes with idents" { expectValue "(fun () x -> x) () 5" (VInt 5L) }
+          test "fun-sugar: desugars to nested lambdas (parse shape)" {
+              Expect.equal (show (parse "fun a b -> b")) "(fun a (fun b b))" ""
+          }
+          test "fun-sugar: duplicate params reject in BOTH positions (FCS-matched)" {
+              match Weir.Parser.parseExpr "fun a a -> a" with
+              | Error msg -> Expect.stringContains msg "duplicate parameter" ""
+              | Ok _ -> failtest "expected rejection"
+
+              match Weir.Parser.parseExpr "let f a a = a in f 1 2" with
+              | Error msg -> Expect.stringContains msg "duplicate parameter" ""
+              | Ok _ -> failtest "expected rejection (the probe caught let-sugar accepting dups)"
+          }
+          test "fun-sugar: casing law applies per param" {
+              let terr = checkErr "(fun a B -> a) 1 2"
+              Expect.stringContains terr.Message "binding names start lowercase" ""
+          }
+          test "Env.pair and Env.ofPairs construct EnvVar" {
+              expectValue "(Env.pair \"K\" \"v\").Name" (VStr "K")
+              expectValue "Env.ofPairs [(\"A\", \"1\"); (\"B\", \"2\")] |> Seq.map _.Value |> Seq.head" (VStr "1")
+          }
           // fmt v2 respace [D:fmt-respace]
           test "respaceLine: collapse, brace pad, semicolon tidy" {
               Expect.equal

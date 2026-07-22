@@ -256,6 +256,14 @@ let private scalarCompare (name: string) (a: Value) (b: Value) : int =
     | VBool x, VBool y -> compare x y
     | v, _ -> unreachable $"the checker rejects '{name}' keys of {formatValue v}"
 
+let private foldImpl: Value =
+    VBuiltin(fun folder ->
+        VBuiltin(fun init ->
+            VBuiltin(fun sv ->
+                match sv with
+                | VSeq items -> items |> Seq.fold (fun acc v -> apply (apply folder acc) v) init
+                | v -> unreachable $"the checker rejects 'fold' on {formatValue v}")))
+
 let private sortByImpl: Value =
     VBuiltin(fun keyf ->
         VBuiltin(fun s ->
@@ -594,6 +602,10 @@ let private seqMembers: (string * Ty * Value) list =
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
       "length", TFun(TSeq tA, TInt), seqLengthImpl
+      // fold [D:seq-fold]: STRICT (the running-total operator — an
+      // infinite source does not return); state-first folder, F#'s
+      // order, FCS-verdict-pinned; constraint-free by construction
+      "fold", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, tA))), foldImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "sortByDescending", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByDescImpl
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
@@ -789,9 +801,36 @@ let private envFromFileImpl: Value =
             )
         | v -> unreachable $"the checker rejects 'Env.fromFile' on {formatValue v}")
 
+// Env.pair / Env.ofPairs — inline-env construction for a KNOWN
+// nominal type, writable because tuples landed; NOT an
+// anonymous-records case (the ledger's pattern note: every
+// anon-records prompt so far had a cheaper spelling already in the
+// type system).
+let private envPairImpl: Value =
+    VBuiltin(fun n ->
+        VBuiltin(fun v ->
+            match n, v with
+            | VStr n, VStr v -> VRecord("EnvVar", Map [ "Name", VStr n; "Value", VStr v ])
+            | _ -> unreachable "the checker rejects 'Env.pair' on these arguments"))
+
+let private envOfPairsImpl: Value =
+    VBuiltin(fun sv ->
+        match sv with
+        | VSeq items ->
+            VSeq(
+                items
+                |> Seq.map (fun p ->
+                    match p with
+                    | VTuple [ VStr n; VStr v ] -> VRecord("EnvVar", Map [ "Name", VStr n; "Value", VStr v ])
+                    | v -> unreachable $"the checker rejects 'Env.ofPairs' elements: {formatValue v}")
+            )
+        | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
+
 // Env — process environment [D:typed-env]
 let private envMembers: (string * Ty * Value) list =
-    [ "get",
+    [ "pair", TFun(TStr, TFun(TStr, TNamed("EnvVar", []))), envPairImpl
+      "ofPairs", TFun(TSeq(TTuple [ TStr; TStr ]), TSeq(TNamed("EnvVar", []))), envOfPairsImpl
+      "get",
       TFun(TStr, TNamed("Option", [ TStr ])),
       VBuiltin(fun v ->
           match v with

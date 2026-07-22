@@ -11,6 +11,11 @@ skill lines and targeted hints).
 
 ## friction
 
+- 2026-07-22 | git-subrepo translation exercise | no `Seq.fold` (now
+  LANDED on this receipt), no multi-param lambdas (now LANDED), and
+  ctor-pattern-scrutinee's first live receipt (a standalone result
+  dispatcher; match moved to call sites — row tagged).
+
 - 2026-07-21 | loc report | no `elif`: wrote it reflexively in a
   cascade; `else if`/match-with-guards cover it, but the parse error
   points at `then` rather than naming `elif`. Also no `Seq.last` —

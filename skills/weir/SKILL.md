@@ -122,7 +122,15 @@ print $"branches: {branches}"
   matters.
 - No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
-  Ranges are lazy; `[a; b; c]` lists are eager.
+  Ranges are lazy; `[a; b; c]` lists are eager. Running totals are
+  `Seq.fold`: `xs |> Seq.fold (fun state x -> ...) init` — STATE FIRST
+  in the folder (bash/JS `reduce` priors put it second), STRICT
+  (consumes the source; not for infinite seqs), and the piped
+  spelling anchors the folder's types (prefer it). Multi-accumulator
+  loops fold over a record: `Seq.fold (fun c x -> { c with ... }) c0`.
+- Lambdas take multiple params: `fun acc x -> ...` desugars to nested
+  lambdas exactly like `let f a b =` sugar (same param set — idents,
+  `()`, parenthesized irrefutable patterns; duplicates rejected).
 - `if c then a else b` is an expression; `else` is mandatory unless the
   then-branch is unit (`if ok then print "yes"` is a valid statement).
   `elif` chains as in F# (`if / elif / elif / else`) — pure spelling
