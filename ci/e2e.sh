@@ -2019,6 +2019,8 @@ echo "$errout" | grep -qF "pipe expressions with '|>'" || fail "the cliff must n
 echo "e2e ok: '|' after an expression names the |> spelling"
 
 # block-let command RHS (PLAN-block-let-cmd): the uniformity fix
+# (ROOT resolved BEFORE any cd: $0 is relative to the invocation dir)
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bldir=$(mktemp -d)
 cat > "$bldir/forms.weir" <<'WEOF'
 let graft c =
@@ -2029,7 +2031,7 @@ let graft c =
 
 print (graft "HEAD")
 WEOF
-out=$(cd /output/weir && $BIN "$bldir/forms.weir")
+out=$(cd "$ROOT" && $BIN "$bldir/forms.weir")
 echo "$out" | grep -qE "^[0-9a-f]+:true " || fail "the forms block must run: $out"
 echo "e2e ok: block-let command RHS binds, pipes, and reifies at depth"
 
