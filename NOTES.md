@@ -1,5 +1,30 @@
 # Spike Notes
 
+## Seq patterns — the design closed as drawn (2026-07-23)
+
+Part 2 opened on user call hours after going on file, and the
+design survived contact almost verbatim. The one implementation
+insight: the "statically bounded force + memoize-once" law is
+Seq.cache — probing pulls at most maxArity+1 elements through one
+cache, arms share the buffer, and `rest = cached |> Seq.skip k` is
+literally "buffer suffix + untouched tail," so effects run once
+TOTAL even when rest is consumed later. The live pin is the crown:
+four arms probed AND rest summed over a counted command seq = one
+spawn. The explicit bound computation the design sketched became
+EMERGENT — probes cannot pull past maxArity+1 by construction, so
+nothing computes the number; it is simply true.
+
+The probes ran first and all four verdicts held: F# accepts the
+spellings on list literals (Same pins), rejects them on seq
+scrutinees (the seq-patterns row, born refereed, filed in the
+param-ful-RHS class). The cons level is the pattern grammar's
+first infix (right-assoc, tighter than comma — sepBy1 and a fold).
+Two standing bounds carried over without new machinery: param
+scrutinees ride ctor-pattern-scrutinee (pipe through a Seq op to
+resolve), and interp holes in generic match arms ride
+splice-default-last. The SKILL must-fail block flipped to a
+working example — the taught workarounds retire.
+
 ## Seq.force — a rename with its reasons written down (2026-07-23)
 
 `Seq.toList` was a permanent small lie (a type weir will never

@@ -162,16 +162,22 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (consumes the source; not for infinite seqs), and the piped
   spelling anchors the folder's types (prefer it). Multi-accumulator
   loops fold over a record: `Seq.fold (fun c x -> { c with ... }) c0`.
-- No seq patterns yet: `match xs with | x :: rest` and `| []` do not
-  parse (design on file; the trigger is a stranded receipt). Spell
-  it: `Seq.tryHead` + an Option match for first-or-empty; `Seq.item`
-  / `first n` for fixed positions; Regex + `Str.split` for text.
+- Seq patterns, F#'s spelling on seqs: `[]`, `x :: rest` (right-assoc
+  chains), `[a; b]` fixed arity; element positions nest full
+  patterns. `[]` + an irrefutable cons is a COMPLETE match; fixed
+  arity never completes alone (add `_`). The match probes a bounded
+  prefix ONCE (memoized): effects run once total, `rest` continues
+  the same enumeration, infinite seqs are safe. Refutable → match
+  only, never `let`. Param scrutinees need a resolved seq type
+  (pipe through a Seq op first — the ctor-pattern rule).
 
-```weir-error
-let xs = [1; 2; 3]
-match xs with // seq patterns are not a thing yet: match on tryHead instead
-| x :: rest -> x
-| [] -> 0
+```weir
+let first =
+    match $(printf 'a\nb\nc') with
+    | [] -> "none"
+    | x :: rest -> $"{x}+{rest |> Seq.length}"
+
+print first
 ```
 - `Seq.force` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, exactly two cases:

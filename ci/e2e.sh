@@ -1974,4 +1974,43 @@ case "$out" in
 esac
 echo "e2e ok: piped REPL output is byte-clean (the harness guard)"
 
+# seq patterns (PLAN-seq-force-patterns Part 2): F#'s spelling, seq
+# semantics, bounded force + memoize-once
+spdir=$(mktemp -d)
+cat > "$spdir/status.weir" <<'WEOF'
+let verdict =
+    match $(printf 'M a.txt\nA b.txt') with
+    | [] -> "clean"
+    | line :: rest -> $"dirty: {line} (+{rest |> Seq.length} more)"
+
+print verdict
+WEOF
+out=$($BIN "$spdir/status.weir")
+expect "the design's git-status shape runs" "dirty: M a.txt (+1 more)" "$out"
+
+cat > "$spdir/once.weir" <<'WEOF'
+let s = cmd "sh" ["-c"; "echo x >> SPMARK; printf 'a\nb\nc\n'"]
+let r =
+    match s with
+    | [] -> "none"
+    | [a] -> a
+    | x :: rest -> $"{x}/{rest |> Str.join "-"}"
+
+print r
+WEOF
+sed -i "s|SPMARK|$spdir/mark|" "$spdir/once.weir"
+out=$($BIN "$spdir/once.weir")
+expect "arms + rest consumption over a command seq" "a/b-c" "$out"
+[ "$(grep -c x "$spdir/mark")" = "1" ] || fail "memoize-once: expected ONE spawn, got $(grep -c x "$spdir/mark")"
+echo "e2e ok: the memoize-once law holds live (one spawn across arms + rest)"
+
+errout=$($BIN -e 'match 5 with | [] -> 0 | _ -> 1' 2>&1) && fail "non-seq scrutinee must reject"
+echo "$errout" | grep -qF "seq patterns need a seq scrutinee" || fail "scrutinee message: $errout"
+printf 'let bad =\n    match [1] |> Seq.skip 0 with\n    | [] -> 0\n' > "$spdir/nx.weir"
+errout=$($BIN check "$spdir/nx.weir" 2>&1 || true)
+echo "$errout" | grep -qF "missing: _ :: _" || fail "seq exhaustiveness names the gap: $errout"
+echo "e2e ok: seq-pattern rejections are located and named"
+
+rm -rf "$spdir"
+
 echo "e2e battery: all green"

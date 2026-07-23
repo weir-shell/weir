@@ -625,10 +625,19 @@ let private patParens =
                 { Start = (List.head many).PSpan.Start
                   End = (List.last many).PSpan.End } }
 
+// seq patterns [D:seq-patterns]: [] and fixed-arity [p; q]
+let private patSeq =
+    spanned (str_ws "[" >>. sepBy pat (str_ws ";") .>> pchar ']') .>> ws
+    |>> fun (ps, span) ->
+        match ps with
+        | [] -> { PKind = PSeqNil; PSpan = span }
+        | ps -> { PKind = PSeqList ps; PSpan = span }
+
 let private patAtom =
     choice
         [ patLit
           patParens
+          patSeq
           patWord
           |>> fun (w, span) ->
               let kind =
@@ -652,10 +661,11 @@ let private regexPatternLit =
           |>> fun (p, sp) -> p, sp, false ]
     .>> ws
 
-patRef.Value <-
+let private patCore =
     choice
         [ patLit
           patParens
+          patSeq
           patWord
           >>= fun (w, span) ->
               if w = "_" then
@@ -684,6 +694,25 @@ patRef.Value <-
                         PSpan = { Start = span.Start; End = e } }
               else
                   preturn { PKind = PVar w; PSpan = span } ]
+
+// cons is the pattern grammar's one infix: right-associative, tighter
+// than comma, looser than constructor application [D:seq-patterns]
+patRef.Value <-
+    sepBy1 patCore (str_ws "::")
+    |>> fun ps ->
+        let rec build =
+            function
+            | [ last ] -> last
+            | h :: rest ->
+                let t = build rest
+
+                { PKind = PCons(h, t)
+                  PSpan =
+                    { Start = h.PSpan.Start
+                      End = t.PSpan.End } }
+            | [] -> failwith "sepBy1 never yields empty"
+
+        build ps
 
 
 binderParamRef.Value <-

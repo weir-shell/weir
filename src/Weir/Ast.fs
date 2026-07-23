@@ -25,6 +25,11 @@ and PatternKind =
     // verbatim (its backslashes belong to the regex engine); litSpan
     // aims check errors at the literal, not the whole pattern.
     | PRegex of pattern: string * litSpan: Span * raw: bool * binder: Pattern
+    // seq patterns [D:seq-patterns]: F#'s list spelling, seq semantics,
+    // bounded force at the match site
+    | PSeqNil
+    | PCons of head: Pattern * tail: Pattern
+    | PSeqList of elems: Pattern list
 
 type InterpPart<'e> =
     | IStr of string
@@ -131,6 +136,9 @@ let rec sexprPat (p: Pattern) : string =
     | PCase(c, None) -> c
     | PCase(c, Some arg) -> $"({c} {sexprPat arg})"
     | PRegex(pat, _, _, binder) -> $"(regex \"{pat}\" {sexprPat binder})"
+    | PSeqNil -> "[]"
+    | PCons(h, t) -> $"({sexprPat h} :: {sexprPat t})"
+    | PSeqList ps -> "[" + (ps |> List.map sexprPat |> String.concat "; ") + "]"
 
 let rec sexpr (e: Expr) : string =
     match e.Kind with

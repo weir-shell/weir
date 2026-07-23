@@ -63,6 +63,22 @@ weir rejects rather than guesses.
   moving brackets between lines. Brackets never
   engage inside strings (the scanner guarantee) or districts
   (command text). Parens spanning lines stay parked.
+- **Seq patterns** [D:seq-patterns]: F#'s LIST-pattern spelling on
+  weir's one sequence type — `[]`, `x :: rest` (right-associative
+  chains; cons binds tighter than comma, looser than constructor
+  application), `[a; b]` fixed arity; element positions nest full
+  patterns. FORCING is statically bounded (maxArity+1 probes,
+  knowable before anything runs) and MEMOIZED ONCE per match
+  (Seq.cache): arms probe one buffer, `rest` binds the buffer
+  suffix plus the untouched tail, effects run once TOTAL, infinite
+  seqs are safe. Exhaustiveness: `[]` + irrefutable-cons complete
+  (F#'s list rule, flat v1 — chained-cons completeness wants a
+  wildcard); fixed-arity literals never complete alone. All seq
+  patterns are refutable → banned in binders. Scrutinees must
+  RESOLVE to seq (params ride the ctor-pattern-scrutinee bound).
+  F# rejects the spelling on seq — the seq-patterns divergence row
+  (the param-ful-RHS class: existing law reaching a scope F# left
+  empty).
 - **Attributes** [D:attributes]: record fields carry `[<Name arg>]`
   lists (F#'s attachment syntax — FCS parses the adopted shapes;
   `;`-separated, literal args only; same-line or on the line above

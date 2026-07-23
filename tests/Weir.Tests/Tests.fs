@@ -2371,6 +2371,86 @@ let replColorTests =
               Expect.isTrue (sw.ElapsedMilliseconds < 2000L) $"1000 lines took {sw.ElapsedMilliseconds}ms"
           } ]
 
+let seqPatternTests =
+    testList
+        "Seq patterns"
+        [ test "the four shapes bind and select" {
+              expectValue
+                  "let f = fun xs -> match xs |> Seq.skip 0 with | [] -> 0 | [a] -> a | [a; b] -> a + b | x :: rest -> x + (rest |> Seq.length) in (f []) + (f [5]) + (f [3; 4]) + (f [10; 9; 8; 7])"
+                  (VInt 25L)
+          }
+          test "chained cons is right-associative" {
+              expectValue "match [1; 2; 3] with | a :: b :: rest -> a + b + (rest |> Seq.sum) | _ -> 0" (VInt 6L)
+          }
+          test "nested patterns in element positions" {
+              expectValue "match [Some 5; None] with | [Some x; _] -> x | _ -> 0" (VInt 5L)
+          }
+          test "rest binds the tail as a seq" {
+              expectValue "match [1; 2; 3; 4] with | _ :: rest -> rest |> Seq.length | [] -> 0" (VInt 3L)
+          }
+          test "exhaustiveness: nil + irrefutable cons complete; fixed arity never alone" {
+              expectValue "match [9] with | [] -> 0 | x :: _ -> x" (VInt 9L)
+
+              Expect.stringContains (checkErr "match [1] |> Seq.skip 0 with | [] -> 0").Message "missing: _ :: _" ""
+
+              Expect.stringContains
+                  (checkErr "match [1] |> Seq.skip 0 with | [a; b] -> a | [] -> 0").Message
+                  "missing: _ :: _"
+                  "fixed arity does not complete"
+          }
+          test "seq patterns are refutable: banned in binders" {
+              match Weir.Parser.parseStmt "let (x :: rest) = [1; 2]" with
+              | Ok stmt ->
+                  match stmt with
+                  | Weir.Ast.SLetPat(p, _) ->
+                      match Weir.Check.typecheck env (parse "match [1] with | x :: _ -> x | [] -> 0") with
+                      | Ok _ -> () // the match spelling stays legal
+                      | Error e -> failtest (formatError e)
+                  | _ -> ()
+              | Error _ -> ()
+
+              Expect.stringContains (checkErr "let (x :: rest) = [1; 2] in x").Message "this pattern can fail" ""
+          }
+          test "non-seq scrutinee rejects by name" {
+              Expect.stringContains
+                  (checkErr "match 5 with | [] -> 0 | _ -> 1").Message
+                  "seq patterns need a seq scrutinee"
+                  ""
+          }
+          test "element types flow: string elems reject int literals in element position" {
+              Expect.stringContains
+                  (checkErr "match [\"a\"] with | [1] -> 1 | _ -> 0").Message
+                  "int literal patterns need an int scrutinee"
+                  ""
+          }
+          test "the memoize-once law: probes + rest consumption pull ONE enumeration" {
+              let opens = ref 0
+
+              let counted =
+                  seq {
+                      System.Threading.Interlocked.Increment opens |> ignore
+
+                      for i in 1..5 do
+                          yield Weir.Builtins.file $"f{i}" i false
+                  }
+
+              match
+                  runWith
+                      [ "ls", VSeq counted ]
+                      "match ls with | [] -> 0 | [a] -> a.Bytes | [p; q] -> p.Bytes | x :: rest -> x.Bytes + (rest |> Seq.map _.Bytes |> Seq.sum)"
+              with
+              | VInt n ->
+                  Expect.equal n 15L "1 + 2+3+4+5"
+                  Expect.equal opens.Value 1 "one enumeration TOTAL across four arms and rest"
+              | v -> failtest $"unexpected {v}"
+          }
+          test "guards compose with seq patterns" {
+              expectValue "match [5; 6] with | x :: _ when x > 4 -> x | _ -> 0" (VInt 5L)
+          }
+          test "Regex patterns sit as sibling arms" {
+              expectValue "match [\"key=1\"] with | [Regex @\"(\\w+)=\" k] -> k | _ -> \"no\"" (VStr "key")
+          } ]
+
 let optionSweepTests =
     testList
         "Option sweep"
@@ -4918,6 +4998,7 @@ let allTests =
           fmtStroustrupTests
           replEchoTests
           replColorTests
+          seqPatternTests
           optionSweepTests
           moduleTests
           scriptTests

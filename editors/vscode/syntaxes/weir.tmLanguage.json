@@ -92,7 +92,7 @@
       "name": "keyword.operator.attribute.weir"
     },
     "operators": {
-      "match": "\\|>|>>|<<|==|<>|<=|>=|->|\\.\\.|&&|\\|\\||[+\\-*/<>=;,]|\\|",
+      "match": "\\|>|>>|<<|==|<>|<=|>=|->|\\.\\.|::|&&|\\|\\||[+\\-*/<>=;,]|\\|",
       "name": "keyword.operator.weir"
     },
     "field-sugar": {
@@ -116,7 +116,7 @@
             { "include": "#types" },
             { "include": "#numbers" },
             { "include": "#field-sugar" },
-            { "match": "\\|>|==|<>|<=|>=|->|\\.\\.|[+\\-*/<>=]", "name": "keyword.operator.weir" },
+            { "match": "\\|>|==|<>|<=|>=|->|\\.\\.|::|[+\\-*/<>=]", "name": "keyword.operator.weir" },
             { "match": "\\b[a-z_][A-Za-z0-9_]*\\b", "name": "variable.other.weir" }
           ]
         }

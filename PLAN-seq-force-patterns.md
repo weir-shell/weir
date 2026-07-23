@@ -83,7 +83,26 @@ axis is FORCING SEMANTICS AT THE MATCH SITE:
   patterns, array patterns.
 
 **Trigger**: the first stranded cons-pattern in the friction/agent
-log, OR user call — whichever first.
+log, OR user call — whichever first. FIRED (user call, 2026-07-23,
+hours after filing) — EXECUTED same day.
+
+### Part 2 completion addenda (2026-07-23)
+
+Design closed as drawn. All four pre-implementation FCS verdicts
+held (list-literal Same ×2, seq-scrutinee reject ×2 → the row born
+refereed). The memoize-once law IS Seq.cache — the explicit bound
+became emergent (probes cannot exceed maxArity+1 by construction);
+the crown pin: four arms + rest consumption over a counted command
+seq = ONE spawn, live in e2e. Cons is the pattern grammar's first
+infix (right-assoc via sepBy1+fold, tighter than comma). Carried
+bounds, no new machinery: param scrutinees ride
+ctor-pattern-scrutinee; interp holes in arms ride
+splice-default-last; chained-cons completeness wants a wildcard
+(the flat-v1 exhaustiveness rule, noted in the row). The SKILL
+must-fail block flipped to a working example. `::` joined both
+highlighter operator rules (existing rule edit — no inventory
+change). 794 unit / 136 oracle / full e2e / 50 doc blocks; timing
+unchanged.
 
 ## Parked
 

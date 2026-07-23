@@ -64,7 +64,7 @@ rules:
     # ---- operators ----
     # rule: operators
     - symbol.operator: "\\|>"
-    - symbol.operator: "(==|<>|<=|>=|->|\\.\\.|&&|\\|\\|)"
+    - symbol.operator: "(==|<>|<=|>=|->|\\.\\.|&&|\\|\\||::)"
     - symbol.operator: "[+\\-*/<>=;,]"
     - symbol.operator: "\\|"
 

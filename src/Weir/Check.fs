@@ -691,6 +691,29 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
         match ty with
         | TStr -> Ok []
         | ty -> err p.PSpan $"string literal patterns need a string scrutinee; this one has type {formatTy ty}"
+    | PSeqNil ->
+        (match ty with
+         | TSeq _ -> Ok []
+         | ty -> err p.PSpan $"seq patterns need a seq scrutinee; this one has type {formatTy ty}")
+    | PCons(h, t) ->
+        (match ty with
+         | TSeq elem ->
+             result {
+                 let! hb = checkPattern env elem h
+                 let! tb = checkPattern env ty t
+                 return hb @ tb
+             }
+         | ty -> err p.PSpan $"seq patterns need a seq scrutinee; this one has type {formatTy ty}")
+    | PSeqList ps ->
+        (match ty with
+         | TSeq elem ->
+             ps
+             |> List.fold
+                 (fun acc sub ->
+                     acc
+                     |> Result.bind (fun bs -> checkPattern env elem sub |> Result.map (fun b -> bs @ b)))
+                 (Ok [])
+         | ty -> err p.PSpan $"seq patterns need a seq scrutinee; this one has type {formatTy ty}")
     | PRegex(pat, litSpan, raw, binder) ->
         // check-time compilation [D:regex-pattern]: an invalid literal
         // is a check error, and the binder's arity must equal the
@@ -824,6 +847,9 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
     | PInt _
     | PStr _
     | PRegex _
+    | PSeqNil
+    | PCons _
+    | PSeqList _
     | PCase _ -> err p.PSpan "this pattern can fail; use match"
 
 // per-name generalization for destructuring binders: each bound name's
@@ -854,6 +880,9 @@ let rec private isIrrefutablePat (p: Pattern) =
     | PInt _
     | PStr _
     | PRegex _
+    | PSeqNil
+    | PCons _
+    | PSeqList _
     | PCase _ -> false
 
 // Exhaustiveness [D:exhaustiveness-hard-error]. Only unguarded arms
@@ -911,6 +940,23 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
             // completes; per-component product analysis is out of scope
             // (tuple-exhaustiveness-bounded divergence row)
             [ "_" ]
+        | TSeq _ ->
+            // [D:seq-patterns]: [] + irrefutable-cons complete (F#'s
+            // list rule, flat v1 — chained-cons completeness wants a
+            // wildcard); fixed-arity literals never complete alone
+            let nilCovered = pats |> List.exists (fun p -> p.PKind = PSeqNil)
+
+            let consCovered =
+                pats
+                |> List.exists (fun p ->
+                    match p.PKind with
+                    | PCons(h, t) -> isIrrefutablePat h && isIrrefutablePat t
+                    | _ -> false)
+
+            [ if not nilCovered then
+                  "[]"
+              if not consCovered then
+                  "_ :: _" ]
         | _ -> []
 
 let private exhaustive
@@ -961,7 +1007,10 @@ let private exhaustive
         else
             match scrutTy with
             | TNamed _
-            | TBool ->
+            | TBool
+            // [D:seq-patterns]: [] + irrefutable-cons is a complete
+            // seq analysis (F#'s list rule)
+            | TSeq _ ->
                 match missingCases env scrutTy unguarded with
                 | [] -> Ok()
                 | missing ->

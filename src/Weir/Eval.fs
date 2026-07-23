@@ -393,6 +393,26 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
                      |> Some
                  | _ -> unreachable "the checker constrains Regex binders to unit/name/tuple")
     | PRegex _, v -> unreachable $"the checker rejects Regex patterns on {formatValue v}"
+    // seq patterns [D:seq-patterns]: probes pull from the match-site
+    // cache (see TEMatch) — bounded force, memoize-once
+    | PSeqNil, VSeq items -> if Seq.isEmpty items then Some [] else None
+    | PCons(h, t), VSeq items ->
+        (match items |> Seq.truncate 1 |> List.ofSeq with
+         | [ first ] ->
+             tryBind h first
+             |> Option.bind (fun hb -> tryBind t (VSeq(items |> Seq.skip 1)) |> Option.map (fun tb -> hb @ tb))
+         | _ -> None)
+    | PSeqList ps, VSeq items ->
+        let probe = items |> Seq.truncate (List.length ps + 1) |> List.ofSeq
+
+        if List.length probe <> List.length ps then
+            None
+        else
+            List.zip ps probe
+            |> List.fold
+                (fun acc (p, v) -> acc |> Option.bind (fun bs -> tryBind p v |> Option.map (fun b -> bs @ b)))
+                (Some [])
+    | (PSeqNil | PCons _ | PSeqList _), v -> unreachable $"the checker rejects seq patterns on {formatValue v}"
 
 
 // binder patterns are irrefutable by checking, so the bind always
@@ -701,7 +721,25 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | VSeq items -> VSeq(items |> Seq.map (jsonLine >> VStr))
             | v -> unreachable $"the checker rejects 'to json' on {formatValue v}")
     | TEMatch(scrutinee, arms) ->
-        let v = eval env scrutinee
+        let v0 = eval env scrutinee
+
+        // memoize-once law [D:seq-patterns]: a match containing ANY seq
+        // pattern views its scrutinee through ONE cache — arms probe the
+        // same buffer (never re-pull), rest binds the buffer suffix plus
+        // the untouched tail, effects run once TOTAL
+        let rec hasSeqPat (p: Weir.Ast.Pattern) =
+            match p.PKind with
+            | Weir.Ast.PSeqNil
+            | Weir.Ast.PCons _
+            | Weir.Ast.PSeqList _ -> true
+            | Weir.Ast.PTuple ps -> ps |> List.exists hasSeqPat
+            | Weir.Ast.PCase(_, Some a) -> hasSeqPat a
+            | _ -> false
+
+        let v =
+            match v0 with
+            | VSeq items when arms |> List.exists (fun (p, _, _) -> hasSeqPat p) -> VSeq(Seq.cache items)
+            | _ -> v0
 
         let rec tryArms arms =
             match arms with

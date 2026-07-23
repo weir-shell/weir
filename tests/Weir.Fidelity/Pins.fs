@@ -329,6 +329,24 @@ let pins =
           "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n}\n"
           (Diverges "record-fields-ignore-indent")
 
+      // --- seq-pattern probes (PLAN-seq-force-patterns Part 2) ---
+      pin
+          "seq patterns: F#'s spelling on a LIST literal scrutinee agrees"
+          "let v =\n    match [1; 2] with\n    | [] -> 0\n    | x :: rest -> x\n"
+          Same
+      pin
+          "seq patterns on a SEQ scrutinee: F# rejects, weir extends (the row)"
+          "let v =\n    match ([1; 2] |> Seq.skip 0) with\n    | [] -> 0\n    | x :: rest -> x\n"
+          (Diverges "seq-patterns")
+      pin
+          "fixed-arity pattern on a seq scrutinee"
+          "let v =\n    match ([1; 2] |> Seq.skip 0) with\n    | [a; b] -> a + b\n    | _ -> 0\n"
+          (Diverges "seq-patterns")
+      pin
+          "chained cons on a list literal (F#'s right assoc)"
+          "let v =\n    match [1; 2; 3] with\n    | a :: b :: rest -> a + b\n    | _ -> 0\n"
+          Same
+
       // --- Seq.append probe (the full-port receipt: variable argv) ---
       pin "Seq.append: piped tail after the head seq" "let xs = [3; 4] |> Seq.append [1; 2] |> Seq.length\n" Same
 
