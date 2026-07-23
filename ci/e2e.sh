@@ -1923,8 +1923,12 @@ rm -rf "$bbdir"
 
 # bounded REPL echo (mini-plan): glance vs read
 out=$(printf 'let xs = [1..100]\nxs\n' | $BIN 2>&1)
-echo "$out" | grep -qF "10; …] : seq<int> (10 of ? shown — pipe to print for all)" || fail "REPL echo must bound and hint: $out"
-echo "e2e ok: REPL echo truncates at 10 with the way-out hint"
+echo "$out" | grep -qF "10; …] : seq<int> (10 of ? shown — pipe to Seq.map show |> print for all)" || fail "REPL echo must bound and hint a spelling that TYPES: $out"
+echo "e2e ok: REPL echo truncates at 10; non-string seqs hint the show spelling"
+
+out=$($BIN -e '["a"; "b"; "c"; "d"; "e"; "f"; "g"; "h"; "i"; "j"; "k"]')
+echo "$out" | grep -qF "(10 of 11 shown — pipe to print for all)" || fail "string seqs hint plain print: $out"
+echo "e2e ok: string seqs hint |> print (it types); counts real when known"
 
 out=$($BIN -e '[1..50]')
 echo "$out" | grep -qF "(10 of ? shown" || fail "-e echoes like the REPL (decided): $out"

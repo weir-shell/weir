@@ -78,7 +78,14 @@ let private evalOnce (input: string) : int =
 
                 if v <> Eval.VUnit then
                     let rendered, hint = Eval.echoValue v
-                    let tail = hint |> Option.map (fun h -> " " + h) |> Option.defaultValue ""
+
+                    let tail =
+                        match hint with
+                        | Some counts ->
+                            let spelling = Eval.echoSpelling (te.Ty = TSeq TStr)
+                            $" ({counts} — {spelling})"
+                        | None -> ""
+
                     Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
                 0

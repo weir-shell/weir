@@ -67,6 +67,8 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
                 | _ -> None
             | Error _ -> None
 
+/// text ENDS AT THE CURSOR (both callers truncate — the LSP's `upto`,
+/// the REPL's Substring): the word runs from wordStart to the end
 let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
     let word =
         if wordStart >= text.Length then

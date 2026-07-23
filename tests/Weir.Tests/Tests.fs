@@ -868,6 +868,22 @@ let completionTests =
               let text = "ls |> where (fun f -> f."
               Expect.equal (suggest text (text.Length - 2)) [ "f.Bytes"; "f.Name"; "f.ReadOnly" ] ""
           }
+          test "lambda param completes inside a record literal (the user receipt)" {
+              let text = "ls |> Seq.map (fun x -> { Line = x."
+              Expect.equal (suggest text (text.Length - 2)) [ "x.Bytes"; "x.Name"; "x.ReadOnly" ] ""
+          }
+          test "mid-line cursor: callers truncate at the cursor (the contract)" {
+              // the receipt: `{ Line = x. })` with the cursor after the
+              // dot — the tail must not reach suggest; both callers
+              // truncate (LSP upto, REPL Substring), pinned here as the
+              // truncated call giving fields while the full-line call
+              // (a contract violation) gives nothing
+              let full = "ls |> Seq.map (fun x -> { Line = x. })"
+              let upto = full.Substring(0, full.Length - 3)
+              let ws = full.Length - 5
+              Expect.equal (suggest upto ws) [ "x.Bytes"; "x.Name"; "x.ReadOnly" ] "truncated: fields"
+              Expect.equal (suggest full ws) [] "untruncated would kill every match"
+          }
           test "field prefix narrows the suggestions" {
               let text = "ls |> where (fun f -> f.B"
               Expect.equal (suggest text (text.Length - 3)) [ "f.Bytes" ] ""
@@ -2229,12 +2245,12 @@ let replEchoTests =
               let rendered, hint = Weir.Eval.echoValue (VSeq counted)
               Expect.isTrue (pulls.Value <= 11) $"forced {pulls.Value} pulls (bound is 11)"
               Expect.stringContains rendered "; …]" "truncation spelled"
-              Expect.equal hint (Some "(10 of ? shown — pipe to print for all)") "lazy count stays ?"
+              Expect.equal hint (Some "10 of ? shown") "lazy count stays ?"
           }
           test "materialized lists show the real count" {
               let v = VSeq([ for i in 1..12 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
               let _, hint = Weir.Eval.echoValue v
-              Expect.equal hint (Some "(10 of 12 shown — pipe to print for all)") ""
+              Expect.equal hint (Some "10 of 12 shown") ""
           }
           test "short seqs echo whole, no hint" {
               let v = VSeq([ VInt 1L; VInt 2L ] :> seq<Weir.Eval.Value>)

@@ -141,6 +141,9 @@ let echoValue (v: Value) : string * string option =
         let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
         let rendered = formatWith echoLimits 0 (VSeq(shown :> seq<Value>))
 
+        // the counts phrase only — the SPELLING is composed at the echo
+        // sites, which know the element type (pipe-to-print is a lie for
+        // record seqs; the hint must name a spelling that types)
         let hint =
             if shown.Length > echoLimits.MaxItems then
                 let count =
@@ -149,12 +152,20 @@ let echoValue (v: Value) : string * string option =
                     | :? System.Collections.Generic.ICollection<Value> as c -> string c.Count
                     | _ -> "?"
 
-                Some $"({echoLimits.MaxItems} of {count} shown — pipe to print for all)"
+                Some $"{echoLimits.MaxItems} of {count} shown"
             else
                 None
 
         rendered, hint
     | _ -> formatWith echoLimits 0 v, None
+
+// the way-out spelling per element type [D:repl-echo]: the hint names
+// a spelling that TYPES — print takes seq<string> only
+let echoSpelling (elemIsString: bool) : string =
+    if elemIsString then
+        "pipe to print for all"
+    else
+        "pipe to Seq.map show |> print for all"
 
 // The line-per-element renderer. Both consumers — the print builtin and the
 // runner's command-statement streaming — must call this one function; the

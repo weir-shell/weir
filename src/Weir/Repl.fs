@@ -163,7 +163,11 @@ let private readLineTty () : string option =
         | ConsoleKey.Tab ->
             let text = buf.ToString()
             let ws = wordStartAt text pos
-            let suggestions = Complete.suggest currentEnv.Value text ws
+            // suggest's contract: text ends at the CURSOR — the tail past
+            // it must not leak into the word (the mid-line receipt: the
+            // typed closer ` })` became part of the prefix and killed
+            // every match); insertion below re-attaches the tail
+            let suggestions = Complete.suggest currentEnv.Value (text.Substring(0, pos)) ws
 
             (match suggestions with
              | [] -> ()
@@ -328,7 +332,14 @@ let rec private loop (state: State) =
 
                         if v <> Eval.VUnit then
                             let rendered, hint = Eval.echoValue v
-                            let tail = hint |> Option.map (fun h -> " " + h) |> Option.defaultValue ""
+
+                            let tail =
+                                match hint with
+                                | Some counts ->
+                                    let spelling = Eval.echoSpelling (te.Ty = TSeq TStr)
+                                    $" ({counts} — {spelling})"
+                                | None -> ""
+
                             Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
 
                         { TypeEnv = chk.Env
@@ -347,7 +358,14 @@ let rec private loop (state: State) =
 
                         if v <> Eval.VUnit then
                             let rendered, hint = Eval.echoValue v
-                            let tail = hint |> Option.map (fun h -> " " + h) |> Option.defaultValue ""
+
+                            let tail =
+                                match hint with
+                                | Some counts ->
+                                    let spelling = Eval.echoSpelling (te.Ty = TSeq TStr)
+                                    $" ({counts} — {spelling})"
+                                | None -> ""
+
                             Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
                         state

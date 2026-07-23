@@ -81,6 +81,11 @@ by the machinery working as designed.
 - Receipts before features: parked items reopen on recorded
   triggers; user fiat can override, and the override is recorded as
   such (env-sugar layers).
+- Laziness claims get pull-count pins, never inspection: instrument
+  a counted source and assert the forcing bound (third instance made
+  it a rule — fold's strictness sentence, choose's infinite-source
+  pin, the echo's double-force caught at 22 pulls where the property
+  allows 11, before the pin was an hour old).
 
 ## Harness truth (stamps + waitpid)
 

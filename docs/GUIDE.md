@@ -22,6 +22,11 @@ Three properties, in the order they matter:
 
 - `weir` — the REPL: bare names allowed, values echo back, tab
   completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits.
+  Three output roles: the echo is a bounded GLANCE (10 elements,
+  clipped strings, a hint naming the rest), the READ is `|> print`
+  for string seqs and `|> Seq.map show |> print` for the rest
+  (everything, line per element), and a bare command statement is
+  the STREAM (live, as the child produces it).
 - `weir -e '1 + 2'` — one expression.
 - `weir script.weir args...` — run a script; `#!/usr/bin/env weir`
   works. Scripts are STRICT: library calls are module-qualified

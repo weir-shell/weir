@@ -32,6 +32,15 @@ send("\x1b[1;5D")  # to the start of 'ab'
 send("\x1b[1;5C")  # Ctrl+Right: back over 'ab'
 send("9", 0.2)
 send("\r", 0.5)    # ab9.cd proves both directions hop segment-wise
+# mid-line Tab: the tail past the cursor must not join the completion
+# word (the `{ Line = x. })` receipt) — type the full line, cursor back
+# over the tail, complete `Seq.ma` -> Seq.map, Enter; the evaluated echo
+# proves both the truncation and that insertion preserved the tail
+send('["zz"] |> Seq.ma (fun s -> s) |> Seq.head')
+for _ in range(25):
+    send("\x1b[D", 0.02)  # Left over ' (fun s -> s) |> Seq.head'
+send("\t", 0.3)
+send("\r", 0.6)
 send("\x04")       # Ctrl+D
 time.sleep(0.4)
 
@@ -52,6 +61,8 @@ if "424" not in text:
     failures.append("Ctrl+Left did not land before '23' (no 424 in output)")
 if "ab9.cd" not in text:
     failures.append("Ctrl+Left x2 / Ctrl+Right did not hop segment-wise (no ab9.cd echo)")
+if '"zz"' not in text:
+    failures.append("mid-line Tab completion did not complete Seq.ma with a tail after the cursor (no zz echo)")
 
 if failures:
     print(text)

@@ -22,8 +22,32 @@ The pull-count pin earned its keep in its first minute: the naive
 echoValue rendered the seq AND re-truncated to decide the hint — 22
 pulls where the property allows 11, a silent double-force that
 re-runs effects on lazy streams. One materialize-once restructure
-later the pin passed. Instrumented properties over eyeballed
-laziness, again.
+later the pin passed. Third instance of the pattern (fold's
+strictness sentence, choose's infinite-source pin, now this) —
+threshold reached, promoted to a PROCESS rule: laziness claims get
+pull-count pins, never inspection.
+
+Live correction within the hour: the hint said "pipe to print for
+all" unconditionally, and `ls |> print` REJECTS — print takes
+seq<string>, the echo's own origin receipt is seq<FileRow>. The
+hint-names-the-spelling convention means the named spelling must
+TYPE: the counts phrase now composes in Eval (where the value is)
+and the spelling at the echo sites (where the type is) —
+seq<string> hints `|> print`, everything else hints
+`|> Seq.map show |> print`, both verified against the checker
+before wording the hint.
+
+Second live catch, same hour: Tab at `{ Line = x. })` with the
+cursor mid-line offered nothing — the REPL passed the FULL buffer
+to Complete.suggest, whose word runs from wordStart to end-of-text,
+so the typed closer joined the prefix and killed every match. The
+LSP caller already truncated at the cursor (`upto`); the contract
+("text ends at the cursor") was implicit and one of two callers
+violated it. Fixed at the caller, contract now stated on suggest,
+pinned twice: the unit pin compares truncated-vs-full on the exact
+receipt, and the PTY harness types the closer first, cursors back,
+completes mid-line, and asserts the evaluated echo — verified to
+FAIL against the pre-fix binary before counting it as a pin.
 
 ## The founding divergence retires — blanks never end statements (2026-07-23)
 
