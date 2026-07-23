@@ -432,3 +432,18 @@ TEEnvLoad. Derivation lives in `Check.Argv` (kebabFlag, shortTables
 excluded) shared by the checker, the eval loader, and usage
 rendering, so the check-time truth and the runtime truth cannot
 drift.
+
+## Addendum — the bracket stack (2026-07-23, [D:multiline-brackets])
+
+Pend's `BraceDepth: int` + `BraceLine: int` became `Brackets:
+(char * int) list`, fed by `bracketFold` (scanner-riding, so
+brackets inside strings never count; parens deliberately untracked
+— the park). The continuation branch keys the separator rule on the
+innermost kind: `{` uses StartsField (literals) or the new
+StartsTypeField (type decls — `Ident :` or `[<`), `[` treats every
+line as an element unless the previous line dangles `{ [ ; with >]`
+or an operator/comma. Mismatched closers error from inside
+bracketFold naming both sides. braceStack (fmt's alignment feed)
+widened to (kind, column); fmt aligns at brace+2 / bracket+1 —
+under the first entry either way. Zero checker or parser surface:
+the assembled single-line text is what the grammar already accepts.

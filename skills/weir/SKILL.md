@@ -80,6 +80,13 @@ print $"branches: {branches}"
   (`let bump r = { r with N = r.N + 1 }`) generalizes to any record
   with the field. A comma between fields is a parse error (F#
   silently makes the field a TUPLE there; weir refuses the trap).
+- Type declarations and list literals continue across lines inside
+  the open bracket (line break = separator; a dangling operator
+  continues the same element; blank lines inside are errors naming
+  the bracket). House style is Stroustrup: opener dangles at the
+  head line's end, entries one level in, closer alone at the head's
+  indent — `type Cli = {` / four-space fields / `}`. The aligned
+  style (`{ x` with column-aligned fields) stays accepted.
 - Record fields take attributes, F#'s syntax: `[<Short "c">]`,
   `[<Doc "text">]`, `[<NoShort>]`, `[<Positional>]` — `;`-separated
   lists, literal args only (string/int/bool). Attributes are

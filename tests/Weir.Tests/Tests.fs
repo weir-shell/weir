@@ -1960,6 +1960,207 @@ let chooseTests =
               Expect.stringContains terr.Message "Option" ""
           } ]
 
+let bracketContinuationTests =
+    // [D:multiline-brackets] — fixture diversity per the standing rule:
+    // headed / standalone / nested / at-boundary
+    let joined lines =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Ok [ ll ] -> ll.Text
+        | other -> failtest $"unexpected: {other}"
+
+    let assembleErr lines =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Error e -> e
+        | Ok lls -> failtest $"expected an assembly error, got {lls |> List.map (fun l -> l.Text)}"
+
+    testList
+        "Bracket continuation"
+        [ test "type declaration fields join as siblings" {
+              Expect.equal
+                  (joined
+                      [ "type Ctx ="
+                        "    { Subdir: string"
+                        "      Subref: string"
+                        "      Repo: GitRepo }" ])
+                  "type Ctx = { Subdir: string ; Subref: string ; Repo: GitRepo }"
+                  ""
+          }
+          test "same-line attributes ride a type field line" {
+              Expect.equal
+                  (joined [ "type Cli ="; "    { [<Short \"c\">] count: int"; "      verbose: bool }" ])
+                  "type Cli = { [<Short \"c\">] count: int ; verbose: bool }"
+                  ""
+          }
+          test "preceding-line attribute binds to ITS field: no separator between" {
+              Expect.equal
+                  (joined
+                      [ "type Cli ="
+                        "    { [<Doc \"count\">]"
+                        "      count: int"
+                        "      verbose: bool }" ])
+                  "type Cli = { [<Doc \"count\">] count: int ; verbose: bool }"
+                  ""
+          }
+          test "list elements join as siblings" {
+              Expect.equal
+                  (joined [ "let pairs ="; "    [(\"a\", 1)"; "     (\"b\", 2)"; "     (\"c\", 3)]" ])
+                  "let pairs = [(\"a\", 1) ; (\"b\", 2) ; (\"c\", 3)]"
+                  ""
+          }
+          test "a dangling operator continues the same element" {
+              Expect.equal (joined [ "let x ="; "    [1 +"; "     2"; "     3]" ]) "let x = [1 + 2 ; 3]" ""
+          }
+          test "trailing ; takes no second separator" {
+              Expect.equal (joined [ "let x ="; "    [1;"; "     2]" ]) "let x = [1; 2]" ""
+          }
+          test "nested list: inner elements nest, outer resumes" {
+              Expect.equal (joined [ "let xs ="; "    [[1; 2]"; "     [3]]" ]) "let xs = [[1; 2] ; [3]]" ""
+          }
+          test "a multiline record inside a list: innermost bracket rules" {
+              Expect.equal
+                  (joined [ "let xs ="; "    [{ A = 1"; "       B = 2 }"; "     { A = 3; B = 4 }]" ])
+                  "let xs = [{ A = 1 ; B = 2 } ; { A = 3; B = 4 }]"
+                  ""
+          }
+          test "at-boundary: a col-0 statement after the close is a new statement" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "type T ="
+                        2, "    { A: int"
+                        3, "      B: int }"
+                        4, "let t = { A = 1; B = 2 }" ]
+              with
+              | Ok [ ty; letLine ] ->
+                  Expect.equal ty.Text "type T = { A: int ; B: int }" ""
+                  Expect.equal letLine.Text "let t = { A = 1; B = 2 }" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "cross-bracket closer names both sides" {
+              Expect.stringContains
+                  (assembleErr [ "let x ="; "    [1; 2"; "     3}" ])
+                  "'}' closes the '[' opened at line 2"
+                  ""
+          }
+          test "blank inside an open list names the bracket" {
+              Expect.stringContains
+                  (assembleErr [ "let x ="; "    [1"; ""; "     2]" ])
+                  "this list's [ is still open"
+                  ""
+          }
+          test "blank inside an open type decl names the record type" {
+              Expect.stringContains
+                  (assembleErr [ "type T ="; "    { A: int"; ""; "      B: int }" ])
+                  "this record type's {"
+                  ""
+          }
+          test "Stroustrup closers take no separator" {
+              Expect.equal
+                  (joined [ "let pairs = ["; "    (\"a\", 1)"; "    (\"b\", 2)"; "]" ])
+                  "let pairs = [ (\"a\", 1) ; (\"b\", 2) ]"
+                  "list closer joins with space"
+
+              Expect.equal
+                  (joined [ "type Ctx = {"; "    Subdir: string"; "    Repo: string"; "}" ])
+                  "type Ctx = { Subdir: string ; Repo: string }"
+                  "type closer joins with space"
+          }
+          test "brackets never engage inside strings (the scanner guarantee)" {
+              Expect.equal (joined [ "let s ="; "    [\"a[\""; "     \"b\"]" ]) "let s = [\"a[\" ; \"b\"]" ""
+          } ]
+
+let fmtMatchTests =
+    testList
+        "fmt: match arm alignment"
+        [ test "arms align under the m (the drift pull)" {
+              match
+                  Weir.Fmt.formatLines
+                      [ "let category ="
+                        "    match 3 with"
+                        "        | s when s > 2 -> \"big\""
+                        "        | _ -> \"small\"" ]
+              with
+              | Ok lines ->
+                  Expect.equal lines[2] "    | s when s > 2 -> \"big\"" ""
+                  Expect.equal lines[3] "    | _ -> \"small\"" ""
+              | Error e -> failtest e
+          }
+          test "nested matches align to their own m; the outer arm returns" {
+              match
+                  Weir.Fmt.formatLines
+                      [ "let deep ="
+                        "    match 1 with"
+                        "        | 1 ->"
+                        "            match 2 with"
+                        "                | 2 -> \"a\""
+                        "                | _ -> \"b\""
+                        "        | _ -> \"c\"" ]
+              with
+              | Ok lines ->
+                  Expect.equal lines[2] "    | 1 ->" "outer arm at outer m"
+                  Expect.equal lines[4] "        | 2 -> \"a\"" "inner arm at inner m"
+                  Expect.equal lines[6] "    | _ -> \"c\"" "outer resumes after inner closes"
+              | Error e -> failtest e
+          }
+          test "union cases and chain stages are not arms" {
+              match Weir.Fmt.formatLines [ "type Cmd ="; "    | First of int"; "    | Second" ] with
+              | Ok lines -> Expect.equal lines[1] "    | First of int" "union case untouched"
+              | Error e -> failtest e
+
+              match
+                  Weir.Fmt.formatLines
+                      [ "let r ="
+                        "    match 1 with"
+                        "    | 1 ->"
+                        "        sh -c \"echo one\""
+                        "        | complete"
+                        "    | _ -> 0" ]
+              with
+              | Ok lines ->
+                  Expect.equal lines[4] "        | complete" "arm-body chain stage keeps its depth"
+                  Expect.equal lines[5] "    | _ -> 0" "the next arm still aligns"
+              | Error e -> failtest e
+          }
+          test "col-0 statement match arms stay at column 0" {
+              match Weir.Fmt.formatLines [ "match 1 with"; "| 1 -> print \"a\""; "| _ -> print \"b\"" ] with
+              | Ok lines -> Expect.equal lines[1] "| 1 -> print \"a\"" ""
+              | Error e -> failtest e
+          } ]
+
+let fmtStroustrupTests =
+    testList
+        "fmt: Stroustrup brackets"
+        [ test "dangling opener: entries at +4, closer at the opener line's indent" {
+              match
+                  Weir.Fmt.formatLines [ "type Ctx = {"; "        Subdir: string"; "      Repo: string"; "    }" ]
+              with
+              | Ok lines ->
+                  Expect.equal lines[1] "    Subdir: string" ""
+                  Expect.equal lines[2] "    Repo: string" ""
+                  Expect.equal lines[3] "}" "closer returns to the opener line"
+              | Error e -> failtest e
+          }
+          test "with-header takes Stroustrup rules" {
+              match Weir.Fmt.formatLines [ "let c2 = { c with"; "        Repo = \"r2\""; "}" ] with
+              | Ok lines ->
+                  Expect.equal lines[1] "    Repo = \"r2\"" ""
+                  Expect.equal lines[2] "}" ""
+              | Error e -> failtest e
+          }
+          test "inline opener keeps column alignment (both styles accepted)" {
+              match Weir.Fmt.formatLines [ "let target ="; "    { Name = \"a\""; "        Bp = \"b\" }" ] with
+              | Ok lines -> Expect.equal lines[2] "      Bp = \"b\" }" "brace+2 unchanged"
+              | Error e -> failtest e
+          }
+          test "nested Stroustrup: inner opener indents from its own line" {
+              match Weir.Fmt.formatLines [ "let xs = ["; "    {"; "            A = 1"; "    }"; "]" ] with
+              | Ok lines ->
+                  Expect.equal lines[1] "    {" "inner opener is an element"
+                  Expect.equal lines[2] "        A = 1" "inner entries +4 from the inner opener"
+                  Expect.equal lines[3] "    }" "inner closer at the inner opener's indent"
+                  Expect.equal lines[4] "]" "outer closer at the head"
+              | Error e -> failtest e
+          } ]
+
 let optionSweepTests =
     testList
         "Option sweep"
@@ -4486,6 +4687,9 @@ let allTests =
           attributeTests
           typedArgvTests
           chooseTests
+          bracketContinuationTests
+          fmtMatchTests
+          fmtStroustrupTests
           optionSweepTests
           moduleTests
           scriptTests

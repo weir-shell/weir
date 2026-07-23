@@ -7,8 +7,22 @@
 
 // ---- the state the bash threaded ambiently ----------------------
 
-type GitRepo = { Remote: string; Branch: string; Commit: string; Parent: string; Method: string }
-type Ctx = { Subdir: string; Subref: string; Gitrepo: string; Repo: GitRepo; UpstreamHead: string; HeadBranch: string }
+type GitRepo = {
+    Remote: string
+    Branch: string
+    Commit: string
+    Parent: string
+    Method: string
+}
+
+type Ctx = {
+    Subdir: string
+    Subref: string
+    Gitrepo: string
+    Repo: GitRepo
+    UpstreamHead: string
+    HeadBranch: string
+}
 
 type PullOutcome =
     | Pulled
@@ -19,9 +33,27 @@ type PullOutcome =
 // dynamic call) — a typed union over subcommands [D:typed-argv];
 // unknown subcommands did-you-mean, --help derives usage ----------
 
-type StatusArgs = { [<Doc "the subrepo directory">] subdir: string; verbose: bool }
-type FetchArgs = { [<Doc "the subrepo directory">] subdir: string; quiet: bool; verbose: bool }
-type PullArgs = { [<Doc "the subrepo directory">] subdir: string; quiet: bool; verbose: bool; [<Doc "pull even if the branch exists">] force: bool }
+type StatusArgs = {
+    [<Doc "the subrepo directory">]
+    subdir: string
+    verbose: bool
+}
+
+type FetchArgs = {
+    [<Doc "the subrepo directory">]
+    subdir: string
+    quiet: bool
+    verbose: bool
+}
+
+type PullArgs = {
+    [<Doc "the subrepo directory">]
+    subdir: string
+    quiet: bool
+    verbose: bool
+    [<Doc "pull even if the branch exists">]
+    force: bool
+}
 
 type Cmd =
     | Status of StatusArgs
@@ -65,7 +97,18 @@ let configGet file key =
 // loop) — one fold over replacement pairs -------------------------
 
 let encodeSubref subdir =
-    [("%", "%25"); ("..", "%2e%2e"); (" ", "%20"); ("~", "%7e"); ("^", "%5e"); (":", "%3a"); ("?", "%3f"); ("*", "%2a"); ("[", "%5b"); (@"\", "%5c")]
+    [
+        ("%", "%25")
+        ("..", "%2e%2e")
+        (" ", "%20")
+        ("~", "%7e")
+        ("^", "%5e")
+        (":", "%3a")
+        ("?", "%3f")
+        ("*", "%2a")
+        ("[", "%5b")
+        (@"\", "%5c")
+    ]
     |> Seq.fold (fun s (from0, to0) -> Str.replace from0 to0 s) subdir
 
 // ---- .gitrepo reading (bash: read-gitrepo-file mutating 6 globals)
@@ -122,10 +165,10 @@ let walkCommits ctx =
             else
                 let gitrepoCommit = blob.Stdout |> Seq.tryHead |> Option.defaultTo ""
                 { w with
-                  Prev = commit
-                  Ancestor = w.Prev
-                  First = (if w.First == "" then gitrepoCommit else w.First)
-                  Kept = w.Kept + 1 })
+                    Prev = commit
+                    Ancestor = w.Prev
+                    First = (if w.First == "" then gitrepoCommit else w.First)
+                    Kept = w.Kept + 1 })
         { Prev = ""; Ancestor = ""; First = ""; Kept = 0 }
 
 // bash: GIT_AUTHOR_* env prefix on git commit-tree — runEnv overlay,

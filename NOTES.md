@@ -1,5 +1,79 @@
 # Spike Notes
 
+## Stroustrup house style — and the oracle earns its keep again (2026-07-23)
+
+The user called Stroustrup as the house bracket style (the fantomas
+repo poll, ~70%): dangling opener, entries one level in, closer
+alone at the opener's indent. The assembler needed ONE line — a
+closer line never starts an entry (the list `]` was taking a
+sibling separator) — everything else already followed from the
+bracket stack. fmt learned to annotate each pushed bracket with its
+style at push time (dangling-at-EOL or a `{ .. with` header =
+Stroustrup; inline = column-aligned) and canonicalizes indentation
+within either; fmt does no line surgery, so the aligned style stays
+accepted rather than converted.
+
+The probe set caught a real asymmetry: F# accepts the col-0 closer
+for Stroustrup type decls, literals, and lists — but offside-REJECTS
+it in copy-and-update position. The Same claim flipped to the
+standing record-fields-ignore-indent row (weir is indentation-blind
+inside brackets), and the fantomas controversy now has a refereed
+pin instead of a vibe. Flagship, GUIDE, and SKILL swept to the new
+style; the live smoke stayed green throughout.
+
+## fmt: match arms align under the m (2026-07-23)
+
+A user request landed the same day as the bracket stack, and the
+same shape paid twice: fmt gained a match-head stack (original
+indent, formatted column, first-arm anchor). The first pipe line
+after a `match` head IS an arm — the assembler guarantees it — and
+its indent anchors the arm set, so deeper-indented arms pull back
+to the m while union cases (no match open), chain stages (deeper
+than the anchor), and arm-body pipes keep their depth. Nested
+matches align to their own m and the outer arms resume at the
+outer column when the inner closes at the offside boundary. The
+respace safety guard held throughout: every realignment is
+parse-neutral by construction, and the whole example corpus stayed
+--check clean.
+
+## Multiline brackets — one stack, three shapes (2026-07-23)
+
+Type declarations and list literals continue across lines, and the
+mechanism SHRANK the special cases rather than adding one: the
+assembler's brace depth (an int + a line number) became a bracket
+STACK (kind, opening line), and the innermost bracket picks the
+separator rule — `=`-fields for record literals, `:`-fields and
+`[<` lines for type declarations, every-line-an-element for lists
+unless the previous line dangles an opener, separator, or operator.
+Nesting falls out for free: a multiline record inside a list
+switches rules at the inner brace and switches back at its close,
+no code asked. Cross-bracket closers error naming BOTH sides
+("'}' closes the '[' opened at line 2") — the stack knows what the
+depth int never could.
+
+Preceding-line attributes (the F# house style) rode the widening
+with zero parser change: an attribute line starts its field
+(sibling separator before, none after — the `>]` dangle rule), and
+the assembled text is exactly what the same-line parser already
+accepts. The attributes session's same-line-only bound retires; the
+GUIDE bite that surfaced the gap is healed in place (the attributed
+Cli wraps).
+
+Zero existing-pin movement across the rewrite — 736 unit + 110
+oracle passed untouched before the new pins landed, the assembler
+battery proving the stack is a strict generalization. All six new
+oracle verdicts held first-try, including the wrapped-element
+dangling-operator continuation (F# accepts) and the col-0 type
+field riding the records-ignore-indent divergence unchanged.
+
+fmt's "bracket+2" decided wording resolved in-session: the house
+logic is align-under-the-first-entry, which is brace+2 for `{ x`
+and bracket+1 for `[x` — the plan's own form block shows +1; the
+bullet's arithmetic was records-specific. Probes clarified one
+scope line early: piped stdin is the REPL (single-line by the
+standing continuation-prompt park), so multiline forms are a
+file-mode feature — the probe harness moved to files and the park
+is unchanged.
 ## Seq.choose + the highlighter that was never broken (2026-07-23)
 
 `Seq.choose` lands as the match-or-skip member — lazy, qualified-only,

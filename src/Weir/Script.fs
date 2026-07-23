@@ -202,6 +202,7 @@ type PieceClass =
       IsBangSigil: bool
       ClosesBrace: bool
       StartsField: bool
+      StartsTypeField: bool
       BraceDelta: int }
 
 let private isIdentToken (t: string) =
@@ -249,6 +250,13 @@ let classifyPiece (piece: string) : PieceClass =
         (match piece.IndexOf '=' with
          | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
          | _ -> false)
+      // type-declaration fields carry `:` not `=`; attribute lines
+      // start their field [D:multiline-brackets]
+      StartsTypeField =
+        piece.StartsWith "[<"
+        || (match piece.IndexOf ':' with
+            | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
+            | _ -> false)
       BraceDelta = braceDelta piece }
 
 /// The marker's district wrap: opener text and how many trailing
@@ -352,23 +360,51 @@ let closers (text: string) : string =
         | c -> string c)
     |> String.concat ""
 
-// Columns (0-based) of still-open record braces after folding a line
-// into the running stack — fmt aligns record fields at TOP+2
+// Still-open brackets (kind, column) after folding a line into the
+// running stack — fmt aligns record fields at TOP+2 and list elements
+// at TOP+1, under the first field/element either way
 // (quote-aware via the scanner family; lives here per the rule).
-let braceStack (prev: int list) (line: string) : int list =
+let braceStack (prev: (char * int) list) (line: string) : (char * int) list =
     // rides the ONE scanner [D:one-scanner]
     foldOutsideStrings
         (fun stack i c ->
-            if c = '{' then
-                i :: stack
-            elif c = '}' then
-                match stack with
-                | _ :: rest -> rest
-                | [] -> []
-            else
-                stack)
+            match c with
+            | '{'
+            | '[' -> (c, i) :: stack
+            | '}'
+            | ']' ->
+                (match stack with
+                 | _ :: rest -> rest
+                 | [] -> [])
+            | _ -> stack)
         prev
         line
+
+// Fold a piece's brackets into the pending statement's open-bracket
+// stack (kind, line) [D:multiline-brackets]. A mismatched closer is an
+// error naming BOTH sides; over-closing stays permissive (the parser
+// owns that message). Parens are NOT tracked (parens-spanning-lines is
+// parked).
+let bracketFold (lineNo: int) (stack: (char * int) list) (piece: string) : Result<(char * int) list, string> =
+    foldOutsideStrings
+        (fun acc _ c ->
+            match acc with
+            | Error _ -> acc
+            | Ok stack ->
+                match c with
+                | '{'
+                | '[' -> Ok((c, lineNo) :: stack)
+                | '}'
+                | ']' ->
+                    let expected = if c = '}' then '{' else '['
+
+                    (match stack with
+                     | (o, _) :: rest when o = expected -> Ok rest
+                     | (o, oline) :: _ -> Error $"line {lineNo}: '{c}' closes the '{o}' opened at line {oline}"
+                     | [] -> Ok [])
+                | _ -> Ok stack)
+        (Ok stack)
+        piece
 
 // Pending-statement state. Compounds is the offside stack: each open
 // if/match-headed piece as (headIndent, textStart). A sibling arriving
@@ -392,8 +428,8 @@ type private Pend =
       LastIndent: int
       District: District option
       Compounds: (int * int) list
-      BraceDepth: int
-      BraceLine: int }
+      // still-open brackets (kind, opening line) [D:multiline-brackets]
+      Brackets: (char * int) list }
 
 // The join algebra: every way a continuation line attaches to the
 // pending statement, its inserted text in ONE place. joinedStart
@@ -443,12 +479,19 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
         Error
             $"line {letLine}: this let needs a body — a blank line ends the statement; keep the block's lines contiguous"
 
-    let braceOpen braceLine =
-        Error $"line {braceLine}: this record literal's {{ is still open when the statement ends — close the brace"
+    let braceOpen (p: Pend) =
+        match p.Brackets with
+        | ('{', line) :: _ when p.LL.Text.StartsWith "type " ->
+            Error $"line {line}: this record type's {{ is still open when the statement ends — close the brace"
+        | ('{', line) :: _ ->
+            Error $"line {line}: this record literal's {{ is still open when the statement ends — close the brace"
+        | (kind, line) :: _ ->
+            Error $"line {line}: this list's {kind} is still open when the statement ends — close the bracket"
+        | [] -> Error "unreachable: bracketOpen on an empty stack"
 
     let close (current: Pend option) acc =
         match current with
-        | Some p when p.BraceDepth > 0 -> braceOpen p.BraceLine
+        | Some p when not p.Brackets.IsEmpty -> braceOpen p
         | Some { District = Some { Active = None; MarkerLine = mLine } } ->
             Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
         | Some { Lets = (_, letLine) :: _ } -> noBody letLine
@@ -487,12 +530,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 | Ok(current, acc, blankSinceHead) ->
                     let inOpenBrace =
                         match current with
-                        | Some p -> p.BraceDepth > 0
+                        | Some p -> not p.Brackets.IsEmpty
                         | None -> false
 
                     if raw.Trim() = "" then
                         match current with
-                        | Some p when p.BraceDepth > 0 -> braceOpen p.BraceLine
+                        | Some p when not p.Brackets.IsEmpty -> braceOpen p
                         | Some { District = Some { Active = None; MarkerLine = mLine } } ->
                             Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
                         | Some { Lets = (_, letLine) :: _ } -> noBodyBlank letLine
@@ -515,39 +558,55 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 let cls = classifyPiece piece
 
                                 let rec go (p: Pend) =
-                                    if p.BraceDepth > 0 then
-                                        // record continuation: a line break after a
-                                        // field is a separator (with or without `;`)
+                                    match p.Brackets with
+                                    | (kind, _) :: _ ->
+                                        // bracket continuation: a line break after a
+                                        // field/element is a separator
                                         let prev = p.LL.Text.TrimEnd()
 
-                                        // the separator goes BEFORE a field-start line
-                                        // (`Ident =`), never before a value continuation —
-                                        // a field's value may open on the next line (the
-                                        // fixture-diversity sweep's first catch — PROCESS.md)
-                                        let join =
-                                            if
-                                                cls.StartsField
-                                                && not (prev.EndsWith "{")
-                                                && not (prev.EndsWith ";")
-                                                // an update header ends at `with`; the
-                                                // first field after it is not a sibling
-                                                // [D:record-update]
-                                                && not (prev.EndsWith " with")
-                                            then
-                                                JSibling
-                                            else
-                                                JSpace
+                                        // the separator goes BEFORE an entry-start line,
+                                        // never before a value continuation — a field's
+                                        // value may open on the next line (the
+                                        // fixture-diversity sweep's first catch — PROCESS.md).
+                                        // Lists have no entry marker: every line starts an
+                                        // element unless the previous line dangles an
+                                        // opener/separator/operator [D:multiline-brackets]
+                                        let startsEntry =
+                                            // a closer line ends its bracket, never
+                                            // starts an entry (Stroustrup closers)
+                                            // [D:multiline-brackets]
+                                            if piece.StartsWith "]" || piece.StartsWith "}" then false
+                                            elif kind = '[' then true
+                                            elif p.LL.Text.StartsWith "type " then cls.StartsTypeField
+                                            else cls.StartsField
 
-                                        Ok(
+                                        let danglesOpen =
+                                            prev.EndsWith "{"
+                                            || prev.EndsWith "["
+                                            || prev.EndsWith ";"
+                                            // an update header ends at `with`; the
+                                            // first field after it is not a sibling
+                                            // [D:record-update]
+                                            || prev.EndsWith " with"
+                                            // a preceding-line attribute binds to ITS
+                                            // field: no separator between them
+                                            || prev.EndsWith ">]"
+                                            // a dangling operator/comma continues the
+                                            // same element (wrapped elements)
+                                            || (prev.Length > 0 && "+-*/,(<>=|&" |> Seq.contains prev[prev.Length - 1])
+
+                                        let join = if startsEntry && not danglesOpen then JSibling else JSpace
+
+                                        bracketFold lineNo p.Brackets piece
+                                        |> Result.map (fun brackets ->
                                             Some
                                                 { p with
                                                     LL = applyJoin join p.LL piece lineNo indent
                                                     LastIndent = indent
-                                                    BraceDepth = max 0 (p.BraceDepth + cls.BraceDelta) },
+                                                    Brackets = brackets },
                                             acc,
-                                            blankSinceHead
-                                        )
-                                    else
+                                            blankSinceHead)
+                                    | [] ->
                                         match p.District with
                                         | Some({ Active = None } as dst) when indent > dst.MarkerIndent ->
                                             districtLineCheck lineNo cls
@@ -674,7 +733,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         else
                                                             compounds
 
-                                                    Ok(
+                                                    bracketFold lineNo [] piece
+                                                    |> Result.map (fun brackets ->
                                                         Some
                                                             { p with
                                                                 LL = joined
@@ -682,38 +742,37 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 LastIndent = indent
                                                                 District = district
                                                                 Compounds = compounds
-                                                                BraceDepth = max 0 cls.BraceDelta
-                                                                BraceLine = lineNo },
+                                                                Brackets = brackets },
                                                         acc,
-                                                        blankSinceHead
-                                                    )
+                                                        blankSinceHead)
 
                                 go p
                     else
                         let cls = classifyPiece (raw.TrimEnd())
 
                         close current acc
-                        |> Result.map (fun acc ->
-                            Some
-                                { LL =
-                                    { Text = raw
-                                      Head = lineNo
-                                      Segments = [ (0, lineNo, 0) ] }
-                                  Lets = []
-                                  LastIndent = 0
-                                  District =
-                                    markerOpener cls.Marker
-                                    |> Option.map (fun (opener, strip) ->
-                                        { MarkerIndent = 0
-                                          MarkerLine = lineNo
-                                          Opener = opener
-                                          Strip = strip
-                                          Active = None })
-                                  Compounds = []
-                                  BraceDepth = max 0 cls.BraceDelta
-                                  BraceLine = lineNo },
-                            acc,
-                            false))
+                        |> Result.bind (fun acc ->
+                            bracketFold lineNo [] (raw.TrimEnd())
+                            |> Result.map (fun brackets ->
+                                Some
+                                    { LL =
+                                        { Text = raw
+                                          Head = lineNo
+                                          Segments = [ (0, lineNo, 0) ] }
+                                      Lets = []
+                                      LastIndent = 0
+                                      District =
+                                        markerOpener cls.Marker
+                                        |> Option.map (fun (opener, strip) ->
+                                            { MarkerIndent = 0
+                                              MarkerLine = lineNo
+                                              Opener = opener
+                                              Strip = strip
+                                              Active = None })
+                                      Compounds = []
+                                      Brackets = brackets },
+                                acc,
+                                false)))
             (Ok(None, [], false))
 
     match folded with

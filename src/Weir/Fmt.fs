@@ -125,11 +125,18 @@ let formatLines (body: string list) : Result<string list, string> =
         // the assembler makes (=, <, >), so re-assembly is
         // join-for-join identical.
         let mutable levels: int list = []
-        // open record braces (columns in the FORMATTED text): fields
-        // align at top+2 [D:fmt-brace-plus-2]
-        let mutable braces: int list = []
+        // open brackets, annotated: (kind, column, stroustrup, opener
+        // line's formatted indent). A DANGLING opener (line ends at the
+        // bracket, or a `{ ... with` header) takes Stroustrup rules —
+        // entries at opener-indent+4, closers at opener-indent; an
+        // inline opener keeps column alignment [D:fmt-stroustrup]
+        let mutable braces: (char * int * bool * int) list = []
         // district: Some(markerOrigIndent, markerDepth) while inside a ! block
         let mutable district: (int * int) option = None
+        // open match heads, innermost first: (originalIndent,
+        // formattedCol, first arm's original indent once seen) — arms
+        // align under the m [D:fmt-match-arms]
+        let mutable matches: (int * int * int option) list = []
 
         let formatted =
             body
@@ -140,6 +147,7 @@ let formatLines (body: string list) : Result<string list, string> =
                 if raw.Trim() = "" then
                     levels <- []
                     braces <- []
+                    matches <- []
                     ""
                 elif code.Trim() = "" then
                     // comment-only: transparent to assembly [D:comment-transparency];
@@ -159,26 +167,99 @@ let formatLines (body: string list) : Result<string list, string> =
 
                         let formatted =
                             match braces with
-                            | top :: _ ->
-                                // record continuation: align under the open
-                                // brace's first field (top + 2)
-                                String.replicate (top + 2) " " + content
-                            | [] ->
-                                let depth =
-                                    if indent = 0 then
-                                        levels <- []
-                                        0
+                            | (_, _, true, oIndent) :: _ ->
+                                // Stroustrup: closers return to the opener
+                                // line's indent, entries sit one level in
+                                let col =
+                                    if piece.StartsWith "]" || piece.StartsWith "}" then
+                                        oIndent
                                     else
-                                        let kept = levels |> List.filter (fun k -> k < indent)
-                                        levels <- indent :: kept
-                                        List.length kept + 1
+                                        oIndent + 4
 
-                                if ((Script.classifyPiece piece).Marker <> Script.MarkerKind.NoMarker) then
-                                    district <- Some(indent, depth)
+                                String.replicate col " " + content
+                            | (kind, top, false, _) :: _ ->
+                                // bracket continuation: align under the first
+                                // field/element — brace+2 (`{ x`), bracket+1
+                                // (`[x`) [D:multiline-brackets]
+                                let offset = if kind = '{' then 2 else 1
+                                String.replicate (top + offset) " " + content
+                            | [] ->
+                                let isPipe =
+                                    piece.StartsWith "|"
+                                    && not (piece.StartsWith "|>")
+                                    && not (piece.StartsWith "||")
 
-                                String.replicate (depth * 4) " " + content
+                                // a match closes at the offside boundary:
+                                // strictly-shallower lines pop for arms too;
+                                // same-indent non-arm lines pop as siblings
+                                matches <-
+                                    matches
+                                    |> List.skipWhile (fun (mi, _, _) -> mi > indent || (mi >= indent && not isPipe))
 
-                        braces <- Script.braceStack braces formatted
+                                let armCol =
+                                    if isPipe then
+                                        match matches with
+                                        | (mi, col, None) :: rest ->
+                                            // the first pipe after a match head
+                                            // IS an arm; its indent anchors the
+                                            // arm set [D:fmt-match-arms]
+                                            matches <- (mi, col, Some indent) :: rest
+                                            Some col
+                                        | (_, col, Some armIndent) :: _ when indent = armIndent -> Some col
+                                        | _ -> None
+                                    else
+                                        None
+
+                                match armCol with
+                                | Some col -> String.replicate col " " + content
+                                | None ->
+                                    let depth =
+                                        if indent = 0 then
+                                            levels <- []
+                                            0
+                                        else
+                                            let kept = levels |> List.filter (fun k -> k < indent)
+                                            levels <- indent :: kept
+                                            List.length kept + 1
+
+                                    if ((Script.classifyPiece piece).Marker <> Script.MarkerKind.NoMarker) then
+                                        district <- Some(indent, depth)
+
+                                    let line = String.replicate (depth * 4) " " + content
+
+                                    if piece.StartsWith "match " then
+                                        matches <- (indent, depth * 4, None) :: matches
+
+                                    line
+
+                        // re-annotate: entries pushed on THIS line learn
+                        // their style from where the line leaves its opener
+                        let raw = braces |> List.map (fun (k, c, _, _) -> k, c)
+                        let newRaw = Script.braceStack raw formatted
+
+                        let survived =
+                            let rec common j =
+                                let tailOf (l: (char * int) list) = List.skip (List.length l - j) l
+
+                                if j < List.length raw && j < List.length newRaw && tailOf raw = tailOf newRaw then
+                                    common (j + 1)
+                                else
+                                    j
+
+                            common 0
+
+                        let trimmed = formatted.TrimEnd()
+                        let lineIndent = formatted.Length - formatted.TrimStart().Length
+
+                        let pushed =
+                            newRaw
+                            |> List.take (List.length newRaw - survived)
+                            |> List.map (fun (k, c) ->
+                                let stroustrup = c = trimmed.Length - 1 || (k = '{' && trimmed.EndsWith " with")
+
+                                k, c, stroustrup, lineIndent)
+
+                        braces <- pushed @ (braces |> List.skip (List.length braces - survived))
                         formatted)
 
         let renumbered =

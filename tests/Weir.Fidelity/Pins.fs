@@ -276,6 +276,39 @@ let pins =
       pin "F#-rejects-this: open range" "let r = [1..]\n" Same
       pin "F#-rejects-this: triple-dotted range" "let r = [1..2..3..4]\n" Same
 
+      // --- multiline bracket probes (PLAN-multiline-brackets) ---
+      pin
+          "multiline type declaration (F# light's own rule)"
+          "type Ctx =\n    { Subdir: string\n      Subref: string }\nlet c = { Subdir = \"a\"; Subref = \"b\" }\n"
+          Same
+      pin "multiline list literal" "let pairs =\n    [(\"a\", 1)\n     (\"b\", 2)]\n" Same
+      pin "multiline list: wrapped element via dangling operator" "let x =\n    [1 +\n     2\n     3]\n" Same
+      pin "F#-rejects-this: cross-bracket closer" "let x =\n    [1; 2\n     3}\n" Same
+      pin
+          "type field at column 0 rides the records-indent divergence"
+          "type T =\n    { A: int\nB: int }\nlet t = { A = 1; B = 2 }\n"
+          (Diverges "record-fields-ignore-indent")
+      pin
+          "preceding-line attribute on a type field (THE F# style; names diverge)"
+          "type T =\n    { [<System.Obsolete>]\n      A: int }\nlet t = { A = 1 }\n"
+          (Diverges "attributes-registered")
+
+      // --- Stroustrup bracket probes (fantomas-poll house style) ---
+      pin
+          "Stroustrup type declaration"
+          "type Ctx = {\n    Subdir: string\n    Repo: string\n}\nlet c = { Subdir = \"a\"; Repo = \"b\" }\n"
+          Same
+      pin "Stroustrup record literal" "type R = { A: int }\nlet r = {\n    A = 1\n}\n" Same
+      pin "Stroustrup list literal" "let xs = [\n    1\n    2\n]\n" Same
+      // REFUTED as Same by the probe: F# offside-rejects the col-0
+      // closer in UPDATE position (accepts it for type decls,
+      // literals, lists — the fantomas-poll controversy, refereed);
+      // weir is indentation-blind inside brackets — the standing row
+      pin
+          "Stroustrup copy-and-update (weir indentation-blind; F# offside-rejects)"
+          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n}\n"
+          (Diverges "record-fields-ignore-indent")
+
       // --- Seq.choose probes (PLAN-choose) ---
       pin
           "Seq.choose: partial map, applied"

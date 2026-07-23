@@ -111,13 +111,15 @@ any record carrying the field.
 Record fields also take attributes, F#'s syntax:
 
 ```weir
-type Cli = { [<Short "C"; Doc "clean first">] Clean: bool; [<Positional>] Target: string }
+type Cli = {
+    [<Short "C"; Doc "clean first">]
+    Clean: bool
+    [<Positional>] Target: string
+}
+
 let cli = { Clean = true; Target = "prod" }
 print cli.Target
 ```
-
-(Type declarations are single-line today — record literals continue
-across lines, type declarations do not yet.)
 
 They are check-time data, fully erased at runtime — `cli` above is
 indistinguishable from a bare `Cli`. The names are a closed registry
@@ -335,7 +337,12 @@ it loads the same way — declare the shape, load once, typed
 thereafter:
 
 ```weir
-type Cli = { [<Short "C"; Doc "clean the target first">] clean: bool; port: Option<int> }
+type Cli = {
+    [<Short "C"; Doc "clean the target first">]
+    clean: bool
+    port: Option<int>
+}
+
 let cli = Args.load Cli
 print $"{show cli.clean} {show cli.port}"
 ```

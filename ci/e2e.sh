@@ -1789,4 +1789,43 @@ rm -rf "$tadir"
 $BIN check tools/jira-branch.weir >/dev/null 2>&1 || fail "jira-branch must check with Args.load"
 echo "e2e ok: jira-branch checks with the typed Cli"
 
+# multiline brackets (PLAN-multiline-brackets): type decls + lists
+mldir=$(mktemp -d)
+cat > "$mldir/forms.weir" <<'WEOF'
+type Ctx =
+    { Subdir: string
+      Repo: string }
+
+type Cli =
+    { [<Short "c"; Doc "count">] count: int
+      [<Doc "notes">]
+      verbose: bool }
+
+let pairs =
+    [("%", "%25")
+     ("..", "%2e%2e")
+     (" ", "%20")]
+
+let c = { Subdir = "s"; Repo = "r" }
+let cli = { count = 1; verbose = false }
+print $"{c.Subdir} {cli.count} {pairs |> Seq.length}"
+WEOF
+out=$($BIN "$mldir/forms.weir")
+expect "all three form-block shapes run (incl. preceding-line attribute)" "s 1 3" "$out"
+
+$BIN fmt --check "$mldir/forms.weir" >/dev/null 2>&1 || fail "fmt must accept the canonical multiline forms"
+echo "e2e ok: fmt roundtrips multiline type decls and lists"
+
+printf 'let x =\n    [1; 2\n     3}\n' > "$mldir/cross.weir"
+errout=$($BIN "$mldir/cross.weir" 2>&1) && fail "cross-bracket must reject"
+echo "$errout" | grep -qF "'}' closes the '[' opened at line 2" || fail "cross-bracket names both: $errout"
+echo "e2e ok: cross-bracket closer errors naming both brackets"
+
+printf 'let x =\n    [1\n\n     2]\n' > "$mldir/blank.weir"
+errout=$($BIN "$mldir/blank.weir" 2>&1) && fail "blank inside a list must reject"
+echo "$errout" | grep -qF "this list's [ is still open" || fail "blank-inside names the bracket: $errout"
+echo "e2e ok: blank inside an open list errors, naming the bracket"
+
+rm -rf "$mldir"
+
 echo "e2e battery: all green"

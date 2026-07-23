@@ -142,7 +142,9 @@ not-yet message carry over to that plan.
   (fabricated citation; parallel-record supersession with the
   Default idiom preserved), TRANSCRIPTION registry-arm addendum.
 
-### Finding: type declarations are single-line
+### Finding: type declarations are single-line (RESOLVED 2026-07-23
+by PLAN-multiline-brackets — type decls continue, and preceding-line
+attributes ride the same rule; same-line-only v1 is retired)
 
 Probed en route (the attachment-grammar cell): record TYPE
 declarations do not continue across lines — record LITERALS

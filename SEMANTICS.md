@@ -41,9 +41,28 @@ weir rejects rather than guesses.
   source evaluates ONCE (the plan's parser-desugar clause hit its
   stop-and-report: a parser desugar duplicates the source expression,
   so paths live in the AST and the checker walks them).
+- **Bracket continuation** [D:multiline-brackets]: inside an open
+  `{` or `[`, line breaks separate entries — F# light's own rule,
+  one assembler mechanism (a bracket STACK, kind + opening line;
+  the innermost bracket picks the separator rule). Record literals
+  key on `Ident =` field starts (a value may continue), TYPE
+  declarations key on `Ident :` / `[<` (so type decls wrap, and a
+  preceding-line attribute joins its field with no separator),
+  lists treat every line as a new element unless the previous line
+  dangles an opener, separator, or operator (wrapped elements
+  continue). A mismatched closer errors naming BOTH sides; a blank
+  inside an open bracket errors naming the bracket. House style is
+  Stroustrup [D:fmt-stroustrup] (dangling opener, entries one level
+  in, closer at the opener line's indent); the aligned style stays
+  accepted — fmt canonicalizes indentation within either, never
+  moving brackets between lines. Brackets never
+  engage inside strings (the scanner guarantee) or districts
+  (command text). Parens spanning lines stay parked.
 - **Attributes** [D:attributes]: record fields carry `[<Name arg>]`
   lists (F#'s attachment syntax — FCS parses the adopted shapes;
-  `;`-separated, literal args only, same-line-before-field). The
+  `;`-separated, literal args only; same-line or on the line above
+  the field — the F# house style, riding the bracket continuation
+  [D:multiline-brackets]). The
   semantics diverge invisibly from F#: no reflection, no runtime
   metadata — attributes are CHECK-TIME data on the record
   declaration, and erasure is absolute (no attribute reaches eval,
