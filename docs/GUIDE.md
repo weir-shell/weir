@@ -22,6 +22,11 @@ Three properties, in the order they matter:
 
 - `weir` — the REPL: bare names allowed, values echo back, tab
   completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits.
+  Input colors as you type (lexical: keywords, strings, comments,
+  numbers, sigils) and the HEAD word colors by live resolution —
+  bold = known binding/builtin, blue = found on PATH, red = would
+  fail; a red head is the typo caught before Enter. `NO_COLOR`
+  honored; piped sessions are plain text always.
   Three output roles: the echo is a bounded GLANCE (10 elements,
   clipped strings, a hint naming the rest), the READ is `|> print`
   for string seqs and `|> Seq.map show |> print` for the rest

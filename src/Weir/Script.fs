@@ -812,6 +812,132 @@ module Color =
     let yellow on s = wrap on "33" s
     let bold on s = wrap on "1" s
 
+// ---- the REPL input-line colorizer [D:repl-color] -----------------
+// Rides the ONE scanner (inStringMask), stripComment, and the parser's
+// keyword set — no re-derived string states, by law: this is the one
+// highlighter that is correct by construction. Lexical grade only;
+// the head word additionally colors by the session resolver's verdict
+// (the fish trick). Fixed palette, no theming.
+
+let stripAnsi (s: string) : string =
+    System.Text.RegularExpressions.Regex.Replace(s, "\x1b\[[0-9;]*m", "")
+
+let colorizeRepl (isKnown: string -> bool) (line: string) : string =
+    if line = "" then
+        ""
+    else
+        // per-char color codes; None = plain
+        let codes: string option array = Array.create line.Length None
+        let mask = inStringMask line
+
+        for i in 0 .. line.Length - 1 do
+            if mask[i] then
+                codes[i] <- Some "32" // strings, all three kinds
+
+        let commentCut = (stripComment line).Length
+
+        for i in commentCut .. line.Length - 1 do
+            codes[i] <- Some "90" // comments override to EOL
+
+        let isIdentStart c = Char.IsLetter c || c = '_'
+        let isIdentCont c = Char.IsLetterOrDigit c || c = '_'
+        let free i = i < commentCut && not mask[i]
+
+        // token pass over the code region
+        let mutable i = 0
+        let mutable headSeen = false
+
+        while i < line.Length do
+            if not (free i) then
+                i <- i + 1
+            elif isIdentStart line[i] then
+                let start = i
+
+                while i < line.Length && free i && isIdentCont line[i] do
+                    i <- i + 1
+
+                let word = line.Substring(start, i - start)
+
+                let code =
+                    if Weir.Parser.keywords.Contains word then
+                        // keywords: BLUE — the red family (31/35 render
+                        // near-identically in some themes) is reserved for
+                        // exactly one signal: a head that would fail
+                        Some "34"
+                    elif not headSeen && start = 0 then
+                        // the fish trick: the head resolves live
+                        if isKnown word then Some "1" // known: bold
+                        elif Extern.exists word then Some "1;34" // PATH: bold blue
+                        else Some "31" // unresolved: red
+                    elif Char.IsUpper word[0] then
+                        Some "33" // the casing law: types/ctors/modules
+                    else
+                        None
+
+                headSeen <- true
+
+                match code with
+                | Some c ->
+                    for j in start .. i - 1 do
+                        codes[j] <- Some c
+                | None -> ()
+            elif Char.IsDigit line[i] then
+                let start = i
+
+                while i < line.Length && free i && Char.IsDigit line[i] do
+                    i <- i + 1
+
+                for j in start .. i - 1 do
+                    codes[j] <- Some "36" // numbers: cyan
+            elif line[i] = '$' || line[i] = '^' || line[i] = '!' then
+                // sigils, splices, markers, force-prefix
+                codes[i] <- Some "36"
+                i <- i + 1
+
+                if line[i - 1] = '$' && i < line.Length && free i && isIdentStart line[i] then
+                    while i < line.Length && free i && isIdentCont line[i] do
+                        codes[i] <- Some "36"
+                        i <- i + 1
+            elif "|><=+-*/".Contains(line[i]) then
+                codes[i] <- Some "1" // operators: bold
+                i <- i + 1
+            else
+                i <- i + 1
+
+        // ^ls: the forced head resolves against PATH only
+        if line.Length > 1 && line[0] = '^' && isIdentStart line[1] then
+            let mutable e = 1
+
+            while e < line.Length && isIdentCont line[e] do
+                e <- e + 1
+
+            let word = line.Substring(1, e - 1)
+            let c = if Extern.exists word then "34" else "31"
+
+            for j in 1 .. e - 1 do
+                codes[j] <- Some c
+
+        // emit: group adjacent same-code chars into spans
+        let sb = System.Text.StringBuilder()
+        let mutable j = 0
+
+        while j < line.Length do
+            let code = codes[j]
+            let start = j
+
+            while j < line.Length && codes[j] = code do
+                j <- j + 1
+
+            let span = line.Substring(start, j - start)
+
+            match code with
+            | Some c ->
+                sb.Append("\x1b[").Append(c).Append('m').Append(span).Append("\x1b[0m")
+                |> ignore
+            | None -> sb.Append span |> ignore
+
+        sb.ToString()
+
 type Mode =
     | Strict
     | Loose

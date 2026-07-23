@@ -1,5 +1,45 @@
 # Spike Notes
 
+## REPL coloring — the highlighter that cannot drift (2026-07-23)
+
+Input lines color as you type, and the architecture note the plan
+wanted for the ledger holds cleanly: the colorizer consumes
+inStringMask (the one scanner), stripComment, and the parser's own
+keyword set — zero re-derived string states, so this highlighter is
+correct by construction where micro and TextMate hold only by
+hand-audit. The eventual semantic-tokens conversation gets its
+evidence: one brain, many surfaces.
+
+Two planned mechanisms dissolved on contact with the code. The
+strip-escapes width helper: unnecessary, because the design keeps
+escapes out of the BUFFER entirely — coloring happens at the paint
+(redraw's single choke point), buf/pos stay plain text, and cursor
+math never meets an ANSI byte. And tier 2 (colored error carets)
+was already shipped by the colored-diagnostics session — verified,
+not rebuilt. The cache-cost verify clause closed trivially:
+Extern.exists is a set lookup, and the redraw-cost ceiling pin
+(1000 pathological 200-char lines under 2s) covers the whole paint
+including head resolution.
+
+The fish trick is the feature: the head word colors by the live
+resolver verdict — bold for bindings/builtins, blue for PATH, red
+for would-fail — and `^`-forced heads resolve PATH-only, consistent
+with their semantics (pinned: `^print` paints red while bare
+`print` is bold). The load-bearing pin is the transparency
+property: strip ∘ colorize = id over fixtures including emoji,
+unclosed raw strings, and an unclosed bracket — coloring can never
+alter what runs. The harness guard landed FIRST per the plan:
+piped sessions are byte-clean structurally (the tty editor never
+runs), and NO_COLOR under a pty suppresses every span.
+
+First live receipt within the hour: `let`/`match`/`with`/`from`
+"all get red" — they were MAGENTA (35), which renders near-red in
+the user's theme and read as four errors on a correct line. The
+probe-the-codes-first discipline paid (the logic was right; the hue
+collided), and the palette gained its one hard rule: the red family
+belongs to exactly one signal, the head that would fail. Keywords
+went blue, PATH heads bold blue.
+
 ## Bounded REPL echo — two premises corrected, one pin earns its keep (2026-07-23)
 
 The echo now glances: 10 elements then "…", strings clipped at 120,

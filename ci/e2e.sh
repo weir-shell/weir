@@ -719,6 +719,9 @@ PYEOF
     # --- REPL line editor under a pty (2026-07-21) ---------------------
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
     echo "e2e ok: repl Ctrl+Left/Right word navigation"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-color.py" "$BIN" || fail "repl coloring"
+    echo "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
 else
     # no silent caps: name what was skipped
     echo "e2e SKIP: python3 absent — lsp + repl pty probes NOT run" >&2
@@ -1937,5 +1940,13 @@ echo "e2e ok: -e shares the echo bound"
 out=$(printf 'print (show [1..100])\n' | $BIN 2>&1)
 echo "$out" | grep -qF "; 20; ...]" || fail "show byte-identical (20 + dots): $out"
 echo "e2e ok: show is unchanged — byte-identical to its shipped lossy contract"
+
+# REPL coloring (PLAN-repl-color): the harness-sees-no-ANSI guard —
+# piped stdin bypasses the tty editor structurally; pin it stays true
+out=$(printf 'let x = 1 + 2\nx\n' | $BIN 2>&1)
+case "$out" in
+    *$'\x1b['*) fail "piped REPL output must carry zero ANSI: $(echo "$out" | head -1)" ;;
+esac
+echo "e2e ok: piped REPL output is byte-clean (the harness guard)"
 
 echo "e2e battery: all green"

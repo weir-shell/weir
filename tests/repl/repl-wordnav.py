@@ -54,7 +54,10 @@ try:
 except OSError:
     pass
 os.waitpid(pid, 0)
-text = out.decode(errors="replace")
+# assertions are about TEXT, not paint: strip color spans (the input
+# echo colors as of PLAN-repl-color; content must be unchanged)
+import re as _re
+text = _re.sub(r"\x1b\[[0-9;]*m", "", out.decode(errors="replace"))
 
 failures = []
 if "424" not in text:

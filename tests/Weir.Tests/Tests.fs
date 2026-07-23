@@ -2278,6 +2278,65 @@ let replEchoTests =
               Expect.equal (Weir.Eval.formatValue (VStr s200)) ("\"" + s200 + "\"") "show never clips strings"
           } ]
 
+let replColorTests =
+    // [D:repl-color] — the paint-transparency property is the load-bearing
+    // pin: coloring NEVER alters the text (strip . colorize = id)
+    let colorize = Weir.Script.colorizeRepl (fun n -> n = "ls" || n = "print")
+    let strip = Weir.Script.stripAnsi
+
+    testList
+        "REPL coloring"
+        [ test "paint transparency: strip after colorize is the identity" {
+              let fixtures =
+                  [ "let x = 1 + 2"
+                    "ls |> where (fun f -> f.Bytes > 10)"
+                    "let s = @\"unclosed raw to eol"
+                    "let t = \"\"\"triple \\ and \" inside\"\"\""
+                    "git log --oneline // trailing comment"
+                    "$(git status) |> Seq.head"
+                    "^ls -la $target !marker"
+                    "let e = \"emoji 😀 inside\" |> Str.length"
+                    "let xs = [1; 2"
+                    "" ]
+
+              for f in fixtures do
+                  Expect.equal (strip (colorize f)) f $"altered: {f}"
+          }
+          test "head verdicts: known bold, unknown red, forced PATH-only" {
+              Expect.stringContains (colorize "ls -la") "\x1b[1mls\x1b[0m" "known head bold"
+              Expect.stringContains (colorize "zzznope arg") "\x1b[31mzzznope\x1b[0m" "unknown head red"
+
+              // ^-forced resolves against PATH only: 'print' is known but
+              // not a binary, so ^print paints red even though bare print
+              // would be bold
+              Expect.stringContains (colorize "^print x") "\x1b[31mprint\x1b[0m" "force ignores bindings"
+          }
+          test "lexical spans: keyword, string, comment, number, uppercase" {
+              let out = colorize "let n = Some 42 // done"
+              Expect.stringContains out "\x1b[34mlet\x1b[0m" "keyword"
+              Expect.stringContains out "\x1b[33mSome\x1b[0m" "uppercase (casing law)"
+              Expect.stringContains out "\x1b[36m42\x1b[0m" "number"
+              Expect.stringContains out "\x1b[90m// done\x1b[0m" "comment"
+              Expect.stringContains (colorize "let s = \"hi\"") "\x1b[32m" "string"
+          }
+          test "an unclosed verbatim colors to end of line (live feedback)" {
+              let out = colorize "let s = @\"abc def"
+              Expect.stringContains out "abc def\x1b[0m" "string span reaches EOL"
+          }
+          test "redraw-cost ceiling: 1000 pathological 200-char lines" {
+              let line =
+                  String.replicate 5 "let ZZig = $(git log) |> where (fun f -> f.Bytes > 12) ; "
+                  + "@\"tail"
+
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+
+              for _ in 1..1000 do
+                  colorize line |> ignore
+
+              sw.Stop()
+              Expect.isTrue (sw.ElapsedMilliseconds < 2000L) $"1000 lines took {sw.ElapsedMilliseconds}ms"
+          } ]
+
 let optionSweepTests =
     testList
         "Option sweep"
@@ -4813,6 +4872,7 @@ let allTests =
           fmtMatchTests
           fmtStroustrupTests
           replEchoTests
+          replColorTests
           optionSweepTests
           moduleTests
           scriptTests

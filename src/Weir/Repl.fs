@@ -50,7 +50,23 @@ let private readLineTty () : string option =
     let mutable draft = ""
 
     let redraw () =
-        Console.Write("\r" + prompt + buf.ToString() + "\x1b[K")
+        // paint-only coloring [D:repl-color]: buf/pos never hold
+        // escapes, so cursor math below stays plain-text; ANSI spans
+        // are zero display columns
+        let painted =
+            if Script.Color.onStdout.Value then
+                let env = currentEnv.Value
+
+                let isKnown n =
+                    Map.containsKey n env.Values
+                    || Map.containsKey n env.Modules
+                    || Builtins.commandCallable.Contains n
+
+                Script.colorizeRepl isKnown (buf.ToString())
+            else
+                buf.ToString()
+
+        Console.Write("\r" + prompt + painted + "\x1b[K")
         let back = buf.Length - pos
 
         if back > 0 then

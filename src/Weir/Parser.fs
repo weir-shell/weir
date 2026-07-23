@@ -5,7 +5,9 @@ open FParsec
 open Weir.Types
 open Weir.Ast
 
-let private keywords =
+// public: the REPL colorizer reuses THIS set [D:repl-color] — one
+// keyword source, no drift
+let keywords =
     Set
         [ "let"
           "in"
