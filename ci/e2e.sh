@@ -2013,4 +2013,9 @@ echo "e2e ok: seq-pattern rejections are located and named"
 
 rm -rf "$spdir"
 
+# the two-pipe cliff (investigation rider [D:pipe-hint])
+errout=$($BIN -e '$(git status) | Seq.head' 2>&1) && fail "bare | after an expression must reject"
+echo "$errout" | grep -qF "pipe expressions with '|>'" || fail "the cliff must name the spelling: $errout"
+echo "e2e ok: '|' after an expression names the |> spelling"
+
 echo "e2e battery: all green"

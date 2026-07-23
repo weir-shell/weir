@@ -63,6 +63,15 @@ let private spanned (p: Parser<'a, unit>) : Parser<'a * Span, unit> =
 
 let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
 
+// the two-pipe cliff [D:pipe-hint]: a bare `|` after a completed
+// EXPRESSION is not an operator — name the spelling instead of
+// dumping the token set (`||` and `|>` belong to the expression
+// grammar and never reach this check)
+let private barePipeHint: Parser<unit, unit> =
+    (attempt (pchar '|' .>> notFollowedBy (anyOf "|>"))
+     >>. failFatally "'|' chains commands; pipe expressions with '|>'")
+    <|> preturn ()
+
 // non-field positions name the scope decision [D:attributes]
 let private attrsRejectHere: Parser<unit, unit> =
     followedBy (pstring "[<") >>. failFatally "attributes attach to record fields"
@@ -532,15 +541,20 @@ let private letIn =
         )
 
     choice
-        [ pipe3 getPosition (patForm .>>. seqExpr .>> keyword "in") seqExpr (fun p (binder, value) body ->
-              { Kind = ELetPat(binder, value, body)
-                Span = { Start = pos p; End = body.Span.End } })
+        [ pipe3
+              getPosition
+              (patForm .>>. seqExpr .>> barePipeHint .>> keyword "in")
+              seqExpr
+              (fun p (binder, value) body ->
+                  { Kind = ELetPat(binder, value, body)
+                    Span = { Start = pos p; End = body.Span.End } })
           pipe3
               getPosition
               ((keyword "let" >>. ident .>>. many binderParam
                 >>= fun (n, ps) -> rejectDupParams ps >>% (n, ps))
                .>> str_ws "="
                .>>. seqExpr
+               .>> barePipeHint
                .>> keyword "in")
               seqExpr
               (fun p ((name, ps), value) body ->
@@ -943,6 +957,7 @@ let private commandSegment
 
 let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
 
+
 let private segment
     (builtinHeads: bool)
     (argP: Parser<Expr, unit>)
@@ -1165,7 +1180,7 @@ let private topLet (r: Resolver) =
                     { r with
                         IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n }
 
-                let rhsP = cmdLineLetRhs r' <|> seqExpr
+                let rhsP = cmdLineLetRhs r' <|> (seqExpr .>> barePipeHint)
 
                 rhsP .>> eof |>> fun rhs -> SLet(name, curryParams ps rhs)
     )
@@ -1184,13 +1199,13 @@ let private stmtWith (r: Resolver) =
                        | PVar _
                        | PCase(_, None) -> fail "plain binder takes the ident path"
                        | _ -> preturn b)
-                  .>>. seqExpr
+                  .>>. (seqExpr .>> barePipeHint)
                   .>> eof
               )
               |>> SLetPat
               topLet r
               cmdLine r .>> eof |>> SCmd
-              seqExpr .>> eof |>> SExpr ]
+              seqExpr .>> barePipeHint .>> eof |>> SExpr ]
 
 let private noExternals =
     { IsKnown = fun _ -> true

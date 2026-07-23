@@ -2457,6 +2457,19 @@ let optionSweepTests =
         [ test "Seq.tryHead types as Option of the element" {
               Expect.equal (formatTy (checkOk "ls |> Seq.tryHead").Ty) "Option<FileRow>" ""
           }
+          test "the two-pipe cliff names the spelling [D:pipe-hint]" {
+              match Weir.Parser.parseStmt "[1; 2] |> Seq.skip 1 | Seq.head" with
+              | Error msg -> Expect.stringContains msg "pipe expressions with '|>'" ""
+              | Ok _ -> failtest "expected the cliff"
+
+              match Weir.Parser.parseStmt "let xs = [1] | Seq.head" with
+              | Error msg -> Expect.stringContains msg "pipe expressions with '|>'" "let-RHS site"
+              | Ok _ -> failtest "expected the cliff"
+
+              match Weir.Parser.parseStmt "[1; 2] | Seq.head" with
+              | Error msg -> Expect.stringContains msg "'|' chains commands" ""
+              | Ok _ -> failtest "expected the cliff"
+          }
           test "retired names teach their replacements [D:seq-force]" {
               Expect.stringContains (checkErr "[1] |> Seq.toList").Message "'Seq.force' is the materializer" ""
               Expect.stringContains (checkErr "[1] |> toList").Message "'force' is the materializer" ""

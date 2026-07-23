@@ -1,5 +1,52 @@
 # Spike Notes
 
+## Investigation: the | stage whitelist that wasn't (2026-07-23)
+
+The blessed investigation returned verdict C-sharpened: the feared
+mechanism does not exist, and neither does the symptom. The findings
+by the plan's questions:
+
+Q1/Q2 — `commandCallable` is not a stage gate. It is a one-member
+set (`["cd"]`), born in Ergonomics session 2 (c0a3485) so the one
+builtin that behaves like a shell command can HEAD a command-shaped
+statement (`cd /tmp` with bareword args, cd not being on PATH). It
+gates HEAD position only, was already once caught outranking the
+known-name check (the `let workdir = cd target` regression → the
+builtinHeads flag), and has never accreted a second member.
+
+Q3 — the receipt does not reproduce. `git status | Seq.map f`
+(named fn), `| Seq.map (fun l -> l)`, `| Seq.where (fun ...)` all
+pass on HEAD — script, -e, piped REPL, sigil interiors, statement
+level. Stages have been FULL EXPRESSIONS since session-3-command-
+mode (a3ba058): `segment = commandSegment <|> segExpr`, with
+resolution deciding — known names fail command mode and fall to the
+expression parser, externals stay external, bindings beat PATH in
+stage position by construction.
+
+Q4/Q5 — moot: the prototype the plan sketched (resolution-based
+stage rule) IS the shipped grammar; there is nothing to widen and
+no pins to move.
+
+THE REAL RECEIPT, recovered by probing adjacent spellings: `|`
+after an EXPRESSION LHS — `$(git status) | Seq.map f` or
+`[1; 2] | Seq.map f` — rejects with a RAW parse error ("Expecting:
+end of input, ... infix operator ...") that never names `|>`. The
+two-pipe distinction is fine; the CLIFF MESSAGE is the gap. The
+follow-up is pre-scoped rider-size per the verdict convention:
+a targeted parse-error hint at `|`-after-expression — "`|` chains
+commands; pipe expressions with `|>`" — hints-name-the-spelling.
+No code moved this session (investigation and change do not share
+a session). The rider ran on the user's go, next session: barePipeHint
+at the three expression-end sites (statement, let-RHS, destructuring
+RHS), with the consumed-pipe fatal dominating FParsec's
+furthest-error merge so the hint IS the message, caret on the `|`.
+Zero pin movement; the hint pinned at all three sites — plus a
+fourth found by the pin itself: topLet's attempt EATS fatals (by
+design, for the let-in fallthrough), so the let-RHS spelling needed
+the hint at the EXPRESSION let-in's value position, where the
+statement-level grammar is not attempt-wrapped and the fatal
+dominates.
+
 ## Seq patterns — the design closed as drawn (2026-07-23)
 
 Part 2 opened on user call hours after going on file, and the
