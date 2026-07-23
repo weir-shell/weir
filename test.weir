@@ -1,6 +1,0 @@
-type Great = {Lomo: int; Bimbo: string}
-
-let lomo = {Lomo = 10; Bimbo = "yuck"}
-
-let l2 =  {    lomo with Lomo = 100}
-l2 |> show |> print
