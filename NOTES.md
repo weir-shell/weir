@@ -1,5 +1,45 @@
 # Spike Notes
 
+## Attributes — syntax parity, invisible divergence (2026-07-23)
+
+`[<Short "c"; Doc "count">]` attaches to record fields with F#'s
+syntax and none of F#'s machinery. The re-costing that opened the
+plan holds in the code: what makes .NET attributes expensive is
+reflection — runtime metadata, an access API — and weir wants none
+of it. Attributes here are check-time data on the RecordDef,
+validated at attachment, fully erased after: the erasure pin shows
+an attributed record constructing, updating, comparing, and showing
+identically to a bare one. The registry is closed (Short, NoShort,
+Doc, Positional) and unknown names are check errors with a
+did-you-mean — no silent decoration, the reject-don't-guess posture
+at the meta level.
+
+The plan's premise partially failed on contact: it wrote consumers
+into `Args.load` — typed argv with derived shorts and `--help` —
+and Args.load DOES NOT EXIST (Args has `flag`/`value` only; the
+consumers targeted an advisor-thread design that never landed).
+Stop-and-report resolved by the plan's own
+validate-at-attachment/bind-at-consumption rule: registered names
+with no consumer are legal-and-inert, so the infrastructure lands
+honestly and consumer activation waits for the typed-argv plan.
+Positional's "registered now, consumed later" treatment turned out
+to describe all four names.
+
+Correction owed and paid: the attributes question was first waved
+off with a fabricated "refused machinery" citation — an advisor
+claim with no pointer into the archaeology. Decisions are citable
+only by pointer; a claim without one is folklore and gets the
+folklore rule (probe, don't recall). The parallel-record design for
+shorts overrides retires unbuilt, superseded by `[<Short>]` field
+locality — its record-update-based Default idiom stays valuable
+independent of this feature.
+
+Found en route, now with a docs receipt: record TYPE declarations
+do not continue across lines (literals continue — their fields
+carry `=`; type fields carry `:` and the continuation join never
+learned them). The GUIDE's two-field attributed Cli wanted to wrap
+and could not. Candidate next fix, logged not ridden.
+
 ## Exit-code reifiers — the bash priors that were right (2026-07-23)
 
 `| succeeds` and `| orFail "msg"` join complete's family through one

@@ -60,8 +60,14 @@ and ExprKind =
     | EUpdate of source: Expr * updates: ((string * Span) list * Expr) list
     | EInterp of parts: InterpPart<Expr> list
 
+// [<Name arg>] attachment [D:attributes] — check-time, fully erased
+type AttrSpec =
+    { AName: string
+      AArg: AttrArg option
+      ASpan: Span }
+
 type DeclBody =
-    | DRecord of fields: (string * Ty) list
+    | DRecord of fields: (string * Ty * AttrSpec list) list
     | DUnion of cases: (string * Ty option) list
 
 type Decl =

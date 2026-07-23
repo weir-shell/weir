@@ -93,10 +93,19 @@ let mono (ty: Ty) : Scheme =
       Cs = Map.empty
       Ty = ty }
 
+// attribute arguments [D:attributes]: literal-only, the splice family
+type AttrArg =
+    | AStr of string
+    | AInt of int64
+    | ABool of bool
+
 type RecordDef =
     { Name: string
       Params: string list
-      Fields: (string * Ty) list }
+      Fields: (string * Ty) list
+      // check-time data, FULLY ERASED [D:attributes] — never reaches
+      // eval, Value, show, json, or equatability
+      Attrs: Map<string, (string * AttrArg option) list> }
 
 type UnionDef =
     { Name: string

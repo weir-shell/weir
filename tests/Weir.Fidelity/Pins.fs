@@ -276,6 +276,24 @@ let pins =
       pin "F#-rejects-this: open range" "let r = [1..]\n" Same
       pin "F#-rejects-this: triple-dotted range" "let r = [1..2..3..4]\n" Same
 
+      // --- attribute probes (PLAN-attributes) — attachment shape is
+      // F#-real (the System.Obsolete direction proves FCS parses it);
+      // weir's registry is closed, so names diverge both ways ---
+      pin
+          "attributes: registered name attaches (F# has no Short type)"
+          "type T = { [<Short \"c\">] A: int }\nlet t = { A = 1 }\n"
+          (Diverges "attributes-registered")
+      pin
+          "attributes: F# accepts a real attribute weir does not register"
+          "type T = { [<System.Obsolete>] A: int }\nlet t = { A = 1 }\n"
+          (Diverges "attributes-registered")
+      pin "F#-rejects-this: literal in attribute-name position" "type T = { [<5>] A: int }\n" Same
+      pin "F#-rejects-this: attribute in expression position" "let x = [<Short \"c\">] 1\n" Same
+      pin
+          "attributes: multiple in one list, semicolon-separated"
+          "type T = { [<Short \"c\"; Doc \"count\">] A: int }\nlet t = { A = 1 }\n"
+          (Diverges "attributes-registered")
+
       // --- named divergences, refereed from both sides ---
       pinT "equality spelling: == vs =" "let b = 1 == 1\n" "let b = 1 == 1\n" (Diverges "double-equals")
       pinT "binding-only =: F# equality rejected by weir" "let b = 1 = 1\n" "let b = 1 = 1\n" (Diverges "double-equals")

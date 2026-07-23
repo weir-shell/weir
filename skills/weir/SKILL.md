@@ -80,6 +80,25 @@ print $"branches: {branches}"
   (`let bump r = { r with N = r.N + 1 }`) generalizes to any record
   with the field. A comma between fields is a parse error (F#
   silently makes the field a TUPLE there; weir refuses the trap).
+- Record fields take attributes, F#'s syntax: `[<Short "c">]`,
+  `[<Doc "text">]`, `[<NoShort>]`, `[<Positional>]` — `;`-separated
+  lists, literal args only (string/int/bool). Attributes are
+  check-time data, fully erased: an attributed record is the same
+  type as a bare one. The name set is CLOSED — an unregistered name
+  is a check error with a did-you-mean; consumers (typed argv's
+  shorts/help) are a coming feature, so today every attribute is
+  legal-and-inert. Attributes attach to record fields only.
+
+```weir
+type Cli = { [<Short "C"; Doc "clean first">] Clean: bool; [<Positional>] Target: string }
+let args = { Clean = true; Target = "prod" }
+print args.Target
+```
+
+```weir-error
+type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
+```
+
 - Union cases carry tuple payloads for multi-value: `Case of int * string`;
   match with `| Case (n, s) ->`.
 - `let f x y = ...` defines a curried function (desugars to nested

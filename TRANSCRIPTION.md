@@ -403,3 +403,17 @@ piped element type) — the canonical `xs |> Seq.fold (fun s x ->
 s + x) 0` rejected. `fun a b ->` sugar itself added ZERO checker
 surface (pure parse desugar through curryParams — less than the
 budgeted adapter; reported per the stop-and-report clause's inverse).
+
+## Addendum — the attribute registry arm (2026-07-23, [D:attributes])
+
+`checkDecl`'s DRecord arm gained three steps before the def is
+built: per-field attr validation (registry lookup — unknown names
+error with did-you-mean over the registered set; per-name arg
+validators; duplicate-attr and Short/NoShort conflicts at the
+offending spec's span), cross-field explicit-Short collision
+detection, and the Attrs map fold (field → (name, arg) list,
+attr-free fields absent). The registry is a `Map<string, AttrArg
+option -> string option>` — a validator returns the complaint or
+None, so registering a name is one entry, no new arm. Erasure is
+structural: Attrs lives on RecordDef only, and no eval/show/json
+path reads RecordDef.Attrs.

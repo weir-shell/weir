@@ -61,6 +61,10 @@ let private spanned (p: Parser<'a, unit>) : Parser<'a * Span, unit> =
 
 let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
 
+// non-field positions name the scope decision [D:attributes]
+let private attrsRejectHere: Parser<unit, unit> =
+    followedBy (pstring "[<") >>. failFatally "attributes attach to record fields"
+
 let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
 
@@ -183,7 +187,9 @@ let private fieldAssign =
 // I.X sugar; the checker walks them.
 let private updatePath = sepBy1 (spanned rawWord .>> ws) (pchar '.' >>. ws)
 
-let private updateAssign = updatePath .>> str_ws "=" .>>. commaExpr
+let private updateAssign =
+    (attrsRejectHere >>% Unchecked.defaultof<_>)
+    <|> (updatePath .>> str_ws "=" .>>. commaExpr)
 
 let private recordLit =
     spanned (
@@ -360,7 +366,8 @@ let private negAtom =
 
 let private atom =
     choice
-        [ negAtom
+        [ attrsRejectHere >>% Unchecked.defaultof<Expr>
+          negAtom
           intLit
           tripleLit
           verbatimLit
@@ -679,7 +686,8 @@ patRef.Value <-
 
 binderParamRef.Value <-
     choice
-        [ spanned (pstring "()") .>> ws
+        [ attrsRejectHere >>% Unchecked.defaultof<Pattern>
+          spanned (pstring "()") .>> ws
           |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
           identSpanned |>> fun (n, span) -> { PKind = PVar n; PSpan = span }
           patParens ]
@@ -1047,13 +1055,30 @@ tySynRef.Value <-
             | [ one ] -> one
             | many -> TTuple many
 
-let private fieldDecl = ident .>> str_ws ":" .>>. tySyn
+// literal-only attribute arguments [D:attributes]
+let private attrArgLit =
+    choice
+        [ between (pchar '"') (pchar '"') (manyChars stringChar) |>> AStr
+          many1Satisfy isDigit |>> (int64 >> AInt)
+          keyword "true" >>% ABool true
+          keyword "false" >>% ABool false ]
+    .>> ws
+
+let private attrSpec =
+    spanned (ident .>>. opt attrArgLit)
+    |>> fun ((name, arg), sp) -> { AName = name; AArg = arg; ASpan = sp }
+
+let private attrList = str_ws "[<" >>. sepBy1 attrSpec (str_ws ";") .>> str_ws ">]"
+
+let private fieldDecl =
+    opt attrList .>>. (ident .>> str_ws ":") .>>. tySyn
+    |>> fun ((attrs, name), ty) -> name, ty, defaultArg attrs []
 
 let private recordBody =
     str_ws "{" >>. sepBy1 fieldDecl (str_ws ";") .>> str_ws "}" |>> DRecord
 
 let private caseDecl =
-    spanned rawWord .>> ws
+    (attrsRejectHere >>% Unchecked.defaultof<_>) <|> spanned rawWord .>> ws
     >>= fun (w, _) ->
         if keywords.Contains w then
             fail $"'{w}' is a keyword"

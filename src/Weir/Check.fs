@@ -1958,6 +1958,72 @@ let rec private validateTy
         | Some a when a <> targs.Length -> err span $"'{n}' expects {a} type argument(s), got {targs.Length}"
         | Some _ -> allOk targs (validateTy env selfName selfArity allowed span)
 
+// registered attribute names [D:attributes]: unknown names are check
+// errors; registered-but-unconsumed is legal-and-inert. Validation
+// happens at attachment; consumers bind at consumption.
+let private attrRegistry: Map<string, AttrArg option -> string option> =
+    Map.ofList
+        [ "Short",
+          (function
+          | Some(AStr "h") -> Some "argument 'h' is reserved for --help"
+          | Some(AStr s) when s.Length = 1 -> None
+          | _ -> Some "expects a one-character string, e.g. [<Short \"c\">]")
+          "NoShort",
+          (function
+          | None -> None
+          | Some _ -> Some "takes no argument")
+          "Doc",
+          (function
+          | Some(AStr s) when s <> "" -> None
+          | _ -> Some "expects a non-empty string")
+          "Positional",
+          (function
+          | None -> None
+          | Some _ -> Some "takes no argument") ]
+
+let private validateFieldAttrs (recName: string) (field: string, _: Ty, specs: AttrSpec list) =
+    let conflicts a b (seen: Set<string>) (spec: AttrSpec) = spec.AName = a && Set.contains b seen
+
+    let rec go seen specs =
+        match specs with
+        | [] -> Ok()
+        | (a: AttrSpec) :: rest ->
+            if Set.contains a.AName seen then
+                err a.ASpan $"duplicate attribute '{a.AName}' on field '{field}'"
+            elif conflicts "Short" "NoShort" seen a || conflicts "NoShort" "Short" seen a then
+                err a.ASpan $"field '{field}' has both Short and NoShort"
+            else
+                match Map.tryFind a.AName attrRegistry with
+                | None ->
+                    let hint = didYouMean a.AName (Map.keys attrRegistry)
+                    err a.ASpan $"unknown attribute '{a.AName}'{hint}"
+                | Some validate ->
+                    match validate a.AArg with
+                    | Some msg -> err a.ASpan $"'{a.AName}' {msg}"
+                    | None -> go (Set.add a.AName seen) rest
+
+    go Set.empty specs
+
+let private validateShortCollisions (fields: (string * Ty * AttrSpec list) list) =
+    let explicitShorts =
+        fields
+        |> List.collect (fun (f, _, specs) ->
+            specs
+            |> List.choose (fun a ->
+                match a.AName, a.AArg with
+                | "Short", Some(AStr s) -> Some(s, f, a.ASpan)
+                | _ -> None))
+
+    let rec go seen shorts =
+        match shorts with
+        | [] -> Ok()
+        | (s: string, f: string, sp) :: rest ->
+            match Map.tryFind s seen with
+            | Some prev -> err sp $"duplicate short '-{s}' (fields '{prev}' and '{f}')"
+            | None -> go (Map.add s f seen) rest
+
+    go Map.empty explicitShorts
+
 let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
     let allowed = Set.ofList decl.Params
     let selfArity = decl.Params.Length
@@ -1969,16 +2035,30 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
         match decl.Body with
         | DRecord fields ->
             result {
-                match firstDup (List.map fst fields) with
+                match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
                 | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
                 | None ->
-                    do! allOk fields (snd >> validateTy env decl.Name selfArity allowed decl.Span)
+                    let plain = fields |> List.map (fun (n, t, _) -> n, t)
+
+                    do! allOk plain (snd >> validateTy env decl.Name selfArity allowed decl.Span)
+                    do! allOk fields (validateFieldAttrs decl.Name)
+                    do! validateShortCollisions fields
+
+                    let attrs =
+                        fields
+                        |> List.choose (fun (n, _, specs) ->
+                            if List.isEmpty specs then
+                                None
+                            else
+                                Some(n, specs |> List.map (fun a -> a.AName, a.AArg)))
+                        |> Map.ofList
 
                     let def =
                         Record
                             { Name = decl.Name
                               Params = decl.Params
-                              Fields = fields }
+                              Fields = plain
+                              Attrs = attrs }
 
                     return
                         { env with

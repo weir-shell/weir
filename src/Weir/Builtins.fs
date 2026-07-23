@@ -8,7 +8,8 @@ open Weir.Eval
 let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
-      Fields = [ "Name", TStr; "Bytes", TInt; "ReadOnly", TBool ] }
+      Fields = [ "Name", TStr; "Bytes", TInt; "ReadOnly", TBool ]
+      Attrs = Map.empty }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
@@ -81,7 +82,8 @@ let private notImpl: Value =
 let changeDef: RecordDef =
     { Name = "Change"
       Params = []
-      Fields = [ "Status", TStr; "Staged", TBool; "Unstaged", TBool; "Path", TStr ] }
+      Fields = [ "Status", TStr; "Staged", TBool; "Unstaged", TBool; "Path", TStr ]
+      Attrs = Map.empty }
 
 let private asString (v: Value) : string =
     match v with
@@ -156,7 +158,8 @@ let private toListImpl: Value =
 let completedDef: RecordDef =
     { Name = "Completed"
       Params = []
-      Fields = [ "ExitCode", TInt; "Stdout", TSeq TStr; "Stderr", TSeq TStr ] }
+      Fields = [ "ExitCode", TInt; "Stdout", TSeq TStr; "Stderr", TSeq TStr ]
+      Attrs = Map.empty }
 
 // completedWith is the shared body; completed IS the empty overlay and
 // completedEnv the env-sigil desugar target — the cmd/cmdEnv pattern.
@@ -438,7 +441,8 @@ let private tB = TVar "b"
 let groupDef: RecordDef =
     { Name = "Group"
       Params = [ "k"; "v" ]
-      Fields = [ "Key", TVar "k"; "Items", TSeq(TVar "v") ] }
+      Fields = [ "Key", TVar "k"; "Items", TSeq(TVar "v") ]
+      Attrs = Map.empty }
 
 // pairwise/zip produce tuples [D:tuples-reversal]
 let private pairwiseImpl: Value =
@@ -735,7 +739,8 @@ let private argsMembers: (string * Ty * Value) list =
 let envVarDef: RecordDef =
     { Name = "EnvVar"
       Params = []
-      Fields = [ "Name", TStr; "Value", TStr ] }
+      Fields = [ "Name", TStr; "Value", TStr ]
+      Attrs = Map.empty }
 
 // Env.fromFile parses the DOTENV SUBSET only: KEY=VALUE, optional
 // single/double quotes around VALUE, # full-line and trailing

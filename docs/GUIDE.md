@@ -108,6 +108,25 @@ never adds fields, and leaves the source untouched. An updater over
 an open row — `let bump r = { r with N = r.N + 1 }` — generalizes to
 any record carrying the field.
 
+Record fields also take attributes, F#'s syntax:
+
+```weir
+type Cli = { [<Short "C"; Doc "clean first">] Clean: bool; [<Positional>] Target: string }
+let cli = { Clean = true; Target = "prod" }
+print cli.Target
+```
+
+(Type declarations are single-line today — record literals continue
+across lines, type declarations do not yet.)
+
+They are check-time data, fully erased at runtime — `cli` above is
+indistinguishable from a bare `Cli`. The names are a closed registry
+(`Short`, `NoShort`, `Doc`, `Positional`); a typo like `[<Shrot "c">]`
+is a check error with a did-you-mean. Their consumers — typed argv
+deriving `-C` and `--help` text from the declaration — are a coming
+feature; until then attributes are legal-and-inert documentation the
+checker validates.
+
 ## Functions
 
 `let f x y = ...` defines a curried function (it desugars to nested

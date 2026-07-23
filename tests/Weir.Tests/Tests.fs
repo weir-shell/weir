@@ -48,6 +48,8 @@ let private env =
         |> declare "type UpdP = { UpN: int; UpT: string }"
         |> declare "type UpdQ = { UpN: int }"
         |> declare "type UpdS = { UpN: string; UpS: string }"
+        // attributed twin for the erasure pin [D:attributes]
+        |> declare "type AttrE = { [<Short \"q\">] Q: int }"
 
     { e with
         Values =
@@ -1659,6 +1661,115 @@ let genericsTests =
                   "type display"
           } ]
 
+
+let attributeTests =
+    testList
+        "Attributes"
+        [ // attachment + inertness [D:attributes]
+          test "registered attributes attach and the record works unchanged" {
+              let env' =
+                  env
+                  |> declare
+                      "type Cfg = { [<Short \"c\"; Doc \"count\">] Count: int; [<Positional>] Name: string; [<NoShort>] Loud: bool }"
+
+              match Map.tryFind "Cfg" env'.Types with
+              | Some(Record def) ->
+                  Expect.equal (List.map fst def.Fields) [ "Count"; "Name"; "Loud" ] "fields unchanged"
+
+                  Expect.equal
+                      (Map.find "Count" def.Attrs)
+                      [ "Short", Some(AStr "c"); "Doc", Some(AStr "count") ]
+                      "attrs recorded"
+
+                  Expect.equal (Map.find "Name" def.Attrs) [ "Positional", None ] "argless recorded"
+              | other -> failtest $"expected a record def, got {other}"
+          }
+          test "bare fields leave Attrs empty" {
+              let env' = env |> declare "type Bare = { N: int }"
+
+              match Map.tryFind "Bare" env'.Types with
+              | Some(Record def) -> Expect.isTrue def.Attrs.IsEmpty "no attr entries"
+              | other -> failtest $"expected a record def, got {other}"
+          }
+          test "unknown attribute is a check error with a hint" {
+              let terr = env |> declErr "type T = { [<Shrot \"c\">] A: int }"
+              Expect.stringContains terr.Message "unknown attribute 'Shrot'" ""
+              Expect.stringContains terr.Message "Did you mean 'Short'?" ""
+          }
+          test "Short wants a one-character string" {
+              let terr = env |> declErr "type T = { [<Short \"cc\">] A: int }"
+              Expect.stringContains terr.Message "one-character string" ""
+
+              let terr2 = env |> declErr "type T = { [<Short>] A: int }"
+              Expect.stringContains terr2.Message "one-character string" ""
+
+              let terr3 = env |> declErr "type T = { [<Short 3>] A: int }"
+              Expect.stringContains terr3.Message "one-character string" ""
+          }
+          test "Short 'h' is reserved" {
+              let terr = env |> declErr "type T = { [<Short \"h\">] A: int }"
+              Expect.stringContains terr.Message "reserved for --help" ""
+          }
+          test "argless attributes reject arguments" {
+              let terr = env |> declErr "type T = { [<Positional 1>] A: int }"
+              Expect.stringContains terr.Message "takes no argument" ""
+
+              let terr2 = env |> declErr "type T = { [<NoShort true>] A: int }"
+              Expect.stringContains terr2.Message "takes no argument" ""
+          }
+          test "Doc wants a non-empty string" {
+              let terr = env |> declErr "type T = { [<Doc \"\">] A: int }"
+              Expect.stringContains terr.Message "non-empty string" ""
+          }
+          test "duplicate attribute on one field is rejected" {
+              let terr = env |> declErr "type T = { [<Doc \"a\"; Doc \"b\">] A: int }"
+              Expect.stringContains terr.Message "duplicate attribute 'Doc'" ""
+          }
+          test "Short and NoShort conflict on one field" {
+              let terr = env |> declErr "type T = { [<NoShort; Short \"d\">] B: int }"
+              Expect.stringContains terr.Message "both Short and NoShort" ""
+          }
+          test "explicit shorts collide across fields" {
+              let terr =
+                  env |> declErr "type T = { [<Short \"c\">] A: int; [<Short \"c\">] B: int }"
+
+              Expect.stringContains terr.Message "duplicate short '-c'" ""
+          }
+          test "erasure: construction, projection, show, equality are attr-blind" {
+              expectValue
+                  "let e = { Q = 7 } in (show e == \"{ Q = 7 }\") && (e == { Q = 7 }) && (e.Q == 7)"
+                  (VBool true)
+          }
+          // products [D:attributes]
+          test "generic record carries attrs as declaration data" {
+              let env' = env |> declare "type GB<'a> = { [<Doc \"v\">] V: 'a }"
+
+              match Map.tryFind "GB" env'.Types with
+              | Some(Record def) -> Expect.equal (Map.find "V" def.Attrs) [ "Doc", Some(AStr "v") ] ""
+              | other -> failtest $"expected a record def, got {other}"
+
+              match Weir.Check.typecheck env' (parse "let b = { V = \"s\" } in b.V") with
+              | Ok te -> Expect.equal te.Ty TStr "instantiates and projects unchanged"
+              | Error terr -> failtest $"check failed: {formatError terr}"
+          }
+          test "record update cannot mention attributes" {
+              match Weir.Parser.parseExpr "{ e with [<Short \"d\">] Q = 2 }" with
+              | Ok _ -> failtest "expected a parse rejection"
+              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
+          }
+          test "non-field positions name the scope decision" {
+              match Weir.Parser.parseExpr "[<Short \"c\">] 1" with
+              | Ok _ -> failtest "expected a parse rejection"
+              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
+
+              match Weir.Parser.parseStmt "type U = [<Short \"c\">] A of int | B" with
+              | Ok _ -> failtest "expected a parse rejection"
+              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
+
+              match Weir.Parser.parseStmt "let f [<Short \"c\">] x = x" with
+              | Ok _ -> failtest "expected a parse rejection"
+              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
+          } ]
 
 let optionSweepTests =
     testList
@@ -4183,6 +4294,7 @@ let allTests =
           session3Tests
           stringTests
           genericsTests
+          attributeTests
           optionSweepTests
           moduleTests
           scriptTests

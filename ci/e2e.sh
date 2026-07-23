@@ -1607,4 +1607,49 @@ echo "e2e ok: fmt accepts the bicep origin script"
 
 rm -rf "$gdir"
 
+# attributes (PLAN-attributes): check-time, erased, registered names
+adir=$(mktemp -d)
+cat > "$adir/attrs.weir" <<'WEOF'
+type Cfg = { [<Short "c"; Doc "count">] Count: int; [<Positional>] Name: string; [<NoShort>] Loud: bool }
+let c = { Count = 1; Name = "x"; Loud = false }
+let c2 = { c with Count = 2 }
+print $"{c2.Count} {show c.Loud}"
+WEOF
+out=$($BIN "$adir/attrs.weir")
+expect "attributed record constructs, updates, shows — erased" "2 false" "$out"
+
+cat > "$adir/attrs-json.weir" <<'WEOF'
+type J = { [<Doc "the n">] N: int }
+let j = echo '{"N": 5}' | from json J | Seq.head
+print j.N
+WEOF
+out=$($BIN "$adir/attrs-json.weir")
+expect "from json loads an attributed record identically" "5" "$out"
+
+cat > "$adir/attrs-env.weir" <<'WEOF'
+type EC = { [<Doc "the home dir">] HOME: string }
+let cfg = Env.load EC
+print (Str.length cfg.HOME > 0)
+WEOF
+out=$(HOME=/tmp $BIN "$adir/attrs-env.weir")
+expect "Env.load on a Doc'd config field is inert-legal" "true" "$out"
+
+errout=$($BIN -e 'type T = { [<Shrot "c">] A: int }' 2>&1) && fail "unknown attribute must reject"
+echo "$errout" | grep -qF "unknown attribute 'Shrot'" || fail "unknown attribute names the error: $errout"
+echo "$errout" | grep -qF "Did you mean 'Short'?" || fail "unknown attribute hints: $errout"
+echo "e2e ok: unknown attribute is a check error with did-you-mean"
+
+errout=$($BIN -e 'type T = { [<Short "c">] A: int; [<Short "c">] B: int }' 2>&1) && fail "short collision must reject"
+echo "$errout" | grep -qF "duplicate short '-c'" || fail "explicit shorts collide at check: $errout"
+echo "e2e ok: explicit short collision is a check error"
+
+errout=$($BIN -e 'let x = [<Short "c">] 1' 2>&1) && fail "expression-position attribute must reject"
+echo "$errout" | grep -qF "attributes attach to record fields" || fail "non-field position names the scope: $errout"
+echo "e2e ok: attribute positions outside record fields reject by name"
+
+$BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
+echo "e2e ok: fmt roundtrips attribute lists"
+
+rm -rf "$adir"
+
 echo "e2e battery: all green"

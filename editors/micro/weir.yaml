@@ -57,6 +57,10 @@ rules:
     # rule: splice
     - identifier.var: "\\$[a-z_][A-Za-z0-9_]*"
 
+    # ---- attributes on record fields (names get the types rule) ----
+    # rule: attribute
+    - special: "\\[<|>\\]"
+
     # ---- operators ----
     # rule: operators
     - symbol.operator: "\\|>"
