@@ -162,6 +162,8 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (consumes the source; not for infinite seqs), and the piped
   spelling anchors the folder's types (prefer it). Multi-accumulator
   loops fold over a record: `Seq.fold (fun c x -> { c with ... }) c0`.
+- Concatenation is `Seq.append` (lazy; piped spelling puts the TAIL
+  in the pipe: `tail |> Seq.append head`).
 - Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
   the arm returns `Some out` or `None`, never a sentinel `""` to
   filter later. The natural pair with the `Regex` pattern:

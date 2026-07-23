@@ -864,31 +864,56 @@ echo "$errout" | grep -qF "Did you mean 'pth'?" || fail "splice-typo must did-yo
 echo "e2e ok: a typo'd splice did-you-means the param"
 rm -rf "$pfdir"
 
-# the git-subrepo example (the translation flagship): live repo pair
+# the git-subrepo example (the translation flagship): the FULL live
+# lifecycle — clone, pull, push (author-preserving graft), second
+# round-trip, status/clean/init — against a real bare upstream
 srdir=$(mktemp -d)
+SR="$(cd "$(dirname "$0")/.." && pwd)/examples/git-subrepo.weir"
 (
     cd "$srdir"
-    git init -q --bare upstream.git
-    git init -q host
-    cd host
-    git -c user.email=a@a -c user.name=a commit -q --allow-empty -m init
-    git clone -q "$srdir/upstream.git" up-work 2>/dev/null
-    (cd up-work && echo x > f.txt && git add f.txt && git -c user.email=a@a -c user.name=a commit -qm up1 && git push -q origin HEAD:main)
-    upsha=$(cd up-work && git rev-parse HEAD)
-    rm -rf up-work
-    mkdir libx && echo lib > libx/code.txt
-    printf '[subrepo]\n\tremote = %s\n\tbranch = main\n\tcommit = %s\n\tmethod = merge\n' "$srdir/upstream.git" "$upsha" > libx/.gitrepo
-    git add -A && git -c user.email=a@a -c user.name=a commit -qm "add subrepo"
+    git init -q --bare lib.git && git -C lib.git symbolic-ref HEAD refs/heads/main
+    git init -q seed && cd seed
+    git config user.email u@u && git config user.name up
+    echo "lib v1" > lib.txt && git add -A && git commit -qm "lib: v1"
+    git branch -m main && git push -q ../lib.git main && cd ..
+    git init -q host && cd host
+    git config user.email h@h && git config user.name hostdev
+    echo host > host.txt && git add -A && git commit -qm "host: init" && git branch -m main
 )
-SR="$(cd "$(dirname "$0")/.." && pwd)/examples/git-subrepo.weir"
-out=$(cd "$srdir/host" && $BIN "$SR" status --subdir libx)
-expect "git-subrepo status reads .gitrepo" "Tracking Branch: main" "$out"
-out=$(cd "$srdir/host" && $BIN "$SR" fetch --subdir libx)
-expect "git-subrepo fetch" "Fetched 'libx'" "$out"
-out=$(cd "$srdir/host" && $BIN "$SR" pull --subdir libx)
+out=$(cd "$srdir/host" && $BIN "$SR" clone --remote ../lib.git --subdir vendor)
+expect "git-subrepo clone (head-branch detected via ls-remote)" "cloned into 'vendor'" "$out"
+[ -f "$srdir/host/vendor/lib.txt" ] || fail "clone must materialize the subdir"
+
+(cd "$srdir/seed" && echo "lib v2" >> lib.txt && git commit -qam "lib: v2" && git push -q ../lib.git main)
+out=$(cd "$srdir/host" && $BIN "$SR" pull --subdir vendor)
+expect "git-subrepo pull (graft + merge-tree join, no worktree)" "pulled from" "$out"
+grep -q "lib v2" "$srdir/host/vendor/lib.txt" || fail "pull must land upstream content"
+
+(cd "$srdir/host" && echo "host contribution" >> vendor/lib.txt && git commit -qam "host: contribute")
+out=$(cd "$srdir/host" && $BIN "$SR" push --subdir vendor)
+expect "git-subrepo push (the graft walk)" "pushed to" "$out"
+upstream_log=$(cd "$srdir/seed" && git pull -q ../lib.git main 2>/dev/null; git log --format="%s|%an" -2)
+echo "$upstream_log" | grep -qF "host: contribute|hostdev" || fail "push must land upstream WITH the host author preserved: $upstream_log"
+
+(cd "$srdir/seed" && echo "lib v3" >> lib.txt && git commit -qam "lib: v3" && git push -q ../lib.git main)
+out=$(cd "$srdir/host" && $BIN "$SR" pull --subdir vendor)
+expect "second pull merges upstream over local contributions" "pulled from" "$out"
+grep -q "lib v3" "$srdir/host/vendor/lib.txt" || fail "v3 must arrive"
+grep -q "host contribution" "$srdir/host/vendor/lib.txt" || fail "local contribution must survive the merge"
+
+out=$(cd "$srdir/host" && $BIN "$SR" pull --subdir vendor)
 expect "git-subrepo pull detects up-to-date via the union" "up to date" "$out"
-out=$(cd "$srdir/host" && $BIN "$SR" status --subdir libx -v)
+
+out=$(cd "$srdir/host" && $BIN "$SR" status --subdir vendor -v)
+expect "git-subrepo status reads .gitrepo" "Tracking Branch: main" "$out"
 expect "the fetch ref surfaces through the Regex pattern" "FETCH Ref:" "$out"
+
+out=$(cd "$srdir/host" && $BIN "$SR" clean --subdir vendor --force)
+expect "clean removes the subrepo refs" "Removed ref" "$out"
+
+out=$(cd "$srdir/host" && mkdir -p tools && echo t > tools/t.txt && git add -A && git commit -qm "host: tools" && $BIN "$SR" init --subdir tools)
+expect "init converts a tracked subdir" "Subrepo created from 'tools'" "$out"
+
 errout=$(cd "$srdir/host" && $BIN "$SR" pull --subdir nope 2>&1 || true)
 echo "$errout" | grep -qF "No 'nope/.gitrepo' file" || fail "missing-gitrepo error: $errout"
 echo "e2e ok: git-subrepo error paths are located"

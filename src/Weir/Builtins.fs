@@ -67,6 +67,13 @@ let private chooseImpl: Value =
                 )
             | v -> unreachable $"the checker rejects 'choose' on {formatValue v}"))
 
+let private appendImpl: Value =
+    VBuiltin(fun a ->
+        VBuiltin(fun b ->
+            match a, b with
+            | VSeq xs, VSeq ys -> VSeq(Seq.append xs ys)
+            | v, _ -> unreachable $"the checker rejects 'append' on {formatValue v}"))
+
 let private sumImpl: Value =
     VBuiltin(fun s ->
         match s with
@@ -659,6 +666,7 @@ let private seqMembers: (string * Ty * Value) list =
       // return); state-first folder; constraint-free by construction
       "fold", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, tA))), foldImpl
       "choose", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TSeq tB)), chooseImpl
+      "append", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), appendImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "sortByDescending", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByDescImpl
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl

@@ -1967,6 +1967,15 @@ let chooseTests =
                   "string"
                   "row-projecting chooser types through"
           }
+          test "Seq.append: lazy concat, piped-tail order (the full-port receipt)" {
+              expectValue "[3; 4] |> Seq.append [1; 2] |> Seq.sum" (VInt 10L)
+
+              let infinite = Seq.initInfinite (fun i -> Weir.Builtins.file $"f{i}" i false)
+
+              match runWith [ "ls", VSeq infinite ] "ls |> Seq.append ls |> first 2 |> Seq.length" with
+              | VInt n -> Expect.equal n 2L "lazy on both sides"
+              | v -> failtest $"unexpected {v}"
+          }
           test "qualified-only: bare choose does not resolve" {
               let terr = checkErr "[1] |> choose (fun x -> Some x)"
               Expect.stringContains terr.Message "choose" ""
@@ -2110,6 +2119,31 @@ let bracketContinuationTests =
                   (joined [ "type Ctx = {"; "    Subdir: string"; "    Repo: string"; "}" ])
                   "type Ctx = { Subdir: string ; Repo: string }"
                   "type closer joins with space"
+          }
+          test "compound-paren-prune: a match inside a closed lambda never wraps [D:compound-paren-prune]" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f remote ="
+                        2, "    let symref ="
+                        3, "        $(git ls-remote --symref $remote HEAD)"
+                        4, "        |> Seq.choose (fun l ->"
+                        5, "            match l with"
+                        6, "            | Regex @\"^ref: refs/heads/(\\S+)\\s+HEAD\" b -> Some b"
+                        7, "            | _ -> None)"
+                        8, "        |> Seq.tryHead"
+                        9, ""
+                        10, "    match symref with"
+                        11, "    | Some b -> b"
+                        12, "    | None -> \"m\"" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.equal
+                      ll.Text
+                      ("let f remote = let symref = $(git ls-remote --symref $remote HEAD) "
+                       + "|> Seq.choose (fun l -> match l with | Regex @\"^ref: refs/heads/(\\S+)\\s+HEAD\" b -> Some b | _ -> None) "
+                       + "|> Seq.tryHead in match symref with | Some b -> b | None -> \"m\"")
+                      "the lambda's own ) prunes the inner compound — no cross-paren wrap"
+              | other -> failtest $"unexpected: {other}"
           }
           test "gap positions: first-after-head, mid, before-close (offside)" {
               Expect.equal

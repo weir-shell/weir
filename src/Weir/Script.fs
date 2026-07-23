@@ -380,6 +380,18 @@ let braceStack (prev: (char * int) list) (line: string) : (char * int) list =
         prev
         line
 
+// Net ( / ) delta of a piece (scanner-aware) — compounds opened
+// inside parens are pruned when the user's own closer buries them
+// [D:compound-paren-prune]
+let parenDelta (s: string) : int =
+    foldOutsideStrings
+        (fun d _ c ->
+            (if c = '(' then d + 1
+             elif c = ')' then d - 1
+             else d))
+        0
+        s
+
 // Fold a piece's brackets into the pending statement's open-bracket
 // stack (kind, line) [D:multiline-brackets]. A mismatched closer is an
 // error naming BOTH sides; over-closing stays permissive (the parser
@@ -427,7 +439,9 @@ type private Pend =
       Lets: (int * int) list
       LastIndent: int
       District: District option
-      Compounds: (int * int) list
+      // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
+      Compounds: (int * int * int) list
+      ParenDepth: int
       // still-open brackets (kind, opening line) [D:multiline-brackets]
       Brackets: (char * int) list }
 
@@ -598,8 +612,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             // field: no separator between them
                                             || prev.EndsWith ">]"
                                             // a dangling operator/comma continues the
-                                            // same element (wrapped elements)
-                                            || (prev.Length > 0 && "+-*/,(<>=|&" |> Seq.contains prev[prev.Length - 1])
+                                            // same element (wrapped elements) — but NOT in
+                                            // type declarations, where a generic closer
+                                            // (`Option<string>`) legitimately ends a field
+                                            || (not (kind = '{' && p.LL.Text.StartsWith "type ")
+                                                && prev.Length > 0
+                                                && "+-*/,(<>=|&" |> Seq.contains prev[prev.Length - 1])
 
                                         let join = if startsEntry && not danglesOpen then JSibling else JSpace
 
@@ -678,11 +696,17 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 match p.Lets with
                                                 | (k, letLine) :: _ when indent <= k -> noBody letLine
                                                 | _ ->
+                                                    let depth = p.ParenDepth + parenDelta piece
+
                                                     Ok(
                                                         Some
                                                             { p with
                                                                 LL = applyJoin JSpace p.LL piece lineNo indent
-                                                                LastIndent = indent },
+                                                                LastIndent = indent
+                                                                ParenDepth = depth
+                                                                Compounds =
+                                                                    p.Compounds
+                                                                    |> List.filter (fun (_, _, d) -> d <= depth) },
                                                         acc,
                                                         blankSinceHead
                                                     )
@@ -694,7 +718,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     // open if/match head wrap it shut
                                                     let rec closeCompounds ll compounds closedHead =
                                                         match compounds with
-                                                        | (h, ts) :: rest when indent <= h ->
+                                                        | (h, ts, _) :: rest when indent <= h ->
                                                             closeCompounds (wrapFrom ll ts) rest (Some h)
                                                         | _ -> ll, compounds, closedHead
 
@@ -730,12 +754,21 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                                     let joined = applyJoin join ll piece lineNo indent
 
+                                                    let depth = p.ParenDepth + parenDelta piece
+
+                                                    // a net-negative piece closed parens the
+                                                    // compounds were opened inside: those are
+                                                    // balanced units already — prune, never wrap
+                                                    // [D:compound-paren-prune]
+                                                    let compounds =
+                                                        compounds |> List.filter (fun (_, _, d) -> d <= depth)
+
                                                     let compounds =
                                                         if cls.OpensCompound then
                                                             // the piece starts where the join put it:
                                                             // its segment is the newest entry
                                                             let (js, _, _) = List.head joined.Segments
-                                                            (indent, js) :: compounds
+                                                            (indent, js, p.ParenDepth) :: compounds
                                                         else
                                                             compounds
 
@@ -748,7 +781,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 LastIndent = indent
                                                                 District = district
                                                                 Compounds = compounds
-                                                                Brackets = brackets },
+                                                                Brackets = brackets
+                                                                ParenDepth = depth },
                                                         acc,
                                                         blankSinceHead)
 
@@ -776,6 +810,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                               Strip = strip
                                               Active = None })
                                       Compounds = []
+                                      ParenDepth = parenDelta (raw.TrimEnd())
                                       Brackets = brackets },
                                 acc,
                                 false)))

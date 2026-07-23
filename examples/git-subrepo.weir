@@ -1,9 +1,18 @@
 #!/usr/bin/env weir
-// git-subrepo, the pull path — translated from the 1,500-line bash
-// original as the post-fold demonstration artifact. The ~40 mutated
-// globals became ONE Ctx record derived per step; the OK/CODE band
-// became result unions; RUN's flag matrix became weir's three command
-// spellings; BASH_REMATCH loops became Regex patterns.
+// git-subrepo — the FULL port, translated from the 1,500-line bash
+// original as the translation flagship. The ~40 mutated globals became
+// ONE Ctx record derived per step; the OK/CODE band became result
+// unions; RUN's flag matrix became weir's three command spellings;
+// BASH_REMATCH loops became Regex patterns; filter-branch became
+// per-commit temp-index plumbing (trees built MINUS .gitrepo up
+// front, so the deprecated pass and its refs/original cleanup do not
+// exist here).
+//
+// Bounds, stated: no --squash; push grafts with the merge method
+// (rebase joins stay on the pull path); no worktrees; no empty-repo
+// clone; no --edit/--file commit messages; `config` is NOT ported —
+// its `<key> [<value>]` shape is the positionals park's operand case,
+// on record as that park's receipt.
 
 // ---- the state the bash threaded ambiently ----------------------
 
@@ -29,9 +38,7 @@ type PullOutcome =
     | UpToDate
     | JoinConflict of string
 
-// ---- the front door (bash: eval'd getopt + "command:$command"
-// dynamic call) — a typed union over subcommands [D:typed-argv];
-// unknown subcommands did-you-mean, --help derives usage ----------
+// ---- the front door: a typed union over subcommands [D:typed-argv]
 
 type StatusArgs = {
     [<Doc "the subrepo directory">]
@@ -55,24 +62,82 @@ type PullArgs = {
     force: bool
 }
 
+type CloneArgs = {
+    [<Doc "the upstream repository url">]
+    remote: string
+    [<Doc "the directory to clone into">]
+    subdir: string
+    [<Doc "the upstream branch (default: the remote HEAD branch)">]
+    branch: Option<string>
+}
+
+type InitArgs = {
+    [<Doc "the directory to convert into a subrepo">]
+    subdir: string
+    remote: Option<string>
+    branch: Option<string>
+}
+
+type PushArgs = {
+    [<Doc "the subrepo directory">]
+    subdir: string
+    quiet: bool
+    verbose: bool
+    [<Doc "push even when upstream moved">]
+    force: bool
+}
+
+type BranchArgs = {
+    [<Doc "the subrepo directory">]
+    subdir: string
+    verbose: bool
+}
+
+type CommitArgs = {
+    [<Doc "the subrepo directory">]
+    subdir: string
+    quiet: bool
+    verbose: bool
+    force: bool
+}
+
+type CleanArgs = {
+    [<Doc "the subrepo directory">]
+    subdir: string
+    [<Doc "also delete every refs/subrepo ref for the subdir">]
+    force: bool
+}
+
 type Cmd =
     | Status of StatusArgs
     | Fetch of FetchArgs
     | Pull of PullArgs
+    | Clone of CloneArgs
+    | Init of InitArgs
+    | Push of PushArgs
+    | Branch of BranchArgs
+    | Commit of CommitArgs
+    | Clean of CleanArgs
 
 let cli = Args.load Cmd
 
 let quiet =
     match cli with
-    | Status _ -> false
     | Fetch a -> a.quiet
     | Pull a -> a.quiet
+    | Push a -> a.quiet
+    | Commit a -> a.quiet
+    | _ -> false
 
 let verbose =
     match cli with
     | Status a -> a.verbose
     | Fetch a -> a.verbose
     | Pull a -> a.verbose
+    | Push a -> a.verbose
+    | Branch a -> a.verbose
+    | Commit a -> a.verbose
+    | _ -> false
 
 let say msg = if not quiet then print msg
 let step msg = if verbose then printerr $"* {msg}"
@@ -92,6 +157,17 @@ let rawConfig file key = git config --file $file $key | complete
 let configGet file key =
     let r = rawConfig file key
     if r.ExitCode == 0 then r.Stdout |> Seq.tryHead |> Option.defaultTo "" else ""
+
+let makeRef name target = !(git update-ref $name $target)
+
+let deleteRef name = !(git update-ref -d $name)
+
+let deleteBranch b =
+    if branchExists b then !(git branch -q -D $b)
+
+let treeExists spec = git cat-file -e $spec | succeeds
+
+let isAncestor a b = git merge-base --is-ancestor $a $b | succeeds
 
 // ---- encode-subdir (bash: 30 parameter expansions + a C-style
 // loop) — one fold over replacement pairs -------------------------
@@ -113,7 +189,8 @@ let encodeSubref subdir =
     ]
     |> Seq.fold (fun s (from0, to0) -> Str.replace from0 to0 s) subdir
 
-// ---- .gitrepo reading (bash: read-gitrepo-file mutating 6 globals)
+// ---- .gitrepo reading and writing (bash: read-gitrepo-file /
+// update-gitrepo-file mutating 6 globals) -------------------------
 
 let readGitrepo gitrepo =
     let methodRaw = configGet gitrepo "subrepo.method"
@@ -122,6 +199,26 @@ let readGitrepo gitrepo =
       Commit = configGet gitrepo "subrepo.commit"
       Parent = configGet gitrepo "subrepo.parent"
       Method = if methodRaw == "rebase" then "rebase" else "merge" }
+
+let gitrepoHeader =
+    [ "; DO NOT EDIT (unless you know what you are doing)"
+     ";"
+     "; This subdirectory is a git \"subrepo\", and this file is maintained by the"
+     "; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme"
+     ";" ]
+
+let writeGitrepo gitrepo repo =
+    if not (File.exists gitrepo) then gitrepoHeader |> File.write gitrepo
+    !(git config --file $gitrepo subrepo.remote (repo.Remote))
+    !(git config --file $gitrepo subrepo.branch (repo.Branch))
+    !(git config --file $gitrepo subrepo.commit (repo.Commit))
+    !(git config --file $gitrepo subrepo.parent (repo.Parent))
+    !(git config --file $gitrepo subrepo.method (repo.Method))
+
+let commitMessage verb ctx =
+    $"git subrepo {verb} (merge) {ctx.Subdir}"
+
+// ---- context construction ---------------------------------------
 
 let makeCtx subdir =
     let subref = encodeSubref subdir
@@ -134,6 +231,15 @@ let makeCtx subdir =
       UpstreamHead = ""
       HeadBranch = $(git symbolic-ref --short --quiet HEAD) |> Seq.head }
 
+// clone/init reach the same shape BEFORE a .gitrepo exists
+let makeFreshCtx subdir repo =
+    { Subdir = subdir
+      Subref = encodeSubref subdir
+      Gitrepo = Path.combine subdir ".gitrepo"
+      Repo = repo
+      UpstreamHead = ""
+      HeadBranch = $(git symbolic-ref --short --quiet HEAD) |> Seq.head }
+
 // ---- environment/repo asserts (bash: assert-*) ------------------
 
 let assertRepoReady ctx =
@@ -142,7 +248,7 @@ let assertRepoReady ctx =
     !(git diff-files --quiet --ignore-submodules | orFail "Can't pull subrepo. Unstaged changes.")
     !(git diff-index --quiet --cached --ignore-submodules HEAD | orFail "Can't pull subrepo. Index has changes.")
 
-// ---- fetch (bash: subrepo:fetch mutating upstream_head_commit) --
+// ---- fetch (bash: subrepo:fetch) --------------------------------
 
 let fetchUpstream ctx =
     if ctx.Repo.Remote == "none" then fail $"Can't fetch subrepo. Remote is 'none' in '{ctx.Gitrepo}'."
@@ -150,52 +256,238 @@ let fetchUpstream ctx =
     !(git fetch --no-tags --quiet (ctx.Repo.Remote) (ctx.Repo.Branch))
     let head = revParse "FETCH_HEAD^0"
     step $"Create ref 'refs/subrepo/{ctx.Subref}/fetch'."
-    !(git update-ref $"refs/subrepo/{ctx.Subref}/fetch" $head)
+    makeRef $"refs/subrepo/{ctx.Subref}/fetch" head
     { ctx with UpstreamHead = head }
 
-// ---- the commit walk (bash: subrepo:branch's 4-accumulator loop
-// over rev-list) — a fold over a Walk record ----------------------
+// ---- the graft machinery (bash: subrepo:branch's loop +
+// filter-branch) — trees built MINUS .gitrepo via a temp index ----
 
-type Walk = { Prev: string; Ancestor: string; First: string; Kept: int }
+// the tree of commit:subdir with .gitrepo removed — GIT_INDEX_FILE
+// plumbing replaces filter-branch
+let subdirTree subdir commit =
+    let idx = $(mktemp -u) |> Seq.head
+    let e = Env.ofPairs [("GIT_INDEX_FILE", idx)]
+    !e(git read-tree $"{commit}:{subdir}")
+    !e(git rm -q --cached --ignore-unmatch .gitrepo)
+    let tree = $e(git write-tree) |> Seq.head
+    !(rm -f $idx)
+    tree
 
-let walkCommits ctx =
-    $(git rev-list --reverse --ancestry-path --topo-order $"{ctx.Repo.Parent}..HEAD")
-    |> Seq.fold
-        (fun w commit ->
-            let blob = $(git config --blob $"{commit}:{ctx.Gitrepo}" subrepo.commit | complete)
-            if blob.ExitCode <> 0 then w // no .gitrepo in this commit: skip
-            else
-                let gitrepoCommit = blob.Stdout |> Seq.tryHead |> Option.defaultTo ""
-                { w with
-                    Prev = commit
-                    Ancestor = w.Prev
-                    First = (if w.First == "" then gitrepoCommit else w.First)
-                    Kept = w.Kept + 1 })
-        { Prev = ""; Ancestor = ""; First = ""; Kept = 0 }
-
-// bash: GIT_AUTHOR_* env prefix on git commit-tree — runEnv overlay,
-// author preserved / committer current, exactly the original's intent
-let commitTreeAs date email name msg tree =
+// author-preserving commit-tree with explicit parents (bash: the
+// GIT_AUTHOR_* prefix; committer stays current, cherry-pick-style)
+let commitTreeAs date email name msg tree parents =
     let author = Env.ofPairs [("GIT_AUTHOR_DATE", date); ("GIT_AUTHOR_EMAIL", email); ("GIT_AUTHOR_NAME", name)]
-    $author(git commit-tree -m $msg $tree) |> Seq.head
+    let parentArgs = parents |> Seq.fold (fun acc p -> ["-p"; p] |> Seq.append acc) []
+    let argv = [tree] |> Seq.append parentArgs |> Seq.append ["commit-tree"; "-m"; msg]
+    (completedEnv author "git" argv).Stdout |> Seq.head
 
-// ---- pull (bash: subrepo:pull + OK/CODE signaling) --------------
+type Walk = {
+    Prev: string
+    Ancestor: string
+    FirstG: string
+    LastG: string
+}
+
+// one grafted commit per mainline commit that touched the subdir —
+// parents: the previous graft, plus the upstream commit when the
+// .gitrepo reference moved (the merge-method join)
+let graftStep ctx w commit =
+    let blob = $(git config --blob $"{commit}:{ctx.Gitrepo}" subrepo.commit | complete)
+    if blob.ExitCode <> 0 then w // no .gitrepo in this commit: skip
+    else
+        let gCommit = blob.Stdout |> Seq.tryHead |> Option.defaultTo ""
+        let parentsLine = $(git show -s --format=%P $commit) |> Seq.tryHead |> Option.defaultTo ""
+        let isChild = (w.Ancestor == "") || (parentsLine |> Str.contains (w.Ancestor))
+        if not isChild then w // not on the single selected path: skip
+        else
+            let hasContent = treeExists $"{commit}:{ctx.Subdir}"
+            if not hasContent then
+                // EMPTY-placeholder commits bounded out: keep the path
+                { w with Ancestor = commit }
+            else
+                let author = $(git log -1 --date=default --format=%ad%n%ae%n%an $commit) |> Seq.toList
+                let msg = $(git log -1 --format=%B $commit) |> Str.join "\n"
+                let tree = subdirTree (ctx.Subdir) commit
+                let firstG = if w.FirstG == "" then gCommit else w.FirstG
+                let joins = if (w.FirstG == "") || (not (gCommit == w.LastG)) then [gCommit] else []
+                let parents = joins |> Seq.append (if w.Prev == "" then [] else [w.Prev])
+                step $"Graft {commit}"
+                let newC = commitTreeAs (author[0]) (author[1]) (author[2]) msg tree parents
+                { Prev = newC; Ancestor = commit; FirstG = firstG; LastG = gCommit }
+
+let graftBranch ctx branch =
+    if branchExists branch then step $"Branch '{branch}' already exists."
+    else
+        if ctx.Repo.Parent == "" then fail $"No subrepo.parent in '{ctx.Gitrepo}' (the no-parent filter-branch path is bounded out)."
+        if not (isAncestor (ctx.Repo.Parent) "HEAD") then
+            fail $"The last sync point {ctx.Repo.Parent} is not an ancestor of HEAD (a rebase moved it?)."
+        step $"Walk {ctx.Repo.Parent}..HEAD"
+        let walked =
+            $(git rev-list --reverse --ancestry-path --topo-order $"{ctx.Repo.Parent}..HEAD")
+            |> Seq.fold (fun w c -> graftStep ctx w c) { Prev = ""; Ancestor = ""; FirstG = ""; LastG = "" }
+        if walked.Prev == "" then fail $"Nothing to graft: no commit in {ctx.Repo.Parent}..HEAD touches '{ctx.Subdir}'."
+        !(git branch -q $branch (walked.Prev))
+        makeRef $"refs/subrepo/{ctx.Subref}/branch" (walked.Prev)
+
+// ---- commit (bash: subrepo:commit) — put a fetched upstream tree
+// into the subdir and commit to the mainline ----------------------
+
+let commitSubrepo verb force ctx commitRef =
+    if not (revExists commitRef) then fail $"Commit ref '{commitRef}' does not exist."
+    if not force then
+        if not (commitInRevList (ctx.UpstreamHead) commitRef) then
+            fail $"Can't commit: '{commitRef}' doesn't contain upstream HEAD."
+    let tracked = $(git ls-files -- (ctx.Subdir)) |> Seq.length
+    if tracked > 0 then !(git rm -q -r -- (ctx.Subdir))
+    step $"Put remote subrepo content into '{ctx.Subdir}/'."
+    !(git read-tree $"--prefix={ctx.Subdir}" -u $commitRef)
+    writeGitrepo (ctx.Gitrepo) { ctx.Repo with Commit = ctx.UpstreamHead; Parent = revParse "HEAD" }
+    !(git add -f -- (ctx.Gitrepo))
+    !(git commit -q -m (commitMessage verb ctx))
+    makeRef $"refs/subrepo/{ctx.Subref}/commit" commitRef
+
+// ---- pull (bash: subrepo:pull — branch, join, commit). The bash
+// joins in a WORKTREE; here `git merge-tree --write-tree` does the
+// real merge in plumbing, no worktree (the rebase method is bounded
+// to merge on this path — a rebase join needs a checkout) ----------
 
 let pull ctx0 =
     let ctx = fetchUpstream ctx0
     if ctx.UpstreamHead == ctx.Repo.Commit then UpToDate
     else
         let branch = $"subrepo/{ctx.Subref}"
+        deleteBranch branch
         step $"Create subrepo branch '{branch}'."
-        let joined =
-            if ctx.Repo.Method == "rebase" then
-                $(git rebase $"refs/subrepo/{ctx.Subref}/fetch" $branch | complete)
-            else
-                $(git merge $"refs/subrepo/{ctx.Subref}/fetch" | complete)
-        if joined.ExitCode <> 0 then JoinConflict (joined.Stderr |> Str.join "\n")
+        graftBranch ctx branch
+        let localHead = revParse branch
+        let joined = $(git merge-tree --write-tree $branch $"refs/subrepo/{ctx.Subref}/fetch" | complete)
+        if joined.ExitCode <> 0 then
+            JoinConflict (joined.Stdout |> Seq.append (joined.Stderr) |> Str.join "\n")
         else
+            let tree = joined.Stdout |> Seq.head
+            let merged =
+                $(git commit-tree -p $localHead -p $"refs/subrepo/{ctx.Subref}/fetch" -m $"subrepo pull merge" $tree)
+                |> Seq.head
+            makeRef $"refs/subrepo/{ctx.Subref}/pull" merged
             step $"Commit the new '{ctx.Subdir}' content."
+            commitSubrepo "pull" true { ctx with Repo = { ctx.Repo with Commit = ctx.UpstreamHead } } merged
+            deleteBranch branch
             Pulled
+
+// ---- clone (bash: subrepo:clone, the fresh path) ----------------
+
+let detectHeadBranch remote =
+    let symref =
+        $(git ls-remote --symref $remote HEAD)
+        |> Seq.choose (fun l ->
+            match l with
+            | Regex @"^ref: refs/heads/(\S+)\s+HEAD" b -> Some b
+            | _ -> None)
+        |> Seq.tryHead
+
+    match symref with
+    | Some b -> b
+    | None ->
+        // a bare file remote can carry a dangling HEAD: fall back to
+        // the first advertised branch
+        $(git ls-remote --heads $remote)
+        |> Seq.choose (fun l ->
+            match l with
+            | Regex @"refs/heads/(\S+)$" b -> Some b
+            | _ -> None)
+        |> Seq.tryHead
+        |> Option.defaultTo "master"
+
+let clone remote subdir branch =
+    if not (revExists "HEAD") then fail "You can't clone into an empty repository."
+    let tracked = $(git ls-files -- $subdir) |> Seq.length
+    if (tracked > 0) || File.exists (Path.combine subdir ".gitrepo") then
+        fail $"The subdir '{subdir}' is already tracked (reclone via --force is bounded out; use pull)."
+    step $"Fetch '{remote}' ({branch})."
+    !(git fetch --no-tags --quiet $remote $branch)
+    let head = revParse "FETCH_HEAD^0"
+    let repo = { Remote = remote; Branch = branch; Commit = head; Parent = ""; Method = "merge" }
+    let ctx = { makeFreshCtx subdir repo with UpstreamHead = head }
+    makeRef $"refs/subrepo/{ctx.Subref}/fetch" head
+    commitSubrepo "clone" true ctx head
+    say $"Subrepo '{remote}' ({branch}) cloned into '{subdir}'."
+
+// ---- init (bash: subrepo:init) ----------------------------------
+
+let init subdir remote branch =
+    let tracked = $(git ls-files -- $subdir) |> Seq.length
+    if tracked == 0 then fail $"The subdir '{subdir}' is not part of this repo."
+    if File.exists (Path.combine subdir ".gitrepo") then fail $"The subdir '{subdir}' is already a subrepo."
+    let repo =
+        { Remote = remote |> Option.defaultTo "none"
+          Branch = branch |> Option.defaultTo "master"
+          Commit = ""
+          Parent = revParse "HEAD"
+          Method = "merge" }
+    let ctx = makeFreshCtx subdir repo
+    writeGitrepo (ctx.Gitrepo) repo
+    !(git add -f -- (ctx.Gitrepo))
+    !(git commit -q -m (commitMessage "init" ctx))
+    makeRef $"refs/subrepo/{ctx.Subref}/commit" (revParse "HEAD")
+    say $"Subrepo created from '{subdir}' (remote: {repo.Remote})."
+
+// ---- push (bash: subrepo:push, merge-method graft) --------------
+
+let push force ctx0 =
+    let branch = $"subrepo/{ctx0.Subref}"
+    let fetched = $(git fetch --no-tags --quiet (ctx0.Repo.Remote) (ctx0.Repo.Branch) | complete)
+    let fetchErr = fetched.Stderr |> Str.join "\n"
+    let newUpstream =
+        (fetched.ExitCode <> 0) && (fetchErr |> Str.toLower |> Str.contains "couldn't find remote ref")
+    if (fetched.ExitCode <> 0) && not newUpstream then fail $"Fetch for push failed: {fetchErr}"
+    let ctx =
+        if newUpstream then ctx0
+        else
+            let head = revParse "FETCH_HEAD^0"
+            makeRef $"refs/subrepo/{ctx0.Subref}/fetch" head
+            if (not force) && (not (head == ctx0.Repo.Commit)) then
+                fail "There are new changes upstream, you need to pull first."
+            { ctx0 with UpstreamHead = head }
+    deleteBranch branch
+    graftBranch ctx branch
+    let newHead = revParse branch
+    if (not newUpstream) && (newHead == ctx.UpstreamHead) then
+        deleteBranch branch
+        say $"Subrepo '{ctx.Subdir}' has no new commits to push."
+    else
+        if (not force) && (not newUpstream) then
+            if not (commitInRevList (ctx.UpstreamHead) branch) then
+                fail $"Can't push: '{branch}' doesn't contain upstream HEAD {ctx.UpstreamHead}."
+        step $"Push branch '{branch}' to '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
+        if force then
+            !(git push -q --force (ctx.Repo.Remote) $"{branch}:{ctx.Repo.Branch}")
+        else
+            !(git push -q (ctx.Repo.Remote) $"{branch}:{ctx.Repo.Branch}")
+        makeRef $"refs/subrepo/{ctx.Subref}/push" branch
+        deleteBranch branch
+        writeGitrepo (ctx.Gitrepo) { ctx.Repo with Commit = newHead; Parent = revParse "HEAD" }
+        !(git add -f -- (ctx.Gitrepo))
+        !(git commit -q -m (commitMessage "push" ctx))
+        say $"Subrepo '{ctx.Subdir}' pushed to '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
+
+// ---- clean (bash: subrepo:clean) --------------------------------
+
+let clean force ctx =
+    let branch = $"subrepo/{ctx.Subref}"
+    if branchExists branch then
+        deleteBranch branch
+        say $"Removed branch '{branch}'."
+    if force then
+        $(git show-ref)
+        |> Seq.choose (fun line ->
+            match line with
+            | Regex @"^[0-9a-f]+ (refs/subrepo/\S+)$" r -> Some r
+            | _ -> None)
+        |> Seq.where (Str.contains (ctx.Subref))
+        |> Seq.toList
+        // multi-statement lambda bodies stay single-line (the
+        // parens-spanning-lines park); greedy-; groups inside
+        |> Seq.iter (fun r -> deleteRef r; say $"Removed ref '{r}'.")
 
 // ---- status (bash: status-refs' while-read + BASH_REMATCH) ------
 
@@ -211,7 +503,6 @@ let status ctx =
     print $"Git subrepo '{ctx.Subdir}':"
     if branchExists $"subrepo/{ctx.Subref}" then print $"  Subrepo Branch:  subrepo/{ctx.Subref}"
     print $"  Remote URL:      {ctx.Repo.Remote}"
-
     print $"  Tracking Branch: {ctx.Repo.Branch}"
     if not (ctx.Repo.Commit == "") then print $"  Pulled Commit:   {ctx.Repo.Commit}"
     if verbose then statusRefs ctx |> Seq.iter print
@@ -222,6 +513,7 @@ let status ctx =
 match cli with
 | Status a ->
     status (makeCtx a.subdir)
+
 | Fetch a ->
     let ctx = fetchUpstream (makeCtx a.subdir)
     say $"Fetched '{ctx.Subdir}' from '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
@@ -236,3 +528,34 @@ match cli with
             printerr $"The join failed:"
             printerr out
             exit 1)
+
+| Clone a ->
+    // the Option match lives HERE, where a.branch is nominally typed
+    // (params never infer from ctor patterns — the standing bound)
+    let branch =
+        match a.branch with
+        | Some b -> b
+        | None -> detectHeadBranch (a.remote)
+
+    clone (a.remote) (a.subdir) branch
+
+| Init a ->
+    init (a.subdir) (a.remote) (a.branch)
+
+| Push a ->
+    let ctx = makeCtx a.subdir
+    assertRepoReady ctx
+    push (a.force) ctx
+
+| Branch a ->
+    let ctx = fetchUpstream (makeCtx a.subdir)
+    graftBranch ctx $"subrepo/{ctx.Subref}"
+    say $"Created branch 'subrepo/{ctx.Subref}'."
+
+| Commit a ->
+    let ctx = fetchUpstream (makeCtx a.subdir)
+    commitSubrepo "commit" (a.force) ctx $"refs/subrepo/{ctx.Subref}/fetch"
+    say $"Subrepo '{ctx.Subdir}' committed."
+
+| Clean a ->
+    clean (a.force) (makeCtx a.subdir)

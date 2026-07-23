@@ -1,5 +1,46 @@
 # Spike Notes
 
+## git-subrepo: the exercise finishes — and harvests receipts (2026-07-23)
+
+The full port lands: clone, init, pull, push, branch, commit, clean,
+status, fetch — the complete lifecycle e2e against a real bare
+upstream, with the crown assertion green: a host contribution pushed
+upstream arrives WITH the host author preserved (the graft's
+cherry-pick-style author/committer split), and a second pull merges
+upstream movement over local contributions.
+
+Two modernizations replaced the bash's heaviest machinery. The graft
+builds each tree MINUS .gitrepo via GIT_INDEX_FILE temp-index
+plumbing through runEnv — the deprecated filter-branch pass and its
+refs/original cleanup do not exist in the port. And the pull join
+runs `git merge-tree --write-tree` (real merge machinery, no
+worktree) — which also EXPOSED that the inherited pull path had been
+wrong all along: it merged upstream's unrelated history straight
+into the mainline, masked until now because every fixture was
+up-to-date. The lifecycle fixture found it in its first minute.
+
+The port found a genuine assembler bug in the worst class
+(legal-parse-wrong-meaning): with a block-let pending, a match
+inside a multi-line lambda outlived the lambda's own `)` on the
+compound stack, and the next outer-pipeline stage got offside-
+WRAPPED INTO the lambda — piping the inner match's Option where a
+seq belonged. Fix: compounds record their paren depth at open;
+the user's own closers prune them ([D:compound-paren-prune]) — the
+wrap can no longer cross a paren boundary. Pinned on the exact
+assembled text.
+
+The receipt harvest, filed against the standing parks: block-let
+command RHS inside bodies bit TWICE (hoisted to top-level wrappers
+— the idiomatic answer, but the friction is real); multi-statement
+lambdas across lines are the parens-spanning park's face (spelled
+single-line with greedy-`;`, which HELPS here); ctor-pattern-
+scrutinee moved a match to the dispatch site where the Option is
+nominally typed; `config` is NOT ported — its `<key> [<value>]`
+shape is the positionals park's operand case, on record; and
+Seq.append landed mid-port because variable-length argv had no
+concat spelling at all. One exercise, five park receipts, two real
+bugs — the flagship keeps earning its name.
+
 ## REPL coloring — the highlighter that cannot drift (2026-07-23)
 
 Input lines color as you type, and the architecture note the plan

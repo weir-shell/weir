@@ -329,6 +329,9 @@ let pins =
           "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n}\n"
           (Diverges "record-fields-ignore-indent")
 
+      // --- Seq.append probe (the full-port receipt: variable argv) ---
+      pin "Seq.append: piped tail after the head seq" "let xs = [3; 4] |> Seq.append [1; 2] |> Seq.toList\n" Same
+
       // --- Seq.choose probes (PLAN-choose) ---
       pin
           "Seq.choose: partial map, applied"
