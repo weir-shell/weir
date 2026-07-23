@@ -57,3 +57,5 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 
+__pycache__/
+*.pyc
