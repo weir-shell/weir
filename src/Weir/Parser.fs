@@ -26,7 +26,10 @@ let keywords =
           "when"
           "elif"
           "rec"
-          "mutable" ]
+          "mutable"
+          // reserved for the parked match-lambda sugar [D:block-let-cmd
+          // rider]: the future form breaks nothing
+          "function" ]
 
 // the keyword set, exposed for tooling resolvers (weir check's
 // assume-command rule must never claim a keyword head)
@@ -47,6 +50,42 @@ let private ambientResolver =
           IsCommandCallable = (fun _ -> false)
           IsExternal = (fun _ -> false)
           ExternalNames = fun () -> Seq.empty })
+
+// Block-let command RHS [D:block-let-cmd]: TRUE only along the
+// statement spine a block assembles into (topLet RHS + its let-in
+// chain) — parens, lambda bodies, and the bare single-line let-in
+// (REPL/-e) stay expression-only, holding the original in-swallow
+// park's boundary by construction.
+let private letCmdOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
+
+// forwarded: the let-in value position sits above the command grammar
+let private letRhsCmd, private letRhsCmdRef =
+    createParserForwardedToRef<Expr, unit> ()
+
+let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = letCmdOk.Value
+        letCmdOk.Value <- v
+
+        try
+            p stream
+        finally
+            letCmdOk.Value <- saved
+
+// the param-ful law one scope deeper [D:block-let-cmd]: a block-let
+// name shadows PATH for every later parse in its body
+let private withAmbientName (name: string) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = ambientResolver.Value
+
+        ambientResolver.Value <-
+            { saved with
+                IsKnown = fun n -> n = name || saved.IsKnown n }
+
+        try
+            p stream
+        finally
+            ambientResolver.Value <- saved
 
 let private isIdentStart c = isLetter c || c = '_'
 let private isIdentCont c = isLetter c || isDigit c || c = '_'
@@ -80,7 +119,9 @@ let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
 
 let private notKeyword (w: string) =
-    if keywords.Contains w then
+    if w = "function" then
+        fail "'function' is reserved; write 'fun x -> match x with'"
+    elif keywords.Contains w then
         fail $"'{w}' is a keyword"
     else
         preturn w
@@ -517,7 +558,7 @@ let private lambda =
         getPosition
         (keyword "fun" >>. many1 binderParam >>= fun ps -> rejectDupParams ps >>% ps
          .>> str_ws "->")
-        seqExpr
+        (withLetCmd false seqExpr)
         (fun p ps body ->
             let inner = curryParams ps body
 
@@ -548,18 +589,28 @@ let private letIn =
               (fun p (binder, value) body ->
                   { Kind = ELetPat(binder, value, body)
                     Span = { Start = pos p; End = body.Span.End } })
-          pipe3
-              getPosition
-              ((keyword "let" >>. ident .>>. many binderParam
-                >>= fun (n, ps) -> rejectDupParams ps >>% (n, ps))
-               .>> str_ws "="
-               .>>. seqExpr
-               .>> barePipeHint
-               .>> keyword "in")
-              seqExpr
-              (fun p ((name, ps), value) body ->
-                  { Kind = ELet(name, curryParams ps value, body)
-                    Span = { Start = pos p; End = body.Span.End } }) ]
+          getPosition
+          >>= fun p ->
+              (keyword "let" >>. ident .>>. many binderParam
+               >>= fun (n, ps) -> rejectDupParams ps >>% (n, ps))
+              .>> str_ws "="
+              >>= fun (name, ps) ->
+                  // the block-let command RHS [D:block-let-cmd]: the same
+                  // grammar the top-level bare RHS takes (in-stop argv, one
+                  // gate), live only on the assembled statement spine
+                  let cmdRhs: Parser<Expr, unit> =
+                      fun stream ->
+                          if letCmdOk.Value then
+                              letRhsCmd stream
+                          else
+                              fail "block-let command RHS is spine-only" stream
+
+                  (cmdRhs <|> (seqExpr .>> barePipeHint)) .>> keyword "in"
+                  >>= fun value ->
+                      withAmbientName name seqExpr
+                      |>> fun body ->
+                          { Kind = ELet(name, curryParams ps value, body)
+                            Span = { Start = pos p; End = body.Span.End } } ]
 
 let private binOp op l r =
     { Kind = EBinOp(op, l, r)
@@ -975,7 +1026,17 @@ type private Seg =
     | OrFailMarker of Expr * Span
 
 let private reifierEnd =
-    lookAhead (choice [ pipeSep |>> ignore; pchar ')' |>> ignore; eof ])
+    // the let-RHS chain also ends at bare `in` [D:block-let-cmd] —
+    // without this, `| succeeds in body` demotes the reifier to a
+    // bareword stage (found by the depth battery)
+    let inStop: Parser<unit, unit> =
+        fun stream ->
+            if letCmdOk.Value then
+                (attempt (pstring "in" .>> notFollowedBy (satisfy cmdWordChar)) |>> ignore) stream
+            else
+                fail "no in-stop here" stream
+
+    lookAhead (choice [ pipeSep |>> ignore; pchar ')' |>> ignore; eof; inStop ])
 
 let private completeMarker =
     attempt (
@@ -1072,6 +1133,8 @@ sigilChainImpl <- fun envO -> fun stream -> (cmdLineWith true cmdArg envO ambien
 // bareword) when the example script was modernized.
 let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
     cmdLineWith false (cmdArgWith true) None r
+
+letRhsCmdRef.Value <- fun stream -> (cmdLineLetRhs ambientResolver.Value) stream
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
@@ -1182,7 +1245,20 @@ let private topLet (r: Resolver) =
 
                 let rhsP = cmdLineLetRhs r' <|> (seqExpr .>> barePipeHint)
 
-                rhsP .>> eof |>> fun rhs -> SLet(name, curryParams ps rhs)
+                // the RHS spine carries the flag + the param-extended
+                // resolver, so interior block lets parse commands with
+                // params AND earlier block names known [D:block-let-cmd]
+                let withSpine (p: Parser<'a, unit>) : Parser<'a, unit> =
+                    fun stream ->
+                        let saved = ambientResolver.Value
+                        ambientResolver.Value <- r'
+
+                        try
+                            (withLetCmd true p) stream
+                        finally
+                            ambientResolver.Value <- saved
+
+                withSpine (rhsP .>> eof) |>> fun rhs -> SLet(name, curryParams ps rhs)
     )
 
 let private stmtWith (r: Resolver) =

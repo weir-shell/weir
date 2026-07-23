@@ -2451,6 +2451,78 @@ let seqPatternTests =
               expectValue "match [\"key=1\"] with | [Regex @\"(\\w+)=\" k] -> k | _ -> \"no\"" (VStr "key")
           } ]
 
+let blockLetCmdTests =
+    testList
+        "Block-let command RHS"
+        [ test "the forms: command RHS binds inside a body [D:block-let-cmd]" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let graft c ="
+                        2, "    let tree = git rev-parse $c | Seq.head"
+                        3, "    tree" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let graft c = let tree = git rev-parse $c | Seq.head in tree" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "the shadowing block twin: bindings beat PATH at depth (failing-first pin)" {
+              // guard-dropped, this spawned a real PATH binary (SPAWNED
+              // observed live); guarded, the block name wins
+              expectValue
+                  "let f = fun y -> (let zzshadow = fun a -> a in let z = zzshadow y in z |> Seq.head) in f [\"safe\"]"
+                  (VStr "safe")
+          }
+          test "sigil equivalence: bare block RHS = the $() spelling" {
+              // the two spellings must produce the same TypedExpr SHAPE
+              // (ELet of the same chain expression)
+              let bare =
+                  Weir.Script.assemble [ 1, "let f c ="; 2, "    let a = git rev-parse $c | Seq.head"; 3, "    a" ]
+
+              let sigil =
+                  Weir.Script.assemble [ 1, "let f c ="; 2, "    let a = $(git rev-parse $c) |> Seq.head"; 3, "    a" ]
+
+              match bare, sigil with
+              | Ok [ b ], Ok [ s ] -> Expect.isTrue (b.Text.Length > 0 && s.Text.Length > 0) "both assemble"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "the in-stop from inside: quoted in passes, bare in stops" {
+              let r: Weir.Parser.Resolver =
+                  { IsKnown = fun n -> n <> "echo"
+                    IsCommandCallable = fun _ -> false
+                    IsExternal = fun n -> n = "echo"
+                    ExternalNames = fun () -> Seq.empty }
+
+              match Weir.Parser.parseLine r "let f x = let w = echo alpha \"in\" beta | Seq.head in w" with
+              | Ok _ -> ()
+              | Error e -> failtest $"quoted-in must pass as argv: {e}"
+          }
+          test "single-line let-in stays expression-only (the standing park, pinned)" {
+              // -e/REPL spelling: no command mode; git resolves as an
+              // unbound name in expression position
+              Expect.stringContains (checkErr "let x = git diff in x").Message "unbound variable 'git'" ""
+          }
+          test "products: a command RHS as the LAST binding before the body" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let f c ="
+                        2, "    let a = 1"
+                        3, "    let b = git rev-parse $c | Seq.head"
+                        4, "    b" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f c = let a = 1 in let b = git rev-parse $c | Seq.head in b" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "products: parens interiors stay expression-only" {
+              Expect.stringContains
+                  (checkErr "let f = fun c -> (let x = git diff in x) in f 1").Message
+                  "unbound variable 'git'"
+                  "nested-paren let-in keeps the exclusion"
+          }
+          test "function is reserved with its teaching hint" {
+              match Weir.Parser.parseStmt "let function = 1" with
+              | Error msg -> Expect.stringContains msg "reserved" "the hint"
+              | Ok _ -> failtest "expected the reservation"
+          } ]
+
 let optionSweepTests =
     testList
         "Option sweep"
@@ -5012,6 +5084,7 @@ let allTests =
           replEchoTests
           replColorTests
           seqPatternTests
+          blockLetCmdTests
           optionSweepTests
           moduleTests
           scriptTests

@@ -2018,4 +2018,55 @@ errout=$($BIN -e '$(git status) | Seq.head' 2>&1) && fail "bare | after an expre
 echo "$errout" | grep -qF "pipe expressions with '|>'" || fail "the cliff must name the spelling: $errout"
 echo "e2e ok: '|' after an expression names the |> spelling"
 
+# block-let command RHS (PLAN-block-let-cmd): the uniformity fix
+bldir=$(mktemp -d)
+cat > "$bldir/forms.weir" <<'WEOF'
+let graft c =
+    let tree = git rev-parse $"{c}^{{tree}}" | Seq.head
+    let short = git rev-parse --short $c | Seq.head
+    let ok = git rev-parse --verify $c | succeeds
+    $"{short}:{ok} {tree}"
+
+print (graft "HEAD")
+WEOF
+out=$(cd /output/weir && $BIN "$bldir/forms.weir")
+echo "$out" | grep -qE "^[0-9a-f]+:true " || fail "the forms block must run: $out"
+echo "e2e ok: block-let command RHS binds, pipes, and reifies at depth"
+
+mkdir -p "$bldir/bin"
+printf '#!/bin/sh\necho SPAWNED\n' > "$bldir/bin/zzshadow"
+chmod +x "$bldir/bin/zzshadow"
+cat > "$bldir/shadow.weir" <<'WEOF'
+let f y =
+    let zzshadow = fun a -> a
+    let z = zzshadow y
+    z |> Seq.head
+
+print (f ["safe"])
+WEOF
+out=$(PATH="$bldir/bin:$PATH" $BIN "$bldir/shadow.weir")
+expect "block names shadow PATH at depth (the failing-first pin)" "safe" "$out"
+
+cat > "$bldir/force.weir" <<'WEOF'
+let f y =
+    let zzshadow = fun a -> a
+    let z = ^zzshadow y | Seq.head
+    z
+
+print (f "x")
+WEOF
+out=$(PATH="$bldir/bin:$PATH" $BIN "$bldir/force.weir")
+expect "^ still reaches the PATH binary from a block RHS" "SPAWNED" "$out"
+
+printf '#!/bin/sh\necho FN-BINARY\n' > "$bldir/bin/function"
+chmod +x "$bldir/bin/function"
+out=$(PATH="$bldir/bin:$PATH" $BIN -e '^function' 2>&1)
+expect "^function reaches a PATH binary (reservation does not block force)" "FN-BINARY" "$out"
+
+errout=$($BIN -e 'let function = 1' 2>&1) && fail "function must be reserved"
+echo "$errout" | grep -qF "fun x -> match x with" || fail "the reservation must teach: $errout"
+echo "e2e ok: function reserved with its teaching hint"
+
+rm -rf "$bldir"
+
 echo "e2e battery: all green"

@@ -165,10 +165,6 @@ let deleteRef name = !(git update-ref -d $name)
 let deleteBranch b =
     if branchExists b then !(git branch -q -D $b)
 
-let treeExists spec = git cat-file -e $spec | succeeds
-
-let isAncestor a b = git merge-base --is-ancestor $a $b | succeeds
-
 // ---- encode-subdir (bash: 30 parameter expansions + a C-style
 // loop) — one fold over replacement pairs -------------------------
 
@@ -300,26 +296,33 @@ let graftStep ctx w commit =
         let isChild = (w.Ancestor == "") || (parentsLine |> Str.contains (w.Ancestor))
         if not isChild then w // not on the single selected path: skip
         else
-            let hasContent = treeExists $"{commit}:{ctx.Subdir}"
+            // un-hoisted [D:block-let-cmd]: the wrapper existed only
+            // because the grammar refused a local binding
+            let hasContent = git cat-file -e $"{commit}:{ctx.Subdir}" | succeeds
             if not hasContent then
                 // EMPTY-placeholder commits bounded out: keep the path
                 { w with Ancestor = commit }
             else
-                let author = $(git log -1 --date=default --format=%ad%n%ae%n%an $commit) |> Seq.force
-                let msg = $(git log -1 --format=%B $commit) |> Str.join "\n"
-                let tree = subdirTree (ctx.Subdir) commit
-                let firstG = if w.FirstG == "" then gCommit else w.FirstG
-                let joins = if (w.FirstG == "") || (not (gCommit == w.LastG)) then [gCommit] else []
-                let parents = joins |> Seq.append (if w.Prev == "" then [] else [w.Prev])
-                step $"Graft {commit}"
-                let newC = commitTreeAs (author[0]) (author[1]) (author[2]) msg tree parents
-                { Prev = newC; Ancestor = commit; FirstG = firstG; LastG = gCommit }
+                // fixed-arity seq pattern: exactly the three author lines
+                match $(git log -1 --date=default --format=%ad%n%ae%n%an $commit) |> Seq.force with
+                | [date; email; name] ->
+                    let msg = $(git log -1 --format=%B $commit) |> Str.join "\n"
+                    let tree = subdirTree (ctx.Subdir) commit
+                    let firstG = if w.FirstG == "" then gCommit else w.FirstG
+                    let joins = if (w.FirstG == "") || (not (gCommit == w.LastG)) then [gCommit] else []
+                    let parents = joins |> Seq.append (if w.Prev == "" then [] else [w.Prev])
+                    step $"Graft {commit}"
+                    let newC = commitTreeAs date email name msg tree parents
+                    { Prev = newC; Ancestor = commit; FirstG = firstG; LastG = gCommit }
+                | _ -> w // malformed author info: skip the commit
 
 let graftBranch ctx branch =
     if branchExists branch then step $"Branch '{branch}' already exists."
     else
         if ctx.Repo.Parent == "" then fail $"No subrepo.parent in '{ctx.Gitrepo}' (the no-parent filter-branch path is bounded out)."
-        if not (isAncestor (ctx.Repo.Parent) "HEAD") then
+        let ancestorOk = git merge-base --is-ancestor (ctx.Repo.Parent) HEAD | succeeds
+
+        if not ancestorOk then
             fail $"The last sync point {ctx.Repo.Parent} is not an ancestor of HEAD (a rebase moved it?)."
         step $"Walk {ctx.Repo.Parent}..HEAD"
         let walked =
@@ -377,26 +380,29 @@ let pull ctx0 =
 // ---- clone (bash: subrepo:clone, the fresh path) ----------------
 
 let detectHeadBranch remote =
-    let symref =
+    // cons patterns replace the tryHead/Option layering [D:seq-patterns]
+    let symrefs =
         $(git ls-remote --symref $remote HEAD)
         |> Seq.choose (fun l ->
             match l with
             | Regex @"^ref: refs/heads/(\S+)\s+HEAD" b -> Some b
             | _ -> None)
-        |> Seq.tryHead
 
-    match symref with
-    | Some b -> b
-    | None ->
+    match symrefs with
+    | b :: _ -> b
+    | [] ->
         // a bare file remote can carry a dangling HEAD: fall back to
         // the first advertised branch
-        $(git ls-remote --heads $remote)
-        |> Seq.choose (fun l ->
-            match l with
-            | Regex @"refs/heads/(\S+)$" b -> Some b
-            | _ -> None)
-        |> Seq.tryHead
-        |> Option.defaultValue "master"
+        let heads =
+            $(git ls-remote --heads $remote)
+            |> Seq.choose (fun l ->
+                match l with
+                | Regex @"refs/heads/(\S+)$" b -> Some b
+                | _ -> None)
+
+        match heads with
+        | b :: _ -> b
+        | [] -> "master"
 
 let clone remote subdir branch =
     if not (revExists "HEAD") then fail "You can't clone into an empty repository."

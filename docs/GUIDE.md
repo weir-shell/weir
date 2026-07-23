@@ -101,9 +101,10 @@ type Verdict =
 
 type Score = { Name: string; Points: int }
 
-let s =
-    { Name = "a"
-      Points = 12 }
+let s = {
+    Name = "a"
+    Points = 12
+}
 
 let s2 = { s with Points = 13 }
 
@@ -276,7 +277,10 @@ porcelain regex every time.
 ## Commands and processes
 
 Bareword heads run externals; builtins shadow PATH (`^ls` forces the
-real one). Splice values with `$name` or `(expr)` — always single argv
+real one). A `let` takes a bare command RHS everywhere lets go —
+top level and inside bodies alike (`let tree = git rev-parse $c | Seq.head`
+works in a function body now); `$()` remains the spelling for
+sub-expression positions (inside records, arguments, parens). Splice values with `$name` or `(expr)` — always single argv
 entries, never re-split, so there is no injection class. No globs, no
 `&&`, no `$VAR` expansion, no redirects — `>` and `>>` pass through as
 literal argv with a warning naming the weir spelling

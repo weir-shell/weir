@@ -154,6 +154,10 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   `cd` inside a worker is worker-local and gone at the join — force
   worker output inside the worker (`Seq.head`/`Seq.force`) if its cd
   matters.
+- A `let` RHS takes command mode wherever lets go — top level AND
+  inside bodies (`let tree = git rev-parse $c | Seq.head` in a
+  function); `$()` covers sub-expression positions. `function` is
+  reserved (write `fun x -> match x with`).
 - No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
   Ranges are lazy; `[a; b; c]` lists are eager. Running totals are

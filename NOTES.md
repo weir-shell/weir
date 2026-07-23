@@ -1,6 +1,56 @@
 # Spike Notes
 
-## Investigation: the | stage whitelist that wasn't (2026-07-23)
+## The goodness sweep — every example on the newest idioms (2026-07-23)
+
+The docs-and-examples sweep after the window's landings, per the
+idioms-rot rule. bicep-deploy got the biggest lift: the hand-rolled
+subcommand match, usage string, and empty-flag fail all deleted for
+the typed front door (a three-case union over one Doc'd flags
+record — the dispatch is now a check-time obligation), and its four
+records went Stroustrup. repo-report matches argv and the porcelain
+rows with seq patterns ([] + cons over a forced seq — the
+double-enumeration it always had went away with the force).
+git-subrepo's detectHeadBranch dropped its tryHead/Option layering
+for cons matches, and graftStep binds the three author lines with a
+fixed-arity [date; email; name] — the pattern the feature was made
+for. test-counts swapped its cmd-builtin call for the capture
+sigil. The README front-page snippet now leads with a seq match.
+Everything checks, fmt-canonical, runs live; the lifecycle smoke
+and all 50 doc blocks green.
+
+## Block-let command RHS — the uniformity fix## Block-let command RHS — the uniformity fix, and its friction closes (2026-07-23)
+
+The parked half of param-ful RHS opened on three encounters and
+landed as the plan drew it: one grammar, one more position. The
+mechanism is a SPINE FLAG — a ThreadLocal true only along topLet's
+RHS and its let-in chain (exactly the text the assembler's block
+join produces) — so the original in-swallow park's boundary holds
+by construction: parens interiors, lambda bodies, and the
+single-line `let ... in` spelling stay expression-only, each
+pinned. The failing-first ordering ran verbatim: guard-dropped,
+`zzshadow y` SPAWNED a real PATH binary from inside a body; the
+ambient-resolver extension (the param-ful mkR one scope deeper)
+turned it into the binding it names.
+
+The depth battery found the one seam the pre-scoping missed: the
+REIFIER end. `| succeeds in body` demoted succeeds to a bareword
+stage because reifierEnd knew pipe/paren/eof but not the ` in `
+boundary — the in-stop now reaches it, gated on the same spine
+flag. And the e2e is the promised un-hoisting: the port's
+treeExists/isAncestor wrappers — which existed only because the
+grammar refused a local binding — inlined back into graftStep and
+graftBranch, the lifecycle smoke green throughout. The friction
+arc closes: parked with receipts → taught workaround → three
+encounters (two hoists + the user hitting the wall knowing the
+workaround) → opened → the workarounds deleted.
+
+The rider: `function` joins the reserved words with a hint that
+teaches the spelling AND holds the park's name ("'function' is
+reserved; write 'fun x -> match x with'"); `^function` reaches a
+PATH binary (pinned live with a fake executable), and FCS agrees
+the binder rejection is Same.
+
+## Investigation: the | stage whitelist that wasn't (2026-07-23)## Investigation: the | stage whitelist that wasn't (2026-07-23)
 
 The blessed investigation returned verdict C-sharpened: the feared
 mechanism does not exist, and neither does the symptom. The findings

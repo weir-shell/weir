@@ -329,6 +329,9 @@ let pins =
           "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n}\n"
           (Diverges "record-fields-ignore-indent")
 
+      // --- function reservation probe (block-let-cmd rider) ---
+      pin "F#-rejects-this: function as a binder name" "let function = 1\n" Same
+
       // --- seq-pattern probes (PLAN-seq-force-patterns Part 2) ---
       pin
           "seq patterns: F#'s spelling on a LIST literal scrutinee agrees"
