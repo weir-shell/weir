@@ -242,6 +242,16 @@ match line with
 | _ -> print "unparsed"
 ```
 
+Over a stream, the same arm shape pairs with `Seq.choose` — return
+`Some out` to keep a line, `None` to skip it, and the sentinel-empty
+detour (map to `""`, filter empties later) never happens:
+
+```weir
+["cache=42"; "noise"; "hits=7"]
+    |> Seq.choose (fun l -> match l with | Regex @"(\w+)=(\d+)" (k, v) -> Some $"{k}: {v}" | _ -> None)
+    |> Seq.iter print
+```
+
 Groups bind as strings (convert explicitly — `Str.tryToInt`). The
 `Regex` literal is RAW-ONLY — `@"..."`, or `"""..."""` for patterns
 containing quotes; an ordinary escaped string there is a check error,

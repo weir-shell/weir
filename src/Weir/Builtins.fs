@@ -51,6 +51,22 @@ let private mapImpl: Value =
             | VSeq items -> VSeq(items |> Seq.map (apply f))
             | v -> unreachable $"the checker rejects 'map' on {formatValue v}"))
 
+// the match-or-skip member [D:seq-choose]: lazy, constraint-free
+let private chooseImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                VSeq(
+                    items
+                    |> Seq.choose (fun x ->
+                        match apply f x with
+                        | VUnion("Some", Some v) -> Some v
+                        | VUnion("None", None) -> None
+                        | v -> unreachable $"the checker guarantees an Option chooser, got {formatValue v}")
+                )
+            | v -> unreachable $"the checker rejects 'choose' on {formatValue v}"))
+
 let private sumImpl: Value =
     VBuiltin(fun s ->
         match s with
@@ -642,6 +658,7 @@ let private seqMembers: (string * Ty * Value) list =
       // fold [D:seq-fold]: STRICT (an infinite source does not
       // return); state-first folder; constraint-free by construction
       "fold", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, tA))), foldImpl
+      "choose", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TSeq tB)), chooseImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "sortByDescending", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByDescImpl
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl

@@ -698,7 +698,12 @@ if command -v python3 >/dev/null 2>&1; then
     echo "e2e ok: lsp diagnostics/hover/completion over stdio"
 
     # grammar drift guard: micro's '# rule:' annotations vs the
-    # tmLanguage repository keys — add to BOTH or neither
+    # tmLanguage repository keys — add to BOTH or neither.
+    # LIMITATION on record: this proves rule PRESENCE, not regex
+    # semantics — a wrong skip/end inside a matching rule name is
+    # invisible here; per-kind escape laws are verified by eye on the
+    # flagship (git-subrepo's encodeSubref @-string line is the canary,
+    # and a stale INSTALLED syntax copy shows there too)
     python3 - "$(dirname "$0")/.." <<'PYEOF' || fail "grammar inventories diverge (micro vs tmLanguage)"
 import json, re, sys
 root = sys.argv[1]

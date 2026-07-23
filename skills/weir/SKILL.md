@@ -152,6 +152,16 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (consumes the source; not for infinite seqs), and the piped
   spelling anchors the folder's types (prefer it). Multi-accumulator
   loops fold over a record: `Seq.fold (fun c x -> { c with ... }) c0`.
+- Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
+  the arm returns `Some out` or `None`, never a sentinel `""` to
+  filter later. The natural pair with the `Regex` pattern:
+
+```weir
+let refs = ["sha1 refs/a"; "junk"; "sha2 refs/b"]
+refs
+    |> Seq.choose (fun l -> match l with | Regex @"(\w+) refs" s -> Some s | _ -> None)
+    |> Seq.iter print
+```
 - Lambdas take multiple params: `fun acc x -> ...` desugars to nested
   lambdas exactly like `let f a b =` sugar (same param set — idents,
   `()`, parenthesized irrefutable patterns; duplicates rejected).

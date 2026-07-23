@@ -1,5 +1,34 @@
 # Spike Notes
 
+## Seq.choose + the highlighter that was never broken (2026-07-23)
+
+`Seq.choose` lands as the match-or-skip member — lazy, qualified-only,
+constraint-free, FCS-probed (all three pins Same, including both
+languages rejecting a non-Option chooser). The flagship's statusRefs
+was the receipt and is now the showcase: the Regex arm returns
+`Some line`/`None` straight into choose, and the sentinel-empty
+detour (map to "", filter empties) is gone from the one place it was
+taught by example. `Seq.choose id` was NOT ridden: `id` does not
+exist (probing `id 5` runs the PATH binary — command mode claims the
+name at statement level), and the identity-lambda spelling carries
+no receipt beyond cosmetics.
+
+The rider's root cause was WRONG and the correction is the story:
+the plan blamed a backslash skip in the repo's verbatim region, but
+the repo file has carried the correct per-kind escape laws since the
+VS Code session — no commit ever had the claimed skip. The live
+symptom was real and the MECHANISM was as described; the carrier was
+the INSTALLED copy (~/.config/micro/syntax/weir.yaml), stale from
+the pre-raw-strings era: no verbatim region at all, so `@"\"` fell
+into the plain-string region whose `\.` skip ate `\"` and the
+cascade painted the rest of the file as string. Sixth member of the
+stale-artifact/masked-failure class, first in editor config — the
+binary got stamps; syntax files have no mechanism, and the guard's
+presence-not-semantics limitation comment plus the flagship's
+encodeSubref line as by-eye canary are the honest manual substitute
+(a committed repro file was dropped on review — it cannot catch a
+stale INSTALLED copy, which is this class's actual failure mode). Diagnose-before-fix paid again: the decided "fix" would
+have been a no-op edit to an already-correct file.
 ## Typed argv — the front door closes (2026-07-23)
 
 `Args.load` lands as Env.load's sibling and the sixth typed-boundary

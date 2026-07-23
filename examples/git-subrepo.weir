@@ -156,12 +156,11 @@ let pull ctx0 =
 
 let statusRefs ctx =
     $(git show-ref)
-    |> Seq.map (fun line ->
+    |> Seq.choose (fun line ->
         match line with
         | Regex @"^([0-9a-f]+) refs/subrepo/.*/(branch|commit|fetch|pull|push)$" (sha, kind) ->
-            $"    {Str.toUpper kind} Ref:  {sha}"
-        | _ -> "")
-    |> Seq.where (fun l -> not (l == ""))
+            Some $"    {Str.toUpper kind} Ref:  {sha}"
+        | _ -> None)
 
 let status ctx =
     print $"Git subrepo '{ctx.Subdir}':"

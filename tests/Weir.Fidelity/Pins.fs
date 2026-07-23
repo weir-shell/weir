@@ -276,6 +276,14 @@ let pins =
       pin "F#-rejects-this: open range" "let r = [1..]\n" Same
       pin "F#-rejects-this: triple-dotted range" "let r = [1..2..3..4]\n" Same
 
+      // --- Seq.choose probes (PLAN-choose) ---
+      pin
+          "Seq.choose: partial map, applied"
+          "let xs = [1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.toList\n"
+          Same
+      pin "Seq.choose: all-None yields empty" "let n = [1; 2] |> Seq.choose (fun x -> None) |> Seq.length\n" Same
+      pin "Seq.choose: chooser must return Option" "let bad = [1] |> Seq.choose (fun x -> x)\n" Same
+
       // --- attribute probes (PLAN-attributes) — attachment shape is
       // F#-real (the System.Obsolete direction proves FCS parses it);
       // weir's registry is closed, so names diverge both ways ---

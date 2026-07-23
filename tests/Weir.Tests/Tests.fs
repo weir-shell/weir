@@ -1925,6 +1925,41 @@ let typedArgvTests =
                   ""
           } ]
 
+let chooseTests =
+    testList
+        "Seq.choose"
+        [ test "the idiom: match-or-skip over Regex arms" {
+              expectValue
+                  "[\"a1\"; \"x\"; \"a2\"] |> Seq.choose (fun l -> match l with | Regex @\"a(1|2)\" n -> Some n | _ -> None) |> Str.join \",\""
+                  (VStr "1,2")
+          }
+          test "lazy: infinite source, choose, first terminates" {
+              let infinite = Seq.initInfinite (fun i -> Weir.Builtins.file $"f{i}" i false)
+
+              match
+                  runWith
+                      [ "ls", VSeq infinite ]
+                      "ls |> Seq.choose (fun f -> if f.Bytes > 2 then Some f.Bytes else None) |> first 2 |> Seq.sum"
+              with
+              | VInt n -> Expect.equal n 7L "3 + 4"
+              | v -> failtest $"unexpected {v}"
+          }
+          test "all-None yields empty" { expectValue "[1; 2; 3] |> Seq.choose (fun x -> None) |> Seq.length" (VInt 0L) }
+          test "constraint-free: no Eq/Ord obligation on either side" {
+              Expect.equal
+                  (formatTy (checkOk "ls |> Seq.choose (fun f -> Some f.Name) |> Seq.head").Ty)
+                  "string"
+                  "row-projecting chooser types through"
+          }
+          test "qualified-only: bare choose does not resolve" {
+              let terr = checkErr "[1] |> choose (fun x -> Some x)"
+              Expect.stringContains terr.Message "choose" ""
+          }
+          test "non-Option chooser rejects at check" {
+              let terr = checkErr "[1] |> Seq.choose (fun x -> x)"
+              Expect.stringContains terr.Message "Option" ""
+          } ]
+
 let optionSweepTests =
     testList
         "Option sweep"
@@ -4450,6 +4485,7 @@ let allTests =
           genericsTests
           attributeTests
           typedArgvTests
+          chooseTests
           optionSweepTests
           moduleTests
           scriptTests
