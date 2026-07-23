@@ -51,6 +51,19 @@ original's exit-code plumbing dissolved under raise-at-force, so the
 propagation shape is pinned in e2e where it is real, and the example
 correctly carries none.
 
+## Dependency-gate rule
+
+Plans that consume another plan's outputs name the dependency in
+their header and gate on its SESSION REPORT, not its bless — a
+blessed plan is a decision, not a fact. The LSP chain did this
+correctly ("three sessions in hard dependency order"); the
+attributes plan wrote its consumers into Args.load, machinery from
+a blessed-but-never-executed plan, and the session's opening
+reality-check caught it as a stop-and-report. Advisor-error ledger:
+filed next to the fabricated-citation correction the same plan
+paid for — two process-integrity errors in one plan, both caught
+by the machinery working as designed.
+
 ## Established rules (index; full text in their origin archaeology)
 
 - Stop-and-report on behavior deltas mid-refactor, on budget

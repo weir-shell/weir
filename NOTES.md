@@ -34,6 +34,20 @@ shorts overrides retires unbuilt, superseded by `[<Short>]` field
 locality — its record-update-based Default idiom stays valuable
 independent of this feature.
 
+Second advisor-error entry, same plan: the Args.load dependency was
+the advisor's to sequence — PLAN-typed-argv was blessed and amended
+in-thread but never reported executed, and the attributes plan
+wrote work items into its machinery anyway, treating a blessed plan
+as landed code. The countermeasure is the dependency-gate rule, now
+in PROCESS: consuming plans name the dependency in their header and
+gate on its session report, not its bless. The resolution's shape
+gets its credit precisely: extending Positional's not-yet treatment
+to all four names is the plan self-repairing through its own
+decided law — validate-at-attachment/bind-at-consumption was
+decided for a different reason and turned out to be the escape
+hatch, and the carried-over done-when clauses mean the typed-argv
+session inherits its acceptance criteria pre-written.
+
 Found en route, now with a docs receipt: record TYPE declarations
 do not continue across lines (literals continue — their fields
 carry `=`; type fields carry `:` and the continuation join never
