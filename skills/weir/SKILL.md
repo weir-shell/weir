@@ -35,7 +35,9 @@ stops being true fails the build.
   unions, options and debugging: `show x` renders ANY value (except
   functions) as a REPL-shaped string — `print (show row)`,
   `$"got: {show r}"`. Lossy debug format (strings come quoted, long
-  seqs truncate); `print` remains the raw data channel.
+  seqs truncate); `print` remains the raw data channel. The REPL's
+  echo is tighter still (10 elements, clipped strings, a hint naming
+  the way out): echo = glance, `|> print` = read.
 - `xs |> Seq.map print` does nothing (lazy) and is a check error as a
   statement; use `xs |> Seq.iter print`.
 

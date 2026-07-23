@@ -1921,4 +1921,17 @@ echo "e2e ok: the orphan error survives where it is true (no pending statement)"
 
 rm -rf "$bbdir"
 
+# bounded REPL echo (mini-plan): glance vs read
+out=$(printf 'let xs = [1..100]\nxs\n' | $BIN 2>&1)
+echo "$out" | grep -qF "10; …] : seq<int> (10 of ? shown — pipe to print for all)" || fail "REPL echo must bound and hint: $out"
+echo "e2e ok: REPL echo truncates at 10 with the way-out hint"
+
+out=$($BIN -e '[1..50]')
+echo "$out" | grep -qF "(10 of ? shown" || fail "-e echoes like the REPL (decided): $out"
+echo "e2e ok: -e shares the echo bound"
+
+out=$(printf 'print (show [1..100])\n' | $BIN 2>&1)
+echo "$out" | grep -qF "; 20; ...]" || fail "show byte-identical (20 + dots): $out"
+echo "e2e ok: show is unchanged — byte-identical to its shipped lossy contract"
+
 echo "e2e battery: all green"

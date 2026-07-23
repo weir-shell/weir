@@ -2215,6 +2215,53 @@ let fmtStroustrupTests =
               | Error e -> failtest e
           } ]
 
+let replEchoTests =
+    testList
+        "REPL echo bounds"
+        [ test "the laziness property: echo forces at most limit+1 pulls" {
+              let pulls = ref 0
+
+              let counted =
+                  Seq.initInfinite (fun i ->
+                      System.Threading.Interlocked.Increment pulls |> ignore
+                      VInt(int64 i))
+
+              let rendered, hint = Weir.Eval.echoValue (VSeq counted)
+              Expect.isTrue (pulls.Value <= 11) $"forced {pulls.Value} pulls (bound is 11)"
+              Expect.stringContains rendered "; …]" "truncation spelled"
+              Expect.equal hint (Some "(10 of ? shown — pipe to print for all)") "lazy count stays ?"
+          }
+          test "materialized lists show the real count" {
+              let v = VSeq([ for i in 1..12 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
+              let _, hint = Weir.Eval.echoValue v
+              Expect.equal hint (Some "(10 of 12 shown — pipe to print for all)") ""
+          }
+          test "short seqs echo whole, no hint" {
+              let v = VSeq([ VInt 1L; VInt 2L ] :> seq<Weir.Eval.Value>)
+              let rendered, hint = Weir.Eval.echoValue v
+              Expect.equal rendered "[1; 2]" ""
+              Expect.equal hint None ""
+          }
+          test "echo clips long strings at 120 with an ellipsis" {
+              let rendered, _ = Weir.Eval.echoValue (VStr(String.replicate 200 "x"))
+              Expect.stringContains rendered "…\"" "clip marker inside the quotes"
+              Expect.isTrue (rendered.Length < 140) $"clipped ({rendered.Length} chars)"
+          }
+          test "nesting truncates at each level" {
+              let inner = VSeq([ for i in 1..15 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
+              let outer = VSeq([ for _ in 1..15 -> inner ] :> seq<Weir.Eval.Value>)
+              let rendered, _ = Weir.Eval.echoValue outer
+              Expect.equal (rendered.Split("; …").Length - 1) 11 "10 inner truncations + the outer"
+          }
+          test "show is byte-identical to its shipped contract (NOT the echo)" {
+              let long = VSeq(seq { for i in 1..100 -> VInt(int64 i) })
+
+              Expect.stringContains (Weir.Eval.formatValue long) "; 20; ...]" "show keeps 20 + dots"
+
+              let s200 = String.replicate 200 "x"
+              Expect.equal (Weir.Eval.formatValue (VStr s200)) ("\"" + s200 + "\"") "show never clips strings"
+          } ]
+
 let optionSweepTests =
     testList
         "Option sweep"
@@ -4749,6 +4796,7 @@ let allTests =
           bracketContinuationTests
           fmtMatchTests
           fmtStroustrupTests
+          replEchoTests
           optionSweepTests
           moduleTests
           scriptTests

@@ -58,44 +58,103 @@ type Value =
 
 and Env = Map<string, Value>
 
-let rec formatValue (v: Value) : string =
+// One renderer, limits threaded [D:repl-echo]: show keeps its shipped
+// constants byte-identical (20 items, "; ...", unclipped strings); the
+// REPL echo runs the same core tighter (10, "; …", 120-char clip,
+// depth bound). Forcing is bounded at MaxItems+1 per level either way.
+type private RenderLimits =
+    { MaxItems: int
+      MaxStr: int option
+      MaxDepth: int
+      Ellipsis: string }
+
+let private showLimits =
+    { MaxItems = 20
+      MaxStr = None
+      MaxDepth = System.Int32.MaxValue
+      Ellipsis = "; ..." }
+
+let private echoLimits =
+    { MaxItems = 10
+      MaxStr = Some 120
+      MaxDepth = 8
+      Ellipsis = "; …" }
+
+let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string =
+    if depth > lim.MaxDepth then
+        "…"
+    else
+        let sub = formatWith lim (depth + 1)
+
+        match v with
+        | VInt n -> string n
+        | VStr s ->
+            let raw, clipped =
+                match lim.MaxStr with
+                | Some m when s.Length > m -> s.Substring(0, m), true
+                | _ -> s, false
+
+            let escaped =
+                raw.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
+
+            let tail = if clipped then "…" else ""
+            $"\"{escaped}{tail}\""
+        | VBool true -> "true"
+        | VBool false -> "false"
+        | VRecord(_, fields) ->
+            let body =
+                fields |> Seq.map (fun kv -> $"{kv.Key} = {sub kv.Value}") |> String.concat "; "
+
+            "{ " + body + " }"
+        | VUnion(case, None) -> case
+        | VUnion(case, Some payload) ->
+            let inner = sub payload
+
+            match payload with
+            | VInt _
+            | VStr _
+            | VBool _ -> $"{case} {inner}"
+            | _ -> $"{case} ({inner})"
+        | VSeq items ->
+            let shown = items |> Seq.truncate (lim.MaxItems + 1) |> List.ofSeq
+
+            let body = shown |> List.truncate lim.MaxItems |> List.map sub |> String.concat "; "
+
+            let ellipsis = if shown.Length > lim.MaxItems then lim.Ellipsis else ""
+            $"[{body}{ellipsis}]"
+        | VClosure _ -> "<fun>"
+        | VClosurePat _ -> "<fun>"
+        | VBuiltin _ -> "<builtin>"
+        | VUnit -> "()"
+        | VTuple items -> "(" + (items |> List.map sub |> String.concat ", ") + ")"
+
+let formatValue (v: Value) : string = formatWith showLimits 0 v
+
+// The REPL/-e echo [D:repl-echo]: bounded render + the way-out hint.
+// The count shows only when already known (a materialized list) —
+// counting a lazy seq would force it.
+let echoValue (v: Value) : string * string option =
     match v with
-    | VInt n -> string n
-    | VStr s ->
-        let escaped =
-            s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
-
-        $"\"{escaped}\""
-    | VBool true -> "true"
-    | VBool false -> "false"
-    | VRecord(_, fields) ->
-        let body =
-            fields
-            |> Seq.map (fun kv -> $"{kv.Key} = {formatValue kv.Value}")
-            |> String.concat "; "
-
-        "{ " + body + " }"
-    | VUnion(case, None) -> case
-    | VUnion(case, Some payload) ->
-        let inner = formatValue payload
-
-        match payload with
-        | VInt _
-        | VStr _
-        | VBool _ -> $"{case} {inner}"
-        | _ -> $"{case} ({inner})"
     | VSeq items ->
-        let shown = items |> Seq.truncate 21 |> List.ofSeq
+        // ONE forcing pass (the pull-count pin caught the double-force):
+        // materialize limit+1, render and hint from the materialized list
+        let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
+        let rendered = formatWith echoLimits 0 (VSeq(shown :> seq<Value>))
 
-        let body = shown |> List.truncate 20 |> List.map formatValue |> String.concat "; "
+        let hint =
+            if shown.Length > echoLimits.MaxItems then
+                let count =
+                    match items with
+                    | :? (Value list) as l -> string (List.length l)
+                    | :? System.Collections.Generic.ICollection<Value> as c -> string c.Count
+                    | _ -> "?"
 
-        let ellipsis = if shown.Length > 20 then "; ..." else ""
-        $"[{body}{ellipsis}]"
-    | VClosure _ -> "<fun>"
-    | VClosurePat _ -> "<fun>"
-    | VBuiltin _ -> "<builtin>"
-    | VUnit -> "()"
-    | VTuple items -> "(" + (items |> List.map formatValue |> String.concat ", ") + ")"
+                Some $"({echoLimits.MaxItems} of {count} shown — pipe to print for all)"
+            else
+                None
+
+        rendered, hint
+    | _ -> formatWith echoLimits 0 v, None
 
 // The line-per-element renderer. Both consumers — the print builtin and the
 // runner's command-statement streaming — must call this one function; the

@@ -1,5 +1,30 @@
 # Spike Notes
 
+## Bounded REPL echo — two premises corrected, one pin earns its keep (2026-07-23)
+
+The echo now glances: 10 elements then "…", strings clipped at 120,
+depth-bounded nesting, and a tail that names the way out —
+"(10 of 12 shown — pipe to print for all)", with the count real for
+materialized lists and "?" where counting would force. `-e` shares
+the bound (decided in-session); `show` is byte-identical to its
+shipped contract; bare command statements still stream everything —
+echo = glance, print = read, the two paths' roles now crisp.
+
+Both of the plan's premises were wrong in weir's favor, verified
+before code: the "infinite seq HANGS today" expectation was refuted
+(formatValue has bounded seq forcing at 21 since the show session),
+and "show is total" contradicted show's own DOCUMENTED contract
+("deliberately lossy," SEMANTICS and SKILL both). The decided
+behaviors were executable exactly as written — only the reasoning
+needed amending, and the DECISIONS row records both corrections.
+
+The pull-count pin earned its keep in its first minute: the naive
+echoValue rendered the seq AND re-truncated to decide the hint — 22
+pulls where the property allows 11, a silent double-force that
+re-runs effects on lazy streams. One materialize-once restructure
+later the pin passed. Instrumented properties over eyeballed
+laziness, again.
+
 ## The founding divergence retires — blanks never end statements (2026-07-23)
 
 The oldest non-structural row in the divergence ledger is gone.

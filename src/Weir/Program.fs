@@ -77,7 +77,9 @@ let private evalOnce (input: string) : int =
                 let v = Eval.eval valueEnv te
 
                 if v <> Eval.VUnit then
-                    Console.WriteLine $"{Eval.formatValue v} : {formatTy te.Ty}"
+                    let rendered, hint = Eval.echoValue v
+                    let tail = hint |> Option.map (fun h -> " " + h) |> Option.defaultValue ""
+                    Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
                 0
             with
