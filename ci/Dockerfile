@@ -7,4 +7,5 @@ RUN apt-get update \
         binutils \
         git \
         procps \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
