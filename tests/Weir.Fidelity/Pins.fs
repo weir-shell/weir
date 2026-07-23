@@ -330,12 +330,12 @@ let pins =
           (Diverges "record-fields-ignore-indent")
 
       // --- Seq.append probe (the full-port receipt: variable argv) ---
-      pin "Seq.append: piped tail after the head seq" "let xs = [3; 4] |> Seq.append [1; 2] |> Seq.toList\n" Same
+      pin "Seq.append: piped tail after the head seq" "let xs = [3; 4] |> Seq.append [1; 2] |> Seq.length\n" Same
 
       // --- Seq.choose probes (PLAN-choose) ---
       pin
           "Seq.choose: partial map, applied"
-          "let xs = [1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.toList\n"
+          "let n = [1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.length\n"
           Same
       pin "Seq.choose: all-None yields empty" "let n = [1; 2] |> Seq.choose (fun x -> None) |> Seq.length\n" Same
       pin "Seq.choose: chooser must return Option" "let bad = [1] |> Seq.choose (fun x -> x)\n" Same

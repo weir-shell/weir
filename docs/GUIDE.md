@@ -35,7 +35,7 @@ Three properties, in the order they matter:
 - `weir -e '1 + 2'` — one expression.
 - `weir script.weir args...` — run a script; `#!/usr/bin/env weir`
   works. Scripts are STRICT: library calls are module-qualified
-  (`Seq.map`, `Str.trim`, `Option.defaultTo`, `File.read`).
+  (`Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read`).
 - `weir check script.weir` — every diagnostic, located and coded, no
   evaluation; `--json` for tools and agent loops. Commands missing
   from PATH are warnings here (the runner treats them as errors), so
@@ -321,7 +321,7 @@ let child = runEnv (Env.fromFile "demo.env") "sh"
 child ["-c"; "echo child: $GREETING"]
 child ["-c"; "echo again: $GREETING"]
 
-print (Env.get "GREETING" |> Option.defaultTo "parent stays clean")
+print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
 ```
 
 For command chains the env slot goes INSIDE the sigil — `$e(...)` /

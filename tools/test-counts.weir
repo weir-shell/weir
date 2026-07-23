@@ -16,7 +16,7 @@ let counts =
             |> Seq.where (Str.contains "test \"")
             |> Seq.length
         { Label = line; Count = count })
-    |> Seq.toList
+    |> Seq.force
 
 print "test counts, newest first:"
 counts |> Seq.iter (fun c -> print $"  {c.Label}: {c.Count}")

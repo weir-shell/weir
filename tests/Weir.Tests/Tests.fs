@@ -1407,40 +1407,40 @@ let diagnoseTests =
 let session3Tests =
     testSequenced
     <| testList
-        "complete and toList"
-        [ test "toList snapshots a live query" {
+        "complete and force"
+        [ test "force snapshots a live query" {
               try
                   expectValue
-                      "let p = pwd |> toList in let d = cd \"/tmp\" in p |> first 1"
+                      "let p = pwd |> force in let d = cd \"/tmp\" in p |> first 1"
                       (VSeq [ VStr(System.IO.Directory.GetCurrentDirectory()) ])
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
-          test "toList forces effects exactly once" {
+          test "force runs effects exactly once" {
               let marker =
-                  Path.Combine(Path.GetTempPath(), $"weir-toList-{System.Guid.NewGuid():N}")
+                  Path.Combine(Path.GetTempPath(), $"weir-force-{System.Guid.NewGuid():N}")
 
               try
                   run
-                      $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] |> toList in let a = s |> first 1 in let b = s |> first 1 in b"
+                      $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] |> force in let a = s |> first 1 in let b = s |> first 1 in b"
                   |> forceSeq
                   |> ignore
 
-                  Expect.equal (File.ReadAllLines marker |> Array.length) 1 "one spawn with toList"
+                  Expect.equal (File.ReadAllLines marker |> Array.length) 1 "one spawn with force"
 
                   File.Delete marker
 
                   let r =
                       run
-                          $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] in let a = s |> first 1 |> toList in let b = s |> first 1 |> toList in b"
+                          $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] in let a = s |> first 1 |> force in let b = s |> first 1 |> force in b"
 
                   r |> forceSeq |> ignore
-                  Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront toList"
+                  Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront force"
               finally
                   if File.Exists marker then
                       File.Delete marker
           }
-          test "toList is polymorphic" { expectValue "[1; 2] |> toList |> sum" (VInt 3) }
+          test "force is polymorphic" { expectValue "[1; 2] |> force |> sum" (VInt 3) }
           test "head extracts the element" {
               expectValue "[1; 2] |> head" (VInt 1)
               expectValue "ls |> map _.Name |> head" (VStr "a.txt")
@@ -2377,22 +2377,33 @@ let optionSweepTests =
         [ test "Seq.tryHead types as Option of the element" {
               Expect.equal (formatTy (checkOk "ls |> Seq.tryHead").Ty) "Option<FileRow>" ""
           }
-          test "Option.defaultTo closes the idiom without a match" {
-              expectValue "[] |> Seq.tryHead |> Option.defaultTo 0" (VInt 0)
-              expectValue "[7] |> Seq.tryHead |> Option.defaultTo 0" (VInt 7)
-              expectValue "tryToInt \"nope\" |> Option.defaultTo (0 - 1)" (VInt(-1))
+          test "retired names teach their replacements [D:seq-force]" {
+              Expect.stringContains (checkErr "[1] |> Seq.toList").Message "'Seq.force' is the materializer" ""
+              Expect.stringContains (checkErr "[1] |> toList").Message "'force' is the materializer" ""
+              Expect.stringContains (checkErr "[1] |> Seq.collect").Message "reserved" "the flatMap reservation"
+              Expect.stringContains (checkErr "[1] |> collect").Message "force" ""
+              Expect.stringContains (checkErr "None |> Option.defaultTo 1").Message "Option.defaultValue" ""
+          }
+          test "Option.defaultWith: the thunk runs only on None" {
+              expectValue "Some 3 |> Option.defaultWith (fun () -> 9)" (VInt 3L)
+              expectValue "None |> Option.defaultWith (fun () -> 9)" (VInt 9L)
+          }
+          test "Option.defaultValue closes the idiom without a match" {
+              expectValue "[] |> Seq.tryHead |> Option.defaultValue 0" (VInt 0)
+              expectValue "[7] |> Seq.tryHead |> Option.defaultValue 0" (VInt 7)
+              expectValue "tryToInt \"nope\" |> Option.defaultValue (0 - 1)" (VInt(-1))
           }
           test "Option.map maps through Some and skips None" {
-              expectValue "[3] |> Seq.tryHead |> Option.map double |> Option.defaultTo 0" (VInt 6)
-              expectValue "[] |> Seq.tryHead |> Option.map double |> Option.defaultTo 0" (VInt 0)
+              expectValue "[3] |> Seq.tryHead |> Option.map double |> Option.defaultValue 0" (VInt 6)
+              expectValue "[] |> Seq.tryHead |> Option.map double |> Option.defaultValue 0" (VInt 0)
           }
           test "Seq.tryFind is data-last and Option-returning" {
               expectValue
-                  "ls |> Seq.tryFind _.ReadOnly |> Option.map _.Name |> Option.defaultTo \"none\""
+                  "ls |> Seq.tryFind _.ReadOnly |> Option.map _.Name |> Option.defaultValue \"none\""
                   (VStr "b.bin")
 
               expectValue
-                  "ls |> Seq.tryFind (fun f -> f.Bytes > 999999999) |> Option.map _.Name |> Option.defaultTo \"none\""
+                  "ls |> Seq.tryFind (fun f -> f.Bytes > 999999999) |> Option.map _.Name |> Option.defaultValue \"none\""
                   (VStr "none")
           }
           test "Str.tryIndexOf and Str.sub compose" {
@@ -2428,8 +2439,8 @@ let moduleTests =
               expectValue "split \",\" \"a,b\" |> join \";\"" (VStr "a;b")
           }
           test "Option members are qualified-only" {
-              expectValue "[7] |> Seq.tryHead |> Option.map double |> Option.defaultTo 0" (VInt 14)
-              Expect.stringContains (checkErr "[7] |> Seq.tryHead |> defaultTo 0").Message "Option.defaultTo" ""
+              expectValue "[7] |> Seq.tryHead |> Option.map double |> Option.defaultValue 0" (VInt 14)
+              Expect.stringContains (checkErr "[7] |> Seq.tryHead |> defaultTo 0").Message "Option.defaultValue" ""
           }
           test "length is qualified-only in both homes" {
               expectValue "Str.length \"abc\"" (VInt 3)
@@ -2454,7 +2465,7 @@ let moduleTests =
                   ""
           }
           test "moved names hint their qualified home" {
-              Expect.stringContains (checkErr "[] |> defaultTo 1").Message "use 'Option.defaultTo'" ""
+              Expect.stringContains (checkErr "[] |> defaultTo 1").Message "use 'Option.defaultValue'" ""
               Expect.stringContains (checkErr "ls |> groupBy _.ReadOnly").Message "use 'Seq.groupBy'" ""
           }
           test "module member completion" {
@@ -3427,7 +3438,7 @@ let showTests =
               // the constrained scheme (Session B) keeps it genuinely
               // generic — the element type resolves from data, and Show
               // rides until it does
-              expectValue "nats |> take 2 |> Seq.map show |> Seq.toList |> Seq.length" (VInt 2L)
+              expectValue "nats |> take 2 |> Seq.map show |> Seq.force |> Seq.length" (VInt 2L)
 
               match (checkOk "Seq.map show").Ty with
               | TFun(TSeq(TVar _), TSeq TStr) -> ()
@@ -3485,7 +3496,7 @@ let seqAccessTests =
           }
           test "skip is lazy and raises past the end at enumeration" {
               expectValue "[1; 2; 3] |> Seq.skip 1 |> Seq.sum" (VInt 5L)
-              Expect.throws (fun () -> run "[1] |> Seq.skip 3 |> Seq.toList" |> ignore) "F#-faithful raise"
+              Expect.throws (fun () -> run "[1] |> Seq.skip 3 |> Seq.force" |> ignore) "F#-faithful raise"
           }
           test "Args scanners read the script argv" {
               Weir.Session.ScriptArgs <- [ "-c"; "--out"; "r.txt" ]
@@ -3639,7 +3650,7 @@ let childEnvTests =
               System.IO.File.WriteAllLines(f, [ "A=1"; "B='sq val'"; "C=\"dq\" # note"; "# comment"; ""; "D=" ])
 
               let got =
-                  run ("Env.fromFile \"" + f + "\" |> Seq.map (fun e -> e.Value) |> Seq.toList")
+                  run ("Env.fromFile \"" + f + "\" |> Seq.map (fun e -> e.Value) |> Seq.force")
                   |> forceSeq
 
               Expect.equal got [ VStr "1"; VStr "sq val"; VStr "dq"; VStr "" ] ""
@@ -3650,7 +3661,7 @@ let childEnvTests =
               System.IO.File.WriteAllLines(f, [ "GOOD=1"; "BAD=$HOME" ])
 
               let ex =
-                  Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> Seq.toList") |> ignore) ""
+                  Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> Seq.force") |> ignore) ""
 
               System.IO.File.Delete f
           }
@@ -4576,7 +4587,7 @@ let indexerTests =
         [ test "xs[i] desugars to Seq.item" { expectValue "[\"a\"; \"b\"][1]" (VStr "b") }
           test "chains and composes with fields and sigils" {
               expectValue "[[1; 2]; [3; 4]][1][0]" (VInt 3L)
-              expectValue "(ls |> Seq.toList)[0].Name" (VStr "a.txt")
+              expectValue "(ls |> Seq.force)[0].Name" (VStr "a.txt")
           }
           test "the whitespace rule: space means application (F# 6 dotless precedent)" {
               expectValue "Seq.sum [1; 2]" (VInt 3L)

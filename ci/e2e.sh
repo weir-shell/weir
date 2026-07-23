@@ -126,7 +126,7 @@ expect "prelude Result with cross-arm inference" "3 : int" "$out"
 out=$($BIN -e 'ls |> Seq.sortBy _.Bytes |> Seq.map _.Name |> Seq.head' 2>/dev/null | head -1)
 expect "qualified module pipeline" " : string" "$out"
 
-out=$($BIN -e '[] |> Seq.tryHead |> Option.defaultTo 9')
+out=$($BIN -e '[] |> Seq.tryHead |> Option.defaultValue 9')
 expect "Option sweep idiom on the AOT binary" "9 : int" "$out"
 
 out=$($BIN -e 'Some 3')
@@ -1131,7 +1131,7 @@ expect "Path members compose" '"a/b/c"' "$out"
 # prefix minus + sortByDescending (2026-07-21, loc.weir friction)
 out=$($BIN -e '2 * -3')
 expect "prefix minus at operand position" "-6 : int" "$out"
-out=$($BIN -e '[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.toList')
+out=$($BIN -e '[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.force')
 expect "sortByDescending orders down" "[3; 2; 1]" "$out"
 
 # the squiggle sits ON the name, not the RHS (user report, 2026-07-21)
@@ -1228,7 +1228,7 @@ let classify n =
     | 1 -> "one"
     | n -> $"many ({n})"
 
-let mode = args |> Seq.tryHead |> Option.defaultTo "count"
+let mode = args |> Seq.tryHead |> Option.defaultValue "count"
 
 match mode with
 | "count" -> print (classify 1)
@@ -1488,7 +1488,7 @@ let vars = Env.fromFile "target.env"
 
 runEnv vars "sh" ["-c"; "true"]
 
-print (Env.get "AZURE_SUBSCRIPTION_ID" |> Option.defaultTo "(clean)")
+print (Env.get "AZURE_SUBSCRIPTION_ID" |> Option.defaultValue "(clean)")
 WEOF
 out=$(cd "$edir" && $BIN iso.weir)
 expect "child-env never leaks into the parent session" "(clean)" "$out"

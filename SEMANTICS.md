@@ -753,7 +753,7 @@ quantity semantics now.
   (ephemeral lines are not the PS output-pollution bug class; durable
   scripts are).
 - **Script inputs**: `args : seq<string>` (argv after the script name) and
-  `stdin : seq<string>` (lazy, one-shot — `Seq.toList` it if reused) exist
+  `stdin : seq<string>` (lazy, one-shot — `Seq.force` it if reused) exist
   only in scripts, not the REPL (the REPL owns its own stdin). Children
   inherit the process stdin unless a value is piped into them; the `stdin`
   binding reads the same underlying stream, so consuming it both ways is
@@ -813,7 +813,7 @@ quantity semantics now.
   untouched. Named caveat (read-at-force-time is unchanged): a lazy
   stream built in a worker but forced after the join resolves against
   the JOINER's session — force inside the worker (`Seq.head`,
-  `Seq.toList`) when the worker's cd matters. Interleaved worker output
+  `Seq.force`) when the worker's cd matters. Interleaved worker output
   is line-atomic and owned by the user, as with any parallel tool.
 - **Async/task machinery is REJECTED, permanently** (2026-07-20, user
   decision): a scripting shell's concurrency model is processes and
@@ -849,9 +849,9 @@ quantity semantics now.
   process-backed-stream distinction, which would not survive ordinary
   combinators (`where`/`first` return plain seqs). Splices in a completed
   command must be strings (the arg vector is a `seq<string>` literal).
-- **`complete` and `Seq.toList` force their source to completion** — on a
+- **`complete` and `Seq.force` force their source to completion** — on a
   non-terminating source they do not return (`yes hi | complete` hangs by
-  design; the user owns it, exactly as with `yes hi |> Seq.toList`).
+  design; the user owns it, exactly as with `yes hi |> Seq.force`).
 - **A top-level `let` RHS admits command mode** (2026-07-18; agent
   dogfooding produced the second independent hit of the gap within
   hours of the protocol starting): `let files = git ls-files` binds
@@ -877,9 +877,10 @@ quantity semantics now.
 - **Partiality convention (FINAL)**: a raising name plus a `try`-prefixed
   sibling returning `Option<'a>`. Pairs: `head`/`tryHead`, `toInt`/`tryToInt`;
   Option-native: `tryFind`, `tryIndexOf`; raising-only (documented bounds):
-  `substring start len subject`. The idiom's other half: `defaultTo` and
-  `mapOption`, so an Option in a pipeline does not force a match —
-  `ls |> tryFind _.ReadOnly |> mapOption _.Name |> defaultTo "none"`. The
+  `substring start len subject`. The idiom's other half:
+  `Option.defaultValue` (eager; `Option.defaultWith` takes a thunk) and
+  `Option.map`, so an Option in a pipeline does not force a match —
+  `ls |> Seq.tryFind _.ReadOnly |> Option.map _.Name |> Option.defaultValue "none"`. The
   interim 0-or-1-seq idiom is retired (it never became case law, as
   intended). The singleton extraction is `pwd |> head : string`.
 - **String builtins are data-last, curried — needle/pattern first, subject
@@ -939,16 +940,16 @@ quantity semantics now.
 - Deferred with intent: `substring`/`indexOf` (they want Option — Session 3
   customers), padding, regex (its own design — match vs captures vs typed
   groups; a backlog entry, not a builtins-session improvisation).
-- **`Seq.toList : seq<'a> -> seq<'a>`** (RENAMED from `collect`,
+- **`Seq.force : seq<'a> -> seq<'a>`** (RENAMED from `collect`,
   2026-07-18 — agent-era decision: F#'s `Seq.collect` is flatMap, a
-  direct prior-bleed collision for F#-trained authors; `toList` is the
+  direct prior-bleed collision for F#-trained authors; `force` is the
   F# name whose muscle-memory semantics match, and weir has no list
   type so the seq return is the only reading. The rename frees
   `Seq.collect` for flatMap if the bleed catalog demands it.)
   It materializes eagerly at application:
   effects run exactly once, re-enumeration replays values with no re-spawn.
   Live queries (`pwd`, `ls`, command streams) bind the *query*, not the
-  answer; `Seq.toList` is the snapshot operator.
+  answer; `Seq.force` is the snapshot operator.
 - **`File.read`/`File.write`/`File.append`/`File.exists`** (qualified-only,
   data-last, eager): the library-owned alternative to shell-redirect
   idioms. `write`/`append` return `unit` (their path-return was an
@@ -975,7 +976,7 @@ quantity semantics now.
   effects (standard seq semantics), **including re-spawning external
   commands** — `let files = cmd "find" [...] in ...` used twice runs
   `find` twice, and the command may not be idempotent. Mitigation is backlog #2: a
-  `Seq.toList` builtin (force once, materialize; né `collect`) as the
+  `Seq.force` builtin (force once, materialize; né `collect`) as the
   standard escape hatch.
 - **Overflow policy (Part 3, 2026-07-18)**: `int` is 64-bit end to end —
   literals parse as int64 (beyond-range literals are parse errors:
@@ -1056,7 +1057,7 @@ implied→rejected when the sugar made `let mutable` parse strangely.
    The 2026-07-17 drop decision and the `no_unit_algebra` tripwire
    retired with them *and* the `*`/`/`-defaulting rule above.
 (Done: backlog #1 and the exit-code policy — old #3 — landed as
-`Seq.toList` (né `collect`) and `complete`; see "Processes and the
+`Seq.force` (né `collect`) and `complete`; see "Processes and the
 session".)
 
 (Done: comparison/boolean completeness — landed with `<>` inheriting `==`'s

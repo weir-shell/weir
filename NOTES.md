@@ -1,5 +1,32 @@
 # Spike Notes
 
+## Seq.force — a rename with its reasons written down (2026-07-23)
+
+`Seq.toList` was a permanent small lie (a type weir will never
+have, per the no-split decision) and the materializer's history had
+already burned the honest F# name: weir's original bare `collect`
+squatted on F#'s Seq.collect, which is FLATMAP — an F# hand reading
+`|> collect` expects concat-map. The session renames to
+`Seq.force`/bare `force` (Haskell prior, zero collision, no false
+parity claim) and RESERVES Seq.collect unbuilt for the flatMap that
+may someday earn receipts — the reservation being the actual point:
+later is breaking, now is a grep. The Option bundle rode
+(`defaultTo` → `defaultValue` + `defaultWith`), closing the parity
+audit's known backlog in the same migration mechanics.
+
+All four retired spellings teach their replacement through one
+table consulted at both lookup sites (bare-unbound and
+module-member-miss — the measures-transition precedent, now
+mechanism). The migration swept nine script/doc files and both
+suites; the oracle kept its snippets F#-legal by swapping the
+materializer for Seq.length where it wasn't the pin's point.
+Part 2 (seq patterns over seqs: statically bounded force,
+memoize-once, F#'s spelling on the type weir has) is design-on-file
+with its trigger stated — SKILL carries the must-fail block and the
+taught spellings until a stranded cons-pattern or a user call opens
+it. The when-do-I-force answer is finally two lines: reuse, or
+timing.
+
 ## git-subrepo: the exercise finishes — and harvests receipts (2026-07-23)
 
 The full port lands: clone, init, pull, push, branch, commit, clean,

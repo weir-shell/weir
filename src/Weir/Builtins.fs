@@ -448,6 +448,14 @@ let private defaultToImpl: Value =
             | VUnion("None", None) -> fallback
             | v -> unreachable $"the checker rejects 'defaultTo' on {formatValue v}"))
 
+let private defaultWithImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun opt ->
+            match opt with
+            | VUnion("Some", Some v) -> v
+            | VUnion("None", None) -> apply f VUnit
+            | v -> unreachable $"the checker rejects 'defaultWith' on {formatValue v}"))
+
 let private mapOptionImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun opt ->
@@ -657,7 +665,7 @@ let private seqMembers: (string * Ty * Value) list =
       "take", TFun(TInt, TFun(TSeq tA, TSeq tA)), truncateImpl
       "head", TFun(TSeq tA, tA), headImpl
       "sum", TFun(seqInt, TInt), sumImpl
-      "toList", TFun(TSeq tA, TSeq tA), toListImpl
+      "force", TFun(TSeq tA, TSeq tA), toListImpl
       "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
@@ -729,7 +737,8 @@ let private pathMembers: (string * Ty * Value) list =
 
 let private optionMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
-      "defaultTo", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl ]
+      "defaultValue", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl
+      "defaultWith", TFun(TFun(TUnit, tA), TFun(TNamed("Option", [ tA ]), tA)), defaultWithImpl ]
 
 // Args — script-only scanners over the invocation argv (Session.ScriptArgs;
 // empty in the REPL by design). Long-only flags: empty short form.
@@ -967,7 +976,7 @@ let private bareAliases: Set<string> =
           "take"
           "head"
           "sum"
-          "toList"
+          "force"
           "contains"
           "startsWith"
           "endsWith"

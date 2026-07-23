@@ -156,7 +156,7 @@ let rawConfig file key = git config --file $file $key | complete
 
 let configGet file key =
     let r = rawConfig file key
-    if r.ExitCode == 0 then r.Stdout |> Seq.tryHead |> Option.defaultTo "" else ""
+    if r.ExitCode == 0 then r.Stdout |> Seq.tryHead |> Option.defaultValue "" else ""
 
 let makeRef name target = !(git update-ref $name $target)
 
@@ -295,8 +295,8 @@ let graftStep ctx w commit =
     let blob = $(git config --blob $"{commit}:{ctx.Gitrepo}" subrepo.commit | complete)
     if blob.ExitCode <> 0 then w // no .gitrepo in this commit: skip
     else
-        let gCommit = blob.Stdout |> Seq.tryHead |> Option.defaultTo ""
-        let parentsLine = $(git show -s --format=%P $commit) |> Seq.tryHead |> Option.defaultTo ""
+        let gCommit = blob.Stdout |> Seq.tryHead |> Option.defaultValue ""
+        let parentsLine = $(git show -s --format=%P $commit) |> Seq.tryHead |> Option.defaultValue ""
         let isChild = (w.Ancestor == "") || (parentsLine |> Str.contains (w.Ancestor))
         if not isChild then w // not on the single selected path: skip
         else
@@ -305,7 +305,7 @@ let graftStep ctx w commit =
                 // EMPTY-placeholder commits bounded out: keep the path
                 { w with Ancestor = commit }
             else
-                let author = $(git log -1 --date=default --format=%ad%n%ae%n%an $commit) |> Seq.toList
+                let author = $(git log -1 --date=default --format=%ad%n%ae%n%an $commit) |> Seq.force
                 let msg = $(git log -1 --format=%B $commit) |> Str.join "\n"
                 let tree = subdirTree (ctx.Subdir) commit
                 let firstG = if w.FirstG == "" then gCommit else w.FirstG
@@ -396,7 +396,7 @@ let detectHeadBranch remote =
             | Regex @"refs/heads/(\S+)$" b -> Some b
             | _ -> None)
         |> Seq.tryHead
-        |> Option.defaultTo "master"
+        |> Option.defaultValue "master"
 
 let clone remote subdir branch =
     if not (revExists "HEAD") then fail "You can't clone into an empty repository."
@@ -419,8 +419,8 @@ let init subdir remote branch =
     if tracked == 0 then fail $"The subdir '{subdir}' is not part of this repo."
     if File.exists (Path.combine subdir ".gitrepo") then fail $"The subdir '{subdir}' is already a subrepo."
     let repo =
-        { Remote = remote |> Option.defaultTo "none"
-          Branch = branch |> Option.defaultTo "master"
+        { Remote = remote |> Option.defaultValue "none"
+          Branch = branch |> Option.defaultValue "master"
           Commit = ""
           Parent = revParse "HEAD"
           Method = "merge" }
@@ -484,7 +484,7 @@ let clean force ctx =
             | Regex @"^[0-9a-f]+ (refs/subrepo/\S+)$" r -> Some r
             | _ -> None)
         |> Seq.where (Str.contains (ctx.Subref))
-        |> Seq.toList
+        |> Seq.force
         // multi-statement lambda bodies stay single-line (the
         // parens-spanning-lines park); greedy-; groups inside
         |> Seq.iter (fun r -> deleteRef r; say $"Removed ref '{r}'.")

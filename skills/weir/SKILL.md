@@ -15,7 +15,7 @@ stops being true fails the build.
   line) — blank lines and comment lines are both transparent inside
   a statement, so blocks group freely with gaps.
 - Scripts are STRICT: every library name is module-qualified —
-  `Seq.map`, `Str.trim`, `Option.defaultTo`, `File.read` — including in
+  `Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read` — including in
   command pipelines (`| Seq.map Str.trim`). Bare names (`map`, `where`)
   exist only in the REPL and `#loose` scripts. If unsure, qualify.
 - `args : seq<string>` and `stdin : seq<string>` exist in scripts only.
@@ -152,7 +152,7 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
   ordered results) / `Seq.piter` for effects. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
-  worker output inside the worker (`Seq.head`/`Seq.toList`) if its cd
+  worker output inside the worker (`Seq.head`/`Seq.force`) if its cd
   matters.
 - No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
@@ -162,6 +162,22 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (consumes the source; not for infinite seqs), and the piped
   spelling anchors the folder's types (prefer it). Multi-accumulator
   loops fold over a record: `Seq.fold (fun c x -> { c with ... }) c0`.
+- No seq patterns yet: `match xs with | x :: rest` and `| []` do not
+  parse (design on file; the trigger is a stranded receipt). Spell
+  it: `Seq.tryHead` + an Option match for first-or-empty; `Seq.item`
+  / `first n` for fixed positions; Regex + `Str.split` for text.
+
+```weir-error
+let xs = [1; 2; 3]
+match xs with // seq patterns are not a thing yet: match on tryHead instead
+| x :: rest -> x
+| [] -> 0
+```
+- `Seq.force` materializes (consume to completion, eager in-memory;
+  STRICT — not for infinite seqs). When to force, exactly two cases:
+  REUSE (a command-backed seq re-runs its process per enumeration —
+  force once, consume twice) and TIMING (a lazy `ls` enumerated
+  after a `cd` sees the new directory; force pins the data NOW).
 - Concatenation is `Seq.append` (lazy; piped spelling puts the TAIL
   in the pipe: `tail |> Seq.append head`).
 - Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):

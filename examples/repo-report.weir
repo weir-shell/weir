@@ -10,7 +10,7 @@ type Health =
 let target =
     args
     |> Seq.tryHead
-    |> Option.defaultTo "."
+    |> Option.defaultValue "."
 
 // cd returns the new cwd — bind it once, interpolate it everywhere
 let workdir = cd target

@@ -12,10 +12,10 @@ type XrEnv = { XR_AZURE_GITHUB_AUTH: Option<int>; XR_ACTION_ON_UNMANAGE: Option<
 type TokenEnv = { ACTIONS_ID_TOKEN_REQUEST_TOKEN: string; ACTIONS_ID_TOKEN_REQUEST_URL: string }
 type Oidc = { value: string }
 
-let subcommand = args |> Seq.tryHead |> Option.defaultTo ""
+let subcommand = args |> Seq.tryHead |> Option.defaultValue ""
 
 let xr = Env.load XrEnv
-let onUnmanage = xr.XR_ACTION_ON_UNMANAGE |> Option.defaultTo "detachAll"
+let onUnmanage = xr.XR_ACTION_ON_UNMANAGE |> Option.defaultValue "detachAll"
 
 let header t = printerr $"== {t} =="
 
@@ -57,7 +57,7 @@ let azureLogin t =
 let deploy t =
     quality t
     let e = targetEnv t
-    if (xr.XR_AZURE_GITHUB_AUTH |> Option.defaultTo 0) == 1 then
+    if (xr.XR_AZURE_GITHUB_AUTH |> Option.defaultValue 0) == 1 then
         azureLogin t
         deployStack t
         !e(az logout)
@@ -65,8 +65,8 @@ let deploy t =
 
 let usage = "usage: bicep.weir <deploy|snapshot|quality> --stack S --env E"
 
-let stack = Args.value "--stack" |> Option.defaultTo ""
-let env = Args.value "--env" |> Option.defaultTo ""
+let stack = Args.value "--stack" |> Option.defaultValue ""
+let env = Args.value "--env" |> Option.defaultValue ""
 
 if stack == "" || env == "" then fail usage
 

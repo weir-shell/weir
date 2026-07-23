@@ -103,6 +103,23 @@ module Argv =
 
         flagShorts, shortIndex
 
+// retired names teach their replacement [D:seq-force] — the
+// measures-transition precedent; one table, both lookup sites
+let private retiredMember (m: string) (field: string) : string option =
+    match m, field with
+    | "Seq", "toList" -> Some "weir has no list type; 'Seq.force' is the materializer"
+    | "Seq", "collect" ->
+        Some "F#'s Seq.collect is flatMap — the name stays reserved for it; the materializer is Seq.force"
+    | "Option", "defaultTo" -> Some "renamed 'Option.defaultValue' (F# parity); a lazy default is 'Option.defaultWith'"
+    | _ -> None
+
+let private retiredBare (name: string) : string option =
+    match name with
+    | "toList" -> Some "weir has no list type; 'force' is the materializer"
+    | "collect" -> Some "'force' materializes (F#'s collect is flatMap, reserved)"
+    | "defaultTo" -> Some "renamed: use 'Option.defaultValue' (or 'Option.defaultWith' for a thunk)"
+    | _ -> None
+
 type TypedExpr = { Kind: TypedKind; Ty: Ty; Span: Span }
 
 and TypedKind =
@@ -1048,8 +1065,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let all = String.concat " or " homes
                     err expr.Span $"'{name}' is module-qualified here; use {all}"
                 | [] ->
-                    let hint = didYouMean name (Map.keys env.Values)
-                    err expr.Span $"unbound variable '{name}'{hint}"
+                    match retiredBare name with
+                    | Some teach -> err expr.Span $"'{name}' is retired: {teach}"
+                    | None ->
+                        let hint = didYouMean name (Map.keys env.Values)
+                        err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, value, body) ->
         result {
             do! checkBinderName expr.Span name
@@ -1358,8 +1378,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Ty = instantiate ctx expr.Span sch
                       Span = expr.Span }
             | None ->
-                let hint = didYouMean field (Map.keys members)
-                return! err fieldSpan $"module {m} has no member '{field}'{hint}"
+                match retiredMember m field with
+                | Some teach -> return! err fieldSpan $"'{m}.{field}' is retired: {teach}"
+                | None ->
+                    let hint = didYouMean field (Map.keys members)
+                    return! err fieldSpan $"module {m} has no member '{field}'{hint}"
         }
     | EField(target, field, fieldSpan) ->
         result {
