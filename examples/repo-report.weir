@@ -6,11 +6,11 @@ type Health =
     | Clean
     | Dirty of int
 
-// first arg, or the current directory
+// first arg, or the current directory — a seq pattern on argv
 let target =
-    args
-    |> Seq.tryHead
-    |> Option.defaultValue "."
+    match args with
+    | [] -> "."
+    | t :: _ -> t
 
 // cd returns the new cwd — bind it once, interpolate it everywhere
 let workdir = cd target
@@ -22,10 +22,13 @@ print $"=== repo report: {workdir} ==="
 let changes =
     git status --porcelain
     | from porcelain
+    | Seq.force
 
+// match the rows directly: [] + cons is a complete seq analysis
 let health =
-    let count = changes |> Seq.length
-    if changes |> Seq.isEmpty then Clean else Dirty count
+    match changes with
+    | [] -> Clean
+    | _ :: _ -> Dirty (changes |> Seq.length)
 
 let status =
     match health with

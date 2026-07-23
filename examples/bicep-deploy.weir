@@ -1,18 +1,46 @@
 #!/usr/bin/env weir
 // bicep deploy/snapshot/quality — translated from the F#/dbt script.
-// Reshapes: subcommands via args matching; App-of-(stack, env) tuple ->
-// --stack/--env flags; dbt plan{} discovery NOT translated (pass the
+// Reshapes: subcommands via the typed front door [D:typed-argv];
+// App-of-(stack, env) tuple -> --stack/--env flags; dbt plan{} discovery NOT translated (pass the
 // target explicitly); per-target env via Env.fromFile with the sigil
 // env slot !e(...) and the !e district header (the shEnv shape);
 // use!-disposal -> logout on the success path (see GUIDE's cleanup
 // idiom for the complete-ization pattern).
 
-type Target = { Name: string; BicepPath: string; Stack: string; Env: string }
-type XrEnv = { XR_AZURE_GITHUB_AUTH: Option<int>; XR_ACTION_ON_UNMANAGE: Option<string> }
-type TokenEnv = { ACTIONS_ID_TOKEN_REQUEST_TOKEN: string; ACTIONS_ID_TOKEN_REQUEST_URL: string }
+type Target = {
+    Name: string
+    BicepPath: string
+    Stack: string
+    Env: string
+}
+
+type XrEnv = {
+    XR_AZURE_GITHUB_AUTH: Option<int>
+    XR_ACTION_ON_UNMANAGE: Option<string>
+}
+
+type TokenEnv = {
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: string
+    ACTIONS_ID_TOKEN_REQUEST_URL: string
+}
+
 type Oidc = { value: string }
 
-let subcommand = args |> Seq.tryHead |> Option.defaultValue ""
+// the typed front door: three subcommands, one flags shape —
+// --help derives, unknown subcommands did-you-mean
+type CmdArgs = {
+    [<Doc "the bicep stack">]
+    stack: string
+    [<Doc "the target environment">]
+    env: string
+}
+
+type Cmd =
+    | Deploy of CmdArgs
+    | Snapshot of CmdArgs
+    | Quality of CmdArgs
+
+let cli = Args.load Cmd
 
 let xr = Env.load XrEnv
 let onUnmanage = xr.XR_ACTION_ON_UNMANAGE |> Option.defaultValue "detachAll"
@@ -63,21 +91,16 @@ let deploy t =
         !e(az logout)
     else deployStack t
 
-let usage = "usage: bicep.weir <deploy|snapshot|quality> --stack S --env E"
+let toTarget a = {
+    BicepPath = $"bicep/apps/stacks/{a.stack}/{a.env}.bicepparam"
+    Stack = a.stack
+    Env = a.env
+    Name = $"{a.stack}-{a.env}-apps"
+}
 
-let stack = Args.value "--stack" |> Option.defaultValue ""
-let env = Args.value "--env" |> Option.defaultValue ""
-
-if stack == "" || env == "" then fail usage
-
-let target =
-    { BicepPath = $"bicep/apps/stacks/{stack}/{env}.bicepparam"
-      Stack = stack
-      Env = env
-      Name = $"{stack}-{env}-apps" }
-
-match subcommand with
-| "deploy" -> deploy target
-| "snapshot" -> snapshot target
-| "quality" -> quality target
-| _ -> fail usage
+// the dispatch the checker exhaustiveness-verifies — adding a Cmd
+// case is a check-time obligation, not a runtime usage string
+match cli with
+| Deploy a -> deploy (toTarget a)
+| Snapshot a -> snapshot (toTarget a)
+| Quality a -> quality (toTarget a)

@@ -8,9 +8,11 @@ in line 40 executes none of lines 1-39.
 let changes =
     git status --porcelain
     | from porcelain
+    | Seq.force
 
-if changes |> Seq.isEmpty then print "clean" else
-    changes |> Seq.where _.Staged |> Seq.map _.Path |> print
+match changes with
+| [] -> print "clean"
+| _ :: _ -> changes |> Seq.where _.Staged |> Seq.map _.Path |> print
 ```
 
 - **Check-everything-first**: parse and typecheck the whole file --

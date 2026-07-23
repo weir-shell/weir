@@ -12,7 +12,7 @@ let counts =
     |> Seq.map (fun line ->
         let hash = line |> Str.split " " |> Seq.head
         let count =
-            cmd "git" ["show"; $"{hash}:tests/Weir.Tests/Tests.fs"]
+            $(git show $"{hash}:tests/Weir.Tests/Tests.fs")
             |> Seq.where (Str.contains "test \"")
             |> Seq.length
         { Label = line; Count = count })
