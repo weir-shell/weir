@@ -15,7 +15,7 @@ let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: strin
     let mutable inSingle = false
     // raw kinds [D:raw-strings]: verbatim @"..." ("" = one quote, no
     // escapes) and triple-quoted """...""" (no escapes at all,
-    // closes at the FIRST triple — FCS-verdict-pinned)
+    // closes at the FIRST triple [D:raw-strings])
     let mutable inVerbatim = false
     let mutable inTriple = false
 
@@ -356,8 +356,7 @@ let closers (text: string) : string =
 // into the running stack — fmt aligns record fields at TOP+2
 // (quote-aware via the scanner family; lives here per the rule).
 let braceStack (prev: int list) (line: string) : int list =
-    // rewritten over the ONE scanner when raw strings landed
-    // [D:raw-strings] — this was a verbatim third quote machine
+    // rides the ONE scanner [D:one-scanner]
     foldOutsideStrings
         (fun stack i c ->
             if c = '{' then
@@ -399,7 +398,7 @@ type private Pend =
 // The join algebra: every way a continuation line attaches to the
 // pending statement, its inserted text in ONE place. joinedStart
 // derives from the same strings, so span arithmetic cannot drift from
-// the insertion (the hand-audited `+ 5` / `- 1 + 2` offsets retired).
+// the insertion.
 type private Join =
     | JIn // let-close: text + " in " + piece
     | JSibling // sequencing (and record field separators): " ; "
@@ -753,8 +752,7 @@ type Mode =
     | Loose
 
 // shebang/#loose peeling — ONE derivation for the runner and the
-// check-side analyzeLines (refactor sweep 2026-07-22; they had
-// drifted-prone twin copies)
+// check-side analyzeLines
 let private scriptBody (rawLines: string list) : Mode * string list * int =
     let afterShebang, shebangOffset =
         match rawLines with

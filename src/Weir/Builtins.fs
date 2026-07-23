@@ -635,9 +635,8 @@ let private seqMembers: (string * Ty * Value) list =
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
       "length", TFun(TSeq tA, TInt), seqLengthImpl
-      // fold [D:seq-fold]: STRICT (the running-total operator — an
-      // infinite source does not return); state-first folder, F#'s
-      // order, FCS-verdict-pinned; constraint-free by construction
+      // fold [D:seq-fold]: STRICT (an infinite source does not
+      // return); state-first folder; constraint-free by construction
       "fold", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, tA))), foldImpl
       "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
       "sortByDescending", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByDescImpl
@@ -834,11 +833,8 @@ let private envFromFileImpl: Value =
             )
         | v -> unreachable $"the checker rejects 'Env.fromFile' on {formatValue v}")
 
-// Env.pair / Env.ofPairs — inline-env construction for a KNOWN
-// nominal type, writable because tuples landed; NOT an
-// anonymous-records case (the ledger's pattern note: every
-// anon-records prompt so far had a cheaper spelling already in the
-// type system).
+// Env.pair / Env.ofPairs [D:seq-fold] — inline-env construction
+// for a known nominal type (NOT an anonymous-records case).
 let private envPairImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun v ->

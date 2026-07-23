@@ -96,7 +96,7 @@ let private commaExpr, private commaExprRef =
     createParserForwardedToRef<Expr, unit> ()
 
 // update-source expressions [D:record-update]: compound-free (a bare
-// match/if source is rejected — parens required, FCS-verdict-pinned);
+// match/if source is rejected — parens required [D:record-update]);
 // assigned once the operator table exists
 let private updateSource, private updateSourceRef =
     createParserForwardedToRef<Expr, unit> ()
@@ -461,10 +461,8 @@ let private binderParam, private binderParamRef =
 let private binderPat, private binderPatRef =
     createParserForwardedToRef<Pattern, unit> ()
 
-// duplicate params reject in BOTH sugar positions (let and fun) —
-// FCS-verdict-pinned; explicit nested lambdas may still shadow
-// [D:fun-sugar]. The probe also caught let-sugar ACCEPTING dups (a
-// latent divergence, fixed here by the one-rule-two-positions law).
+// duplicate params reject in BOTH sugar positions [D:fun-sugar];
+// explicit nested lambdas may still shadow.
 let private rejectDupParams (ps: Pattern list) =
     let names =
         ps
@@ -560,11 +558,10 @@ let private mkOpp (withPipe: bool) =
     opp.AddOperator(InfixOperator("<>", ws, 4, Associativity.Left, binOp "<>"))
     opp.AddOperator(InfixOperator(">=", ws, 4, Associativity.Left, binOp ">="))
     opp.AddOperator(InfixOperator("<=", ws, 4, Associativity.Left, binOp "<="))
-    // composition [D:composition-operators] at the PIPE's level — the
-    // oracle refuted the tighter-than-pipe folklore: F# parses
-    // `xs |> f >> g` as `(xs |> f) >> g` (shared infix class), so the
-    // idiom needs parens: `xs |> (f >> g)`. OPP's operator trie keeps
-    // > / >= / >> apart.
+    // composition [D:composition-operators] at the PIPE's level:
+    // `xs |> f >> g` is `(xs |> f) >> g` (F#'s shared infix class) —
+    // the idiom needs parens, `xs |> (f >> g)`. OPP's operator trie
+    // keeps > / >= / >> apart.
     opp.AddOperator(InfixOperator(">>", ws, 1, Associativity.Left, binOp ">>"))
     opp.AddOperator(InfixOperator("<<", ws, 1, Associativity.Left, binOp "<<"))
     opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
@@ -634,10 +631,8 @@ let private patAtom =
 
               { PKind = kind; PSpan = span } ]
 
-// The positional raw-regex lexer RETIRED with PLAN-raw-strings
-// (2026-07-22): rawness is a property of the literal KIND, never of
-// position. The Regex position parses any string kind and tags it;
-// the checker enforces raw-only there [D:raw-strings].
+// The Regex position parses any string kind and tags it; the
+// checker enforces raw-only there [D:raw-strings].
 let private regexPatternLit =
     choice
         [ spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"")
@@ -1097,10 +1092,8 @@ let private topLet (r: Resolver) =
         >>= fun (name, ps) ->
             rejectDupParams ps
             >>= fun () ->
-                // RHS takes sequenced blocks too (function bodies of effect
-                // lines — the bicep-script receipt). The old "no command
-                // mode under a lambda" bar RETIRED with [D:paramful-rhs]:
-                // splice-default-last made param splices boundary-safe.
+                // RHS takes sequenced blocks too, and commands
+                // [D:paramful-rhs] — param splices are boundary-safe.
                 // params shadow PATH in their own RHS — bindings-beat-
                 // PATH reaching a scope commands could not previously
                 // occupy [D:paramful-rhs]; ^x still reaches the binary

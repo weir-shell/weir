@@ -4,8 +4,10 @@
 
 - Comments citing a decision use `[D:key]` from DECISIONS.md (a keyed
   index pointing at NOTES/SEMANTICS/divergences/PROCESS — never a
-  fourth prose store) plus a half-line local why. No dates in
-  comments; dates live in the index. New decision = new index row.
+  fourth prose store) plus the bare-minimum local why. No dates, no
+  history narration (retired/died/was/found-by/probe-caught — that is
+  NOTES' job), no verification credits (FCS-verdict-pinned — pins
+  live in tests). New decision = new index row.
 
 ## Scripting policy
 

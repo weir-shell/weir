@@ -3,8 +3,7 @@ module Weir.Fmt
 open Weir.Ast
 
 let private collectBareUses (e: Expr) : (Span * string) list =
-    // traversal via Ast.exprChildren (refactor sweep 2026-07-22 —
-    // this was a third hand-rolled walker); only EVar collects
+    // traversal is Ast.exprChildren's job; only EVar collects
     let acc = ResizeArray<Span * string>()
 
     let rec walk (e: Expr) =
@@ -201,9 +200,8 @@ let formatLines (body: string list) : Result<string list, string> =
                 // sides, so sexpr differences can only come from the
                 // respacing itself
                 // Script.assumeResolver: command-SHAPED heads only —
-                // an always-true IsExternal claimed `{Lomo` as a head
-                // and made every let-RHS a command (caught by the
-                // guard itself during this feature's own build)
+                // an always-true IsExternal would claim `{Lomo` as a
+                // head and make every let-RHS a command
                 let shapeResolver = Script.assumeResolver Builtins.typeEnv
 
                 let shape (text: string) =

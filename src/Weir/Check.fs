@@ -396,7 +396,7 @@ let private isPrintFamily (env: TypeEnv) (name: string) =
     && Map.tryFind name env.Values = Some printScheme
 
 // show : Show a => a -> string — the debugging renderer (REPL-shaped,
-// lossy). Sentinel RETIRED (Session B): an ordinary constrained scheme
+// lossy) [D:inferred-type-classes]: an ordinary constrained scheme
 // on the normal instantiate/apply path; showable = no function
 // anywhere, recursively (seqs render fine — Show is wider than Eq).
 let showScheme: Scheme =
@@ -1664,10 +1664,9 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let typeBody e =
                 match body.Kind, resolve ctx cod with
                 // a NESTED lambda against a function cod pushes through
-                // — the inner domain may already be resolved (fold's
-                // piped element type), and the infer fallback would
-                // drop it [D:seq-fold]; found by the canonical
-                // `xs |> Seq.fold (fun s x -> s + x) 0` rejecting
+                // [D:seq-fold]: the inner domain may already be resolved
+                // (a piped element type), and the infer fallback would
+                // drop it
                 | (ELambda _ | ELambdaPat _), TFun _ -> check ctx e body cod
                 | _ ->
                     if hasVars ctx cod then
@@ -2026,9 +2025,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
 // errors [D:exhaustiveness-hard-error].
 let warnings (te: TypedExpr) : Warning list =
     // one collection site (command argv nudges); traversal is
-    // childExprs' job — the hand-rolled 90-line walk retired in the
-    // refactor sweep (2026-07-22). The env param died with the
-    // reachability move into `exhaustive`.
+    // childExprs' job
     let acc = ResizeArray<Warning>()
 
     let rec walk (te: TypedExpr) =
