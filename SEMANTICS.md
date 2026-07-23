@@ -717,22 +717,19 @@ quantity semantics now.
   so there is no injection class (`cmd "echo" ["; rm -rf x"]` prints the
   string). Programs containing `/` resolve against `Session.Cwd`; bare names
   resolve against PATH.
-- **Splice-defaulting soundness condition** (why "unresolved argv-position
-  types default to string" is harmless) — RE-VERIFIED under
-  [D:splice-default-last] (2026-07-22): defaulting is now a
-  FINALIZATION step, not an eager bind. The early bind rejected the
-  correct `1 |> (fun k -> $"{k}")` — an ORDER bug (the hole
-  defaulted k before the pipe delivered int), the only
-  wrong-rejection on the books. Splice/hole vars now queue in ctx
-  and resolve at the statement boundary (typecheckWith /
-  typecheckBinder, the same point where stranded class constraints
-  error): resolved-to-scalar passes, still-unresolved defaults to
-  string (the original rule, moved), anything else gets the original
-  rejection at the hole's span. The soundness argument SURVIVES and
-  simplifies: defaulting at the boundary runs before generalization
-  in the same ctx, so nothing defaulted is generalized at another
-  type — and late defaulting can only default vars that inference
-  left untouched, strictly fewer than the eager bind touched.
+- **Splice-defaulting soundness condition** — RESTATED under
+  [D:paramful-rhs] (2026-07-23), its THIRD edition; the old premise
+  ("command segments never sit under a lambda, so no param variable
+  is in scope to default") RETIRES, because commands now do:
+  `let f r = echo $r` is legal and `$r` splices a lambda parameter.
+  The argument no longer needs the premise: defaulting is a
+  finalization step at the statement boundary [D:splice-default-last]
+  — it runs pre-generalization in the same ctx, so a defaulted param
+  is monomorphic BEFORE the binding generalizes (`let f r = echo $r`
+  types `string -> seq<string>` deterministically), and inference-
+  resolved params are never defaulted at all. This is the first
+  feature enabled by a bug fix: the defaulting-order wrong-rejection,
+  fixed properly two days earlier, WAS the load-bearing wall.
 - **Data parallelism, not concurrency machinery**: `Seq.pmap` /
   `Seq.piter` (2026-07-20) fan a function out over a seq —
   ProcessorCount degree, EAGER, results in input order, first worker

@@ -84,8 +84,13 @@ print $"branches: {branches}"
   match with `| Case (n, s) ->`.
 - `let f x y = ...` defines a curried function (desugars to nested
   `fun`). Params are idents, `()`, or PARENTHESIZED irrefutable
-  patterns (`let dist (x, y) = ...`) — no type annotations — and a
-  param-ful let cannot take a command-line RHS.
+  patterns (`let dist (x, y) = ...`) — no type annotations. A
+  param-ful let TAKES a command RHS
+  (`let revParse r = git rev-parse $r | Seq.head`): params shadow
+  PATH inside their own RHS (bindings-beat-PATH's scope; `^x` still
+  forces the binary), and a spliced param defaults to string at the
+  statement boundary. Splices are WHOLE argv entries — `--file=$f`
+  passes literally; spell `--file $f` or an interp arg.
 - `+` on two unknown params cannot infer (int-or-string): anchor one
   side (`x + 0`) or take data in. All single-typing operators
   (`- * / > <`) default to int; `let rec` and `mutable` are reserved
@@ -285,12 +290,13 @@ print x
   `if clean then` + indented `!(...)` lines. Interiors are ordinary
   command chains (splices, pipes, `| complete`). `!` is NOT bash
   history/extglob and `;` still does not chain inside them.
-- A top-level `let` RHS takes command lines: `let files = git ls-files`
+- A top-level `let` RHS takes command lines — param-ful included
+  (`let f r = git rev-parse $r | Seq.head`): `let files = git ls-files`
   binds `seq<string>`; `let r = git status | complete` binds the
   record. Externals only — builtins stay functions there
   (`let w = cd target` applies the BINDING target). NOT in `let ... in`
-  or inside expressions — there use `cmd "git" ["status"; "--porcelain"]`
-  (prog + argv list). A bareword `in` on a let RHS ends the command
+  or in BLOCK lets inside bodies — there use
+  `cmd "git" ["status"; "--porcelain"]` (prog + argv list) or `$()`. A bareword `in` on a let RHS ends the command
   grammar; quote `"in"` to pass it.
 - Tuples: `(a, b)` literals, `int * string` types, `| (x, y) ->`
   patterns (arity 2+). `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.

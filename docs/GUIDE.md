@@ -356,10 +356,13 @@ print $"at {latest}"
 let tagged = $"at {$(git log -1 "--format=%h") |> Seq.head}"
 ```
 
-A top-level `let` RHS takes a bare command chain directly
-(`let branch = git rev-parse HEAD | Seq.head`) — prefer that where it
-is legal; `$()` is for everywhere bare cannot go (inside expressions,
-holes, nested splices). `run`/`cmd` remain the spellings when the
+A top-level `let` RHS takes a bare command chain directly — with or
+without params (`let branch = git rev-parse HEAD | Seq.head`,
+`let revParse r = git rev-parse $r | Seq.head`; params shadow PATH in
+their own RHS, so `let f x = x` stays the identity whatever is
+installed) — prefer bare when the whole RHS is the chain; `$()` is
+for everywhere the command is a SUB-expression (inside bodies, holes,
+nested splices). `run`/`cmd` remain the spellings when the
 program NAME is computed. And do not bind an `if`-effect block to a
 `let`: the binding is eagerly evaluated unit — a bare `if` statement
 says what it means.

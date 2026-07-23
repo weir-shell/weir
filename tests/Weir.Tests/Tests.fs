@@ -2324,6 +2324,42 @@ let agentFindingsTests =
               | Ok(SCmd { Kind = ECmd("git", args, _) }) -> Expect.hasLength args 3 "log, in, h"
               | other -> failtest $"expected a command statement, got {other}"
           }
+          // param-ful command RHS [D:paramful-rhs]
+          test "param-ful let takes a command RHS (curried under the params)" {
+              match Weir.Parser.parseLine cmdResolver "let f r = git log $r" with
+              | Ok(SLet("f", { Kind = ELambda("r", { Kind = ECmd("git", _, _) }) })) -> ()
+              | other -> failtest $"expected a lambda over a command, got {other}"
+          }
+          test "params shadow PATH in their own RHS (the law's regression pin)" {
+              // cmdResolver says EVERY bareword is an external; the param
+              // must still win — identity stays identity
+              match Weir.Parser.parseLine cmdResolver "let f x = x" with
+              | Ok(SLet("f", { Kind = ELambda("x", { Kind = EVar "x" }) })) -> ()
+              | other -> failtest $"identity became something else: {other}"
+          }
+          test "tuple-pattern params shadow too" {
+              match Weir.Parser.parseLine cmdResolver "let f (a, b) = a" with
+              | Ok(SLet("f", { Kind = ELambdaPat(_, { Kind = EVar "a" }) })) -> ()
+              | other -> failtest $"expected the leaf to stay a binding, got {other}"
+          }
+          test "param-ful RHS keeps the in-stop" {
+              match Weir.Parser.parseLine cmdResolver "let f r = git log in r" with
+              | Ok(SLet(_, { Kind = ELambda(_, { Kind = ECmd(_, args, _) }) })) ->
+                  failtest $"the in-eating cliff, param-ful edition: {List.length args} argv words"
+              | _ -> ()
+          }
+          test "splice of a param defaults to string at the boundary" {
+              match Weir.Parser.parseLine cmdResolver "let f r = echo $r" with
+              | Ok(SLet("f", _) as stmt) ->
+                  // typecheck through the statement path: f : string -> seq<string>
+                  match stmt with
+                  | SLet(_, e) ->
+                      match Weir.Check.typecheckWith env e with
+                      | Ok(te, _) -> Expect.equal (formatTy te.Ty) "string -> seq<string>" ""
+                      | Error terr -> failtest (formatError terr)
+                  | _ -> ()
+              | other -> failtest $"parse failed: {other}"
+          }
           test "pairwise re-typed to tuples (2026-07-21, the reversal; was Pair {Fst;Snd})" {
               Expect.equal (checkOk "[1; 2] |> Seq.pairwise").Ty (TSeq(TTuple [ TInt; TInt ])) "type"
 
@@ -2544,10 +2580,10 @@ let paramSugarTests =
               | Ok(SLet("f", { Kind = ELambda("x", _) })) -> ()
               | other -> failtest $"expected a desugared lambda, got {other}"
           }
-          test "params take an expression RHS only (no command mode under a lambda)" {
+          test "params now take a command RHS (the rule this pin used to state REVERSED by PLAN-paramful-rhs; splice-default-last removed the soundness bar)" {
               match Weir.Parser.parseLine cmdResolver "let f x = git status" with
-              | Ok(SLet(_, { Kind = ELambda(_, { Kind = EApp _ }) })) -> ()
-              | other -> failtest $"expected expression-mode application (which then fails check), got {other}"
+              | Ok(SLet(_, { Kind = ELambda(_, { Kind = ECmd("git", _, _) }) })) -> ()
+              | other -> failtest $"expected a command RHS under the param, got {other}"
           }
           test "unit and PARENTHESIZED pattern params legal (binders session completed the arc)" {
               match Weir.Parser.parseExpr "let f () = 1 in f" with

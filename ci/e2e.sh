@@ -818,6 +818,44 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# param-ful command RHS (PLAN-paramful-rhs): the shadowing law —
+# this pin was written FAILING against the guard-dropped prototype
+# (`let f x = x` printed SPAWNED with an executable x on PATH)
+shdir=$(mktemp -d)
+printf '#!/bin/sh\necho SPAWNED\n' > "$shdir/x" && chmod +x "$shdir/x"
+cat > "$shdir/shadow.weir" <<'WEOF'
+let f x = x
+print (f "value")
+WEOF
+out=$(PATH="$shdir:$PATH" $BIN "$shdir/shadow.weir")
+expect "params shadow PATH in their own RHS (identity stays identity)" "value" "$out"
+printf '^x\n' > "$shdir/force.weir"
+out=$(PATH="$shdir:$PATH" $BIN "$shdir/force.weir")
+expect "^x still reaches the PATH binary (no capability lost)" "SPAWNED" "$out"
+rm -rf "$shdir"
+
+# param-ful RHS: forms, sigil equivalence, splice-typo hint
+pfdir=$(mktemp -d)
+(cd "$pfdir" && git init -q . && git -c user.email=a@a -c user.name=a commit -q --allow-empty -m x)
+cat > "$pfdir/forms.weir" <<'WEOF'
+let revParse r = git rev-parse $r | Seq.head
+let asSigil r = $(git rev-parse $r) |> Seq.head
+let headLog () = git log --format=%s -1
+print (if revParse "HEAD" == asSigil "HEAD" then "EQUAL" else "DIFF")
+headLog () |> print
+WEOF
+out=$(cd "$pfdir" && $BIN forms.weir)
+expect "bare and sigil spellings behaviorally equal" "EQUAL" "$out"
+expect "thunk param takes a command RHS" "x" "$out"
+cat > "$pfdir/typo.weir" <<'WEOF'
+let f pth = git checkout $path
+print "unreached"
+WEOF
+errout=$(cd "$pfdir" && $BIN typo.weir 2>&1 || true)
+echo "$errout" | grep -qF "Did you mean 'pth'?" || fail "splice-typo must did-you-mean the param: $errout"
+echo "e2e ok: a typo'd splice did-you-means the param"
+rm -rf "$pfdir"
+
 # the git-subrepo example (the translation flagship): live repo pair
 srdir=$(mktemp -d)
 (

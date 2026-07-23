@@ -1,5 +1,31 @@
 # Spike Notes
 
+## Param-ful command RHS — the first feature enabled by a bug fix (2026-07-23)
+
+`let revParse r = git rev-parse $r | Seq.head` runs, and the flagship
+git-subrepo example now reads bare where it wanted to. The enabling
+arc the plan named: the defaulting-order WRONG-REJECTION was fixed
+two days ago by making splice defaulting a boundary step — and that
+architecture, built for correctness, turned out to be the wall this
+feature needed. Fixing wrong-rejections properly compounds.
+
+The ceremony's order mattered: the guard-dropped prototype printed
+SPAWNED for `let f x = x` with an executable x on PATH — the
+legal-parse-wrong-meaning hazard demonstrated live, the pin written
+red, THEN the resolver learned param names (bindings-beat-PATH
+reaching a scope commands could not previously occupy; ^x pinned as
+still reaching the binary). The soundness note took its third
+edition without the stop clause firing; zero checker arms; the
+retired rule's own pin flipped with archaeology in its name.
+
+Wild finding from the flagship rewrite: mid-word splices
+(`--file=$file`) pass literally — the whole-argv law working as
+designed but worth teaching; the live smoke caught it, SKILL now
+says it. Advisor pins (sigil equivalence, splice-typo did-you-mean)
+green first try. Friction retired for the param-ful half; block
+lets inside bodies stay the parked half's receipt collector.
+
+
 ## Seq.fold + fun-sugar — the port unblocked (2026-07-22)
 
 The strongest receipt on file cashes: both git-subrepo blocker folds

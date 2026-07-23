@@ -1075,15 +1075,26 @@ let private topLet (r: Resolver) =
         >>= fun (name, ps) ->
             rejectDupParams ps
             >>= fun () ->
-                // command mode never sits under a lambda (splice-soundness
-                // invariant), so a param-ful let takes an expression RHS only
                 // RHS takes sequenced blocks too (function bodies of effect
-                // lines — the bicep-script receipt)
-                let rhsP =
-                    if List.isEmpty ps then
-                        cmdLineLetRhs r <|> seqExpr
-                    else
-                        seqExpr
+                // lines — the bicep-script receipt). The old "no command
+                // mode under a lambda" bar RETIRED with [D:paramful-rhs]:
+                // splice-default-last made param splices boundary-safe.
+                // params shadow PATH in their own RHS — bindings-beat-
+                // PATH reaching a scope commands could not previously
+                // occupy [D:paramful-rhs]; ^x still reaches the binary
+                let rec leafNames (p: Pattern) =
+                    match p.PKind with
+                    | PVar n -> [ n ]
+                    | PTuple ps -> ps |> List.collect leafNames
+                    | _ -> []
+
+                let paramNames = ps |> List.collect leafNames |> Set.ofList
+
+                let r' =
+                    { r with
+                        IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n }
+
+                let rhsP = cmdLineLetRhs r' <|> seqExpr
 
                 rhsP .>> eof |>> fun rhs -> SLet(name, curryParams ps rhs)
     )
