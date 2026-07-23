@@ -13,6 +13,96 @@ type Warning = { Span: Span; Message: string }
 let formatWarning (w: Warning) : string =
     $"[{w.Span.Start.Line}:{w.Span.Start.Col}-{w.Span.End.Col}] warning: {w.Message}"
 
+// Args.load targets [D:typed-argv] — the record is the flags shape,
+// the union is the subcommand front door (case -> payload def)
+type ArgsTarget =
+    | ArgsRecord of RecordDef
+    | ArgsUnion of def: UnionDef * payloads: Map<string, RecordDef>
+
+// short-flag resolution: a letter is owned or contested; contested
+// letters derive for NOBODY and error with candidates at invocation
+type ShortOwner =
+    | ShortOf of longFlag: string
+    | AmbiguousShort of longFlags: string list
+
+module Argv =
+    // field name -> kebab flag: split at lower->upper boundaries and
+    // before the last upper of an acronym run [D:typed-argv]
+    let kebabFlag (name: string) : string =
+        let sb = System.Text.StringBuilder()
+
+        for i in 0 .. name.Length - 1 do
+            let c = name[i]
+
+            let boundary =
+                i > 0
+                && System.Char.IsUpper c
+                && (System.Char.IsLower name[i - 1]
+                    || System.Char.IsDigit name[i - 1]
+                    || (i + 1 < name.Length
+                        && System.Char.IsUpper name[i - 1]
+                        && System.Char.IsLower name[i + 1]))
+
+            if boundary then
+                sb.Append '-' |> ignore
+
+            sb.Append(System.Char.ToLowerInvariant c) |> ignore
+
+        sb.ToString()
+
+    let private attrOf (def: RecordDef) (field: string) (attr: string) =
+        def.Attrs
+        |> Map.tryFind field
+        |> Option.bind (List.tryFind (fun (n, _) -> n = attr))
+
+    let docOf (def: RecordDef) (field: string) : string option =
+        match attrOf def field "Doc" with
+        | Some(_, Some(AStr d)) -> Some d
+        | _ -> None
+
+    // (flag -> short) and (letter -> owner). Explicit [<Short>] beats
+    // derivation: the derived short retires, --help is the truth.
+    // 'h' never derives (reserved; [<Short "h">] rejects at attachment)
+    let shortTables (def: RecordDef) : Map<string, string> * Map<string, ShortOwner> =
+        let flagged = def.Fields |> List.map (fun (f, _) -> f, "--" + kebabFlag f)
+
+        let explicits =
+            flagged
+            |> List.choose (fun (f, flag) ->
+                match attrOf def f "Short" with
+                | Some(_, Some(AStr sh)) -> Some(flag, sh)
+                | _ -> None)
+
+        let taken = explicits |> List.map snd |> Set.ofList
+
+        let derivers =
+            flagged
+            |> List.filter (fun (f, _) -> (attrOf def f "Short").IsNone && (attrOf def f "NoShort").IsNone)
+            |> List.map (fun (_, flag) -> flag, string flag[2])
+            |> List.filter (fun (_, letter) -> letter <> "h" && not (Set.contains letter taken))
+
+        let derivedGroups = derivers |> List.groupBy snd
+
+        let singles =
+            derivedGroups
+            |> List.choose (fun (letter, group) ->
+                match group with
+                | [ (flag, _) ] -> Some(flag, letter)
+                | _ -> None)
+
+        let flagShorts = Map.ofList (explicits @ singles)
+
+        let shortIndex =
+            (explicits |> List.map (fun (flag, letter) -> letter, ShortOf flag))
+            @ (derivedGroups
+               |> List.map (fun (letter, group) ->
+                   match group with
+                   | [ (flag, _) ] -> letter, ShortOf flag
+                   | many -> letter, AmbiguousShort(many |> List.map fst)))
+            |> Map.ofList
+
+        flagShorts, shortIndex
+
 type TypedExpr = { Kind: TypedKind; Ty: Ty; Span: Span }
 
 and TypedKind =
@@ -32,6 +122,7 @@ and TypedKind =
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
     | TESeq of first: TypedExpr * rest: TypedExpr
     | TEEnvLoad of def: RecordDef
+    | TEArgsLoad of target: ArgsTarget
     | TEFrom of format: string * rowDef: RecordDef
     | TETo of format: string
     | TEList of items: TypedExpr list
@@ -1070,6 +1161,103 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                  | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
                  | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
              | _ -> err arg.Span "Env.load takes a record type name, e.g. Env.load Config")
+        | EField({ Kind = EVar "Args" }, "load", _), [ arg ] when
+            not (Map.containsKey "Args" env.Values) && Map.containsKey "Args" env.Modules
+            ->
+            // Args.load T — the sixth typed-boundary instance [D:typed-argv]:
+            // Env.load's sibling; the union acceptance is the delta
+            (if not (Map.containsKey "args" env.Values) then
+                 err expr.Span "Args.load is script-only ('args' is not available here)"
+             else
+                 let validateFields span (label: string) (def: RecordDef) =
+                     let positional =
+                         def.Fields
+                         |> List.tryFind (fun (f, _) ->
+                             def.Attrs
+                             |> Map.tryFind f
+                             |> Option.map (List.exists (fun (n, _) -> n = "Positional"))
+                             |> Option.defaultValue false)
+
+                     match positional with
+                     | Some(f, _) -> err span $"{label}'{f}' is [<Positional>]: positionals are not yet supported"
+                     | None ->
+                         let badShape =
+                             def.Fields
+                             |> List.tryFind (fun (_, ft) ->
+                                 match ft with
+                                 | TStr
+                                 | TInt
+                                 | TBool
+                                 | TNamed("Option", [ TStr | TInt ]) -> false
+                                 | _ -> true)
+
+                         match badShape with
+                         | Some(f, TNamed("Option", [ TBool ])) ->
+                             err span $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
+                         | Some(f, ft) ->
+                             err
+                                 span
+                                 $"{label}Args.load fields must be string, int, bool, or Option of string|int; '{f}' is {formatTy ft}"
+                         | None ->
+                             let dupFlag =
+                                 def.Fields
+                                 |> List.map (fun (f, _) -> f, Argv.kebabFlag f)
+                                 |> List.groupBy snd
+                                 |> List.tryFind (fun (_, g) -> g.Length > 1)
+
+                             match dupFlag with
+                             | Some(flag, (a, _) :: (b, _) :: _) ->
+                                 err span $"{label}fields '{a}' and '{b}' derive the same flag '--{flag}'"
+                             | _ -> Ok()
+
+                 match arg.Kind with
+                 | EVar tyName ->
+                     match Map.tryFind tyName env.Types with
+                     | Some(Record def) when def.Params.IsEmpty ->
+                         result {
+                             do! validateFields arg.Span "" def
+
+                             return
+                                 { Kind = TEArgsLoad(ArgsRecord def)
+                                   Ty = TNamed(tyName, [])
+                                   Span = expr.Span }
+                         }
+                     | Some(Union udef) when udef.Params.IsEmpty ->
+                         result {
+                             let lowered = udef.Cases |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
+
+                             match lowered |> List.groupBy snd |> List.tryFind (fun (_, g) -> g.Length > 1) with
+                             | Some(word, (a, _) :: (b, _) :: _) ->
+                                 return! err arg.Span $"cases '{a}' and '{b}' collide as subcommand '{word}'"
+                             | _ ->
+                                 let payloadErr c =
+                                     err
+                                         arg.Span
+                                         $"case '{c}' must carry a single record payload; spell it as a record type"
+
+                                 let rec buildPayloads acc cases =
+                                     match cases with
+                                     | [] -> Ok acc
+                                     | (_, None) :: rest -> buildPayloads acc rest
+                                     | (c, Some(TNamed(rn, []))) :: rest ->
+                                         match Map.tryFind rn env.Types with
+                                         | Some(Record rdef) when rdef.Params.IsEmpty ->
+                                             validateFields arg.Span $"case '{c}': " rdef
+                                             |> Result.bind (fun () -> buildPayloads (Map.add c rdef acc) rest)
+                                         | _ -> payloadErr c
+                                     | (c, Some _) :: _ -> payloadErr c
+
+                                 let! payloads = buildPayloads Map.empty udef.Cases
+
+                                 return
+                                     { Kind = TEArgsLoad(ArgsUnion(udef, payloads))
+                                       Ty = TNamed(tyName, [])
+                                       Span = expr.Span }
+                         }
+                     | Some(Record _)
+                     | Some(Union _) -> err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
+                     | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
+                 | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
         | EVar(("print" | "printerr") as pname), [ arg ] when isPrintFamily env pname ->
             result {
                 let! targ = infer ctx env arg
@@ -1793,7 +1981,8 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
             )
         | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
-        | TEEnvLoad _ -> te.Kind
+        | TEEnvLoad _
+        | TEArgsLoad _ -> te.Kind
         | leaf -> leaf
 
     { te with
@@ -1891,6 +2080,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEUnit
     | TEVar _
     | TEEnvLoad _
+    | TEArgsLoad _
     | TEFrom _
     | TETo _ -> []
     | TELet(_, v, b) -> [ v; b ]

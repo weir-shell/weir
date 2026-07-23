@@ -318,10 +318,48 @@ if ready then !e
     sh -c "echo block two: $STAGE"
 ```
 
-Multi-value options idiom, while we are near CLI shapes: weir's `Args`
-has no two-token options — reshape `--app stack env` as one flag per
-value (`--stack X --env Y`, two `Args.value` calls). The reshape is
-usually clearer than the positional pair.
+## The script's own front door
+
+Argv is the same species of stringly boundary as the environment, and
+it loads the same way — declare the shape, load once, typed
+thereafter:
+
+```weir
+type Cli = { [<Short "C"; Doc "clean the target first">] clean: bool; port: Option<int> }
+let cli = Args.load Cli
+print $"{show cli.clean} {show cli.port}"
+```
+
+Field names derive kebab-case flags (`dryRun` becomes `--dry-run`)
+and unambiguous first-letter shorts; `[<Short "C">]` pins a short
+explicitly, `[<NoShort>]` suppresses one, and `--help` prints the
+derived usage — flags, types, optionality, the short truth, and
+`[<Doc>]` text — even on otherwise-invalid invocations. `bool`
+fields are presence flags, `string`/`int` are required, `Option`
+makes them optional. Loading is STRICT and collected: unknown flags
+(with did-you-mean), unexpected arguments, missing requireds, and
+unparseable values all arrive in one boundary error, before any
+effect runs.
+
+Subcommands are a union of record-payload cases — the first token
+picks the case, the rest parse as its flags, and the dispatch match
+is exhaustiveness-checked, so adding a subcommand makes every
+non-updated match a check-time obligation instead of a runtime
+`die "unknown command"`:
+
+```weir-error
+type CloneArgs = { remote: string; force: bool }
+type Cmd = Clone of CloneArgs | Status
+match Args.load Cmd with // no argv here: "missing subcommand; one of: clone, status"
+| Clone a -> print a.remote
+| Status -> print "status"
+```
+
+There are no positionals — spell operands as flags (`pull --subdir
+libx`); named-over-positional is the house aesthetic. The untyped
+floor remains for hand-rolled shapes: `Args.flag "--clean" "-c"` and
+`Args.value "--out"` scan the raw `args` seq, and multi-value options
+reshape as one flag per value (`--stack X --env Y`).
 
 ## Parallelism
 

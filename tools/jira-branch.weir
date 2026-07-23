@@ -5,11 +5,14 @@
 
 type Issue = { Key: string; Title: string }
 
-let clean = Args.flag "--clean" "-c"
+// typed argv [D:typed-argv]: --clean derives -c anyway; the explicit
+// [<Short>] pins the contract against future fields stealing it
+type Cli = { [<Short "c"; Doc "reset to main first">] clean: bool }
+let cli = Args.load Cli
 
 let branch = git rev-parse --abbrev-ref HEAD | Seq.head
 
-if clean then !
+if cli.clean then !
     git checkout main
     git pull
     git branch -D $branch

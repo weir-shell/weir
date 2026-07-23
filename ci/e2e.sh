@@ -873,15 +873,15 @@ srdir=$(mktemp -d)
     git add -A && git -c user.email=a@a -c user.name=a commit -qm "add subrepo"
 )
 SR="$(cd "$(dirname "$0")/.." && pwd)/examples/git-subrepo.weir"
-out=$(cd "$srdir/host" && $BIN "$SR" status libx)
+out=$(cd "$srdir/host" && $BIN "$SR" status --subdir libx)
 expect "git-subrepo status reads .gitrepo" "Tracking Branch: main" "$out"
-out=$(cd "$srdir/host" && $BIN "$SR" fetch libx)
+out=$(cd "$srdir/host" && $BIN "$SR" fetch --subdir libx)
 expect "git-subrepo fetch" "Fetched 'libx'" "$out"
-out=$(cd "$srdir/host" && $BIN "$SR" pull libx)
+out=$(cd "$srdir/host" && $BIN "$SR" pull --subdir libx)
 expect "git-subrepo pull detects up-to-date via the union" "up to date" "$out"
-out=$(cd "$srdir/host" && $BIN "$SR" status libx -v)
+out=$(cd "$srdir/host" && $BIN "$SR" status --subdir libx -v)
 expect "the fetch ref surfaces through the Regex pattern" "FETCH Ref:" "$out"
-errout=$(cd "$srdir/host" && $BIN "$SR" pull nope 2>&1 || true)
+errout=$(cd "$srdir/host" && $BIN "$SR" pull --subdir nope 2>&1 || true)
 echo "$errout" | grep -qF "No 'nope/.gitrepo' file" || fail "missing-gitrepo error: $errout"
 echo "e2e ok: git-subrepo error paths are located"
 rm -rf "$srdir"
@@ -1651,5 +1651,137 @@ $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept att
 echo "e2e ok: fmt roundtrips attribute lists"
 
 rm -rf "$adir"
+
+# typed argv (PLAN-typed-argv): Args.load over records and unions;
+# the attributes plan's carried done-when clauses discharge here
+tadir=$(mktemp -d)
+cat > "$tadir/cli.weir" <<'WEOF'
+type Cli = { [<Doc "clean first">] clean: bool; verbose: bool; port: Option<int>; env: string }
+let cli = Args.load Cli
+print $"{show cli.clean} {show cli.verbose} {show cli.port} {cli.env}"
+WEOF
+out=$($BIN "$tadir/cli.weir" --clean --env prod --port 8080)
+expect "record flags load typed" "true false Some 8080 prod" "$out"
+out=$($BIN "$tadir/cli.weir" -c -e prod)
+expect "derived shorts resolve" "true false None prod" "$out"
+
+errout=$($BIN "$tadir/cli.weir" --verbos --port abc stray 2>&1) && fail "three-problem invocation must reject"
+echo "$errout" | grep -qF "unknown flag '--verbos'. Did you mean '--verbose'?" || fail "typo did-you-means: $errout"
+echo "$errout" | grep -qF "is not an int ('abc')" || fail "int parse collected: $errout"
+echo "$errout" | grep -qF "unexpected argument 'stray'" || fail "strictness collected: $errout"
+echo "$errout" | grep -qF "missing required flag '--env'" || fail "missing required collected: $errout"
+echo "e2e ok: a four-problem invocation reports all four, collected"
+
+out=$($BIN "$tadir/cli.weir" --bogus --help); rc=$?
+[ "$rc" -eq 0 ] || fail "--help must exit 0 (got $rc)"
+echo "$out" | grep -qF -- "-c, --clean" || fail "help shows derived short truth: $out"
+echo "$out" | grep -qF "clean first" || fail "help shows Doc text: $out"
+echo "$out" | grep -qF -- "--env <string>" || fail "help shows valued flags: $out"
+echo "$out" | grep -qF "required" || fail "help shows requiredness: $out"
+echo "e2e ok: --help derives usage (short truth + Doc) BEFORE validation, exit 0"
+
+cat > "$tadir/short.weir" <<'WEOF'
+type Cli = { [<Short "e">] clean: bool; env: string }
+let cli = Args.load Cli
+print $"{show cli.clean} {cli.env}"
+WEOF
+out=$($BIN "$tadir/short.weir" -e --env prod)
+expect "explicit [<Short>] beats derivation" "true prod" "$out"
+out=$($BIN "$tadir/short.weir" --help)
+echo "$out" | grep -qF -- "-e, --clean" || fail "explicit short in help: $out"
+echo "$out" | grep -qE -- '^      --env' || fail "the derived short retired from --env: $out"
+echo "e2e ok: derivation yields to declaration; --help is the truth"
+
+cat > "$tadir/amb.weir" <<'WEOF'
+type Cli = { clean: bool; copy: bool }
+let cli = Args.load Cli
+print (show cli.clean)
+WEOF
+errout=$($BIN "$tadir/amb.weir" -c 2>&1) && fail "ambiguous short must reject"
+echo "$errout" | grep -qF "'-c' is ambiguous: --clean, --copy" || fail "ambiguity lists candidates: $errout"
+echo "e2e ok: contested shorts derive for nobody and error with candidates"
+
+cat > "$tadir/sub.weir" <<'WEOF'
+type CloneArgs = { remote: string; force: bool }
+type Cmd =
+    | Clone of CloneArgs
+    | Status
+let r =
+    match Args.load Cmd with
+    | Clone a -> $"clone {a.remote} {show a.force}"
+    | Status -> "status"
+print r
+WEOF
+out=$($BIN "$tadir/sub.weir" clone --remote http://x --force)
+expect "union subcommand with payload flags" "clone http://x true" "$out"
+out=$($BIN "$tadir/sub.weir" status)
+expect "bare-word case" "status" "$out"
+errout=$($BIN "$tadir/sub.weir" clne 2>&1) && fail "unknown subcommand must reject"
+echo "$errout" | grep -qF "unknown subcommand 'clne'. Did you mean 'clone'?" || fail "subcommand did-you-mean: $errout"
+errout=$($BIN "$tadir/sub.weir" 2>&1) && fail "missing subcommand must reject"
+echo "$errout" | grep -qF "missing subcommand; one of: clone, status" || fail "missing subcommand lists cases: $errout"
+echo "e2e ok: the union front door dispatches, hints, and lists"
+
+errout=$($BIN "$tadir/cli.weir" --env a --env b 2>&1) && fail "repeated flag must reject"
+echo "$errout" | grep -qF "'--env' is given twice" || fail "strictness on repeats: $errout"
+echo "e2e ok: repeated flags reject (strict by default)"
+
+cat > "$tadir/kebab.weir" <<'WEOF'
+type Cli = { dryRun: bool; noFF: bool; useHTTPSNow: bool }
+let cli = Args.load Cli
+print $"{show cli.dryRun} {show cli.noFF} {show cli.useHTTPSNow}"
+WEOF
+out=$($BIN "$tadir/kebab.weir" --dry-run --no-ff --use-https-now)
+expect "kebab derivation (dryRun/noFF/useHTTPSNow)" "true true true" "$out"
+
+errout=$(printf 'type Cli = { dryRun: bool; DryRun: bool }\nlet c = Args.load Cli\n' | $BIN check /dev/stdin 2>&1) && fail "duplicate derived flag must reject"
+echo "$errout" | grep -qF "derive the same flag '--dry-run'" || fail "duplicate kebab at check: $errout"
+echo "e2e ok: hump-style variance collapses to one flag, duplicate rejected at check"
+
+cat > "$tadir/host.weir" <<'WEOF'
+type Cli = { host: string }
+let cli = Args.load Cli
+print cli.host
+WEOF
+out=$($BIN "$tadir/host.weir" -h); rc=$?
+[ "$rc" -eq 0 ] || fail "-h reserved for help (got rc=$rc)"
+echo "$out" | grep -qE -- '^      --host' || fail "h-initial field must not derive a short: $out"
+echo "e2e ok: -h is help; h-initial fields never derive"
+
+errout=$(printf 'type P = { [<Positional>] t: string }\nlet p = Args.load P\n' | $BIN check /dev/stdin 2>&1) && fail "Positional must fire the not-yet"
+echo "$errout" | grep -qF "positionals are not yet supported" || fail "the not-yet message: $errout"
+echo "e2e ok: [<Positional>] fires its not-yet at check time"
+
+errout=$(printf 'type C = { b: Option<bool> }\nlet c = Args.load C\n' | $BIN check /dev/stdin 2>&1) && fail "Option<bool> field must reject"
+echo "$errout" | grep -qF "a presence flag is already optional" || fail "Option<bool> message: $errout"
+echo "e2e ok: Option<bool> rejects with the presence explanation"
+
+errout=$(printf 'type C = { env: string }\nlet c = Args.load C\n' | $BIN 2>&1)
+echo "$errout" | grep -qF "Args.load is script-only" || fail "REPL/stdin gate: $errout"
+echo "e2e ok: Args.load is script-only; the REPL errors by name"
+
+cat > "$tadir/both.weir" <<'WEOF'
+type A = { env: string }
+type E = { HOME: string }
+let a = Args.load A
+let e = Env.load E
+print $"{a.env} {Str.length e.HOME > 0}"
+WEOF
+out=$(HOME=/tmp $BIN "$tadir/both.weir" --env prod)
+expect "Args.load composes with Env.load" "prod true" "$out"
+
+printf 'print (args |> Str.join ",")\n' > "$tadir/slice.weir"
+out=$($BIN "$tadir/slice.weir" --a b c)
+expect "script args start AFTER the script path" "--a,b,c" "$out"
+
+errout=$(printf 'type C = { env: string }\nArgs.load C\n' | $BIN check /dev/stdin 2>&1) && fail "bare Args.load statement must reject"
+echo "$errout" | grep -qF "discards it" || fail "statement rule covers Args.load: $errout"
+echo "e2e ok: Args.load joins the discard family as a value"
+
+rm -rf "$tadir"
+
+# jira-branch loads its Cli (check-only: jira/fzf are not installed)
+$BIN check tools/jira-branch.weir >/dev/null 2>&1 || fail "jira-branch must check with Args.load"
+echo "e2e ok: jira-branch checks with the typed Cli"
 
 echo "e2e battery: all green"

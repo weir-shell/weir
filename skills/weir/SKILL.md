@@ -362,8 +362,40 @@ print x
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
   Membership: `Seq.contains x xs` (equatable elements),
   `Seq.exists`/`Seq.forall` with predicates.
-- Flags: `Args.flag "--clean" "-c"` (bool; `""` short form if none),
-  `Args.value "--out"` (Option of the next token). Script-only.
+- Argv: `Args.load T` (script-only) — the typed front door. Two
+  shapes: a RECORD of flags (`bool` = presence; `string`/`int` =
+  required valued; `Option<string|int>` = optional valued;
+  `Option<bool>` rejected — presence is already optional), or a
+  UNION of record-payload cases = subcommands (first token matches
+  the lowercased case name; bare cases take no flags). Field names
+  derive kebab flags (`dryRun` → `--dry-run`) and unambiguous
+  first-letter shorts (contested letters derive for nobody;
+  `[<Short "C">]` overrides, `[<NoShort>]` suppresses, `-h` is
+  help). STRICT: unknown flags (did-you-mean), unexpected
+  arguments, repeats, missing requireds — all collected into ONE
+  boundary error. `--help` prints derived usage (short truth +
+  `[<Doc>]` text), exit 0, even on invalid invocations. No
+  positionals — spell operands as flags. The untyped floor:
+  `Args.flag "--clean" "-c"` (bool), `Args.value "--out"`
+  (Option of the next token).
+
+```weir
+type Cli = { [<Short "C"; Doc "clean first">] clean: bool; port: Option<int> }
+let cli = Args.load Cli
+print $"{show cli.clean} {show cli.port}"
+```
+
+```weir-error
+type Cli = { env: string }
+let cli = Args.load Cli // no argv: "missing required flag '--env'" — collected, strict
+print cli.env
+```
+
+```weir-error
+type Cmd = Go of string | Stop // payload must be a record: check error
+let c = Args.load Cmd
+```
+
 - Environment: `Env.get "NAME"` (Option<string>) for one var;
   `Env.load Config` for typed config — declare
   `type Config = { PORT: int; DEBUG: bool; TOKEN: Option<string> }`

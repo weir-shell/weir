@@ -630,6 +630,34 @@ quantity semantics now.
   not session mutation — see the child-env entry below; no ambient
   member ships. Line one `#!` is skipped by the runner; `#` at line head is
   reserved for directives.
+- **`Args.load T`** [D:typed-argv] — the sixth typed-boundary
+  instance (porcelain, from json, env, dotenv; http parked): the
+  script's own front door was the last unchecked boundary in a
+  fail-before-effects language. Two declared shapes: a monomorphic
+  RECORD of flags, or a UNION of record-payload cases as
+  subcommands (first token vs constructor names lowercased —
+  collision-free by the casing law; single-record payloads only;
+  bare cases are bare words; unknown/missing first token errors
+  with did-you-mean/the case list). Field typing is the Env.load
+  scalar rule's argv face: `bool` = presence (valued booleans
+  rejected — presence IS the semantics; `Option<bool>` rejected at
+  check with the presence explanation), `string`/`int` = required
+  valued, `Option<string|int>` = optional valued; other shapes
+  reject in the Env.load message family. Field names derive
+  kebab-case flags (lower→upper splits + acronym-run tails:
+  `useHTTPSNow` → `--use-https-now`); hump-style variance collapses
+  (`dryRun`/`DryRun` collide — check error). Shorts: first-letter
+  derivation IFF unambiguous — contested letters derive for NOBODY
+  and error with candidates at invocation; `[<Short>]` beats
+  derivation (the derived short retires; --help is the truth);
+  `[<NoShort>]` suppresses; `h` never derives and `-h` is help.
+  STRICT: no positionals (`[<Positional>]` fires its not-yet at
+  check), unconsumed tokens/unknown flags/repeats/missing
+  requireds/garbage values collect into ONE boundary error.
+  `--help`/`-h` short-circuits BEFORE validation to derived usage
+  (short truth + Doc text), stdout, exit 0. Script-only (`args`'
+  scope); the untyped floor (`args`, `Args.flag`, `Args.value`)
+  remains, exactly Env.get under Env.load.
 - **Child-env injection** (2026-07-20, the shEnv receipt — the bicep
   translation's strongest): `cmdEnv : seq<EnvVar> -> string ->
   seq<string> -> seq<string>` and `runEnv` (its `|> print` desugar,

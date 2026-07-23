@@ -1771,6 +1771,160 @@ let attributeTests =
               | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
           } ]
 
+let typedArgvTests =
+    // check-side battery [D:typed-argv]; runtime behavior pins live in
+    // e2e (Session.ScriptArgs is ambient global state)
+    let argvEnv =
+        { env with
+            Values = env.Values |> Map.add "args" (generalize (TSeq TStr)) }
+
+    let argvCheck input =
+        Weir.Check.typecheck argvEnv (parse input)
+
+    let argvErr input =
+        match argvCheck input with
+        | Ok _ -> failtest "expected the check to reject"
+        | Error terr -> terr
+
+    testList
+        "Typed argv"
+        [ test "kebab derivation pins (the plan's examples)" {
+              Expect.equal (Weir.Check.Argv.kebabFlag "dryRun") "dry-run" ""
+              Expect.equal (Weir.Check.Argv.kebabFlag "DryRun") "dry-run" ""
+              Expect.equal (Weir.Check.Argv.kebabFlag "noFF") "no-ff" ""
+              Expect.equal (Weir.Check.Argv.kebabFlag "useHTTPSNow") "use-https-now" ""
+              Expect.equal (Weir.Check.Argv.kebabFlag "port") "port" ""
+          }
+          test "short tables: derive, contest, override, suppress, reserve" {
+              let def name input =
+                  match Map.tryFind name (argvEnv |> declare input).Types with
+                  | Some(Record d) -> d
+                  | _ -> failtest "record expected"
+
+              let shorts, index =
+                  Weir.Check.Argv.shortTables (def "S1" "type S1 = { clean: bool; verbose: bool }")
+
+              Expect.equal (Map.tryFind "--clean" shorts) (Some "c") "derives"
+              Expect.equal (Map.tryFind "c" index) (Some(Weir.Check.ShortOf "--clean")) "owner"
+
+              let shorts2, index2 =
+                  Weir.Check.Argv.shortTables (def "S2" "type S2 = { clean: bool; copy: bool }")
+
+              Expect.equal (Map.tryFind "--clean" shorts2) None "contested letters derive for nobody"
+
+              Expect.equal
+                  (Map.tryFind "c" index2)
+                  (Some(Weir.Check.AmbiguousShort [ "--clean"; "--copy" ]))
+                  "candidates kept for the error"
+
+              let shorts3, _ =
+                  Weir.Check.Argv.shortTables (def "S3" "type S3 = { [<Short \"e\">] clean: bool; env: string }")
+
+              Expect.equal (Map.tryFind "--clean" shorts3) (Some "e") "explicit wins the letter"
+              Expect.equal (Map.tryFind "--env" shorts3) None "the derived short retires"
+
+              let shorts4, _ =
+                  Weir.Check.Argv.shortTables (def "S4" "type S4 = { [<NoShort>] clean: bool }")
+
+              Expect.equal (Map.tryFind "--clean" shorts4) None "NoShort suppresses"
+
+              let shorts5, _ = Weir.Check.Argv.shortTables (def "S5" "type S5 = { host: bool }")
+              Expect.equal (Map.tryFind "--host" shorts5) None "h never derives (help)"
+          }
+          test "Args.load types as the record; the union as the union" {
+              let e2 =
+                  argvEnv
+                  |> declare "type Cli = { clean: bool; env: string }"
+                  |> declare "type CA = { remote: string }"
+                  |> declare "type Cmd = Clone of CA | Status"
+
+              match Weir.Check.typecheck e2 (parse "Args.load Cli") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "Cli" ""
+              | Error terr -> failtest (formatError terr)
+
+              match Weir.Check.typecheck e2 (parse "Args.load Cmd") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "Cmd" ""
+              | Error terr -> failtest (formatError terr)
+          }
+          test "field-shape rejections" {
+              let e2 = argvEnv |> declare "type B1 = { b: Option<bool> }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load B1") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "a presence flag is already optional"
+                  ""
+
+              let e3 = argvEnv |> declare "type B2 = { xs: seq<string> }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e3 (parse "Args.load B2") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "must be string, int, bool"
+                  ""
+          }
+          test "duplicate derived flags reject at check" {
+              let e2 = argvEnv |> declare "type D = { dryRun: bool; DryRun: bool }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load D") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "derive the same flag '--dry-run'"
+                  ""
+          }
+          test "Positional fires its not-yet at consumption" {
+              let e2 = argvEnv |> declare "type P = { [<Positional>] t: string }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load P") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "positionals are not yet supported"
+                  ""
+          }
+          test "union payload rules: single record only; case collisions" {
+              let e2 = argvEnv |> declare "type U1 = Go of string | Stop"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load U1") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "must carry a single record payload"
+                  ""
+
+              let e3 = argvEnv |> declare "type U2 = Go | GO"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e3 (parse "Args.load U2") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "collide as subcommand 'go'"
+                  ""
+          }
+          test "script-only: without args in scope Args.load rejects by name" {
+              let e2 = env |> declare "type C = { env: string }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load C") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "Args.load is script-only"
+                  ""
+          }
+          test "unknown type did-you-means over declared types" {
+              let e2 = argvEnv |> declare "type Cli9 = { env: string }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load Cli8") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "Did you mean 'Cli9'?"
+                  ""
+          } ]
+
 let optionSweepTests =
     testList
         "Option sweep"
@@ -4295,6 +4449,7 @@ let allTests =
           stringTests
           genericsTests
           attributeTests
+          typedArgvTests
           optionSweepTests
           moduleTests
           scriptTests

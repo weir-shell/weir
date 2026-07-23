@@ -417,3 +417,18 @@ option -> string option>` — a validator returns the complaint or
 None, so registering a name is one entry, no new arm. Erasure is
 structural: Attrs lives on RecordDef only, and no eval/show/json
 path reads RecordDef.Attrs.
+
+## Addendum — the Args.load arm (2026-07-23, [D:typed-argv])
+
+Env.load's sibling in the App case: `EField(EVar "Args", "load")`
+applied to a type name, gated on `args` being in scope (script-only).
+The record path validates argv field shapes (presence/valued/Option,
+Option<bool> rejected), Positional's not-yet, and duplicate kebab
+derivation; the union path validates lowered-case uniqueness and
+single-record payloads, building a case→RecordDef map. `TEArgsLoad
+of ArgsTarget` is a leaf to every walk (finalize, childExprs), like
+TEEnvLoad. Derivation lives in `Check.Argv` (kebabFlag, shortTables
+— explicit claims first, then unambiguous first letters, `h`
+excluded) shared by the checker, the eval loader, and usage
+rendering, so the check-time truth and the runtime truth cannot
+drift.

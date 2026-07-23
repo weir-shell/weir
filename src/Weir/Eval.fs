@@ -337,6 +337,177 @@ let private wrapOpt (ty: Ty) (v: Value) : Value =
     | TNamed("Option", _) -> VUnion("Some", Some v)
     | _ -> v
 
+// ---- Args.load [D:typed-argv] ------------------------------------
+// collect-then-raise over Session.ScriptArgs; --help short-circuits
+// BEFORE validation (help must work on invalid invocations)
+
+let private argvValueSlot (ty: Ty) : string =
+    match ty with
+    | TInt
+    | TNamed("Option", [ TInt ]) -> " <int>"
+    | TStr
+    | TNamed("Option", [ TStr ]) -> " <string>"
+    | _ -> ""
+
+let private argvUsageLines (def: RecordDef) : string list =
+    let flagShorts, _ = Argv.shortTables def
+
+    def.Fields
+    |> List.map (fun (f, ty) ->
+        let flag = "--" + Argv.kebabFlag f
+
+        let short =
+            match Map.tryFind flag flagShorts with
+            | Some sh -> $"-{sh}, "
+            | None -> "    "
+
+        let left = $"  {short}{flag}{argvValueSlot ty}"
+
+        let need =
+            match ty with
+            | TBool -> ""
+            | TNamed("Option", _) -> "optional"
+            | _ -> "required"
+
+        let right =
+            [ need
+              match Argv.docOf def f with
+              | Some d -> d
+              | None -> "" ]
+            |> List.filter (fun s -> s <> "")
+            |> String.concat " — "
+
+        if right = "" then left else sprintf "%-30s%s" left right)
+
+let private argvUsage (target: ArgsTarget) : string =
+    match target with
+    | ArgsRecord def -> String.concat "\n" ("usage: [flags]" :: argvUsageLines def)
+    | ArgsUnion(udef, payloads) ->
+        let caseLines = udef.Cases |> List.map (fun (c, _) -> "  " + c.ToLowerInvariant())
+
+        let blocks =
+            udef.Cases
+            |> List.collect (fun (c, _) ->
+                match Map.tryFind c payloads with
+                | Some rdef when not rdef.Fields.IsEmpty -> $"{c.ToLowerInvariant()} flags:" :: argvUsageLines rdef
+                | _ -> [])
+
+        String.concat "\n" ([ "usage: <command> [flags]"; "commands:" ] @ caseLines @ blocks)
+
+let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
+    let flagged =
+        def.Fields |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty))
+
+    let longIndex = Map.ofList flagged
+    let _, shortIndex = Argv.shortTables def
+    let problems = ResizeArray<string>()
+    let values = System.Collections.Generic.Dictionary<string, Value>()
+    let seen = System.Collections.Generic.HashSet<string>()
+
+    let parseValue (f: string) (ty: Ty) (flagTok: string) (raw: string) =
+        match ty with
+        | TInt
+        | TNamed("Option", [ TInt ]) ->
+            match System.Int64.TryParse raw with
+            | true, n -> values[f] <- wrapOpt ty (VInt n)
+            | _ -> problems.Add $"{flagTok} is not an int ('{raw}')"
+        | _ -> values[f] <- wrapOpt ty (VStr raw)
+
+    let rec go tokens =
+        match tokens with
+        | [] -> ()
+        | (t: string) :: rest when t.StartsWith "--" ->
+            match Map.tryFind t longIndex with
+            | Some(f, ty) -> consume f ty t rest
+            | None ->
+                problems.Add $"unknown flag '{t}'{didYouMean t (flagged |> List.map fst)}"
+                go rest
+        | t :: rest when t.StartsWith "-" && t.Length = 2 ->
+            match Map.tryFind (t.Substring 1) shortIndex with
+            | Some(ShortOf flag) ->
+                let f, ty = Map.find flag longIndex
+                consume f ty t rest
+            | Some(AmbiguousShort candidates) ->
+                problems.Add $"""'{t}' is ambiguous: {String.concat ", " candidates}"""
+                go rest
+            | None ->
+                problems.Add $"unknown flag '{t}'"
+                go rest
+        | t :: rest ->
+            problems.Add $"unexpected argument '{t}'"
+            go rest
+
+    and consume f ty flagTok rest =
+        if not (seen.Add f) then
+            problems.Add $"'{flagTok}' is given twice"
+
+        match ty with
+        | TBool ->
+            values[f] <- VBool true
+            go rest
+        | _ ->
+            match rest with
+            | raw :: rest' ->
+                parseValue f ty flagTok raw
+                go rest'
+            | [] -> problems.Add $"flag '{flagTok}' needs a value"
+
+    go tokens
+
+    let fields =
+        def.Fields
+        |> List.map (fun (f, ty) ->
+            match values.TryGetValue f with
+            | true, v -> f, v
+            | false, _ ->
+                match ty with
+                | TBool -> f, VBool false
+                | TNamed("Option", _) -> f, VUnion("None", None)
+                | _ ->
+                    problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
+                    f, VUnit)
+
+    if problems.Count > 0 then
+        failwith ($"{label}: " + String.concat "; " problems)
+
+    VRecord(def.Name, Map.ofList fields)
+
+let private argvLoad (target: ArgsTarget) : Value =
+    let argv = Session.ScriptArgs
+
+    if List.contains "--help" argv || List.contains "-h" argv then
+        printfn "%s" (argvUsage target)
+        raise (ExitRequest 0)
+
+    match target with
+    | ArgsRecord def -> argvParseRecord $"Args.load {def.Name}" def argv
+    | ArgsUnion(udef, payloads) ->
+        let table = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
+
+        match argv with
+        | [] ->
+            failwith (
+                $"Args.load {udef.Name}: missing subcommand; one of: "
+                + String.concat ", " (table |> List.map fst)
+            )
+        | tok :: rest ->
+            match table |> List.tryFind (fun (w, _) -> w = tok) with
+            | Some(_, (c, None)) ->
+                match rest with
+                | [] -> VUnion(c, None)
+                | extra ->
+                    failwith (
+                        $"Args.load {udef.Name} {tok}: "
+                        + String.concat "; " (extra |> List.map (fun t -> $"unexpected argument '{t}'"))
+                    )
+            | Some(_, (c, Some _)) ->
+                let payload =
+                    argvParseRecord $"Args.load {udef.Name} {tok}" (Map.find c payloads) rest
+
+                VUnion(c, Some payload)
+            | None ->
+                failwith $"Args.load {udef.Name}: unknown subcommand '{tok}'{didYouMean tok (table |> List.map fst)}"
+
 // the sigil env slot evaluated to overlay pairs — inside the stream's
 // delay, so Env.fromFile boundary errors keep raise-at-force semantics
 let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
@@ -482,6 +653,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 | None -> tryArms rest
 
         tryArms arms
+    | TEArgsLoad target -> argvLoad target
     | TEEnvLoad def ->
         // snapshot at force time; collect every problem, raise ONCE
         let problems = ResizeArray<string>()

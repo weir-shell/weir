@@ -15,11 +15,32 @@ type PullOutcome =
     | UpToDate
     | JoinConflict of string
 
-// ---- flags (bash: getopt spec + *_wanted globals) ---------------
+// ---- the front door (bash: eval'd getopt + "command:$command"
+// dynamic call) — a typed union over subcommands [D:typed-argv];
+// unknown subcommands did-you-mean, --help derives usage ----------
 
-let quiet = Args.flag "--quiet" "-q"
-let verbose = Args.flag "--verbose" "-v"
-let forceWanted = Args.flag "--force" "-f"
+type StatusArgs = { [<Doc "the subrepo directory">] subdir: string; verbose: bool }
+type FetchArgs = { [<Doc "the subrepo directory">] subdir: string; quiet: bool; verbose: bool }
+type PullArgs = { [<Doc "the subrepo directory">] subdir: string; quiet: bool; verbose: bool; [<Doc "pull even if the branch exists">] force: bool }
+
+type Cmd =
+    | Status of StatusArgs
+    | Fetch of FetchArgs
+    | Pull of PullArgs
+
+let cli = Args.load Cmd
+
+let quiet =
+    match cli with
+    | Status _ -> false
+    | Fetch a -> a.quiet
+    | Pull a -> a.quiet
+
+let verbose =
+    match cli with
+    | Status a -> a.verbose
+    | Fetch a -> a.verbose
+    | Pull a -> a.verbose
 
 let say msg = if not quiet then print msg
 let step msg = if verbose then printerr $"* {msg}"
@@ -44,7 +65,7 @@ let configGet file key =
 // loop) — one fold over replacement pairs -------------------------
 
 let encodeSubref subdir =
-    [("%", "%25"); ("..", "%2e%2e"); (" ", "%20"); ("~", "%7e"); ("^", "%5e"); (":", "%3a"); ("?", "%3f"); ("*", "%2a"); ("[", "%5b"); ("\\", "%5c")]
+    [("%", "%25"); ("..", "%2e%2e"); (" ", "%20"); ("~", "%7e"); ("^", "%5e"); (":", "%3a"); ("?", "%3f"); ("*", "%2a"); ("[", "%5b"); (@"\", "%5c")]
     |> Seq.fold (fun s (from0, to0) -> Str.replace from0 to0 s) subdir
 
 // ---- .gitrepo reading (bash: read-gitrepo-file mutating 6 globals)
@@ -81,10 +102,10 @@ let assertRepoReady ctx =
 let fetchUpstream ctx =
     if ctx.Repo.Remote == "none" then fail $"Can't fetch subrepo. Remote is 'none' in '{ctx.Gitrepo}'."
     step $"Fetch the upstream: {ctx.Repo.Remote} ({ctx.Repo.Branch})."
-    run "git" ["fetch"; "--no-tags"; "--quiet"; ctx.Repo.Remote; ctx.Repo.Branch]
+    !(git fetch --no-tags --quiet (ctx.Repo.Remote) (ctx.Repo.Branch))
     let head = revParse "FETCH_HEAD^0"
     step $"Create ref 'refs/subrepo/{ctx.Subref}/fetch'."
-    run "git" ["update-ref"; $"refs/subrepo/{ctx.Subref}/fetch"; head]
+    !(git update-ref $"refs/subrepo/{ctx.Subref}/fetch" $head)
     { ctx with UpstreamHead = head }
 
 // ---- the commit walk (bash: subrepo:branch's 4-accumulator loop
@@ -93,11 +114,10 @@ let fetchUpstream ctx =
 type Walk = { Prev: string; Ancestor: string; First: string; Kept: int }
 
 let walkCommits ctx =
-    let commits = cmd "git" ["rev-list"; "--reverse"; "--ancestry-path"; "--topo-order"; $"{ctx.Repo.Parent}..HEAD"]
-    commits
+    $(git rev-list --reverse --ancestry-path --topo-order $"{ctx.Repo.Parent}..HEAD")
     |> Seq.fold
         (fun w commit ->
-            let blob = completed "git" ["config"; "--blob"; $"{commit}:{ctx.Gitrepo}"; "subrepo.commit"]
+            let blob = $(git config --blob $"{commit}:{ctx.Gitrepo}" subrepo.commit | complete)
             if blob.ExitCode <> 0 then w // no .gitrepo in this commit: skip
             else
                 let gitrepoCommit = blob.Stdout |> Seq.tryHead |> Option.defaultTo ""
@@ -112,7 +132,7 @@ let walkCommits ctx =
 // author preserved / committer current, exactly the original's intent
 let commitTreeAs date email name msg tree =
     let author = Env.ofPairs [("GIT_AUTHOR_DATE", date); ("GIT_AUTHOR_EMAIL", email); ("GIT_AUTHOR_NAME", name)]
-    (completedEnv author "git" ["commit-tree"; "-m"; msg; tree]).Stdout |> Seq.head
+    $author(git commit-tree -m $msg $tree) |> Seq.head
 
 // ---- pull (bash: subrepo:pull + OK/CODE signaling) --------------
 
@@ -124,9 +144,9 @@ let pull ctx0 =
         step $"Create subrepo branch '{branch}'."
         let joined =
             if ctx.Repo.Method == "rebase" then
-                completed "git" ["rebase"; $"refs/subrepo/{ctx.Subref}/fetch"; branch]
+                $(git rebase $"refs/subrepo/{ctx.Subref}/fetch" $branch | complete)
             else
-                completed "git" ["merge"; $"refs/subrepo/{ctx.Subref}/fetch"]
+                $(git merge $"refs/subrepo/{ctx.Subref}/fetch" | complete)
         if joined.ExitCode <> 0 then JoinConflict (joined.Stderr |> Str.join "\n")
         else
             step $"Commit the new '{ctx.Subdir}' content."
@@ -135,7 +155,7 @@ let pull ctx0 =
 // ---- status (bash: status-refs' while-read + BASH_REMATCH) ------
 
 let statusRefs ctx =
-    cmd "git" ["show-ref"]
+    $(git show-ref)
     |> Seq.map (fun line ->
         match line with
         | Regex @"^([0-9a-f]+) refs/subrepo/.*/(branch|commit|fetch|pull|push)$" (sha, kind) ->
@@ -151,22 +171,17 @@ let status ctx =
     if not (ctx.Repo.Commit == "") then print $"  Pulled Commit:   {ctx.Repo.Commit}"
     if verbose then statusRefs ctx |> Seq.iter print
 
-// ---- dispatch (bash: eval'd getopt + "command:$command" dynamic
-// call) — a match the checker exhaustiveness-verifies -------------
+// ---- dispatch — the match the checker exhaustiveness-verifies:
+// adding a Cmd case makes this a check-time obligation ------------
 
-let subcommand = args |> Seq.tryHead |> Option.defaultTo "help"
-let subdirArg = args |> Seq.skip 1 |> Seq.tryHead |> Option.defaultTo ""
-
-let usage = "usage: git-subrepo <status|fetch|pull> <subdir> [-q|-v|-f]"
-
-match subcommand with
-| "status" ->
-    status (makeCtx subdirArg)
-| "fetch" ->
-    let ctx = fetchUpstream (makeCtx subdirArg)
+match cli with
+| Status a ->
+    status (makeCtx a.subdir)
+| Fetch a ->
+    let ctx = fetchUpstream (makeCtx a.subdir)
     say $"Fetched '{ctx.Subdir}' from '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
-| "pull" ->
-    let ctx = makeCtx subdirArg
+| Pull a ->
+    let ctx = makeCtx a.subdir
     assertRepoReady ctx
     (match pull ctx with
         | Pulled -> say $"Subrepo '{ctx.Subdir}' pulled from '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
@@ -175,5 +190,3 @@ match subcommand with
             printerr $"The join failed:"
             printerr out
             exit 1)
-| "help" -> print usage
-| c -> fail $"'{c}' is not a command. {usage}"

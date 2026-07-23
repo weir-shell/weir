@@ -1,5 +1,40 @@
 # Spike Notes
 
+## Typed argv — the front door closes (2026-07-23)
+
+`Args.load` lands as Env.load's sibling and the sixth typed-boundary
+instance, and the four registered attribute names flip from inert to
+bound — the activation session the attributes stop-and-report
+deferred to, its acceptance criteria inherited pre-written. The
+flags record and the subcommand union both ship; git-subrepo's
+hand-rolled dispatch (`args |> Seq.tryHead` + a string match with a
+`fail` floor) became a typed union front door whose exhaustiveness
+the checker owns — the PullResult win at the script's own entrance,
+running verbatim against the live repo-pair smoke. jira-branch's
+Cli carries the `[<Short "c">]` worked example.
+
+The derivation story held together better than expected: ONE
+shortTables function (explicit claims first, then unambiguous first
+letters, `h` excluded) is consulted by the checker, the loader, and
+the usage renderer, so check-time truth, runtime resolution, and
+--help output cannot disagree by construction. Contested letters
+derive for nobody and the invocation error lists candidates;
+explicit `[<Short "e">]` visibly retires `--env`'s derived short in
+--help — derivation yields to declaration, pinned.
+
+Strictness decisions the plan left open, resolved strict: repeated
+flags reject ('--env' is given twice) rather than last-winning —
+collect-then-raise makes the strict default cheap to relax and
+expensive to regret. A four-problem invocation (typo'd flag, bad
+int, stray token, missing required) reports all four in one
+boundary error, did-you-mean included.
+
+The kebab pins (`dryRun`/`DryRun` → `--dry-run` and its check-time
+collision, `noFF` → `--no-ff`, `useHTTPSNow` → `--use-https-now`)
+are exactly the plan's examples; hump-style variance collapsing to
+one flag makes the casing law self-enforcing at the CLI face.
+`weir -e` rejects type declarations, so the check-side e2e pins run
+through `check /dev/stdin` — a harness spelling worth remembering.
 ## Attributes — syntax parity, invisible divergence (2026-07-23)
 
 `[<Short "c"; Doc "count">]` attaches to record fields with F#'s
