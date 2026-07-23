@@ -818,6 +818,36 @@ errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
 echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law must reject at the binder: $errout"
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
+# the git-subrepo example (the translation flagship): live repo pair
+srdir=$(mktemp -d)
+(
+    cd "$srdir"
+    git init -q --bare upstream.git
+    git init -q host
+    cd host
+    git -c user.email=a@a -c user.name=a commit -q --allow-empty -m init
+    git clone -q "$srdir/upstream.git" up-work 2>/dev/null
+    (cd up-work && echo x > f.txt && git add f.txt && git -c user.email=a@a -c user.name=a commit -qm up1 && git push -q origin HEAD:main)
+    upsha=$(cd up-work && git rev-parse HEAD)
+    rm -rf up-work
+    mkdir libx && echo lib > libx/code.txt
+    printf '[subrepo]\n\tremote = %s\n\tbranch = main\n\tcommit = %s\n\tmethod = merge\n' "$srdir/upstream.git" "$upsha" > libx/.gitrepo
+    git add -A && git -c user.email=a@a -c user.name=a commit -qm "add subrepo"
+)
+SR="$(cd "$(dirname "$0")/.." && pwd)/examples/git-subrepo.weir"
+out=$(cd "$srdir/host" && $BIN "$SR" status libx)
+expect "git-subrepo status reads .gitrepo" "Tracking Branch: main" "$out"
+out=$(cd "$srdir/host" && $BIN "$SR" fetch libx)
+expect "git-subrepo fetch" "Fetched 'libx'" "$out"
+out=$(cd "$srdir/host" && $BIN "$SR" pull libx)
+expect "git-subrepo pull detects up-to-date via the union" "up to date" "$out"
+out=$(cd "$srdir/host" && $BIN "$SR" status libx -v)
+expect "the fetch ref surfaces through the Regex pattern" "FETCH Ref:" "$out"
+errout=$(cd "$srdir/host" && $BIN "$SR" pull nope 2>&1 || true)
+echo "$errout" | grep -qF "No 'nope/.gitrepo' file" || fail "missing-gitrepo error: $errout"
+echo "e2e ok: git-subrepo error paths are located"
+rm -rf "$srdir"
+
 # Seq.fold + fun-sugar (PLAN-fold): the git-subrepo receipt folds
 # verbatim — the port's blocker provably unblocked
 folddir=$(mktemp -d)

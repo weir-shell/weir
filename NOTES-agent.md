@@ -11,6 +11,12 @@ skill lines and targeted hints).
 
 ## friction
 
+- 2026-07-23 | git-subrepo example | two reflex-errors while writing:
+  `then`/`else` on their own lines at the `if`'s indent are SIBLINGS
+  (offside law — correct, surprising mid-write); command lines inside
+  function bodies need `run`/`cmd` (documented; still the most common
+  reflex). Both self-corrected in one round via check.
+
 - 2026-07-22 | git-subrepo translation exercise | no `Seq.fold` (now
   LANDED on this receipt), no multi-param lambdas (now LANDED), and
   ctor-pattern-scrutinee's first live receipt (a standalone result

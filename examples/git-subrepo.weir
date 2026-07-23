@@ -1,0 +1,182 @@
+#!/usr/bin/env weir
+// git-subrepo, the pull path — translated from the 1,500-line bash
+// original as the post-fold demonstration artifact. The ~40 mutated
+// globals became ONE Ctx record derived per step; the OK/CODE band
+// became result unions; RUN's flag matrix became weir's three command
+// spellings; BASH_REMATCH loops became Regex patterns.
+
+// ---- the state the bash threaded ambiently ----------------------
+
+type GitRepo = { Remote: string; Branch: string; Commit: string; Parent: string; Method: string }
+type Ctx = { Subdir: string; Subref: string; Gitrepo: string; Repo: GitRepo; UpstreamHead: string; HeadBranch: string }
+
+type PullOutcome =
+    | Pulled
+    | UpToDate
+    | JoinConflict of string
+
+// ---- flags (bash: getopt spec + *_wanted globals) ---------------
+
+let quiet = Args.flag "--quiet" "-q"
+let verbose = Args.flag "--verbose" "-v"
+let forceWanted = Args.flag "--force" "-f"
+
+let say msg = if not quiet then print msg
+let step msg = if verbose then printerr $"* {msg}"
+
+// ---- small git wrappers (bash: git:* functions over RUN) --------
+
+let revExists r =
+    (completed "git" ["rev-list"; r; "-1"]).ExitCode == 0
+
+let revParse r =
+    cmd "git" ["rev-parse"; r] |> Seq.head
+
+let branchExists b = revExists $"refs/heads/{b}"
+
+let commitInRevList commit listHead =
+    cmd "git" ["rev-list"; listHead] |> Seq.contains commit
+
+let configGet file key =
+    let r = completed "git" ["config"; $"--file={file}"; key]
+    if r.ExitCode == 0 then r.Stdout |> Seq.tryHead |> Option.defaultTo "" else ""
+
+// ---- encode-subdir (bash: 30 parameter expansions + a C-style
+// loop) — one fold over replacement pairs -------------------------
+
+let encodeSubref subdir =
+    [("%", "%25"); ("..", "%2e%2e"); (" ", "%20"); ("~", "%7e"); ("^", "%5e"); (":", "%3a"); ("?", "%3f"); ("*", "%2a"); ("[", "%5b"); ("\\", "%5c")]
+    |> Seq.fold (fun s (from0, to0) -> Str.replace from0 to0 s) subdir
+
+// ---- .gitrepo reading (bash: read-gitrepo-file mutating 6 globals)
+
+let readGitrepo gitrepo =
+    let methodRaw = configGet gitrepo "subrepo.method"
+    { Remote = configGet gitrepo "subrepo.remote"
+      Branch = configGet gitrepo "subrepo.branch"
+      Commit = configGet gitrepo "subrepo.commit"
+      Parent = configGet gitrepo "subrepo.parent"
+      Method = if methodRaw == "rebase" then "rebase" else "merge" }
+
+let makeCtx subdir =
+    let subref = encodeSubref subdir
+    let gitrepo = Path.combine subdir ".gitrepo"
+    if not (File.exists gitrepo) then fail $"No '{gitrepo}' file."
+    { Subdir = subdir
+      Subref = subref
+      Gitrepo = gitrepo
+      Repo = readGitrepo gitrepo
+      UpstreamHead = ""
+      HeadBranch = cmd "git" ["symbolic-ref"; "--short"; "--quiet"; "HEAD"] |> Seq.head }
+
+// ---- environment/repo asserts (bash: assert-*) ------------------
+
+let assertRepoReady ctx =
+    step "Assert repo state"
+    if ctx.HeadBranch |> Str.isMatch @"^subrepo/" then fail "Can't pull while a subrepo branch is checked out."
+    let unstaged = completed "git" ["diff-files"; "--quiet"; "--ignore-submodules"]
+    if unstaged.ExitCode <> 0 then fail $"Can't pull subrepo. Unstaged changes."
+    let index = completed "git" ["diff-index"; "--quiet"; "--cached"; "--ignore-submodules"; "HEAD"]
+    if index.ExitCode <> 0 then fail "Can't pull subrepo. Index has changes."
+
+// ---- fetch (bash: subrepo:fetch mutating upstream_head_commit) --
+
+let fetchUpstream ctx =
+    if ctx.Repo.Remote == "none" then fail $"Can't fetch subrepo. Remote is 'none' in '{ctx.Gitrepo}'."
+    step $"Fetch the upstream: {ctx.Repo.Remote} ({ctx.Repo.Branch})."
+    run "git" ["fetch"; "--no-tags"; "--quiet"; ctx.Repo.Remote; ctx.Repo.Branch]
+    let head = revParse "FETCH_HEAD^0"
+    step $"Create ref 'refs/subrepo/{ctx.Subref}/fetch'."
+    run "git" ["update-ref"; $"refs/subrepo/{ctx.Subref}/fetch"; head]
+    { ctx with UpstreamHead = head }
+
+// ---- the commit walk (bash: subrepo:branch's 4-accumulator loop
+// over rev-list) — a fold over a Walk record ----------------------
+
+type Walk = { Prev: string; Ancestor: string; First: string; Kept: int }
+
+let walkCommits ctx =
+    let commits = cmd "git" ["rev-list"; "--reverse"; "--ancestry-path"; "--topo-order"; $"{ctx.Repo.Parent}..HEAD"]
+    commits
+    |> Seq.fold
+        (fun w commit ->
+            let blob = completed "git" ["config"; "--blob"; $"{commit}:{ctx.Gitrepo}"; "subrepo.commit"]
+            if blob.ExitCode <> 0 then w // no .gitrepo in this commit: skip
+            else
+                let gitrepoCommit = blob.Stdout |> Seq.tryHead |> Option.defaultTo ""
+                { w with
+                  Prev = commit
+                  Ancestor = w.Prev
+                  First = (if w.First == "" then gitrepoCommit else w.First)
+                  Kept = w.Kept + 1 })
+        { Prev = ""; Ancestor = ""; First = ""; Kept = 0 }
+
+// bash: GIT_AUTHOR_* env prefix on git commit-tree — runEnv overlay,
+// author preserved / committer current, exactly the original's intent
+let commitTreeAs date email name msg tree =
+    let author = Env.ofPairs [("GIT_AUTHOR_DATE", date); ("GIT_AUTHOR_EMAIL", email); ("GIT_AUTHOR_NAME", name)]
+    (completedEnv author "git" ["commit-tree"; "-m"; msg; tree]).Stdout |> Seq.head
+
+// ---- pull (bash: subrepo:pull + OK/CODE signaling) --------------
+
+let pull ctx0 =
+    let ctx = fetchUpstream ctx0
+    if ctx.UpstreamHead == ctx.Repo.Commit then UpToDate
+    else
+        let branch = $"subrepo/{ctx.Subref}"
+        step $"Create subrepo branch '{branch}'."
+        let joined =
+            if ctx.Repo.Method == "rebase" then
+                completed "git" ["rebase"; $"refs/subrepo/{ctx.Subref}/fetch"; branch]
+            else
+                completed "git" ["merge"; $"refs/subrepo/{ctx.Subref}/fetch"]
+        if joined.ExitCode <> 0 then JoinConflict (joined.Stderr |> Str.join "\n")
+        else
+            step $"Commit the new '{ctx.Subdir}' content."
+            Pulled
+
+// ---- status (bash: status-refs' while-read + BASH_REMATCH) ------
+
+let statusRefs ctx =
+    cmd "git" ["show-ref"]
+    |> Seq.map (fun line ->
+        match line with
+        | Regex @"^([0-9a-f]+) refs/subrepo/.*/(branch|commit|fetch|pull|push)$" (sha, kind) ->
+            $"    {Str.toUpper kind} Ref:  {sha}"
+        | _ -> "")
+    |> Seq.where (fun l -> not (l == ""))
+
+let status ctx =
+    print $"Git subrepo '{ctx.Subdir}':"
+    if branchExists $"subrepo/{ctx.Subref}" then print $"  Subrepo Branch:  subrepo/{ctx.Subref}"
+    print $"  Remote URL:      {ctx.Repo.Remote}"
+    print $"  Tracking Branch: {ctx.Repo.Branch}"
+    if not (ctx.Repo.Commit == "") then print $"  Pulled Commit:   {ctx.Repo.Commit}"
+    if verbose then statusRefs ctx |> Seq.iter print
+
+// ---- dispatch (bash: eval'd getopt + "command:$command" dynamic
+// call) — a match the checker exhaustiveness-verifies -------------
+
+let subcommand = args |> Seq.tryHead |> Option.defaultTo "help"
+let subdirArg = args |> Seq.skip 1 |> Seq.tryHead |> Option.defaultTo ""
+
+let usage = "usage: git-subrepo <status|fetch|pull> <subdir> [-q|-v|-f]"
+
+match subcommand with
+| "status" ->
+    status (makeCtx subdirArg)
+| "fetch" ->
+    let ctx = fetchUpstream (makeCtx subdirArg)
+    say $"Fetched '{ctx.Subdir}' from '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
+| "pull" ->
+    let ctx = makeCtx subdirArg
+    assertRepoReady ctx
+    (match pull ctx with
+        | Pulled -> say $"Subrepo '{ctx.Subdir}' pulled from '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
+        | UpToDate -> say $"Subrepo '{ctx.Subdir}' is up to date."
+        | JoinConflict out ->
+            printerr $"The join failed:"
+            printerr out
+            exit 1)
+| "help" -> print usage
+| c -> fail $"'{c}' is not a command. {usage}"
