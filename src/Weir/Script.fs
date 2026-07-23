@@ -830,6 +830,9 @@ let private printResult (v: Eval.Value) =
     match v with
     | Eval.VStr s -> Console.WriteLine s
     | Eval.VSeq items -> Eval.writeLines items
+    // unit-valued command statements (| orFail) print NOTHING —
+    // the assert idiom is silent on success [D:exit-reifiers]
+    | Eval.VUnit -> ()
     | other -> Console.WriteLine(Eval.formatValue other)
 
 // The statement rule: a pure expression statement must have type unit.
@@ -1092,10 +1095,25 @@ let checkStatement
         match Check.typecheck tenv e with
         | Error terr -> Error(typed StmtTag.Cmd terr)
         | Ok te ->
-            Ok
-                { Kind = KCmd te
-                  Env = tenv
-                  Warnings = warningsOf te }
+            // a bool-valued chain (| succeeds) as a bare statement is a
+            // DISCARDED value, not a stream — the discard family
+            // [D:exit-reifiers]; record-valued (| complete) statements
+            // keep their standing echo behavior
+            match te.Ty with
+            | TBool ->
+                Error(
+                    typed
+                        StmtTag.Cmd
+                        { Span = te.Span
+                          Message =
+                            "this statement computes a bool and discards it — bind it "
+                            + "(let ok = ... | succeeds) or use it in a condition" }
+                )
+            | _ ->
+                Ok
+                    { Kind = KCmd te
+                      Env = tenv
+                      Warnings = warningsOf te }
     | Ok(SExpr e) ->
         match Check.typecheck tenv e with
         | Error terr -> Error(typed StmtTag.Expr terr)

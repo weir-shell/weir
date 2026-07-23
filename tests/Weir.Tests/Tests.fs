@@ -2484,6 +2484,37 @@ let agentFindingsTests =
               expectValue "(Env.pair \"K\" \"v\").Name" (VStr "K")
               expectValue "Env.ofPairs [(\"A\", \"1\"); (\"B\", \"2\")] |> Seq.map _.Value |> Seq.head" (VStr "1")
           }
+          // exit-code reifiers [D:exit-reifiers]
+          test "succeeds parses as complete's sibling (desugar shape)" {
+              match Weir.Parser.parseLine cmdResolver "let ok = git fetch | succeeds" with
+              | Ok(SLet("ok", { Kind = EApp({ Kind = EApp({ Kind = EVar "succeeded" }, _) }, _) })) -> ()
+              | other -> failtest $"expected the succeeded desugar, got {other}"
+          }
+          test "orFail carries its message expression" {
+              match Weir.Parser.parseLine cmdResolver "git fetch | orFail \"boom\"" with
+              | Ok(SCmd { Kind = EApp(_, _) }) -> ()
+              | other -> failtest $"expected the orFailed desugar, got {other}"
+          }
+          test "multi-segment reifiers share complete's rule and message shape" {
+              match Weir.Parser.parseLine cmdResolver "git log | grep x | succeeds" with
+              | Error msg ->
+                  Expect.stringContains msg "'succeeds' must directly follow a single external command segment" ""
+              | Ok s -> failtest $"expected the family error, got {s}"
+          }
+          test "downstream stages after succeeds are gated by TYPE (complete's actual rule)" {
+              // verified-not-assumed: complete allows onward stages; the
+              // bool just fails any seq-shaped consumer
+              match Weir.Parser.parseLine cmdResolver "let m = git log | succeeds |> Seq.head" with
+              | Ok(SLet(_, e)) ->
+                  match Weir.Check.typecheck env e with
+                  | Error terr -> Expect.stringContains terr.Message "got bool" ""
+                  | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
+              | other -> failtest $"parse failed: {other}"
+          }
+          test "print of unit is silent (the decided !()-interior rule)" {
+              Expect.equal (checkOk "print ()").Ty TUnit ""
+              expectValue "print ()" VUnit
+          }
           // fmt v2 respace [D:fmt-respace]
           test "respaceLine: collapse, brace pad, semicolon tidy" {
               Expect.equal
@@ -2580,7 +2611,8 @@ let paramSugarTests =
               | Ok(SLet("f", { Kind = ELambda("x", _) })) -> ()
               | other -> failtest $"expected a desugared lambda, got {other}"
           }
-          test "params now take a command RHS (the rule this pin used to state REVERSED by PLAN-paramful-rhs; splice-default-last removed the soundness bar)" {
+          test
+              "params now take a command RHS (the rule this pin used to state REVERSED by PLAN-paramful-rhs; splice-default-last removed the soundness bar)" {
               match Weir.Parser.parseLine cmdResolver "let f x = git status" with
               | Ok(SLet(_, { Kind = ELambda(_, { Kind = ECmd("git", _, _) }) })) -> ()
               | other -> failtest $"expected a command RHS under the param, got {other}"

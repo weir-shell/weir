@@ -920,14 +920,37 @@ let private segment
 type private Seg =
     | Stage of Expr
     | CompleteMarker of Span
+    // the exit-code reifiers [D:exit-reifiers] — complete's family,
+    // ONE rule (single external segment, nothing follows)
+    | SucceedsMarker of Span
+    | OrFailMarker of Expr * Span
+
+let private reifierEnd =
+    lookAhead (choice [ pipeSep |>> ignore; pchar ')' |>> ignore; eof ])
 
 let private completeMarker =
     attempt (
         spanned (pstring "complete" .>> notFollowedBy (satisfy cmdWordChar))
         .>> ws
-        .>> lookAhead (choice [ pipeSep |>> ignore; pchar ')' |>> ignore; eof ])
+        .>> reifierEnd
     )
     |>> fun (_, span) -> CompleteMarker span
+
+let private succeedsMarker =
+    attempt (
+        spanned (pstring "succeeds" .>> notFollowedBy (satisfy cmdWordChar))
+        .>> ws
+        .>> reifierEnd
+    )
+    |>> fun (_, span) -> SucceedsMarker span
+
+let private orFailMarker =
+    attempt (
+        spanned (pstring "orFail" .>> notFollowedBy (satisfy cmdWordChar)) .>> ws
+        .>>. postfixAtom
+        .>> reifierEnd
+    )
+    |>> fun ((_, span), msg) -> OrFailMarker(msg, span)
 
 let private cmdLineWith
     (builtinHeads: bool)
@@ -938,7 +961,10 @@ let private cmdLineWith
     commandSegment builtinHeads argP sigilEnv r
     .>>. many (
         pipeSep
-        >>. (completeMarker <|> (segment builtinHeads argP sigilEnv r |>> Stage))
+        >>. (completeMarker
+             <|> succeedsMarker
+             <|> orFailMarker
+             <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )
     >>= fun (h, rest) ->
         let folded =
@@ -951,40 +977,36 @@ let private cmdLineWith
                         Result.Ok
                             { Kind = EPipe(acc, seg)
                               Span = Span.union acc.Span seg.Span }
-                    | Result.Ok acc, CompleteMarker mspan ->
+                    | Result.Ok acc, (CompleteMarker _ | SucceedsMarker _ | OrFailMarker _ as marker) ->
+                        let stageName, mspan, plainVar, envVar, extraArgs =
+                            match marker with
+                            | CompleteMarker sp -> "complete", sp, "completed", "completedEnv", []
+                            | SucceedsMarker sp -> "succeeds", sp, "succeeded", "succeededEnv", []
+                            | OrFailMarker(msg, sp) -> "orFail", sp, "orFailed", "orFailedEnv", [ msg ]
+                            | Stage _ -> "", acc.Span, "", "", []
+
                         match acc.Kind with
                         | ECmd(prog, args, cenv) ->
                             let span = Span.union acc.Span mspan
 
-                            // env sigils route through completedEnv — the
+                            // env sigils route through the *Env twins — the
                             // same desugar family, env threaded up front
                             let headVar =
                                 match cenv with
                                 | Some e ->
-                                    { Kind =
-                                        EApp(
-                                            { Kind = EVar "completedEnv"
-                                              Span = mspan },
-                                            e
-                                        )
+                                    { Kind = EApp({ Kind = EVar envVar; Span = mspan }, e)
                                       Span = mspan }
-                                | None ->
-                                    { Kind = EVar "completed"
-                                      Span = mspan }
+                                | None -> { Kind = EVar plainVar; Span = mspan }
 
                             let progArg = { Kind = EStr prog; Span = acc.Span }
-
                             let argList = { Kind = EList args; Span = acc.Span }
 
-                            Result.Ok
-                                { Kind =
-                                    EApp(
-                                        { Kind = EApp(headVar, progArg)
-                                          Span = span },
-                                        argList
-                                    )
-                                  Span = span }
-                        | _ -> Result.Error "'complete' must directly follow a single external command segment")
+                            let applied =
+                                (extraArgs @ [ progArg; argList ])
+                                |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
+
+                            Result.Ok applied
+                        | _ -> Result.Error $"'{stageName}' must directly follow a single external command segment")
                 (Result.Ok h)
 
         match folded with

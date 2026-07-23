@@ -26,8 +26,7 @@ let step msg = if verbose then printerr $"* {msg}"
 
 // ---- small git wrappers (bash: git:* functions over RUN) --------
 
-let revExists r =
-    (completed "git" ["rev-list"; r; "-1"]).ExitCode == 0
+let revExists r = git rev-list $r -1 | succeeds
 
 let revParse r = git rev-parse $r | Seq.head
 
@@ -67,17 +66,15 @@ let makeCtx subdir =
       Gitrepo = gitrepo
       Repo = readGitrepo gitrepo
       UpstreamHead = ""
-      HeadBranch = cmd "git" ["symbolic-ref"; "--short"; "--quiet"; "HEAD"] |> Seq.head }
+      HeadBranch = $(git symbolic-ref --short --quiet HEAD) |> Seq.head }
 
 // ---- environment/repo asserts (bash: assert-*) ------------------
 
 let assertRepoReady ctx =
     step "Assert repo state"
     if ctx.HeadBranch |> Str.isMatch @"^subrepo/" then fail "Can't pull while a subrepo branch is checked out."
-    let unstaged = completed "git" ["diff-files"; "--quiet"; "--ignore-submodules"]
-    if unstaged.ExitCode <> 0 then fail $"Can't pull subrepo. Unstaged changes."
-    let index = completed "git" ["diff-index"; "--quiet"; "--cached"; "--ignore-submodules"; "HEAD"]
-    if index.ExitCode <> 0 then fail "Can't pull subrepo. Index has changes."
+    !(git diff-files --quiet --ignore-submodules | orFail "Can't pull subrepo. Unstaged changes.")
+    !(git diff-index --quiet --cached --ignore-submodules HEAD | orFail "Can't pull subrepo. Index has changes.")
 
 // ---- fetch (bash: subrepo:fetch mutating upstream_head_commit) --
 

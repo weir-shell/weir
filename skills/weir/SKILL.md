@@ -231,6 +231,14 @@ print x
 ```
 
 ```weir
+// the exit-code idioms: succeeds is ExitCode == 0 EXACTLY — grep's
+// no-match (1) is FALSE here; reach for | complete when codes are data
+let found = grep -c NOPE_XYZ /etc/hostname | succeeds
+let detail = grep -c NOPE_XYZ /etc/hostname | complete
+print (if found then "?" else $"no match is false; code {detail.ExitCode}")
+```
+
+```weir
 // copy-and-update: derive, don't re-literal
 type Cfg = { Host: string; Port: int }
 let base0 = { Host = "h"; Port = 80 }
@@ -268,10 +276,19 @@ print x
   (redirection is `cmd | File.write "out.txt"` / `File.append`).
   For bash semantics: `sh -c "the bash line"` (a command
   line; streams, completes, pipes like any command).
-- Nonzero exit RAISES when the stream is forced. To inspect instead:
-  `somecmd args | complete` (command mode, single external segment)
-  gives `{ ExitCode; Stdout; Stderr }`; in expression positions use the
-  `completed` builtin: `completed "prog" ["arg1"; "arg2"]`.
+- Nonzero exit RAISES when the stream is forced. The exit-code
+  reifiers (complete's family, single external segment, one rule):
+  `cmd | succeeds` reifies to BOOL (never raises; output discarded —
+  a predicate is silent); `cmd | orFail "msg"` raises `msg (exit N)`
+  on nonzero and is unit on success — THE assert idiom, legal as a
+  statement, in `!()`, and in districts. **`succeeds` is
+  ExitCode == 0, exactly** — for tools whose nonzero codes are data
+  (grep's no-match is 1), use `| complete` and match the code.
+  Full inspection: `cmd | complete` gives `{ ExitCode; Stdout;
+  Stderr }`; in expression positions use the `completed` builtin:
+  `completed "prog" ["arg1"; "arg2"]`. `print ()` is silent (unit
+  prints nothing — the rule that lets orFail sit in effect
+  positions).
 - Typed output: `git status --porcelain | from porcelain` gives rows
   with `Path`/`Staged`/`Unstaged`/`Status`; `... | from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).

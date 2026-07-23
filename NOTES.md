@@ -1,5 +1,31 @@
 # Spike Notes
 
+## Exit-code reifiers — the bash priors that were right (2026-07-23)
+
+`| succeeds` and `| orFail "msg"` join complete's family through one
+generalized fold arm (the three reifiers now share literally one rule
+and one message shape). The flagship's assert functions are
+one-liners; revExists reads `git rev-list $r -1 | succeeds`.
+
+The verify-clauses earned their keep twice. "Nothing follows a
+reifier" was folklore — complete has always allowed downstream stages
+with types as the gate; the plan's cell inherited the REAL rule
+(bool into Seq.head is a type error, pinned). And the flagged !( )
+cell forced a real decision: orFail interiors are unit, and BOTH the
+!( ) sigil and districts wrap interiors in print — so unit became
+printable-as-nothing, one rule at printArgTy instead of a shadow
+drain builtin twinning print's typing. `print ()` is now silent
+(pinned as the deliberate consequence); seq<unit> still rejects.
+
+Two runner seams closed en route: printResult skips unit (asserts are
+silent on success), and bool-valued command statements join the
+discard family — `git log | succeeds` bare is a check error with a
+bind-or-condition hint, while record-valued complete statements keep
+their standing echo. The exit-zero sentence ships in SKILL with the
+grep counter-example doc-tested: succeeds is ExitCode == 0 exactly,
+and no-match-is-data tools spell | complete.
+
+
 ## Param-ful command RHS — the first feature enabled by a bug fix (2026-07-23)
 
 `let revParse r = git rev-parse $r | Seq.head` runs, and the flagship

@@ -417,6 +417,10 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
     match resolve ctx ty with
     | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
     | (TStr | TInt | TBool) as t -> Ok t
+    // unit is printable as NOTHING [D:exit-reifiers]: the !()/district
+    // desugar wraps interiors in print, and `| orFail` interiors are
+    // unit — one rule instead of a shadow drain builtin
+    | TUnit -> Ok TUnit
     | TSeq inner ->
         (match resolve ctx inner with
          | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TSeq TStr)

@@ -333,6 +333,19 @@ sh -c "echo cleanup runs either way"
 if r.ExitCode <> 0 then exit (r.ExitCode)
 ```
 
+For the two commonest exit-code shapes there is sugar:
+`cmd | succeeds` is the bool (`succeeds` means ExitCode == 0 exactly —
+grep's no-match counts as false; use `| complete` when codes are
+data), and `cmd | orFail "msg"` is the one-line assert — unit on
+success, `msg (exit N)` raised on failure, at home as a statement or
+inside `!()` blocks:
+
+```weir
+let onBranch = git symbolic-ref -q HEAD | succeeds
+sh -c "true" | orFail "sanity failed"
+print (if onBranch then "on a branch" else "detached")
+```
+
 `printerr` is `print` to stderr — diagnostics there, data on stdout.
 Effect steps sequence inside blocks — same-indent lines, each but the
 last unit-typed. Command sigils bring full command chains into

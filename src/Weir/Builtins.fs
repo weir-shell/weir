@@ -181,6 +181,39 @@ let private completedWith (overlay: (string * string) list) : Value =
 
 let private completedImpl: Value = completedWith []
 
+// the exit-code reifiers [D:exit-reifiers] — complete's siblings on
+// the SAME spawn path (Proc.completeWith). succeeds is ExitCode == 0
+// EXACTLY, output captured-and-discarded (a predicate is silent);
+// orFail replays the child's stderr, discards stdout, and raises
+// `msg (exit N)` on nonzero — the code survives the custom message.
+let private succeededWith (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            match progV, argsV with
+            | VStr prog, VSeq args ->
+                let argv = args |> Seq.map asString |> List.ofSeq
+                let code, _, _ = Proc.completeWith overlay (Proc.resolveProg prog) argv None
+                VBool(code = 0)
+            | _ -> unreachable "the checker rejects 'succeeded' on these arguments"))
+
+let private orFailedWith (overlay: (string * string) list) : Value =
+    VBuiltin(fun msgV ->
+        VBuiltin(fun progV ->
+            VBuiltin(fun argsV ->
+                match msgV, progV, argsV with
+                | VStr msg, VStr prog, VSeq args ->
+                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let code, _, stderr = Proc.completeWith overlay (Proc.resolveProg prog) argv None
+
+                    for line in stderr do
+                        System.Console.Error.WriteLine line
+
+                    if code <> 0 then
+                        failwith $"{msg} (exit {code})"
+
+                    VUnit
+                | _ -> unreachable "the checker rejects 'orFailed' on these arguments")))
+
 // the expression-side regex family [D:regex-pattern] — computed
 // patterns are fine here; an invalid runtime pattern joins the
 // boundary-validation class (raises at the call)
@@ -1006,12 +1039,20 @@ let private entries: (string * Ty * Value) list =
       "fst", TFun(TTuple [ tA; tB ], tA), fstImpl
       "snd", TFun(TTuple [ tA; tB ], tB), sndImpl
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
+      "succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
+      "orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
       "fail", TFun(TStr, TUnit), failImpl
       "exit", TFun(TInt, TUnit), exitImpl
       "cmdEnv", TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TSeq TStr))), cmdEnvImpl
       "completedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))),
-      VBuiltin(fun envV -> completedWith (envVarPairs envV)) ]
+      VBuiltin(fun envV -> completedWith (envVarPairs envV))
+      "succeededEnv",
+      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TBool))),
+      VBuiltin(fun envV -> succeededWith (envVarPairs envV))
+      "orFailedEnv",
+      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit)))),
+      VBuiltin(fun envV -> orFailedWith (envVarPairs envV)) ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)
@@ -1025,6 +1066,9 @@ let private printImpl: Value =
         | (VStr _ | VInt _ | VBool _) as scalar ->
             System.Console.WriteLine(scalarString "print argument" scalar)
             VUnit
+        // unit prints NOTHING [D:exit-reifiers] — the !()/district
+        // desugar's interior may be unit (| orFail)
+        | VUnit -> VUnit
         | v -> unreachable $"the checker rejects 'print' on {formatValue v}")
 
 // run p a IS cmd p a |> print — composed from the exact same impls, so
