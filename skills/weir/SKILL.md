@@ -11,8 +11,9 @@ stops being true fails the build.
   `--check` for CI; `--qualify` converts `#loose` scripts to strict.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
-- Comments are `//`. A blank line ends a statement (F# divergence);
-  comment lines are transparent and safe inside blocks.
+- Comments are `//`. Statements end at column 0 (the next col-0
+  line) — blank lines and comment lines are both transparent inside
+  a statement, so blocks group freely with gaps.
 - Scripts are STRICT: every library name is module-qualified —
   `Seq.map`, `Str.trim`, `Option.defaultTo`, `File.read` — including in
   command pipelines (`| Seq.map Str.trim`). Bare names (`map`, `where`)
@@ -82,8 +83,8 @@ print $"branches: {branches}"
   silently makes the field a TUPLE there; weir refuses the trap).
 - Type declarations and list literals continue across lines inside
   the open bracket (line break = separator; a dangling operator
-  continues the same element; blank lines inside are errors naming
-  the bracket). House style is Stroustrup: opener dangles at the
+  continues the same element; blank lines are transparent here as
+  everywhere inside a statement). House style is Stroustrup: opener dangles at the
   head line's end, entries one level in, closer alone at the head's
   indent — `type Cli = {` / four-space fields / `}`. The aligned
   style (`{ x` with column-aligned fields) stays accepted.
@@ -436,8 +437,8 @@ let c = Args.load Cmd
   arg must be quoted. Bare `!(...)`/`!` districts and command lines
   stay env-less.
 - Multi-line record literals separate fields by newline, F#-style
-  (trailing `;` also fine); a blank line inside an open `{` is an
-  error. Braces ignore indentation.
+  (trailing `;` also fine); blank lines inside brackets are
+  transparent. Braces ignore indentation.
 - Blocks are offside, F#-style: a line at an `if`/`match`'s OWN indent
   is a sibling (runs after, unconditionally); only deeper lines are
   the body. Guard lines before a block result work:

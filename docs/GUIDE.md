@@ -288,7 +288,8 @@ print $"exit {r.ExitCode}"
 ```
 
 Multi-line scripts: a statement starts at column 0, indented lines
-continue it, a blank line ends it (comment lines are transparent). An
+continue it, and the NEXT column-0 line ends it — blank lines and
+comment lines are transparent, so blocks group freely with gaps. An
 indented `let` closes at the next line of the same indent — F# light
 syntax.
 
@@ -340,6 +341,7 @@ thereafter:
 type Cli = {
     [<Short "C"; Doc "clean the target first">]
     clean: bool
+
     port: Option<int>
 }
 

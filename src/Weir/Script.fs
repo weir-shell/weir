@@ -475,10 +475,6 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
         Error
             $"line {letLine}: this let needs a body — an expression at the same indentation must follow before the statement ends"
 
-    let noBodyBlank letLine =
-        Error
-            $"line {letLine}: this let needs a body — a blank line ends the statement; keep the block's lines contiguous"
-
     let braceOpen (p: Pend) =
         match p.Brackets with
         | ('{', line) :: _ when p.LL.Text.StartsWith "type " ->
@@ -535,11 +531,13 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                     if raw.Trim() = "" then
                         match current with
-                        | Some p when not p.Brackets.IsEmpty -> braceOpen p
-                        | Some { District = Some { Active = None; MarkerLine = mLine } } ->
-                            Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
-                        | Some { Lets = (_, letLine) :: _ } -> noBodyBlank letLine
-                        | _ -> close current acc |> Result.map (fun acc -> None, acc, true)
+                        // transparency is total while a statement pends
+                        // [D:body-blanks] — the comment-line class, second
+                        // member; the col-0 law (plus EOF) is the sole
+                        // statement boundary, so every error the blank
+                        // boundary produced still fires at close
+                        | Some p -> Ok(Some p, acc, blankSinceHead)
+                        | None -> Ok(None, acc, true)
                     elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' || inOpenBrace then
                         let indent = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
 
@@ -559,6 +557,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                 let rec go (p: Pend) =
                                     match p.Brackets with
+                                    // the statement-head guard [D:blank-in-brackets]:
+                                    // keywords cannot be entries, so a col-0
+                                    // let/type bounds a runaway unclosed bracket
+                                    | (kind, bline) :: _ when
+                                        indent = 0 && (piece.StartsWith "let " || piece.StartsWith "type ")
+                                        ->
+                                        Error
+                                            $"line {lineNo}: statement at column 0 while the '{kind}' opened at line {bline} is still open — close the bracket"
                                     | (kind, _) :: _ ->
                                         // bracket continuation: a line break after a
                                         // field/element is a separator

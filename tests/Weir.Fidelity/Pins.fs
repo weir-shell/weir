@@ -51,10 +51,9 @@ let pins =
           Same
       pin "F#-rejects-this: bodyless block let" "let x =\n    let a = 1\n" Same
       pin "comment lines are transparent inside blocks" "let x =\n    // note\n    let a = 1\n    a + 1\n" Same
-      pin
-          "blank line inside a block ends the statement (weir only)"
-          "let x =\n    let a = 1\n\n    a + 1\n"
-          (Diverges "blank-line-ends-statement")
+      // FLIPPED 2026-07-23 [D:body-blanks]: the founding divergence
+      // retired — blanks are transparent; the col-0 law is the boundary
+      pin "blank line inside a block is transparent (row RETIRED)" "let x =\n    let a = 1\n\n    a + 1\n" Same
 
       // --- offside close & record continuations (2026-07-20) ---
       pin "multi-line if/else as a let body" "let x =\n    if true then 1\n    else 2\n" Same
@@ -292,6 +291,27 @@ let pins =
           "preceding-line attribute on a type field (THE F# style; names diverge)"
           "type T =\n    { [<System.Obsolete>]\n      A: int }\nlet t = { A = 1 }\n"
           (Diverges "attributes-registered")
+
+      // --- body-blank probes (PLAN-body-blanks: the core reversal) ---
+      pin "blank inside a function body" "let f x =\n    let a = 1\n\n    a + x\nlet y = f 1\n" Same
+      pin "blank between match arms" "let v =\n    match 1 with\n    | 1 -> \"a\"\n\n    | _ -> \"b\"\n" Same
+      pin "blank between a let head and its first body line" "let x =\n\n    1\n" Same
+      pin "blank inside an if body" "let v =\n    if true then\n        let a = 1\n\n        a + 1\n    else 2\n" Same
+      pin "blank between match head and the first arm" "let v =\n    match 1 with\n\n    | _ -> \"b\"\n" Same
+      pin "stray after a blank (the deliberate consequence)" "let x = 1\n\n    2\n" Same
+
+      // --- blank-inside-bracket probes (PLAN-blank-lines) ---
+      pin
+          "blank inside a Stroustrup type declaration"
+          "type Ctx = {\n    A: int\n\n    B: int\n}\nlet c = { A = 1; B = 2 }\n"
+          Same
+      pin "blank inside a record literal" "type R = { A: int; B: int }\nlet r = {\n    A = 1\n\n    B = 2\n}\n" Same
+      pin "blank inside a list" "let xs = [\n    1\n\n    2\n]\n" Same
+      pin
+          "blank inside an update rides the update-offside row"
+          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n\n    B = 4\n}\n"
+          (Diverges "record-fields-ignore-indent")
+      pin "F#-rejects-this: col-0 let while a bracket is open (the guard)" "let xs = [\n    1\nlet y = 2\n" Same
 
       // --- Stroustrup bracket probes (fantomas-poll house style) ---
       pin

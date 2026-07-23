@@ -145,9 +145,10 @@ let formatLines (body: string list) : Result<string list, string> =
                 let content = raw.TrimStart().TrimEnd()
 
                 if raw.Trim() = "" then
-                    levels <- []
-                    braces <- []
-                    matches <- []
+                    // blanks never end statements [D:body-blanks]: all
+                    // state survives the gap; the col-0 branches already
+                    // reset levels/matches at real statement boundaries,
+                    // which IS the deferred decision the plan asks for
                     ""
                 elif code.Trim() = "" then
                     // comment-only: transparent to assembly [D:comment-transparency];

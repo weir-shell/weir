@@ -1,5 +1,81 @@
 # Spike Notes
 
+## The founding divergence retires — blanks never end statements (2026-07-23)
+
+The oldest non-structural row in the divergence ledger is gone.
+Blank-line-ends-statement was named at the first multi-line session
+as THE safety boundary; comment transparency opened a second seam;
+the bracket half narrowed it this morning; and this afternoon the
+col-0 law revealed the rest redundant — every error the blank
+boundary produced also fires at the col-0/EOF close, same or better
+locality. The arc is the standing answer to "does the process ever
+REMOVE strictness?": yes — when a receipt arrives, a stronger law
+is shown to carry the load, and the oracle referees the direction.
+
+The implementation was a DELETION, as the plan predicted: the blank
+branch's three arms (noBodyBlank, the district-blank close,
+close-on-blank) collapsed into "pending → skip", and the morning's
+bracket-transparency arm was SUBSUMED — one rule again, no special
+case. fmt's fix was smaller still: stop resetting on blank; the
+col-0 branches already reset at real boundaries, which IS the
+deferred decision. The bracket statement-head guard stays verbatim
+(brackets are the one place col-0 does not close).
+
+Probes: five gap shapes F#-accept (body, arms, head-to-first-body,
+if-body, match-head-to-arm — the |-inertness customer exercised
+explicitly, not assumed); the STRAY shape F#-REJECTS, which is
+better than the plan hoped — the deliberate-consequence pin shows
+weir and F# refusing the same mistake, and the gapped and
+blank-free spellings error identically (the consistency claim,
+e2e-compared).
+
+Six pins flipped by name, including the twin added FOUR HOURS
+earlier as the bracket plan's both-sides pin — it held the boundary
+the user then moved, which is pin-as-regression-guard doing its
+job, not churn. One stale doc line surfaced en route: SKILL still
+said "a blank inside an open { is an error" from BEFORE the
+morning's bracket landing — the docs-sweep rule (grep idioms, not
+keywords) missed it once; swept now.
+
+The board note lands as written: the remaining divergence rows are
+structural identity or deliberate boundaries — the leanest the
+F#-refugee's map has ever been.
+
+## Blanks inside brackets — a reversal, honestly bookkept (2026-07-23)
+
+Blank lines inside open brackets are transparent — the comment-line
+class's second member. The reversal's honesty clause fired as
+written: the plan's reframe assumed comment transparency POSTDATED
+the records session's "blank = error" choice, and the archaeology
+says otherwise — the transparency fix round landed EARLIER the same
+day (2026-07-20) than the grammar-consolidation session that chose
+the error rule. So the reversal entry records a re-weighing on new
+receipts (Stroustrup grouping wants gaps; encodeSubref's ten pairs;
+the user's ask), not a correction of an ill-informed decision. The
+DECISIONS row says exactly that.
+
+The statement-head guard pays the error-locality bill: a col-0
+`let `/`type ` while a bracket is open errors immediately, naming
+the opener's kind and line from data the bracket stack already
+carries. The update×guard product cell (Stroustrup `{ r with`,
+gapped fields, forgotten closer, col-0 let) fires the guard naming
+the with-header's own line. The residue is on record with a WATCH:
+the bound is keyword-anchored, so command-heavy scripts can swallow
+many lines before a `let` appears — a long-swallow incident reopens
+the guard's keyword set.
+
+Probes first, all five verdicts harvested BEFORE implementation by
+running the pins against the unmodified binary and reading the
+disagreement messages: F# accepts blanks in type decls, literals,
+and lists (Same after the flip), rejects them in UPDATE position
+(the Stroustrup session's offside row absorbed it, as predicted),
+and Same-rejects the guard shape. Two error pins flipped to
+acceptance BY NAME (unit: blank-inside list/type-decl; e2e: the
+at-blank brace error became three pins — gapped-closed runs,
+unclosed still errors at statement end, the guard bounds the
+runaway). The blank-line-ends-statement divergence NARROWED —
+weir's F#-side gap shrank again.
+
 ## Stroustrup house style — and the oracle earns its keep again (2026-07-23)
 
 The user called Stroustrup as the house bracket style (the fantomas

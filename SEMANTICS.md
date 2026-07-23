@@ -51,7 +51,12 @@ weir rejects rather than guesses.
   lists treat every line as a new element unless the previous line
   dangles an opener, separator, or operator (wrapped elements
   continue). A mismatched closer errors naming BOTH sides; a blank
-  inside an open bracket errors naming the bracket. House style is
+  inside an open bracket is TRANSPARENT [D:blank-in-brackets] —
+  the comment-line class's second member (outside brackets, blank
+  still ends the statement — the divergence row's core). The
+  statement-head guard bounds the unclosed-bracket runaway: a
+  col-0 `let `/`type ` while a bracket is open errors naming the
+  opener and its line. House style is
   Stroustrup [D:fmt-stroustrup] (dangling opener, entries one level
   in, closer at the opener line's indent); the aligned style stays
   accepted — fmt canonicalizes indentation within either, never

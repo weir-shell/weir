@@ -15,7 +15,7 @@ argument that killed the subtractive fork.
 
 | id | status | shape | weir | fsharp | ref |
 |----|--------|-------|------|--------|-----|
-| blank-line-ends-statement | different | blank line inside an indented block | reject | accept | SEMANTICS: multi-line rules |
+<!-- blank-line-ends-statement RETIRED 2026-07-23 [D:body-blanks]: the founding multi-line divergence — narrowed to brackets-only that morning, then retired entirely the same day when the col-0 law proved it redundant (blanks are transparent while a statement pends; statements end at column 0 or EOF). The fidelity-gain class. -->
 | double-equals | different | equality is == ; = is binding-only | == accepts / = rejects | == rejects / = accepts | SEMANTICS: why == and not = |
 | statement-rule | different | discarded non-unit statement | reject | accept (warning) | SEMANTICS: the statement rule |
 | pipe-precedence-error | different | piping into an operator expression | reject (targeted) | accept | SEMANTICS: precedence error |
@@ -42,7 +42,7 @@ argument that killed the subtractive fork.
 | attributes-registered | different | `[<Name arg>]` on record fields is a CLOSED registry (Short/NoShort/Doc/Positional) — unknown names are check errors with didYouMean; F# resolves attribute names as types (accepts any in-scope attribute, rejects unknowns) | accept registered, reject the rest | reject Short (no such type), accept System.Obsolete | SEMANTICS: attributes — check-time, fully erased; consumers registered; validation at attachment, binding at consumption |
 | update-path-plain | different | update paths are FIELD paths only; F# name resolution captures a type named like the path head (`type I` + `{ o with I.X = v }` rejects in F#, accepts in weir) | accept | reject (type-name capture) | FCS-probed 2026-07-22; the probe's naming collision found it |
 | ctor-pattern-scrutinee | different | constructor patterns need an already-resolved scrutinee type; F# infers a param's type FROM the pattern (`let f x = match x with | A -> ...`) | reject | accept | corpus: 5928e91; live: git-subrepo (a standalone result-dispatcher fn — match moved to call sites); the pattern face of the no-annotations/funParams inference bound |
-| column-zero-statements | different | statements start at column 0; F# accepts uniformly-indented fragments | reject (continuation without a statement) | accept | corpus: 5928e91 (x5); the assembly law — blank-line-ends-statement's family |
+| column-zero-statements | different | statements start at column 0 AND end at the next col-0 line — the sole statement boundary (blank-blind since [D:body-blanks]); F# accepts uniformly-indented fragments | reject (continuation without a statement) | accept | corpus: 5928e91 (x5); the assembly law — absorbed the retired blank-line-ends-statement's boundary role |
 | record-field-comma-trap | different | `{ Name = "x", Age = 21 }` — F# silently makes the FIELD a tuple (the classic trap); weir rejects the shape | reject | accept (trap semantics) | corpus: 5928e91; strictness family, weir-safe direction |
 | no-arrays | pending | `[\| ... \|]` array literals | reject (seqs are the collection) | accept | corpus: 5928e91 |
 | no-access-modifiers | pending | `let internal/private ...` (the corpus hit also carried fsi's `;;`, an artifact not a feature) | reject | accept | corpus: 5928e91 |

@@ -1567,6 +1567,21 @@ WEOF
 out=$($BIN "$gdir/rec2.weir")
 expect "record continuation, trailing-; spelling (no double separator)" "b3" "$out"
 
+# FLIPPED 2026-07-23 [D:blank-in-brackets]: this pinned the AT-BLANK error;
+# blanks are transparent now — a gapped-but-closed record RUNS, and the
+# unclosed shape still errors (at statement end / the statement-head guard)
+cat > "$gdir/gapped.weir" <<'WEOF'
+type T = { Name: string }
+
+let t =
+    { Name = "a"
+
+      Tail = "b" }
+WEOF
+errout=$($BIN check "$gdir/gapped.weir" 2>&1 || true)
+echo "$errout" | grep -qF "no declared record has exactly the fields: Name, Tail" || fail "gapped record must reach the CHECKER (transparency): $errout"
+echo "e2e ok: blank inside an open brace is transparent (flipped pin)"
+
 cat > "$gdir/broken.weir" <<'WEOF'
 type T = { Name: string }
 
@@ -1576,8 +1591,20 @@ let t =
 print t.Name
 WEOF
 errout=$($BIN "$gdir/broken.weir" 2>&1 || true)
-echo "$errout" | grep -qF "record literal" || fail "open-brace error must name the record: $errout"
-echo "e2e ok: blank inside an open brace errors, naming the brace"
+echo "$errout" | grep -qF "record literal" || fail "unclosed brace still errors naming the record: $errout"
+echo "e2e ok: an unclosed brace still errors at statement end"
+
+cat > "$gdir/runaway.weir" <<'WEOF'
+type T = { Name: string }
+
+let t =
+    { Name = "a"
+
+let after = 1
+WEOF
+errout=$($BIN "$gdir/runaway.weir" 2>&1 || true)
+echo "$errout" | grep -qF "statement at column 0 while the '{' opened at line 4" || fail "the guard must bound the runaway: $errout"
+echo "e2e ok: the statement-head guard bounds an unclosed bracket"
 
 cat > "$gdir/exit.weir" <<'WEOF'
 let r = sh -c "exit 4" | complete
@@ -1821,11 +1848,77 @@ errout=$($BIN "$mldir/cross.weir" 2>&1) && fail "cross-bracket must reject"
 echo "$errout" | grep -qF "'}' closes the '[' opened at line 2" || fail "cross-bracket names both: $errout"
 echo "e2e ok: cross-bracket closer errors naming both brackets"
 
-printf 'let x =\n    [1\n\n     2]\n' > "$mldir/blank.weir"
-errout=$($BIN "$mldir/blank.weir" 2>&1) && fail "blank inside a list must reject"
-echo "$errout" | grep -qF "this list's [ is still open" || fail "blank-inside names the bracket: $errout"
-echo "e2e ok: blank inside an open list errors, naming the bracket"
+# FLIPPED 2026-07-23 [D:blank-in-brackets]
+printf 'let x =\n    [1\n\n     2]\nprint (x |> Seq.sum)\n' > "$mldir/blank.weir"
+out=$($BIN "$mldir/blank.weir")
+expect "blank inside an open list is transparent (flipped pin)" "3" "$out"
 
 rm -rf "$mldir"
+
+# body blanks (PLAN-body-blanks): the core reversal — blanks transparent
+# while a statement pends; the col-0 law is the sole boundary
+bbdir=$(mktemp -d)
+cat > "$bbdir/status.weir" <<'WEOF'
+let status name =
+    print $"name: {name}"
+
+    print $"tail: ok"
+
+status "weir"
+WEOF
+out=$($BIN "$bbdir/status.weir")
+expect "the receipt: a gapped function body runs (the user's exact shape)" "tail: ok" "$out"
+
+cat > "$bbdir/arms.weir" <<'WEOF'
+let v =
+    match 2 with
+
+    | 1 -> "one"
+
+    | _ -> "other"
+
+print v
+WEOF
+out=$($BIN "$bbdir/arms.weir")
+expect "gaps between match head and arms, and between arms" "other" "$out"
+
+cat > "$bbdir/district.weir" <<'WEOF'
+let ok = 1 > 0
+if ok then !
+    sh -c "echo first"
+
+    sh -c "echo second"
+print "after"
+WEOF
+out=$($BIN "$bbdir/district.weir")
+expect "a gapped district runs both commands" "second" "$out"
+echo "$out" | grep -qF "after" || fail "the district closes at col-0: $out"
+echo "e2e ok: district gaps group commands; effect count intact"
+
+cat > "$bbdir/below.weir" <<'WEOF'
+let f x =
+    let a = 1
+
+    a + nosuchvar
+WEOF
+errout=$($BIN check "$bbdir/below.weir" 2>&1 || true)
+echo "$errout" | grep -qF "below.weir:4:" || fail "an error BELOW a gap must map to its physical line: $errout"
+echo "e2e ok: segment translation across gaps"
+
+# the deliberate consequence, both spellings compared
+printf 'let x = 1\n\n    2\n' > "$bbdir/stray-gap.weir"
+printf 'let x = 1\n    2\n' > "$bbdir/stray-nogap.weir"
+err1=$($BIN check "$bbdir/stray-gap.weir" 2>&1 || true)
+err2=$($BIN check "$bbdir/stray-nogap.weir" 2>&1 || true)
+echo "$err1" | grep -qF "not a function" || fail "gapped stray joins and the checker catches it: $err1"
+echo "$err2" | grep -qF "not a function" || fail "blank-free stray control: $err2"
+echo "e2e ok: strays behave identically with and without the gap (pinned consequence)"
+
+printf '\n    orphan\n' > "$bbdir/orphan.weir"
+errout=$($BIN "$bbdir/orphan.weir" 2>&1 || true)
+echo "$errout" | grep -qF "continuation" || fail "no-pending orphan error survives: $errout"
+echo "e2e ok: the orphan error survives where it is true (no pending statement)"
+
+rm -rf "$bbdir"
 
 echo "e2e battery: all green"

@@ -100,12 +100,14 @@ let encodeSubref subdir =
     [
         ("%", "%25")
         ("..", "%2e%2e")
+
         (" ", "%20")
         ("~", "%7e")
         ("^", "%5e")
         (":", "%3a")
         ("?", "%3f")
         ("*", "%2a")
+
         ("[", "%5b")
         (@"\", "%5c")
     ]
@@ -209,6 +211,7 @@ let status ctx =
     print $"Git subrepo '{ctx.Subdir}':"
     if branchExists $"subrepo/{ctx.Subref}" then print $"  Subrepo Branch:  subrepo/{ctx.Subref}"
     print $"  Remote URL:      {ctx.Repo.Remote}"
+
     print $"  Tracking Branch: {ctx.Repo.Branch}"
     if not (ctx.Repo.Commit == "") then print $"  Pulled Commit:   {ctx.Repo.Commit}"
     if verbose then statusRefs ctx |> Seq.iter print
@@ -222,6 +225,7 @@ match cli with
 | Fetch a ->
     let ctx = fetchUpstream (makeCtx a.subdir)
     say $"Fetched '{ctx.Subdir}' from '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
+
 | Pull a ->
     let ctx = makeCtx a.subdir
     assertRepoReady ctx

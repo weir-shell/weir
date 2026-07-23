@@ -2041,17 +2041,48 @@ let bracketContinuationTests =
                   "'}' closes the '[' opened at line 2"
                   ""
           }
-          test "blank inside an open list names the bracket" {
-              Expect.stringContains
-                  (assembleErr [ "let x ="; "    [1"; ""; "     2]" ])
-                  "this list's [ is still open"
+          // FLIPPED 2026-07-23 [D:blank-in-brackets]: these two pinned the
+          // blank-inside ERROR; blanks are transparent inside brackets now
+          test "blank inside an open list is transparent" {
+              Expect.equal (joined [ "let x ="; "    [1"; ""; "     2]" ]) "let x = [1 ; 2]" ""
+          }
+          test "blank inside an open type decl is transparent" {
+              Expect.equal
+                  (joined [ "type T ="; "    { A: int"; ""; "      B: int }" ])
+                  "type T = { A: int ; B: int }"
                   ""
           }
-          test "blank inside an open type decl names the record type" {
+          test "the statement-head guard bounds an unclosed bracket" {
               Expect.stringContains
-                  (assembleErr [ "type T ="; "    { A: int"; ""; "      B: int }" ])
-                  "this record type's {"
+                  (assembleErr [ "let xs = ["; "    1"; ""; "let y = 2" ])
+                  "statement at column 0 while the '[' opened at line 1 is still open"
                   ""
+
+              Expect.stringContains
+                  (assembleErr [ "type T = {"; "    A: int"; ""; "type U = { B: int }" ])
+                  "'{' opened at line 1 is still open"
+                  ""
+          }
+          test "update x guard: the with-header bracket names its own line" {
+              Expect.stringContains
+                  (assembleErr [ "let r2 = { r with"; "    A = 2"; ""; "let z = 3" ])
+                  "'{' opened at line 1 is still open"
+                  ""
+          }
+          test "runs of blanks are transparent too" {
+              Expect.equal (joined [ "let x ="; "    [1"; ""; ""; "     2]" ]) "let x = [1 ; 2]" ""
+          }
+          // FLIPPED 2026-07-23 [D:body-blanks] after FOUR HOURS: this was
+          // PLAN-blank-lines' both-sides pin, holding the boundary the
+          // user then moved — pin-as-regression-guard, not constitution
+          test "twin flipped: a pending block-let's body continues across a gap" {
+              Expect.equal (joined [ "let x ="; "    let a = 1"; ""; "    a + 1" ]) "let x = let a = 1 in a + 1" ""
+          }
+          test "bracket transparency wins over a pending let INSIDE the bracket" {
+              Expect.equal
+                  (joined [ "let xs = ["; "    1"; ""; "    2"; "]" ])
+                  "let xs = [ 1 ; 2 ]"
+                  "the statement survives the gap"
           }
           test "Stroustrup closers take no separator" {
               Expect.equal
@@ -2063,6 +2094,29 @@ let bracketContinuationTests =
                   (joined [ "type Ctx = {"; "    Subdir: string"; "    Repo: string"; "}" ])
                   "type Ctx = { Subdir: string ; Repo: string }"
                   "type closer joins with space"
+          }
+          test "gap positions: first-after-head, mid, before-close (offside)" {
+              Expect.equal
+                  (joined [ "let x ="; ""; "    let a = 1"; "    a + 1" ])
+                  "let x = let a = 1 in a + 1"
+                  "gap as the FIRST line after a head"
+
+              Expect.equal
+                  (joined [ "let f x ="; "    printerr \"a\""; ""; "    printerr \"b\"" ])
+                  "let f x = printerr \"a\" ; printerr \"b\""
+                  "mid-body gap"
+          }
+          test "gap positions inside brackets: first, mid, before-close" {
+              Expect.equal
+                  (joined [ "let xs = ["; ""; "    1"; ""; "    2"; ""; "]" ])
+                  "let xs = [ 1 ; 2 ]"
+                  "gaps at every bracket position"
+          }
+          test "gap between match head and the first arm (|-inertness meets blanks)" {
+              Expect.equal
+                  (joined [ "let v ="; "    match 1 with"; ""; "    | _ -> 2" ])
+                  "let v = match 1 with | _ -> 2"
+                  ""
           }
           test "brackets never engage inside strings (the scanner guarantee)" {
               Expect.equal (joined [ "let s ="; "    [\"a[\""; "     \"b\"]" ]) "let s = [\"a[\" ; \"b\"]" ""
@@ -2440,10 +2494,11 @@ let multilineTests =
                   Expect.equal n.Text "next" ""
               | other -> failtest $"unexpected: {other}"
           }
-          test "blank then continuation is an error" {
+          // FLIPPED 2026-07-23 [D:body-blanks]: pinned the blank boundary
+          test "blank then continuation joins (transparency)" {
               match Weir.Script.assemble [ 1, "let x = 1"; 2, ""; 3, "    |> Seq.map f" ] with
-              | Error msg -> Expect.stringContains msg "continuation after a blank line" ""
-              | Ok _ -> failtest "expected error"
+              | Ok [ ll ] -> Expect.equal ll.Text "let x = 1 |> Seq.map f" ""
+              | other -> failtest $"unexpected: {other}"
           }
           test "tabs in indentation are an error" {
               match Weir.Script.assemble [ 1, "let x = 1"; 2, "\t|> f" ] with
@@ -3095,10 +3150,12 @@ let agentFindingsTests =
               Expect.isFalse (commentOnly "   ") "whitespace stays a blank"
               Expect.isFalse (commentOnly "let x = 1 // tail") "code with tail comment stays"
           }
-          test "blank line inside a block names its cause" {
+          // FLIPPED 2026-07-23 [D:body-blanks]: was the noBodyBlank
+          // attribution pin; a pending let's body continues across a gap
+          test "blank line inside a block is transparent" {
               match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, ""; 4, "    a + 1" ] with
-              | Error msg -> Expect.stringContains msg "blank line ends the statement" "attribution"
-              | other -> failtest $"expected an error, got {other}"
+              | Ok [ ll ] -> Expect.equal ll.Text "let x = let a = 1 in a + 1" ""
+              | other -> failtest $"unexpected: {other}"
           } ]
 
 let paramSugarTests =
@@ -3983,9 +4040,10 @@ let productMatrixTests =
               | other -> failtest $"unexpected: {other}"
           }
           // C x E: pipe line after a blank
-          test "C x E: pipe continuation after a blank is the located error" {
+          // FLIPPED 2026-07-23 [D:body-blanks]
+          test "C x E: pipe continuation joins across a gap" {
               match Weir.Script.assemble [ 1, "ls"; 2, ""; 3, "    |> Seq.length" ] with
-              | Error e -> Expect.stringContains e "continuation after a blank line" ""
+              | Ok [ ll ] -> Expect.equal ll.Text "ls |> Seq.length" ""
               | other -> failtest $"unexpected: {other}"
           }
           // C x F: comment between pipe stages (comment filtered upstream:
@@ -3996,19 +4054,20 @@ let productMatrixTests =
               | other -> failtest $"unexpected: {other}"
           }
           // E x F: comment-only after a blank stays invisible
-          test "E x F: indented line after blank+comment is still the blank error" {
-              // the comment line never reaches assemble (runner filters it);
-              // the indented line after the gap is the continuation error
+          // FLIPPED 2026-07-23 [D:body-blanks]
+          test "E x F: indented line after blank+comment joins" {
               match Weir.Script.assemble [ 1, "let x = 1"; 2, ""; 4, "    + 2" ] with
-              | Error e -> Expect.stringContains e "continuation after a blank line" ""
+              | Ok [ ll ] -> Expect.equal ll.Text "let x = 1 + 2" ""
               | other -> failtest $"unexpected: {other}"
           }
           // E x G: former sibling level after a blank
-          test "E x G: a sibling-level line after a blank is the located error, not a join" {
+          // FLIPPED 2026-07-23 [D:body-blanks]: the sibling rule is
+          // indent-keyed, not adjacency-keyed — gap-invariant `;`
+          test "E x G: sibling sequencing joins across a gap" {
               match
                   Weir.Script.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 3, ""; 4, "    printerr \"b\"" ]
               with
-              | Error e -> Expect.stringContains e "continuation after a blank line" ""
+              | Ok [ ll ] -> Expect.equal ll.Text "let f x = printerr \"a\" ; printerr \"b\"" ""
               | other -> failtest $"unexpected: {other}"
           }
           // F x G: sibling `;` joins across a transparent comment
