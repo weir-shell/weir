@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the full CI pipeline locally in the CI image (clean-room mirror of
-# .github/workflows/ci.yml). Post-stage ritual: run this before pushing.
+# .gitlab-ci.yml's test job). Post-stage ritual: run this before pushing.
 #
 # The repo is COPIED into the image as build context, not bind-mounted:
 # bind mounts silently break with remote docker daemons (paths resolve on

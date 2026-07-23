@@ -1,0 +1,50 @@
+# GitLab CI — the same battery ci/local.sh mirrors locally.
+# Two stages: `image` rebuilds the toolchain container only when
+# ci/Dockerfile changes (kaniko, no docker daemon; run it MANUALLY once
+# to bootstrap a fresh project registry), `test` runs the full battery
+# inside it. NuGet is cached across pipelines — the F# oracle's FCS
+# restore is the heavy hitter (the note in ci/fsharp-oracle.sh).
+
+stages:
+  - image
+  - test
+
+build-image:
+  stage: image
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  rules:
+    - changes:
+        - ci/Dockerfile
+    - when: manual
+      allow_failure: true
+  script:
+    - mkdir -p /kaniko/.docker
+    - >-
+      printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY"
+      "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 -w0)"
+      > /kaniko/.docker/config.json
+    - >-
+      /kaniko/executor --context "$CI_PROJECT_DIR/ci"
+      --dockerfile "$CI_PROJECT_DIR/ci/Dockerfile"
+      --destination "$CI_REGISTRY_IMAGE/weir-ci:latest"
+
+test:
+  stage: test
+  image: $CI_REGISTRY_IMAGE/weir-ci:latest
+  cache:
+    key: nuget
+    paths:
+      - .nuget/packages
+  variables:
+    NUGET_PACKAGES: $CI_PROJECT_DIR/.nuget/packages
+  script:
+    - dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+    # flake detection: the suite must pass twice
+    - dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+    - ./publish.sh
+    - ./ci/e2e.sh
+    - ./ci/skill-doc.sh
+    - ./ci/fsharp-oracle.sh
+    - ./ci/timing.sh

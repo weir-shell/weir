@@ -1,31 +1,31 @@
-# CI image
+# CI (GitLab)
 
-The workflow runs inside `codeberg.org/queil/weir-ci:latest` — dotnet 10 SDK
-plus the AOT toolchain (clang, zlib1g-dev, binutils), git (checkout + e2e
-battery), and procps (lifecycle tests use pgrep/ps).
+`.gitlab-ci.yml` runs the full battery inside a toolchain image built
+FROM this directory's Dockerfile: dotnet 10 SDK, the AOT toolchain
+(clang, zlib1g-dev, binutils), git (checkout + e2e battery), procps
+(lifecycle tests use pgrep/ps), and python3 (the LSP/REPL/harness/
+grammar-inventory probes — these were silently SKIPPED under the old
+python-less image; the GitLab migration paid that gap).
 
-One-time build and push (rebuild only when the toolchain changes):
+The image lives in the PROJECT registry
+(`$CI_REGISTRY_IMAGE/weir-ci:latest`) and is rebuilt BY THE PIPELINE
+(kaniko, no docker daemon) whenever ci/Dockerfile changes. Bootstrap
+on a fresh project: run the `build-image` job manually once (it is
+`when: manual` outside Dockerfile changes), then `test` pipelines pull
+it with the job token — no docker login ritual, no external registry.
 
-```sh
-docker build -t codeberg.org/queil/weir-ci:latest ci/
-docker login codeberg.org        # Codeberg access token with package scope
-docker push codeberg.org/queil/weir-ci:latest
-```
-
-Then mark the package public in Codeberg → Packages → weir-ci → settings, so
-the runner can pull without credentials.
-
-Notes:
+Notes (carried from the previous home where still true):
 - `ci/local.sh` copies the repo into the image (build context) instead
   of bind-mounting: bind mounts silently yield an EMPTY /work with
   remote docker daemons (paths resolve daemon-side), FUSE/network
   checkouts, and unlabeled SELinux — the symptom is a misleading
   MSB1003/MSB1009. Context upload works with every daemon topology.
   `WEIR_CI_ENGINE=podman` for rootless.
-- Forgejo's act-based runner injects node into job containers, so JS actions
-  (`actions/checkout`) need nothing extra in the image.
-- The image is toolchain-only, deliberately not coupled to the repo (no NuGet
-  restore baked in). If restore time ever dominates, warm the package cache in
-  a build stage — but that couples image rebuilds to dependency bumps.
+- The image is toolchain-only, deliberately not coupled to the repo
+  (no NuGet restore baked in); the pipeline caches `.nuget/packages`
+  instead (the F# oracle's FCS restore is the heavy hitter).
+- The e2e battery HARD-gates on the build stamp (`weir --version` ==
+  HEAD) and source mtimes — publish.sh runs inside the pipeline
+  before e2e, so the gate holds by construction there too.
 - `ci/timing.sh` thresholds are env-overridable (`WEIR_MAX_EXPR_MS`,
-  `WEIR_MAX_CMD_MS`) if the tiny runner needs more headroom.
+  `WEIR_MAX_CMD_MS`) if a small shared runner needs headroom.
