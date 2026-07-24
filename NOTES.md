@@ -1,6 +1,55 @@
 # Spike Notes
 
-## Field alignment — the records half (2026-07-24)
+## The assembler fuzzer — Session 1, and the boring outcome's shape (2026-07-24)
+
+The widen-the-net answer, executed: a generator of valid-by-
+construction line-shape programs (FsCheck, test-side — the FCS
+precedent; the gen builder took the stateful scope threading fine
+once repetition went through an explicit state-passing combinator,
+so the hand-rolled fallback stayed unused). Invariant 1 runs the AOT
+binary and demands (rc, stdout, stderr) byte-identical under blank
+insertion, comment insertion, whole-block re-indent, and their
+composition; invariant 2 demands analyzeLines totality on every
+generated program and mutated neighbor. Shrinking is delta debugging
+on top-level statements with dependency closure — program-unique
+names make the closure set arithmetic — and it produced minimal,
+readable repros from the first failure on.
+
+Bring-up was the probes-first discipline paying twice. The generator
+had to LEARN two placement laws the docs state only obliquely: bare
+command lines are top-level-only (an if body is expression territory
+at any nesting — bare `echo` is an unbound variable there; districts
+are the command spelling in bodies), and a bare command inside a
+let-block body becomes the let's command RHS and `;`-joins its
+successor into argv (warned, then type-errored — surfaced, not
+silent). And the fuzzer's own first failures found a third: two
+record types with the same field SET make every literal ambiguous —
+field names now carry their type's tag.
+
+The prediction, graded: MISSED on its own words. Three deep runs
+(10k cases each, fresh seeds 424242/777/20260724, ~70k mutated
+neighbors, composition included) found zero product bugs — the
+recent hardening sessions appear to have actually hardened the seam
+the ledger said was softest. The denominator is committed
+(tests/fuzz/GRAMMAR.md): no env districts, no sigils, no seq/Regex
+patterns, no tuples, no update literals yet — the boring outcome is
+bounded by that list. Harness truth held to its own rule: the
+equality detector carries a graded positive control (a deliberately
+non-neutral edit fails the property), so "passed" means "compared",
+not "never fired".
+
+One real find anyway, from the law probes: SKILL.md still taught
+"Blank lines END statements — never leave one inside an indented
+block" — the founding divergence RETIRED by [D:body-blanks] the day
+before, contradicting the same file's own line 15. Prose the
+doc-executor cannot see is exactly where claim-vs-behavior drift
+survives; fixed to the col-0 law. Session 2 owes: the remaining
+transforms (district ↔ sigil, bare ↔ $(), sibling ↔ `;`, bracket
+styles), span soundness, fmt roundtrip, CI smoke + tools/fuzz.sh,
+and the PROCESS line making grammar membership part of every new
+assembler feature.
+
+## Field alignment — the records half (2026-07-24)## Field alignment — the records half (2026-07-24)
 
 The pipes rule's sibling, opened on the planted `Commit` off-by-one.
 The probes corrected ME this time: the first read said "F# tolerates

@@ -1,0 +1,86 @@
+# The fuzzer's generator grammar — the coverage denominator
+
+"The fuzzer passed" is a claim with this file as its denominator: the
+generator (tests/Weir.Fuzz/Grammar.fs) produces exactly the shapes
+listed under CAN; anything under CANNOT-YET is outside the net, on
+purpose and on record. New assembler features add their shapes here
+and their equivalence claims to the transform library — the
+metamorphic law is part of the feature.
+
+Programs are valid-by-construction: type-correct, casing-lawful,
+exhaustive matches, exact alignment, program-unique names, effects
+carrying unique markers (`m<n>`) so output identity sees ORDER.
+Expression bodies are trivial (small ints, safe words, `$"..."`
+interpolation with int-typed holes) — the subject is line-shape
+composition, not type complexity.
+
+## CAN produce (Session 1)
+
+- top-level `let` with single-line RHS; block-bodied `let` (unit
+  statements + result line, nesting depth ≤ 2)
+- `let` = multi-line `match` (dangling head): int/string literal arms,
+  optional `when`-guard arm, catch-all last; nested match as an arm
+  RHS (the offside-close shape)
+- full-coverage match over a union value (payload binders int/string)
+- `print` statements (interp markers); `if ... then` unit bodies
+  (nested ifs, prints, headed districts)
+- record type decls: inline, Stroustrup, aligned styles; `[<Doc>]`
+  field attributes inline and in the attr-dangle spelling (attr line +
+  field line as one aligned entry)
+- union type decls: single-line and multi-line `|` case lists;
+  tuple-free payloads (`of int` / `of string`)
+- record literals: inline, Stroustrup, aligned (measured anchors)
+- list literals: inline, Stroustrup, aligned; int and string elements
+- multi-line pipelines (`|>` stages under a dangling let)
+- command lines: top-level bare `echo`; command-backed `let` (top
+  level AND block bodies — the spine flag); `seq |> print`;
+  `(xs |> Seq.length)` forcing command output in expressions
+- districts: standalone `!` (top level), headed `if ... then !` (top
+  level, if bodies, block bodies)
+- placement laws the probes established (generator-enforced): bare
+  command lines and type declarations are top-level only; if bodies
+  are expression territory (districts are the command spelling there);
+  record field sets are unique per type (ambiguity)
+
+## CANNOT yet produce
+
+- multiline lambdas (not a weir feature yet — this harness is that
+  feature's acceptance rig when it lands)
+- multiline strings (never — not a weir feature)
+- env-parameterized districts (`!name`) and env sigils (`$e`/`!e`);
+  `sh -c` lines; `| from porcelain/json` adapters; exit reifiers
+  (`succeeds`/`complete`/`orFail`)
+- `let ... in` inline form; param-ful lets / lambdas / function defs;
+  seq patterns; Regex patterns; tuples; copy-and-update literals;
+  `Args.load` / `Env.load`; raw strings; `#loose` mode
+- comments/blanks INSIDE the generated program (they arrive only via
+  the transform layer)
+- Session 2 will grow the transform library (district ↔ `!()`, bare
+  command RHS ↔ `$()`, `;` ↔ block siblings, Stroustrup ↔ inline)
+  and may widen the grammar with it
+
+## Shrinking
+
+Delta debugging on top-level statements with dependency closure
+(program-unique names make the closure set arithmetic); inner-block
+statement removal is not shrunk. FsCheck drives the shrink loop; the
+reported counterexample is the minimal statement subset that still
+fails.
+
+## Invariants wired (Session 1)
+
+1. Metamorphic equivalence on the AOT binary — (rc, stdout, stderr)
+   byte-identical under: blank insertion (any gap), comment insertion
+   (any gap, any indent 0–12), whole-block re-indent (+1..6 on one
+   block: let bodies, if bodies, district bodies, match-arm groups,
+   Stroustrup bracket groups, pipeline stages), and all three
+   COMPOSED (one property — the laws must hold under composition).
+2. Totality of `Script.analyzeLines` (assemble → parse → check, the
+   one pipeline) on every generated program and mutated neighbor
+   (line deletion, ±1..3 indent perturbation, line duplication,
+   adjacent-line swap, and stacked pairs): no exception, no >5s hang.
+
+Smoke: pinned seed 1789001, 200 cases/invariant (~5s). Deep: fresh
+seeds via `WEIR_FUZZ_SEED`/`WEIR_FUZZ_COUNT` (10k ≈ 4.5min). The
+equality detector has a graded positive control (a deliberately
+non-neutral edit fails the property — verified at bring-up).

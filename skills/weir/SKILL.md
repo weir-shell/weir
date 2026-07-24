@@ -477,8 +477,9 @@ let c = Args.load Cmd
   `if r.ExitCode <> 0 then exit (r.ExitCode)`); `fail "msg"` is
   the message-carrying exit-1. No try/finally — for cleanup-always,
   reify with `| complete`, clean up, then propagate.
-- Blank lines END statements — never leave one inside an indented
-  block (the error will say so).
+- Blank lines are TRANSPARENT while a statement is open — bodies,
+  arms, brackets, districts group freely with gaps. A statement ends
+  at the next column-0 line (or EOF), nowhere else.
 
 ```weir
 let files = git ls-files
