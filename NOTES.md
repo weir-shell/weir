@@ -37,6 +37,16 @@ MISLEADING runtime argv error while the checker stayed happy. The
 dangle now suppresses only the separator; an attribute and its
 field are one entry on two lines and must align, pinned both ways.
 
+Third plant, third class: a lowercase union case (`upToDate`) got
+the RIGHT message at the WRONG place — 39:5 instead of 38:7 —
+because caseDecl validated AFTER consuming the word and its
+trailing whitespace, and ws crosses physical lines in assembled
+statements, so FParsec reported from the next case's segment. The
+fix is peek-validate-then-consume (lookAhead restores the position
+before the fatal fires), pinned on the exact column. The pattern to
+watch: any parser that consumes-then-fails attributes its error to
+wherever the stream drifted — spans want anchoring BEFORE the read.
+
 ## Pipe alignment — the indentation session (2026-07-24)## Pipe alignment — the indentation session (2026-07-24)
 
 Opened on a live receipt sitting in the committed flagship: `| Init`

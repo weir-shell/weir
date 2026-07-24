@@ -4569,6 +4569,21 @@ let offsideTests =
           }
           // FLIPPED 2026-07-24 [D:field-alignment]: fields at the brace's own
           // indent were the records-ignore-indent divergence; siblings align now
+          test "a lowercase case name errors AT the name, not past it" {
+              // the planted upToDate: rawWord's trailing ws crossed the
+              // physical line and the error landed on the NEXT case
+              let r: Weir.Parser.Resolver =
+                  { IsKnown = fun _ -> true
+                    IsCommandCallable = fun _ -> false
+                    IsExternal = fun _ -> false
+                    ExternalNames = fun () -> Seq.empty }
+
+              match Weir.Parser.parseLineFull r "type P = | Pulled | upToDate | Join of string" with
+              | Error f ->
+                  Expect.stringContains f.Message "uppercase letter" ""
+                  Expect.equal f.Col (Some 21) "the column of 'upToDate', not the next token"
+              | Ok _ -> failtest "expected the casing error"
+          }
           test "a field misaligned from ITS OWN attribute line errors [D:field-alignment]" {
               // the >] dangle suppresses the separator, never the alignment
               // (the planted flagship line 106: checker was happy, runtime

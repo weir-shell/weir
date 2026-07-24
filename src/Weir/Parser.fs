@@ -1187,14 +1187,18 @@ let private recordBody =
     str_ws "{" >>. sepBy1 fieldDecl (str_ws ";") .>> str_ws "}" |>> DRecord
 
 let private caseDecl =
-    (attrsRejectHere >>% Unchecked.defaultof<_>) <|> spanned rawWord .>> ws
-    >>= fun (w, _) ->
-        if keywords.Contains w then
-            fail $"'{w}' is a keyword"
-        elif not (Char.IsUpper w[0]) then
-            fail "constructor names must start with an uppercase letter"
-        else
-            opt (keyword "of" >>. tySyn) |>> fun ty -> w, ty
+    // peek-validate-then-consume: a post-consumption fail reports past
+    // the word (its trailing ws even crosses physical lines) — lookAhead
+    // restores the position so the error lands ON the constructor
+    (attrsRejectHere >>% Unchecked.defaultof<_>)
+    <|> (lookAhead rawWord
+         >>= fun w ->
+             if keywords.Contains w then
+                 failFatally $"'{w}' is a keyword"
+             elif not (Char.IsUpper w[0]) then
+                 failFatally "constructor names must start with an uppercase letter"
+             else
+                 rawWord .>> ws >>= fun w -> opt (keyword "of" >>. tySyn) |>> fun ty -> w, ty)
 
 let private unionBody = opt (str_ws "|") >>. sepBy1 caseDecl (str_ws "|") |>> DUnion
 
