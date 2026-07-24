@@ -140,6 +140,25 @@ deriving `-C` and `--help` text from the declaration — are a coming
 feature; until then attributes are legal-and-inert documentation the
 checker validates.
 
+## File batches: glob is a function, not an expansion
+
+`Path.glob` returns matches as a typed seq — nothing ever expands
+inside argv (a bare `*.txt` in a command stays a literal word; that
+law is unchanged). Discovery composes like any seq:
+
+```weir
+match Path.glob "*.md" with
+| [] -> print "no docs here"
+| docs -> docs |> feed "sort" ["-r"] |> Seq.iter print
+
+let pinned = Path.glob "*.md" |> Seq.force
+```
+
+Relative patterns resolve against the cwd at ENUMERATION — the lazy
+seam: `|> Seq.force` pins the batch before a `cd`. Script-relative
+batches ride `scriptPath`:
+`Path.glob $"{scriptPath |> Path.dir}/fixtures/**/*.txt"`.
+
 ## A script's own location
 
 `scriptPath : string` is the running script's absolute path —
@@ -398,7 +417,8 @@ real one). A `let` takes a bare command RHS everywhere lets go —
 top level and inside bodies alike (`let tree = git rev-parse $c | Seq.head`
 works in a function body now); `$()` remains the spelling for
 sub-expression positions (inside records, arguments, parens). Splice values with `$name` or `(expr)` — always single argv
-entries, never re-split, so there is no injection class. No globs, no
+entries, never re-split, so there is no injection class. No glob
+expansion (`Path.glob` is the function spelling), no
 `&&`, no `$VAR` expansion, no redirects — `>` and `>>` pass through as
 literal argv with a warning naming the weir spelling
 (`cmd | File.write "out.txt"` / `File.append`). For bash semantics,

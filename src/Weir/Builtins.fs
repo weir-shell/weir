@@ -295,6 +295,130 @@ let private rmatchImpl: Value =
                     VUnion("None", None)
             | _ -> unreachable "the checker rejects 'rmatch' on these arguments"))
 
+// Path.glob [D:path-glob] — the standard subset (`*` within-segment,
+// `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
+// matches dotfiles (a `.`-leading segment does); sorted per level
+// (deterministic output); LAZY against the cwd at ENUMERATION (the
+// cd seam — `|> Seq.force` pins the answer now); symlinked dirs
+// NOT traversed by `**` (bash ≥4.3 globstar parity — loop-immune by
+// law; explicit segments still follow links); unreadable dirs
+// skipped (a pattern is discovery, not assertion); no matches = the
+// empty seq. Hand-rolled: the FileSystemGlobbing probe found the
+// library unable to express the dotfile law (and unrestorable
+// offline) — the plan's fallback clause, taken and reported.
+let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
+    let sb = System.Text.StringBuilder("^")
+    let mutable i = 0
+
+    while i < seg.Length do
+        (match seg[i] with
+         | '*' -> sb.Append "[^/]*" |> ignore
+         | '?' -> sb.Append "[^/]" |> ignore
+         | '[' ->
+             let close = seg.IndexOf(']', i + 1)
+
+             if close < 0 then
+                 sb.Append(System.Text.RegularExpressions.Regex.Escape "[") |> ignore
+             else
+                 let body = seg.Substring(i + 1, close - i - 1)
+                 let body = if body.StartsWith "!" then "^" + body.Substring 1 else body
+                 sb.Append('[').Append(body).Append(']') |> ignore
+                 i <- close
+         | c -> sb.Append(System.Text.RegularExpressions.Regex.Escape(string c)) |> ignore)
+
+        i <- i + 1
+
+    sb.Append "$" |> ignore
+    System.Text.RegularExpressions.Regex(sb.ToString())
+
+let private globWalk (pattern: string) : seq<string> =
+    seq {
+        let isAbs = pattern.StartsWith "/"
+
+        let segs = pattern.Split('/') |> Array.filter (fun s -> s <> "") |> Array.toList
+
+        let rootFs = if isAbs then "/" else Session.Cwd()
+        let rootDisplay = if isAbs then "/" else ""
+
+        let entriesOf (dirFs: string) =
+            try
+                System.IO.Directory.EnumerateFileSystemEntries dirFs
+                |> Seq.map System.IO.Path.GetFileName
+                |> Seq.sort
+                |> List.ofSeq
+            with _ ->
+                []
+
+        let hasWild (seg: string) =
+            seg |> Seq.exists (fun c -> c = '*' || c = '?' || c = '[')
+
+        // `**` never descends a symlinked dir (bash globstar's law)
+        let realDir (dirFs: string) =
+            try
+                System.IO.Directory.Exists dirFs
+                && not (System.IO.File.GetAttributes(dirFs).HasFlag System.IO.FileAttributes.ReparsePoint)
+            with _ ->
+                false
+
+        let rec walk (dirFs: string) (prefix: string) (segs: string list) : seq<string> =
+            seq {
+                match segs with
+                | [] -> ()
+                | [ "**" ] ->
+                    // trailing globstar: everything below, recursively
+                    for name in entriesOf dirFs do
+                        if not (name.StartsWith ".") then
+                            let sub = System.IO.Path.Combine(dirFs, name)
+                            yield prefix + name
+
+                            if realDir sub then
+                                yield! walk sub (prefix + name + "/") [ "**" ]
+                | "**" :: rest ->
+                    // zero directories...
+                    yield! walk dirFs prefix rest
+
+                    // ...or one-plus (dot-dirs stay unentered, bash's law)
+                    for name in entriesOf dirFs do
+                        if not (name.StartsWith ".") then
+                            let sub = System.IO.Path.Combine(dirFs, name)
+
+                            if realDir sub then
+                                yield! walk sub (prefix + name + "/") ("**" :: rest)
+                | seg :: rest when not (hasWild seg) ->
+                    // literal segments echo without enumeration
+                    let sub = System.IO.Path.Combine(dirFs, seg)
+
+                    match rest with
+                    | [] ->
+                        if System.IO.File.Exists sub || System.IO.Directory.Exists sub then
+                            yield prefix + seg
+                    | _ ->
+                        if System.IO.Directory.Exists sub then
+                            yield! walk sub (prefix + seg + "/") rest
+                | seg :: rest ->
+                    let rx = globSegRegex seg
+                    let dotOk = seg.StartsWith "."
+
+                    for name in entriesOf dirFs do
+                        if (dotOk || not (name.StartsWith ".")) && rx.IsMatch name then
+                            let sub = System.IO.Path.Combine(dirFs, name)
+
+                            match rest with
+                            | [] -> yield prefix + name
+                            | _ ->
+                                if System.IO.Directory.Exists sub then
+                                    yield! walk sub (prefix + name + "/") rest
+            }
+
+        yield! walk rootFs rootDisplay segs
+    }
+
+let private globImpl: Value =
+    VBuiltin(fun patV ->
+        match patV with
+        | VStr pat -> VSeq(Seq.delay (fun () -> globWalk pat |> Seq.map VStr))
+        | _ -> unreachable "the checker rejects 'glob' on this argument")
+
 let private str1 (name: string) (f: string -> string) : Value =
     VBuiltin(fun v ->
         match v with
@@ -760,7 +884,8 @@ let private pathMembers: (string * Ty * Value) list =
           match Path.GetDirectoryName s with
           | null -> ""
           | d -> d)
-      "combine", TFun(TStr, TFun(TStr, TStr)), pathCombineImpl ]
+      "combine", TFun(TStr, TFun(TStr, TStr)), pathCombineImpl
+      "glob", TFun(TStr, TSeq TStr), globImpl ]
 
 let private optionMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl

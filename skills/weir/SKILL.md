@@ -354,7 +354,9 @@ print x
   Builtins shadow PATH (`ls` is typed rows); `^ls` forces the external.
 - Splice values into commands: `$name` for bindings, `(expr)` for
   expressions — always single argv entries, never re-split, no injection.
-- No globs, no redirects, no `&&`, no `$VAR` env expansion — those
+- No glob EXPANSION (`Path.glob` is the typed spelling — a
+  function, not argv magic), no redirects, no `&&`, no `$VAR` env
+  expansion — those
   characters pass through as literal argv (`echo a && b` prints
   "a && b"); `>`/`>>` additionally WARN with the File spelling
   (redirection is `cmd | File.write "out.txt"` / `File.append`).
@@ -428,6 +430,15 @@ if clean then !(sh -c "echo acting")
 - Paths: `Path.extension` (keeps the dot; `""` when none),
   `Path.fileName`, `Path.stem`, `Path.dir` (`""` at the top),
   `Path.combine dir name` — System.IO semantics.
+- `Path.glob "src/**/*.fs" : seq<string>` — typed discovery
+  (nothing expands in argv, ever): `*` within-segment, `**`
+  cross-segment (never through symlinked dirs — bash globstar),
+  `?`, `[abc]`/`[!abc]`. Bash's dotfile law: `*` skips dotfiles, a
+  `.`-leading segment matches them. Sorted; relative patterns
+  echo relative and resolve against the cwd AT ENUMERATION —
+  `|> Seq.force` pins the answer before a `cd`. No matches = the
+  empty seq (`match ... with | [] -> fail "no matches"`).
+  Unreadable dirs skip (discovery, not assertion).
 - Editor mode-coloring (LSP semantic tokens) is for humans — agents
   read `weir check`; colors carry no information the checker does
   not already report.

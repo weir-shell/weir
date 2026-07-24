@@ -639,7 +639,9 @@ quantity semantics now.
   the next line; completion reuses the cache rather than re-scanning per
   keystroke).
 - **Deliberately excluded, chosen not improvised** (each passes through as a
-  literal argument today, it does not error): no glob *expansion*, no
+  literal argument today, it does not error): no glob *expansion*
+  (discovery is the FUNCTION `Path.glob` [D:path-glob] — typed,
+  visible, outside this exclusion's rationale), no
   redirects (`>`/`>>` — argv words with a warning naming the File
   spelling), no env-var assignment prefix (`FOO=1 prog`), no `&&`/`;`
   chaining in command mode. Weir routes streams by application: `>`

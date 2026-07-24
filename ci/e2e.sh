@@ -2410,4 +2410,75 @@ echo "$errout" | grep -qF "scriptPath is script-only" || fail "the teaching: $er
 echo "e2e ok: scriptPath refused outside scripts with its teaching"
 rm -rf "$spdir"
 
+# ---- Path.glob [D:path-glob]: typed discovery, nothing expands ----
+
+pgdir=$(mktemp -d)
+mkdir -p "$pgdir/src/a/b" "$pgdir/fixtures/x" "$pgdir/deny" "$pgdir/loop"
+touch "$pgdir/top.json" "$pgdir/other.json" "$pgdir/.hidden.json" \
+      "$pgdir/src/one.fs" "$pgdir/src/a/two.fs" "$pgdir/src/a/b/three.fs" \
+      "$pgdir/fixtures/x/f.txt" "$pgdir/deny/secret.fs"
+ln -s .. "$pgdir/loop/up"
+chmod 000 "$pgdir/deny"
+
+cat > "$pgdir/g.weir" <<'WEOF'
+Path.glob "*.json" |> Seq.iter print
+Path.glob ".*.json" |> Seq.iter print
+Path.glob "**/*.fs" |> Seq.iter print
+
+match Path.glob "*.nope" with
+| [] -> print "no matches"
+| files -> files |> Seq.iter print
+
+let pinned = Path.glob "*.json" |> Seq.force
+cd src
+let after = Path.glob "*.json" |> Seq.length
+print $"lazy-sees-new-cwd: {after}"
+print $"forced-pinned: {pinned |> Seq.length}"
+WEOF
+out=$(cd "$pgdir" && $BIN g.weir)
+expect "glob: * excludes dotfiles, sorted" "other.json
+top.json" "$out"
+expect "glob: a dot segment matches them" ".hidden.json" "$out"
+expect "glob: ** crosses segments, skips unreadable dirs and symlinks" "src/a/b/three.fs" "$out"
+echo "$out" | grep -qF "secret.fs" && fail "unreadable dir must skip"
+echo "$out" | grep -qF "loop/up" && fail "globstar must not traverse symlinks"
+expect "glob: no matches is the empty seq (the match-[] idiom)" "no matches" "$out"
+expect "glob: the cd seam — lazy sees the new cwd" "lazy-sees-new-cwd: 0" "$out"
+expect "glob: Seq.force pins the answer before cd" "forced-pinned: 2" "$out"
+
+# script-relative discovery: the scriptPath gate's payoff
+cat > "$pgdir/src/rel.weir" <<'WEOF'
+cd /
+Path.glob $"{scriptPath |> Path.dir}/../fixtures/**/*.txt" |> Seq.iter print
+WEOF
+out=$(cd "$pgdir" && $BIN src/rel.weir)
+echo "$out" | grep -qF "fixtures/x/f.txt" || fail "script-relative glob after cd /: $out"
+echo "e2e ok: glob composes with scriptPath (script-relative, cd-proof)"
+
+# glob feeds stdin (the feed composition)
+cat > "$pgdir/fd.weir" <<'WEOF'
+Path.glob "*.json" |> feed "sort" ["-r"] |> Seq.iter print
+WEOF
+out=$(cd "$pgdir" && $BIN fd.weir)
+expect "glob |> feed: discovery into a child's stdin" "top.json
+other.json" "$out"
+
+chmod 755 "$pgdir/deny"
+
+# the timing ceiling: 10k files enumerate under 2s on the AOT binary
+big=$(mktemp -d)
+mkdir -p "$big/d"
+(cd "$big/d" && seq 1 10000 | xargs touch)
+cat > "$big/t.weir" <<'WEOF'
+let n = Path.glob "d/*" |> Seq.length
+print $"{n}"
+WEOF
+start=$(date +%s%N)
+out=$(cd "$big" && $BIN t.weir)
+elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
+expect "glob: 10k files counted" "10000" "$out"
+[ "$elapsed" -lt 2000 ] || fail "glob 10k ceiling: ${elapsed}ms"
+echo "e2e ok: glob 10k-file tree under the ceiling (${elapsed}ms)"
+rm -rf "$pgdir" "$big"
+
 echo "e2e battery: all green"

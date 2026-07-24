@@ -1,6 +1,45 @@
 # Spike Notes
 
-## scriptPath — the $0 gap closes by sequencing (2026-07-24)
+## Path.glob — discovery typed, the expansion law untouched (2026-07-24)
+
+The recategorization leads, as the plan demanded: the old exclusion
+guarded against bareword EXPANSION in argv, and nothing here touches
+argv — `Path.glob` is a function taking a pattern and returning a
+typed seq; a bare `*.txt` in a command line remains a literal word.
+The law amends, it does not retire.
+
+Two premise corrections, both probe-caught. The library probe:
+FileSystemGlobbing fails the SPEC before AOT is even asked — its `*`
+matches dotfiles and the API exposes only final match sets, so
+bash's dotfile law cannot be imposed (it is also unrestorable in the
+offline container). The fallback clause was taken as written: a
+hand-rolled matcher over the standard subset, ~90 lines, whose
+per-segment structure is exactly what the dotfile law needs. And
+the symlink bracket: the plan's "follow, matching bash; visited-set
+protection" described PRE-4.3 bash — modern globstar does NOT
+traverse symlinked dirs at all. The first implementation followed
+links with a visited set and the loop fixture promptly showed the
+set's identity was wrong (paths reached THROUGH links never
+canonicalize); the bash-parity law is simpler and loop-immune by
+construction — `**` skips symlinked dirs, explicit segments follow
+them — and the fixture pins both halves.
+
+The seams taught rather than smoothed: relative patterns resolve
+against the cwd AT ENUMERATION (the standing laziness/Cwd seam —
+the e2e shows the lazy glob seeing the post-cd world and
+`|> Seq.force` pinning the batch, the when-do-I-force doc's third
+customer); no matches is the empty seq with the match-`[]` idiom
+(no nullglob/failglob ceremony — weir's empty composes where bash
+needed shopt). The scriptPath gate paid off on schedule: the
+script-relative fixture globs its own tree after `cd /`. The
+argv-splat park holds its second receipt (glob-into-git-add is the
+exact shape; argv building spells `Seq.append` today) without
+opening. One product cell deferred honestly: the distinct-dedupe
+composition waits for Seq.distinct (the miner session) — the plan
+listed the product ahead of its dependency. 10k files enumerate in
+14ms against a 2s ceiling.
+
+## scriptPath — the $0 gap closes by sequencing (2026-07-24)## scriptPath — the $0 gap closes by sequencing (2026-07-24)
 
 Opened by dependency-ordering rather than receipt count, and the
 row says so: Path.glob is next in the queue, its first customers
