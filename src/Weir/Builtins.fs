@@ -207,11 +207,12 @@ let private completedWith (overlay: (string * string) list) : Value =
 
 let private completedImpl: Value = completedWith []
 
-// the exit-code reifiers [D:exit-reifiers] — complete's siblings on
-// the SAME spawn path (Proc.completeWith). succeeds is ExitCode == 0
-// EXACTLY, output captured-and-discarded (a predicate is silent);
-// orFail replays the child's stderr, discards stdout, and raises
-// `msg (exit N)` on nonzero — the code survives the custom message.
+// the exit-code reifiers [D:exit-reifiers], under the one law: output
+// goes where the meaning goes. succeeds is ExitCode == 0 EXACTLY,
+// output captured-and-discarded (a predicate is silent); orFail and
+// exitCode STREAM (their output is for the human — the result travels
+// separately): orFail raises `msg (exit N)` on nonzero, exitCode
+// yields the code as int and never raises.
 let private succeededWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
@@ -229,16 +230,22 @@ let private orFailedWith (overlay: (string * string) list) : Value =
                 match msgV, progV, argsV with
                 | VStr msg, VStr prog, VSeq args ->
                     let argv = args |> Seq.map asString |> List.ofSeq
-                    let code, _, stderr = Proc.completeWith overlay (Proc.resolveProg prog) argv None
-
-                    for line in stderr do
-                        System.Console.Error.WriteLine line
+                    let code = Proc.streamCode overlay (Proc.resolveProg prog) argv
 
                     if code <> 0 then
                         failwith $"{msg} (exit {code})"
 
                     VUnit
                 | _ -> unreachable "the checker rejects 'orFailed' on these arguments")))
+
+let private exitCodedWith (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            match progV, argsV with
+            | VStr prog, VSeq args ->
+                let argv = args |> Seq.map asString |> List.ofSeq
+                VInt(int64 (Proc.streamCode overlay (Proc.resolveProg prog) argv))
+            | _ -> unreachable "the checker rejects 'exitCoded' on these arguments"))
 
 // the expression-side regex family [D:regex-pattern] — computed
 // patterns are fine here; an invalid runtime pattern joins the
@@ -1076,6 +1083,7 @@ let private entries: (string * Ty * Value) list =
       "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
       "succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
       "orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
+      "exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
       "fail", TFun(TStr, TUnit), failImpl
       "exit", TFun(TInt, TUnit), exitImpl
       "cmdEnv", TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TSeq TStr))), cmdEnvImpl
@@ -1087,7 +1095,10 @@ let private entries: (string * Ty * Value) list =
       VBuiltin(fun envV -> succeededWith (envVarPairs envV))
       "orFailedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit)))),
-      VBuiltin(fun envV -> orFailedWith (envVarPairs envV)) ]
+      VBuiltin(fun envV -> orFailedWith (envVarPairs envV))
+      "exitCodedEnv",
+      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TInt))),
+      VBuiltin(fun envV -> exitCodedWith (envVarPairs envV)) ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)

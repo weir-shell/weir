@@ -357,16 +357,21 @@ print x
   For bash semantics: `sh -c "the bash line"` (a command
   line; streams, completes, pipes like any command).
 - Nonzero exit RAISES when the stream is forced. The exit-code
-  reifiers (complete's family, single external segment, one rule):
-  `cmd | succeeds` reifies to BOOL (never raises; output discarded —
-  a predicate is silent); `cmd | orFail "msg"` raises `msg (exit N)`
-  on nonzero and is unit on success — THE assert idiom, legal as a
-  statement, in `!()`, and in districts. **`succeeds` is
-  ExitCode == 0, exactly** — for tools whose nonzero codes are data
-  (grep's no-match is 1), use `| complete` and match the code.
+  reifiers (complete's family, single external segment, one law:
+  output goes where the meaning goes): `cmd | succeeds` reifies to
+  BOOL (silent — a predicate's output IS its result); `cmd | orFail
+  "msg"` STREAMS and raises `msg (exit N)` on nonzero, unit on
+  success — THE assert idiom, legal as a statement, in `!()`, and in
+  districts; `cmd | exitCode` STREAMS and reifies the code as INT,
+  never raises — bind it or match it (`| 130 ->` for cancels); a
+  bare/`!()`/`$()` position is a teaching error ($() captures — use
+  `| complete` there). **`succeeds` is ExitCode == 0, exactly** —
+  for tools whose nonzero codes AND output are both data (grep,
+  fzf), use `| complete` and read the record.
   Full inspection: `cmd | complete` gives `{ ExitCode; Stdout;
-  Stderr }`; in expression positions use the `completed` builtin:
-  `completed "prog" ["arg1"; "arg2"]`. `print ()` is silent (unit
+  Stderr }`; in expression positions use the builtins:
+  `completed "prog" [args]`, `exitCoded "prog" [args]` (+ `...Env`
+  twins). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
 - Typed output: `git status --porcelain | from porcelain` gives rows

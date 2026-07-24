@@ -3766,6 +3766,38 @@ let agentFindingsTests =
               | Ok(SLet("ok", { Kind = EApp({ Kind = EApp({ Kind = EVar "succeeded" }, _) }, _) })) -> ()
               | other -> failtest $"expected the succeeded desugar, got {other}"
           }
+          test "exitCode desugars to the exitCoded application [D:exit-reifiers]" {
+              match Weir.Parser.parseLine cmdResolver "let rc = git push | exitCode" with
+              | Ok(SLet(_, e)) -> Expect.stringContains (Weir.Ast.sexpr e) "exitCoded" ""
+              | other -> failtest $"expected the exitCoded desugar, got {other}"
+          }
+          test "exitCode conflict cells teach at parse [D:exit-reifiers]" {
+              // $() captures vs exitCode streams: destination conflict
+              match Weir.Parser.parseLine cmdResolver "let x = $(git push | exitCode)" with
+              | Error msg -> Expect.stringContains msg "use '| complete' inside $()" ""
+              | Ok _ -> failtest "the capture conflict must reject"
+
+              // !() discards the int
+              match Weir.Parser.parseLine cmdResolver "!(git push | exitCode)" with
+              | Error msg -> Expect.stringContains msg "bind it (let rc = <command> | exitCode)" ""
+              | Ok _ -> failtest "the discard conflict must reject"
+
+              // the single-external-segment family rule (statement level —
+              // the let-RHS chain rejects mid-chain stages earlier, with
+              // the bare-pipe hint, family-uniformly)
+              match Weir.Parser.parseLine cmdResolver "git log | Seq.first 1 | exitCode" with
+              | Error msg -> Expect.stringContains msg "single external command segment" ""
+              | Ok _ -> failtest "exitCode must keep the family's segment rule"
+          }
+          test "a discarded exit code errors with the bind-or-match hint" {
+              let lines = [ "git push | exitCode" ]
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+              Expect.exists
+                  diags
+                  (fun d -> d.Message.Contains "bind it (let rc = <command> | exitCode), match on it")
+                  "the set +e muscle-memory hint"
+          }
           test "orFail carries its message expression" {
               match Weir.Parser.parseLine cmdResolver "git fetch | orFail \"boom\"" with
               | Ok(SCmd { Kind = EApp(_, _) }) -> ()

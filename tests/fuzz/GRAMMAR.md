@@ -52,7 +52,8 @@ composition, not type complexity.
 - multiline strings (never — not a weir feature)
 - env-parameterized districts (`!name`) and env sigils (`$e`/`!e`);
   `sh -c` lines; `| from porcelain/json` adapters; exit reifiers
-  (`succeeds`/`complete`/`orFail`)
+  (`succeeds`/`complete`/`orFail`/`exitCode` — the family is outside
+  the generator's shape list)
 - `let ... in` inline form; param-ful lets / function defs;
   seq patterns; Regex patterns; tuples; copy-and-update literals;
   `Args.load` / `Env.load`; raw strings; `#loose` mode
@@ -107,7 +108,7 @@ inline `in` form yet), aligned ↔ Stroustrup/inline (aligned is
 generated as a base style but not flipped by a transform).
 
 Smoke: pinned seed 1789001, 200 cases/invariant (~7s), wired into CI
-after publish + e2e. Deep: `tools/fuzz.sh [seed] [count]` (fresh
+after publish + e2e. Deep: `tools/fuzz.weir [seed] [count]` (fresh
 seed, 10k default). The equality detector has a graded positive
 control (a deliberately non-neutral edit fails the property —
 verified at bring-up).

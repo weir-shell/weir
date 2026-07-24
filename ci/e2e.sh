@@ -2223,4 +2223,81 @@ echo "e2e ok: declaration collisions reject at check (both routes + one slot)"
 
 rm -rf "$sfdir"
 
+# ---- the reifier family completes [D:exit-reifiers]: output goes
+# ---- where the meaning goes ----
+
+rfdir=$(mktemp -d)
+
+# orFail STREAMS (behavioral pin: the child's stdout reaches the user)
+cat > "$rfdir/of.weir" <<'WEOF'
+sh -c "echo build-step-one; echo build-step-two; exit 4" | orFail "build broke"
+WEOF
+out=$($BIN "$rfdir/of.weir" 2>&1) && fail "orFail must raise on nonzero"
+echo "$out" | grep -qF "build-step-one" || fail "orFail must stream stdout: $out"
+echo "$out" | grep -qF "build broke (exit 4)" || fail "orFail message+code: $out"
+echo "e2e ok: orFail streams and raises with the message"
+
+# bare !(cmd) ≡ cmd | orFail "<msg>": byte-identical stream, same raise
+cat > "$rfdir/eq1.weir" <<'WEOF'
+!(sh -c "echo same-stream; exit 2")
+WEOF
+cat > "$rfdir/eq2.weir" <<'WEOF'
+sh -c "echo same-stream; exit 2" | orFail "custom words"
+WEOF
+out1=$($BIN "$rfdir/eq1.weir" 2>/dev/null; echo "rc=$?")
+out2=$($BIN "$rfdir/eq2.weir" 2>/dev/null; echo "rc=$?")
+[ "$out1" = "$out2" ] || fail "!() and orFail must stream identically: [$out1] vs [$out2]"
+echo "e2e ok: bare !() and orFail stream byte-identically (messages differ on stderr)"
+
+# exitCode: stream + the code as data; never raises
+cat > "$rfdir/ec.weir" <<'WEOF'
+let rc = sh -c "echo watched-output; exit 7" | exitCode
+print $"code={rc}"
+WEOF
+out=$($BIN "$rfdir/ec.weir")
+echo "$out" | grep -qF "watched-output" || fail "exitCode must stream: $out"
+echo "$out" | grep -qF "code=7" || fail "exitCode must bind the code: $out"
+echo "e2e ok: exitCode streams AND binds (a watched build decides)"
+
+# the taught idiom: match on the code (130 = cancel)
+cat > "$rfdir/match.weir" <<'WEOF'
+let rc = sh -c "exit 130" | exitCode
+
+match rc with
+| 0 -> print "ok"
+| 130 -> print "cancelled"
+| c -> fail $"unexpected: {c}"
+WEOF
+out=$($BIN "$rfdir/match.weir")
+expect "the match-on-exit-code idiom (graceful cancel)" "cancelled" "$out"
+
+# env variant: the expression-position spelling
+cat > "$rfdir/env.weir" <<'WEOF'
+let rc = exitCodedEnv (Env.ofPairs [("MARK", "seen")]) "sh" ["-c"; "echo mark=$MARK; exit 3"]
+print $"env code {rc}"
+WEOF
+out=$($BIN "$rfdir/env.weir")
+expect "exitCodedEnv streams with the overlay applied" "mark=seen" "$out"
+expect "exitCodedEnv binds the code" "env code 3" "$out"
+
+# conflict cells reject with the teaching text
+errout=$(printf 'let x = $(git push | exitCode)
+print "u"
+' | $BIN check /dev/stdin 2>&1) && fail "capture conflict must reject"
+echo "$errout" | grep -qF "use '| complete' inside" || fail "capture-conflict teaching: $errout"
+errout=$(printf '!(git push | exitCode)
+' | $BIN check /dev/stdin 2>&1) && fail "discard conflict must reject"
+echo "$errout" | grep -qF "bind it (let rc = <command> | exitCode)" || fail "discard-conflict teaching: $errout"
+errout=$(printf 'git push | exitCode
+' | $BIN check /dev/stdin 2>&1) && fail "statement discard must reject"
+echo "$errout" | grep -qF "drop '| exitCode' if you don't need the code" || fail "statement hint: $errout"
+# a district line inherits the !() ruling (the wrap desugar)
+errout=$(printf 'if 1 > 0 then !
+    git push | exitCode
+' | $BIN check /dev/stdin 2>&1) && fail "district exitCode line must reject"
+echo "$errout" | grep -qF "bind it (let rc = <command> | exitCode)" || fail "district cell: $errout"
+echo "e2e ok: exitCode conflict cells teach (sigil, bang, statement, district)"
+
+rm -rf "$rfdir"
+
 echo "e2e battery: all green"

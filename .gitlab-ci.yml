@@ -45,7 +45,7 @@ test:
     - dotnet test tests/Weir.Tests/Weir.Tests.fsproj
     - ./publish.sh
     - ./ci/e2e.sh
-    # fuzz smoke: pinned seed, 200 cases/invariant (deep runs: tools/fuzz.sh)
+    # fuzz smoke: pinned seed, 200 cases/invariant (deep runs: tools/fuzz.weir)
     - dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
     - ./ci/skill-doc.sh
     - ./ci/fsharp-oracle.sh

@@ -1,6 +1,47 @@
 # Spike Notes
 
-## Arm-commit — the span-soundness arc closes (2026-07-24)
+## The reifier family completes — one law, four cells (2026-07-24)
+
+The archaeology ran first and settled the genus: orFail's silence
+was accident-grade. No pin held it — only the message desugar was
+pinned — and the in-code comment revealed the mechanism (riding
+complete's capture plumbing, stderr replayed after the fact). Both
+flagship orFail sites used --quiet git commands, which is exactly
+why the corpus never noticed. The fix gives orFail the streaming
+spawn (stderr inherits, stdout relays live), and the implied claim
+from the reifier session became provable: bare `!(cmd)` and
+`cmd | orFail msg` now stream byte-identically, differing only in
+the failure message — pinned behaviorally in e2e.
+
+`| exitCode` fills the fourth cell: streams like a bare command
+line, never raises, the code as int. The old park opened on its own
+criterion — it was right that complete carries the code; the missing
+cell was the code STREAMED, and the axis only became visible when
+the family sat in a table. The law now governs instead of a zoo:
+output goes where the meaning goes. Predicates and inspectors are
+quiet/captured (their output IS the result); asserts and control
+flow stream (their output is for the human).
+
+The conflict cells were decided on paper and landed as parse-time
+teaching errors: `$(… | exitCode)` names the tension and points at
+`| complete` (the captured-code cell that already exists);
+`!(… | exitCode)` and bare statements get the discarded-int hint
+(`set +e; cmd; rc=$?` muscle memory will type that shape); district
+lines inherit the bang ruling through the wrap desugar — all four
+pinned. The env story follows the completed precedent: exitCodedEnv
+rides the same desugar twin, and the expression-position builtins
+are exposed. The semantic-token walk learned the new spine names the
+same session — exitCode chains keep their command coloring.
+
+Both agent frictions closed with their arcs: fuzz.weir's
+reproduce-hint un-workarounds into the orFail message (streaming AND
+deciding, the thing that had no spelling), and graceful-cancel's
+code-as-data half is the match-on-130 idiom — its selection half
+stays complete's, said explicitly. The flagship's diff-files guard
+swapped --quiet for --exit-code as the living example: when the
+pull guard fails, the failing paths now SHOW.
+
+## Arm-commit — the span-soundness arc closes (2026-07-24)## Arm-commit — the span-soundness arc closes (2026-07-24)
 
 The smallest session of the window carries the arc's last stone.
 Invariant 3 was built to audit spans generatively; its two finds

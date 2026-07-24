@@ -17,7 +17,7 @@ module Fuzz.Main
 //     program, is idempotent, preserves per-statement sexpr shape, and
 //     the formatted program is output-identical on the binary.
 // Seeds/counts: WEIR_FUZZ_SEED / WEIR_FUZZ_COUNT (smoke default is the
-// pinned seed; tools/fuzz.sh passes fresh seeds for deep runs).
+// pinned seed; tools/fuzz.weir passes fresh seeds for deep runs).
 
 open System
 open Expecto

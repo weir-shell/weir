@@ -192,8 +192,10 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
             [ "succeeded"
               "completed"
               "orFailed"
+              "exitCoded"
               "succeededEnv"
               "completedEnv"
+              "exitCodedEnv"
               "orFailedEnv" ]
 
     let rec spineIsReifier (te: Check.TypedExpr) =

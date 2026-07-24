@@ -10,6 +10,16 @@ skill lines and targeted hints).
 ## stranded
 
 ## friction
+- 2026-07-24 | fuzz.sh -> fuzz.weir | stream-AND-reify has no
+  spelling: `| orFail msg` swallows the chain's output (probed —
+  the predicate-silence family), `| complete` captures it, so a
+  long-running child whose LIVE output matters can only run bare
+  (raise carries a generic located error; the reproduce-hint moved
+  BEFORE the run). Also: no `$0` — the repo root rides
+  `git rev-parse --show-toplevel` instead of dirname-$0.
+  CLOSED same day [D:exit-reifiers]: orFail streams now, and
+  `| exitCode` streams-and-binds; fuzz.weir carries the reproduce
+  message in the orFail. The `$0` half stands.
 
 - 2026-07-23 | git-subrepo example | two reflex-errors while writing:
   `then`/`else` on their own lines at the `if`'s indent are SIBLINGS
@@ -77,6 +87,9 @@ skill lines and targeted hints).
   reified (want: tolerate cancel, exit 0 silently). Candidate shapes:
   chain-level complete, or completed-with-stdin. Logged, not
   improvised.
+  PARTIALLY CLOSED [D:exit-reifiers]: the code-as-data half is
+  `| exitCode` + match (`| 130 -> ...`); the selection-AND-code half
+  stays `| complete` (both are data there — the captured cell).
 - 2026-07-20 | nuget http-get translation | TWO receipts in one line:
   (1) env-var access — the launch-day predicted gap arrived as a user
   task; Env.get shipped same session (Option<string>, no $NAME

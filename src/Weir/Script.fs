@@ -1637,6 +1637,12 @@ let checkStatement
             // DISCARDED value, not a stream — the discard family
             // [D:exit-reifiers]; record-valued (| complete) statements
             // keep their standing echo behavior
+            let rec exitCodeSpine (t: Check.TypedExpr) =
+                match t.Kind with
+                | Check.TEVar("exitCoded" | "exitCodedEnv") -> true
+                | Check.TEApp(f, _) -> exitCodeSpine f
+                | _ -> false
+
             match te.Ty with
             | TBool ->
                 Error(
@@ -1646,6 +1652,16 @@ let checkStatement
                           Message =
                             "this statement computes a bool and discards it — bind it "
                             + "(let ok = ... | succeeds) or use it in a condition" }
+                )
+            // `set +e; cmd; rc=$?` muscle memory lands here [D:exit-reifiers]
+            | TInt when exitCodeSpine te ->
+                Error(
+                    typed
+                        StmtTag.Cmd
+                        { Span = te.Span
+                          Message =
+                            "this statement computes the exit code and discards it — bind it "
+                            + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code" }
                 )
             | _ ->
                 Ok

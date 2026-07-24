@@ -51,6 +51,18 @@ weir rejects rather than guesses.
   and explicit trailing-`;` lines stay alignment-free; fmt
   canonicalizes to the measured anchor, never offset arithmetic —
   fmt and the assembler agree by construction.
+- **The reifier output law** [D:exit-reifiers]: output goes where the
+  meaning goes. Predicates and inspectors are quiet/captured because
+  their output IS the result (`succeeds` → bool, `complete` → the
+  Completed record); asserts and control-flow STREAM because their
+  output is for the human — the result travels separately (`orFail` →
+  unit/raise with the message, `exitCode` → the code as int, never
+  raising). Four cells, one rule; a proposed reifier is tested
+  against the law, not appended to a zoo. Streaming reifiers refuse
+  capture/discard contexts at parse (`$(… | exitCode)`,
+  `!(… | exitCode)`, district lines, bare statements — each error
+  teaches the spelling that fits); `complete` remains the
+  captured-code cell.
 - **The consumed-separator law** [D:seq-commit] [D:arm-commit]: a
   consumed separator COMMITS to its continuation — `;` to its next
   element, an arm's `|` to its arm, a record literal to its fields

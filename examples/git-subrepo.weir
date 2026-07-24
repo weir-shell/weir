@@ -227,7 +227,9 @@ let assertRepoReady ctx =
     step "Assert repo state"
     if ctx.HeadBranch |> Str.isMatch @"^subrepo/" then fail "Can't pull while a subrepo branch is checked out."
     !
-        git diff-files --quiet --ignore-submodules | orFail "Can't pull subrepo. Unstaged changes."
+        // --exit-code instead of --quiet: orFail streams, so the
+        // failing paths SHOW [D:exit-reifiers]
+        git diff-files --exit-code --ignore-submodules | orFail "Can't pull subrepo. Unstaged changes."
         git diff-index --quiet --cached --ignore-submodules HEAD | orFail "Can't pull subrepo. Index has changes."
 
 // ---- fetch (bash: subrepo:fetch) --------------------------------

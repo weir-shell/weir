@@ -367,13 +367,27 @@ let private sigilOpen (glyph: char) : Parser<Expr option, unit> =
         |>> fun (nameO, span) -> nameO |> Option.map (fun n -> { Kind = EVar n; Span = span })
     )
 
+// `| exitCode` STREAMS; capture/discard contexts are destination
+// conflicts [D:exit-reifiers] — reject at parse with the teaching text
+let rec private exitCodeSpine (e: Expr) : bool =
+    match e.Kind with
+    | EVar("exitCoded" | "exitCodedEnv") -> true
+    | EApp(f, _) -> exitCodeSpine f
+    | _ -> false
+
 let private captureSigil =
     spanned (
         sigilOpen '$'
         >>= fun envO ->
             ws >>. sigilChain envO
-            .>> (pchar ')'
-                 <?> "')' — close the sigil on this line, or bind with 'let x = <command>' at statement level")
+            >>= fun chain ->
+                (if exitCodeSpine chain then
+                     failFatally
+                         "exitCode streams; $() captures — use '| complete' inside $() and read .ExitCode, or move the exitCode chain to a let RHS"
+                 else
+                     preturn chain)
+                .>> (pchar ')'
+                     <?> "')' — close the sigil on this line, or bind with 'let x = <command>' at statement level")
     )
     |>> fun (chain, span) -> { chain with Span = span }
     .>> ws
@@ -383,8 +397,14 @@ let private effectSigil =
         sigilOpen '!'
         >>= fun envO ->
             ws >>. sigilChain envO
-            .>> (pchar ')'
-                 <?> "')' — close the sigil on this line, or use line-end '!' for a block of commands")
+            >>= fun chain ->
+                (if exitCodeSpine chain then
+                     failFatally
+                         "this discards the exit code — bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+                 else
+                     preturn chain)
+                .>> (pchar ')'
+                     <?> "')' — close the sigil on this line, or use line-end '!' for a block of commands")
     )
     |>> (fun (chain, span) ->
         { Kind = EPipe(chain, { Kind = EVar "print"; Span = span })
@@ -1065,6 +1085,7 @@ type private Seg =
     // the exit-code reifiers [D:exit-reifiers] — complete's family,
     // ONE rule (single external segment, nothing follows)
     | SucceedsMarker of Span
+    | ExitCodeMarker of Span
     | OrFailMarker of Expr * Span
 
 let private reifierEnd =
@@ -1104,6 +1125,14 @@ let private orFailMarker =
     )
     |>> fun ((_, span), msg) -> OrFailMarker(msg, span)
 
+let private exitCodeMarker =
+    attempt (
+        spanned (pstring "exitCode" .>> notFollowedBy (satisfy cmdWordChar))
+        .>> ws
+        .>> reifierEnd
+    )
+    |>> fun (_, span) -> ExitCodeMarker span
+
 let private cmdLineWith
     (builtinHeads: bool)
     (argP: Parser<Expr, unit>)
@@ -1115,6 +1144,7 @@ let private cmdLineWith
         pipeSep
         >>. (completeMarker
              <|> succeedsMarker
+             <|> exitCodeMarker
              <|> orFailMarker
              <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )
@@ -1129,11 +1159,13 @@ let private cmdLineWith
                         Result.Ok
                             { Kind = EPipe(acc, seg)
                               Span = Span.union acc.Span seg.Span }
-                    | Result.Ok acc, (CompleteMarker _ | SucceedsMarker _ | OrFailMarker _ as marker) ->
+                    | Result.Ok acc,
+                      (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ as marker) ->
                         let stageName, mspan, plainVar, envVar, extraArgs =
                             match marker with
                             | CompleteMarker sp -> "complete", sp, "completed", "completedEnv", []
                             | SucceedsMarker sp -> "succeeds", sp, "succeeded", "succeededEnv", []
+                            | ExitCodeMarker sp -> "exitCode", sp, "exitCoded", "exitCodedEnv", []
                             | OrFailMarker(msg, sp) -> "orFail", sp, "orFailed", "orFailedEnv", [ msg ]
                             | Stage _ -> "", acc.Span, "", "", []
 

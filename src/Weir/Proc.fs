@@ -84,6 +84,50 @@ let linesWith
 
 let lines (prog: string) (args: string list) (input: seq<string> option) : seq<string> = linesWith [] prog args input
 
+// stream stdout to the console as it arrives (stderr inherits), wait,
+// return the exit code — the streaming reifiers' spawn path
+// [D:exit-reifiers]: output goes to the human, the code is the result
+let streamCode (overlay: (string * string) list) (prog: string) (args: string list) : int =
+    let psi = ProcessStartInfo(prog)
+
+    for a in args do
+        psi.ArgumentList.Add a
+
+    for k, v in overlay do
+        psi.Environment[k] <- v
+
+    psi.WorkingDirectory <- Session.Cwd()
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- false
+
+    use p =
+        try
+            Process.Start psi
+        with :? System.ComponentModel.Win32Exception ->
+            failwith $"command not found or not executable: {prog}"
+
+    try
+        let out = p.StandardOutput
+        let mutable line = out.ReadLine()
+
+        while line <> null do
+            System.Console.Out.WriteLine line
+            line <- out.ReadLine()
+
+        p.WaitForExit()
+        p.ExitCode
+    finally
+        try
+            p.Kill true
+        with _ ->
+            ()
+
+        try
+            p.WaitForExit()
+        with _ ->
+            ()
+
 let resolveProg (prog: string) : string =
     if prog.Contains '/' then Session.resolve prog else prog
 

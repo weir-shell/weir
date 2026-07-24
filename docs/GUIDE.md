@@ -140,6 +140,35 @@ deriving `-C` and `--help` text from the declaration — are a coming
 feature; until then attributes are legal-and-inert documentation the
 checker validates.
 
+## Exit codes: the reifier family
+
+One law: **output goes where the meaning goes.**
+
+| spelling | output | result |
+|---|---|---|
+| `cmd \| succeeds` | silent | `bool` (`ExitCode == 0`, exactly) |
+| `cmd \| complete` | captured | `{ ExitCode; Stdout; Stderr }` |
+| `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
+| `cmd \| exitCode` | streams | the code as `int`; never raises |
+
+Predicates and inspectors are quiet/captured because their output IS
+the result; asserts and control flow stream because their output is
+for the human. A watched build that decides:
+
+```weir
+let rc = sh -c "echo building...; exit 130" | exitCode
+
+match rc with
+| 0 -> print "deployed"
+| 130 -> print "cancelled"
+| c -> fail $"build: exit {c}"
+```
+
+`exitCode` refuses capturing/discarding positions with a teaching
+error (`$()` captures — use `| complete` there; a bare statement
+discards — bind or match). For codes-with-captured-output (fzf's
+selection AND its cancel code), `complete` is the cell.
+
 ## What the editor colors mean
 
 With the LSP attached, editors render weir's one novel boundary — the
