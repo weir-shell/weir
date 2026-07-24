@@ -4569,6 +4569,32 @@ let offsideTests =
           }
           // FLIPPED 2026-07-24 [D:field-alignment]: fields at the brace's own
           // indent were the records-ignore-indent divergence; siblings align now
+          test "a field misaligned from ITS OWN attribute line errors [D:field-alignment]" {
+              // the >] dangle suppresses the separator, never the alignment
+              // (the planted flagship line 106: checker was happy, runtime
+              // error misled)
+              match
+                  Weir.Script.assemble
+                      [ 1, "type C = {"
+                        2, "    [<Doc \"d\">]"
+                        3, "     subdir: string"
+                        4, "    force: bool"
+                        5, "}" ]
+              with
+              | Error e -> Expect.stringContains e "they sit at column 4" ""
+              | other -> failtest $"expected the alignment error, got {other}"
+
+              match
+                  Weir.Script.assemble
+                      [ 1, "type C = {"
+                        2, "    [<Doc \"d\">]"
+                        3, "    subdir: string"
+                        4, "    force: bool"
+                        5, "}" ]
+              with
+              | Ok _ -> ()
+              | Error e -> failtest $"the aligned attr+field must stay legal: {e}"
+          }
           test "record fields off the first-field column error naming it" {
               match
                   Weir.Script.assemble

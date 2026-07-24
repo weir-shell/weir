@@ -29,6 +29,14 @@ a `[ x`-spaced list (anchor at +2, fmt pulling to +1): fmt now
 aligns to the measured anchor, so the two components agree by
 construction instead of by convention.
 
+Day-two catch, user-planted: a field one column off its OWN
+attribute line slipped through — the `>]` dangle exemption (there
+to suppress the separator between an attribute and its field)
+was also skipping the alignment check, and the first symptom was a
+MISLEADING runtime argv error while the checker stayed happy. The
+dangle now suppresses only the separator; an attribute and its
+field are one entry on two lines and must align, pinned both ways.
+
 ## Pipe alignment — the indentation session (2026-07-24)## Pipe alignment — the indentation session (2026-07-24)
 
 Opened on a live receipt sitting in the committed flagship: `| Init`

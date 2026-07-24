@@ -657,8 +657,13 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         // the first entry (opener-line content, or the first
                                         // continuation entry of a dangling opener) sets the
                                         // column; every later entry must hit it
+                                        // an attribute and its field are ONE entry on two
+                                        // lines — the `>]` dangle suppresses the separator,
+                                        // never the alignment [D:field-alignment]
+                                        let attrField = startsEntry && prev.EndsWith ">]"
+
                                         let alignment =
-                                            if join = JSibling || (startsEntry && entryCol.IsNone) then
+                                            if join = JSibling || attrField || (startsEntry && entryCol.IsNone) then
                                                 match entryCol with
                                                 | Some c when indent <> c ->
                                                     Error
