@@ -1182,6 +1182,11 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
         // token pass over the code region
         let mutable i = 0
         let mutable headSeen = false
+        // the mode tint [D:semantic-tokens]: an external head arms
+        // command mode; argv words render DIM until a '|' hands the
+        // chain to an expression stage — the same three-way the LSP
+        // tokens carry (head / argv / splice), from the same resolver
+        let mutable cmdMode = false
 
         while i < line.Length do
             if not (free i) then
@@ -1202,11 +1207,17 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         Some "34"
                     elif not headSeen && start = 0 then
                         // the fish trick: the head resolves live
-                        if isKnown word then Some "1" // known: bold
-                        elif Extern.exists word then Some "1;34" // PATH: bold blue
-                        else Some "31" // unresolved: red
+                        if isKnown word then
+                            Some "1" // known: bold
+                        elif Extern.exists word then
+                            cmdMode <- true
+                            Some "1;34" // PATH: bold blue
+                        else
+                            Some "31" // unresolved: red
                     elif Char.IsUpper word[0] then
                         Some "33" // the casing law: types/ctors/modules
+                    elif cmdMode then
+                        Some "2" // argv words: dim (inert data)
                     else
                         None
 
@@ -1235,6 +1246,10 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         codes[i] <- Some "36"
                         i <- i + 1
             elif "|><=+-*/".Contains(line[i]) then
+                if line[i] = '|' then
+                    // a stage boundary: what follows is expression land
+                    cmdMode <- false
+
                 codes[i] <- Some "1" // operators: bold
                 i <- i + 1
             else

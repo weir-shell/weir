@@ -91,13 +91,11 @@ fails.
    (some error diagnostic exists) holds unconditionally; the strict
    positional assertion (the injected line, col within extent, a
    translated backtrack note counts) runs under
-   `WEIR_FUZZ_STRICT_SPANS=1` — red today on two pinned classes
-   (district-wrap anchor, bare-pipe fatal; pins in Weir.Tests), open
-   until the re-anchor policy is decided. The hard floor itself is
-   red on deep (fresh-seed) runs via one pinned OPEN BUG: the
-   check/run verdict split (a bound-name block-let RHS claimed as an
-   assumed command — junk demotes to a cmd-not-found warning); it
-   gates deep runs until the assume-resolver fix lands.
+   `WEIR_FUZZ_STRICT_SPANS=1` — red today on ONE pinned class (the
+   bare-pipe fatal; pin in Weir.Tests), open until its policy is
+   decided. The district-wrap class and the verdict-split hard-floor
+   bug were both closed by [D:seq-commit] (a consumed `;` commits to
+   its element); deep runs are green.
 4. fmt roundtrip: `formatLines` succeeds on every generated program,
    is idempotent, preserves per-statement sexpr shape (the respace
    guard's own predicate), and the formatted program is

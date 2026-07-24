@@ -2396,7 +2396,14 @@ let replColorTests =
 
     testList
         "REPL coloring"
-        [ test "paint transparency: strip after colorize is the identity" {
+        [ test "command mode tints: head bold-blue, argv dim, splice cyan, stage undimmed [D:semantic-tokens]" {
+              let c = colorize "git add file.txt $x | Seq.head"
+              Expect.stringContains c "\u001b[1;34mgit\u001b[0m" "the external head"
+              Expect.stringContains c "\u001b[2madd\u001b[0m" "argv words render dim"
+              Expect.stringContains c "\u001b[36m$x\u001b[0m" "the splice island"
+              Expect.isFalse (c.Contains "\u001b[2mhead") "after | the stage is expression land"
+          }
+          test "paint transparency: strip after colorize is the identity" {
               let fixtures =
                   [ "let x = 1 + 2"
                     "ls |> where (fun f -> f.Bytes > 10)"
@@ -2597,6 +2604,127 @@ let blockLetCmdTests =
               match Weir.Parser.parseStmt "let function = 1" with
               | Error msg -> Expect.stringContains msg "reserved" "the hint"
               | Ok _ -> failtest "expected the reservation"
+          } ]
+
+let semanticTokenTests =
+    testList
+        "Semantic tokens"
+        [ test "a command statement tokens head + argv [D:semantic-tokens]" {
+              let toks = Weir.Lsp.semanticTokensFor [ "echo hi there" ]
+              Expect.equal toks [ (0, 0, 4, 0); (0, 5, 2, 1); (0, 8, 5, 1) ] ""
+          }
+          test "splice islands: $name whole, (expr) delimiters only; strings stay lexical" {
+              let toks =
+                  Weir.Lsp.semanticTokensFor [ "let x = \"v\""; "echo hi $x (1 + 2) \"quoted\"" ]
+
+              Expect.equal
+                  toks
+                  [ (1, 0, 4, 0); (1, 5, 2, 1); (1, 8, 2, 2); (1, 11, 1, 2); (1, 17, 1, 2) ]
+                  "the quoted arg and the splice interior emit nothing"
+          }
+          test "the shadowed-cat trio: binding wins, deletion restores, ^ forces" {
+              // bound: an application — NO command tokens
+              let bound =
+                  Weir.Lsp.semanticTokensFor [ "let echo x = x"; "let y = echo 5"; "print $\"{y}\"" ]
+
+              Expect.equal bound [] "a known binding is expression mode"
+
+              // unbound: the same text tokens as command
+              let free = Weir.Lsp.semanticTokensFor [ "echo 5" ]
+              Expect.equal free [ (0, 0, 4, 0); (0, 5, 1, 1) ] ""
+
+              // forced: the ^ rides in the head span
+              let forced = Weir.Lsp.semanticTokensFor [ "let echo x = x"; "^echo hi" ]
+              Expect.equal (forced |> List.filter (fun (l, _, _, _) -> l = 1)) [ (1, 0, 5, 0); (1, 6, 2, 1) ] ""
+          }
+          test "the verdict-split repro renders expression-colored (no phantom tokens)" {
+              // [D:seq-commit] made it an error; the failed statement
+              // emits NOTHING — the fix's visible face
+              let toks =
+                  Weir.Lsp.semanticTokensFor
+                      [ "let v0 ="
+                        "    let v3 = \"a\""
+                        "    print \"mm\""
+                        "    let v4 = v3 ?!?"
+                        "    3" ]
+
+              Expect.equal toks [] "no command tokens anywhere"
+          }
+          test "district body lines token; the wrapper glyphs emit nothing" {
+              let toks =
+                  Weir.Lsp.semanticTokensFor
+                      [ "if 1 > 0 then !"; "    echo m one"; "    echo m two"; ""; "print \"z\"" ]
+
+              Expect.equal
+                  toks
+                  [ (1, 4, 4, 0)
+                    (1, 9, 1, 1)
+                    (1, 11, 3, 1)
+                    (2, 4, 4, 0)
+                    (2, 9, 1, 1)
+                    (2, 11, 3, 1) ]
+                  "argv/head spans have physical homes; no token past EOL"
+          }
+          test "error-state files emit partial truth" {
+              let toks =
+                  Weir.Lsp.semanticTokensFor [ "echo before ok"; "let bad = ?!?"; "echo after ok" ]
+
+              Expect.equal
+                  toks
+                  [ (0, 0, 4, 0)
+                    (0, 5, 6, 1)
+                    (0, 12, 2, 1)
+                    (2, 0, 4, 0)
+                    (2, 5, 5, 1)
+                    (2, 11, 2, 1) ]
+                  "statements that parsed token; the failed one is silent"
+          }
+          test "expression stages after | emit nothing; reifiers emit nothing" {
+              let toks =
+                  Weir.Lsp.semanticTokensFor [ "git status --porcelain | Seq.map Str.trim" ]
+
+              Expect.equal
+                  toks
+                  [ (0, 0, 3, 0); (0, 4, 6, 1); (0, 11, 11, 1) ]
+                  "the stage after | is expression territory"
+
+              let toks2 =
+                  Weir.Lsp.semanticTokensFor [ "let ok = git rev-parse HEAD | succeeds"; "print $\"{show ok}\"" ]
+
+              Expect.equal
+                  toks2
+                  [ (0, 9, 3, 0); (0, 13, 9, 1); (0, 23, 4, 1) ]
+                  "the reifier stays lexical (grammar, not argv)"
+          }
+          test "block-let and param-ful RHS commands token at depth" {
+              let toks =
+                  Weir.Lsp.semanticTokensFor
+                      [ "let f r ="
+                        "    let g = echo tag $r"
+                        "    g |> Seq.length"
+                        "print $\"{f 1}\"" ]
+
+              Expect.equal
+                  toks
+                  [ (1, 12, 4, 0); (1, 17, 3, 1); (1, 21, 2, 2) ]
+                  "the fresh block-let RHS tokens; the param splice is an island"
+          }
+          test "nested sigil through a paren splice recurses (depth 2)" {
+              // $() as a direct command ARG is a type error (seq arg —
+              // rejected); the nested spelling rides a paren splice
+              let toks =
+                  Weir.Lsp.semanticTokensFor
+                      [ "let m = $(echo a ($(echo b) |> Seq.head)) |> Seq.length"; "print $\"{m}\"" ]
+
+              Expect.equal
+                  toks
+                  [ (0, 10, 4, 0)
+                    (0, 15, 1, 1)
+                    (0, 17, 1, 2)
+                    (0, 20, 4, 0)
+                    (0, 25, 1, 1)
+                    (0, 39, 1, 2) ]
+                  "outer sigil head/argv, splice delimiters, inner sigil head/argv"
           } ]
 
 let multilineLambdaTests =
@@ -4799,20 +4927,18 @@ let offsideTests =
 
               let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
 
+              // IMPROVED by [D:seq-commit]: the ';'-commit killed the
+              // backtrack that anchored past the district — the primary
+              // now lands ON the junk
               match diags |> List.filter (fun d -> d.Severity = "error") with
-              | d :: _ ->
-                  Expect.equal (d.Line, d.Col) (3, 24) "primary sits past the district line's end"
-                  Expect.stringContains d.Message "at line 4, col 20" "the true site travels as a backtrack note"
+              | d :: _ -> Expect.equal (d.Line, d.Col) (4, 20) "primary anchors on the junk itself"
               | [] -> failtest "expected a parse diagnostic"
           }
-          test "fuzzer find: junk after a BOUND name demotes to a cmd-not-found warning at check" {
-              // the deep run's verdict-split find [D:fuzz-harness]: after a
-              // sequenced unit statement, a block-let RHS headed by a KNOWN
-              // binding parses as an ASSUMED command and the junk becomes
-              // argv — check exits 0 (warning) on a script the runner
-              // rejects. OPEN BUG marker; fix candidate: assume-resolver
-              // stops claiming names the env already knows
-              // (bindings-beat-PATH holds at check time too)
+          test "FIXED: junk after a bound name errors at check, on the junk [D:seq-commit]" {
+              // the verdict-split find's closure: a consumed ';' commits to
+              // its element, so the failing tail can no longer re-parse
+              // outside its let-in scope into a phantom command — check
+              // and run agree, located at the junk
               let lines =
                   [ "let v0 ="
                     "    let v3 = \"a\""
@@ -4822,14 +4948,12 @@ let offsideTests =
 
               let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
 
-              Expect.isFalse
-                  (diags |> List.exists (fun d -> d.Severity = "error"))
-                  "check reports NO error today — the split this pin marks"
-
               Expect.exists
                   diags
-                  (fun d -> d.Code = "cmd-not-found" && d.Line = 4)
-                  "the binding claimed as a missing command"
+                  (fun d -> d.Severity = "error" && d.Line = 4)
+                  "check errors ON the junk line, like the runner"
+
+              Expect.isFalse (diags |> List.exists (fun d -> d.Code = "cmd-not-found")) "no phantom command survives"
           }
           test "span find: junk in a nested arm after a completed arm triggers the bare-pipe fatal upstream" {
               // `match 62 with | 0 -> ..` is already a complete expression,
@@ -5465,6 +5589,7 @@ let allTests =
           seqPatternTests
           blockLetCmdTests
           multilineLambdaTests
+          semanticTokenTests
           pipeAlignTests
           optionSweepTests
           moduleTests

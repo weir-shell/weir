@@ -1,6 +1,79 @@
 # Spike Notes
 
-## Shared flags by containment — the friction arc closes (2026-07-24)
+## Semantic tokens — the mode boundary made visible; the park closes (2026-07-24)
+
+The standing semantic-tokens park closes on its named trigger with
+its arc intact: parked at LSP v1, the REPL-coloring session laid the
+one-brain groundwork ("the eventual semantic-tokens conversation
+gets its evidence"), and the verdict-split receipt fired it — the
+find whose whole story was an expression silently becoming a phantom
+command is now a feature whose whole job is making that impossible
+to miss.
+
+The engine is ~90 lines riding entirely on what existed: analyzeLines
+for the checked statements, a TypedExpr walk for TECmd nodes,
+translate() for physical homes. The legend is three types and the
+claim deliberately minimal — mode spans only, expression land emits
+NOTHING (TextMate keeps lexical coloring; rebuilding it server-side
+would double the drift surface). The synthetic-span rule is the
+span-soundness lesson institutionalized: a token is emitted only
+where the logical slice appears VERBATIM at its translated physical
+position, so district wrapper glyphs and join text emit nothing
+rather than something mislocated — the district pin proves body
+lines token while nothing lands past EOL.
+
+Two shapes needed recognizers the plan didn't enumerate: reified
+chains (| succeeds/complete/orFail) desugar their ECmd into an
+application spine before the checker sees it — the walk recognizes
+the spine so the command still tokens while the reifier name stays
+lexical (the in-session decision, as recommended); and sigil-origin
+TECmd spans open on the `$(`/`!(` glyphs, so the head scanner walks
+past them (the depth-2 pin found it — painting `$(ec` as a head on
+the first try). A fixture correction along the way: `$(...)` as a
+direct command ARGUMENT is a type error (seq arg) — the nested
+spelling rides a paren splice; pinned as found.
+
+The shadowed-cat trio is the acceptance it was designed to be:
+bound → no tokens; unbound → command tokens; `^` → forced head with
+the prefix in the span. The verdict-split repro renders
+expression-colored (no tokens at all — the failed statement emits
+nothing, which IS the correct rendering of a parse error). The REPL
+rider took eleven lines: the existing fish-trick head arms a dim
+argv tint that un-dims at `|` — same resolver, no new derivation.
+VS Code maps the three types onto standard TextMate scopes (argv as
+string.unquoted — fish/nushell's inert-words convention), so default
+themes color the boundary with no user config; SMOKE.md carries the
+interactive checks. Micro stays coarse by design, noted in its
+header.
+
+## The seq-commit fix — the verdict split dies, and the diagnosis corrects itself (2026-07-24)## The seq-commit fix — the verdict split dies, and the diagnosis corrects itself (2026-07-24)
+
+The semantic-tokens plan gated on "the assume-resolver fix", and the
+gate session's probes promptly corrected the blessed diagnosis: the
+resolver was never the door. A tenv-known binding with junk after it
+errored correctly all along (the head gate refuses known names); the
+swallow needed BLOCK scope, and the explicit `in`/`;` single-line
+spelling reproduced it identically. The mechanism: seqExpr's
+`;`-chain wrapped `; elem` in attempt, so a failing element
+un-consumed the `;` and the backtrack re-parsed the tail OUTSIDE the
+let-in scope it belonged to — where the binding is genuinely unknown
+and check's assume-resolver legitimately claims it as a command. The
+scope was never lost in valid programs (probed: let-in spans `;` in
+both spellings); only the FAILING parse could rewind into the
+wrong-scope alternative and come back "successful".
+
+The fix is the consumed-`|` fatal's sibling, one line: a consumed
+`;` commits to its element. Check and run now agree on the class,
+located at the junk. Two dividends: the DISTRICT span class fixed
+for free — the primary error now anchors ON the junk instead of
+past the wrapped segment's end (that pin flipped to the gain), and
+the fuzzer's hard floor is green on deep runs again (seed 8675309,
+10k clean). Strict spans remain red on exactly one class — the
+bare-pipe fatal — which is its own open policy question, unchanged.
+The verdict-split pin flipped from open-bug marker to fixed
+behavior, tying the find to its closure.
+
+## Shared flags by containment — the friction arc closes (2026-07-24)## Shared flags by containment — the friction arc closes (2026-07-24)
 
 The shape sighted at the bicep original (Argu's [<Inherit>],
 reshaped away in translation) and paid for at the port (two

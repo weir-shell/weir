@@ -405,6 +405,9 @@ print x
 - Paths: `Path.extension` (keeps the dot; `""` when none),
   `Path.fileName`, `Path.stem`, `Path.dir` (`""` at the top),
   `Path.combine dir name` — System.IO semantics.
+- Editor mode-coloring (LSP semantic tokens) is for humans — agents
+  read `weir check`; colors carry no information the checker does
+  not already report.
 - Iterate with `weir check file.weir` (all errors, located, coded) or
   `weir check --json file.weir` (structured: file/line/col/code/
   severity) BEFORE running — no evaluation happens, by construction.

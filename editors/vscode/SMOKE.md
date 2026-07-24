@@ -30,3 +30,23 @@ NOT comment-colored.
 Protocol disagreements found here are FINDINGS against the server —
 frame-level pin in tests/lsp/lsp-e2e.py, fixed server-side; the
 extension does not absorb workarounds.
+
+## Mode coloring (semantic tokens [D:semantic-tokens])
+
+10. Open a scratch `.weir` with:
+    ```
+    let cat x = x
+    let y = cat 5
+    echo hello $y (1 + 2) "quoted"
+    if 1 > 0 then !
+        git status
+    ```
+    - line 3: `echo` colors as a callable, `hello` as an inert word
+      (string-family), `$y` and the parens of `(1 + 2)` as splice
+      markers, the interior `1 + 2` and `"quoted"` keep their
+      ordinary code/string colors.
+    - line 2: `cat 5` shows NO command coloring (the binding wins —
+      the shadowing law made visible). Delete line 1: `cat` and its
+      argument re-color as command.
+    - district body (`git status` under the `!`): command-colored,
+      nothing painted past the line ends.

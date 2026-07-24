@@ -140,6 +140,19 @@ deriving `-C` and `--help` text from the declaration — are a coming
 feature; until then attributes are legal-and-inert documentation the
 checker validates.
 
+## What the editor colors mean
+
+With the LSP attached, editors render weir's one novel boundary — the
+command/expression mode line — from the checker's own verdict:
+command heads color as callables, their argv as inert words
+(string-family), and splice markers (`$name`, the parens of an
+`(expr)` splice) as operators, while everything inside a splice keeps
+ordinary code coloring — the visual message "this island is code".
+If text you meant as an expression renders argv-colored (or a bound
+name you meant as a command doesn't), the coloring is not wrong — it
+is the parse, and it just told you before the checker did. The REPL
+carries the same three-way tint.
+
 ## Shared CLI flags: containment, not inheritance
 
 Flags every subcommand carries are declared ONCE, on a record that

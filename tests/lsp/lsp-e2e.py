@@ -189,6 +189,63 @@ expect(diag["params"]["diagnostics"] == [], f"unicode text must check clean: {di
 # default encoder's HTML-tuned escaping mangled in micro; user report)
 expect(all(b"\\u0022" not in f for f in RAW_FRAMES), "u0022 escapes present in frames")
 
+# ---- semantic tokens [D:semantic-tokens] ----------------------------
+expect(init["result"]["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"]
+       == ["weirCommandHead", "weirArgv", "weirSplice"], "token legend missing")
+
+def decode(data):
+    """the five-int delta scheme back to (line, char, len, type)."""
+    out, line, char = [], 0, 0
+    for i in range(0, len(data), 5):
+        dl, dc, ln, ty, _mods = data[i:i + 5]
+        line += dl
+        char = char + dc if dl == 0 else dc
+        out.append((line, char, ln, ty))
+    return out
+
+# the minimal two-line two-token case first (the encoding's off-by-one nest)
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": "echo one\necho two\n"}]}})
+read_msg()  # diagnostics
+send({"jsonrpc": "2.0", "id": 7, "method": "textDocument/semanticTokens/full",
+      "params": {"textDocument": {"uri": URI}}})
+toks = read_msg()
+expect(decode(toks["result"]["data"])
+       == [(0, 0, 4, 0), (0, 5, 3, 1), (1, 0, 4, 0), (1, 5, 3, 1)],
+       f"two-token delta encoding: {toks}")
+
+# the position-matrix fixture: statement cmd, block-let RHS, district,
+# splices, shadowing, an expression stage
+FIXTURE = """let path = "/etc"
+let f r =
+    let g = echo tag $r
+    g |> Seq.length
+if 1 > 0 then !
+    echo m one
+let echo x = x
+let y = echo 5
+git status --porcelain | Seq.map Str.trim
+"""
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": FIXTURE}]}})
+read_msg()
+import time
+t0 = time.monotonic()
+send({"jsonrpc": "2.0", "id": 8, "method": "textDocument/semanticTokens/full",
+      "params": {"textDocument": {"uri": URI}}})
+toks = read_msg()
+elapsed = (time.monotonic() - t0) * 1000
+got = decode(toks["result"]["data"])
+expect((2, 12, 4, 0) in got and (2, 17, 3, 1) in got and (2, 21, 2, 2) in got,
+       f"block-let RHS command must token: {got}")
+expect((5, 4, 4, 0) in got and (5, 9, 1, 1) in got, f"district body must token: {got}")
+expect((8, 0, 3, 0) in got and (8, 4, 6, 1) in got, f"statement command must token: {got}")
+expect(not any(t[0] == 7 for t in got), f"the shadowed echo must emit nothing: {got}")
+expect(not any(t[0] == 8 and t[1] > 23 for t in got),
+       f"the expression stage after | must emit nothing: {got}")
+expect(elapsed < 500, f"tokens latency {elapsed:.0f}ms exceeds the bound")
+
 send({"jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": {}})
 read_msg()
 send({"jsonrpc": "2.0", "method": "exit", "params": {}})

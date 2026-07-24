@@ -910,7 +910,13 @@ commaExprRef.Value <-
               Span = Span.union first.Span (List.last all).Span }
 
 seqExprRef.Value <-
-    commaExpr .>>. many (attempt (str_ws ";" >>. commaExpr))
+    // a consumed ';' COMMITS to its element (the consumed-'|' fatal's
+    // sibling): the old attempt let a failing element un-consume the
+    // ';', so backtracking re-parsed the tail OUTSIDE the let-in scope
+    // it belonged to — where check's assume-resolver monetized the
+    // now-unknown binding into a phantom command (the fuzzer's
+    // verdict-split find) [D:seq-commit]
+    commaExpr .>>. many (str_ws ";" >>. commaExpr)
     |>> fun (first, rest) ->
         match rest with
         | [] -> first

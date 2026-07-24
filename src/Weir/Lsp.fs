@@ -98,6 +98,136 @@ let private notify (method: string) (writeParams: Text.Json.Utf8JsonWriter -> un
             w.WriteEndObject())
     )
 
+// ---- semantic tokens [D:semantic-tokens]: the mode boundary made
+// visible. Mode spans ONLY — expression land emits nothing (TextMate
+// keeps lexical coloring; the server overlays the one distinction
+// statics cannot make). Token types: 0 = weirCommandHead, 1 = weirArgv,
+// 2 = weirSplice.
+
+let tokenLegend = [| "weirCommandHead"; "weirArgv"; "weirSplice" |]
+
+/// (0-based line, 0-based startChar, length, tokenType), sorted by
+/// position — the raw form the LSP delta encoding rides on.
+let semanticTokensFor (lines: string list) : (int * int * int * int) list =
+    let _, stmts, _, _ = Script.analyzeLines "tokens" lines
+    let lineArr = List.toArray lines
+    let out = ResizeArray<int * int * int * int>()
+
+    // the synthetic-span rule [D:semantic-tokens]: emit ONLY when the
+    // logical slice appears VERBATIM at its translated physical home —
+    // spans anchored on inserted join/wrap text emit nothing rather
+    // than a mislocated token
+    let emitSpan (ll: Script.LogicalLine) (startCol: int) (len: int) (ty: int) =
+        if len > 0 && startCol >= 1 && startCol - 1 + len <= ll.Text.Length then
+            let l1, c1 = Script.translate ll startCol
+            let l2, c2 = Script.translate ll (startCol + len - 1)
+
+            if l1 = l2 && c2 = c1 + len - 1 && l1 >= 1 && l1 <= lineArr.Length then
+                let phys = lineArr[l1 - 1]
+
+                if
+                    c1 >= 1
+                    && c1 - 1 + len <= phys.Length
+                    && phys.Substring(c1 - 1, len) = ll.Text.Substring(startCol - 1, len)
+                then
+                    out.Add(l1 - 1, c1 - 1, len, ty)
+
+    let charAt (ll: Script.LogicalLine) (col: int) =
+        if col >= 1 && col <= ll.Text.Length then
+            Some ll.Text[col - 1]
+        else
+            None
+
+    // the head token: a span may open on sigil glyphs ($(, !(, $e()
+    // — scan past them to the program name; a ^ force prefix rides in
+    // the span. Defensive: emit only when the text really is the prog.
+    let emitHead (ll: Script.LogicalLine) (spanStart: int) (prog: string) =
+        let mutable j = spanStart
+
+        (match charAt ll j with
+         | Some '$'
+         | Some '!' ->
+             j <- j + 1
+
+             while (match charAt ll j with
+                    | Some c when System.Char.IsLetterOrDigit c || c = '_' -> true
+                    | _ -> false) do
+                 j <- j + 1
+
+             if charAt ll j = Some '(' then
+                 j <- j + 1
+         | _ -> ())
+
+        let forced = charAt ll j = Some '^'
+        let ps = j + (if forced then 1 else 0)
+
+        if
+            ps - 1 + prog.Length <= ll.Text.Length
+            && ll.Text.Substring(ps - 1, prog.Length) = prog
+        then
+            emitSpan ll j (prog.Length + (if forced then 1 else 0)) 0
+
+    let emitArg (ll: Script.LogicalLine) (a: Check.TypedExpr) =
+        let s = a.Span.Start.Col
+        let len = a.Span.End.Col - s
+
+        match a.Kind, charAt ll s with
+        // bareword argv (quoted/raw/interp args keep their lexical
+        // string coloring — they already read as data)
+        | Check.TEStr _, Some c when c <> '"' && c <> '@' && c <> '$' -> emitSpan ll s len 1
+        // $name splice: the island marker, whole token
+        | Check.TEVar _, Some '$' -> emitSpan ll s len 2
+        // (expr) splice: delimiters only — the interior is expression
+        // code and stays lexically colored
+        | _, Some '(' when charAt ll (s + len - 1) = Some ')' ->
+            emitSpan ll s 1 2
+            emitSpan ll (s + len - 1) 1 2
+        | _ -> ()
+
+    // reified chains (| succeeds/complete/orFail) desugar the ECmd into
+    // an application spine — recognize it so the command still tokens
+    // (the reifier NAME stays lexical: grammar, not argv)
+    let reifierHeads =
+        set
+            [ "succeeded"
+              "completed"
+              "orFailed"
+              "succeededEnv"
+              "completedEnv"
+              "orFailedEnv" ]
+
+    let rec spineIsReifier (te: Check.TypedExpr) =
+        match te.Kind with
+        | Check.TEVar v -> Set.contains v reifierHeads
+        | Check.TEApp(f, _) -> spineIsReifier f
+        | _ -> false
+
+    let rec walk (ll: Script.LogicalLine) (te: Check.TypedExpr) =
+        (match te.Kind with
+         | Check.TECmd(prog, args, _) ->
+             emitHead ll te.Span.Start.Col prog
+             args |> List.iter (emitArg ll)
+         | Check.TEApp({ Kind = Check.TEApp(inner,
+                                            { Kind = Check.TEStr prog
+                                              Span = pspan }) },
+                       { Kind = Check.TEList args }) when spineIsReifier inner ->
+             emitHead ll pspan.Start.Col prog
+             args |> List.iter (emitArg ll)
+         | _ -> ())
+
+        for c in Check.childExprs te do
+            walk ll c
+
+    for (ll, chk) in stmts do
+        match chk.Kind with
+        | Script.KType _ -> ()
+        | Script.KLet(_, _, te)
+        | Script.KLetPat(_, _, te)
+        | Script.KCmd te
+        | Script.KExpr te -> walk ll te
+
+    out |> Seq.sortBy (fun (l, c, _, _) -> l, c) |> Seq.distinct |> List.ofSeq
+
 // ---- analysis helpers ---------------------------------------------
 
 let private analyze (uri: string) (text: string) =
@@ -282,7 +412,7 @@ let run () : int =
                     |> Option.iter (fun id ->
                         respond id (fun w ->
                             w.WriteRawValue
-                                """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"completionProvider":{"triggerCharacters":["."]}},"serverInfo":{"name":"weir"}}"""))
+                                """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir"}}"""))
                 | "initialized" -> ()
                 | "shutdown" -> idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
                 | "exit" -> running <- false
@@ -308,6 +438,38 @@ let run () : int =
                     jObj "textDocument" ps
                     |> Option.bind (jStr "uri")
                     |> Option.iter (fun uri -> docs.Remove uri |> ignore)
+                | "textDocument/semanticTokens/full" ->
+                    let writeResult (w: Text.Json.Utf8JsonWriter) =
+                        match docOf () with
+                        | Some(_, text) ->
+                            let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                            let toks = semanticTokensFor lines
+                            w.WriteStartObject()
+                            w.WritePropertyName "data"
+                            w.WriteStartArray()
+
+                            // the five-int delta scheme: deltaLine,
+                            // deltaStartChar (line-relative resets), length,
+                            // tokenType, modifiers
+                            let mutable pl = 0
+                            let mutable pc = 0
+
+                            for (l, c, len, ty) in toks do
+                                let dl = l - pl
+                                let dc = if dl = 0 then c - pc else c
+                                w.WriteNumberValue dl
+                                w.WriteNumberValue dc
+                                w.WriteNumberValue len
+                                w.WriteNumberValue ty
+                                w.WriteNumberValue 0
+                                pl <- l
+                                pc <- c
+
+                            w.WriteEndArray()
+                            w.WriteEndObject()
+                        | None -> w.WriteNullValue()
+
+                    idStr |> Option.iter (fun id -> respond id writeResult)
                 | "textDocument/hover" ->
                     let writeResult (w: Text.Json.Utf8JsonWriter) =
                         match docOf (), posOf () with

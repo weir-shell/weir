@@ -2,6 +2,10 @@
 # Install: copy to ~/.config/micro/syntax/weir.yaml
 #
 # Kept in-repo so grammar sessions can amend it alongside the parser
+# NOTE: mode coloring (command vs expression) is LSP semantic tokens
+# [D:semantic-tokens] — this static grammar stays coarse BY DESIGN
+# (regex cannot know scope); micro's lsp-plugin token support is
+# uninvestigated, so micro renders lexical colors only
 # (checked against the keyword set and scanner pins, 2026-07-21).
 
 filetype: weir
