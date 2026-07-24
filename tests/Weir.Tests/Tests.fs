@@ -579,6 +579,29 @@ let streamingTests =
               Expect.equal (List.length result) 5 "exactly five rows"
               Expect.equal result[0] (Weir.Builtins.file "f2" 2 false) "first surviving row"
           }
+          test "feed pulls its INPUT lazily: an early-exiting child bounds the pulls [D:spawn-spec]" {
+              // the standing laziness rule reaches inputs — the writer
+              // task pulls as the pipe accepts, so `head -1` over a
+              // million-line source stops at the pipe buffer, not the end
+              let pulled = ref 0
+
+              let source =
+                  seq {
+                      for i in 1..1000000 do
+                          System.Threading.Interlocked.Increment pulled |> ignore
+                          yield string i
+                  }
+
+              let out = Weir.Proc.linesWith [] "head" [ "-1" ] (Some source) |> List.ofSeq
+              Expect.equal out [ "1" ] "head takes the first line"
+              Expect.isLessThan pulled.Value 500000 "the input was not drained"
+          }
+          test "feed closes stdin on input exhaustion: EOF-needing children finish [D:spawn-spec]" {
+              let out =
+                  Weir.Proc.linesWith [] "sort" [] (Some(seq [ "b"; "a"; "c" ])) |> List.ofSeq
+
+              Expect.equal out [ "a"; "b"; "c" ] "sort saw EOF and emitted"
+          }
           test "acceptance: first 5 pulls exactly 5 elements from the source" {
               let pulled = ref 0
 

@@ -238,6 +238,26 @@ let private orFailedWith (overlay: (string * string) list) : Value =
                     VUnit
                 | _ -> unreachable "the checker rejects 'orFailed' on these arguments")))
 
+// feed = cmd + stdin [D:spawn-spec]: the family's first data-LAST
+// member, because its data is the pipeline's subject
+// (`snips |> feed "sha256sum" []`); lifecycle inherited from the one
+// spawn by construction
+let private feedWith (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            VBuiltin(fun inputV ->
+                match progV, argsV, inputV with
+                | VStr prog, VSeq args, VSeq input ->
+                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let inputLines = input |> Seq.map asString
+
+                    VSeq(
+                        Seq.delay (fun () ->
+                            Proc.linesWith overlay (Proc.resolveProg prog) argv (Some inputLines)
+                            |> Seq.map VStr)
+                    )
+                | _ -> unreachable "the checker rejects 'feed' on these arguments")))
+
 let private exitCodedWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
@@ -1084,6 +1104,7 @@ let private entries: (string * Ty * Value) list =
       "succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
       "orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
       "exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
+      "feed", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TSeq TStr))), feedWith []
       "fail", TFun(TStr, TUnit), failImpl
       "exit", TFun(TInt, TUnit), exitImpl
       "cmdEnv", TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TSeq TStr))), cmdEnvImpl
@@ -1098,7 +1119,10 @@ let private entries: (string * Ty * Value) list =
       VBuiltin(fun envV -> orFailedWith (envVarPairs envV))
       "exitCodedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TInt))),
-      VBuiltin(fun envV -> exitCodedWith (envVarPairs envV)) ]
+      VBuiltin(fun envV -> exitCodedWith (envVarPairs envV))
+      "feedEnv",
+      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TSeq TStr)))),
+      VBuiltin(fun envV -> feedWith (envVarPairs envV)) ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)

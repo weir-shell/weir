@@ -2300,4 +2300,25 @@ echo "e2e ok: exitCode conflict cells teach (sigil, bang, statement, district)"
 
 rm -rf "$rfdir"
 
+# ---- feed: the family's stdin member [D:spawn-spec] ----
+
+fddir=$(mktemp -d)
+cat > "$fddir/hash.weir" <<'WEOF'
+let hashes =
+    ["snippet one"; "snippet two"]
+    |> feed "sha256sum" []
+    |> Seq.map (fun l -> l |> Str.split " " |> Seq.head)
+
+hashes |> Seq.iter print
+WEOF
+out=$($BIN "$fddir/hash.weir")
+expect "feed: the miner's sha256 shape (value -> child stdin)" "0027e9fbda04a2a921cb8ae59053abae8a3d29e0c93613be831bcf0262faa36f" "$out"
+
+cat > "$fddir/lazy.weir" <<'WEOF'
+[1..1000000] |> Seq.map (fun n -> $"{n}") |> feed "head" ["-1"] |> print
+WEOF
+out=$(timeout 10 $BIN "$fddir/lazy.weir") || fail "feed input must be lazy (head -1 over a huge range must terminate)"
+expect "feed input laziness on the AOT binary" "1" "$out"
+rm -rf "$fddir"
+
 echo "e2e battery: all green"

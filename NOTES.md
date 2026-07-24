@@ -1,6 +1,38 @@
 # Spike Notes
 
-## The reifier family completes — one law, four cells (2026-07-24)
+## The spawn spec — six names audited, one spawn, feed lands (2026-07-24)
+
+The family audit found what audits find: six builtin names
+(cmd/run/cmdEnv/runEnv/completedEnv/exitCodedEnv) over a three-axis
+product (output × env × stdin), with the spawn wiring copied three
+times inside Proc — psi construction, env overlay, the not-found
+mapping, the stdin writer, the kill/reap tail. The refactor is the
+assembler-formalization move one layer down: an internal Spec record
+(Prog/Args/Env/Input), ONE starter, and the output axis as consumer
+functions — linesOf, streamCodeOf, completedOf — which is the
+reifier law restated in code: the consumer IS the meaning. The
+public wrappers kept their signatures, and the zero-behavior
+contract held exactly: no pin moved, and the two byte-identity pins
+(run ≡ cmd |> print; !() ≡ orFail-default) re-ran unchanged — those
+equivalences now hold structurally, not by discipline.
+
+`feed`/`feedEnv` then landed as constructors seven and eight rather
+than as a third copy of the wiring — cmd + stdin, data-last because
+the input is the pipeline's subject. The laziness rule met its
+first INPUT customer: the writer task pulls the source as the pipe
+accepts, pinned by pull count (a million-line source into `head -1`
+pulls a pipe-buffer's worth, not the million) and by the huge-range
+e2e on the binary. Stdin closes on exhaustion (sort-class children
+get their EOF, pinned). The miner's sha256 shape runs end to end.
+
+The PARK, banked as designed: a user-facing spec type
+(axes-as-fields over a base value, the Rust-Default idiom;
+consumers as the output axis) waits for the family to genuinely
+need a NINTH name or a new axis — Cwd is visibly next, at the
+Session seam. When that session comes it is an EXPOSE, not a
+build: the internal spec is already the thing it would surface.
+
+## The reifier family completes — one law, four cells (2026-07-24)## The reifier family completes — one law, four cells (2026-07-24)
 
 The archaeology ran first and settled the genus: orFail's silence
 was accident-grade. No pin held it — only the message desugar was

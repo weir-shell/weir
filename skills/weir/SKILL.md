@@ -484,6 +484,10 @@ let c = Args.load Cmd
   through; comments need line start or a preceding space.
 - `run "git" ["push"]` runs a program from expression positions:
   streams like a command line, raises on nonzero, returns unit.
+- `xs |> feed "prog" [args]` pipes a weir seq into a child's STDIN
+  (data-last; stdout streams back as `seq<string>`; input pulls
+  lazily, stdin closes at exhaustion): `snips |> feed "sha256sum" []`.
+  `feedEnv vars ...` is the env twin.
 - `runEnv vars "az" [...]` / `cmdEnv vars ...` inject child-env
   (overlay: set those names, inherit the rest; parent untouched).
   `Env.fromFile "x.env"` loads the dotenv SUBSET (KEY=VALUE, optional
