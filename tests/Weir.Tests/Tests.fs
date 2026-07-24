@@ -2531,6 +2531,138 @@ let blockLetCmdTests =
               | Ok _ -> failtest "expected the reservation"
           } ]
 
+let multilineLambdaTests =
+    testList
+        "Multiline lambdas"
+        [ test "closer alone pops at col 0 and at body indent [D:multiline-lambda]" {
+              match Weir.Script.assemble [ 1, "[\"a\"] |> Seq.iter (fun r ->"; 2, "    print r"; 3, ")" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "[\"a\"] |> Seq.iter (fun r -> print r )" ""
+              | other -> failtest $"unexpected: {other}"
+
+              match Weir.Script.assemble [ 1, "[\"a\"] |> Seq.iter (fun r ->"; 2, "    print r"; 3, "    )" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "[\"a\"] |> Seq.iter (fun r -> print r )" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "the closer returns the statement to the opener's level: siblings sequence after" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="
+                        2, "    xs |> Seq.iter (fun r ->"
+                        3, "        print r"
+                        4, "    )"
+                        5, "    3" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let v = xs |> Seq.iter (fun r -> print r ) ; 3" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "body at the opener's indent is a continuation, not a sibling (F#-parity)" {
+              match Weir.Script.assemble [ 1, "let f ="; 2, "    [1] |> Seq.map (fun x ->"; 3, "    x + 1)" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text "let f = [1] |> Seq.map (fun x -> x + 1)" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a line left of the opener errors naming the lambda (F# errors too: FS0058)" {
+              match Weir.Script.assemble [ 1, "let f ="; 2, "    [1] |> Seq.map (fun x ->"; 3, "  x + 1)" ] with
+              | Error e -> Expect.stringContains e "left of the lambda '(' opened at line 2" ""
+              | other -> failtest $"expected the leak error, got {other}"
+          }
+          test "a col-0 line under a col-0 opener joins as body; EOF names the open lambda" {
+              // opener at col 0 makes col 0 the body floor (the
+              // at-opener-indent continuation rule): nothing sits LEFT of
+              // it, so the runaway surfaces at close, named
+              match Weir.Script.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    print r"; 3, "let x = 1" ] with
+              | Error e -> Expect.stringContains e "line 1: this lambda's '(' is still open" ""
+              | other -> failtest $"expected the open-lambda close error, got {other}"
+          }
+          test "EOF with the lambda open names the opener line" {
+              match Weir.Script.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    print r" ] with
+              | Error e -> Expect.stringContains e "line 1: this lambda's '(' is still open" ""
+              | other -> failtest $"expected the open-lambda error, got {other}"
+          }
+          test "a body let still needs its body before the paren closes" {
+              match Weir.Script.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    let a = 1"; 3, ")" ] with
+              | Error e -> Expect.stringContains e "needs a body" ""
+              | other -> failtest $"expected noBody, got {other}"
+          }
+          test "a compound in the body prunes at the user's closer (the original repro, now designed)" {
+              // the port-session bug shape [D:compound-paren-prune]: the
+              // match must NOT swallow the next outer stage
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="
+                        2, "    xs"
+                        3, "    |> Seq.map (fun n ->"
+                        4, "        match n with"
+                        5, "        | 1 -> 10"
+                        6, "        | _ -> n"
+                        7, "    )"
+                        8, "    |> Seq.sum" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.equal
+                      ll.Text
+                      "let v = xs |> Seq.map (fun n -> match n with | 1 -> 10 | _ -> n ) |> Seq.sum"
+                      "the stage after ) belongs to the OUTER pipeline"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "an ATTACHED closer also returns the level: the next sibling gets ';' (fuzzer catch)" {
+              // the deep-indent last body line must not leave the block's
+              // sibling level down there — `40` sequences, never applies
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="
+                        2, "    xs |> Seq.iter (fun r ->"
+                        3, "        print r)"
+                        4, "    40" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let v = xs |> Seq.iter (fun r -> print r) ; 40" ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "nested multiline lambdas pop innermost-first" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "rows |> Seq.iter (fun row ->"
+                        2, "    row |> Seq.iter (fun c ->"
+                        3, "        print c"
+                        4, "    )"
+                        5, "    print \"row-done\""
+                        6, ")" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.equal
+                      ll.Text
+                      "rows |> Seq.iter (fun row -> row |> Seq.iter (fun c -> print c ) ; print \"row-done\" )"
+                      ""
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "command block-let in a lambda body parses on the let-RHS spine [D:multiline-lambda]" {
+              let r: Weir.Parser.Resolver =
+                  { IsKnown = (fun n -> n = "xs" || n = "Seq")
+                    IsCommandCallable = (fun _ -> false)
+                    IsExternal = (fun n -> n = "echo")
+                    ExternalNames = fun () -> Seq.empty }
+
+              match
+                  Weir.Parser.parseLine r "let out = xs |> Seq.map (fun k -> let g = echo tag in g |> Seq.length)"
+              with
+              | Ok _ -> ()
+              | Error e -> failtest $"spine must reach the lambda body: {e}"
+          }
+          test "lambda params shadow PATH in their body (the test-counts regression, pinned)" {
+              // under the assume-resolver a param-headed let RHS must stay
+              // an EXPRESSION, not become a phantom command [D:paramful-rhs]
+              let lines =
+                  [ "let counts ="
+                    "    [\"a b\"]"
+                    "    |> Seq.map (fun line ->"
+                    "        let hash = line |> Str.split \" \" |> Seq.head"
+                    "        hash)"
+                    ""
+                    "counts |> Seq.iter print" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              Expect.isEmpty diags "no diagnostics — the param is known, not a command head"
+          } ]
+
 let pipeAlignTests =
     testList
         "Pipe alignment"
@@ -5264,6 +5396,7 @@ let allTests =
           replColorTests
           seqPatternTests
           blockLetCmdTests
+          multilineLambdaTests
           pipeAlignTests
           optionSweepTests
           moduleTests

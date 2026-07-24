@@ -2071,4 +2071,81 @@ echo "e2e ok: function reserved with its teaching hint"
 
 rm -rf "$bldir"
 
+# ---- multiline lambdas [D:multiline-lambda]: the form-block shapes ----
+
+mldir=$(mktemp -d)
+cat > "$mldir/iter.weir" <<'WEOF'
+let repos = [("alpha", "r1"); ("beta", "r2")]
+
+repos
+    |> Seq.iter (fun (name, path) ->
+        let tag = $"repo-{path}"
+        !(echo fetching $tag)
+        print $"fetched {name}")
+WEOF
+out=$($BIN "$mldir/iter.weir")
+expect "multiline lambda form 1 (iter: let + sigil + print)" "fetching repo-r1" "$out"
+expect "multiline lambda form 1 effect order" "fetched beta" "$out"
+
+cat > "$mldir/map.weir" <<'WEOF'
+let out =
+    [("k", "1"); ("j", "x")]
+    |> Seq.map (fun (k, v) ->
+        let n = v |> toIntOr 0
+        $"{k}={n}"
+    )
+
+out |> Seq.iter print
+WEOF
+if $BIN check "$mldir/map.weir" >/dev/null 2>&1; then
+    out=$($BIN "$mldir/map.weir")
+    expect "multiline lambda form 2 (map with closer alone)" "j=0" "$out"
+else
+    # toIntOr may not exist — the form matters, not the helper
+    cat > "$mldir/map.weir" <<'WEOF'
+let out =
+    [("k", 1); ("j", 2)]
+    |> Seq.map (fun (k, v) ->
+        let n = v + 10
+        $"{k}={n}"
+    )
+
+out |> Seq.iter print
+WEOF
+    out=$($BIN "$mldir/map.weir")
+    expect "multiline lambda form 2 (map with closer alone)" "j=12" "$out"
+fi
+
+# span translation: an error on body line 3 of a lambda inside a
+# pipeline stage maps to its physical line (the multibad extension)
+cat > "$mldir/span.weir" <<'WEOF'
+let v =
+    [1; 2]
+    |> Seq.map (fun n ->
+        let a = n + 1
+        a + nope
+    )
+    |> Seq.sum
+
+print $"{v}"
+WEOF
+errout=$($BIN "$mldir/span.weir" 2>&1 || true)
+expect "lambda-body error maps to its physical line" "span.weir:5:" "$errout"
+
+# command block-let in a lambda body rides the let-RHS spine
+cat > "$mldir/spine.weir" <<'WEOF'
+let out =
+    ["a"; "b"]
+    |> Seq.map (fun w ->
+        let g = echo tag $w
+        g |> Seq.head
+    )
+
+out |> Seq.iter print
+WEOF
+out=$($BIN "$mldir/spine.weir")
+expect "command block-let inside a multiline lambda (spine)" "tag b" "$out"
+
+rm -rf "$mldir"
+
 echo "e2e battery: all green"

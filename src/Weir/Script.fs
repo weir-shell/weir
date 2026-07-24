@@ -201,6 +201,7 @@ type PieceClass =
       OpensCompound: bool
       IsBangSigil: bool
       ClosesBrace: bool
+      ClosesParen: bool
       StartsField: bool
       StartsTypeField: bool
       BraceDelta: int }
@@ -246,6 +247,7 @@ let classifyPiece (piece: string) : PieceClass =
                 | i when i > 1 -> isIdentToken (piece.Substring(1, i - 1))
                 | _ -> false))
       ClosesBrace = piece.StartsWith "}"
+      ClosesParen = piece.StartsWith ")"
       StartsField =
         (match piece.IndexOf '=' with
          | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
@@ -258,6 +260,42 @@ let classifyPiece (piece: string) : PieceClass =
             | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
             | _ -> false)
       BraceDelta = braceDelta piece }
+
+/// The multiline-lambda opener [D:multiline-lambda]: a line ends with
+/// `->` while its INNERMOST unclosed paren opens a `fun` — `(fun r ->`
+/// dangling at EOL opens a body block closed by its own `)`. A same-line
+/// `(fun r -> body)` never arms (its parens balance at EOL).
+let lambdaOpens (piece: string) : bool =
+    let trimmed = piece.TrimEnd()
+
+    if not (trimmed.EndsWith "->") then
+        false
+    else
+        let opens =
+            foldOutsideStrings
+                (fun stack i c ->
+                    match c with
+                    | '(' -> i :: stack
+                    | ')' ->
+                        (match stack with
+                         | _ :: t -> t
+                         | [] -> [])
+                    | _ -> stack)
+                []
+                trimmed
+
+        match opens with
+        | top :: _ -> trimmed.Substring(top + 1).TrimStart().StartsWith "fun "
+        | [] -> false
+
+/// A piece that dangles a block open at EOL: the NEXT deeper line
+/// starts a statement of that block (the lambda restore level rides
+/// this) [D:multiline-lambda].
+let dangleEnders = [| "="; "then"; "else"; "with"; "->" |]
+
+let dangleOpensBlock (piece: string) : bool =
+    let t = piece.TrimEnd()
+    dangleEnders |> Array.exists t.EndsWith
 
 /// The marker's district wrap: opener text and how many trailing
 /// characters of the armed line the first district line strips.
@@ -473,6 +511,18 @@ type private Pend =
       // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
       Compounds: (int * int * int) list
       ParenDepth: int
+      // the indent where the CURRENT statement started (statement = a
+      // sibling/`in` join, or the first line after a dangling head) —
+      // the lambda pop restores to this level, so a block sibling after
+      // the `)` sequences while a fold's init still applies
+      // [D:multiline-lambda]
+      StmtLevel: int
+      PrevDangles: bool
+      // open multiline lambdas (opening line, opener indent, paren depth
+      // BEFORE the open, statement level to RESTORE on pop), innermost
+      // first [D:multiline-lambda] — popped by paren balance; the user's
+      // `)` is the closer
+      Lambdas: (int * int * int * int) list
       // still-open brackets (kind, opening line, sibling-entry column)
       // [D:multiline-brackets] [D:field-alignment]
       Brackets: (char * int * int option) list }
@@ -534,6 +584,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
     let close (current: Pend option) acc =
         match current with
         | Some p when not p.Brackets.IsEmpty -> braceOpen p
+        | Some { Lambdas = (oline, _, _, _) :: _ } ->
+            Error $"line {oline}: this lambda's '(' is still open when the statement ends — close the paren"
         | Some { District = Some { Active = None; MarkerLine = mLine } } ->
             Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
         | Some { Lets = (_, letLine) :: _ } -> noBody letLine
@@ -575,6 +627,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                         | Some p -> not p.Brackets.IsEmpty
                         | None -> false
 
+                    // the col-0 law suspends while a lambda's paren is
+                    // open [D:multiline-lambda]: the closer (or the leak
+                    // guard) owns those lines
+                    let inOpenLambda =
+                        match current with
+                        | Some p -> not p.Lambdas.IsEmpty
+                        | None -> false
+
                     if raw.Trim() = "" then
                         match current with
                         // transparency is total while a statement pends
@@ -584,7 +644,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                         // boundary produced still fires at close
                         | Some p -> Ok(Some p, acc, blankSinceHead)
                         | None -> Ok(None, acc, true)
-                    elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' || inOpenBrace then
+                    elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' || inOpenBrace || inOpenLambda then
                         let indent = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
 
                         if raw.Substring(0, indent).Contains '\t' then
@@ -748,6 +808,68 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 { p with
                                                     District = None
                                                     LastIndent = dst.MarkerIndent }
+                                        // the multiline lambda's closer and leak guard
+                                        // [D:multiline-lambda]: a `)`-headed line continues
+                                        // the statement at ANY indent; any other line at or
+                                        // left of the opener is a leak, named
+                                        | None when
+                                            (match p.Lambdas with
+                                             | (_, oindent, _, _) :: _ -> cls.ClosesParen || indent < oindent
+                                             | [] -> false)
+                                            ->
+                                            let (oline, oindent, _, _) = List.head p.Lambdas
+
+                                            if not cls.ClosesParen then
+                                                // F#-parity: FS0058 is an ERROR left of the
+                                                // opener; AT the opener's indent the line is a
+                                                // body continuation (handled below)
+                                                Error
+                                                    $"line {lineNo}: this line sits left of the lambda '(' opened at line {oline} — close the paren first"
+                                            else
+                                                // a body let still needs its body before the paren
+                                                match p.Lets |> List.tryFind (fun (k, _) -> k > oindent) with
+                                                | Some(_, letLine) -> noBody letLine
+                                                | None ->
+                                                    let depth = p.ParenDepth + parenDelta piece
+
+                                                    let popped, kept =
+                                                        p.Lambdas |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
+
+                                                    let kept =
+                                                        if lambdaOpens piece then
+                                                            (lineNo, indent, depth - 1, p.StmtLevel) :: kept
+                                                        else
+                                                            kept
+
+                                                    // restore the level the popped lambda's own
+                                                    // statement started at
+                                                    let backTo =
+                                                        match popped with
+                                                        | [] -> indent
+                                                        | ps ->
+                                                            let (_, _, _, restore) = List.last ps
+                                                            restore
+
+                                                    bracketFold lineNo indent [] piece
+                                                    |> Result.map (fun brackets ->
+                                                        Some
+                                                            { p with
+                                                                LL = applyJoin JSpace p.LL piece lineNo indent
+                                                                LastIndent = backTo
+                                                                StmtLevel = backTo
+                                                                PrevDangles = dangleOpensBlock piece
+                                                                ParenDepth = depth
+                                                                Lambdas = kept
+                                                                Compounds =
+                                                                    p.Compounds
+                                                                    |> List.filter (fun (_, _, d) -> d <= depth)
+                                                                PipeGroups =
+                                                                    p.PipeGroups
+                                                                    |> List.skipWhile (fun g -> g > backTo)
+                                                                LastWasPipe = false
+                                                                Brackets = brackets },
+                                                        acc,
+                                                        blankSinceHead)
                                         | None ->
                                             if cls.Kind = PieceKind.PipeHead || cls.Kind = PieceKind.ElseHead then
                                                 // arms, pipeline stages, and else extend the
@@ -799,12 +921,32 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         let ll, compounds = closeDeeper p.LL p.Compounds
                                                         let depth = p.ParenDepth + parenDelta piece
 
+                                                        let poppedL, keptL =
+                                                            p.Lambdas
+                                                            |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
+
+                                                        let lambdas =
+                                                            if lambdaOpens piece then
+                                                                (lineNo, indent, depth - 1, p.StmtLevel) :: keptL
+                                                            else
+                                                                keptL
+
+                                                        let lastIndent, stmtLevel =
+                                                            match poppedL with
+                                                            | [] -> indent, p.StmtLevel
+                                                            | ps ->
+                                                                let (_, _, _, restore) = List.last ps
+                                                                restore, restore
+
                                                         Ok(
                                                             Some
                                                                 { p with
                                                                     LL = applyJoin JSpace ll piece lineNo indent
-                                                                    LastIndent = indent
+                                                                    LastIndent = lastIndent
+                                                                    StmtLevel = stmtLevel
+                                                                    PrevDangles = dangleOpensBlock piece
                                                                     ParenDepth = depth
+                                                                    Lambdas = lambdas
                                                                     PipeGroups = groups
                                                                     LastWasPipe = true
                                                                     Compounds =
@@ -833,11 +975,23 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         | Some h -> h
                                                         | None -> p.LastIndent
 
+                                                    // while a lambda's paren is open, lines at (or
+                                                    // right of) its opener that would close a let or
+                                                    // sequence a sibling OUTSIDE it are body
+                                                    // continuations instead — the `in`/`;` joins wait
+                                                    // for the `)` [D:multiline-lambda]
+                                                    let lambdaFloor =
+                                                        match p.Lambdas with
+                                                        | (_, oi, _, _) :: _ -> oi
+                                                        | [] -> -1
+
                                                     let lets, join =
                                                         match p.Lets with
-                                                        | (k, _) :: rest when indent = k -> rest, JIn
+                                                        | (k, _) :: rest when indent = k && k > lambdaFloor ->
+                                                            rest, JIn
                                                         // same-indent sibling = block sequencing
-                                                        | _ when indent = siblingLevel -> p.Lets, JSibling
+                                                        | _ when indent = siblingLevel && indent > lambdaFloor ->
+                                                            p.Lets, JSibling
                                                         | _ -> p.Lets, JSpace
 
                                                     let lets =
@@ -875,20 +1029,51 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         else
                                                             compounds
 
+                                                    // a statement starts at a sibling/`in` join or on
+                                                    // the first line after a dangling head; the level
+                                                    // rides into the lambda entry as its pop restore
+                                                    let stmtLevel =
+                                                        if join = JSibling || join = JIn || p.PrevDangles then
+                                                            indent
+                                                        else
+                                                            p.StmtLevel
+
+                                                    // an attached closer pops its lambda AND restores
+                                                    // the statement level — the next sibling joins
+                                                    // with `;`, not a swallow (the fuzzer's catch)
+                                                    let poppedL, keptL =
+                                                        p.Lambdas |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
+
+                                                    let lambdas =
+                                                        if lambdaOpens piece then
+                                                            (lineNo, indent, depth - 1, stmtLevel) :: keptL
+                                                        else
+                                                            keptL
+
+                                                    let lastIndent, stmtLevel =
+                                                        match poppedL with
+                                                        | [] -> indent, stmtLevel
+                                                        | ps ->
+                                                            let (_, _, _, restore) = List.last ps
+                                                            restore, restore
+
                                                     bracketFold lineNo indent [] piece
                                                     |> Result.map (fun brackets ->
                                                         Some
                                                             { p with
                                                                 LL = joined
                                                                 Lets = lets
-                                                                LastIndent = indent
+                                                                LastIndent = lastIndent
+                                                                StmtLevel = stmtLevel
+                                                                PrevDangles = dangleOpensBlock piece
                                                                 District = district
                                                                 Compounds = compounds
+                                                                Lambdas = lambdas
                                                                 Brackets = brackets
                                                                 ParenDepth = depth
                                                                 PipeGroups =
                                                                     p.PipeGroups
-                                                                    |> List.skipWhile (fun g -> g > indent)
+                                                                    |> List.skipWhile (fun g -> g > lastIndent)
                                                                 LastWasPipe = false },
                                                         acc,
                                                         blankSinceHead)
@@ -918,6 +1103,13 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                               Active = None })
                                       Compounds = []
                                       ParenDepth = parenDelta (raw.TrimEnd())
+                                      StmtLevel = 0
+                                      PrevDangles = dangleOpensBlock (raw.TrimEnd())
+                                      Lambdas =
+                                        (if lambdaOpens (raw.TrimEnd()) then
+                                             [ (lineNo, 0, parenDelta (raw.TrimEnd()) - 1, 0) ]
+                                         else
+                                             [])
                                       PipeGroups = []
                                       LastWasPipe = false
                                       Brackets = brackets },

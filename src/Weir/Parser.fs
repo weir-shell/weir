@@ -553,17 +553,43 @@ let private curryParams (ps: Pattern list) (value: Expr) : Expr =
 let private lambda =
     // fun a b -> e desugars to nested lambdas [D:fun-sugar] — the
     // lambda-side twin of let-param sugar, same param set, same
-    // curryParams, zero checker surface
-    pipe3
-        getPosition
+    // curryParams, zero checker surface. The body INHERITS the spine
+    // flag [D:multiline-lambda]: block lets in a lambda body on a
+    // let-RHS spine take command RHS like any other spine position —
+    // and the params extend the ambient resolver for the body, so
+    // params shadow PATH exactly as let params do [D:paramful-rhs]
+    getPosition
+    >>= fun p ->
         (keyword "fun" >>. many1 binderParam >>= fun ps -> rejectDupParams ps >>% ps
          .>> str_ws "->")
-        (withLetCmd false seqExpr)
-        (fun p ps body ->
-            let inner = curryParams ps body
+        >>= fun ps ->
+            let withParams (inner: Parser<'a, unit>) : Parser<'a, unit> =
+                fun stream ->
+                    let saved = ambientResolver.Value
 
-            { inner with
-                Span = { Start = pos p; End = body.Span.End } })
+                    let rec leafNames (pt: Pattern) =
+                        match pt.PKind with
+                        | PVar n -> [ n ]
+                        | PTuple pts -> pts |> List.collect leafNames
+                        | _ -> []
+
+                    let names = ps |> List.collect leafNames |> Set.ofList
+
+                    ambientResolver.Value <-
+                        { saved with
+                            IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+
+                    try
+                        inner stream
+                    finally
+                        ambientResolver.Value <- saved
+
+            withParams seqExpr
+            |>> fun body ->
+                let inner = curryParams ps body
+
+                { inner with
+                    Span = { Start = pos p; End = body.Span.End } }
 
 // let f x y = e desugars to nested lambdas [D:let-param-sugar].
 // Params are plain idents OR () — the unit param pins its type in the

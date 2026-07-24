@@ -499,9 +499,9 @@ let clean force ctx =
             | _ -> None)
         |> Seq.where (Str.contains (ctx.Subref))
         |> Seq.force
-        // multi-statement lambda bodies stay single-line (the
-        // parens-spanning-lines park); greedy-; groups inside
-        |> Seq.iter (fun r -> deleteRef r; say $"Removed ref '{r}'.")
+        |> Seq.iter (fun r ->
+            deleteRef r
+            say $"Removed ref '{r}'.")
 
 // ---- status (bash: status-refs' while-read + BASH_REMATCH) ------
 

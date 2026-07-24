@@ -159,6 +159,23 @@ record (`Seq.fold (fun c x -> { c with Total = c.Total + x }) c0` —
 derive, don't mutate). Lambdas take several params (`fun acc x ->`),
 desugaring exactly like `let f a b =`.
 
+Multi-statement lambdas read best MULTILINE: a `(fun ... ->` dangling
+at line end opens a body block — block lets, siblings, compounds and
+districts all legal inside — closed by its own `)` (attached to the
+last body line, or alone). The single-line `;`-joined spelling is
+also legal.
+
+```weir
+let sizes =
+    [("a", 1); ("b", 2)]
+    |> Seq.map (fun (name, n) ->
+        let doubled = n * 2
+        $"{name}={doubled}"
+    )
+
+sizes |> Seq.iter print
+```
+
 `>>` / `<<` compose functions — `Seq.map (Str.trim >> Str.toLower)`
 is the point-free spelling. One precedence rule to know (it is F#'s):
 `|>` and `>>` share a level, so `xs |> f >> g` is `(xs |> f) >> g` —

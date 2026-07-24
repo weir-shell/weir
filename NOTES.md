@@ -1,6 +1,58 @@
 # Spike Notes
 
-## The assembler fuzzer — Session 2: the net earns its keep (2026-07-24)
+## Multiline lambdas — the park's face opens, and the harness bites twice (2026-07-24)
+
+The probes-first pass reshaped the session before a line landed: MOST
+of the blessed form already worked. Deeper-line bodies, block lets,
+sibling `;`, compounds (the compound-paren prune carrying its
+port-session fix as designed behavior), districts, blanks, nested
+lambdas, and the receipts' pipeline-stage-spanning shape — all
+emergent from the standing indent machinery. What was actually
+missing: closer-alone lines (the col-0 law and the sibling rule both
+broke them), the guard rails (leak/EOF errors naming the lambda), and
+the parser-side spine.
+
+The FCS probes drew the boundary sharper than the plan guessed. Body
+AT the opener's indent: F# accepts — a silent pre-change weir-reject,
+now F#-parity (gain). Body LEFT of the opener: weir errors naming the
+lambda where F# floors at the enclosing context and tolerates the
+dedent — the lambda-body-offside row, pipe-alignment's strictness
+sibling. Closer-alone at any indent: F# accepts, weir now agrees
+(gain). And the sigil-interior premise CORRECTED itself under probe:
+multiline lambdas inside $() were already legal as physical
+continuation — the single-LOGICAL-line law never spoke to line count.
+
+The restore rule is the session's story, and the new-grammar
+obligation paid for itself within hours of existing. The fuzzer
+(lambda shapes freshly in its grammar) caught the attached-closer +
+block-sibling swallow — `40` after a lambda's deep last line joined
+as an APPLICATION, a pre-existing hole the hand pins never named.
+The opener-indent fix for that promptly broke e2e's fold receipt —
+Seq.fold's init at the opener's own column must CONTINUE the
+application while v2-block siblings at the same relative geometry
+must SEQUENCE. (prior, opener) cannot discriminate; the true
+quantity is where the lambda's STATEMENT started. Pend now tracks
+StmtLevel (sibling/`in` joins and first-line-after-dangling-head
+start statements); the lambda entry records it at arm, the pop
+restores it. Both counter-shapes are pins.
+
+Parser side, two moves: lambda bodies inherit the letCmdOk spine
+(the block-let-cmd boundary widened BY PLAN — command block-lets
+legal in lambda bodies on a let-RHS spine; bare-statement lambdas
+keep the law), and lambda params extend the ambient resolver — found
+by e2e when tools/test-counts' `let hash = line |> ...` turned into
+a phantom command under the assume-resolver (params-shadow-PATH
+reached check time; pinned).
+
+The parens-spanning park AMENDS: lambda parens opened by their own
+receipt; general parens still parked, content shrunk. The port's
+friction site reads multiline; the greedy-`;` single-line spelling
+demoted to "also legal" in the docs. Budget honesty: ~90 assembler
+lines against the ~40 estimate — the overage is the restore rule's
+two counter-shapes, caught by the layered nets exactly as the
+fuzzer plan promised its first customer.
+
+## The assembler fuzzer — Session 2: the net earns its keep (2026-07-24)## The assembler fuzzer — Session 2: the net earns its keep (2026-07-24)
 
 The transform library completed to the plan's full list — district ↔
 `!(...)` (the desugar claim), bare command RHS ↔ `$(...)` (the pinned

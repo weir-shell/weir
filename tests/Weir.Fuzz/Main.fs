@@ -149,6 +149,8 @@ let tests =
 
           metamorphic "block siblings and single-line ';' agree" (fun rnd p -> Transform.joinSiblings rnd p)
 
+          metamorphic "multiline lambdas and their single-line form agree" (fun rnd p -> Transform.lambdaSingle rnd p)
+
           // the laws must hold under COMPOSITION — where they have
           // historically failed
           metamorphic "all transforms composed stay output-neutral" (fun rnd p -> Some(Transform.composedAll rnd p))

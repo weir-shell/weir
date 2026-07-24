@@ -75,6 +75,24 @@ type Stmt =
     | SDistrict of bid: int * headed: Cond option * cmds: string list list
     | SCmdLet of binder: string * words: string list
     | SSeqPrint of string // xs |> print (seq<string> binders only)
+    // multiline lambdas [D:multiline-lambda]: body block under a
+    // dangling `(fun p ->`; closerAlone renders `)` on its own line
+    | SIterLambda of
+        bid: int *
+        param: string *
+        elems: string list *
+        tv: string *
+        k: int *
+        mark: string *
+        closerAlone: bool
+    | SMapLambda of
+        bid: int *
+        name: string *
+        param: string *
+        elems: int list *
+        tv: string *
+        addend: int *
+        closerAlone: bool
 
 and Block =
     { Bid: int
@@ -129,14 +147,16 @@ type RenderCfg =
       ExplicitDistrict: int -> bool // district bid -> `!(...)`-per-line spelling
       SigilCmdLet: string -> bool // cmd-let binder -> `$(...)` RHS spelling
       InlineBracket: int -> bool // Stroustrup bid -> inline bracket spelling
-      JoinBlock: int -> bool } // block bid -> single-line `;` join
+      JoinBlock: int -> bool // block bid -> single-line `;` join
+      SingleLambda: int -> bool } // lambda bid -> single-line `;`/`in` spelling
 
 let defaultCfg =
     { Extra = (fun _ -> 0)
       ExplicitDistrict = (fun _ -> false)
       SigilCmdLet = (fun _ -> false)
       InlineBracket = (fun _ -> false)
-      JoinBlock = (fun _ -> false) }
+      JoinBlock = (fun _ -> false)
+      SingleLambda = (fun _ -> false) }
 
 // a block is `;`-joinable only when every body statement is a print —
 // lets spell `in` inline, and command lines take `;` as a literal argv
@@ -364,6 +384,47 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
             emit bodyInd src
             emit bodyInd $"|> Seq.map (fun a -> a + {k})"
             emit bodyInd "|> Seq.length"
+        | SIterLambda(bid, param, elems, tv, k, mark, closerAlone) ->
+            let elemsTxt = elems |> List.map (fun e -> $"\"{e}\"") |> String.concat "; "
+            let letLine = $"let {tv} = {k}"
+            let p1 = $"print {param}"
+            let p2 = $"print $\"{mark} {{({tv} + 1)}} \""
+
+            if cfg.SingleLambda bid then
+                emit ind $"[{elemsTxt}] |> Seq.iter (fun {param} -> {letLine} in {p1} ; {p2})"
+            else
+                emit ind $"[{elemsTxt}] |> Seq.iter (fun {param} ->"
+                let bodyInd = ind + 4 + extra bid
+                emit bodyInd letLine
+                emit bodyInd p1
+
+                if closerAlone then
+                    emit bodyInd p2
+                    emit ind ")"
+                else
+                    emit bodyInd (p2 + ")")
+        | SMapLambda(bid, name, param, elems, tv, addend, closerAlone) ->
+            let elemsTxt = elems |> List.map string |> String.concat "; "
+            let letLine = $"let {tv} = {param} + {addend}"
+            let res = $"{tv} * 2"
+
+            if cfg.SingleLambda bid then
+                emit ind $"let {name} = [{elemsTxt}] |> Seq.map (fun {param} -> {letLine} in {res}) |> Seq.sum"
+            else
+                emit ind $"let {name} ="
+                let stageInd = ind + 4
+                emit stageInd $"[{elemsTxt}]"
+                emit stageInd $"|> Seq.map (fun {param} ->"
+                let bodyInd = stageInd + 4 + extra bid
+                emit bodyInd letLine
+
+                if closerAlone then
+                    emit bodyInd res
+                    emit stageInd ")"
+                else
+                    emit bodyInd (res + ")")
+
+                emit stageInd "|> Seq.sum"
         | SEcho words -> emitCmd ind ("echo " + String.concat " " words)
         | SDistrict(bid, headed, cmds) when cfg.ExplicitDistrict bid ->
             // the marker's desugar claim: `!` block = `!(...)` per line
@@ -440,6 +501,8 @@ let blockIds (p: Program) : int list =
         | STypeUnion(_, _, true, bid) -> ids.Add bid
         | SPipeLet(bid, _, _, _) -> ids.Add bid
         | SDistrict(bid, _, _) -> ids.Add bid
+        | SIterLambda(bid, _, _, _, _, _, _) -> ids.Add bid
+        | SMapLambda(bid, _, _, _, _, _, _) -> ids.Add bid
         | _ -> ()
 
     List.iter ofStmt p.Stmts
@@ -493,6 +556,8 @@ let rec stmtDefs (s: Stmt) : string list =
     | SListLet(x, _, _, _) -> [ x ]
     | SPipeLet(_, n, _, _) -> [ n ]
     | SCmdLet(g, _) -> [ g ]
+    | SMapLambda(_, n, _, _, _, _, _) -> [ n ]
+    | SIterLambda _
     | SPrint _
     | SIf _
     | SEcho _
@@ -525,6 +590,8 @@ let rec stmtUses (s: Stmt) : string list =
     | SPipeLet(_, _, src, _) -> [ src ]
     | SDistrict(_, headed, _) -> headed |> Option.map condUses |> Option.defaultValue []
     | SSeqPrint x -> [ x ]
+    | SIterLambda _
+    | SMapLambda _ -> []
 
 // ---------------------------------------------------------------------------
 // Generator. Scope threads in-scope names by type; Fresh/Marker/Bid are
@@ -1102,6 +1169,38 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
                               Bid = scB.Bid }
                   }
 
+          // multiline iter lambda (unit statement)
+          yield
+              2,
+              gen {
+                  let bid, sc = freshBid sc
+                  let param, sc = freshVal sc
+                  let tv, sc = freshVal sc
+                  let m, sc = freshMarker sc
+                  let! n = Gen.choose (1, 3)
+                  let! elems = Gen.listOfLength n genSafeWord
+                  let! k = Gen.choose (0, 9)
+                  let! closerAlone = Arb.generate<bool>
+                  return SIterLambda(bid, param, elems, tv, k, m, closerAlone), sc
+              }
+
+          // multiline map lambda on a let-RHS spine
+          yield
+              2,
+              gen {
+                  let bid, sc = freshBid sc
+                  let name, sc = freshVal sc
+                  let param, sc = freshVal sc
+                  let tv, sc = freshVal sc
+                  let! n = Gen.choose (1, 3)
+                  let! elems = Gen.listOfLength n (Gen.choose (0, 20))
+                  let! addend = Gen.choose (1, 9)
+                  let! closerAlone = Arb.generate<bool>
+
+                  return
+                      SMapLambda(bid, name, param, elems, tv, addend, closerAlone), { sc with Ints = name :: sc.Ints }
+              }
+
           // headed district (legal in nested positions too)
           yield
               2,
@@ -1327,6 +1426,18 @@ module Transform =
     let joinSiblings (rnd: Random) (p: Program) : string list option =
         withSites rnd (joinBids p) (fun f -> { defaultCfg with JoinBlock = f }) p
 
+    let lambdaBids (p: Program) =
+        allStmts p
+        |> List.choose (function
+            | SIterLambda(bid, _, _, _, _, _, _) -> Some bid
+            | SMapLambda(bid, _, _, _, _, _, _) -> Some bid
+            | _ -> None)
+
+    // multiline lambda <-> its single-line `;`/`in`-joined form
+    // [D:multiline-lambda] — the assembler's own join claim for bodies
+    let lambdaSingle (rnd: Random) (p: Program) : string list option =
+        withSites rnd (lambdaBids p) (fun f -> { defaultCfg with SingleLambda = f }) p
+
     // everything at once: random subsets of every spelling flip + one
     // re-indent, then comment and blank surgery over the result — the
     // laws must hold under COMPOSITION
@@ -1338,9 +1449,13 @@ module Transform =
         let cmdlets = sub (cmdLetBinders p)
         let brackets = sub (bracketBids p)
         let joins = sub (joinBids p)
+        let lambdas = sub (lambdaBids p)
 
         let extraBid, k =
-            match blockIds p |> List.filter (fun b -> not (joins.Contains b)) with
+            match
+                blockIds p
+                |> List.filter (fun b -> not (joins.Contains b) && not (lambdas.Contains b))
+            with
             | [] -> -1, 0
             | ids -> ids[rnd.Next ids.Length], 1 + rnd.Next 6
 
@@ -1349,7 +1464,8 @@ module Transform =
               ExplicitDistrict = districts.Contains
               SigilCmdLet = cmdlets.Contains
               InlineBracket = brackets.Contains
-              JoinBlock = joins.Contains }
+              JoinBlock = joins.Contains
+              SingleLambda = lambdas.Contains }
 
         insertBlanks rnd (insertComments rnd (render cfg p))
 

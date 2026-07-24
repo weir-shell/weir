@@ -37,6 +37,9 @@ composition, not type complexity.
   `(xs |> Seq.length)` forcing command output in expressions
 - districts: standalone `!` (top level), headed `if ... then !` (top
   level, if bodies, block bodies)
+- multiline lambdas [D:multiline-lambda]: dangling `(fun p ->` opening
+  a body block (block-let + prints inside), closer attached AND alone,
+  as a bare iter statement and as a map on a let-RHS pipeline
 - placement laws the probes established (generator-enforced): bare
   command lines and type declarations are top-level only; if bodies
   are expression territory (districts are the command spelling there);
@@ -50,7 +53,7 @@ composition, not type complexity.
 - env-parameterized districts (`!name`) and env sigils (`$e`/`!e`);
   `sh -c` lines; `| from porcelain/json` adapters; exit reifiers
   (`succeeds`/`complete`/`orFail`)
-- `let ... in` inline form; param-ful lets / lambdas / function defs;
+- `let ... in` inline form; param-ful lets / function defs;
   seq patterns; Regex patterns; tuples; copy-and-update literals;
   `Args.load` / `Env.load`; raw strings; `#loose` mode
 - comments/blanks INSIDE the generated program (they arrive only via
@@ -74,7 +77,8 @@ fails.
    ↔ explicit `!(...)` lines; bare command RHS ↔ `$(...)`; block
    siblings ↔ single-line `;` (print-only bodies — the probed
    boundary: inner lets spell `in`, commands take `;` as argv);
-   Stroustrup ↔ inline bracket styles; and ALL of it COMPOSED in one
+   Stroustrup ↔ inline bracket styles; multiline lambda ↔ its
+   single-line `;`/`in`-joined form; and ALL of it COMPOSED in one
    property (random subsets of every flip + re-indent + comments +
    blanks — the laws must hold under composition).
 2. Totality of `Script.analyzeLines` (assemble → parse → check, the

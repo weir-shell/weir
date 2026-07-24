@@ -203,6 +203,19 @@ refs
 - Lambdas take multiple params: `fun acc x -> ...` desugars to nested
   lambdas exactly like `let f a b =` sugar (same param set — idents,
   `()`, parenthesized irrefutable patterns; duplicates rejected).
+- A `(fun ... ->` dangling at line end opens a BODY BLOCK closed by
+  its own `)`: ordinary block rules inside (block lets, siblings,
+  compounds, districts, blanks), body lines at or right of the
+  opener's indent, the `)` attached to the last body line or alone on
+  its own line. The single-line `;`-joined spelling stays legal.
+
+```weir
+["r1"; "r2"]
+    |> Seq.iter (fun r ->
+        let tag = $"repo-{r}"
+        !(echo fetching $tag)
+        print $"done {r}")
+```
 - `if c then a else b` is an expression; `else` is mandatory unless the
   then-branch is unit (`if ok then print "yes"` is a valid statement).
   `elif` chains as in F# (`if / elif / elif / else`) — pure spelling

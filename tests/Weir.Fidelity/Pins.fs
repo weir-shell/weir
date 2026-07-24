@@ -457,7 +457,37 @@ let pins =
           "let go = 1 > 0\nlet w =\n    if go then\n        print \"a\"\n        print \"b\"\n"
           "let go = 1 > 0\nlet w =\n    if go then\n        printf \"a\"\n        printf \"b\"\n"
           Same
-      pinT "explicit semicolon sequencing" "let u = (print \"x\" ; 1)\n" "let u = (printf \"x\" ; 1)\n" Same ]
+      pinT "explicit semicolon sequencing" "let u = (print \"x\" ; 1)\n" "let u = (printf \"x\" ; 1)\n" Same
+
+      // --- multiline lambdas (2026-07-24) [D:multiline-lambda]: the
+      // parens-spanning park's lambda face opens — pure fidelity gain,
+      // every cell Same (light-syntax lambdas are core F#) ---
+      pin
+          "multiline lambda: dangling (fun -> opens a body block"
+          "let f =\n    [1] |> Seq.map (fun x ->\n        let y = x + 1\n        y * 2)\n"
+          Same
+      pin "multiline lambda: closer alone at column 0" "let f =\n    [1] |> Seq.map (fun x ->\n        x + 1\n)\n" Same
+      pin
+          "multiline lambda: closer alone at body indent"
+          "let f =\n    [1] |> Seq.map (fun x ->\n        x + 1\n    )\n"
+          Same
+      pin "multiline lambda: body at the opener's own indent" "let f =\n    [1] |> Seq.map (fun x ->\n    x + 1)\n" Same
+      pin
+          "multiline lambda: body left of the opener rejects (weir-stricter)"
+          "let f =\n    [1] |> Seq.map (fun x ->\n  x + 1)\n"
+          (Diverges "lambda-body-offside")
+      pin
+          "multiline lambda: body at column 0 rejects (both: F# offside floor)"
+          "let f =\n    [1] |> Seq.map (fun x ->\nx + 1)\n"
+          Same
+      pin
+          "multiline lambda: a match body prunes at the closer, the next stage stays outer"
+          "let v =\n    [1; 2]\n    |> Seq.map (fun n ->\n        match n with\n        | 1 -> 10\n        | _ -> n\n    )\n    |> Seq.sum\n"
+          Same
+      pin
+          "nested multiline lambdas pop innermost-first"
+          "let v =\n    [[1]; [2]]\n    |> Seq.map (fun row ->\n        row\n        |> Seq.map (fun c ->\n            let u = c + 1\n            u)\n        |> Seq.sum\n    )\n    |> Seq.sum\n"
+          Same ]
 
 [<Tests>]
 let fidelityTests =

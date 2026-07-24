@@ -51,6 +51,25 @@ weir rejects rather than guesses.
   and explicit trailing-`;` lines stay alignment-free; fmt
   canonicalizes to the measured anchor, never offset arithmetic —
   fmt and the assembler agree by construction.
+- **Multiline lambdas** [D:multiline-lambda]: a `(fun ... ->` whose
+  paren is unclosed at EOL opens a BODY BLOCK closed by its own `)`.
+  Ordinary block rules apply inside (block lets, sibling `;`,
+  compounds, districts, blank transparency); body lines sit at or
+  right of the OPENER line's indent (left of it is a named leak
+  error — weir-stricter than F#'s enclosing-context floor, the
+  lambda-body-offside row; body AT the opener's indent is a
+  continuation, F#-parity). The closer attaches to the last body
+  line or stands alone at any indent (the col-0 law suspends while
+  the lambda is open); EOF with the paren open errors naming the
+  opener. On pop the statement level RESTORES to where the lambda's
+  statement started — a following block sibling sequences with `;`
+  while a deeper application argument (a fold's init under its
+  `(fun` line) still continues the application. Lambda bodies
+  inherit the letCmdOk spine (command block-lets legal on a let-RHS
+  spine) and lambda params extend the ambient resolver
+  (params-shadow-PATH at check time too). Sigil interiors were
+  already physically spannable by continuation — the
+  single-LOGICAL-line law holds unchanged.
 - **Pipe alignment** [D:pipe-alignment]: sibling `|` lines — match
   arms, union cases, chain stages — must align EXACTLY on their
   group's column (the first pipe after a non-pipe line sets it);
