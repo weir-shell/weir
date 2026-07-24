@@ -1,5 +1,90 @@
 # Spike Notes
 
+## Safe-by-design review — the four safety properties verified (2026-07-24)
+
+Verification-only session (blessed), the security sibling of the
+oracle and the fuzzer: confirm weir's four already-CLAIMED safety
+properties were built soundly, flag what isn't, change nothing in
+src/. Deliverable is SECURITY.md (new) + this report. The plan called
+it: the secret-leak and extreme-input passes were "the two most
+likely to surface a real flag" — extreme-input surfaced THREE.
+
+**Property 1 — injection safety: CONFIRMED.** A hostile value
+(`a b;\tc"d'e\nf$(id)`+backtick+`id`+backtick+`&&*?`) spliced as `$x`
+arrives at the child ONE argv word, byte-for-byte identical to the
+source (`od` diff clean). Confirmed at every splice position: bare
+argv (argc=1 under `; && $(...) *`), `$@xs` splat (N words, each one
+word), interpolation `$"pre {x} post"` (one word), capture-sigil
+interior `$(… $x)` (one word). Architectural leg confirmed: ONE
+`Process.Start` in src/ (Proc.fs:37), `UseShellExecute=false`, argv
+vector; the only `/bin/sh -c` is the explicit `into` builtin
+(Builtins.fs:134), never on the implicit spawn path.
+- MINOR FLAG (diagnostic asymmetry, not a safety hole): mid-word
+  `$x` (`--opt=$x`) SILENTLY splits into two words `["--opt="; x]`
+  — the value stays isolated (safe), but the prefix drops off with
+  no warning, while the SAME mistake with `$@` is a hard fatal
+  ("cannot join a word under construction"). Size: ~10 lines
+  (mirror splat's `previousCharSatisfiesNot`-space check into
+  spliceVar, emit the same teaching). Shape: a diagnostics session,
+  not a safety fix — the doc already warns ("spell `--file $f`"),
+  this makes the checker say so too. The `--file=$f` "passes
+  literally" doc phrasing is misleading (it splits, not glues) —
+  fold the wording fix into the same session.
+
+**Property 2 — resolution integrity: CONFIRMED.** With a malicious
+`git` planted first on PATH: a `let git …` binding runs the binding
+(`bound:status`), never the planted binary; bare unshadowed `git`
+reaches PATH (`MALICIOUS` — correct, that IS normal shell
+resolution); `^git` in command-head position forces PATH through the
+shadow. Check-time verdict matches run-time (checks clean, runs the
+binding). Note recorded, not a flag: `^` is command-mode HEAD syntax
+— `run "^git" [...]` does not strip it (errors "not found: ^git"),
+which is the documented head-vs-string-arg distinction.
+
+**Property 3 — untrusted-text totality: FLAGGED (three violations).**
+The claim is diagnose-or-bound, never crash-or-hang. Adversarial
+LOCAL text breaks it three ways (all availability, not
+execution/injection — you already chose to run the file):
+- SEGFAULT on deep paren nesting: `((((1))))` at depth ≳6000
+  (nest5000 ok 207ms, nest7000 rc=139). Stack exhaustion in
+  FParsec's recursive descent.
+- SEGFAULT on long operator chains: `1 + 1 + …` at ≳50000 terms
+  (rc=139). Same mechanism, the OperatorPrecedenceParser recursion.
+- HANG (super-linear/exponential) on nested empty brackets:
+  `[[[…]]]` — depth 20 = 2.3s, depth 40+ = >20s timeout. Backtracking
+  blowup in the list-literal grammar.
+  Size: medium — the two segfaults share a fix (a parse-depth guard
+  that converts stack-death into a located "expression nested too
+  deeply" diagnostic); the bracket hang is separate (left-factor or
+  memoize the list production). Shape: one hardening session,
+  acceptance = these exact fixtures diagnose-or-bound under a wall
+  clock, folded into the fuzzer's totality property as pinned seeds.
+  Honest denominator: the fuzzer patrols totality but under-weights
+  extreme DEPTH (its generators favor breadth); this pass IS that
+  gap's receipt.
+
+**Property 4 — supply chain + secret surface: CONFIRMED.** Shipped
+binary PackageReferences exactly FParsec 1.1.1 (Simplified BSD);
+FCS + FsCheck are test-side only (grep: neither in src/Weir/*.fsproj),
+so the AOT single-binary links neither. `weir --version` stamps the
+source revision; the batteries hard-gate on stale binaries. Secret
+surface: a nonzero-exit raise renders `Prog :: Args` only
+(Proc.fs:72, Env structurally excluded), and a `complete` record is
+`{ExitCode; Stdout; Stderr}` with NO env field — a secret in
+`runEnv`'s overlay does not appear in either. A secret leaks only if
+the script author puts it in argv itself.
+- FOLLOW-UP (OSS-readiness, not a vuln): no LICENSE / NOTICE /
+  third-party-notices file exists in the repo. SECURITY.md names
+  FParsec's license inline; a proper LICENSE + a one-line FParsec
+  notice is a small housekeeping rider before OSS publish.
+
+**Net:** two properties clean, two carry flags (one minor-diagnostic,
+one real-totality-hardening), plus one OSS housekeeping rider. Zero
+src/ changes this session — every flag is a blessed follow-up's seed,
+per the verification/hardening separation. SECURITY.md carries the
+threat model, the not-a-sandbox scope line, the provenance note, and
+the confidential-issue reporting channel.
+
 ## Regroup — the debt census; no features (2026-07-24)
 
 A stock-take session under the zero-behavior contract: nothing in
