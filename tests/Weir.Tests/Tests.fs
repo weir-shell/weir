@@ -2878,6 +2878,10 @@ let pipeAlignTests =
               | Error e -> Expect.stringContains e "left of its match (head at column 4)" ""
               | Ok _ -> failtest "expected the offside error"
           }
+          // the arm-commit soundness premise rides THIS invariant
+          // [D:arm-commit]: offside-close paren-wraps nested matches, so
+          // at the logical line a '|' after a completed arm at the same
+          // paren depth can only be another arm
           test "the nested-match return F# reads from columns now assembles" {
               match
                   Weir.Script.assemble
@@ -4955,10 +4959,12 @@ let offsideTests =
 
               Expect.isFalse (diags |> List.exists (fun d -> d.Code = "cmd-not-found")) "no phantom command survives"
           }
-          test "span find: junk in a nested arm after a completed arm triggers the bare-pipe fatal upstream" {
-              // `match 62 with | 0 -> ..` is already a complete expression,
-              // so the retry reads the NEXT arm's `|` as pipe confusion and
-              // the consumed-`|` fatal outranks the deeper true error
+          test "FIXED: junk in a nested arm reports at the junk [D:arm-commit]" {
+              // the second span class closes: a consumed '|' commits to
+              // its arm, so the list never backs out and the bare-pipe
+              // fatal never receives the counterfeit "completed
+              // expression" (weir now beats FCS here — F# reports the
+              // NEXT arm's line for the same junk)
               let lines =
                   [ "let v6 ="
                     "    match 62 with"
@@ -4973,9 +4979,77 @@ let offsideTests =
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | d :: _ ->
-                  Expect.equal d.Line 4 "anchored on the outer arm, not the junk"
-                  Expect.stringContains d.Message "'|' chains commands" "the teaching hint misfires here"
+                  Expect.equal (d.Line, d.Col) (6, 23) "on the junk itself"
+                  Expect.isFalse (d.Message.Contains "'|' chains commands") "the hint keeps its real customers"
               | [] -> failtest "expected a parse diagnostic"
+          }
+          test "record-literal commit: deep field junk reports at its site [D:arm-commit]" {
+              // the law's THIRD instance, found by the strict deep run
+              // the day it graduated: the literal commits on its head
+              // (`ident =`), so a failing field no longer rewinds the
+              // whole literal into the update alternative's dump
+              let lines =
+                  [ "type R = { A: int; B: string }"
+                    "let v = { A = 47"
+                    "          B = \"x\" ?!?"
+                    "          }" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | d :: _ ->
+                  Expect.equal d.Line 3 "on the junk's line"
+                  Expect.isFalse (d.Message.Contains "'with'") "no update-grammar dump"
+              | [] -> failtest "expected the parse diagnostic"
+
+              // the update spelling keeps its path
+              match Weir.Parser.parseStmt "let s = { r with A = 3 }" with
+              | Ok _ -> ()
+              | Error e -> failtest $"update must still parse: {e}"
+          }
+          test "arm-commit products: chains, or-patterns, reserved heads, REPL [D:arm-commit]" {
+              let rNone: Weir.Parser.Resolver =
+                  { IsKnown = (fun _ -> false)
+                    IsCommandCallable = (fun _ -> false)
+                    IsExternal = (fun _ -> false)
+                    ExternalNames = fun () -> Seq.empty }
+
+              let rGit =
+                  { rNone with
+                      IsExternal = (fun n -> n = "git") }
+
+              // (a) a bare '|' in an arm RHS is an ARM SEPARATOR (F#
+              // reads it the same way) — command chains in arms ride $()
+              match Weir.Parser.parseLineFull rGit "let v = match 1 with | 1 -> git log | Seq.head | _ -> \"x\"" with
+              | Error _ -> ()
+              | Ok _ -> failtest "a bare chain in an arm RHS must not parse"
+
+              match
+                  Weir.Parser.parseLineFull rGit "let v = match 1 with | 1 -> $(git log) |> Seq.head | _ -> \"x\""
+              with
+              | Ok _ -> ()
+              | Error e -> failtest $"the sigil spelling is the arm chain: {e.Message}"
+
+              // (b) or-patterns stay rejected, located at the second '|'
+              // (divergence row or-patterns; F# accepts)
+              match Weir.Parser.parseLineFull rNone "let v = match 1 with | 0 | 1 -> \"low\" | _ -> \"hi\"" with
+              | Error f -> Expect.equal f.Col (Some 26) "at the or-pattern's second bar"
+              | Ok _ -> failtest "or-patterns are not a weir feature (yet)"
+
+              // (c) guards under commit
+              match Weir.Parser.parseStmt "let v = match 3 with | n when n > 2 -> n | _ -> 0" with
+              | Ok _ -> ()
+              | Error e -> failtest $"guards must survive the commit: {e}"
+
+              // (e) a reserved word in arm-head position errors AT it
+              match Weir.Parser.parseLineFull rNone "let f = match 1 with | 1 -> 2 | function -> 3" with
+              | Error f -> Expect.equal f.Col (Some 33) "located at the reserved word"
+              | Ok _ -> failtest "expected the arm-head failure"
+
+              // (f) the REPL single-line grammar commits identically
+              match Weir.Parser.parseStmt "match 1 with | 1 -> 2 | _ -> ?!?" with
+              | Error msg -> Expect.stringContains msg "Col: 30" "at the junk in the one-line spelling"
+              | Ok _ -> failtest "expected the junk failure"
           }
           test "a field misaligned from ITS OWN attribute line errors [D:field-alignment]" {
               // the >] dangle suppresses the separator, never the alignment

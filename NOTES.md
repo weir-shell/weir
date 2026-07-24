@@ -1,6 +1,59 @@
 # Spike Notes
 
-## Semantic tokens — the mode boundary made visible; the park closes (2026-07-24)
+## Arm-commit — the span-soundness arc closes (2026-07-24)
+
+The smallest session of the window carries the arc's last stone.
+Invariant 3 was built to audit spans generatively; its two finds
+turned out to be one disease at two separators — an attempt-wrapped
+`many` silently backing out after consuming a separator, handing the
+tail to whatever alternative would take it. Seq-commit killed the
+`;` instance (and the district-wrap class with it); arm-commit kills
+the `|` instance: one line, the attempt retired, and the pinned
+repro now reports at 6:23 — the junk itself — where FCS, run as the
+referee, reports the NEXT arm's line. Weir beats its oracle on
+error placement here, recorded without a pin (the oracle compares
+verdicts, not positions; the FCS probe is in this entry).
+
+The probe set earned its place in the plan. A bare `|` inside an arm
+RHS is an ARM SEPARATOR — F# reads it identically — so the "greedy
+chain absorption" premise was corrected: command chains in arms ride
+`$()`, and the committed loop gives the bare spelling a located
+error at the pattern position. Or-patterns: weir rejects (located at
+the second bar), F# accepts — the unnamed divergence is now the
+or-patterns row, filed with no receipt and a reopen condition.
+Guards, Regex arms, reserved-word heads, and the REPL one-line
+grammar all pass under commit; the bare-pipe hint's original
+customers re-ran untouched.
+
+The graduation earned its keep the day it happened: the first
+strict deep run found the law's THIRD instance — junk on a
+record-literal field line reported at the PREVIOUS line with the
+update grammar's dump ("expecting 'with'"), because the literal's
+attempt spanned the whole record and a deep field failure rewound it
+into the update alternative. Fix in the same session, same shape:
+the literal COMMITS on its head (`ident =`, guarded against `==` —
+an update source can start that way) — the field junk now reports at
+its own site with the literal's own expectations. Trailing `;}` was
+already a reject (probed — nothing to preserve); updates keep their
+path (pinned).
+
+So the arc's period: WEIR_FUZZ_STRICT_SPANS defaults ON — the
+invariant that shipped gated-red is a standing guarantee in the CI
+smoke, and the soundness premise (a `|` after a completed arm at the
+same paren depth can only be another arm) is pinned to the assembler
+invariant it rides (offside-close wrapping). Built → found twice →
+fixed twice → promoted → found a third the same day → fixed the same
+day: the fuzzer plan's "finds are pins, triaged" clause, running as
+a flywheel now.
+
+Harness-truth watch, filed from a self-inflicted scare: a deep run
+CONCURRENT with a republish fails en masse (P and T(P) can execute
+against different binaries — the stamp gate checks once, at first
+use). The rerun against the settled binary was clean. If it recurs,
+the mechanization is per-case stamp echo or a lockfile; one line
+here until then.
+
+## Semantic tokens — the mode boundary made visible; the park closes (2026-07-24)## Semantic tokens — the mode boundary made visible; the park closes (2026-07-24)
 
 The standing semantic-tokens park closes on its named trigger with
 its arc intact: parked at LSP v1, the REPL-coloring session laid the

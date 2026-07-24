@@ -248,7 +248,14 @@ let private recordLit =
         pchar '{'
         >>. ws
         >>. choice
-                [ attempt (sepBy1 fieldAssign (str_ws ";") .>> pchar '}') |>> ERecord
+                [ // the consumed-separator law's record instance
+                  // [D:arm-commit]: the literal COMMITS on its head
+                  // (`ident =`, not `==`) — a deep field failure reports
+                  // at ITS site instead of rewinding the whole literal
+                  // into the update alternative's shallower dump
+                  attempt (lookAhead (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=')))
+                  >>. (sepBy1 fieldAssign (str_ws ";") .>> pchar '}')
+                  |>> ERecord
                   (updateSource .>> keyword "with") .>>. sepBy1 updateAssign (str_ws ";")
                   .>> pchar '}'
                   |>> EUpdate ]
@@ -850,7 +857,12 @@ let private matchExpr =
     pipe3
         getPosition
         (keyword "match" >>. expr .>> keyword "with")
-        (opt (str_ws "|") >>. matchArm .>>. many (attempt (str_ws "|" >>. matchArm)))
+        // a consumed '|' COMMITS to its arm [D:arm-commit] — the
+        // consumed-separator law's second instance (seq-commit's twin):
+        // a failing arm RHS reports at ITS OWN site instead of silently
+        // ending the arm list, whose leftover '|' then counterfeited
+        // the bare-pipe fatal's "completed expression" customer
+        (opt (str_ws "|") >>. matchArm .>>. many (str_ws "|" >>. matchArm))
         (fun p scrut (arm0, rest) ->
             let arms = arm0 :: rest
             let lastBody = List.last arms |> fun (_, _, b) -> b

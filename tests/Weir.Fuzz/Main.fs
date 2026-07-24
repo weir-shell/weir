@@ -36,12 +36,11 @@ let private envInt name dflt =
 let private seed = envInt "WEIR_FUZZ_SEED" 1789001
 let private count = envInt "WEIR_FUZZ_COUNT" 200
 
-// invariant 3's positional assertion is gated: two span-quality classes
-// are pinned in Weir.Tests (district wrap anchor, bare-pipe fatal) and
-// the re-anchor policy is an open decision — the hard floor (junk always
-// diagnosed) holds unconditionally; strict positions are the nightly's
-// pressure instrument until the policy lands
-let private strictSpans = envInt "WEIR_FUZZ_STRICT_SPANS" 0 = 1
+// invariant 3's positional assertion GRADUATED [D:arm-commit]: both
+// span classes closed (district wrap by seq-commit, bare-pipe by
+// arm-commit) — strict positions are a standing guarantee; the env
+// remains as an off-switch for archaeology only
+let private strictSpans = envInt "WEIR_FUZZ_STRICT_SPANS" 1 = 1
 
 type Arbs =
     static member Program() : Arbitrary<Program> =

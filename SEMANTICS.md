@@ -51,6 +51,16 @@ weir rejects rather than guesses.
   and explicit trailing-`;` lines stay alignment-free; fmt
   canonicalizes to the measured anchor, never offset arithmetic —
   fmt and the assembler agree by construction.
+- **The consumed-separator law** [D:seq-commit] [D:arm-commit]: a
+  consumed separator COMMITS to its continuation — `;` to its next
+  element, an arm's `|` to its arm, a record literal to its fields
+  once the `ident =` head discriminates it from an update. A failing continuation reports at
+  its own site; the parse never silently backs out past a consumed
+  separator into an alternative that re-reads the tail in the wrong
+  scope (the verdict-split mechanism) or manufactures a
+  completed-expression shape for the bare-pipe fatal (the span
+  misfire). Committed-choice at exactly the separators whose silent
+  stop had receipts.
 - **Multiline lambdas** [D:multiline-lambda]: a `(fun ... ->` whose
   paren is unclosed at EOL opens a BODY BLOCK closed by its own `)`.
   Ordinary block rules apply inside (block lets, sibling `;`,

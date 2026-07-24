@@ -485,6 +485,10 @@ let pins =
           "let v =\n    [1; 2]\n    |> Seq.map (fun n ->\n        match n with\n        | 1 -> 10\n        | _ -> n\n    )\n    |> Seq.sum\n"
           Same
       pin
+          "or-patterns are not a weir feature (F# accepts; located reject)"
+          "let v = match 1 with | 0 | 1 -> \"low\" | _ -> \"hi\"\n"
+          (Diverges "or-patterns")
+      pin
           "nested multiline lambdas pop innermost-first"
           "let v =\n    [[1]; [2]]\n    |> Seq.map (fun row ->\n        row\n        |> Seq.map (fun c ->\n            let u = c + 1\n            u)\n        |> Seq.sum\n    )\n    |> Seq.sum\n"
           Same ]

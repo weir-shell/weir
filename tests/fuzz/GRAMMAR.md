@@ -91,11 +91,10 @@ fails.
    (some error diagnostic exists) holds unconditionally; the strict
    positional assertion (the injected line, col within extent, a
    translated backtrack note counts) runs under
-   `WEIR_FUZZ_STRICT_SPANS=1` — red today on ONE pinned class (the
-   bare-pipe fatal; pin in Weir.Tests), open until its policy is
-   decided. The district-wrap class and the verdict-split hard-floor
-   bug were both closed by [D:seq-commit] (a consumed `;` commits to
-   its element); deep runs are green.
+   `WEIR_FUZZ_STRICT_SPANS` (default ON — GRADUATED once both span
+   classes closed: the district wrap by [D:seq-commit], the bare-pipe
+   fatal by [D:arm-commit]; the consumed-separator law). The strict
+   positional assertion is a standing guarantee in the CI smoke.
 4. fmt roundtrip: `formatLines` succeeds on every generated program,
    is idempotent, preserves per-statement sexpr shape (the respace
    guard's own predicate), and the formatted program is
