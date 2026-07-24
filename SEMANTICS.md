@@ -51,6 +51,18 @@ weir rejects rather than guesses.
   and explicit trailing-`;` lines stay alignment-free; fmt
   canonicalizes to the measured anchor, never offset arithmetic —
   fmt and the assembler agree by construction.
+- **The argv word law** [D:argv-splat]: `$x` is one word; `$@xs` is
+  N words; nothing ever re-splits. The one-splice-one-word rule loses
+  its silent asterisk — many things get the `$@` spelling (bash's
+  `"$@"` semantics: each `seq<string>` element one argv word, never
+  re-joined; the `$*`-class re-joining stays unrepresentable). Splats
+  live in every command-arg position, enumerate ONCE at spawn (finite
+  argv forces the seq — no explicit force at the splice), and vanish
+  to zero words when empty (replacing bash's conditional-flag idiom).
+  A splat cannot head a command (N heads is incoherent — the
+  computed-head park) nor build a word mid-construction (N words
+  cannot live in one). The safety story GAINS: adversarial elements
+  stay single words by the same law that made scalar splices safe.
 - **The reifier output law** [D:exit-reifiers]: output goes where the
   meaning goes. Predicates and inspectors are quiet/captured because
   their output IS the result (`succeeds` → bool, `complete` → the

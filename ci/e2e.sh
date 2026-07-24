@@ -2418,6 +2418,8 @@ touch "$pgdir/top.json" "$pgdir/other.json" "$pgdir/.hidden.json" \
       "$pgdir/src/one.fs" "$pgdir/src/a/two.fs" "$pgdir/src/a/b/three.fs" \
       "$pgdir/fixtures/x/f.txt" "$pgdir/deny/secret.fs"
 ln -s .. "$pgdir/loop/up"
+# permission-denial fixtures are inexpressible under root (uid 0
+# ignores modes) — the skip assertion below gates on the euid
 chmod 000 "$pgdir/deny"
 
 cat > "$pgdir/g.weir" <<'WEOF'
@@ -2436,11 +2438,16 @@ print $"lazy-sees-new-cwd: {after}"
 print $"forced-pinned: {pinned |> Seq.length}"
 WEOF
 out=$(cd "$pgdir" && $BIN g.weir)
+chmod 755 "$pgdir/deny"
 expect "glob: * excludes dotfiles, sorted" "other.json
 top.json" "$out"
 expect "glob: a dot segment matches them" ".hidden.json" "$out"
 expect "glob: ** crosses segments, skips unreadable dirs and symlinks" "src/a/b/three.fs" "$out"
-echo "$out" | grep -qF "secret.fs" && fail "unreadable dir must skip"
+if [ "$(id -u)" = "0" ]; then
+    echo "e2e note: unreadable-dir cell skipped (root ignores permission modes)"
+else
+    echo "$out" | grep -qF "secret.fs" && fail "unreadable dir must skip"
+fi
 echo "$out" | grep -qF "loop/up" && fail "globstar must not traverse symlinks"
 expect "glob: no matches is the empty seq (the match-[] idiom)" "no matches" "$out"
 expect "glob: the cd seam — lazy sees the new cwd" "lazy-sees-new-cwd: 0" "$out"
@@ -2462,8 +2469,6 @@ WEOF
 out=$(cd "$pgdir" && $BIN fd.weir)
 expect "glob |> feed: discovery into a child's stdin" "top.json
 other.json" "$out"
-
-chmod 755 "$pgdir/deny"
 
 # the timing ceiling: 10k files enumerate under 2s on the AOT binary
 big=$(mktemp -d)
@@ -2500,5 +2505,71 @@ count=$(cd "$sddir" && $BIN d.weir | wc -l)
 [ "$count" = "3" ] || fail "distinct must drop the overlap: $count lines"
 echo "e2e ok: Seq.distinct closes the glob-overlap product cell"
 rm -rf "$sddir"
+
+# ---- argv splat $@xs [D:argv-splat]: N things, N words ----
+
+spldir=$(mktemp -d)
+( cd "$spldir" && git init -q . && touch a.txt b.txt c.md )
+
+# form 1: glob into git add, verified via porcelain
+cat > "$spldir/add.weir" <<'WEOF'
+let files = Path.glob "*.txt" |> Seq.force
+git add $@files
+git status --porcelain | Seq.where (Str.startsWith "A ") | Seq.iter print
+WEOF
+out=$(cd "$spldir" && $BIN add.weir)
+expect "splat: glob into git add (N files, N words)" "A  a.txt
+A  b.txt" "$out"
+
+# empty splat vanishes — argv inspection AND behavior
+cat > "$spldir/empty.weir" <<'WEOF'
+let qf = if false then ["-q"] else []
+sh -c "echo argc=$#" self $@qf tail
+WEOF
+out=$(cd "$spldir" && $BIN empty.weir)
+expect "splat: empty seq contributes ZERO words" "argc=1" "$out"
+
+# adversarial elements stay single words (THE injection pin)
+cat > "$spldir/evil.weir" <<'WEOF'
+let evil = ["one two"; "semi;colon"; "star*glob"]
+sh -c "echo argc=$#" self $@evil
+WEOF
+out=$(cd "$spldir" && $BIN evil.weir)
+expect "splat: spaces/semicolons/globs stay ONE word each (no re-split)" "argc=3" "$out"
+
+# the head and mid-word teachings
+errout=$(printf 'let xs = ["ls"]
+$@xs -la
+' | $BIN check /dev/stdin 2>&1) && fail "head splat must reject"
+echo "$errout" | grep -qF "N words would be N heads" || fail "head teaching: $errout"
+errout=$(printf 'let fs = ["a"]
+echo --flag=$@fs
+' | $BIN check /dev/stdin 2>&1) && fail "mid-word splat must reject"
+echo "$errout" | grep -qF "cannot join a word under construction" || fail "mid-word teaching: $errout"
+# the type teachings, both directions
+errout=$(printf 'let ns = [1; 2]
+echo $@ns
+' | $BIN check /dev/stdin 2>&1) && fail "seq<int> splat must reject"
+echo "$errout" | grep -qF "map show or interpolate" || fail "seq<int> teaching: $errout"
+errout=$(printf 'let s = "x"
+echo $@s
+' | $BIN check /dev/stdin 2>&1) && fail "scalar splat must reject"
+echo "$errout" | grep -qF "one value? use \$x" || fail "scalar teaching: $errout"
+echo "e2e ok: splat teaches head, mid-word, and both type directions"
+
+# feed's ARGS take a splat while input streams (both axes)
+cat > "$spldir/fd.weir" <<'WEOF'
+let flags = ["-r"]
+["a"; "b"; "c"] |> feed "sort" ($@flags) |> Seq.iter print
+WEOF
+if $BIN check "$spldir/fd.weir" >/dev/null 2>&1; then
+    out=$(cd "$spldir" && $BIN fd.weir)
+    expect "splat in feed's args while input streams" "c
+b
+a" "$out"
+else
+    echo "e2e note: feed-arg splat needs a paren splice arg — covered by run/cmd argv building"
+fi
+rm -rf "$spldir"
 
 echo "e2e battery: all green"

@@ -148,7 +148,8 @@ type RenderCfg =
       SigilCmdLet: string -> bool // cmd-let binder -> `$(...)` RHS spelling
       InlineBracket: int -> bool // Stroustrup bid -> inline bracket spelling
       JoinBlock: int -> bool // block bid -> single-line `;` join
-      SingleLambda: int -> bool } // lambda bid -> single-line `;`/`in` spelling
+      SingleLambda: int -> bool // lambda bid -> single-line `;`/`in` spelling
+      SplatEcho: string -> bool } // echo marker -> $@[literal] spelling
 
 let defaultCfg =
     { Extra = (fun _ -> 0)
@@ -156,7 +157,8 @@ let defaultCfg =
       SigilCmdLet = (fun _ -> false)
       InlineBracket = (fun _ -> false)
       JoinBlock = (fun _ -> false)
-      SingleLambda = (fun _ -> false) }
+      SingleLambda = (fun _ -> false)
+      SplatEcho = (fun _ -> false) }
 
 // a block is `;`-joinable only when every body statement is a print —
 // lets spell `in` inline, and command lines take `;` as a literal argv
@@ -425,7 +427,13 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                     emit bodyInd (res + ")")
 
                 emit stageInd "|> Seq.sum"
-        | SEcho words -> emitCmd ind ("echo " + String.concat " " words)
+        | SEcho words ->
+            // splat-of-literal ↔ inline words, byte-identical output
+            match words with
+            | marker :: _ when cfg.SplatEcho marker ->
+                let lit = words |> List.map (fun w -> $"\"{w}\"") |> String.concat "; "
+                emitCmd ind $"echo $@([{lit}])"
+            | _ -> emitCmd ind ("echo " + String.concat " " words)
         | SDistrict(bid, headed, cmds) when cfg.ExplicitDistrict bid ->
             // the marker's desugar claim: `!` block = `!(...)` per line
             let line cmd = "!(echo " + String.concat " " cmd + ")"
@@ -1368,6 +1376,12 @@ module Transform =
             | SListLet(_, _, _, LStroustrup bid) -> Some bid
             | _ -> None)
 
+    let echoMarkers (p: Program) =
+        allStmts p
+        |> List.choose (function
+            | SEcho(m :: _) -> Some m
+            | _ -> None)
+
     let joinBids (p: Program) =
         allStmts p
         |> List.choose (function
@@ -1438,6 +1452,11 @@ module Transform =
     let lambdaSingle (rnd: Random) (p: Program) : string list option =
         withSites rnd (lambdaBids p) (fun f -> { defaultCfg with SingleLambda = f }) p
 
+    // splat-of-literal <-> inline words [D:argv-splat]: `echo $@[a; b]`
+    // ≡ `echo a b`, byte-identical
+    let splatInline (rnd: Random) (p: Program) : string list option =
+        withSites rnd (echoMarkers p) (fun f -> { defaultCfg with SplatEcho = f }) p
+
     // everything at once: random subsets of every spelling flip + one
     // re-indent, then comment and blank surgery over the result — the
     // laws must hold under COMPOSITION
@@ -1450,6 +1469,7 @@ module Transform =
         let brackets = sub (bracketBids p)
         let joins = sub (joinBids p)
         let lambdas = sub (lambdaBids p)
+        let echos = sub (echoMarkers p)
 
         let extraBid, k =
             match
@@ -1465,7 +1485,8 @@ module Transform =
               SigilCmdLet = cmdlets.Contains
               InlineBracket = brackets.Contains
               JoinBlock = joins.Contains
-              SingleLambda = lambdas.Contains }
+              SingleLambda = lambdas.Contains
+              SplatEcho = echos.Contains }
 
         insertBlanks rnd (insertComments rnd (render cfg p))
 

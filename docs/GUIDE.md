@@ -154,9 +154,11 @@ match Path.glob "*.md" with
 let pinned = Path.glob "*.md" |> Seq.force
 ```
 
-Relative patterns resolve against the cwd at ENUMERATION — the lazy
-seam: `|> Seq.force` pins the batch before a `cd`. Script-relative
-batches ride `scriptPath`:
+A batch splats into a command with `$@` — N files, N words, nothing
+re-split: `git add $@(Path.glob "*.txt" |> Seq.force)`. Relative
+patterns resolve against the cwd at ENUMERATION — the lazy seam:
+`|> Seq.force` pins the batch before a `cd`. Script-relative batches
+ride `scriptPath`:
 `Path.glob $"{scriptPath |> Path.dir}/fixtures/**/*.txt"`.
 
 ## A script's own location

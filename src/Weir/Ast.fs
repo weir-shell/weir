@@ -60,6 +60,8 @@ and ExprKind =
     | ELetPat of binder: Pattern * value: Expr * body: Expr
     | ELambdaPat of binder: Pattern * body: Expr
     | ECmd of prog: string * args: Expr list * env: Expr option
+    // $@xs / $@(expr) — N argv words [D:argv-splat]
+    | ESplat of Expr
     // copy-and-update [D:record-update]: paths carry nested sugar
     // (I.X); the checker walks them, eval overlays — source ONCE
     | EUpdate of source: Expr * updates: ((string * Span) list * Expr) list
@@ -107,6 +109,7 @@ let exprChildren (e: Expr) : Expr list =
     | EList items -> items
     | ETuple items -> items
     | ECmd(_, args, envO) -> args @ Option.toList envO
+    | ESplat e -> [ e ]
     | EUpdate(src, ups) -> src :: (ups |> List.map snd)
     | EInterp parts ->
         parts
@@ -194,6 +197,7 @@ let rec sexpr (e: Expr) : string =
             |> String.concat ""
 
         $"(interp {body})"
+    | ESplat e -> $"(splat {sexpr e})"
     | ECmd(prog, [], None) -> $"(cmd {prog})"
     | ECmd(prog, args, None) ->
         let body = args |> List.map sexpr |> String.concat " "

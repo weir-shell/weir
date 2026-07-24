@@ -172,6 +172,14 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
         let len = a.Span.End.Col - s
 
         match a.Kind, charAt ll s with
+        // $@ splat: the island marker — whole token for $@name, the
+        // delimiters for $@(expr) [D:argv-splat]
+        | Check.TESplat _, Some '$' ->
+            if charAt ll (s + 2) = Some '(' then
+                emitSpan ll s 3 2
+                emitSpan ll (s + len - 1) 1 2
+            else
+                emitSpan ll s len 2
         // bareword argv (quoted/raw/interp args keep their lexical
         // string coloring — they already read as data)
         | Check.TEStr _, Some c when c <> '"' && c <> '@' && c <> '$' -> emitSpan ll s len 1

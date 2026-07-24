@@ -149,6 +149,9 @@ let tests =
 
           metamorphic "multiline lambdas and their single-line form agree" (fun rnd p -> Transform.lambdaSingle rnd p)
 
+          metamorphic "splat-of-literal and inline words agree [D:argv-splat]" (fun rnd p ->
+              Transform.splatInline rnd p)
+
           // the laws must hold under COMPOSITION — where they have
           // historically failed
           metamorphic "all transforms composed stay output-neutral" (fun rnd p -> Some(Transform.composedAll rnd p))

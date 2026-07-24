@@ -926,6 +926,19 @@ let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * strin
             |> List.ofSeq
         | v -> unreachable $"the checker rejects a sigil env of {formatValue v}"
 
+// spawn-argv assembly [D:argv-splat]: a splat enumerates ONCE at
+// spawn (argv is finite — the splat forces by necessity), order
+// preserved, each element ONE word
+and argvOf (env: Env) (args: Check.TypedExpr list) : string list =
+    args
+    |> List.collect (fun a ->
+        match a.Kind with
+        | Check.TESplat inner ->
+            match eval env inner with
+            | VSeq items -> items |> Seq.map (scalarString "splat element") |> List.ofSeq
+            | v -> unreachable $"the checker rejects '$@' on {formatValue v}"
+        | _ -> [ scalarString "command argument" (eval env a) ])
+
 and eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
     | TEInt n -> VInt(int64 n)
@@ -944,7 +957,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TELambda(param, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
     | TEPipe(arg, { Kind = TECmd(prog, cargs, cenvO) }) ->
-        let argv = cargs |> List.map (fun a -> scalarString "command argument" (eval env a))
+        let argv = argvOf env cargs
 
         let stdin =
             match eval env arg with
@@ -1008,7 +1021,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEList items -> VSeq(items |> List.map (eval env))
     | TETuple items -> VTuple(items |> List.map (eval env))
     | TECmd(prog, args, cenvO) ->
-        let argv = args |> List.map (fun a -> scalarString "command argument" (eval env a))
+        let argv = argvOf env args
 
         VSeq(
             Seq.delay (fun () -> Proc.linesWith (overlayOf env cenvO) (Proc.resolveProg prog) argv None)

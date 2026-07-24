@@ -2824,6 +2824,20 @@ let semanticTokenTests =
                   [ (1, 0, 4, 0); (1, 5, 2, 1); (1, 8, 2, 2); (1, 11, 1, 2); (1, 17, 1, 2) ]
                   "the quoted arg and the splice interior emit nothing"
           }
+          test "splat spans join the splice legend [D:argv-splat]" {
+              let toks =
+                  Weir.Lsp.semanticTokensFor [ "let fs = [\"a\"]"; "echo go $@fs $@([\"b\"]) tail" ]
+
+              Expect.equal
+                  (toks |> List.filter (fun (l, _, _, _) -> l = 1))
+                  [ (1, 0, 4, 0)
+                    (1, 5, 2, 1)
+                    (1, 8, 4, 2)
+                    (1, 13, 3, 2)
+                    (1, 21, 1, 2)
+                    (1, 23, 4, 1) ]
+                  "head, argv, $@name whole, $@( delims, tail argv"
+          }
           test "the shadowed-cat trio: binding wins, deletion restores, ^ forces" {
               // bound: an application — NO command tokens
               let bound =
@@ -3970,6 +3984,49 @@ let agentFindingsTests =
               match Weir.Parser.parseLine cmdResolver "let ok = git fetch | succeeds" with
               | Ok(SLet("ok", { Kind = EApp({ Kind = EApp({ Kind = EVar "succeeded" }, _) }, _) })) -> ()
               | other -> failtest $"expected the succeeded desugar, got {other}"
+          }
+          test "argv splat: $@name and $@(expr) desugar to ESplat [D:argv-splat]" {
+              match Weir.Parser.parseLine cmdResolver "git add $@files" with
+              | Ok(SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "(splat files)" ""
+              | other -> failtest $"expected the splat, got {other}"
+
+              match Weir.Parser.parseLine cmdResolver "echo $@([\"a\"])" with
+              | Ok(SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "(splat" ""
+              | other -> failtest $"expected the expr splat, got {other}"
+          }
+          test "splat type demands seq<string>, both teachings [D:argv-splat]" {
+              let msgOf lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+                  diags
+                  |> List.tryPick (fun d -> if d.Severity = "error" then Some d.Message else None)
+
+              // seq<int>: map-show teaching
+              match msgOf [ "let ns = [1; 2]"; "echo $@ns" ] with
+              | Some m -> Expect.stringContains m "map show or interpolate" ""
+              | None -> failtest "expected the seq<int> rejection"
+
+              // scalar: one-value teaching
+              match msgOf [ "let s = \"x\""; "echo $@s" ] with
+              | Some m -> Expect.stringContains m "one value? use $x" ""
+              | None -> failtest "expected the scalar rejection"
+          }
+          test "splat rejects at the head and mid-word, each naming its fix [D:argv-splat]" {
+              match Weir.Parser.parseLine cmdResolver "$@(xs) -la" with
+              | Error msg -> Expect.stringContains msg "N words would be N heads" ""
+              | Ok _ -> failtest "the head splat must reject"
+
+              match Weir.Parser.parseLine cmdResolver "echo --flag=$@fs" with
+              | Error msg -> Expect.stringContains msg "cannot join a word under construction" ""
+              | Ok _ -> failtest "the mid-word splat must reject"
+          }
+          test "$@\" stays the parked interpolated-verbatim cell, not a splat" {
+              // lookahead lets $@ splat and $@"..." coexist; the quote form
+              // is not yet a feature, so it errors as an unknown token — NOT
+              // as a broken splat
+              match Weir.Parser.parseLine cmdResolver "echo $@\"x\"" with
+              | Error msg -> Expect.isFalse (msg.Contains "splat") "the quote opener is not read as a splat"
+              | Ok _ -> failtest "expected a parse error (the cell is parked)"
           }
           test "exitCode desugars to the exitCoded application [D:exit-reifiers]" {
               match Weir.Parser.parseLine cmdResolver "let rc = git push | exitCode" with

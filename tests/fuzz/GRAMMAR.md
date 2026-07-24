@@ -32,6 +32,8 @@ composition, not type complexity.
 - record literals: inline, Stroustrup, aligned (measured anchors)
 - list literals: inline, Stroustrup, aligned; int and string elements
 - multi-line pipelines (`|>` stages under a dangling let)
+- argv splat: `echo $@([...])` on echo statements (the
+  splat-of-literal transform target [D:argv-splat])
 - command lines: top-level bare `echo`; command-backed `let` (top
   level AND block bodies — the spine flag); `seq |> print`;
   `(xs |> Seq.length)` forcing command output in expressions

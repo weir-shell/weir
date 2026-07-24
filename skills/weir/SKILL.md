@@ -352,8 +352,16 @@ print x
   like any nonzero exit, aborting the script at the fault.
 - Bareword heads run externals: `git status` works at a statement head.
   Builtins shadow PATH (`ls` is typed rows); `^ls` forces the external.
-- Splice values into commands: `$name` for bindings, `(expr)` for
-  expressions — always single argv entries, never re-split, no injection.
+- Splice values into commands: `$x` is ONE word; `$@xs` (and
+  `$@(expr)`) is N words — the argv splat, each `seq<string>` element
+  one word, never re-split, never re-joined (no injection either
+  way). `$@xs` is to `$x` what `yield!` is to `yield`. An empty seq
+  contributes ZERO words (`git fetch $@qf origin` with `qf = []`
+  drops nothing) — the typed replacement for bash's conditional-flag
+  idiom. `$@` demands `seq<string>` exactly (a scalar or `seq<int>`
+  is a check error naming the fix); it cannot head a command
+  (computed heads park) or join a word mid-construction
+  (`--flag=$@xs` — map the prefix on, or separate args).
 - No glob EXPANSION (`Path.glob` is the typed spelling — a
   function, not argv magic), no redirects, no `&&`, no `$VAR` env
   expansion — those

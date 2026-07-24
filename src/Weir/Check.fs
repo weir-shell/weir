@@ -177,6 +177,7 @@ and TypedKind =
     | TETo of format: string
     | TEList of items: TypedExpr list
     | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
+    | TESplat of TypedExpr
     | TEUpdate of source: TypedExpr * updates: (string list * TypedExpr) list
     | TETuple of TypedExpr list
     | TELetPat of binder: Pattern * value: TypedExpr * body: TypedExpr
@@ -1859,7 +1860,46 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs |> to json"
     | ECmd(prog, args, envO) ->
         result {
-            let checkArg = checkScalarSplice ctx env "command arguments"
+            // $@ demands seq<string> EXACTLY [D:argv-splat]; the twin
+            // teachings point each mistake at its honest spelling
+            let checkArg (a: Expr) =
+                match a.Kind with
+                | ESplat inner ->
+                    result {
+                        let! tinner = infer ctx env inner
+
+                        match resolve ctx tinner.Ty with
+                        | TVar _ ->
+                            do! bind ctx env a.Span (TSeq TStr) tinner.Ty
+
+                            return
+                                { Kind = TESplat tinner
+                                  Ty = TSeq TStr
+                                  Span = a.Span }
+                        | TSeq TStr ->
+                            return
+                                { Kind = TESplat tinner
+                                  Ty = TSeq TStr
+                                  Span = a.Span }
+                        | TSeq(TVar _ as tv) ->
+                            // an unanchored element ([] and friends)
+                            // resolves to string at the splice
+                            do! bind ctx env a.Span TStr tv
+
+                            return
+                                { Kind = TESplat tinner
+                                  Ty = TSeq TStr
+                                  Span = a.Span }
+                        | TSeq t ->
+                            return!
+                                err
+                                    a.Span
+                                    $"$@ splices a seq<string>; this is seq<{formatTy t}> — map show or interpolate per element"
+                        | (TStr | TInt | TBool) as t ->
+                            return! err a.Span $"$@ splices a seq<string>; this is {formatTy t} — one value? use $x"
+                        | t -> return! err a.Span $"$@ splices a seq<string>; this is {formatTy t}"
+                    }
+                | _ -> checkScalarSplice ctx env "command arguments" a
 
             let! targs =
                 args
@@ -2226,6 +2266,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TELambdaPat(p, b) -> TELambdaPat(p, finalizeExpr ctx b)
         | TECmd(prog, args, envO) ->
             TECmd(prog, args |> List.map (finalizeExpr ctx), envO |> Option.map (finalizeExpr ctx))
+        | TESplat e -> TESplat(finalizeExpr ctx e)
         | TEInterp parts ->
             TEInterp(
                 parts
@@ -2358,6 +2399,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEList items -> items
     | TETuple items -> items
     | TECmd(_, args, envO) -> args @ Option.toList envO
+    | TESplat e -> [ e ]
     | TEUpdate(src, ups) -> src :: (ups |> List.map snd)
     | TEInterp parts ->
         parts

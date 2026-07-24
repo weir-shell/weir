@@ -27,6 +27,10 @@ Expression positions:
 - indexer interior (`xs[i]`)
 - interpolation holes (`$"...{e}..."`)
 - command-arg splices (`(expr)` in command mode — scalar-checked)
+- argv splat `$@name`/`$@(expr)` [D:argv-splat] — every command-arg
+  position (statement, param-ful/block-let RHS, sigil interiors,
+  districts, env chains); REJECTED at the command head (computed-head
+  park) and mid-word (N words can't build one word)
 - sigil interiors are COMMAND grammar, not expression grammar — an
   expression form does not need a sigil pin unless it is also legal
   in command mode

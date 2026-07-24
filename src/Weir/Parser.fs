@@ -989,6 +989,32 @@ let private singleQuoted =
 
 let private spliceVar = spanned (pchar '$' >>. rawWord |>> EVar) |>> mkExpr .>> ws
 
+// $@name / $@(expr) — the argv splat [D:argv-splat]: N words, never
+// re-split. `$@"` stays the parked interpolated-verbatim opener's
+// cell (lookahead-decided, pinned); mid-word adjacency is fatal — N
+// words cannot live inside one word under construction.
+let private spliceSplat: Parser<Expr, unit> =
+    lookAhead (attempt (pstring "$@" .>> notFollowedBy (pchar '"')))
+    >>. ((previousCharSatisfiesNot (fun c -> c = ' ' || c = '\t')
+          >>. failFatally
+                  "a splat cannot join a word under construction — map the prefix onto the elements, or pass it as a separate argument")
+         <|> preturn ())
+    >>. spanned (
+        pstring "$@"
+        >>. (choice
+                 [ rawWord |>> Choice1Of2
+                   (pchar '(' >>. ws >>. seqExpr .>> ws .>> pchar ')') |>> Choice2Of2 ]
+             <?> "a name or (expr) after '$@' — the argv splat")
+    )
+    |>> (fun (c, span) ->
+        let inner =
+            match c with
+            | Choice1Of2 n -> { Kind = EVar n; Span = span }
+            | Choice2Of2 e -> e
+
+        { Kind = ESplat inner; Span = span })
+    .>> ws
+
 let private cmdArgWith (stopAtIn: bool) =
     let bareword =
         if stopAtIn then
@@ -1001,7 +1027,15 @@ let private cmdArgWith (stopAtIn: bool) =
         else
             spanned (cmdWord |>> EStr) |>> mkExpr .>> ws
 
-    choice [ strLit; singleQuoted; interpLit; captureSigil; spliceVar; parens; bareword ]
+    choice
+        [ strLit
+          singleQuoted
+          interpLit
+          captureSigil
+          spliceSplat
+          spliceVar
+          parens
+          bareword ]
 
 let private cmdArg = cmdArgWith false
 
@@ -1040,7 +1074,10 @@ let private commandSegment
             else
                 fail "not an external command"
 
-    attempt head .>>. many argP
+    (lookAhead (pstring "$@")
+     >>. failFatally
+             "a splat cannot head a command (N words would be N heads); computed heads stay parked — run/cmd take the program as a value")
+    <|> (attempt head .>>. many argP)
     |>> fun ((kind, prog, span), args) ->
         let fullSpan =
             { Start = span.Start

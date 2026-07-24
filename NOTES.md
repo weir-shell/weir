@@ -1,6 +1,42 @@
 # Spike Notes
 
-## Seq.distinct — pulled forward by its customer (2026-07-24)
+## The argv splat — N things, N words; the park closes (2026-07-24)
+
+The one-splice-one-word law always carried a silent asterisk ("...and
+if you have many, leave the grammar"): `run prog (Seq.append base
+files)` was the only spelling for a variable-length command. `$@xs`
+retires the asterisk — it is the bare-mode spelling of an operation
+weir already committed to (the argv law plus variable-length commands
+makes it structural, exactly the block-let-RHS genus). Bash's `"$@"`
+is the one expansion bash got right; weir adopts precisely its
+semantics under a distinct glyph while `$*`-rejoining stays
+unrepresentable, and the safety story GAINS a clause rather than
+loses one — adversarial elements (spaces, semicolons, glob chars)
+stay single words by the same law that made scalar splices safe,
+pinned adversarially.
+
+The sharpest new cell is the contrast the mid-word rejection draws:
+`$file` GLUES into a word under construction (`--file=$f` works),
+but `$@files` CANNOT (N words have no single word to join) — a
+fatal at the splice naming both honest spellings. The head
+rejection names the computed-head park (a splat head is N heads);
+the empty seq vanishes to zero words, which is the typed replacement
+for bash's `${arr:+...}` conditional-flag dance. Enumeration is
+once at spawn — argv is finite, so the splat forces by necessity;
+the when-do-I-force doc gains that as a fact, not a warning.
+
+The fuzzer was owed and paid: the generator emits `echo $@([...])`
+and the transform library asserts splat-of-literal ≡ inline words,
+byte-identical (paren-wrapped — `$@[` bare-bracket is not a form,
+only `$@(expr)`, a boundary the transform's first failure taught).
+The `$@"` cell is pinned both ways so the parked interp-verbatim
+opener inherits a held boundary. Tokens learned the form
+same-session (one-brain): `$@name` whole, `$@(` delimiters, in the
+splice legend. The park closes with its arc intact: proposed at the
+sigil audit, parked for receipts, two arrived (conditional flags,
+glob-into-git-add), opened by call.
+
+## Seq.distinct — pulled forward by its customer (2026-07-24)## Seq.distinct — pulled forward by its customer (2026-07-24)
 
 The glob session deferred its overlap-dedupe product cell honestly;
 this closes it same-day. Distinct rides the class machinery the
@@ -322,12 +358,14 @@ fixed twice → promoted → found a third the same day → fixed the same
 day: the fuzzer plan's "finds are pins, triaged" clause, running as
 a flywheel now.
 
-Harness-truth watch, filed from a self-inflicted scare: a deep run
-CONCURRENT with a republish fails en masse (P and T(P) can execute
-against different binaries — the stamp gate checks once, at first
-use). The rerun against the settled binary was clean. If it recurs,
-the mechanization is per-case stamp echo or a lockfile; one line
-here until then.
+Harness-truth watch, RECURRED (argv-splat deep run, 2026-07-24): a
+deep run CONCURRENT with a republish fails en masse — P and T(P)
+execute against different binaries mid-swap, and the stamp gate
+(checked once at first use) does not catch it (0 STALE messages,
+5/13 spurious diffs; both re-runs on the settled binary clean).
+Second occurrence promotes it from watch to OWED: the fix is a
+per-case stamp echo or a run-vs-publish lockfile. Until then, the
+discipline is DO NOT republish while a deep run is live.
 
 ## Semantic tokens — the mode boundary made visible; the park closes (2026-07-24)## Semantic tokens — the mode boundary made visible; the park closes (2026-07-24)
 
