@@ -1,6 +1,79 @@
 # Spike Notes
 
-## The assembler fuzzer — Session 1, and the boring outcome's shape (2026-07-24)
+## The assembler fuzzer — Session 2: the net earns its keep (2026-07-24)
+
+The transform library completed to the plan's full list — district ↔
+`!(...)` (the desugar claim), bare command RHS ↔ `$(...)` (the pinned
+equivalence at scale), block siblings ↔ single-line `;`, Stroustrup ↔
+inline — each law probed before encoding, and the probes drew one
+boundary the docs imply but never state as a unit: `;`-joining is for
+unit-EXPRESSION siblings only (an inner let demands the `in` spelling;
+a command line takes `;` as a literal argv word), so the transform's
+eligibility is print-only bodies, on record in GRAMMAR.md. The
+composition property now flips random subsets of every spelling at
+once over a re-indent plus comment/blank surgery.
+
+Invariant 3 (span soundness) paid for itself within its first 200
+cases — twice. Class one: a parse error AFTER a district in the same
+statement anchors on the district's wrapped segment, col past the
+physical line's end (synthetic wrap text has no physical home), with
+the user's actual line surviving only as a translated backtrack note.
+Class two, nastier: junk in a nested match arm, when the outer match
+already carries a completed arm, makes the retry read the next `|` as
+pipe confusion — the consumed-`|` fatal (built to WIN the
+furthest-error rule) wins against the TRUE deeper failure and aims
+its teaching hint at an innocent line. Both hand-minimized to
+6–8-line repros and pinned as current behavior in Weir.Tests. The
+policy question they jointly pose — who wins the furthest-error
+competition across wraps and fatals; is deepest-wins the rule the
+diag anchor should follow — is parser-diagnostics surgery beyond a
+harness session's remit: STOPPED and reported, strict positional
+assertion parked behind WEIR_FUZZ_STRICT_SPANS, the hard floor (junk
+is always diagnosed — the silent-swallow guarantee) unconditional.
+
+Invariant 4 (fmt roundtrip: succeeds, idempotent, sexpr-shape via the
+respace guard's own predicate, output-neutral on the binary) came up
+clean over the smoke and the deep run — consistent with fmt's
+internal safety gate doing its job.
+
+Then the deep run (seed 8675309, 10k/invariant) delivered the find
+the plan predicted, via invariant 3's HARD floor: `weir check` exits
+0 — one cmd-not-found warning — on a script the runner REJECTS. The
+5-line repro: inside a block, after a sequenced unit statement, a
+`let` RHS headed by a KNOWN binding (`let v4 = v3 ?!?`) parses under
+check's assume-resolver as an ASSUMED COMMAND — the user's junk
+vanishes into a phantom command's argv, and the "missing tool" it
+warns about is the user's own string binding. The verdict SPLIT
+breaks check's contract (check-green must mean runnable modulo
+uninstalled TOOLS — v3 is not a tool), and the product triple nobody
+named is block-let-command-RHS × assume-resolver ×
+bound-head-after-`;`. Pinned as the open-bug marker in Weir.Tests;
+the fix candidate is one clause — the assume-resolver stops claiming
+names the env already KNOWS (bindings-beat-PATH extended to check
+time) — held for bless, since the resolver feeds check, LSP, and
+fmt's shape guard alike. Deep runs stay honestly RED on this class
+until it lands; the CI smoke's pinned seed does not reach it.
+
+The harness is wired: CI smoke (pinned seed, after publish + e2e, in
+.gitlab-ci.yml and ci/local.sh), tools/fuzz.sh for fresh-seed deep
+runs (prints its seed; failures reproduce by command line), and
+PROCESS.md now carries the grammar-membership rule — new assembler
+features owe their shapes to the generator and their equivalence
+claims to the transform library, the metamorphic law part of the
+feature. With that, the widen-the-net park from the silent-swallow
+postmortem is formally CLOSED: this harness is its answer, and the
+owner question is resolved — the fuzzer owns the unnamed-triple
+space, the hand-pinned matrices keep the named cells. Grading note
+for the Session 1 prediction: REVERSED to FOUND. With Session 2's
+instruments in the battery, the deep run surfaced a genuine
+correctness bug (the check/run verdict split) plus two span-quality
+classes — the prediction missed only Session 1's narrower instrument
+set; the base-rate argument was right about the seam, wrong only
+about which invariant would catch it. The metamorphic net
+(invariants 1, 2, 4) remains clean at 40k+ cases across four fresh
+seeds — the equivalence laws themselves appear to hold.
+
+## The assembler fuzzer — Session 1, and the boring outcome's shape (2026-07-24)## The assembler fuzzer — Session 1, and the boring outcome's shape (2026-07-24)
 
 The widen-the-net answer, executed: a generator of valid-by-
 construction line-shape programs (FsCheck, test-side — the FCS

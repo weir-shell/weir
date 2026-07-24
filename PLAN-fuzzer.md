@@ -133,6 +133,35 @@ prediction graded.
   is the right first instrument; feedback-guided is a later
   escalation if the boring outcome arrives suspiciously fast.
 
+## Session 2 report (2026-07-24)
+
+Executed: the four spelling transforms (district ↔ `!(...)`, bare ↔
+`$(...)`, siblings ↔ `;` bounded to print-only bodies by probe —
+inner lets spell `in`, commands take `;` as argv — and Stroustrup ↔
+inline), the composition property now spanning every flip at once,
+invariant 3 (span soundness over renderer-tagged expression lines),
+invariant 4 (fmt: succeeds/idempotent/sexpr-shape/output-neutral),
+CI smoke wired (.gitlab-ci.yml + ci/local.sh, pinned seed, after
+publish), tools/fuzz.sh (fresh-seed deep driver, prints its seed),
+the PROCESS grammar-membership rule, NOTES closure of the
+widen-the-net park. FINDS: invariant 3 caught two span classes on
+its first smoke — (1) a parse error after a district anchors on the
+wrapped segment (col past the physical line), true site only in a
+backtrack note; (2) junk in a nested arm after a completed outer arm
+triggers the consumed-`|` fatal upstream, the teaching hint
+mis-aimed. Both hand-minimized, pinned as current behavior in
+Weir.Tests; the re-anchor policy (who wins the furthest-error
+competition across wraps and fatals) is left as an OPEN DECISION —
+strict positional assertion gated behind WEIR_FUZZ_STRICT_SPANS
+until it lands. DEEP RUN (seed 8675309, 10k/invariant): invariants
+1/2/4 clean; invariant 3's hard floor caught the PREDICTED bug — a
+check/run verdict split (check rc0 + warning, run rejects) where a
+block-let RHS headed by a KNOWN binding is claimed by the
+assume-resolver as a command and junk becomes argv. Prediction
+regraded FOUND (NOTES). Deep runs stay red on that class until the
+one-clause assume-resolver fix (stop claiming env-known names) is
+blessed and lands.
+
 ## Session 1 report (2026-07-24)
 
 Executed as planned; FsCheck held (the fallback stayed unused —

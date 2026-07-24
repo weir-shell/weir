@@ -4584,6 +4584,75 @@ let offsideTests =
                   Expect.equal f.Col (Some 21) "the column of 'upToDate', not the next token"
               | Ok _ -> failtest "expected the casing error"
           }
+          // the fuzzer's first two span-class finds [D:fuzz-harness] —
+          // CURRENT behavior pinned; the re-anchor policy (who wins the
+          // furthest-error competition across wraps and fatals) is an
+          // open decision, so these pins mark the classes, not the goal
+          test "span find: after a district, a later parse error anchors on the wrapped segment" {
+              let lines =
+                  [ "let v0 ="
+                    "    if 79 == 84 then !"
+                    "        echo m0 w381"
+                    "    if 0 > 99 then ?!?"
+                    "        print \"x\""
+                    "    9" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | d :: _ ->
+                  Expect.equal (d.Line, d.Col) (3, 24) "primary sits past the district line's end"
+                  Expect.stringContains d.Message "at line 4, col 20" "the true site travels as a backtrack note"
+              | [] -> failtest "expected a parse diagnostic"
+          }
+          test "fuzzer find: junk after a BOUND name demotes to a cmd-not-found warning at check" {
+              // the deep run's verdict-split find [D:fuzz-harness]: after a
+              // sequenced unit statement, a block-let RHS headed by a KNOWN
+              // binding parses as an ASSUMED command and the junk becomes
+              // argv — check exits 0 (warning) on a script the runner
+              // rejects. OPEN BUG marker; fix candidate: assume-resolver
+              // stops claiming names the env already knows
+              // (bindings-beat-PATH holds at check time too)
+              let lines =
+                  [ "let v0 ="
+                    "    let v3 = \"a\""
+                    "    print \"mm\""
+                    "    let v4 = v3 ?!?"
+                    "    3" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+              Expect.isFalse
+                  (diags |> List.exists (fun d -> d.Severity = "error"))
+                  "check reports NO error today — the split this pin marks"
+
+              Expect.exists
+                  diags
+                  (fun d -> d.Code = "cmd-not-found" && d.Line = 4)
+                  "the binding claimed as a missing command"
+          }
+          test "span find: junk in a nested arm after a completed arm triggers the bare-pipe fatal upstream" {
+              // `match 62 with | 0 -> ..` is already a complete expression,
+              // so the retry reads the NEXT arm's `|` as pipe confusion and
+              // the consumed-`|` fatal outranks the deeper true error
+              let lines =
+                  [ "let v6 ="
+                    "    match 62 with"
+                    "    | 0 -> \"a\""
+                    "    | 1 ->"
+                    "        match \"w790\" with"
+                    "        | \"k0\" -> \"b\" ?!?"
+                    "        | _ -> \"w484\""
+                    "    | _ -> \"d\"" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | d :: _ ->
+                  Expect.equal d.Line 4 "anchored on the outer arm, not the junk"
+                  Expect.stringContains d.Message "'|' chains commands" "the teaching hint misfires here"
+              | [] -> failtest "expected a parse diagnostic"
+          }
           test "a field misaligned from ITS OWN attribute line errors [D:field-alignment]" {
               // the >] dangle suppresses the separator, never the alignment
               // (the planted flagship line 106: checker was happy, runtime

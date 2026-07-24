@@ -121,10 +121,47 @@ let private renderPat (a: LitArm) : string =
     | ALit(e, _) -> renderExpr e
     | AGuard(b, c, _) -> $"{b} when {renderCond c}"
 
-let render (extra: int -> int) (p: Program) : string list =
+// Render configuration: every field is a semantics-NEUTRAL spelling
+// choice the ledger claims equivalent, so a transformed program is
+// well-formed by construction.
+type RenderCfg =
+    { Extra: int -> int // re-indent: added indent for that block id
+      ExplicitDistrict: int -> bool // district bid -> `!(...)`-per-line spelling
+      SigilCmdLet: string -> bool // cmd-let binder -> `$(...)` RHS spelling
+      InlineBracket: int -> bool // Stroustrup bid -> inline bracket spelling
+      JoinBlock: int -> bool } // block bid -> single-line `;` join
+
+let defaultCfg =
+    { Extra = (fun _ -> 0)
+      ExplicitDistrict = (fun _ -> false)
+      SigilCmdLet = (fun _ -> false)
+      InlineBracket = (fun _ -> false)
+      JoinBlock = (fun _ -> false) }
+
+// a block is `;`-joinable only when every body statement is a print —
+// lets spell `in` inline, and command lines take `;` as a literal argv
+// word (both probed)
+let joinable (body: Stmt list) =
+    body
+    |> List.forall (function
+        | SPrint _ -> true
+        | _ -> false)
+
+let private printArg (e: Expr) =
+    match e with
+    | EInterp _ -> renderExpr e
+    | e when atomic e -> renderExpr e
+    | e -> $"({renderExpr e})"
+
+// Lines carry a tag for the span-soundness invariant: true = expression
+// territory (an appended bad token must error HERE); false = command
+// territory (junk becomes argv, not an error).
+let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
     let sp n = String(' ', n)
-    let out = ResizeArray<string>()
-    let emit ind (text: string) = out.Add(sp ind + text)
+    let out = ResizeArray<string * bool>()
+    let emit ind (text: string) = out.Add(sp ind + text, true)
+    let emitCmd ind (text: string) = out.Add(sp ind + text, false)
+    let extra = cfg.Extra
 
     let tyText =
         function
@@ -156,6 +193,15 @@ let render (extra: int -> int) (p: Program) : string list =
     let rec emitStmt (ind: int) (s: Stmt) =
         match s with
         | SLet(v, e) -> emit ind $"let {v} = {renderExpr e}"
+        | SLetBlock(v, b) when cfg.JoinBlock b.Bid && joinable b.Body ->
+            let parts =
+                (b.Body
+                 |> List.map (function
+                     | SPrint e -> $"print {printArg e}"
+                     | _ -> failwith "joinable lied"))
+                @ [ renderExpr b.Result ]
+
+            emit ind ($"let {v} = " + String.concat " ; " parts)
         | SLetBlock(v, b) ->
             emit ind $"let {v} ="
             let bodyInd = ind + 4 + extra b.Bid
@@ -175,14 +221,15 @@ let render (extra: int -> int) (p: Program) : string list =
                 match binder with
                 | Some b -> emit (ind + 4) $"| {case} {b} -> {renderExpr rhs}"
                 | None -> emit (ind + 4) $"| {case} -> {renderExpr rhs}"
-        | SPrint e ->
-            let arg =
-                match e with
-                | EInterp _ -> renderExpr e
-                | e when atomic e -> renderExpr e
-                | e -> $"({renderExpr e})"
+        | SPrint e -> emit ind $"print {printArg e}"
+        | SIf(bid, c, body) when cfg.JoinBlock bid && joinable body ->
+            let parts =
+                body
+                |> List.map (function
+                    | SPrint e -> $"print {printArg e}"
+                    | _ -> failwith "joinable lied")
 
-            emit ind $"print {arg}"
+            emit ind ($"if {renderCond c} then " + String.concat " ; " parts)
         | SIf(bid, c, body) ->
             emit ind $"if {renderCond c} then"
 
@@ -193,6 +240,11 @@ let render (extra: int -> int) (p: Program) : string list =
                 match attr with
                 | Some d -> $"[<Doc \"{d}\">] {f}: {tyText ty}"
                 | None -> $"{f}: {tyText ty}"
+
+            let style =
+                match style with
+                | RStroustrup bid when cfg.InlineBracket bid -> RInline
+                | s -> s
 
             match style with
             | RInline ->
@@ -240,6 +292,11 @@ let render (extra: int -> int) (p: Program) : string list =
                 let cs = cases |> List.map caseText |> String.concat " | "
                 emit ind $"type {n} = {cs}"
         | SRecLet(r, _, fvs, style) ->
+            let style =
+                match style with
+                | RStroustrup bid when cfg.InlineBracket bid -> RInline
+                | s -> s
+
             match style with
             | RInline ->
                 let fs =
@@ -273,6 +330,11 @@ let render (extra: int -> int) (p: Program) : string list =
                 emit ind $"let {u} = {case} {arg}"
             | None -> emit ind $"let {u} = {case}"
         | SListLet(x, _, elems, style) ->
+            let style =
+                match style with
+                | LStroustrup bid when cfg.InlineBracket bid -> LInline
+                | s -> s
+
             match style with
             | LInline ->
                 let es = elems |> List.map renderExpr |> String.concat "; "
@@ -302,15 +364,34 @@ let render (extra: int -> int) (p: Program) : string list =
             emit bodyInd src
             emit bodyInd $"|> Seq.map (fun a -> a + {k})"
             emit bodyInd "|> Seq.length"
-        | SEcho words -> emit ind ("echo " + String.concat " " words)
+        | SEcho words -> emitCmd ind ("echo " + String.concat " " words)
+        | SDistrict(bid, headed, cmds) when cfg.ExplicitDistrict bid ->
+            // the marker's desugar claim: `!` block = `!(...)` per line
+            let line cmd = "!(echo " + String.concat " " cmd + ")"
+
+            match headed with
+            | Some c ->
+                emit ind $"if {renderCond c} then"
+
+                for cmd in cmds do
+                    emitCmd (ind + 4 + extra bid) (line cmd)
+            | None ->
+                for cmd in cmds do
+                    emitCmd ind (line cmd)
         | SDistrict(bid, headed, cmds) ->
             (match headed with
-             | Some c -> emit ind $"if {renderCond c} then !"
-             | None -> emit ind "!")
+             | Some c -> emitCmd ind $"if {renderCond c} then !"
+             | None -> emitCmd ind "!")
 
             for cmd in cmds do
-                emit (ind + 4 + extra bid) ("echo " + String.concat " " cmd)
-        | SCmdLet(g, words) -> emit ind ("let " + g + " = echo " + String.concat " " words)
+                emitCmd (ind + 4 + extra bid) ("echo " + String.concat " " cmd)
+        | SCmdLet(g, words) ->
+            let rhs = "echo " + String.concat " " words
+
+            if cfg.SigilCmdLet g then
+                emitCmd ind ("let " + g + " = $(" + rhs + ")")
+            else
+                emitCmd ind ("let " + g + " = " + rhs)
         | SSeqPrint x -> emit ind $"{x} |> print"
 
     for s in p.Stmts do
@@ -318,7 +399,10 @@ let render (extra: int -> int) (p: Program) : string list =
 
     List.ofSeq out
 
-let renderPlain (p: Program) : string list = render (fun _ -> 0) p
+let render (cfg: RenderCfg) (p: Program) : string list = renderTagged cfg p |> List.map fst
+
+let renderPlain (p: Program) : string list = render defaultCfg p
+
 
 // every reindentable block id in the program, for the transform to pick from
 let blockIds (p: Program) : int list =
@@ -1150,6 +1234,67 @@ module Transform =
 
         ls
 
+    // site collectors for the spelling transforms
+    let private allStmts (p: Program) : Stmt list =
+        let acc = ResizeArray<Stmt>()
+
+        let rec go s =
+            acc.Add s
+
+            match s with
+            | SLetBlock(_, b) -> List.iter go b.Body
+            | SIf(_, _, body) -> List.iter go body
+            | _ -> ()
+
+        List.iter go p.Stmts
+        List.ofSeq acc
+
+    let districtBids (p: Program) =
+        allStmts p
+        |> List.choose (function
+            | SDistrict(bid, _, _) -> Some bid
+            | _ -> None)
+
+    let cmdLetBinders (p: Program) =
+        allStmts p
+        |> List.choose (function
+            | SCmdLet(g, _) -> Some g
+            | _ -> None)
+
+    let bracketBids (p: Program) =
+        allStmts p
+        |> List.choose (function
+            | STypeRec(_, _, RStroustrup bid) -> Some bid
+            | SRecLet(_, _, _, RStroustrup bid) -> Some bid
+            | SListLet(_, _, _, LStroustrup bid) -> Some bid
+            | _ -> None)
+
+    let joinBids (p: Program) =
+        allStmts p
+        |> List.choose (function
+            | SLetBlock(_, b) when joinable b.Body -> Some b.Bid
+            | SIf(bid, _, body) when joinable body -> Some bid
+            | _ -> None)
+
+    // a random nonempty subset of the applicable sites
+    let private pickSites (rnd: Random) (xs: 'a list) : 'a list =
+        match xs with
+        | [] -> []
+        | _ ->
+            let chosen = xs |> List.filter (fun _ -> rnd.Next 2 = 0)
+
+            if chosen.IsEmpty then
+                [ xs[rnd.Next xs.Length] ]
+            else
+                chosen
+
+    let private withSites (rnd: Random) (sites: 'a list) (build: ('a -> bool) -> RenderCfg) (p: Program) =
+        match sites with
+        | [] -> None
+        | _ ->
+            let s = Set.ofList (pickSites rnd sites)
+            Some(render (build s.Contains) p)
+
     // None when the program has no reindentable block
     let reindent (rnd: Random) (p: Program) : string list option =
         match blockIds p with
@@ -1157,7 +1302,56 @@ module Transform =
         | ids ->
             let bid = ids[rnd.Next ids.Length]
             let k = 1 + rnd.Next 6
-            Some(render (fun b -> if b = bid then k else 0) p)
+
+            Some(
+                render
+                    { defaultCfg with
+                        Extra = (fun b -> if b = bid then k else 0) }
+                    p
+            )
+
+    // district marker form <-> explicit `!(...)` lines (the desugar claim)
+    let districtSigil (rnd: Random) (p: Program) : string list option =
+        withSites rnd (districtBids p) (fun f -> { defaultCfg with ExplicitDistrict = f }) p
+
+    // bare command RHS <-> `$(...)` (the pinned equivalence, at scale)
+    let cmdSigil (rnd: Random) (p: Program) : string list option =
+        withSites rnd (cmdLetBinders p) (fun f -> { defaultCfg with SigilCmdLet = f }) p
+
+    // Stroustrup <-> inline bracket style
+    let bracketStyle (rnd: Random) (p: Program) : string list option =
+        withSites rnd (bracketBids p) (fun f -> { defaultCfg with InlineBracket = f }) p
+
+    // block siblings <-> single-line `a ; b` (the assembler's join claim;
+    // print-only bodies — the probed boundary)
+    let joinSiblings (rnd: Random) (p: Program) : string list option =
+        withSites rnd (joinBids p) (fun f -> { defaultCfg with JoinBlock = f }) p
+
+    // everything at once: random subsets of every spelling flip + one
+    // re-indent, then comment and blank surgery over the result — the
+    // laws must hold under COMPOSITION
+    let composedAll (rnd: Random) (p: Program) : string list =
+        let sub (xs: 'a list) =
+            Set.ofList (xs |> List.filter (fun _ -> rnd.Next 2 = 0))
+
+        let districts = sub (districtBids p)
+        let cmdlets = sub (cmdLetBinders p)
+        let brackets = sub (bracketBids p)
+        let joins = sub (joinBids p)
+
+        let extraBid, k =
+            match blockIds p |> List.filter (fun b -> not (joins.Contains b)) with
+            | [] -> -1, 0
+            | ids -> ids[rnd.Next ids.Length], 1 + rnd.Next 6
+
+        let cfg =
+            { Extra = (fun b -> if b = extraBid then k else 0)
+              ExplicitDistrict = districts.Contains
+              SigilCmdLet = cmdlets.Contains
+              InlineBracket = brackets.Contains
+              JoinBlock = joins.Contains }
+
+        insertBlanks rnd (insertComments rnd (render cfg p))
 
 module Mutate =
     let deleteLine (rnd: Random) (lines: string list) : string list =

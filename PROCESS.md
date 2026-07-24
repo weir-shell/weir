@@ -87,6 +87,18 @@ by the machinery working as designed.
   pin, the echo's double-force caught at 22 pulls where the property
   allows 11, before the pin was an hour old).
 
+## Fuzzer grammar membership
+
+New assembler/grammar features add their line shapes to the fuzzer's
+generator (tests/Weir.Fuzz/Grammar.fs + the coverage denominator in
+tests/fuzz/GRAMMAR.md) and their equivalence claims to the transform
+library — the metamorphic law is part of the feature, not a follow-up.
+"The fuzzer passed" means exactly what the denominator says it means.
+Origin: the silent-swallow postmortem's widen-the-net park, closed by
+PLAN-fuzzer — every recent assembler incident lived in an unnamed
+product triple; generation probes the space nobody enumerates, but
+only over the shapes it is told exist.
+
 ## Harness truth (stamps + waitpid)
 
 Harness assertions are claims too — a test harness that can report

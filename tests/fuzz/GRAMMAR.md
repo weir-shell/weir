@@ -55,9 +55,6 @@ composition, not type complexity.
   `Args.load` / `Env.load`; raw strings; `#loose` mode
 - comments/blanks INSIDE the generated program (they arrive only via
   the transform layer)
-- Session 2 will grow the transform library (district ↔ `!()`, bare
-  command RHS ↔ `$()`, `;` ↔ block siblings, Stroustrup ↔ inline)
-  and may widen the grammar with it
 
 ## Shrinking
 
@@ -67,20 +64,49 @@ statement removal is not shrunk. FsCheck drives the shrink loop; the
 reported counterexample is the minimal statement subset that still
 fails.
 
-## Invariants wired (Session 1)
+## Invariants wired
 
 1. Metamorphic equivalence on the AOT binary — (rc, stdout, stderr)
    byte-identical under: blank insertion (any gap), comment insertion
    (any gap, any indent 0–12), whole-block re-indent (+1..6 on one
    block: let bodies, if bodies, district bodies, match-arm groups,
-   Stroustrup bracket groups, pipeline stages), and all three
-   COMPOSED (one property — the laws must hold under composition).
+   Stroustrup bracket groups, pipeline stages); district marker form
+   ↔ explicit `!(...)` lines; bare command RHS ↔ `$(...)`; block
+   siblings ↔ single-line `;` (print-only bodies — the probed
+   boundary: inner lets spell `in`, commands take `;` as argv);
+   Stroustrup ↔ inline bracket styles; and ALL of it COMPOSED in one
+   property (random subsets of every flip + re-indent + comments +
+   blanks — the laws must hold under composition).
 2. Totality of `Script.analyzeLines` (assemble → parse → check, the
    one pipeline) on every generated program and mutated neighbor
    (line deletion, ±1..3 indent perturbation, line duplication,
    adjacent-line swap, and stacked pairs): no exception, no >5s hang.
+3. Span soundness: a bad token (` ?!?`) appended to a random
+   expression-territory line (command lines are argv territory —
+   excluded by the renderer's tags) must be diagnosed. The HARD floor
+   (some error diagnostic exists) holds unconditionally; the strict
+   positional assertion (the injected line, col within extent, a
+   translated backtrack note counts) runs under
+   `WEIR_FUZZ_STRICT_SPANS=1` — red today on two pinned classes
+   (district-wrap anchor, bare-pipe fatal; pins in Weir.Tests), open
+   until the re-anchor policy is decided. The hard floor itself is
+   red on deep (fresh-seed) runs via one pinned OPEN BUG: the
+   check/run verdict split (a bound-name block-let RHS claimed as an
+   assumed command — junk demotes to a cmd-not-found warning); it
+   gates deep runs until the assume-resolver fix lands.
+4. fmt roundtrip: `formatLines` succeeds on every generated program,
+   is idempotent, preserves per-statement sexpr shape (the respace
+   guard's own predicate), and the formatted program is
+   output-identical on the binary.
 
-Smoke: pinned seed 1789001, 200 cases/invariant (~5s). Deep: fresh
-seeds via `WEIR_FUZZ_SEED`/`WEIR_FUZZ_COUNT` (10k ≈ 4.5min). The
-equality detector has a graded positive control (a deliberately
-non-neutral edit fails the property — verified at bring-up).
+Ledger equivalence claims NOT yet in the transform library (named
+exclusions): env-district/`$e`/`!e` spellings (env features are
+outside the grammar), `let ... in` ↔ block lets (grammar has no
+inline `in` form yet), aligned ↔ Stroustrup/inline (aligned is
+generated as a base style but not flipped by a transform).
+
+Smoke: pinned seed 1789001, 200 cases/invariant (~7s), wired into CI
+after publish + e2e. Deep: `tools/fuzz.sh [seed] [count]` (fresh
+seed, 10k default). The equality detector has a graded positive
+control (a deliberately non-neutral edit fails the property —
+verified at bring-up).
