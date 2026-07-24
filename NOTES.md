@@ -1,6 +1,24 @@
 # Spike Notes
 
-## Path.glob — discovery typed, the expansion law untouched (2026-07-24)
+## Seq.distinct — pulled forward by its customer (2026-07-24)
+
+The glob session deferred its overlap-dedupe product cell honestly;
+this closes it same-day. Distinct rides the class machinery the
+containsScheme precedent laid down (one scheme, one override line),
+stays lazy with first-occurrence-wins, and remembers only what it
+has yielded — the pull-count pin shows first-2 over a counted dupe
+source stopping at exactly the second novel element. The Eq
+constraint rejects seq/function elements at the use site with the
+teaching the equality work already wrote.
+
+A finding for the stashed miner proposal while here: Seq.groupBy
+already exists in the module table — the proposal's "countBy/groupBy
+are NOT pulled in (no receipt names them)" premise was doubly stale
+(one of them had been shipped all along). The proposal now needs
+only rmatchAll and the rewrite itself; feed and distinct landed
+ahead of it.
+
+## Path.glob — discovery typed, the expansion law untouched (2026-07-24)## Path.glob — discovery typed, the expansion law untouched (2026-07-24)
 
 The recategorization leads, as the plan demanded: the old exclusion
 guarded against bareword EXPANSION in argv, and nothing here touches

@@ -785,6 +785,26 @@ let private containsImpl: Value =
             | VSeq items -> VBool(items |> Seq.exists (fun v -> v = needle))
             | v -> unreachable $"the checker rejects 'contains' on {formatValue v}"))
 
+// Seq.distinct [D:seq-distinct]: lazy, first-occurrence-wins,
+// remembers only what it has yielded; equality is the checker-vetted
+// structural `=` (Eq-constrained — functions/seqs rejected at use)
+let private distinctImpl: Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            VSeq(
+                Seq.delay (fun () ->
+                    seq {
+                        let seen = ResizeArray<Value>()
+
+                        for x in items do
+                            if not (seen.Contains x) then
+                                seen.Add x
+                                yield x
+                    })
+            )
+        | v -> unreachable $"the checker rejects 'distinct' on {formatValue v}")
+
 let private itemImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
@@ -840,6 +860,7 @@ let private seqMembers: (string * Ty * Value) list =
       "tryItem", TFun(TInt, TFun(TSeq tA, TNamed("Option", [ tA ]))), tryItemImpl
       "skip", TFun(TInt, TFun(TSeq tA, TSeq tA)), skipImpl
       "contains", TFun(tA, TFun(TSeq tA, TBool)), containsImpl
+      "distinct", TFun(TSeq tA, TSeq tA), distinctImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
 
 let private strMembers: (string * Ty * Value) list =
@@ -1315,6 +1336,7 @@ let typeEnv: TypeEnv =
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
         |> Map.ofList
         |> Map.change "Seq" (Option.map (Map.add "contains" Check.containsScheme))
+        |> Map.change "Seq" (Option.map (Map.add "distinct" Check.distinctScheme))
         |> Map.change "Seq" (Option.map (Map.add "sortBy" sortByScheme))
         |> Map.change "Seq" (Option.map (Map.add "sortByDescending" sortByScheme))
       Types =

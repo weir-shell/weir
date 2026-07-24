@@ -579,6 +579,26 @@ let streamingTests =
               Expect.equal (List.length result) 5 "exactly five rows"
               Expect.equal result[0] (Weir.Builtins.file "f2" 2 false) "first surviving row"
           }
+          test "Seq.distinct: first wins, lazily, remembering only the yielded [D:seq-distinct]" {
+              expectValue "[\"b\"; \"a\"; \"b\"; \"c\"; \"a\"] |> Seq.distinct |> Seq.length" (VInt 3L)
+
+              // the pull-count pin: first 2 distinct values pull only
+              // until the second novel element appears
+              let pulled = ref 0
+
+              let source =
+                  seq {
+                      for i in [ 1; 1; 1; 2; 3; 4; 5 ] do
+                          System.Threading.Interlocked.Increment pulled |> ignore
+                          yield VInt(int64 i)
+                  }
+
+              let out =
+                  runWith [ "src", VSeq source ] "src |> Seq.distinct |> first 2" |> forceSeq
+
+              Expect.equal out [ VInt 1; VInt 2 ] "first occurrences, in order"
+              Expect.equal pulled.Value 4 "pulled exactly to the second novel element"
+          }
           test "feed pulls its INPUT lazily: an early-exiting child bounds the pulls [D:spawn-spec]" {
               // the standing laziness rule reaches inputs — the writer
               // task pulls as the pipe accepts, so `head -1` over a

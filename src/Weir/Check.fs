@@ -553,6 +553,12 @@ let containsScheme: Scheme =
       Cs = Map [ "a", Set [ Cls.Eq ] ]
       Ty = TFun(TVar "a", TFun(TSeq(TVar "a"), TBool)) }
 
+// Seq.distinct : Eq a => seq<a> -> seq<a> [D:seq-distinct]
+let distinctScheme: Scheme =
+    { Forall = Set.singleton "a"
+      Cs = Map [ "a", Set [ Cls.Eq ] ]
+      Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a")) }
+
 
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with

@@ -459,7 +459,9 @@ if clean then !(sh -c "echo acting")
   rule — `f [0]` WITH a space is applying a list) / `Seq.tryItem`
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
   Membership: `Seq.contains x xs` (equatable elements),
-  `Seq.exists`/`Seq.forall` with predicates.
+  `Seq.exists`/`Seq.forall` with predicates. Dedupe is
+  `Seq.distinct` (lazy, first occurrence wins, equatable elements —
+  functions/seqs rejected at the use site).
 - Argv: `Args.load T` (script-only) — the typed front door. Three
   shapes: a RECORD of flags (`bool` = presence; `string`/`int` =
   required valued; `Option<string|int>` = optional valued;

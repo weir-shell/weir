@@ -2481,4 +2481,24 @@ expect "glob: 10k files counted" "10000" "$out"
 echo "e2e ok: glob 10k-file tree under the ceiling (${elapsed}ms)"
 rm -rf "$pgdir" "$big"
 
+# ---- Seq.distinct [D:seq-distinct]: dedupe as a pipeline stage ----
+
+sddir=$(mktemp -d)
+mkdir -p "$sddir"; touch "$sddir/a.txt" "$sddir/b.txt" "$sddir/ab.md"
+cat > "$sddir/d.weir" <<'WEOF'
+// the deferred glob product cell: overlapping patterns dedupe
+let one = Path.glob "a*"
+let two = Path.glob "*.txt"
+
+two |> Seq.append one |> Seq.distinct |> Seq.iter print
+WEOF
+out=$(cd "$sddir" && $BIN d.weir)
+expect "glob overlap dedupes through Seq.distinct" "a.txt
+ab.md
+b.txt" "$out"
+count=$(cd "$sddir" && $BIN d.weir | wc -l)
+[ "$count" = "3" ] || fail "distinct must drop the overlap: $count lines"
+echo "e2e ok: Seq.distinct closes the glob-overlap product cell"
+rm -rf "$sddir"
+
 echo "e2e battery: all green"
