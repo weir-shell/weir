@@ -3,19 +3,32 @@
 // invariant. CI never runs fresh seeds (flaky-CI is a masked-failure
 // factory) — the smoke uses the pinned seed.
 //
-//   tools/fuzz.weir [seed] [count]
+//   tools/fuzz.weir [--seed N] [--count N]
 //
 // WEIR_FUZZ_STRICT_SPANS=0 is the archaeology off-switch.
+
+// the literal-vs-computed boundary [D:default-attr], both shapes:
+// count's default is a LITERAL (the attribute); seed's is COMPUTED
+// (fresh nanoseconds — Option + code)
+type Cli = {
+    [<Doc "FsCheck replay seed (fresh nanoseconds when omitted)">]
+    seed: Option<int>
+    [<Default 10000; Doc "cases per invariant">]
+    count: int
+}
+
+let cli = Args.load Cli
 
 let root = git rev-parse --show-toplevel | Seq.head
 cd $root
 
 let seed =
-    args
-    |> Seq.tryItem 0
-    |> Option.defaultWith (fun () -> $(date +%N) |> Seq.head)
+    match cli.seed with
+    | Some n -> $"{n}"
+    | None -> $(date +%N) |> Seq.head
 
-let count = args |> Seq.tryItem 1 |> Option.defaultValue "10000"
+let count = $"{cli.count}"
+
 let strict = Env.get "WEIR_FUZZ_STRICT_SPANS" |> Option.defaultValue "1"
 
 print $"deep fuzz: seed={seed} count={count} (WEIR_FUZZ_STRICT_SPANS={strict})"
@@ -25,6 +38,6 @@ let fenv = Env.ofPairs [("WEIR_FUZZ_SEED", seed); ("WEIR_FUZZ_COUNT", count)]
 // orFail streams the test output live AND carries the reproduce
 // line on failure [D:exit-reifiers]
 !fenv
-    dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj | orFail $"deep fuzz FAILED — reproduce with: tools/fuzz.weir {seed} {count}"
+    dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj | orFail $"deep fuzz FAILED — reproduce with: tools/fuzz.weir --seed {seed} --count {count}"
 
 print $"deep fuzz clean: seed={seed} count={count}"

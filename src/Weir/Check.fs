@@ -64,6 +64,21 @@ module Argv =
         | Some(_, Some(AStr d)) -> Some d
         | _ -> None
 
+    // [D:default-attr]: the resting-point literal, when declared
+    let defaultOf (def: RecordDef) (field: string) : AttrArg option =
+        match attrOf def field "Default" with
+        | Some(_, Some a) -> Some a
+        | _ -> None
+
+    // Default-true bools mint their `--no-X` twin — the minted names
+    // join collision checks and did-you-mean, never short derivation
+    let mintedFlags (def: RecordDef) : (string * string) list =
+        def.Fields
+        |> List.choose (fun (f, ty) ->
+            match ty, defaultOf def f with
+            | TBool, Some(ABool true) -> Some(f, "no-" + kebabFlag f)
+            | _ -> None)
+
     // (flag -> short) and (letter -> owner). Explicit [<Short>] beats
     // derivation: the derived short retires, --help is the truth.
     // 'h' never derives (reserved; [<Short "h">] rejects at attachment)
@@ -1239,10 +1254,37 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              arg.Span
                              $"Env.load fields must be string, int, bool, or Option of these; '{bad}' is {formatTy badTy}"
                      | None ->
-                         Ok
-                             { Kind = TEEnvLoad def
-                               Ty = TNamed(tyName, [])
-                               Span = expr.Span }
+                         // the resting-point cells under ENV's field law
+                         // [D:default-attr]: text bools carry no presence
+                         // semantics, so BOTH Default literals are legal
+                         // here (the Args-side false-is-redundant cell
+                         // flips — validation is the consumer's arm)
+                         let badDefault =
+                             def.Fields
+                             |> List.tryPick (fun (f, ft) ->
+                                 match Argv.defaultOf def f with
+                                 | None -> None
+                                 | Some a ->
+                                     match ft, a with
+                                     | TStr, AStr _
+                                     | TInt, AInt _
+                                     | TBool, ABool _ -> None
+                                     | TNamed("Option", _), _ ->
+                                         Some(
+                                             $"'{f}': optional with a default IS a default — "
+                                             + "drop the Option or the attribute"
+                                         )
+                                     | ft, _ ->
+                                         Some
+                                             $"'{f}': the Default literal does not match the field, which is {formatTy ft}")
+
+                         match badDefault with
+                         | Some msg -> err arg.Span msg
+                         | None ->
+                             Ok
+                                 { Kind = TEEnvLoad def
+                                   Ty = TNamed(tyName, [])
+                                   Span = expr.Span }
                  | Some(Record def) -> err arg.Span $"Env.load needs a monomorphic record; '{tyName}' is generic"
                  | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
                  | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
@@ -1267,34 +1309,65 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                      match positional with
                      | Some(f, _) -> err span $"{label}'{f}' is [<Positional>]: positionals are not yet supported"
                      | None ->
-                         let badShape =
+                         // the resting-point cells [D:default-attr]:
+                         // literal matches the field, Option is
+                         // contradictory, bool-false redundant
+                         let badDefault =
                              def.Fields
-                             |> List.tryFind (fun (_, ft) ->
-                                 match ft with
-                                 | TStr
-                                 | TInt
-                                 | TBool
-                                 | TNamed("Option", [ TStr | TInt ]) -> false
-                                 | _ -> true)
+                             |> List.tryPick (fun (f, ft) ->
+                                 match Argv.defaultOf def f with
+                                 | None -> None
+                                 | Some a ->
+                                     match ft, a with
+                                     | TStr, AStr _
+                                     | TInt, AInt _ -> None
+                                     | TBool, ABool true -> None
+                                     | TBool, ABool false ->
+                                         Some
+                                             $"{label}'{f}': [<Default false>] is redundant — presence already rests at false"
+                                     | TNamed("Option", _), _ ->
+                                         Some(
+                                             $"{label}'{f}': optional with a default IS a default — "
+                                             + "drop the Option or the attribute"
+                                         )
+                                     | ft, _ ->
+                                         Some
+                                             $"{label}'{f}': the Default literal does not match the field, which is {formatTy ft}")
 
-                         match badShape with
-                         | Some(f, TNamed("Option", [ TBool ])) ->
-                             err span $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
-                         | Some(f, ft) ->
-                             err
-                                 span
-                                 $"{label}Args.load fields must be string, int, bool, or Option of string|int; '{f}' is {formatTy ft}"
+                         match badDefault with
+                         | Some msg -> err span msg
                          | None ->
-                             let dupFlag =
-                                 def.Fields
-                                 |> List.map (fun (f, _) -> f, Argv.kebabFlag f)
-                                 |> List.groupBy snd
-                                 |> List.tryFind (fun (_, g) -> g.Length > 1)
 
-                             match dupFlag with
-                             | Some(flag, (a, _) :: (b, _) :: _) ->
-                                 err span $"{label}fields '{a}' and '{b}' derive the same flag '--{flag}'"
-                             | _ -> Ok()
+                             let badShape =
+                                 def.Fields
+                                 |> List.tryFind (fun (_, ft) ->
+                                     match ft with
+                                     | TStr
+                                     | TInt
+                                     | TBool
+                                     | TNamed("Option", [ TStr | TInt ]) -> false
+                                     | _ -> true)
+
+                             match badShape with
+                             | Some(f, TNamed("Option", [ TBool ])) ->
+                                 err span $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
+                             | Some(f, ft) ->
+                                 err
+                                     span
+                                     $"{label}Args.load fields must be string, int, bool, or Option of string|int; '{f}' is {formatTy ft}"
+                             | None ->
+                                 let dupFlag =
+                                     // minted --no-X twins join the namespace
+                                     // [D:default-attr]
+                                     (def.Fields |> List.map (fun (f, _) -> f, Argv.kebabFlag f))
+                                     @ Argv.mintedFlags def
+                                     |> List.groupBy snd
+                                     |> List.tryFind (fun (_, g) -> g.Length > 1)
+
+                                 match dupFlag with
+                                 | Some(flag, (a, _) :: (b, _) :: _) ->
+                                     err span $"{label}fields '{a}' and '{b}' derive the same flag '--{flag}'"
+                                 | _ -> Ok()
 
                  // case collisions + payload validation, shared by the bare-union
                  // and shared-flags shapes [D:shared-flags]
@@ -1352,14 +1425,33 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                          | [ (uf, udef) ] ->
                              result {
                                  let sharedDef = Argv.sharedOf def uf
+
+                                 // the subcommand slot derives no flag —
+                                 // Default has nothing to rest [D:default-attr]
+                                 do!
+                                     (match
+                                         def.Attrs
+                                         |> Map.tryFind uf
+                                         |> Option.bind (List.tryFind (fun (n, _) -> n = "Default"))
+                                      with
+                                      | Some _ ->
+                                          err
+                                              arg.Span
+                                              $"'{uf}' is the subcommand slot: no flag derives there, so Default has no meaning"
+                                      | None -> Ok())
+
                                  do! validateFields arg.Span "" sharedDef
                                  let! payloads = unionPayloads arg.Span udef
 
                                  // a name declared in BOTH tiers is a schema
                                  // error — reject-don't-guess; the runtime
                                  // scanner never faces the question
+                                 // minted --no-X twins ride in both tiers'
+                                 // namespaces [D:default-attr]
                                  let sharedFlags =
-                                     sharedDef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f) |> Set.ofList
+                                     (sharedDef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
+                                     @ (Argv.mintedFlags sharedDef |> List.map snd)
+                                     |> Set.ofList
 
                                  let sharedShorts = Argv.explicitShorts sharedDef |> List.map snd |> Set.ofList
 
@@ -1367,10 +1459,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                      payloads
                                      |> Map.toList
                                      |> List.tryPick (fun (_, rdef) ->
-                                         rdef.Fields
-                                         |> List.tryPick (fun (f, _) ->
-                                             let k = Argv.kebabFlag f
-
+                                         (rdef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
+                                         @ (Argv.mintedFlags rdef |> List.map snd)
+                                         |> List.tryPick (fun k ->
                                              if Set.contains k sharedFlags then
                                                  Some(
                                                      $"flag '--{k}' is declared in {def.Name} and {rdef.Name}; "
@@ -2327,7 +2418,11 @@ let private attrRegistry: Map<string, AttrArg option -> string option> =
           "Positional",
           (function
           | None -> None
-          | Some _ -> Some "takes no argument") ]
+          | Some _ -> Some "takes no argument")
+          "Default",
+          (function
+          | Some(AStr _ | AInt _ | ABool _) -> None
+          | None -> Some "expects a literal (string, int, or bool), e.g. [<Default 10>]") ]
 
 let private validateFieldAttrs (recName: string) (field: string, _: Ty, specs: AttrSpec list) =
     let conflicts a b (seen: Set<string>) (spec: AttrSpec) = spec.AName = a && Set.contains b seen

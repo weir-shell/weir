@@ -448,7 +448,12 @@ print x
   derive kebab flags (`dryRun` → `--dry-run`) and unambiguous
   first-letter shorts (contested letters derive for nobody;
   `[<Short "C">]` overrides, `[<NoShort>]` suppresses, `-h` is
-  help). STRICT: unknown flags (did-you-mean), unexpected
+  help). `[<Default v>]` moves the resting point: the field stays
+  non-Option, an absent flag fills the literal, help shows it;
+  `[<Default true>]` on bool mints the `--no-x` twin (`--no-*`
+  never derives a short). COMPUTED defaults keep Option + code —
+  literals only in the attribute. Default on Option/false-on-bool/
+  the subcommand slot are check errors. STRICT: unknown flags (did-you-mean), unexpected
   arguments, repeats, missing requireds — all collected into ONE
   boundary error. `--help` prints derived usage (short truth +
   `[<Doc>]` text), exit 0, even on invalid invocations. No
@@ -478,7 +483,11 @@ let c = Args.load Cmd
   `type Config = { PORT: int; DEBUG: bool; TOKEN: Option<string> }`
   (field names = env-var names VERBATIM; scalars + Option only; bool
   is exactly true/false), load once, typed thereafter; every missing/
-  garbage field reported in ONE error. `Env.vars` lists everything.
+  garbage field reported in ONE error. `[<Default v>]` fills an
+  ABSENT var (the field stays non-Option; any set var wins — the
+  resting point sits below the whole overlay stack). No twin mints
+  here: env bools are text, so `[<Default false>]` is legal
+  ("absent → false" is a real statement, unlike argv presence). `Env.vars` lists everything.
   No `$NAME` expansion in commands — interpolate: `-H $"token {key}"`.
 - `//` mid-token is NOT a comment: bareword URLs (`https://...`) pass
   through; comments need line start or a preceding space.

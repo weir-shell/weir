@@ -14,9 +14,12 @@ type Target = {
     Env: string
 }
 
-type XrEnv = {
-    XR_AZURE_GITHUB_AUTH: Option<int>
-    XR_ACTION_ON_UNMANAGE: Option<string>
+// literal fallbacks live at the declaration [D:default-attr]
+type Env = {
+    [<Default 0>]
+    AZURE_GITHUB_AUTH: int
+    [<Default "detachAll">]
+    ACTION_ON_UNMANAGE: string
 }
 
 type TokenEnv = {
@@ -42,8 +45,8 @@ type Cmd =
 
 let cli = Args.load Cmd
 
-let xr = Env.load XrEnv
-let onUnmanage = xr.XR_ACTION_ON_UNMANAGE |> Option.defaultValue "detachAll"
+let env = Env.load Env
+let onUnmanage = env.ACTION_ON_UNMANAGE
 
 let header t = printerr $"== {t} =="
 
@@ -85,7 +88,7 @@ let azureLogin t =
 let deploy t =
     quality t
     let e = targetEnv t
-    if (xr.XR_AZURE_GITHUB_AUTH |> Option.defaultValue 0) == 1 then
+    if env.AZURE_GITHUB_AUTH == 1 then
         azureLogin t
         deployStack t
         !e(az logout)

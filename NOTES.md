@@ -1,6 +1,75 @@
 # Spike Notes
 
-## The spawn spec — six names audited, one spawn, feed lands (2026-07-24)
+## Env.load consumes Default — the flip cell, and the stack's floor (2026-07-24)
+
+The follow-up landed on its gate, and its one design sentence held:
+no twin mints. Env bools are true/false TEXT — there is no presence
+semantics to make false unreachable — so `[<Default true>]` is a
+plain fill and `[<Default false>]` is a REAL statement
+("absent → false"). That second half is the flip cell: the same
+attribute, the same literal, LEGAL at Env and REJECTED at Args
+(where presence already rests at false) — pinned both sides in one
+test, and the sharpest demonstration yet that validation belongs to
+the consumer's arm, exactly as the attributes architecture drew it.
+
+The three-layer premise translated faithfully rather than
+literally: Env.load reads process env only, so the file layer
+enters via runEnv/fromFile overlays becoming the CHILD's process
+env — the e2e spawns a real child script and proves the order
+(overlay beats env beats attribute; the resting point sits below
+the whole stack, literally). The receipt is bicep-deploy's
+detachAll dance, deleted at the declaration — and the user pushed
+the auth toggle to `[<Default 0>]` too (its `defaultValue 0` use
+site was equally literal), so BOTH env dances deleted; the
+absent-is-data half of the boundary keeps its living example in
+fuzz.weir's computed seed. Prior art noted as the
+plan required: the Arquidev Env lib's [<Env.Default>] is the
+convergent design — the user's own library arrived at
+attribute-defaults for env records independently; convergence
+noted, no API mimicry.
+
+## [<Default>] — the resting point moves; a door prediction cashes (2026-07-24)## [<Default>] — the resting point moves; a door prediction cashes (2026-07-24)
+
+Forward-archaeology grading line, per the plan: the attributes
+session left "field defaults — the third door stays open as a
+candidate with its own customers" — and the prediction CASHED
+exactly as written. The customers arrived (fuzz.weir's count; Env
+config fallbacks queued behind it), and the attribute serves them
+at zero grammar cost while the language door (defaults in type
+declarations) stays shut. Park discipline working as designed:
+the door entry now carries the pointer.
+
+The law is one sentence — Default moves the resting point — and
+the bool case is where it earns its subtlety: presence semantics
+make false unreachable under a true default, so the attribute
+MINTS the `--no-X` twin. The bless ruled the minted names into the
+collision namespace and did-you-mean but out of short derivation;
+implementation-wise they ride the eval indices as negative entries,
+so the hint machinery saw them for free, and polarity-aware dup
+detection keeps the old given-twice message for same-spelling
+repeats while naming both spellings across polarities
+('--color' and '--no-color' are both given).
+
+The rejection cells all teach: false-on-bool (redundant — the
+resting point is already there), Default-on-Option (optional with
+a default IS a default), literal-type mismatch, and the subcommand
+slot (no flag derives — checked against the OUTER record since
+sharedOf strips the slot's attrs; a cell the implementation had to
+go find). Positional's not-yet wins its composition by ORDER (the
+positional check runs first in validateFields), pinned so the
+precedence is decided rather than incidental. The zero-diff bar
+held: no pin moved, e2e unchanged, and records without Default
+take byte-identical paths (empty minted lists, same messages).
+
+fuzz.weir is the boundary's living example: count went
+[<Default 10000>] and its match DELETED; seed stayed Option
+because its default is computed (fresh nanoseconds, spawned only
+when absent) — literals in the attribute, computation in code,
+both shapes in one Cli. The Env.load follow-up gates on this
+report; its pre-note stands (env bools are true/false text — no
+presence semantics, plain fill, no twin).
+
+## The spawn spec — six names audited, one spawn, feed lands (2026-07-24)## The spawn spec — six names audited, one spawn, feed lands (2026-07-24)
 
 The family audit found what audits find: six builtin names
 (cmd/run/cmdEnv/runEnv/completedEnv/exitCodedEnv) over a three-axis

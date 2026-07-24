@@ -140,6 +140,32 @@ deriving `-C` and `--help` text from the declaration — are a coming
 feature; until then attributes are legal-and-inert documentation the
 checker validates.
 
+## Defaults: the resting point moves
+
+`[<Default v>]` on an `Args.load` field keeps the field non-Option
+and fills the literal when the flag is absent — `--help` shows it.
+On a bool, `[<Default true>]` mints the `--no-x` twin: resting
+point on, `--no-x` turns it off, and giving both polarities is an
+error naming both. `Env.load` consumes the same attribute — an absent env var fills
+the literal, any set var wins (the resting point sits below the
+whole overlay stack), and because env bools are TEXT rather than
+presence, `[<Default false>]` is legal there while Args rejects it
+— the same attribute, each consumer's own law. The boundary:
+LITERAL defaults take the attribute; COMPUTED defaults keep
+`Option` and a line of code — fuzz.weir carries both shapes:
+
+```weir
+type Cli = {
+    [<Doc "replay seed (fresh when omitted)">]
+    seed: Option<int>
+    [<Default 10000; Doc "cases per invariant">]
+    count: int
+}
+
+let cli = Args.load Cli
+print $"count={cli.count} seed={show cli.seed}"
+```
+
 ## Exit codes: the reifier family
 
 One law: **output goes where the meaning goes.**

@@ -94,6 +94,9 @@ attachment-grammar decision.)
   with its marker question pre-answered.
 - Field defaults — the third door stays open as a candidate with
   its own customers; weir-only-no-referee cost noted.
+  [2026-07-24: prediction CASHED by [D:default-attr] — the
+  ATTRIBUTE serves both named customers (Args now, Env follow-up);
+  the language door itself stays shut.]
 
 ---
 

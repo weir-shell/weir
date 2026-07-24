@@ -1943,6 +1943,142 @@ let typedArgvTests =
                   "collide as subcommand 'go'"
                   ""
           }
+          test "Env.load consumes Default: fill, cells, and the FLIP [D:default-attr]" {
+              // acceptance: defaulted fields stay non-Option
+              let e1 =
+                  argvEnv
+                  |> declare "type E1 = { [<Default 8080>] PORT_ZZQ: int; [<Default \"info\">] LVL_ZZQ: string }"
+
+              match Weir.Check.typecheck e1 (parse "Env.load E1") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "E1" ""
+              | Error terr -> failtest (formatError terr)
+
+              // Default on Option: the same contradiction, same text
+              let e2 = argvEnv |> declare "type E2 = { [<Default 5>] P: Option<int> }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Env.load E2") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "drop the Option or the attribute"
+                  ""
+
+              // literal type mismatch
+              let e3 = argvEnv |> declare "type E3 = { [<Default \"x\">] P: int }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e3 (parse "Env.load E3") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "is int"
+                  ""
+
+              // THE FLIP: Default false is LEGAL at Env (absent -> false is
+              // a real statement under text bools), REJECTED at Args
+              // (presence already rests at false)
+              let e4 = argvEnv |> declare "type E4 = { [<Default false>] DEBUG_ZZQ: bool }"
+
+              match Weir.Check.typecheck e4 (parse "Env.load E4") with
+              | Ok _ -> ()
+              | Error terr -> failtest $"Env must accept Default false: {formatError terr}"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e4 (parse "Args.load E4") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "Args must still reject Default false")
+                  "presence already rests at false"
+                  ""
+          }
+          test "Default fills at the resting point [D:default-attr]" {
+              let e2 =
+                  argvEnv
+                  |> declare "type C1 = { [<Default 10000>] count: int; [<Default \"main\">] branch: string }"
+
+              match Weir.Check.typecheck e2 (parse "Args.load C1") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "C1" "defaulted fields stay non-Option"
+              | Error terr -> failtest (formatError terr)
+          }
+          test "Default rejection cells teach [D:default-attr]" {
+              // Default false on bool: redundant
+              let e1 = argvEnv |> declare "type B1 = { [<Default false>] quiet: bool }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e1 (parse "Args.load B1") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "presence already rests at false"
+                  ""
+
+              // Default on Option: contradictory
+              let e2 = argvEnv |> declare "type B2 = { [<Default 5>] port: Option<int> }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load B2") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "drop the Option or the attribute"
+                  ""
+
+              // literal type mismatch
+              let e3 = argvEnv |> declare "type B3 = { [<Default \"x\">] port: int }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e3 (parse "Args.load B3") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "is int"
+                  ""
+
+              // Default on the union subcommand slot
+              let e4 =
+                  argvEnv
+                  |> declare "type CA = { remote: string }"
+                  |> declare "type Cmd4 = Go of CA | Stop"
+                  |> declare "type B4 = { [<Default true>] cmd: Cmd4 }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e4 (parse "Args.load B4") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "no flag derives"
+                  ""
+          }
+          test "Positional's not-yet WINS the composition [D:default-attr]" {
+              let e2 = argvEnv |> declare "type P2 = { [<Default 5; Positional>] t: int }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load P2") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "positionals are not yet supported"
+                  ""
+          }
+          test "minted --no-X joins the collision namespace, both routes [D:default-attr]" {
+              // within one record
+              let e1 =
+                  argvEnv |> declare "type M1 = { [<Default true>] color: bool; noColor: bool }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e1 (parse "Args.load M1") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "no-color"
+                  ""
+
+              // cross-tier (shared-flags shape)
+              let e2 =
+                  argvEnv
+                  |> declare "type MA = { noColor: bool }"
+                  |> declare "type MCmd = Go of MA | Stop"
+                  |> declare "type M2 = { [<Default true>] color: bool; cmd: MCmd }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load M2") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "no-color"
+                  ""
+          }
           test "a record with ONE union-typed field is the shared-flags shape [D:shared-flags]" {
               let e2 =
                   argvEnv

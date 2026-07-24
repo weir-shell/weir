@@ -452,10 +452,13 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
         let left = $"  {short}{flag}{argvValueSlot ty}"
 
         let need =
-            match ty with
-            | TBool -> ""
-            | TNamed("Option", _) -> "optional"
-            | _ -> "required"
+            match ty, Argv.defaultOf def f with
+            | TBool, Some(ABool true) -> $"default: on — --no-{Argv.kebabFlag f} disables"
+            | TBool, _ -> ""
+            | TNamed("Option", _), _ -> "optional"
+            | _, Some(AStr s) -> $"default: {s}"
+            | _, Some(AInt n) -> $"default: {n}"
+            | _, _ -> "required"
 
         let right =
             [ need
@@ -587,14 +590,34 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
                  @ blocks)
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
+    // minted --no-X twins ride the index as negative entries
+    // [D:default-attr]; they join did-you-mean via the same list
     let flagged =
-        def.Fields |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty))
+        (def.Fields |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty, false)))
+        @ (Argv.mintedFlags def |> List.map (fun (f, m) -> "--" + m, (f, TBool, true)))
 
     let longIndex = Map.ofList flagged
     let _, shortIndex = Argv.shortTables def
     let problems = ResizeArray<string>()
     let values = System.Collections.Generic.Dictionary<string, Value>()
     let seen = System.Collections.Generic.HashSet<string>()
+    let polarity = System.Collections.Generic.Dictionary<string, bool>()
+
+    // repeats of one spelling stay the given-twice error; opposite
+    // polarities name both spellings
+    let dup (f: string) (neg: bool) (flagTok: string) =
+        if not (seen.Add f) then
+            let prior =
+                (match polarity.TryGetValue f with
+                 | true, p -> p
+                 | _ -> false)
+
+            if prior <> neg then
+                problems.Add $"'--{Argv.kebabFlag f}' and '--no-{Argv.kebabFlag f}' are both given"
+            else
+                problems.Add $"'{flagTok}' is given twice"
+
+        polarity[f] <- neg
 
     let parseValue (f: string) (ty: Ty) (flagTok: string) (raw: string) =
         match ty with
@@ -610,15 +633,15 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
         | [] -> ()
         | (t: string) :: rest when t.StartsWith "--" ->
             match Map.tryFind t longIndex with
-            | Some(f, ty) -> consume f ty t rest
+            | Some(f, ty, neg) -> consume f ty neg t rest
             | None ->
                 problems.Add $"unknown flag '{t}'{didYouMean t (flagged |> List.map fst)}"
                 go rest
         | t :: rest when t.StartsWith "-" && t.Length = 2 ->
             match Map.tryFind (t.Substring 1) shortIndex with
             | Some(ShortOf flag) ->
-                let f, ty = Map.find flag longIndex
-                consume f ty t rest
+                let f, ty, neg = Map.find flag longIndex
+                consume f ty neg t rest
             | Some(AmbiguousShort candidates) ->
                 problems.Add $"""'{t}' is ambiguous: {String.concat ", " candidates}"""
                 go rest
@@ -629,13 +652,12 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
             problems.Add $"unexpected argument '{t}'"
             go rest
 
-    and consume f ty flagTok rest =
-        if not (seen.Add f) then
-            problems.Add $"'{flagTok}' is given twice"
+    and consume f ty neg flagTok rest =
+        dup f neg flagTok
 
         match ty with
         | TBool ->
-            values[f] <- VBool true
+            values[f] <- VBool(not neg)
             go rest
         | _ ->
             match rest with
@@ -652,12 +674,18 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
             match values.TryGetValue f with
             | true, v -> f, v
             | false, _ ->
-                match ty with
-                | TBool -> f, VBool false
-                | TNamed("Option", _) -> f, VUnion("None", None)
-                | _ ->
-                    problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
-                    f, VUnit)
+                // the resting point [D:default-attr]
+                match Argv.defaultOf def f with
+                | Some(AStr s) -> f, VStr s
+                | Some(AInt n) -> f, VInt n
+                | Some(ABool b) -> f, VBool b
+                | None ->
+                    match ty with
+                    | TBool -> f, VBool false
+                    | TNamed("Option", _) -> f, VUnion("None", None)
+                    | _ ->
+                        problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
+                        f, VUnit)
 
     if problems.Count > 0 then
         failwith ($"{label}: " + String.concat "; " problems)
@@ -678,8 +706,10 @@ let private argvLoadShared
     let sharedDef = Argv.sharedOf outer unionField
 
     let sharedLong =
-        sharedDef.Fields
-        |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty))
+        (sharedDef.Fields
+         |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty, false)))
+        @ (Argv.mintedFlags sharedDef
+           |> List.map (fun (f, m) -> "--" + m, (f, TBool, true)))
         |> Map.ofList
 
     let caseTable = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
@@ -697,8 +727,8 @@ let private argvLoadShared
     let payloadLong =
         payloadDef
         |> Option.map (fun pd ->
-            pd.Fields
-            |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty))
+            (pd.Fields |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty, false)))
+            @ (Argv.mintedFlags pd |> List.map (fun (f, m) -> "--" + m, (f, TBool, true)))
             |> Map.ofList)
         |> Option.defaultValue Map.empty
 
@@ -719,6 +749,21 @@ let private argvLoadShared
     let sharedValues = System.Collections.Generic.Dictionary<string, Value>()
     let payloadValues = System.Collections.Generic.Dictionary<string, Value>()
     let seen = System.Collections.Generic.HashSet<string>()
+    let polarity = System.Collections.Generic.Dictionary<string, bool>()
+
+    let dup (f: string) (neg: bool) (flagTok: string) =
+        if not (seen.Add f) then
+            let prior =
+                (match polarity.TryGetValue f with
+                 | true, p -> p
+                 | _ -> false)
+
+            if prior <> neg then
+                problems.Add $"'--{Argv.kebabFlag f}' and '--no-{Argv.kebabFlag f}' are both given"
+            else
+                problems.Add $"'{flagTok}' is given twice"
+
+        polarity[f] <- neg
 
     let parseValue (values: System.Collections.Generic.Dictionary<string, Value>) f ty (flagTok: string) (raw: string) =
         match ty with
@@ -737,19 +782,19 @@ let private argvLoadShared
             let resolved =
                 if t.StartsWith "--" then
                     match Map.tryFind t sharedLong with
-                    | Some(f, ty) -> Choice1Of3(sharedValues, f, ty)
+                    | Some(f, ty, neg) -> Choice1Of3(sharedValues, f, ty, neg)
                     | None ->
                         match Map.tryFind t payloadLong with
-                        | Some(f, ty) when i > caseIdx -> Choice1Of3(payloadValues, f, ty)
+                        | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
                         | _ -> Choice2Of3()
                 elif t.StartsWith "-" && t.Length = 2 then
                     match Map.tryFind (t.Substring 1) scopeShorts with
                     | Some(ShortOf flag) ->
                         (match Map.tryFind flag sharedLong with
-                         | Some(f, ty) -> Choice1Of3(sharedValues, f, ty)
+                         | Some(f, ty, neg) -> Choice1Of3(sharedValues, f, ty, neg)
                          | None ->
                              match Map.tryFind flag payloadLong with
-                             | Some(f, ty) when i > caseIdx -> Choice1Of3(payloadValues, f, ty)
+                             | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
                              | _ -> Choice2Of3())
                     | Some(AmbiguousShort candidates) ->
                         problems.Add $"""'{t}' is ambiguous: {String.concat ", " candidates}"""
@@ -760,13 +805,12 @@ let private argvLoadShared
                     Choice3Of3()
 
             match resolved with
-            | Choice1Of3(values, f, ty) ->
-                if not (seen.Add f) then
-                    problems.Add $"'{t}' is given twice"
+            | Choice1Of3(values, f, ty, neg) ->
+                dup f neg t
 
                 (match ty with
                  | TBool ->
-                     values[f] <- VBool true
+                     values[f] <- VBool(not neg)
                      go (i + 1) rest
                  | _ ->
                      match rest with
@@ -793,12 +837,18 @@ let private argvLoadShared
             match values.TryGetValue f with
             | true, v -> f, v
             | false, _ ->
-                match ty with
-                | TBool -> f, VBool false
-                | TNamed("Option", _) -> f, VUnion("None", None)
-                | _ ->
-                    problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
-                    f, VUnit)
+                // the resting point [D:default-attr]
+                match Argv.defaultOf def f with
+                | Some(AStr s) -> f, VStr s
+                | Some(AInt n) -> f, VInt n
+                | Some(ABool b) -> f, VBool b
+                | None ->
+                    match ty with
+                    | TBool -> f, VBool false
+                    | TNamed("Option", _) -> f, VUnion("None", None)
+                    | _ ->
+                        problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
+                        f, VUnit)
 
     let sharedFields = collectFields sharedDef sharedValues
 
@@ -1034,8 +1084,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     match ty, raw with
                     | TNamed("Option", _), null -> VUnion("None", None)
                     | _, null ->
-                        problems.Add $"{name} is missing"
-                        VUnit
+                        // the resting point sits BELOW the whole overlay
+                        // stack [D:default-attr]: any set var wins
+                        match Argv.defaultOf def name with
+                        | Some(AStr s) -> VStr s
+                        | Some(AInt n) -> VInt n
+                        | Some(ABool b) -> VBool b
+                        | None ->
+                            problems.Add $"{name} is missing"
+                            VUnit
                     | (TStr | TNamed("Option", [ TStr ])), v -> wrapOpt ty (VStr v)
                     | (TInt | TNamed("Option", [ TInt ])), v ->
                         match System.Int64.TryParse v with

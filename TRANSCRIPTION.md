@@ -466,3 +466,27 @@ combined pseudo-record, so `shortTables` needs no second
 implementation). Both tiers collect into one raise; `--help`
 re-uses pass 1 to case-scope. `TEArgsLoad` stays a leaf to every
 walk.
+
+## Addendum — the Default consumer (2026-07-24, [D:default-attr])
+
+The registry grows by one (any literal at attachment); the SEMANTIC
+cells live in the Args.load arm's validateFields (after the
+positional check, so the not-yet wins compositions): type-match,
+Option-contradiction, false-on-bool, and the subcommand-slot check
+in the shared arm (sharedOf strips the union field's attrs, so the
+slot is checked against the OUTER record explicitly). Minted
+`--no-X` names ride `Argv.mintedFlags` into the dup-flag namespace
+(both tiers) and into the eval indices as NEGATIVE entries —
+(field, ty, neg) triples — so did-you-mean sees them for free;
+polarity-aware dup keeps the given-twice message for same-spelling
+repeats and names both spellings across polarities. The fill sits
+in the missing-field loop of both loaders, before the bool/Option
+resting points.
+
+## Addendum — Env.load's Default arm (2026-07-24, [D:env-default])
+
+The Env.load check arm gains its own resting-point cells (both bool
+literals legal — the flip from Args is per-consumer validation, not
+shared code); the eval fill sits in the null branch AFTER the
+Option-None case, so Option+Default stays unrepresentable and any
+set var wins by construction.

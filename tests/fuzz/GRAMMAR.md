@@ -108,7 +108,7 @@ inline `in` form yet), aligned ↔ Stroustrup/inline (aligned is
 generated as a base style but not flipped by a transform).
 
 Smoke: pinned seed 1789001, 200 cases/invariant (~7s), wired into CI
-after publish + e2e. Deep: `tools/fuzz.weir [seed] [count]` (fresh
+after publish + e2e. Deep: `tools/fuzz.weir [--seed N] [--count N]` (fresh
 seed, 10k default). The equality detector has a graded positive
 control (a deliberately non-neutral edit fails the property —
 verified at bring-up).

@@ -2321,4 +2321,63 @@ out=$(timeout 10 $BIN "$fddir/lazy.weir") || fail "feed input must be lazy (head
 expect "feed input laziness on the AOT binary" "1" "$out"
 rm -rf "$fddir"
 
+# ---- [<Default>]: the resting point moves [D:default-attr] ----
+
+dadir=$(mktemp -d)
+cat > "$dadir/cli.weir" <<'WEOF'
+type Cli = {
+    [<Default 10000; Doc "cases per invariant">]
+    count: int
+    [<Default true>]
+    color: bool
+    quiet: bool
+}
+
+let cli = Args.load Cli
+print $"count={cli.count} color={show cli.color} quiet={show cli.quiet}"
+WEOF
+out=$($BIN "$dadir/cli.weir")
+expect "Default fills the resting point" "count=10000 color=true quiet=false" "$out"
+out=$($BIN "$dadir/cli.weir" --no-color --count 5)
+expect "the minted --no-X twin sets false" "count=5 color=false" "$out"
+out=$($BIN "$dadir/cli.weir" --color)
+expect "the positive form is an idempotent no-op" "color=true" "$out"
+errout=$($BIN "$dadir/cli.weir" --color --no-color 2>&1) && fail "both polarities must reject"
+echo "$errout" | grep -qF "'--color' and '--no-color' are both given" || fail "both-given names both: $errout"
+errout=$($BIN "$dadir/cli.weir" --no-colr 2>&1) && fail "minted typo must reject"
+echo "$errout" | grep -qF "Did you mean '--no-color'?" || fail "minted did-you-mean: $errout"
+out=$($BIN "$dadir/cli.weir" --help)
+echo "$out" | grep -qF "default: 10000" || fail "help shows the literal default: $out"
+echo "$out" | grep -qF -- "default: on — --no-color disables" || fail "help shows the bool resting point: $out"
+echo "e2e ok: Default fills, mints, teaches, and renders (the help-shape pin)"
+
+rm -rf "$dadir"
+
+# ---- Env.load consumes Default [D:default-attr]: the resting point
+# ---- sits below the whole overlay stack ----
+
+endir=$(mktemp -d)
+cat > "$endir/child.weir" <<'WEOF'
+type Cfg = { [<Default 8080>] PORT_ZQ: int; [<Default false>] DEBUG_ZQ: bool }
+let c = Env.load Cfg
+print $"port={c.PORT_ZQ} debug={show c.DEBUG_ZQ}"
+WEOF
+cat > "$endir/layers.env" <<'WEOF'
+PORT_ZQ=9090
+WEOF
+cat > "$endir/parent.weir" <<'WEOF'
+// layer 3: the runEnv overlay becomes the child's process env
+runEnv (Env.fromFile "layers.env") "weir" ["child.weir"]
+WEOF
+out=$(cd "$endir" && $BIN child.weir)
+expect "neither layer sets it: the attribute fills (both types)" "port=8080 debug=false" "$out"
+out=$(cd "$endir" && PORT_ZQ=7000 $BIN child.weir)
+expect "process env beats the attribute" "port=7000" "$out"
+out=$(cd "$endir" && PATH="$(dirname $BIN):$PATH" $BIN parent.weir)
+expect "the file overlay (via runEnv) beats the attribute in the child" "port=9090" "$out"
+out=$(cd "$endir" && PORT_ZQ=7000 DEBUG_ZQ=true $BIN child.weir)
+expect "Default false on an env bool is a real resting point (set wins)" "debug=true" "$out"
+rm -rf "$endir"
+echo "e2e ok: the Default resting point sits below the whole env stack"
+
 echo "e2e battery: all green"
