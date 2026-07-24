@@ -1,6 +1,61 @@
 # Spike Notes
 
-## Env.load consumes Default — the flip cell, and the stack's floor (2026-07-24)
+## The !-glyph audit — fourteen challengers, the incumbent holds (2026-07-24)
+
+An audit, not a session: the effect glyph stood trial against
+fourteen challengers and holds by demonstrated elimination. The
+scoring principle was minted mid-walk and is the entry's keeper:
+**priors are weighed by audience-relevance and correction-cost, not
+existence** — the `*`/C-deref objection died there (the prior
+exists; weir's audience never reaches for it in command position,
+and correcting it would cost nothing because nobody pays it).
+
+The named findings, one line each:
+- `^` — opposite-resolution-same-glyph: `^(cat x)` as effect beside
+  `^cat x` as force would make one glyph mean both resolutions;
+  disqualifying on its own.
+- `+e` — the env form collides with `set +e`'s INVERSION prior
+  (bash's + DISABLES); an env-carrying effect reading +e as
+  "errors off" is a trap laid on purpose.
+- `&` — the background whisper (trailing-& prior) plus a
+  binding-time mismatch against the PowerShell call-operator prior
+  (`& cmd` invokes NOW; weir's form is a block header).
+- `\` — escape freight everywhere plus line-continuation
+  collision; its one GOOD prior (bash `\ls` = bypass-the-alias)
+  belongs to FORCE, not effect — which is the `^` family's job,
+  and yielded the `\cmd` doc byproduct (the stranded log shows
+  ZERO attempts to date; count recorded, feeding the
+  hint-vs-nothing decision if they appear).
+- `@` — the early "taken" objection was STALE (`@(` lexes clean
+  beside `@"raw"`); the real finding is PowerShell's
+  array-subexpression prior: `@(...)` CAPTURES there, and weir
+  would make it an effect — capture-vs-effect inversion for the
+  nearest audience.
+- `$` / `$$` — inverting the value law: `$` is weir's CAPTURE
+  family marker; any effect use subtracts its defining meaning.
+- `.` `_` `'` — multi-collision tombstones (paths/field access,
+  the lambda-shorthand, char-literal adjacency); eliminated
+  without ceremony.
+- `$!` — the last real challenger, felled by the user's
+  capture-not reading: the modifier SUBTRACTS the base glyph's
+  defining capability (a $-form that does not capture) — backwards
+  pedagogy, teaching the exception before the rule.
+
+The incumbent's actual virtue, stated once: `!`-as-negation is the
+CHEAPEST misread in the space to correct — one type error,
+instantly diagnostic, one taught sentence (now taught: the
+not-law sits in SKILL and GUIDE beside the sigil teaching,
+doc-tested). The revisit trigger is behavioral, not aesthetic:
+stranded `!x`-as-negation attempts weigh a HINT ("`!` runs
+commands; negate with `not`") before any rename is entertained.
+
+Advisor errata, kept honest: "exhausted" was called twice before
+the walk was; `$!` was mis-ranked for three rounds by grading the
+DESIGNED framing instead of the reader's prior — both
+user-caught, both the audit's own scoring principle applied to
+its scorer.
+
+## Env.load consumes Default — the flip cell, and the stack's floor (2026-07-24)## Env.load consumes Default — the flip cell, and the stack's floor (2026-07-24)
 
 The follow-up landed on its gate, and its one design sentence held:
 no twin mints. Env bools are true/false TEXT — there is no presence

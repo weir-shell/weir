@@ -384,6 +384,20 @@ print x
 
   `if clean then !`
   + indented `git checkout main` / `git pull` lines.
+- The glyph law: weir has no `!`-negation — negation is the word
+  `not`; `!` means DO IT. And no `\`-escape for commands — `^ls`
+  forces the PATH binary.
+
+```weir
+let clean = not (1 == 2)
+if clean then !(sh -c "echo acting")
+```
+
+```weir-error
+// no \-escape for commands; ^ls is the force spelling
+\ls
+```
+
 - Command sigils work ANYWHERE in expressions: `$(git branch)` captures
   output (`seq<string>`, pipes onward); `!(git push)` runs-and-streams
   (unit, raises on nonzero). On a top-level `let` RHS prefer the bare

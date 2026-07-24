@@ -545,9 +545,10 @@ print (if onBranch then "on a branch" else "detached")
 
 `printerr` is `print` to stderr — diagnostics there, data on stdout.
 Effect steps sequence inside blocks — same-indent lines, each but the
-last unit-typed. Command sigils bring full command chains into
-expressions: `$(...)` captures output, `!(...)` runs-and-streams
-(unit, raises on nonzero):
+last unit-typed. The glyph law: weir has no `!`-negation — negation
+is the word `not`; `!` means DO IT. Command sigils bring full
+command chains into expressions: `$(...)` captures output, `!(...)`
+runs-and-streams (unit, raises on nonzero):
 
 ```weir
 let ready = 1 > 0
