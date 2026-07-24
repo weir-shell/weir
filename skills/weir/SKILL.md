@@ -423,12 +423,20 @@ print x
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
   Membership: `Seq.contains x xs` (equatable elements),
   `Seq.exists`/`Seq.forall` with predicates.
-- Argv: `Args.load T` (script-only) — the typed front door. Two
+- Argv: `Args.load T` (script-only) — the typed front door. Three
   shapes: a RECORD of flags (`bool` = presence; `string`/`int` =
   required valued; `Option<string|int>` = optional valued;
-  `Option<bool>` rejected — presence is already optional), or a
+  `Option<bool>` rejected — presence is already optional); a
   UNION of record-payload cases = subcommands (first token matches
-  the lowercased case name; bare cases take no flags). Field names
+  the lowercased case name; bare cases take no flags); or a record
+  CONTAINING exactly one union-typed field — shared flags by
+  containment: the scalar siblings are global flags recognized
+  ANYWHERE on the line, the union field is the subcommand slot (its
+  name derives no flag), payload flags bind only after the case
+  token. A flag name declared in both tiers is a check error
+  (shared flags are declared once); a short contested across tiers
+  derives for neither in that case's scope. `--help` prints the
+  two-tier usage; `tool <case> --help` scopes it. Field names
   derive kebab flags (`dryRun` → `--dry-run`) and unambiguous
   first-letter shorts (contested letters derive for nobody;
   `[<Short "C">]` overrides, `[<NoShort>]` suppresses, `-h` is

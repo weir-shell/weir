@@ -447,3 +447,22 @@ bracketFold naming both sides. braceStack (fmt's alignment feed)
 widened to (kind, column); fmt aligns at brace+2 / bracket+1 —
 under the first entry either way. Zero checker or parser surface:
 the assembled single-line text is what the grammar already accepts.
+
+## Addendum — the shared-flags shape (2026-07-24, [D:shared-flags])
+
+`ArgsTarget` gains `ArgsShared of outer * unionField * udef *
+payloads`. The check arm partitions the record's fields by
+union-typed-ness: zero unions is the shipped record shape verbatim;
+one is the shared shape (scalar siblings validated as a record via
+`Argv.sharedOf`, payloads via the same `unionPayloads` the bare
+union uses — hoisted, one owner); two-plus errors ("one subcommand
+slot"). Cross-tier collisions (kebab-flag and explicit-Short) reject
+here, so the runtime scanner never faces an ambiguous name. Eval
+side: `argvFindCase` (pass 1 — shared flags float, first non-flag
+token anchors; unknown flags consume no value, the standing
+precedent), then one classified walk against per-scope tables where
+short derivation runs over the UNION of tiers (`scopeDef` — a
+combined pseudo-record, so `shortTables` needs no second
+implementation). Both tiers collect into one raise; `--help`
+re-uses pass 1 to case-scope. `TEArgsLoad` stays a leaf to every
+walk.

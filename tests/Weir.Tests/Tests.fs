@@ -1920,6 +1920,74 @@ let typedArgvTests =
                   "collide as subcommand 'go'"
                   ""
           }
+          test "a record with ONE union-typed field is the shared-flags shape [D:shared-flags]" {
+              let e2 =
+                  argvEnv
+                  |> declare "type CA = { remote: string }"
+                  |> declare "type Cmd = Clone of CA | Status"
+                  |> declare "type Cli = { quiet: bool; cmd: Cmd }"
+
+              match Weir.Check.typecheck e2 (parse "Args.load Cli") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "Cli" "types as the containing record"
+              | Error terr -> failtest (formatError terr)
+          }
+          test "two union-typed fields reject: one subcommand slot" {
+              let e2 =
+                  argvEnv
+                  |> declare "type CA = { remote: string }"
+                  |> declare "type Cmd = Clone of CA | Status"
+                  |> declare "type Cli = { a: Cmd; b: Cmd }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load Cli") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "one subcommand slot"
+                  ""
+          }
+          test "a flag declared in both tiers rejects at declaration (kebab route)" {
+              let e2 =
+                  argvEnv
+                  |> declare "type CA = { quiet: bool; remote: string }"
+                  |> declare "type Cmd = Clone of CA | Status"
+                  |> declare "type Cli = { quiet: bool; cmd: Cmd }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load Cli") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "shared flags are declared once"
+                  ""
+          }
+          test "an explicit Short claimed in both tiers rejects at declaration" {
+              let e2 =
+                  argvEnv
+                  |> declare "type CA = { [<Short \"q\">] query: string }"
+                  |> declare "type Cmd = Clone of CA | Status"
+                  |> declare "type Cli = { [<Short \"q\">] quiet: bool; cmd: Cmd }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load Cli") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "'-q'"
+                  ""
+          }
+          test "a union inside a PAYLOAD record stays rejected (nested hierarchies parked)" {
+              let e2 =
+                  argvEnv
+                  |> declare "type Inner = In1 | In2"
+                  |> declare "type CA = { sub: Inner }"
+                  |> declare "type Cmd = Clone of CA | Status"
+                  |> declare "type Cli = { quiet: bool; cmd: Cmd }"
+
+              Expect.stringContains
+                  (match Weir.Check.typecheck e2 (parse "Args.load Cli") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected rejection")
+                  "must be string, int, bool"
+                  ""
+          }
           test "script-only: without args in scope Args.load rejects by name" {
               let e2 = env |> declare "type C = { env: string }"
 

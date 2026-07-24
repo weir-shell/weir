@@ -140,6 +140,28 @@ deriving `-C` and `--help` text from the declaration — are a coming
 feature; until then attributes are legal-and-inert documentation the
 checker validates.
 
+## Shared CLI flags: containment, not inheritance
+
+Flags every subcommand carries are declared ONCE, on a record that
+contains the subcommand union — where Argu spells `[<Inherit>]` per
+payload, weir deletes the repetition structurally:
+
+```weir
+type CloneArgs = { remote: string }
+
+type Cmd =
+    | Clone of CloneArgs
+    | Status
+
+type Cli = { quiet: bool; cmd: Cmd }
+```
+
+The union field's NAME is immaterial — no flag derives from it.
+`tool --quiet clone --remote X`,
+`tool clone --quiet --remote X`, and `tool clone --remote X --quiet`
+all parse: shared flags float, the case token anchors, payload flags
+bind after it. One access (`cli.quiet`), no extraction match.
+
 ## Functions
 
 `let f x y = ...` defines a curried function (it desugars to nested

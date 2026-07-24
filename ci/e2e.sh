@@ -2148,4 +2148,79 @@ expect "command block-let inside a multiline lambda (spine)" "tag b" "$out"
 
 rm -rf "$mldir"
 
+# ---- shared flags by containment [D:shared-flags] ----
+
+sfdir=$(mktemp -d)
+cat > "$sfdir/cli.weir" <<'WEOF'
+type SearchArgs = { query: string }
+type RunArgs = { name: Option<string> }
+
+type Cmd =
+    | Search of SearchArgs
+    | Run of RunArgs
+    | Status
+
+type Cli = { quiet: bool; cmd: Cmd }
+
+let cli = Args.load Cli
+print $"quiet={show cli.quiet}"
+
+match cli.cmd with
+| Search a -> print $"search {a.query}"
+| Run r -> print $"run {show r.name}"
+| Status -> print "status"
+WEOF
+
+out=$($BIN "$sfdir/cli.weir" --quiet search --query X)
+expect "shared flag BEFORE the case token" "quiet=true" "$out"
+out=$($BIN "$sfdir/cli.weir" search --quiet --query X)
+expect "shared flag right after the case" "quiet=true" "$out"
+out=$($BIN "$sfdir/cli.weir" search --query X --quiet)
+expect "shared flag at line end" "search X" "$out"
+out=$($BIN "$sfdir/cli.weir" status)
+expect "bare case with shared default" "quiet=false" "$out"
+
+errout=$($BIN "$sfdir/cli.weir" run --cmd x 2>&1) && fail "--cmd must be unknown (the union field derives no flag)"
+echo "$errout" | grep -qF "unknown flag '--cmd'" || fail "union-field flag must not exist: $errout"
+echo "e2e ok: the union field derives no flag"
+
+# cross-tier short contest: -q ambiguous in search's scope, derives in run's
+errout=$($BIN "$sfdir/cli.weir" search -q hello 2>&1) && fail "contested -q must be ambiguous"
+echo "$errout" | grep -qF -- "'-q' is ambiguous: --quiet, --query" || fail "cross-tier contest: $errout"
+echo "e2e ok: cross-tier short contest derives for neither in scope"
+out=$($BIN "$sfdir/cli.weir" run -q)
+expect "the same short derives where uncontested" "quiet=true" "$out"
+
+# tier-aware did-you-mean
+errout=$($BIN "$sfdir/cli.weir" --qiuet run 2>&1) && fail "typo before case must reject"
+echo "$errout" | grep -qF "Did you mean '--quiet'?" || fail "before-tier did-you-mean: $errout"
+errout=$($BIN "$sfdir/cli.weir" search --qeury x 2>&1) && fail "typo after case must reject"
+echo "$errout" | grep -qF "Did you mean '--query'?" || fail "after-tier did-you-mean: $errout"
+echo "e2e ok: tier-aware did-you-mean"
+
+# collect-then-raise spans both tiers in ONE error
+errout=$($BIN "$sfdir/cli.weir" search 2>&1) && fail "missing payload flag must reject"
+echo "$errout" | grep -qF "missing required flag '--query'" || fail "cross-tier collection: $errout"
+echo "e2e ok: one boundary error across tiers"
+
+# two-tier help + case-scoped help
+out=$($BIN "$sfdir/cli.weir" --help)
+echo "$out" | grep -qF "global options:" || fail "two-tier help missing global section: $out"
+echo "$out" | grep -qF "commands:" || fail "two-tier help missing commands: $out"
+out=$($BIN "$sfdir/cli.weir" run --help)
+echo "$out" | grep -qF "usage: run [flags]" || fail "case-scoped help: $out"
+echo "$out" | grep -qF -- "-q, --quiet" || fail "scoped help shows the scope-derived short: $out"
+echo "e2e ok: two-tier and case-scoped help"
+
+# declaration collisions reject at CHECK (both routes)
+errout=$(printf 'type CA = { quiet: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | $BIN check /dev/stdin 2>&1) && fail "kebab collision must reject"
+echo "$errout" | grep -qF "shared flags are declared once" || fail "kebab collision route: $errout"
+errout=$(printf 'type CA = { [<Short "q">] query: string }\ntype Cmd = Go of CA | Stop\ntype Cli = { [<Short "q">] quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | $BIN check /dev/stdin 2>&1) && fail "explicit-short collision must reject"
+echo "$errout" | grep -qF "claimed by [<Short>] in both" || fail "explicit-short collision route: $errout"
+errout=$(printf 'type CA = { r: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { a: Cmd; b: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | $BIN check /dev/stdin 2>&1) && fail "two union fields must reject"
+echo "$errout" | grep -qF "one subcommand slot" || fail "one-slot law: $errout"
+echo "e2e ok: declaration collisions reject at check (both routes + one slot)"
+
+rm -rf "$sfdir"
+
 echo "e2e battery: all green"

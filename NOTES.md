@@ -1,6 +1,40 @@
 # Spike Notes
 
-## Multiline lambdas — the park's face opens, and the harness bites twice (2026-07-24)
+## Shared flags by containment — the friction arc closes (2026-07-24)
+
+The shape sighted at the bicep original (Argu's [<Inherit>],
+reshaped away in translation) and paid for at the port (two
+three-arm extraction matches for quiet/verbose) deletes
+structurally: a record CONTAINING the subcommand union declares
+shared flags once. The review's design premise held clean through
+implementation — an [<Inherit>] marker would have PRESERVED the
+repetition; containment is the deletion.
+
+The mechanics stayed one-owner all the way down. Check side: the
+field law widens by exactly one clause (at most one union-typed
+field), the bare union's payload validation hoisted and shared, and
+both collision routes (kebab-derived and explicit-Short) reject at
+declaration — the runtime scanner never faces an ambiguous name.
+Eval side: pass 1 floats shared flags and anchors on the first
+non-flag token (unknown flags consume no value — the standing
+precedent made the classification total); the scope's short tables
+derive over the UNION of tiers via a combined pseudo-record, so the
+cross-tier contest cell (-q for --quiet vs --query: neither derives
+in that case's scope, both named in the ambiguity error, the global
+help omits the short while the scoped help shows it) fell out of
+shortTables unmodified. Validation collects across both tiers into
+the one boundary error; did-you-mean candidates are tier-aware
+(before the case: shared + case names; after: shared + the selected
+payload). Case-scoped --help decided YES and pinned.
+
+The port's Cli gained the containing record, the extraction matches
+deleted, the lifecycle smoke stayed green, and jira-branch's
+record-only load proves the unchanged shapes zero-diff (the shipped
+argv e2e section passed untouched). The fuzzer is NOT owed here —
+argv parsing is not assembler grammar; stated so the
+grammar-membership rule's scope stays crisp.
+
+## Multiline lambdas — the park's face opens, and the harness bites twice (2026-07-24)## Multiline lambdas — the park's face opens, and the harness bites twice (2026-07-24)
 
 The probes-first pass reshaped the session before a line landed: MOST
 of the blessed form already worked. Deeper-line bodies, block lets,

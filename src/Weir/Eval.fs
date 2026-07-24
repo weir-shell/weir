@@ -439,9 +439,7 @@ let private argvValueSlot (ty: Ty) : string =
     | TNamed("Option", [ TStr ]) -> " <string>"
     | _ -> ""
 
-let private argvUsageLines (def: RecordDef) : string list =
-    let flagShorts, _ = Argv.shortTables def
-
+let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef) : string list =
     def.Fields
     |> List.map (fun (f, ty) ->
         let flag = "--" + Argv.kebabFlag f
@@ -469,7 +467,57 @@ let private argvUsageLines (def: RecordDef) : string list =
 
         if right = "" then left else sprintf "%-30s%s" left right)
 
-let private argvUsage (target: ArgsTarget) : string =
+let private argvUsageLines (def: RecordDef) : string list =
+    argvUsageLinesWith (fst (Argv.shortTables def)) def
+
+// the per-case flag scope [D:shared-flags]: shared and payload fields
+// together — short derivation runs over the UNION, so a cross-tier
+// contest (-q for --quiet and --query) derives for NEITHER in that scope
+let private scopeDef (sharedDef: RecordDef) (payloadDef: RecordDef option) : RecordDef =
+    match payloadDef with
+    | Some pd ->
+        { sharedDef with
+            Fields = sharedDef.Fields @ pd.Fields
+            Attrs = pd.Attrs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Attrs }
+    | None -> sharedDef
+
+// pass 1 of the shared-flags scan: shared flags float, the FIRST
+// non-flag token anchors as the case selector (an unknown flag consumes
+// no value — the standing precedent)
+let private argvFindCase (sharedDef: RecordDef) (argv: string list) : (int * string) option =
+    let sharedLong =
+        sharedDef.Fields
+        |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, ty)
+        |> Map.ofList
+
+    let _, sharedShorts = Argv.shortTables sharedDef
+
+    let flagTy (t: string) =
+        if t.StartsWith "--" then
+            Map.tryFind t sharedLong
+        elif t.StartsWith "-" && t.Length = 2 then
+            match Map.tryFind (t.Substring 1) sharedShorts with
+            | Some(ShortOf flag) -> Map.tryFind flag sharedLong
+            | _ -> None
+        else
+            None
+
+    let rec go i (ts: string list) =
+        match ts with
+        | [] -> None
+        | t :: rest ->
+            match flagTy t with
+            | Some ty when ty <> TBool ->
+                (match rest with
+                 | _ :: r -> go (i + 2) r
+                 | [] -> None)
+            | Some _ -> go (i + 1) rest
+            | None when t.StartsWith "-" -> go (i + 1) rest
+            | None -> Some(i, t)
+
+    go 0 argv
+
+let private argvUsage (target: ArgsTarget) (argv: string list) : string =
     match target with
     | ArgsRecord def -> String.concat "\n" ("usage: [flags]" :: argvUsageLines def)
     | ArgsUnion(udef, payloads) ->
@@ -483,6 +531,60 @@ let private argvUsage (target: ArgsTarget) : string =
                 | _ -> [])
 
         String.concat "\n" ([ "usage: <command> [flags]"; "commands:" ] @ caseLines @ blocks)
+    | ArgsShared(outer, uf, udef, payloads) ->
+        let sharedDef = Argv.sharedOf outer uf
+
+        let payloadOf c (p: Ty option) =
+            if p.IsSome then Map.tryFind c payloads else None
+
+        let scopeShortsFor c p =
+            fst (Argv.shortTables (scopeDef sharedDef (payloadOf c p)))
+
+        let caseBlock c p =
+            match payloadOf c p with
+            | Some rdef when not rdef.Fields.IsEmpty ->
+                $"{c.ToLowerInvariant()} flags:" :: argvUsageLinesWith (scopeShortsFor c p) rdef
+            | _ -> []
+
+        // case-scoped help when a case token rides along [D:shared-flags]
+        let scoped =
+            argvFindCase sharedDef (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
+            |> Option.bind (fun (_, tok) -> udef.Cases |> List.tryFind (fun (c, _) -> c.ToLowerInvariant() = tok))
+
+        match scoped with
+        | Some(c, p) ->
+            String.concat
+                "\n"
+                ([ $"usage: {c.ToLowerInvariant()} [flags]"; "global options:" ]
+                 @ argvUsageLinesWith (scopeShortsFor c p) sharedDef
+                 @ caseBlock c p)
+        | None ->
+            // the global section shows a derived short only when it holds
+            // in EVERY case scope (explicit shorts always hold)
+            let sharedOwn, _ = Argv.shortTables sharedDef
+
+            let stable =
+                sharedOwn
+                |> Map.filter (fun flag letter ->
+                    udef.Cases
+                    |> List.forall (fun (c, p) ->
+                        let _, scopeIdx = Argv.shortTables (scopeDef sharedDef (payloadOf c p))
+
+                        match Map.tryFind letter scopeIdx with
+                        | Some(ShortOf f) -> f = flag
+                        | _ -> false))
+
+            let caseLines = udef.Cases |> List.map (fun (c, _) -> "  " + c.ToLowerInvariant())
+
+            let blocks = udef.Cases |> List.collect (fun (c, p) -> caseBlock c p)
+
+            String.concat
+                "\n"
+                ([ "usage: [global flags] <command> [flags]"; "global options:" ]
+                 @ argvUsageLinesWith stable sharedDef
+                 @ [ "commands:" ]
+                 @ caseLines
+                 @ blocks)
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
     let flagged =
@@ -562,15 +664,172 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
 
     VRecord(def.Name, Map.ofList fields)
 
+// the shared-flags load [D:shared-flags]: shared flags float anywhere on
+// the line; the first non-flag token anchors the case; payload flags
+// bind only AFTER it. Both tiers collect into ONE boundary error.
+let private argvLoadShared
+    (outer: RecordDef)
+    (unionField: string)
+    (udef: UnionDef)
+    (payloads: Map<string, RecordDef>)
+    (argv: string list)
+    : Value =
+    let label = $"Args.load {outer.Name}"
+    let sharedDef = Argv.sharedOf outer unionField
+
+    let sharedLong =
+        sharedDef.Fields
+        |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty))
+        |> Map.ofList
+
+    let caseTable = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
+    let caseAt = argvFindCase sharedDef argv
+
+    let selected =
+        caseAt
+        |> Option.bind (fun (_, tok) -> caseTable |> List.tryFind (fun (w, _) -> w = tok))
+        |> Option.map snd
+
+    let payloadDef =
+        selected
+        |> Option.bind (fun (c, p) -> if p.IsSome then Map.tryFind c payloads else None)
+
+    let payloadLong =
+        payloadDef
+        |> Option.map (fun pd ->
+            pd.Fields
+            |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty))
+            |> Map.ofList)
+        |> Option.defaultValue Map.empty
+
+    let _, scopeShorts = Argv.shortTables (scopeDef sharedDef payloadDef)
+
+    let caseIdx = caseAt |> Option.map fst |> Option.defaultValue System.Int32.MaxValue
+
+    // tier-aware did-you-mean: before the case token, shared flags and
+    // case names; after it, shared plus the selected payload's flags
+    let beforeCandidates =
+        (sharedLong |> Map.toList |> List.map fst) @ (caseTable |> List.map fst)
+
+    let afterCandidates =
+        (sharedLong |> Map.toList |> List.map fst)
+        @ (payloadLong |> Map.toList |> List.map fst)
+
+    let problems = ResizeArray<string>()
+    let sharedValues = System.Collections.Generic.Dictionary<string, Value>()
+    let payloadValues = System.Collections.Generic.Dictionary<string, Value>()
+    let seen = System.Collections.Generic.HashSet<string>()
+
+    let parseValue (values: System.Collections.Generic.Dictionary<string, Value>) f ty (flagTok: string) (raw: string) =
+        match ty with
+        | TInt
+        | TNamed("Option", [ TInt ]) ->
+            match System.Int64.TryParse raw with
+            | true, n -> values[f] <- wrapOpt ty (VInt n)
+            | _ -> problems.Add $"{flagTok} is not an int ('{raw}')"
+        | _ -> values[f] <- wrapOpt ty (VStr raw)
+
+    let rec go i (ts: string list) =
+        match ts with
+        | [] -> ()
+        | _ :: rest when i = caseIdx -> go (i + 1) rest
+        | t :: rest ->
+            let resolved =
+                if t.StartsWith "--" then
+                    match Map.tryFind t sharedLong with
+                    | Some(f, ty) -> Choice1Of3(sharedValues, f, ty)
+                    | None ->
+                        match Map.tryFind t payloadLong with
+                        | Some(f, ty) when i > caseIdx -> Choice1Of3(payloadValues, f, ty)
+                        | _ -> Choice2Of3()
+                elif t.StartsWith "-" && t.Length = 2 then
+                    match Map.tryFind (t.Substring 1) scopeShorts with
+                    | Some(ShortOf flag) ->
+                        (match Map.tryFind flag sharedLong with
+                         | Some(f, ty) -> Choice1Of3(sharedValues, f, ty)
+                         | None ->
+                             match Map.tryFind flag payloadLong with
+                             | Some(f, ty) when i > caseIdx -> Choice1Of3(payloadValues, f, ty)
+                             | _ -> Choice2Of3())
+                    | Some(AmbiguousShort candidates) ->
+                        problems.Add $"""'{t}' is ambiguous: {String.concat ", " candidates}"""
+                        Choice3Of3()
+                    | None -> Choice2Of3()
+                else
+                    problems.Add $"unexpected argument '{t}'"
+                    Choice3Of3()
+
+            match resolved with
+            | Choice1Of3(values, f, ty) ->
+                if not (seen.Add f) then
+                    problems.Add $"'{t}' is given twice"
+
+                (match ty with
+                 | TBool ->
+                     values[f] <- VBool true
+                     go (i + 1) rest
+                 | _ ->
+                     match rest with
+                     | raw :: rest' ->
+                         parseValue values f ty t raw
+                         go (i + 2) rest'
+                     | [] -> problems.Add $"flag '{t}' needs a value")
+            | Choice2Of3() ->
+                let cands = if i < caseIdx then beforeCandidates else afterCandidates
+                problems.Add $"unknown flag '{t}'{didYouMean t cands}"
+                go (i + 1) rest
+            | Choice3Of3() -> go (i + 1) rest
+
+    go 0 argv
+
+    (match caseAt, selected with
+     | None, _ -> problems.Add("missing subcommand; one of: " + String.concat ", " (caseTable |> List.map fst))
+     | Some(_, tok), None -> problems.Add $"unknown subcommand '{tok}'{didYouMean tok (caseTable |> List.map fst)}"
+     | Some _, Some _ -> ())
+
+    let collectFields (def: RecordDef) (values: System.Collections.Generic.Dictionary<string, Value>) =
+        def.Fields
+        |> List.map (fun (f, ty) ->
+            match values.TryGetValue f with
+            | true, v -> f, v
+            | false, _ ->
+                match ty with
+                | TBool -> f, VBool false
+                | TNamed("Option", _) -> f, VUnion("None", None)
+                | _ ->
+                    problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
+                    f, VUnit)
+
+    let sharedFields = collectFields sharedDef sharedValues
+
+    let payloadValue =
+        match selected with
+        | Some(c, Some _) ->
+            let pd = Map.find c payloads
+            Some(c, Some(VRecord(pd.Name, Map.ofList (collectFields pd payloadValues))))
+        | Some(c, None) -> Some(c, None)
+        | None -> None
+
+    if problems.Count > 0 then
+        failwith ($"{label}: " + String.concat "; " problems)
+
+    let case, payload =
+        match payloadValue with
+        | Some(c, p) -> c, p
+        | None -> failwith $"{label}: internal — no case after validation"
+
+    VRecord(outer.Name, Map.ofList ((unionField, VUnion(case, payload)) :: sharedFields))
+
 let private argvLoad (target: ArgsTarget) : Value =
     let argv = Session.ScriptArgs
 
     if List.contains "--help" argv || List.contains "-h" argv then
-        printfn "%s" (argvUsage target)
+        printfn "%s" (argvUsage target argv)
         raise (ExitRequest 0)
 
     match target with
     | ArgsRecord def -> argvParseRecord $"Args.load {def.Name}" def argv
+    | ArgsShared(outer, uf, udef, payloads) -> argvLoadShared outer uf udef payloads argv
     | ArgsUnion(udef, payloads) ->
         let table = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
 

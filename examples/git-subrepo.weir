@@ -43,21 +43,16 @@ type PullOutcome =
 type StatusArgs = {
     [<Doc "the subrepo directory">]
     subdir: string
-    verbose: bool
 }
 
 type FetchArgs = {
     [<Doc "the subrepo directory">]
     subdir: string
-    quiet: bool
-    verbose: bool
 }
 
 type PullArgs = {
     [<Doc "the subrepo directory">]
     subdir: string
-    quiet: bool
-    verbose: bool
     [<Doc "pull even if the branch exists">]
     force: bool
 }
@@ -81,8 +76,6 @@ type InitArgs = {
 type PushArgs = {
     [<Doc "the subrepo directory">]
     subdir: string
-    quiet: bool
-    verbose: bool
     [<Doc "push even when upstream moved">]
     force: bool
 }
@@ -90,14 +83,11 @@ type PushArgs = {
 type BranchArgs = {
     [<Doc "the subrepo directory">]
     subdir: string
-    verbose: bool
 }
 
 type CommitArgs = {
     [<Doc "the subrepo directory">]
     subdir: string
-    quiet: bool
-    verbose: bool
     force: bool
 }
 
@@ -119,25 +109,20 @@ type Cmd =
     | Commit of CommitArgs
     | Clean of CleanArgs
 
-let cli = Args.load Cmd
+// shared flags by containment [D:shared-flags]: quiet/verbose declared
+// ONCE; the union field is the subcommand slot — the two extraction
+// matches this replaced were the friction entry's receipt
+type Cli = {
+    [<Doc "suppress progress output">]
+    quiet: bool
+    [<Doc "narrate each step to stderr">]
+    verbose: bool
+    cmd: Cmd
+}
 
-let quiet =
-    match cli with
-    | Fetch a -> a.quiet
-    | Pull a -> a.quiet
-    | Push a -> a.quiet
-    | Commit a -> a.quiet
-    | _ -> false
-
-let verbose =
-    match cli with
-    | Status a -> a.verbose
-    | Fetch a -> a.verbose
-    | Pull a -> a.verbose
-    | Push a -> a.verbose
-    | Branch a -> a.verbose
-    | Commit a -> a.verbose
-    | _ -> false
+let cli = Args.load Cli
+let quiet = cli.quiet
+let verbose = cli.verbose
 
 let say msg = if not quiet then print msg
 let step msg = if verbose then printerr $"* {msg}"
@@ -524,7 +509,7 @@ let status ctx =
 // ---- dispatch — the match the checker exhaustiveness-verifies:
 // adding a Cmd case makes this a check-time obligation ------------
 
-match cli with
+match cli.cmd with
 | Status a ->
     status (makeCtx a.subdir)
 

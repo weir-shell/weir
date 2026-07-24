@@ -18,6 +18,10 @@ let formatWarning (w: Warning) : string =
 type ArgsTarget =
     | ArgsRecord of RecordDef
     | ArgsUnion of def: UnionDef * payloads: Map<string, RecordDef>
+    // shared flags by containment [D:shared-flags]: the outer record's
+    // scalar fields are shared flags; its ONE union-typed field is the
+    // subcommand slot
+    | ArgsShared of outer: RecordDef * unionField: string * udef: UnionDef * payloads: Map<string, RecordDef>
 
 // short-flag resolution: a letter is owned or contested; contested
 // letters derive for NOBODY and error with candidates at invocation
@@ -102,6 +106,20 @@ module Argv =
             |> Map.ofList
 
         flagShorts, shortIndex
+
+    // the outer record minus its subcommand slot: the shared-flags
+    // record [D:shared-flags]
+    let sharedOf (outer: RecordDef) (unionField: string) : RecordDef =
+        { outer with
+            Fields = outer.Fields |> List.filter (fun (f, _) -> f <> unionField)
+            Attrs = outer.Attrs |> Map.remove unionField }
+
+    let explicitShorts (def: RecordDef) : (string * string) list =
+        def.Fields
+        |> List.choose (fun (f, _) ->
+            match attrOf def f "Short" with
+            | Some(_, Some(AStr sh)) -> Some(f, sh)
+            | _ -> None)
 
 // retired names teach their replacement [D:seq-force] — the
 // measures-transition precedent; one table, both lookup sites
@@ -1279,49 +1297,118 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  err span $"{label}fields '{a}' and '{b}' derive the same flag '--{flag}'"
                              | _ -> Ok()
 
+                 // case collisions + payload validation, shared by the bare-union
+                 // and shared-flags shapes [D:shared-flags]
+                 let unionPayloads span (udef: UnionDef) =
+                     let lowered = udef.Cases |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
+
+                     match lowered |> List.groupBy snd |> List.tryFind (fun (_, g) -> g.Length > 1) with
+                     | Some(word, (a, _) :: (b, _) :: _) ->
+                         err span $"cases '{a}' and '{b}' collide as subcommand '{word}'"
+                     | _ ->
+                         let payloadErr c =
+                             err span $"case '{c}' must carry a single record payload; spell it as a record type"
+
+                         let rec buildPayloads acc cases =
+                             match cases with
+                             | [] -> Ok acc
+                             | (_, None) :: rest -> buildPayloads acc rest
+                             | (c, Some(TNamed(rn, []))) :: rest ->
+                                 match Map.tryFind rn env.Types with
+                                 | Some(Record rdef) when rdef.Params.IsEmpty ->
+                                     validateFields span $"case '{c}': " rdef
+                                     |> Result.bind (fun () -> buildPayloads (Map.add c rdef acc) rest)
+                                 | _ -> payloadErr c
+                             | (c, Some _) :: _ -> payloadErr c
+
+                         buildPayloads Map.empty udef.Cases
+
                  match arg.Kind with
                  | EVar tyName ->
                      match Map.tryFind tyName env.Types with
                      | Some(Record def) when def.Params.IsEmpty ->
-                         result {
-                             do! validateFields arg.Span "" def
+                         // the field law [D:shared-flags]: at most ONE
+                         // union-typed field — the subcommand slot; its
+                         // scalar siblings are shared flags
+                         let unionFields =
+                             def.Fields
+                             |> List.choose (fun (f, ft) ->
+                                 match ft with
+                                 | TNamed(n, []) ->
+                                     match Map.tryFind n env.Types with
+                                     | Some(Union u) when u.Params.IsEmpty -> Some(f, u)
+                                     | _ -> None
+                                 | _ -> None)
 
-                             return
-                                 { Kind = TEArgsLoad(ArgsRecord def)
-                                   Ty = TNamed(tyName, [])
-                                   Span = expr.Span }
-                         }
-                     | Some(Union udef) when udef.Params.IsEmpty ->
-                         result {
-                             let lowered = udef.Cases |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
-
-                             match lowered |> List.groupBy snd |> List.tryFind (fun (_, g) -> g.Length > 1) with
-                             | Some(word, (a, _) :: (b, _) :: _) ->
-                                 return! err arg.Span $"cases '{a}' and '{b}' collide as subcommand '{word}'"
-                             | _ ->
-                                 let payloadErr c =
-                                     err
-                                         arg.Span
-                                         $"case '{c}' must carry a single record payload; spell it as a record type"
-
-                                 let rec buildPayloads acc cases =
-                                     match cases with
-                                     | [] -> Ok acc
-                                     | (_, None) :: rest -> buildPayloads acc rest
-                                     | (c, Some(TNamed(rn, []))) :: rest ->
-                                         match Map.tryFind rn env.Types with
-                                         | Some(Record rdef) when rdef.Params.IsEmpty ->
-                                             validateFields arg.Span $"case '{c}': " rdef
-                                             |> Result.bind (fun () -> buildPayloads (Map.add c rdef acc) rest)
-                                         | _ -> payloadErr c
-                                     | (c, Some _) :: _ -> payloadErr c
-
-                                 let! payloads = buildPayloads Map.empty udef.Cases
+                         match unionFields with
+                         | [] ->
+                             result {
+                                 do! validateFields arg.Span "" def
 
                                  return
-                                     { Kind = TEArgsLoad(ArgsUnion(udef, payloads))
+                                     { Kind = TEArgsLoad(ArgsRecord def)
                                        Ty = TNamed(tyName, [])
                                        Span = expr.Span }
+                             }
+                         | [ (uf, udef) ] ->
+                             result {
+                                 let sharedDef = Argv.sharedOf def uf
+                                 do! validateFields arg.Span "" sharedDef
+                                 let! payloads = unionPayloads arg.Span udef
+
+                                 // a name declared in BOTH tiers is a schema
+                                 // error — reject-don't-guess; the runtime
+                                 // scanner never faces the question
+                                 let sharedFlags =
+                                     sharedDef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f) |> Set.ofList
+
+                                 let sharedShorts = Argv.explicitShorts sharedDef |> List.map snd |> Set.ofList
+
+                                 let collision =
+                                     payloads
+                                     |> Map.toList
+                                     |> List.tryPick (fun (_, rdef) ->
+                                         rdef.Fields
+                                         |> List.tryPick (fun (f, _) ->
+                                             let k = Argv.kebabFlag f
+
+                                             if Set.contains k sharedFlags then
+                                                 Some(
+                                                     $"flag '--{k}' is declared in {def.Name} and {rdef.Name}; "
+                                                     + "shared flags are declared once"
+                                                 )
+                                             else
+                                                 None)
+                                         |> Option.orElse (
+                                             Argv.explicitShorts rdef
+                                             |> List.tryPick (fun (_, sh) ->
+                                                 if Set.contains sh sharedShorts then
+                                                     Some(
+                                                         $"'-{sh}' is claimed by [<Short>] in both {def.Name} and {rdef.Name}; "
+                                                         + "a short is declared once"
+                                                     )
+                                                 else
+                                                     None)
+                                         ))
+
+                                 match collision with
+                                 | Some msg -> return! err arg.Span msg
+                                 | None ->
+                                     return
+                                         { Kind = TEArgsLoad(ArgsShared(def, uf, udef, payloads))
+                                           Ty = TNamed(tyName, [])
+                                           Span = expr.Span }
+                             }
+                         | (a, _) :: (b, _) :: _ ->
+                             err arg.Span $"'{a}' and '{b}' are both union-typed: one subcommand slot per record"
+                     | Some(Union udef) when udef.Params.IsEmpty ->
+                         result {
+                             let! payloads = unionPayloads arg.Span udef
+
+                             return
+                                 { Kind = TEArgsLoad(ArgsUnion(udef, payloads))
+                                   Ty = TNamed(tyName, [])
+                                   Span = expr.Span }
                          }
                      | Some(Record _)
                      | Some(Union _) -> err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
