@@ -1,6 +1,35 @@
 # Spike Notes
 
-## Pipe alignment — the indentation session (2026-07-24)
+## Field alignment — the records half (2026-07-24)
+
+The pipes rule's sibling, opened on the planted `Commit` off-by-one.
+The probes corrected ME this time: the first read said "F# tolerates
+deeper fields in record literals" — but that probe's snippet had no
+record type, so both sides were rejecting for a missing type, not
+indentation. The typed re-probe showed F# errors on off-by-one
+fields in declarations, literals, and lists alike — the whole rule
+is F#-PARITY, no strictness-family caveat needed. (Pin hygiene
+lesson, same day it was needed: a probe that can fail for a reason
+other than the one it names proves nothing.)
+
+The mechanism rides the bracket stack: each bracket records its
+first entry's MEASURED column (opener-line content for inline
+openers; the first continuation entry for dangling Stroustrup;
+update headers skip their source and anchor on the first field —
+found by the update pin going red). Entry-starting lines must hit
+the anchor exactly; value continuations, closers, and explicit
+trailing-`;` lines stay free. records-fields-ignore-indent NARROWS
+to its honest residue: update/closer offside edges.
+
+Two real catches on landing day. The flagship's own gitrepoHeader
+list had sat one column off since the port session — latent in
+every commit since, caught by the first full e2e under the rule.
+And fmt's +1/+2 offset arithmetic disagreed with the assembler on
+a `[ x`-spaced list (anchor at +2, fmt pulling to +1): fmt now
+aligns to the measured anchor, so the two components agree by
+construction instead of by convention.
+
+## Pipe alignment — the indentation session (2026-07-24)## Pipe alignment — the indentation session (2026-07-24)
 
 Opened on a live receipt sitting in the committed flagship: `| Init`
 one column off its siblings, accepted. The probes-first discipline

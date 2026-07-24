@@ -68,9 +68,9 @@ let pins =
           Same
       pin "F#-rejects-this: EOF inside an open brace" "type T = { Name: string }\nlet t =\n    { Name = \"a\"\n" Same
       pin
-          "record field at column 0 (weir braces ignore indent)"
+          "F#-rejects-this: record field at column 0 (narrowed 2026-07-24)"
           "type T = { Name: string; Count: int }\nlet t =\n    { Name = \"a\"\nCount = 2 }\n"
-          (Diverges "record-fields-ignore-indent")
+          Same
 
       // --- type classes: Eq (Session A, 2026-07-20) — the fidelity GAIN ---
       pinT
@@ -284,9 +284,9 @@ let pins =
       pin "multiline list: wrapped element via dangling operator" "let x =\n    [1 +\n     2\n     3]\n" Same
       pin "F#-rejects-this: cross-bracket closer" "let x =\n    [1; 2\n     3}\n" Same
       pin
-          "type field at column 0 rides the records-indent divergence"
+          "F#-rejects-this: type field at column 0 (narrowed 2026-07-24)"
           "type T =\n    { A: int\nB: int }\nlet t = { A = 1; B = 2 }\n"
-          (Diverges "record-fields-ignore-indent")
+          Same
       pin
           "preceding-line attribute on a type field (THE F# style; names diverge)"
           "type T =\n    { [<System.Obsolete>]\n      A: int }\nlet t = { A = 1 }\n"
@@ -328,6 +328,21 @@ let pins =
           "Stroustrup copy-and-update (weir indentation-blind; F# offside-rejects)"
           "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n}\n"
           (Diverges "record-fields-ignore-indent")
+
+      // --- field-alignment probes (the records half) ---
+      pin
+          "Stroustrup field off by one (both reject — parity narrowing)"
+          "type R = {\n    A: int\n     B: string\n}\nlet r = { A = 1; B = \"x\" }\n"
+          Same
+      pin
+          "aligned-literal field off by one (typed snippet — the honest probe)"
+          "type R0 = { UpN: int; UpT: string }\nlet r =\n    { UpN = 1\n       UpT = \"x\" }\n"
+          Same
+      pin "list element off by one" "let xs =\n    [1\n      2\n     3]\n" Same
+      pin
+          "aligned continuation fields under the opener-line first field"
+          "type R2 = { A: int; B: string }\nlet r =\n    { A = 1\n      B = \"x\" }\n"
+          Same
 
       // --- pipe-alignment probes (the indentation session) ---
       // F# only WARNS (FS0058) on off-by-one pipes — weir hard-errors:

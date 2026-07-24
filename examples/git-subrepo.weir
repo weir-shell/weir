@@ -198,10 +198,10 @@ let readGitrepo gitrepo =
 
 let gitrepoHeader =
     [ "; DO NOT EDIT (unless you know what you are doing)"
-     ";"
-     "; This subdirectory is a git \"subrepo\", and this file is maintained by the"
-     "; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme"
-     ";" ]
+      ";"
+      "; This subdirectory is a git \"subrepo\", and this file is maintained by the"
+      "; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme"
+      ";" ]
 
 let writeGitrepo gitrepo repo =
     if not (File.exists gitrepo) then gitrepoHeader |> File.write gitrepo

@@ -130,7 +130,7 @@ let formatLines (body: string list) : Result<string list, string> =
         // bracket, or a `{ ... with` header) takes Stroustrup rules —
         // entries at opener-indent+4, closers at opener-indent; an
         // inline opener keeps column alignment [D:fmt-stroustrup]
-        let mutable braces: (char * int * bool * int) list = []
+        let mutable braces: (char * int * bool * int * int option) list = []
         // district: Some(markerOrigIndent, markerDepth) while inside a ! block
         let mutable district: (int * int) option = None
         // open match heads, innermost first: (originalIndent,
@@ -168,7 +168,7 @@ let formatLines (body: string list) : Result<string list, string> =
 
                         let formatted =
                             match braces with
-                            | (_, _, true, oIndent) :: _ ->
+                            | (_, _, true, oIndent, _) :: _ ->
                                 // Stroustrup: closers return to the opener
                                 // line's indent, entries sit one level in
                                 let col =
@@ -178,12 +178,15 @@ let formatLines (body: string list) : Result<string list, string> =
                                         oIndent + 4
 
                                 String.replicate col " " + content
-                            | (kind, top, false, _) :: _ ->
+                            | (kind, top, false, _, anchor) :: _ ->
                                 // bracket continuation: align under the first
-                                // field/element — brace+2 (`{ x`), bracket+1
-                                // (`[x`) [D:multiline-brackets]
-                                let offset = if kind = '{' then 2 else 1
-                                String.replicate (top + offset) " " + content
+                                // entry's MEASURED column [D:field-alignment]
+                                let col =
+                                    match anchor with
+                                    | Some a -> a
+                                    | None -> top + (if kind = '{' then 2 else 1)
+
+                                String.replicate col " " + content
                             | [] ->
                                 let isPipe =
                                     piece.StartsWith "|"
@@ -235,7 +238,7 @@ let formatLines (body: string list) : Result<string list, string> =
 
                         // re-annotate: entries pushed on THIS line learn
                         // their style from where the line leaves its opener
-                        let raw = braces |> List.map (fun (k, c, _, _) -> k, c)
+                        let raw = braces |> List.map (fun (k, c, _, _, _) -> k, c)
                         let newRaw = Script.braceStack raw formatted
 
                         let survived =
@@ -258,7 +261,22 @@ let formatLines (body: string list) : Result<string list, string> =
                             |> List.map (fun (k, c) ->
                                 let stroustrup = c = trimmed.Length - 1 || (k = '{' && trimmed.EndsWith " with")
 
-                                k, c, stroustrup, lineIndent)
+                                // the sibling anchor is the first entry's
+                                // MEASURED column [D:field-alignment] — never
+                                // offset arithmetic (a `[ x` list anchors at
+                                // +2 like a brace)
+                                let anchor =
+                                    let mutable j = c + 1
+
+                                    while j < formatted.Length && formatted[j] = ' ' do
+                                        j <- j + 1
+
+                                    if j < formatted.Length && stroustrup |> not then
+                                        Some j
+                                    else
+                                        None
+
+                                k, c, stroustrup, lineIndent, anchor)
 
                         braces <- pushed @ (braces |> List.skip (List.length braces - survived))
                         formatted)

@@ -41,6 +41,16 @@ weir rejects rather than guesses.
   source evaluates ONCE (the plan's parser-desugar clause hit its
   stop-and-report: a parser desugar duplicates the source expression,
   so paths live in the AST and the checker walks them).
+- **Field alignment** [D:field-alignment]: sibling bracket entries —
+  record and type-decl fields, list elements — align EXACTLY with
+  the FIRST entry (the opener line's content for inline openers;
+  the first continuation entry for dangling Stroustrup openers;
+  update headers anchor on their first FIELD, never the source).
+  F#-parity throughout (probed: F# errors on off-by-one fields in
+  decls, literals, and lists alike). Value continuations, closers,
+  and explicit trailing-`;` lines stay alignment-free; fmt
+  canonicalizes to the measured anchor, never offset arithmetic —
+  fmt and the assembler agree by construction.
 - **Pipe alignment** [D:pipe-alignment]: sibling `|` lines — match
   arms, union cases, chain stages — must align EXACTLY on their
   group's column (the first pipe after a non-pipe line sets it);

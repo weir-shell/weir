@@ -2233,15 +2233,23 @@ let fmtMatchTests =
 let fmtStroustrupTests =
     testList
         "fmt: Stroustrup brackets"
-        [ test "dangling opener: entries at +4, closer at the opener line's indent" {
+        [ test "dangling opener: a CONSISTENT group canonicalizes to +4" {
+              // misaligned groups are assembly errors now [D:field-alignment]
               match
-                  Weir.Fmt.formatLines [ "type Ctx = {"; "        Subdir: string"; "      Repo: string"; "    }" ]
+                  Weir.Fmt.formatLines [ "type Ctx = {"; "        Subdir: string"; "        Repo: string"; "    }" ]
               with
               | Ok lines ->
                   Expect.equal lines[1] "    Subdir: string" ""
                   Expect.equal lines[2] "    Repo: string" ""
                   Expect.equal lines[3] "}" "closer returns to the opener line"
               | Error e -> failtest e
+          }
+          test "misaligned fields are an assembly error, not an fmt repair" {
+              match
+                  Weir.Fmt.formatLines [ "type Ctx = {"; "        Subdir: string"; "      Repo: string"; "    }" ]
+              with
+              | Error e -> Expect.stringContains e "indented off its siblings" ""
+              | Ok _ -> failtest "expected the alignment error"
           }
           test "with-header takes Stroustrup rules" {
               match Weir.Fmt.formatLines [ "let c2 = { c with"; "        Repo = \"r2\""; "}" ] with
@@ -2250,9 +2258,9 @@ let fmtStroustrupTests =
                   Expect.equal lines[2] "}" ""
               | Error e -> failtest e
           }
-          test "inline opener keeps column alignment (both styles accepted)" {
-              match Weir.Fmt.formatLines [ "let target ="; "    { Name = \"a\""; "        Bp = \"b\" }" ] with
-              | Ok lines -> Expect.equal lines[2] "      Bp = \"b\" }" "brace+2 unchanged"
+          test "inline opener: aligned input is fmt-stable (both styles accepted)" {
+              match Weir.Fmt.formatLines [ "let target ="; "    { Name = \"a\""; "      Bp = \"b\" }" ] with
+              | Ok lines -> Expect.equal lines[2] "      Bp = \"b\" }" "brace+2 stable"
               | Error e -> failtest e
           }
           test "nested Stroustrup: inner opener indents from its own line" {
@@ -3729,7 +3737,9 @@ let seqAccessTests =
 let fmtRecordTests =
     testList
         "fmt: record field alignment"
-        [ test "fields align at brace+2, not depth*4 (the drift fix)" {
+        [ // FLIPPED 2026-07-24 [D:field-alignment]: the drift-repair job moved
+          // from fmt to the assembler — misaligned fields ERROR at assembly
+          test "field drift is an assembly error (the repair job retired)" {
               match
                   Weir.Fmt.formatLines
                       [ "let target ="
@@ -3737,12 +3747,18 @@ let fmtRecordTests =
                         "        BicepPath = \"b\""
                         "        Env = \"c\" }" ]
               with
-              | Ok lines -> Expect.equal lines[2] "      BicepPath = \"b\"" ""
-              | Error e -> failtest e
+              | Error e -> Expect.stringContains e "indented off its siblings" ""
+              | Ok _ -> failtest "expected the alignment error"
           }
           test "nested record fields align under the inner brace" {
+              // the inner anchor is V's column (13); W aligned there is
+              // legal and fmt-stable [D:field-alignment]
               match
-                  Weir.Fmt.formatLines [ "let o ="; "    { Name = \"x\""; "      In = { V = 1"; "        W = 2 } }" ]
+                  Weir.Fmt.formatLines
+                      [ "let o ="
+                        "    { Name = \"x\""
+                        "      In = { V = 1"
+                        "             W = 2 } }" ]
               with
               | Ok lines -> Expect.equal (lines[3].TrimEnd()) (String.replicate 13 " " + "W = 2 } }") ""
               | Error e -> failtest e
@@ -4551,7 +4567,9 @@ let offsideTests =
               | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\"; Count = 2 }" ""
               | other -> failtest $"unexpected: {other}"
           }
-          test "record continuation: sibling rule inert inside braces (same indent as {)" {
+          // FLIPPED 2026-07-24 [D:field-alignment]: fields at the brace's own
+          // indent were the records-ignore-indent divergence; siblings align now
+          test "record fields off the first-field column error naming it" {
               match
                   Weir.Script.assemble
                       [ 1, "let t ="
@@ -4559,8 +4577,8 @@ let offsideTests =
                         3, "    Count = 2"
                         4, "    Tag = \"x\" }" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\" ; Count = 2 ; Tag = \"x\" }" ""
-              | other -> failtest $"unexpected: {other}"
+              | Error e -> Expect.stringContains e "they sit at column 6" ""
+              | other -> failtest $"expected the alignment error, got {other}"
           }
           test "record continuation: a field's value may open on the NEXT line (sweep catch)" {
               match

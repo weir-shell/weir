@@ -393,26 +393,52 @@ let parenDelta (s: string) : int =
         s
 
 // Fold a piece's brackets into the pending statement's open-bracket
-// stack (kind, line) [D:multiline-brackets]. A mismatched closer is an
-// error naming BOTH sides; over-closing stays permissive (the parser
-// owns that message). Parens are NOT tracked (parens-spanning-lines is
-// parked).
-let bracketFold (lineNo: int) (stack: (char * int) list) (piece: string) : Result<(char * int) list, string> =
+// stack (kind, line, firstEntryCol) [D:multiline-brackets]. A bracket
+// with content after its opener on the same line records that content's
+// PHYSICAL column as the sibling-entry anchor [D:field-alignment]; a
+// dangling opener records None (the first continuation entry sets it).
+// A mismatched closer is an error naming BOTH sides; over-closing stays
+// permissive (the parser owns that message). Parens are NOT tracked.
+let bracketFold
+    (lineNo: int)
+    (indent: int)
+    (stack: (char * int * int option) list)
+    (piece: string)
+    : Result<(char * int * int option) list, string> =
     foldOutsideStrings
-        (fun acc _ c ->
+        (fun acc i c ->
             match acc with
             | Error _ -> acc
             | Ok stack ->
                 match c with
                 | '{'
-                | '[' -> Ok((c, lineNo) :: stack)
+                | '[' ->
+                    let entryCol =
+                        let mutable j = i + 1
+
+                        while j < piece.Length && piece[j] = ' ' do
+                            j <- j + 1
+
+                        // an update header's opener-line content is the
+                        // SOURCE, not a field — the first continuation
+                        // entry anchors instead [D:record-update]
+                        let isWithHeader =
+                            let rest = piece.Substring(j).TrimEnd()
+                            rest = "with" || rest.EndsWith " with"
+
+                        if j < piece.Length && piece[j] <> '}' && piece[j] <> ']' && not isWithHeader then
+                            Some(indent + j)
+                        else
+                            None
+
+                    Ok((c, lineNo, entryCol) :: stack)
                 | '}'
                 | ']' ->
                     let expected = if c = '}' then '{' else '['
 
                     (match stack with
-                     | (o, _) :: rest when o = expected -> Ok rest
-                     | (o, oline) :: _ -> Error $"line {lineNo}: '{c}' closes the '{o}' opened at line {oline}"
+                     | (o, _, _) :: rest when o = expected -> Ok rest
+                     | (o, oline, _) :: _ -> Error $"line {lineNo}: '{c}' closes the '{o}' opened at line {oline}"
                      | [] -> Ok [])
                 | _ -> Ok stack)
         (Ok stack)
@@ -447,8 +473,9 @@ type private Pend =
       // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
       Compounds: (int * int * int) list
       ParenDepth: int
-      // still-open brackets (kind, opening line) [D:multiline-brackets]
-      Brackets: (char * int) list }
+      // still-open brackets (kind, opening line, sibling-entry column)
+      // [D:multiline-brackets] [D:field-alignment]
+      Brackets: (char * int * int option) list }
 
 // The join algebra: every way a continuation line attaches to the
 // pending statement, its inserted text in ONE place. joinedStart
@@ -496,11 +523,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
     let braceOpen (p: Pend) =
         match p.Brackets with
-        | ('{', line) :: _ when p.LL.Text.StartsWith "type " ->
+        | ('{', line, _) :: _ when p.LL.Text.StartsWith "type " ->
             Error $"line {line}: this record type's {{ is still open when the statement ends — close the brace"
-        | ('{', line) :: _ ->
+        | ('{', line, _) :: _ ->
             Error $"line {line}: this record literal's {{ is still open when the statement ends — close the brace"
-        | (kind, line) :: _ ->
+        | (kind, line, _) :: _ ->
             Error $"line {line}: this list's {kind} is still open when the statement ends — close the bracket"
         | [] -> Error "unreachable: bracketOpen on an empty stack"
 
@@ -579,12 +606,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                     // the statement-head guard [D:blank-in-brackets]:
                                     // keywords cannot be entries, so a col-0
                                     // let/type bounds a runaway unclosed bracket
-                                    | (kind, bline) :: _ when
+                                    | (kind, bline, _) :: _ when
                                         indent = 0 && (piece.StartsWith "let " || piece.StartsWith "type ")
                                         ->
                                         Error
                                             $"line {lineNo}: statement at column 0 while the '{kind}' opened at line {bline} is still open — close the bracket"
-                                    | (kind, _) :: _ ->
+                                    | (kind, _, entryCol) :: _ ->
                                         // bracket continuation: a line break after a
                                         // field/element is a separator
                                         let prev = p.LL.Text.TrimEnd()
@@ -626,15 +653,37 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                         let join = if startsEntry && not danglesOpen then JSibling else JSpace
 
-                                        bracketFold lineNo p.Brackets piece
-                                        |> Result.map (fun brackets ->
-                                            Some
-                                                { p with
-                                                    LL = applyJoin join p.LL piece lineNo indent
-                                                    LastIndent = indent
-                                                    Brackets = brackets },
-                                            acc,
-                                            blankSinceHead)
+                                        // sibling entries align exactly [D:field-alignment]:
+                                        // the first entry (opener-line content, or the first
+                                        // continuation entry of a dangling opener) sets the
+                                        // column; every later entry must hit it
+                                        let alignment =
+                                            if join = JSibling || (startsEntry && entryCol.IsNone) then
+                                                match entryCol with
+                                                | Some c when indent <> c ->
+                                                    Error
+                                                        $"line {lineNo}: this field/element is indented off its siblings (they sit at column {c}) — align the group exactly"
+                                                | Some _ -> Ok p.Brackets
+                                                | None ->
+                                                    // dangling opener: this entry anchors it
+                                                    (match p.Brackets with
+                                                     | (k, l, None) :: rest -> Ok((k, l, Some indent) :: rest)
+                                                     | other -> Ok other)
+                                            else
+                                                Ok p.Brackets
+
+                                        match alignment with
+                                        | Error e -> Error e
+                                        | Ok anchored ->
+                                            bracketFold lineNo indent anchored piece
+                                            |> Result.map (fun brackets ->
+                                                Some
+                                                    { p with
+                                                        LL = applyJoin join p.LL piece lineNo indent
+                                                        LastIndent = indent
+                                                        Brackets = brackets },
+                                                acc,
+                                                blankSinceHead)
                                     | [] ->
                                         match p.District with
                                         | Some({ Active = None } as dst) when indent > dst.MarkerIndent ->
@@ -821,7 +870,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         else
                                                             compounds
 
-                                                    bracketFold lineNo [] piece
+                                                    bracketFold lineNo indent [] piece
                                                     |> Result.map (fun brackets ->
                                                         Some
                                                             { p with
@@ -845,7 +894,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                         close current acc
                         |> Result.bind (fun acc ->
-                            bracketFold lineNo [] (raw.TrimEnd())
+                            bracketFold lineNo 0 [] (raw.TrimEnd())
                             |> Result.map (fun brackets ->
                                 Some
                                     { LL =
