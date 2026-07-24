@@ -24,11 +24,12 @@ let changes =
     | from porcelain
     | Seq.force
 
-// match the rows directly: [] + cons is a complete seq analysis
+// [] matches emptiness on the seq directly; cons is for when the
+// head is worth BINDING — a wildcard completes this one
 let health =
     match changes with
     | [] -> Clean
-    | _ :: _ -> Dirty (changes |> Seq.length)
+    | _ -> Dirty (changes |> Seq.length)
 
 let status =
     match health with

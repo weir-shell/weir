@@ -12,7 +12,7 @@ let changes =
 
 match changes with
 | [] -> print "clean"
-| _ :: _ -> changes |> Seq.where _.Staged |> Seq.map _.Path |> print
+| _ -> changes |> Seq.where _.Staged |> Seq.map _.Path |> print
 ```
 
 - **Check-everything-first**: parse and typecheck the whole file --
