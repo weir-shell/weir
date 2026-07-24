@@ -160,7 +160,7 @@ let defaultCfg =
 
 // a block is `;`-joinable only when every body statement is a print —
 // lets spell `in` inline, and command lines take `;` as a literal argv
-// word (both probed)
+// word
 let joinable (body: Stmt list) =
     body
     |> List.forall (function
@@ -1421,8 +1421,8 @@ module Transform =
     let bracketStyle (rnd: Random) (p: Program) : string list option =
         withSites rnd (bracketBids p) (fun f -> { defaultCfg with InlineBracket = f }) p
 
-    // block siblings <-> single-line `a ; b` (the assembler's join claim;
-    // print-only bodies — the probed boundary)
+    // block siblings <-> single-line `a ; b` (the assembler's join
+    // claim; print-only bodies)
     let joinSiblings (rnd: Random) (p: Program) : string list option =
         withSites rnd (joinBids p) (fun f -> { defaultCfg with JoinBlock = f }) p
 

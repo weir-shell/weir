@@ -14,7 +14,7 @@ esac
 
 # the build STAMP [D:masking-mechanized]: harnesses assert this
 # equals HEAD before running anything — stale results become
-# impossible rather than catchable (the fifth-incident lesson)
+# impossible rather than catchable
 stamp="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
 dotnet publish src/Weir -c Release -r "$rid" -p:InformationalVersion="$stamp" -p:IncludeSourceRevisionInInformationalVersion=false
 

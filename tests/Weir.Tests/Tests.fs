@@ -221,8 +221,8 @@ let evalTests =
           }
           test "arithmetic and pipes: 1 + 2 |> double" { expectValue "1 + 2 |> double" (VInt 6) }
           test "precedence: 1 + 2 * 3" { expectValue "1 + 2 * 3" (VInt 7) }
-          // prefix minus (2026-07-21): F#'s placement — operand
-          // positions only, adjacency required, infix wins after a term
+          // prefix minus: F#'s placement — operand positions only,
+          // adjacency required, infix wins after a term
           test "prefix minus: negative literal" { expectValue "-5" (VInt -5) }
           test "prefix minus binds above *" { expectValue "2 * -3" (VInt -6) }
           test "prefix minus on a binding" { expectValue "let n = 3 in -n + 1" (VInt -2) }
@@ -561,7 +561,7 @@ let warningTests =
               Expect.equal (Weir.Script.closers "let s = @\"a\"\"b") "\"" "doubled quote stays inside"
           }
           test "accepted matches are total: the runtime match-failure class is gone" {
-              // the shapes that used to fail at runtime are now check errors
+              // non-exhaustive shapes are CHECK errors, never runtime failures
               let terr = checkErr "match Stopped with | Running n -> n"
               Expect.stringContains (formatError terr) "missing: Stopped" ""
           } ]
@@ -1215,8 +1215,8 @@ let commandModeTests =
           test "slashed program resolves as external" { expectCmd "./build.sh --flag" "(cmd ./build.sh \"--flag\")" }
           test "caret forces PATH over a builtin shadow" { expectCmd "^ls -la" "(cmd ls \"-la\")" }
           test "builtin shadows PATH: ls -la is expression mode" {
-              // adjacency (2026-07-21): `-la` is a prefix-minus argument
-              // now, exactly F#'s parse; still an error + the ^ls hint
+              // adjacency: `-la` is a prefix-minus argument, exactly
+              // F#'s parse; still an error + the ^ls hint
               Expect.equal (show (parseCmd "ls -la")) "(ls (- 0 la))" "parses as application of -la"
               Expect.stringContains (checkErr "ls - la").Message "unbound variable 'la'" ""
           }
@@ -2134,8 +2134,7 @@ let bracketContinuationTests =
                   "'}' closes the '[' opened at line 2"
                   ""
           }
-          // FLIPPED 2026-07-23 [D:blank-in-brackets]: these two pinned the
-          // blank-inside ERROR; blanks are transparent inside brackets now
+          // blanks are transparent inside brackets [D:blank-in-brackets]
           test "blank inside an open list is transparent" {
               Expect.equal (joined [ "let x ="; "    [1"; ""; "     2]" ]) "let x = [1 ; 2]" ""
           }
@@ -2165,9 +2164,7 @@ let bracketContinuationTests =
           test "runs of blanks are transparent too" {
               Expect.equal (joined [ "let x ="; "    [1"; ""; ""; "     2]" ]) "let x = [1 ; 2]" ""
           }
-          // FLIPPED 2026-07-23 [D:body-blanks] after FOUR HOURS: this was
-          // PLAN-blank-lines' both-sides pin, holding the boundary the
-          // user then moved — pin-as-regression-guard, not constitution
+          // [D:body-blanks] — pin-as-regression-guard, not constitution
           test "twin flipped: a pending block-let's body continues across a gap" {
               Expect.equal (joined [ "let x ="; "    let a = 1"; ""; "    a + 1" ]) "let x = let a = 1 in a + 1" ""
           }
@@ -2637,9 +2634,9 @@ let semanticTokenTests =
               let forced = Weir.Lsp.semanticTokensFor [ "let echo x = x"; "^echo hi" ]
               Expect.equal (forced |> List.filter (fun (l, _, _, _) -> l = 1)) [ (1, 0, 5, 0); (1, 6, 2, 1) ] ""
           }
-          test "the verdict-split repro renders expression-colored (no phantom tokens)" {
-              // [D:seq-commit] made it an error; the failed statement
-              // emits NOTHING — the fix's visible face
+          test "a parse-failed statement renders expression-colored (no phantom tokens)" {
+              // [D:seq-commit] makes this an error; a failed statement
+              // emits NOTHING
               let toks =
                   Weir.Lsp.semanticTokensFor
                       [ "let v0 ="
@@ -2780,8 +2777,8 @@ let multilineLambdaTests =
               | other -> failtest $"expected noBody, got {other}"
           }
           test "a compound in the body prunes at the user's closer (the original repro, now designed)" {
-              // the port-session bug shape [D:compound-paren-prune]: the
-              // match must NOT swallow the next outer stage
+              // [D:compound-paren-prune]: the match must NOT swallow
+              // the next outer stage
               match
                   Weir.Script.assemble
                       [ 1, "let v ="
@@ -2843,7 +2840,7 @@ let multilineLambdaTests =
               | Ok _ -> ()
               | Error e -> failtest $"spine must reach the lambda body: {e}"
           }
-          test "lambda params shadow PATH in their body (the test-counts regression, pinned)" {
+          test "lambda params shadow PATH in their body" {
               // under the assume-resolver a param-headed let RHS must stay
               // an EXPRESSION, not become a phantom command [D:paramful-rhs]
               let lines =
@@ -3217,7 +3214,7 @@ let multilineTests =
                   Expect.equal n.Text "next" ""
               | other -> failtest $"unexpected: {other}"
           }
-          // FLIPPED 2026-07-23 [D:body-blanks]: pinned the blank boundary
+          // blanks are transparent while a statement pends [D:body-blanks]
           test "blank then continuation joins (transparency)" {
               match Weir.Script.assemble [ 1, "let x = 1"; 2, ""; 3, "    |> Seq.map f" ] with
               | Ok [ ll ] -> Expect.equal ll.Text "let x = 1 |> Seq.map f" ""
@@ -3873,8 +3870,7 @@ let agentFindingsTests =
               Expect.isFalse (commentOnly "   ") "whitespace stays a blank"
               Expect.isFalse (commentOnly "let x = 1 // tail") "code with tail comment stays"
           }
-          // FLIPPED 2026-07-23 [D:body-blanks]: was the noBodyBlank
-          // attribution pin; a pending let's body continues across a gap
+          // a pending let's body continues across a gap [D:body-blanks]
           test "blank line inside a block is transparent" {
               match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, ""; 4, "    a + 1" ] with
               | Ok [ ll ] -> Expect.equal ll.Text "let x = let a = 1 in a + 1" ""
@@ -4069,8 +4065,8 @@ let seqAccessTests =
 let fmtRecordTests =
     testList
         "fmt: record field alignment"
-        [ // FLIPPED 2026-07-24 [D:field-alignment]: the drift-repair job moved
-          // from fmt to the assembler — misaligned fields ERROR at assembly
+        [ // misaligned fields ERROR at assembly [D:field-alignment] —
+          // fmt owns no repair job
           test "field drift is an assembly error (the repair job retired)" {
               match
                   Weir.Fmt.formatLines
@@ -4683,7 +4679,7 @@ let typeClassCTests =
           }
           test "Eq x generic records: the reachability correction (fn field via instantiation)" {
               // Session A scoped fn-field records as undeclarable; generic
-              // instantiation REACHES them — the matrix cell that corrected it
+              // instantiation REACHES them
               let boxEnv = env |> declare "type Box<'a> = { V: 'a }"
 
               let e =
@@ -4771,7 +4767,7 @@ let productMatrixTests =
               | other -> failtest $"unexpected: {other}"
           }
           // C x E: pipe line after a blank
-          // FLIPPED 2026-07-23 [D:body-blanks]
+          // [D:body-blanks]
           test "C x E: pipe continuation joins across a gap" {
               match Weir.Script.assemble [ 1, "ls"; 2, ""; 3, "    |> Seq.length" ] with
               | Ok [ ll ] -> Expect.equal ll.Text "ls |> Seq.length" ""
@@ -4785,15 +4781,15 @@ let productMatrixTests =
               | other -> failtest $"unexpected: {other}"
           }
           // E x F: comment-only after a blank stays invisible
-          // FLIPPED 2026-07-23 [D:body-blanks]
+          // [D:body-blanks]
           test "E x F: indented line after blank+comment joins" {
               match Weir.Script.assemble [ 1, "let x = 1"; 2, ""; 4, "    + 2" ] with
               | Ok [ ll ] -> Expect.equal ll.Text "let x = 1 + 2" ""
               | other -> failtest $"unexpected: {other}"
           }
           // E x G: former sibling level after a blank
-          // FLIPPED 2026-07-23 [D:body-blanks]: the sibling rule is
-          // indent-keyed, not adjacency-keyed — gap-invariant `;`
+          // [D:body-blanks]: the sibling rule is indent-keyed, not
+          // adjacency-keyed — gap-invariant `;`
           test "E x G: sibling sequencing joins across a gap" {
               match
                   Weir.Script.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 3, ""; 4, "    printerr \"b\"" ]
@@ -4899,11 +4895,9 @@ let offsideTests =
               | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\"; Count = 2 }" ""
               | other -> failtest $"unexpected: {other}"
           }
-          // FLIPPED 2026-07-24 [D:field-alignment]: fields at the brace's own
-          // indent were the records-ignore-indent divergence; siblings align now
           test "a lowercase case name errors AT the name, not past it" {
-              // the planted upToDate: rawWord's trailing ws crossed the
-              // physical line and the error landed on the NEXT case
+              // rawWord's trailing ws crosses the physical line — the
+              // error must anchor BEFORE the read consumes it
               let r: Weir.Parser.Resolver =
                   { IsKnown = fun _ -> true
                     IsCommandCallable = fun _ -> false
@@ -4916,11 +4910,9 @@ let offsideTests =
                   Expect.equal f.Col (Some 21) "the column of 'upToDate', not the next token"
               | Ok _ -> failtest "expected the casing error"
           }
-          // the fuzzer's first two span-class finds [D:fuzz-harness] —
-          // CURRENT behavior pinned; the re-anchor policy (who wins the
-          // furthest-error competition across wraps and fatals) is an
-          // open decision, so these pins mark the classes, not the goal
-          test "span find: after a district, a later parse error anchors on the wrapped segment" {
+          // the span classes ride the consumed-separator law
+          // [D:seq-commit] [D:arm-commit]: errors anchor on the junk
+          test "a parse error after a district anchors on the junk" {
               let lines =
                   [ "let v0 ="
                     "    if 79 == 84 then !"
@@ -4931,18 +4923,16 @@ let offsideTests =
 
               let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
 
-              // IMPROVED by [D:seq-commit]: the ';'-commit killed the
-              // backtrack that anchored past the district — the primary
-              // now lands ON the junk
+              // [D:seq-commit]: no backtrack can anchor past the
+              // district — the primary lands ON the junk
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | d :: _ -> Expect.equal (d.Line, d.Col) (4, 20) "primary anchors on the junk itself"
               | [] -> failtest "expected a parse diagnostic"
           }
-          test "FIXED: junk after a bound name errors at check, on the junk [D:seq-commit]" {
-              // the verdict-split find's closure: a consumed ';' commits to
-              // its element, so the failing tail can no longer re-parse
-              // outside its let-in scope into a phantom command — check
-              // and run agree, located at the junk
+          test "junk after a bound name errors at check, on the junk [D:seq-commit]" {
+              // a consumed ';' commits to its element: the failing tail
+              // cannot re-parse outside its let-in scope into a phantom
+              // command — check and run agree, located at the junk
               let lines =
                   [ "let v0 ="
                     "    let v3 = \"a\""
@@ -4959,12 +4949,10 @@ let offsideTests =
 
               Expect.isFalse (diags |> List.exists (fun d -> d.Code = "cmd-not-found")) "no phantom command survives"
           }
-          test "FIXED: junk in a nested arm reports at the junk [D:arm-commit]" {
-              // the second span class closes: a consumed '|' commits to
-              // its arm, so the list never backs out and the bare-pipe
-              // fatal never receives the counterfeit "completed
-              // expression" (weir now beats FCS here — F# reports the
-              // NEXT arm's line for the same junk)
+          test "junk in a nested arm reports at the junk [D:arm-commit]" {
+              // a consumed '|' commits to its arm [D:arm-commit]: the
+              // list never backs out, so the bare-pipe fatal never
+              // receives a counterfeit "completed expression"
               let lines =
                   [ "let v6 ="
                     "    match 62 with"
@@ -4984,10 +4972,9 @@ let offsideTests =
               | [] -> failtest "expected a parse diagnostic"
           }
           test "record-literal commit: deep field junk reports at its site [D:arm-commit]" {
-              // the law's THIRD instance, found by the strict deep run
-              // the day it graduated: the literal commits on its head
-              // (`ident =`), so a failing field no longer rewinds the
-              // whole literal into the update alternative's dump
+              // the record literal commits on its `ident =` head
+              // [D:arm-commit]: a failing field must not rewind the
+              // literal into the update alternative's dump
               let lines =
                   [ "type R = { A: int; B: string }"
                     "let v = { A = 47"
@@ -5053,8 +5040,8 @@ let offsideTests =
           }
           test "a field misaligned from ITS OWN attribute line errors [D:field-alignment]" {
               // the >] dangle suppresses the separator, never the alignment
-              // (the planted flagship line 106: checker was happy, runtime
-              // error misled)
+              // an unaligned attr-owned field must fail the CHECK, not
+              // surface as a runtime argv error
               match
                   Weir.Script.assemble
                       [ 1, "type C = {"

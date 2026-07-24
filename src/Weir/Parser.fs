@@ -550,8 +550,8 @@ let private curryParams (ps: Pattern list) (value: Expr) : Expr =
                 | PUnit -> ELambda("()", body)
                 | _ -> ELambdaPat(p, body)
 
-            // span covers the param (binder diagnostics point at it,
-            // not at the RHS the old value-only span implied)
+            // span covers the param — binder diagnostics point at
+            // it, not at the RHS
             { Kind = kind
               Span = Span.union p.PSpan value.Span })
         ps
@@ -922,12 +922,10 @@ commaExprRef.Value <-
               Span = Span.union first.Span (List.last all).Span }
 
 seqExprRef.Value <-
-    // a consumed ';' COMMITS to its element (the consumed-'|' fatal's
-    // sibling): the old attempt let a failing element un-consume the
-    // ';', so backtracking re-parsed the tail OUTSIDE the let-in scope
-    // it belonged to — where check's assume-resolver monetized the
-    // now-unknown binding into a phantom command (the fuzzer's
-    // verdict-split find) [D:seq-commit]
+    // a consumed ';' COMMITS to its element [D:seq-commit]: a failing
+    // element must not un-consume the ';' — the backtrack would re-parse
+    // the tail OUTSIDE its let-in scope, where check's assume-resolver
+    // claims the then-unknown binding as a phantom command
     commaExpr .>>. many (str_ws ";" >>. commaExpr)
     |>> fun (first, rest) ->
         match rest with
@@ -1072,7 +1070,7 @@ type private Seg =
 let private reifierEnd =
     // the let-RHS chain also ends at bare `in` [D:block-let-cmd] —
     // without this, `| succeeds in body` demotes the reifier to a
-    // bareword stage (found by the depth battery)
+    // bareword stage
     let inStop: Parser<unit, unit> =
         fun stream ->
             if letCmdOk.Value then
@@ -1172,9 +1170,9 @@ let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg
 sigilChainImpl <- fun envO -> fun stream -> (cmdLineWith true cmdArg envO ambientResolver.Value) stream
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
-// command-callable builtins (cd) stay ordinary functions there — found as a
-// silent meaning change of `let workdir = cd target` (target became a
-// bareword) when the example script was modernized.
+// command-callable builtins (cd) stay ordinary functions there —
+// `let workdir = cd target` must apply the BINDING target, never read
+// it as a bareword.
 let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
     cmdLineWith false (cmdArgWith true) None r
 
@@ -1276,9 +1274,9 @@ let private topLet (r: Resolver) =
             >>= fun () ->
                 // RHS takes sequenced blocks too, and commands
                 // [D:paramful-rhs] — param splices are boundary-safe.
-                // params shadow PATH in their own RHS — bindings-beat-
-                // PATH reaching a scope commands could not previously
-                // occupy [D:paramful-rhs]; ^x still reaches the binary
+                // params shadow PATH in their own RHS
+                // [D:paramful-rhs] — bindings-beat-PATH; ^x still
+                // reaches the binary
                 let rec leafNames (p: Pattern) =
                     match p.PKind with
                     | PVar n -> [ n ]

@@ -4,9 +4,9 @@ set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
-# HARD stale-binary gates [D:masking-mechanized] — the fifth incident
-# proved a rule that depends on remembering fails; stamps make stale
-# results impossible rather than catchable.
+# HARD stale-binary gates [D:masking-mechanized] — a rule that
+# depends on remembering fails; stamps make stale results
+# impossible rather than catchable.
 repo_root="$(dirname "$0")/.."
 if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --short HEAD >/dev/null 2>&1; then
     head_hash=$(git -C "$repo_root" rev-parse --short HEAD)

@@ -159,8 +159,7 @@ let private braceDelta (s: string) : int =
 
 // --- the line classifier: one derivation, three consumers -----------
 // (assembler fold, fmt's block logic, the oracle's weirVerdict mirror
-// — previously each re-derived these by StartsWith/Trim and agreed by
-// discipline; now they agree by construction)
+// — one derivation, so the three agree by construction)
 
 /// Whole-line classification, pre-assembly: the statement filter.
 [<RequireQualifiedAccess>]
@@ -801,9 +800,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         | Some dst ->
                                             // at or left of the marker: the district closes and
                                             // its marker line is the sibling level for what
-                                            // follows (like a compound closing — found via the
-                                            // standalone-marker shape, latent for bare ! too);
-                                            // then this line reprocesses under the normal rules
+                                            // follows (like a compound closing); then this line
+                                            // reprocesses under the normal rules
                                             go
                                                 { p with
                                                     District = None
@@ -1039,8 +1037,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             p.StmtLevel
 
                                                     // an attached closer pops its lambda AND restores
-                                                    // the statement level — the next sibling joins
-                                                    // with `;`, not a swallow (the fuzzer's catch)
+                                                    // the statement level — the next sibling must
+                                                    // join with `;`, never as an application
                                                     let poppedL, keptL =
                                                         p.Lambdas |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
 

@@ -110,8 +110,7 @@ type Cmd =
     | Clean of CleanArgs
 
 // shared flags by containment [D:shared-flags]: quiet/verbose declared
-// ONCE; the union field is the subcommand slot — the two extraction
-// matches this replaced were the friction entry's receipt
+// ONCE; the union field is the subcommand slot
 type Cli = {
     [<Doc "suppress progress output">]
     quiet: bool

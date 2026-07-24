@@ -121,8 +121,8 @@ module Argv =
             | Some(_, Some(AStr sh)) -> Some(f, sh)
             | _ -> None)
 
-// retired names teach their replacement [D:seq-force] — the
-// measures-transition precedent; one table, both lookup sites
+// retired names teach their replacement [D:seq-force] — one
+// table, both lookup sites
 let private retiredMember (m: string) (field: string) : string option =
     match m, field with
     | "Seq", "toList" -> Some "weir has no list type; 'Seq.force' is the materializer"
@@ -1040,7 +1040,6 @@ let private exhaustive
 // unit/name/pattern; check-mode: name/pattern) share ONE assembly
 // core — env extension, body typing, TFun construction. Each adapter
 // keeps only its judgment delta (domain source + body strategy).
-// Zero behavior change; the full battery is the regression harness.
 let private lambdaCore
     (env: TypeEnv)
     (span: Span)

@@ -36,10 +36,9 @@ let private envInt name dflt =
 let private seed = envInt "WEIR_FUZZ_SEED" 1789001
 let private count = envInt "WEIR_FUZZ_COUNT" 200
 
-// invariant 3's positional assertion GRADUATED [D:arm-commit]: both
-// span classes closed (district wrap by seq-commit, bare-pipe by
-// arm-commit) — strict positions are a standing guarantee; the env
-// remains as an off-switch for archaeology only
+// invariant 3's positional assertion is a standing guarantee
+// [D:arm-commit] — strict positions on by default; the env is an
+// off-switch only
 let private strictSpans = envInt "WEIR_FUZZ_STRICT_SPANS" 1 = 1
 
 type Arbs =

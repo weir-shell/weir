@@ -136,8 +136,8 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 let echoValue (v: Value) : string * string option =
     match v with
     | VSeq items ->
-        // ONE forcing pass (the pull-count pin caught the double-force):
-        // materialize limit+1, render and hint from the materialized list
+        // ONE forcing pass — the echo must not enumerate its source
+        // twice: materialize limit+1, render and hint from that list
         let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
         let rendered = formatWith echoLimits 0 (VSeq(shown :> seq<Value>))
 

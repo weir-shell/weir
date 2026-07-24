@@ -51,11 +51,11 @@ let pins =
           Same
       pin "F#-rejects-this: bodyless block let" "let x =\n    let a = 1\n" Same
       pin "comment lines are transparent inside blocks" "let x =\n    // note\n    let a = 1\n    a + 1\n" Same
-      // FLIPPED 2026-07-23 [D:body-blanks]: the founding divergence
-      // retired — blanks are transparent; the col-0 law is the boundary
+      // blanks are transparent; the col-0 law is the boundary
+      // [D:body-blanks]
       pin "blank line inside a block is transparent (row RETIRED)" "let x =\n    let a = 1\n\n    a + 1\n" Same
 
-      // --- offside close & record continuations (2026-07-20) ---
+      // --- offside close & record continuations ---
       pin "multi-line if/else as a let body" "let x =\n    if true then 1\n    else 2\n" Same
       pinT
           "sibling at the if's indent runs unconditionally"
@@ -72,7 +72,7 @@ let pins =
           "type T = { Name: string; Count: int }\nlet t =\n    { Name = \"a\"\nCount = 2 }\n"
           Same
 
-      // --- type classes: Eq (Session A, 2026-07-20) — the fidelity GAIN ---
+      // --- type classes: Eq ---
       pinT
           "generic equality generalizes (F# equality constraint, inferred)"
           "let same x y = x == y\nlet r = same 1 1\n"
@@ -84,7 +84,7 @@ let pins =
           "let same x y = x = y\nlet r = same (fun (a: int) -> a) (fun (a: int) -> a)\n"
           Same
 
-      // --- type classes: Show/Ord (Session B, 2026-07-21) ---
+      // --- type classes: Show/Ord ---
       pinT
           "generic sort helper (F# comparison constraint, inferred)"
           "let bykey k xs = xs |> Seq.sortBy k\nlet r = [3; 1] |> bykey (fun n -> n)\n"
@@ -96,10 +96,10 @@ let pins =
           "let r = [1] |> Seq.sortBy (fun n -> fun x -> x + n)\n"
           Same
 
-      // --- exit (renamed from Exit.code 2026-07-21 — F#-parity) ---
+      // --- exit (F#-parity) ---
       pin "exit is F#'s exit (statement position)" "let go () = exit 3\n" Same
 
-      // --- literal patterns + () thunks (2026-07-21) ---
+      // --- literal patterns + () thunks ---
       pin "int literal patterns with catch-all" "let v =\n    match 1 with\n    | 0 -> 10\n    | _ -> 20\n" Same
       pin "uppercase value binding rejected (the casing law)" "let Foo = 1\n" (Diverges "lowercase-binds")
       pin "underscore-leading binding accepted both sides" "let _keep = 1\n" Same
@@ -116,15 +116,14 @@ let pins =
           "type T = A of int | B\nlet v =\n    match B with\n    | x -> 1\n    | B -> 2\n"
           (Diverges "unreachable-arm-hard-error")
 
-      // --- prefix minus (2026-07-21) — the no-unary-minus row retires.
-      // The oracle overturned the folklore mid-landing: F# parses
-      // `f -1` as APPLICATION of -1 (adjacency), not subtraction ---
+      // --- prefix minus: F# parses `f -1` as APPLICATION of -1
+      // (adjacency), not subtraction ---
       pin "negative literal at operand position" "let x = -5\n" Same
       pin "prefix minus binds above * (both compilers)" "let x = 2 * -3\n" Same
       pin "f -1 applies the negative literal (both compilers)" "let f n = n + 1\nlet r = f -1\n" Same
       pin "F#-rejects-this: 1 -2 is int applied to int" "let r = 1 -2\n" Same
 
-      // --- composition >>/<< (mini-plan 2026-07-21) ---
+      // --- composition >>/<< ---
       pin "forward composition of let-functions" "let f n = n + 1\nlet g = f >> f\nlet r = g 40\n" Same
       pin "backward composition" "let f n = n + 1\nlet g = f << f\nlet r = g 40\n" Same
       // verdict-visible precedence — the oracle REFUTED tighter-than-
@@ -170,7 +169,7 @@ let pins =
       pin "fold over empty returns the initial state (acceptance)" "let n = Seq.fold (fun s x -> s) 7 []\n" Same
       pin "duplicate lambda params: ask F#, do not recall" "let f = fun a a -> a\nlet n = f 1 2\n" Same
 
-      // --- elif (small-items sweep; the no-elif row retires) ---
+      // --- elif ---
       pin
           "elif chains, F# semantics"
           "let x = 10\nlet y =\n    if x > 100 then \"a\"\n    elif x > 5 then \"b\"\n    else \"c\"\n"
@@ -224,7 +223,7 @@ let pins =
           "type R = { A: int }\nlet x = { A = 1 }\nlet y = { match 1 with | _ -> x with A = 2 }\n"
           Same
 
-      // --- the Regex pattern (2026-07-22) — the first weir-only match form ---
+      // --- the Regex pattern (the weir-only match form) ---
       pin
           "the Regex match pattern: weir-only (F# has no built-in regex pattern)"
           "let v =\n    match \"a1\" with\n    | Regex @\"([a-z])(1)\" (a, b) -> a\n    | _ -> \"\"\n"
@@ -232,7 +231,7 @@ let pins =
       pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
       pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same
 
-      // --- tuples (2026-07-21, the reversal) — the no-tuples rows retire ---
+      // --- tuples ---
       pin "tuple literal, type, pattern" "let p = (1, \"a\")\nlet v =\n    match p with\n    | (n, s) -> n\n" Same
       pin "multi-payload constructor" "type Msg = | Move of int * int | Stop\nlet m = Move (1, 2)\n" Same
       pinT
@@ -248,7 +247,7 @@ let pins =
           "bool-component tuple arms: weir demands catch-all, F# products"
           "let v =\n    match (true, 1) with\n    | (true, _) -> 1\n    | (false, _) -> 2\n"
           (Diverges "tuple-exhaustiveness-bounded")
-      // 2026-07-21: the binder shapes SHIPPED — both pins flip Same
+      // the binder shapes are features — both pins Same
       pin "pattern params (row content moved to refutable binders)" "let f = fun (a, b) -> a\n" Same
       pin "destructuring let (shipped; the row's arc completes)" "let p = (1, 2)\nlet x, y = p\n" Same
       pin "bare-comma tuple at full precedence" "let t = 1, 2\n" Same
@@ -459,9 +458,8 @@ let pins =
           Same
       pinT "explicit semicolon sequencing" "let u = (print \"x\" ; 1)\n" "let u = (printf \"x\" ; 1)\n" Same
 
-      // --- multiline lambdas (2026-07-24) [D:multiline-lambda]: the
-      // parens-spanning park's lambda face opens — pure fidelity gain,
-      // every cell Same (light-syntax lambdas are core F#) ---
+      // --- multiline lambdas [D:multiline-lambda] — light-syntax
+      // lambdas are core F#, so the cells sit Same ---
       pin
           "multiline lambda: dangling (fun -> opens a body block"
           "let f =\n    [1] |> Seq.map (fun x ->\n        let y = x + 1\n        y * 2)\n"
