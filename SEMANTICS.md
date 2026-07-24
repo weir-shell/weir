@@ -41,6 +41,16 @@ weir rejects rather than guesses.
   source evaluates ONCE (the plan's parser-desugar clause hit its
   stop-and-report: a parser desugar duplicates the source expression,
   so paths live in the AST and the checker walks them).
+- **Pipe alignment** [D:pipe-alignment]: sibling `|` lines — match
+  arms, union cases, chain stages — must align EXACTLY on their
+  group's column (the first pipe after a non-pipe line sets it);
+  off-by-one is a hard error naming the sibling column where F#
+  merely warns (the warning-vs-error strictness family). Arms must
+  sit at or right of their match head (F# errors there too), and a
+  SHALLOWER arm offside-closes nested compounds — the nested-match
+  return F# reads from the columns assembles correctly instead of
+  flat-joining every arm to the innermost match. Groups may sit
+  deeper than the head uniformly (fmt canonicalizes them to the m).
 - **Bracket continuation** [D:multiline-brackets]: inside an open
   `{` or `[`, line breaks separate entries — F# light's own rule,
   one assembler mechanism (a bracket STACK, kind + opening line;

@@ -438,6 +438,11 @@ type private Pend =
     { LL: LogicalLine
       Lets: (int * int) list
       LastIndent: int
+      // sibling pipe columns, innermost first [D:pipe-alignment]: a
+      // consecutive `|` line must sit exactly on a group column; the
+      // first pipe after a non-pipe line opens a group
+      PipeGroups: int list
+      LastWasPipe: bool
       District: District option
       // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
       Compounds: (int * int * int) list
@@ -692,24 +697,68 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                         | None ->
                                             if cls.Kind = PieceKind.PipeHead || cls.Kind = PieceKind.ElseHead then
                                                 // arms, pipeline stages, and else extend the
-                                                // current piece: no sibling `;`, no offside close
+                                                // current piece: no sibling `;` — but siblings
+                                                // must ALIGN, and a shallower arm offside-closes
+                                                // deeper compounds [D:pipe-alignment]
                                                 match p.Lets with
                                                 | (k, letLine) :: _ when indent <= k -> noBody letLine
                                                 | _ ->
-                                                    let depth = p.ParenDepth + parenDelta piece
+                                                    // deeper groups die at this line's column
+                                                    let groups = p.PipeGroups |> List.skipWhile (fun g -> g > indent)
 
-                                                    Ok(
-                                                        Some
-                                                            { p with
-                                                                LL = applyJoin JSpace p.LL piece lineNo indent
-                                                                LastIndent = indent
-                                                                ParenDepth = depth
-                                                                Compounds =
-                                                                    p.Compounds
-                                                                    |> List.filter (fun (_, _, d) -> d <= depth) },
-                                                        acc,
-                                                        blankSinceHead
-                                                    )
+                                                    let aligned =
+                                                        if cls.Kind = PieceKind.ElseHead then
+                                                            // else/elif keep their standing rules
+                                                            Ok groups
+                                                        elif not p.LastWasPipe then
+                                                            // first pipe after a non-pipe line
+                                                            // opens a group — anchored at or
+                                                            // right of the innermost open
+                                                            // compound head (F#'s offside)
+                                                            match p.Compounds with
+                                                            | (h, _, _) :: _ when indent < h ->
+                                                                Error
+                                                                    $"line {lineNo}: this arm sits left of its match (head at column {h}) — align arms at or right of it"
+                                                            | _ -> Ok(indent :: groups)
+                                                        else
+                                                            match groups with
+                                                            | g :: _ when g = indent -> Ok groups
+                                                            | g :: _ ->
+                                                                Error
+                                                                    $"line {lineNo}: this line is indented off its siblings (they sit at column {g}) — align the group exactly"
+                                                            | [] ->
+                                                                Error
+                                                                    $"line {lineNo}: this line is indented off its siblings — align the group exactly"
+
+                                                    match aligned with
+                                                    | Error e -> Error e
+                                                    | Ok groups ->
+                                                        // a shallower arm closes compounds whose
+                                                        // heads sit deeper (the nested-match
+                                                        // return F# reads from the columns)
+                                                        let rec closeDeeper ll compounds =
+                                                            match compounds with
+                                                            | (h, ts, _) :: rest when h > indent ->
+                                                                closeDeeper (wrapFrom ll ts) rest
+                                                            | _ -> ll, compounds
+
+                                                        let ll, compounds = closeDeeper p.LL p.Compounds
+                                                        let depth = p.ParenDepth + parenDelta piece
+
+                                                        Ok(
+                                                            Some
+                                                                { p with
+                                                                    LL = applyJoin JSpace ll piece lineNo indent
+                                                                    LastIndent = indent
+                                                                    ParenDepth = depth
+                                                                    PipeGroups = groups
+                                                                    LastWasPipe = true
+                                                                    Compounds =
+                                                                        compounds
+                                                                        |> List.filter (fun (_, _, d) -> d <= depth) },
+                                                            acc,
+                                                            blankSinceHead
+                                                        )
                                             else
                                                 match p.Lets with
                                                 | (k, letLine) :: _ when indent < k -> noBody letLine
@@ -782,7 +831,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 District = district
                                                                 Compounds = compounds
                                                                 Brackets = brackets
-                                                                ParenDepth = depth },
+                                                                ParenDepth = depth
+                                                                PipeGroups =
+                                                                    p.PipeGroups
+                                                                    |> List.skipWhile (fun g -> g > indent)
+                                                                LastWasPipe = false },
                                                         acc,
                                                         blankSinceHead)
 
@@ -811,6 +864,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                               Active = None })
                                       Compounds = []
                                       ParenDepth = parenDelta (raw.TrimEnd())
+                                      PipeGroups = []
+                                      LastWasPipe = false
                                       Brackets = brackets },
                                 acc,
                                 false)))

@@ -329,6 +329,34 @@ let pins =
           "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n}\n"
           (Diverges "record-fields-ignore-indent")
 
+      // --- pipe-alignment probes (the indentation session) ---
+      // F# only WARNS (FS0058) on off-by-one pipes — weir hard-errors:
+      // the warning-vs-error strictness family [D:pipe-alignment]
+      pin
+          "union case off by one (deeper): weir errors, F# warns-accepts"
+          "type C =\n    | A of int\n     | B of string\nlet x = A 1\n"
+          (Diverges "pipe-alignment")
+      pin
+          "union case off by one (shallower)"
+          "type C =\n    | A of int\n   | B of string\nlet x = A 1\n"
+          (Diverges "pipe-alignment")
+      pin
+          "match arm off by one from its siblings"
+          "let v =\n    match 1 with\n    | 1 -> \"a\"\n     | _ -> \"b\"\n"
+          (Diverges "pipe-alignment")
+      pin
+          "F#-rejects-this: col-0 arms under an indented match (statement let)"
+          "let category =\n    match 3 with\n| s when s > 2 -> \"big\"\n| _ -> \"small\"\n"
+          Same
+      pin
+          "arms consistently deeper than the match head are fine"
+          "let v =\n    match 1 with\n        | 1 -> \"a\"\n        | _ -> \"b\"\n"
+          Same
+      pin
+          "nested arms return to the outer column"
+          "let v =\n    match 1 with\n    | 1 ->\n        match 2 with\n        | 2 -> \"a\"\n        | _ -> \"b\"\n    | _ -> \"c\"\n"
+          Same
+
       // --- function reservation probe (block-let-cmd rider) ---
       pin "F#-rejects-this: function as a binder name" "let function = 1\n" Same
 

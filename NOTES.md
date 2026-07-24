@@ -1,6 +1,35 @@
 # Spike Notes
 
-## The goodness sweep — every example on the newest idioms (2026-07-23)
+## Pipe alignment — the indentation session (2026-07-24)
+
+Opened on a live receipt sitting in the committed flagship: `| Init`
+one column off its siblings, accepted. The probes-first discipline
+immediately corrected the premise: F# does NOT error on off-by-one
+pipes — FS0058 is a WARNING, and the oracle counts warnings as
+accept. So the off-by-one rule lands as the warning-vs-error
+strictness family (refutable binders, exhaustiveness — F#'s warnings
+weir escalates), a NEW weir-stricter divergence row, not parity.
+
+The probes also found two real F# gaps the same rule closes
+F#-ward. Arms left of their match head are an F# ERROR weir
+accepted (the col-0-arms-under-deeper-match shape) — now rejected
+naming the head. And the nested-match return — an outer arm at the
+outer column after a nested match — was a WEIR-reject: the flat
+inert join handed every arm to the innermost match and the
+exhaustiveness checker refused the remains, while F# reads the
+columns and accepts. Shallower arms now offside-close nested
+compounds (the wrap machinery pipes previously never touched), so
+the canonical F# shape assembles correctly. A fidelity loss nobody
+had reported, found and fixed by the session that came to tighten.
+
+The mechanism: pipe GROUPS (a column stack; the first pipe after a
+non-pipe line opens a group, anchored at-or-right of the innermost
+compound head; consecutive pipes must hit a group column exactly).
+The |-inertness law narrows honestly: indentation-blind WITHIN an
+aligned group, never across groups. Zero unit-pin movement across
+803 tests — the tightening rejected nothing the corpus ever did.
+
+## The goodness sweep — every example on the newest idioms (2026-07-23)## The goodness sweep — every example on the newest idioms (2026-07-23)
 
 The docs-and-examples sweep after the window's landings, per the
 idioms-rot rule. bicep-deploy got the biggest lift: the hand-rolled

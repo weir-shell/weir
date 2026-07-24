@@ -2523,6 +2523,57 @@ let blockLetCmdTests =
               | Ok _ -> failtest "expected the reservation"
           } ]
 
+let pipeAlignTests =
+    testList
+        "Pipe alignment"
+        [ test "off-by-one siblings error naming the column [D:pipe-alignment]" {
+              match Weir.Script.assemble [ 1, "type C ="; 2, "    | A of int"; 3, "     | B of string" ] with
+              | Error e -> Expect.stringContains e "they sit at column 4" ""
+              | Ok _ -> failtest "expected the alignment error"
+
+              match
+                  Weir.Script.assemble [ 1, "let v ="; 2, "    match 1 with"; 3, "    | 1 -> 1"; 4, "   | _ -> 0" ]
+              with
+              | Error e -> Expect.stringContains e "align the group" ""
+              | Ok _ -> failtest "expected the alignment error"
+          }
+          test "arms left of their match error naming the head" {
+              match Weir.Script.assemble [ 1, "let v ="; 2, "    match 3 with"; 3, "| _ -> 0" ] with
+              | Error e -> Expect.stringContains e "left of its match (head at column 4)" ""
+              | Ok _ -> failtest "expected the offside error"
+          }
+          test "the nested-match return F# reads from columns now assembles" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="
+                        2, "    match 1 with"
+                        3, "    | 1 ->"
+                        4, "        match 2 with"
+                        5, "        | 2 -> \"a\""
+                        6, "        | _ -> \"b\""
+                        7, "    | _ -> \"c\"" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.stringContains
+                      ll.Text
+                      "(match 2 with | 2 -> \"a\" | _ -> \"b\")"
+                      "the inner match wraps at the shallower arm"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "consistent-deeper arms and col-0/col-0 stay legal" {
+              expectValue "let v = 1 in match v with | 1 -> \"a\" | _ -> \"b\"" (VStr "a")
+
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="
+                        2, "    match 1 with"
+                        3, "        | 1 -> 1"
+                        4, "        | _ -> 0" ]
+              with
+              | Ok _ -> ()
+              | Error e -> failtest $"consistent-deeper must stay legal: {e}"
+          } ]
+
 let optionSweepTests =
     testList
         "Option sweep"
@@ -5085,6 +5136,7 @@ let allTests =
           replColorTests
           seqPatternTests
           blockLetCmdTests
+          pipeAlignTests
           optionSweepTests
           moduleTests
           scriptTests
