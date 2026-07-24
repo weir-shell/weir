@@ -19,7 +19,9 @@ skill lines and targeted hints).
   `git rev-parse --show-toplevel` instead of dirname-$0.
   CLOSED same day [D:exit-reifiers]: orFail streams now, and
   `| exitCode` streams-and-binds; fuzz.weir carries the reproduce
-  message in the orFail. The `$0` half stands.
+  message in the orFail. The `$0` half CLOSED by [D:script-path]:
+  `scriptPath` answers it; fuzz.weir keeps git-toplevel
+  DELIBERATELY (it wants the repo root, not the script dir).
 
 - 2026-07-23 | git-subrepo example | two reflex-errors while writing:
   `then`/`else` on their own lines at the `if`'s indent are SIBLINGS

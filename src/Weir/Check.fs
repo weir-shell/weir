@@ -1148,6 +1148,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | [] ->
                     match retiredBare name with
                     | Some teach -> err expr.Span $"'{name}' is retired: {teach}"
+                    | None when name = "scriptPath" ->
+                        // script-only, the args/stdin family [D:script-path]
+                        err
+                            expr.Span
+                            "scriptPath is script-only (the running script's absolute path; absent in the REPL and -e)"
                     | None ->
                         let hint = didYouMean name (Map.keys env.Values)
                         err expr.Span $"unbound variable '{name}'{hint}"

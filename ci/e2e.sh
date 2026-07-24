@@ -2380,4 +2380,34 @@ expect "Default false on an env bool is a real resting point (set wins)" "debug=
 rm -rf "$endir"
 echo "e2e ok: the Default resting point sits below the whole env stack"
 
+# ---- scriptPath: the $0 gap closes [D:script-path] ----
+
+spdir=$(mktemp -d)
+mkdir -p "$spdir/sub" "$spdir/pbin"
+cat > "$spdir/sub/where.weir" <<'WEOF'
+#!/usr/bin/env weir
+cd ..
+print (scriptPath |> Path.dir)
+WEOF
+chmod +x "$spdir/sub/where.weir"
+cp "$spdir/sub/where.weir" "$spdir/pbin/where.weir"
+
+want="$spdir/sub"
+out=$(cd "$spdir" && $BIN sub/where.weir | tail -1)
+[ "$out" = "$want" ] || fail "relative invocation: got $out want $want"
+out=$(cd "$spdir/sub" && $BIN ./where.weir | tail -1)
+[ "$out" = "$want" ] || fail "dot-relative invocation: got $out"
+out=$($BIN "$spdir/sub/where.weir" | tail -1)
+[ "$out" = "$want" ] || fail "absolute invocation: got $out"
+echo "e2e ok: scriptPath — one absolute answer three ways, resolved BEFORE the cd"
+
+out=$(cd "$spdir" && PATH="$spdir/pbin:$(dirname $BIN):$PATH" where.weir | tail -1)
+[ "$out" = "$spdir/pbin" ] || fail "shebang-on-PATH gets the SCRIPT's path: got $out"
+echo "e2e ok: shebang-on-PATH resolves to the script, not the interpreter"
+
+errout=$($BIN -e 'scriptPath' 2>&1) && fail "-e must refuse scriptPath"
+echo "$errout" | grep -qF "scriptPath is script-only" || fail "the teaching: $errout"
+echo "e2e ok: scriptPath refused outside scripts with its teaching"
+rm -rf "$spdir"
+
 echo "e2e battery: all green"

@@ -1311,7 +1311,7 @@ type private CheckedStmt =
     | CType of decl: Decl
     | CNoop
 
-let private baseEnvs (mode: Mode) (scriptArgs: string list) =
+let private baseEnvs (mode: Mode) (scriptArgs: string list) (scriptPath: string) =
     let typeEnv =
         match mode with
         | Strict -> Builtins.typeEnvStrict
@@ -1324,7 +1324,8 @@ let private baseEnvs (mode: Mode) (scriptArgs: string list) =
             Values =
                 typeEnv.Values
                 |> Map.add "args" (generalize (TSeq TStr))
-                |> Map.add "stdin" (generalize (TSeq TStr)) }
+                |> Map.add "stdin" (generalize (TSeq TStr))
+                |> Map.add "scriptPath" (generalize TStr) }
 
     let stdinStream =
         Eval.VSeq(
@@ -1344,6 +1345,7 @@ let private baseEnvs (mode: Mode) (scriptArgs: string list) =
         valueEnv
         |> Map.add "args" (Eval.VSeq(scriptArgs |> List.map Eval.VStr :> seq<Eval.Value>))
         |> Map.add "stdin" stdinStream
+        |> Map.add "scriptPath" (Eval.VStr scriptPath)
 
     typeEnv, valueEnv
 
@@ -1783,7 +1785,8 @@ let analyzeLines
             Values =
                 typeEnv0.Values
                 |> Map.add "args" (generalize (TSeq TStr))
-                |> Map.add "stdin" (generalize (TSeq TStr)) }
+                |> Map.add "stdin" (generalize (TSeq TStr))
+                |> Map.add "scriptPath" (generalize TStr) }
 
     Extern.refresh ()
 
@@ -1966,7 +1969,12 @@ let run (path: string) (scriptArgs: string list) : int =
 
             1
         | None ->
-            let typeEnv0, valueEnv0 = baseEnvs mode scriptArgs
+            // the script's own absolute path [D:script-path]: resolved
+            // against the STARTUP cwd, before any cd; symlinks stay
+            // unresolved (the bash-$0 behavior)
+            let absScriptPath = IO.Path.GetFullPath path
+
+            let typeEnv0, valueEnv0 = baseEnvs mode scriptArgs absScriptPath
             Extern.refresh ()
 
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList

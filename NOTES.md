@@ -1,6 +1,28 @@
 # Spike Notes
 
-## The !-glyph audit — fourteen challengers, the incumbent holds (2026-07-24)
+## scriptPath — the $0 gap closes by sequencing (2026-07-24)
+
+Opened by dependency-ordering rather than receipt count, and the
+row says so: Path.glob is next in the queue, its first customers
+are script-relative by nature, and landing scriptPath first means
+glob arrives composable instead of generating its second receipt
+as friction. The thin-receipt honesty from the stashed proposal is
+superseded, not forgotten.
+
+The semantics went in exactly as decided and pinned: absolute at
+STARTUP (the fixture cds before reading and the answer doesn't
+move), symlinks unresolved (bash's $0; the realpath spelling is
+one GUIDE line away), one answer across relative/dot/absolute
+invocation, and the shebang boundary reads from the other side of
+the typed-argv argv-slicing verification — the script's path, not
+the interpreter's. The plan's Path.parent verify resolved to the
+already-shipped Path.dir, so the derived idiom is taught
+(`scriptPath |> Path.dir`) and nothing new was built — one
+primitive, compositions in the library. fuzz.weir does NOT adopt:
+git-toplevel is the better spelling for a tool that wants the repo
+root, and the friction ledger closes with that non-adoption named.
+
+## The !-glyph audit — fourteen challengers, the incumbent holds (2026-07-24)## The !-glyph audit — fourteen challengers, the incumbent holds (2026-07-24)
 
 An audit, not a session: the effect glyph stood trial against
 fourteen challengers and holds by demonstrated elimination. The

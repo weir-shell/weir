@@ -2147,6 +2147,32 @@ let typedArgvTests =
                   "must be string, int, bool"
                   ""
           }
+          test "scriptPath is script-only, with its teaching [D:script-path]" {
+              // the REPL/-e env lacks it; the error names the family
+              Expect.stringContains
+                  (match Weir.Check.typecheck env (parse "scriptPath") with
+                   | Error terr -> terr.Message
+                   | Ok _ -> failtest "expected the script-only rejection")
+                  "scriptPath is script-only"
+                  ""
+
+              // in scripts it types as string (analyzeLines carries it)
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "print (scriptPath |> Path.dir)" ]
+
+              Expect.isEmpty diags "scripts know their own path"
+          }
+          test "scriptPath coexists with Args.load (no interaction)" {
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "pin.weir"
+                      [ "type Cli = { quiet: bool }"
+                        "let cli = Args.load Cli"
+                        "print (scriptPath |> Path.dir)"
+                        "print $\"{show cli.quiet}\"" ]
+
+              Expect.isEmpty diags "both boundary reads in one script"
+          }
           test "script-only: without args in scope Args.load rejects by name" {
               let e2 = env |> declare "type C = { env: string }"
 

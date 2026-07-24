@@ -140,6 +140,16 @@ deriving `-C` and `--help` text from the declaration — are a coming
 feature; until then attributes are legal-and-inert documentation the
 checker validates.
 
+## A script's own location
+
+`scriptPath : string` is the running script's absolute path —
+resolved at startup against the invocation cwd, before any `cd`
+runs, symlinks left unresolved (bash's `$0` behavior). The
+dirname-$0 idiom is `scriptPath |> Path.dir`; if you need symlinks
+resolved, the command spelling is
+`$(realpath $scriptPath) |> Seq.head`. Script-only, like `args` —
+the REPL and `-e` refuse it by name.
+
 ## Defaults: the resting point moves
 
 `[<Default v>]` on an `Args.load` field keeps the field non-Option
