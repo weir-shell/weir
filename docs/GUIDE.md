@@ -52,7 +52,7 @@ check error, not silent output.
 ```weir
 git status --porcelain
 
-let files = cmd "git" ["ls-files"]
+let files = git ls-files
 print $"tracked: {files |> Seq.length}"
 ```
 

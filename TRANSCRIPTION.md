@@ -5,7 +5,7 @@ smaller: §4 (measures) retired entirely, measure cases gone from bind
 and typeBinOp, the splice rule simplified, and the post-anchor addenda
 of the first edition (interpolation, unit, print) folded in as ordinary
 arms. **The read anchor is the measure-removal commit** (recorded in
-PLAN-remove-measures.md on completion; the first edition's anchor
+plans/PLAN-remove-measures.md on completion; the first edition's anchor
 d12aefd is historical). `src/Weir/Check.fs` line anchors below are
 against that commit.
 

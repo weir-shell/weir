@@ -1,5 +1,85 @@
 # Spike Notes
 
+## Regroup — the debt census; no features (2026-07-24)
+
+A stock-take session under the zero-behavior contract: nothing in
+src/ moved beyond comments, zero pin movement (860 unit / 318 e2e /
+13 fuzz-deep at count=10000 / 58 doc blocks — all green on the
+settled tree). Deliverable is this entry; the DEBT.md question
+resolves AGAINST a new file by the repo's own rule (DECISIONS.md is
+an index "never a fourth prose store" — a debt store would be one).
+Flags live here; each parks with its criterion.
+
+**Duplication census.** The suspects mostly acquitted: didYouMean is
+ONE mechanism (Types.fs) with 19 call sites; the reifier desugar is
+ONE parameterized table; foldOutsideStrings is one scanner with 8
+users; the three IsKnown resolver-extension sites in Parser
+(withAmbientName :83, lambda withParams :607, topLet paramNames
+:1359) share a shape but never mask, consistently. Two convictions:
+
+- FLAG (small session or rider): the base Resolver record is
+  duplicated VERBATIM ×3 — Fmt.fs:58, Program.fs:11, Script.fs:1353.
+  Shape: extract one constructor (Builtins or Script owns it), three
+  call sites collapse, zero behavior. Size: ~30 lines net negative.
+- MICRO-FLAG (rider only): `args |> Seq.map asString |> List.ofSeq`
+  ×6 in Builtins.fs — one `argStrings` local would do. Not worth its
+  own session.
+- DESCRIBED, not flagged: the assembler's four alignment stacks
+  (Brackets / PipeGroups / Compounds / Lambdas) are four bespoke
+  stack disciplines over one line stream. They are NOT duplicates —
+  each tracks a different closing condition — but any fifth
+  alignment feature should force the unification question before
+  adding a sixth.
+
+**Diagnostics policy.** The two pinned span-repro classes CLOSED
+ahead of this census: seq-commit fixed the district class, arm-commit
+fixed the arm class (both pins flipped to fixed-behavior markers).
+Strict spans remain red on exactly ONE class — the bare-pipe fatal —
+which is a policy question (where should a bare `|` fatal point?),
+not a bug hunt. Parks until: the policy is decided in a session that
+owns it; the fuzzer's strict-span property is the acceptance.
+
+**Assume-resolver residue.** The question closes clean: one
+definition [D:assume-resolver] (Script.fs:1439), four consumers
+(Fmt shape pass, Lsp, Script parseLineFull + checkStatement), all
+shape-only, no masking. No residue; nothing to do.
+
+**Multiline-lambda budget overage.** The session ran ~90 lines over
+its assembler budget; the overage read: the Lambdas stack carries
+four fields (line, indent, depthBefore, restore) where the plan
+sketched two — the restore field is the price of dangling-open
+recovery, structural, not accidental. Accepted as spent; no
+follow-up owed.
+
+**Suite hygiene.** Timing sane: 860 unit tests in 3s; e2e 318 checks;
+fuzz deep run 5m47s at count=10000. No slow-test flag.
+
+**OWED (standing, promoted last session): deep-run-vs-republish.**
+Second occurrence of the harness-truth race (a republish during a
+live deep run makes properties fail against a half-swapped binary).
+Mechanize: per-case stamp check or a lockfile the publisher and the
+deep runner both honor. Until then the rule is procedural: NEVER
+republish while a deep run is live.
+
+**Docs fix-up (landed in-session, mechanical).** Five rot greps came
+back zero-hit (sentinel, defaultValue, tryHead, collect, blank-line
+prose); one real stale-prose find fixed (SKILL's block-let sentence
+predated the block-let-RHS session); GUIDE's intro example moved to
+the bare spelling; when-do-I-force now names its FOUR customers
+(REUSE, TIMING, GLOB's cd seam, splat-forces-at-spawn as the
+non-customer); SEMANTICS gained the one-glyph role inventories for
+`;` `|` `$` ahead of the argv word law. A doubled heading in this
+file (shared-flags entry) deduplicated.
+
+**Plan tidy-up (landed in-session).** All 48 PLAN*.md moved to
+plans/, each header status-stamped (EXECUTED + git landing date;
+the miner proposal re-stamped PROPOSED-AMENDED with its remaining
+scope: rmatchAll + the corpus-mine.weir rewrite), plans/README.md
+is the chronological one-line index. Reference sweep: 55 PLAN-
+mentions outside plans/; the 5 path-form references (.md-suffixed)
+updated to plans/ paths, the 50 name-citations left as citations —
+the index resolves them. Root now holds only living docs.
+
 ## The argv splat — N things, N words; the park closes (2026-07-24)
 
 The one-splice-one-word law always carried a silent asterisk ("...and
@@ -440,7 +520,7 @@ bare-pipe fatal — which is its own open policy question, unchanged.
 The verdict-split pin flipped from open-bug marker to fixed
 behavior, tying the find to its closure.
 
-## Shared flags by containment — the friction arc closes (2026-07-24)## Shared flags by containment — the friction arc closes (2026-07-24)
+## Shared flags by containment — the friction arc closes (2026-07-24)
 
 The shape sighted at the bicep original (Argu's [<Inherit>],
 reshaped away in translation) and paid for at the port (two
@@ -2003,7 +2083,7 @@ Ord — the runtime check dies) and C (hardening) remain.
 
 ## Type classes: design filed ahead of trigger (2026-07-20)
 
-PLAN-type-classes.md is ON FILE, not opened — the district precedent
+plans/PLAN-type-classes.md is ON FILE, not opened — the district precedent
 applied to the biggest parked item: settle the design while the
 evidence ledger honestly shows the trigger unfired (sentinel ledger:
 three builtin customers — Eq via ==/Seq.contains, Show via show, Ord
@@ -3232,7 +3312,7 @@ Backlog after this session: measure algebra is the last standing item.
 
 **First dogfood finding** (queued as SEMANTICS backlog #3): "nonzero exit raises" collides with grep's no-match-exits-1 convention — a zero-hit filter is currently a runtime error. Policy needed (allowlist / try-combinator / exit-code-as-value), chosen not improvised.
 
-PLAN-command-mode.md complete: all four sessions done. 222 tests.
+plans/PLAN-command-mode.md complete: all four sessions done. 222 tests.
 
 ## Command-mode Session 3 — the mode decision and command grammar (2026-07-12)
 

@@ -188,10 +188,14 @@ let first =
 print first
 ```
 - `Seq.force` materializes (consume to completion, eager in-memory;
-  STRICT — not for infinite seqs). When to force, exactly two cases:
+  STRICT — not for infinite seqs). When to force, four customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
-  force once, consume twice) and TIMING (a lazy `ls` enumerated
-  after a `cd` sees the new directory; force pins the data NOW).
+  force once, consume twice); TIMING (a lazy `ls` enumerated after a
+  `cd` sees the new directory; force pins the data NOW); GLOB's cd
+  seam (`Path.glob` resolves relative patterns at ENUMERATION —
+  force pins the batch before a `cd`); and the non-customer: a
+  SPLAT (`$@xs`) forces at spawn by necessity — argv is finite, no
+  explicit force needed at the splice.
 - Concatenation is `Seq.append` (lazy; piped spelling puts the TAIL
   in the pipe: `tail |> Seq.append head`).
 - Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
@@ -424,10 +428,12 @@ if clean then !(sh -c "echo acting")
   (`let f r = git rev-parse $r | Seq.head`): `let files = git ls-files`
   binds `seq<string>`; `let r = git status | complete` binds the
   record. Externals only — builtins stay functions there
-  (`let w = cd target` applies the BINDING target). NOT in `let ... in`
-  or in BLOCK lets inside bodies — there use
-  `cmd "git" ["status"; "--porcelain"]` (prog + argv list) or `$()`. A bareword `in` on a let RHS ends the command
-  grammar; quote `"in"` to pass it.
+  (`let w = cd target` applies the BINDING target). BLOCK lets inside
+  bodies (and lambda bodies) take the same command RHS along a
+  top-level let's spine; the single-line `let ... in` spelling stays
+  expression-only — there use `cmd "git" ["status"]` or `$()`. A
+  bareword `in` on a let RHS ends the command grammar; quote `"in"`
+  to pass it.
 - Tuples: `(a, b)` literals, `int * string` types, `| (x, y) ->`
   patterns (arity 2+). `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.
   Destructure ANYWHERE irrefutable: `let x, y = pair`,

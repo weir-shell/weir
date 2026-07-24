@@ -51,6 +51,23 @@ weir rejects rather than guesses.
   and explicit trailing-`;` lines stay alignment-free; fmt
   canonicalizes to the measured anchor, never offset arithmetic —
   fmt and the assembler agree by construction.
+- **The one-glyph inventories** (each glyph's FULL role set, stated
+  once — the fuzzer's `;`-probe found roles the docs implied but
+  never listed as a unit):
+  `;` has four roles — expression sequencing (`a ; b`, committed
+  after consumption [D:seq-commit]), a literal argv word in command
+  lines (warned), the list/record entry separator (its own grammar
+  inside brackets), and the transform-eligibility boundary (only
+  print-shaped siblings single-line with `;`; lets spell `in`).
+  `|` has four — the match/union arm separator (committed
+  [D:arm-commit], alignment-grouped [D:pipe-alignment]), the
+  command pipe (stages are expressions; reifiers end chains), the
+  bare-`|`-after-expression teaching fatal, and NOT an or-pattern
+  (rejected, divergences row or-patterns).
+  `$` has four — the binding splice `$x` (one word), the argv splat
+  `$@xs` (N words [D:argv-splat]), interpolation `$"..."`, and the
+  capture sigil `$(...)` (with `$e(...)` env and the parked `$@"`
+  interp-verbatim opener holding its lookahead boundary).
 - **The argv word law** [D:argv-splat]: `$x` is one word; `$@xs` is
   N words; nothing ever re-splits. The one-splice-one-word rule loses
   its silent asterisk — many things get the `$@` spelling (bash's
@@ -996,7 +1013,7 @@ quantity semantics now.
   (`strLen`, `substring`, `mapOption`, `tryIndexOf`) are plain unbound —
   accepted. Member-access-on-primitives (`s.Length`) stays a logged
   candidate. Strict/loose script modes and trial resolution:
-  PLAN-modules-and-scripts.md (trial resolution deferred, design on file).
+  plans/PLAN-modules-and-scripts.md (trial resolution deferred, design on file).
 - **`sortBy : ('a -> 'b) -> seq<'a> -> seq<'a>`** — the key must evaluate to
   an int, string, or bool; anything else is a runtime error (the type system
   has no comparability constraint — same check-at-the-boundary posture as
