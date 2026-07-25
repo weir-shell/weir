@@ -1310,76 +1310,65 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                  err expr.Span "Args.load is script-only ('args' is not available here)"
              else
                  let validateFields span (label: string) (def: RecordDef) =
-                     let positional =
+                     // the resting-point cells [D:default-attr]:
+                     // literal matches the field, Option is
+                     // contradictory, bool-false redundant
+                     let badDefault =
                          def.Fields
-                         |> List.tryFind (fun (f, _) ->
-                             def.Attrs
-                             |> Map.tryFind f
-                             |> Option.map (List.exists (fun (n, _) -> n = "Positional"))
-                             |> Option.defaultValue false)
+                         |> List.tryPick (fun (f, ft) ->
+                             match Argv.defaultOf def f with
+                             | None -> None
+                             | Some a ->
+                                 match ft, a with
+                                 | TStr, AStr _
+                                 | TInt, AInt _ -> None
+                                 | TBool, ABool true -> None
+                                 | TBool, ABool false ->
+                                     Some
+                                         $"{label}'{f}': [<Default false>] is redundant — presence already rests at false"
+                                 | TNamed("Option", _), _ ->
+                                     Some(
+                                         $"{label}'{f}': optional with a default IS a default — "
+                                         + "drop the Option or the attribute"
+                                     )
+                                 | ft, _ ->
+                                     Some
+                                         $"{label}'{f}': the Default literal does not match the field, which is {formatTy ft}")
 
-                     match positional with
-                     | Some(f, _) -> err span $"{label}'{f}' is [<Positional>]: positionals are not yet supported"
+                     match badDefault with
+                     | Some msg -> err span msg
                      | None ->
-                         // the resting-point cells [D:default-attr]:
-                         // literal matches the field, Option is
-                         // contradictory, bool-false redundant
-                         let badDefault =
+
+                         let badShape =
                              def.Fields
-                             |> List.tryPick (fun (f, ft) ->
-                                 match Argv.defaultOf def f with
-                                 | None -> None
-                                 | Some a ->
-                                     match ft, a with
-                                     | TStr, AStr _
-                                     | TInt, AInt _ -> None
-                                     | TBool, ABool true -> None
-                                     | TBool, ABool false ->
-                                         Some
-                                             $"{label}'{f}': [<Default false>] is redundant — presence already rests at false"
-                                     | TNamed("Option", _), _ ->
-                                         Some(
-                                             $"{label}'{f}': optional with a default IS a default — "
-                                             + "drop the Option or the attribute"
-                                         )
-                                     | ft, _ ->
-                                         Some
-                                             $"{label}'{f}': the Default literal does not match the field, which is {formatTy ft}")
+                             |> List.tryFind (fun (_, ft) ->
+                                 match ft with
+                                 | TStr
+                                 | TInt
+                                 | TBool
+                                 | TNamed("Option", [ TStr | TInt ]) -> false
+                                 | _ -> true)
 
-                         match badDefault with
-                         | Some msg -> err span msg
+                         match badShape with
+                         | Some(f, TNamed("Option", [ TBool ])) ->
+                             err span $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
+                         | Some(f, ft) ->
+                             err
+                                 span
+                                 $"{label}Args.load fields must be string, int, bool, or Option of string|int; '{f}' is {formatTy ft}"
                          | None ->
+                             let dupFlag =
+                                 // minted --no-X twins join the namespace
+                                 // [D:default-attr]
+                                 (def.Fields |> List.map (fun (f, _) -> f, Argv.kebabFlag f))
+                                 @ Argv.mintedFlags def
+                                 |> List.groupBy snd
+                                 |> List.tryFind (fun (_, g) -> g.Length > 1)
 
-                             let badShape =
-                                 def.Fields
-                                 |> List.tryFind (fun (_, ft) ->
-                                     match ft with
-                                     | TStr
-                                     | TInt
-                                     | TBool
-                                     | TNamed("Option", [ TStr | TInt ]) -> false
-                                     | _ -> true)
-
-                             match badShape with
-                             | Some(f, TNamed("Option", [ TBool ])) ->
-                                 err span $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
-                             | Some(f, ft) ->
-                                 err
-                                     span
-                                     $"{label}Args.load fields must be string, int, bool, or Option of string|int; '{f}' is {formatTy ft}"
-                             | None ->
-                                 let dupFlag =
-                                     // minted --no-X twins join the namespace
-                                     // [D:default-attr]
-                                     (def.Fields |> List.map (fun (f, _) -> f, Argv.kebabFlag f))
-                                     @ Argv.mintedFlags def
-                                     |> List.groupBy snd
-                                     |> List.tryFind (fun (_, g) -> g.Length > 1)
-
-                                 match dupFlag with
-                                 | Some(flag, (a, _) :: (b, _) :: _) ->
-                                     err span $"{label}fields '{a}' and '{b}' derive the same flag '--{flag}'"
-                                 | _ -> Ok()
+                             match dupFlag with
+                             | Some(flag, (a, _) :: (b, _) :: _) ->
+                                 err span $"{label}fields '{a}' and '{b}' derive the same flag '--{flag}'"
+                             | _ -> Ok()
 
                  // case collisions + payload validation, shared by the bare-union
                  // and shared-flags shapes [D:shared-flags]
@@ -2475,10 +2464,6 @@ let private attrRegistry: Map<string, AttrArg option -> string option> =
           (function
           | Some(AStr s) when s <> "" -> None
           | _ -> Some "expects a non-empty string")
-          "Positional",
-          (function
-          | None -> None
-          | Some _ -> Some "takes no argument")
           "Default",
           (function
           | Some(AStr _ | AInt _ | ABool _) -> None

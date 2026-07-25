@@ -1746,7 +1746,7 @@ let attributeTests =
               let env' =
                   env
                   |> declare
-                      "type Cfg = { [<Short \"c\"; Doc \"count\">] Count: int; [<Positional>] Name: string; [<NoShort>] Loud: bool }"
+                      "type Cfg = { [<Short \"c\"; Doc \"count\">] Count: int; Name: string; [<NoShort>] Loud: bool }"
 
               match Map.tryFind "Cfg" env'.Types with
               | Some(Record def) ->
@@ -1757,7 +1757,7 @@ let attributeTests =
                       [ "Short", Some(AStr "c"); "Doc", Some(AStr "count") ]
                       "attrs recorded"
 
-                  Expect.equal (Map.find "Name" def.Attrs) [ "Positional", None ] "argless recorded"
+                  Expect.equal (Map.find "Loud" def.Attrs) [ "NoShort", None ] "argless recorded"
               | other -> failtest $"expected a record def, got {other}"
           }
           test "bare fields leave Attrs empty" {
@@ -1787,11 +1787,8 @@ let attributeTests =
               Expect.stringContains terr.Message "reserved for --help" ""
           }
           test "argless attributes reject arguments" {
-              let terr = env |> declErr "type T = { [<Positional 1>] A: int }"
+              let terr = env |> declErr "type T = { [<NoShort true>] A: int }"
               Expect.stringContains terr.Message "takes no argument" ""
-
-              let terr2 = env |> declErr "type T = { [<NoShort true>] A: int }"
-              Expect.stringContains terr2.Message "takes no argument" ""
           }
           test "Doc wants a non-empty string" {
               let terr = env |> declErr "type T = { [<Doc \"\">] A: int }"
@@ -1951,15 +1948,13 @@ let typedArgvTests =
                   "derive the same flag '--dry-run'"
                   ""
           }
-          test "Positional fires its not-yet at consumption" {
-              let e2 = argvEnv |> declare "type P = { [<Positional>] t: string }"
-
-              Expect.stringContains
-                  (match Weir.Check.typecheck e2 (parse "Args.load P") with
-                   | Error terr -> terr.Message
-                   | Ok _ -> failtest "expected rejection")
-                  "positionals are not yet supported"
-                  ""
+          test "Positional is an unknown attribute — dropped, not reserved" {
+              // was "[<Positional>] fires its not-yet": the registration and
+              // its not-yet consumer retired together (the rider — one
+              // receipt, contract-mimicry from model-authored code, nothing
+              // blocked). It is not a thing; weir scripts take FLAGS.
+              let terr = argvEnv |> declErr "type P = { [<Positional>] t: string }"
+              Expect.stringContains terr.Message "unknown attribute 'Positional'" ""
           }
           test "union payload rules: single record only; case collisions" {
               let e2 = argvEnv |> declare "type U1 = Go of string | Stop"
@@ -2078,16 +2073,6 @@ let typedArgvTests =
                    | Error terr -> terr.Message
                    | Ok _ -> failtest "expected rejection")
                   "no flag derives"
-                  ""
-          }
-          test "Positional's not-yet WINS the composition [D:default-attr]" {
-              let e2 = argvEnv |> declare "type P2 = { [<Default 5; Positional>] t: int }"
-
-              Expect.stringContains
-                  (match Weir.Check.typecheck e2 (parse "Args.load P2") with
-                   | Error terr -> terr.Message
-                   | Ok _ -> failtest "expected rejection")
-                  "positionals are not yet supported"
                   ""
           }
           test "minted --no-X joins the collision namespace, both routes [D:default-attr]" {

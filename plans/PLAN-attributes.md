@@ -5,6 +5,19 @@ EXECUTED 2026-07-23 with one scope adjustment — see the completion
 addenda: the consumer half (Args.load) does not exist and is
 deferred to the typed-argv plan; the infrastructure landed in full.
 
+FOUR-NAME CLAUSE DISCHARGE (rider, 2026-07-25): the four registered
+names resolve as THREE BOUND, ONE DROPPED. Short/NoShort/Doc gained
+their consumers (typed argv); `Positional` was registered as a
+pre-scoping not-yet (its "marker question, pre-answered" framing
+below), but the positionals park was DROPPED without opening — its
+one receipt (git-subrepo `config <key> [<value>]`) was contract-
+mimicry from model-authored code, no hand-written weir was ever
+blocked, and the names-beat-positions house rule stood. `Positional`
+is now an unknown attribute [D:drop-positional]. There is no
+PLAN-positionals.md — the "five decisions" (ordering, arity, payload
+scope, floating flags, `--`) were design thinking never committed to
+a file; re-scope from scratch on a hand-written-weir receipt.
+
 The attributes question was walked honestly across the review
 thread: first waved off with a fabricated "refused machinery"
 citation (advisor error, corrected — NOTES owes the entry:

@@ -64,6 +64,25 @@ filed next to the fabricated-citation correction the same plan
 paid for — two process-integrity errors in one plan, both caught
 by the machinery working as designed.
 
+## Receipt provenance
+
+A friction entry or feature receipt from MODEL-AUTHORED code may
+reflect the training distribution's idioms rather than a wall the
+script hit. Distinguish a script that COULD NOT BE WRITTEN (real
+demand) from a script written in an unfamiliar idiom that FELT
+AWKWARD (acclimation). The positionals park died on this: its sole
+receipt was git-subrepo's `config <key> [<value>]`, a port
+reproducing git's positional CLI — and positional CLIs are what
+argparse/click/getopt/every man page overwhelmingly contain, so the
+"receipt" was distribution echo, not demand (no weir script was
+blocked; `config` was skipped and nothing broke). A registered name
+held for such a receipt is squatting, not pre-scoping. This is a
+lens, not distrust — cc's frictions have been overwhelmingly good;
+but a receipt whose shape matches the training prior deserves the
+question "could this have been written another way, and would that
+have felt fine?" before it justifies reserving syntax. Older
+friction entries deserve a re-read under it.
+
 ## Established rules (index; full text in their origin archaeology)
 
 - Stop-and-report on behavior deltas mid-refactor, on budget

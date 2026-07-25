@@ -1,5 +1,50 @@
 # Spike Notes
 
+## Drop [<Positional>] — the squat, and the provenance lens (2026-07-25)
+
+Rider. `[<Positional>]` was registered with a deliberate not-yet
+consumer — reserve the name, pre-answer the positionals park's marker
+fight. Re-examined and answered NO: unregistered, its not-yet deleted;
+`[<Positional>]` in source is now the ordinary unknown-attribute error
+with did-you-mean over the remaining names (Short/NoShort/Doc/Default).
+
+**The reason is a finding, not a feature critique.** The park's one
+receipt was git-subrepo's `config <key> [<value>]` — and that receipt
+is CONTRACT-MIMICRY from model-authored code: the port reproduced
+git's CLI, and positional CLIs are what the training distribution
+overwhelmingly holds (argparse/click/getopt, every man page). No weir
+script was ever blocked; `config` was skipped and nothing broke. The
+names-beat-positions house rule (records-over-tuples, extended to
+argv) stood unchallenged, and three weeks of real scripts produced
+zero organic demand. A registered name reserving syntax for a feature
+whose only receipt is model idiom is SQUATTING, not pre-scoping.
+
+**The durable finding → PROCESS "Receipt provenance".** A friction
+entry or receipt from model-authored code may reflect the training
+distribution's idioms rather than a wall the script hit. Distinguish
+a script that COULD NOT be written (demand) from one written in an
+unfamiliar idiom that FELT awkward (acclimation). A lens, not distrust.
+
+**Diagnosis corrections (ground rule one).** (1) There is no
+`PLAN-positionals.md` — the plan's "restamp it DROPPED" assumed a file
+that never existed; positionals lived in PLAN-attributes/PLAN-typed-argv,
+and the "five decisions" were design thinking never committed. Noted in
+PLAN-attributes' four-name-clause discharge (3 bound, 1 dropped)
+instead. (2) `--` flag-termination NEVER landed (bare `--` is just an
+unknown flag, verified) — it was only planned WITH positionals, so it
+goes unmentioned, untouched.
+
+**Pins flipped, named.** The registry-membership pin ("argless
+recorded" via Positional) now records NoShort instead; the argless-
+rejects-args pin drops its Positional case; the not-yet-at-consumption
+pin FLIPS to "Positional is an unknown attribute — dropped, not
+reserved"; the Default+Positional composition pin RETIRES (net −1
+test). Docs swept: SKILL/GUIDE/SEMANTICS lose Positional from the
+registry lists, GUIDE states plainly that what's dropped is the typed/
+declared/help path, NOT the ability — the untyped floor (`args`,
+`Args.flag`/`Args.value`) remains for hand-rolled operands. Re-askable
+against a HAND-WRITTEN-weir receipt a flags reshape can't serve.
+
 ## The miner — Str.rmatchAll and the last python retires (2026-07-25)
 
 PLAN-miner-receipts, the remaining scope (feed / Seq.distinct /

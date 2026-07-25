@@ -125,7 +125,7 @@ Record fields also take attributes, F#'s syntax:
 type Cli = {
     [<Short "C"; Doc "clean first">]
     Clean: bool
-    [<Positional>] Target: string
+    Target: string
 }
 
 let cli = { Clean = true; Target = "prod" }
@@ -134,7 +134,7 @@ print cli.Target
 
 They are check-time data, fully erased at runtime — `cli` above is
 indistinguishable from a bare `Cli`. The names are a closed registry
-(`Short`, `NoShort`, `Doc`, `Positional`); a typo like `[<Shrot "c">]`
+(`Short`, `NoShort`, `Doc`, `Default`); a typo like `[<Shrot "c">]`
 is a check error with a did-you-mean. Their consumers — typed argv
 deriving `-C` and `--help` text from the declaration — are a coming
 feature; until then attributes are legal-and-inert documentation the
@@ -545,7 +545,10 @@ match Args.load Cmd with // no argv here: "missing subcommand; one of: clone, st
 ```
 
 There are no positionals — spell operands as flags (`pull --subdir
-libx`); named-over-positional is the house aesthetic. The untyped
+libx`); named-over-positional is the house aesthetic (the
+records-over-tuples ruling, extended to argv). `[<Positional>]` is not
+a registered attribute; what is dropped is the typed, declared,
+help-generating path, NOT the ability to read operands. The untyped
 floor remains for hand-rolled shapes: `Args.flag "--clean" "-c"` and
 `Args.value "--out"` scan the raw `args` seq, and multi-value options
 reshape as one flag per value (`--stack X --env Y`).

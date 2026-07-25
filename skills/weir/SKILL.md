@@ -95,16 +95,16 @@ print $"branches: {branches}"
   indent — `type Cli = {` / four-space fields / `}`. The aligned
   style (`{ x` with column-aligned fields) stays accepted.
 - Record fields take attributes, F#'s syntax: `[<Short "c">]`,
-  `[<Doc "text">]`, `[<NoShort>]`, `[<Positional>]` — `;`-separated
+  `[<Doc "text">]`, `[<NoShort>]`, `[<Default v>]` — `;`-separated
   lists, literal args only (string/int/bool). Attributes are
   check-time data, fully erased: an attributed record is the same
   type as a bare one. The name set is CLOSED — an unregistered name
-  is a check error with a did-you-mean; consumers (typed argv's
-  shorts/help) are a coming feature, so today every attribute is
-  legal-and-inert. Attributes attach to record fields only.
+  (`[<Positional>]` among them: dropped, scripts take flags) is a
+  check error with a did-you-mean. Attributes attach to record
+  fields only.
 
 ```weir
-type Cli = { [<Short "C"; Doc "clean first">] Clean: bool; [<Positional>] Target: string }
+type Cli = { [<Short "C"; Doc "clean first">] Clean: bool; Target: string }
 let args = { Clean = true; Target = "prod" }
 print args.Target
 ```

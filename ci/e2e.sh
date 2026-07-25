@@ -1652,7 +1652,7 @@ rm -rf "$gdir"
 # attributes (PLAN-attributes): check-time, erased, registered names
 adir=$(mktemp -d)
 cat > "$adir/attrs.weir" <<'WEOF'
-type Cfg = { [<Short "c"; Doc "count">] Count: int; [<Positional>] Name: string; [<NoShort>] Loud: bool }
+type Cfg = { [<Short "c"; Doc "count">] Count: int; Name: string; [<NoShort>] Loud: bool }
 let c = { Count = 1; Name = "x"; Loud = false }
 let c2 = { c with Count = 2 }
 print $"{c2.Count} {show c.Loud}"
@@ -1790,9 +1790,10 @@ out=$($BIN "$tadir/host.weir" -h); rc=$?
 echo "$out" | grep -qE -- '^      --host' || fail "h-initial field must not derive a short: $out"
 echo "e2e ok: -h is help; h-initial fields never derive"
 
-errout=$(printf 'type P = { [<Positional>] t: string }\nlet p = Args.load P\n' | $BIN check /dev/stdin 2>&1) && fail "Positional must fire the not-yet"
-echo "$errout" | grep -qF "positionals are not yet supported" || fail "the not-yet message: $errout"
-echo "e2e ok: [<Positional>] fires its not-yet at check time"
+# [<Positional>] DROPPED [D:drop-positional] — now an unknown attribute
+errout=$(printf 'type P = { [<Positional>] t: string }\n' | $BIN check /dev/stdin 2>&1) && fail "Positional must be unknown"
+echo "$errout" | grep -qF "unknown attribute 'Positional'" || fail "the unknown-attr message: $errout"
+echo "e2e ok: [<Positional>] is an unknown attribute (dropped)"
 
 errout=$(printf 'type C = { b: Option<bool> }\nlet c = Args.load C\n' | $BIN check /dev/stdin 2>&1) && fail "Option<bool> field must reject"
 echo "$errout" | grep -qF "a presence flag is already optional" || fail "Option<bool> message: $errout"

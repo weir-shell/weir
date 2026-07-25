@@ -179,15 +179,16 @@ weir rejects rather than guesses.
   declaration, and erasure is absolute (no attribute reaches eval,
   Value, show, json, or equatability; an attributed record unifies,
   compares, and prints exactly as a bare one). The name set is a
-  closed registry (`Short`/`NoShort`/`Doc`/`Positional`); an
+  closed registry (`Short`/`NoShort`/`Doc`/`Default`); an
   unknown name is a check error with a did-you-mean — no silent
   decoration, ever. Validation happens at ATTACHMENT (name
   registered, args well-formed, explicit shorts collision-checked
   across fields), binding happens at CONSUMPTION — an attribute no
   consumer reads is legal-and-inert, like a comment. Consumers
-  (typed argv reading Short/Doc/Positional) are pending; every
-  registered name is inert today. Attachment beyond record fields
-  rejects with "attributes attach to record fields".
+  (typed argv reading Short/NoShort/Doc/Default) shipped;
+  `Positional` was registered as a not-yet, then DROPPED (the rider —
+  one receipt, contract-mimicry, nothing blocked). Attachment beyond
+  record fields rejects with "attributes attach to record fields".
 - **Indexers** (2026-07-20): `xs[i]` desugars to `Seq.item i xs`
   (raising; `tryItem` is the safe sibling). The F# 6 dotless-indexing
   whitespace rule applies verbatim: NO space = indexing, a space =
@@ -783,8 +784,9 @@ quantity semantics now.
   and error with candidates at invocation; `[<Short>]` beats
   derivation (the derived short retires; --help is the truth);
   `[<NoShort>]` suppresses; `h` never derives and `-h` is help.
-  STRICT: no positionals (`[<Positional>]` fires its not-yet at
-  check), unconsumed tokens/unknown flags/repeats/missing
+  STRICT: no positionals (`[<Positional>]` is not a registered
+  attribute — dropped; operands spell as flags), unconsumed
+  tokens/unknown flags/repeats/missing
   requireds/garbage values collect into ONE boundary error.
   `--help`/`-h` short-circuits BEFORE validation to derived usage
   (short truth + Doc text), stdout, exit 0. Script-only (`args`'
