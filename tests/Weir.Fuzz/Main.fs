@@ -248,20 +248,72 @@ let tests =
                   | [] ->
                       failtestf "no diagnostic for a bad token injected at line %d:\n%s" physLine (showProgram injected)
                   | errs ->
-                      // a translated backtrack note naming the line counts as
-                      // a positional hit (the district-wrap class carries the
-                      // true site only there)
-                      let noteHit (d: Weir.Script.Diagnostic) =
-                          d.Message.Contains $"at line {physLine}, col "
-
+                      // [D:diag-arbitration]: the PRIMARY error lands at the
+                      // true physical site — no backtrack-note escape hatch.
+                      // The hatch existed for the district-wrap class (the
+                      // true site survived only as a note); the consumed-
+                      // separator law [D:seq-commit][D:arm-commit] closed it,
+                      // so the note fallback retires and the assertion tightens
+                      // to the primary itself.
                       let hit =
                           errs
-                          |> List.exists (fun d -> (d.Line = physLine && d.Col >= 1 && d.Col <= extent) || noteHit d)
+                          |> List.exists (fun d -> d.Line = physLine && d.Col >= 1 && d.Col <= extent)
 
                       if strictSpans && not hit then
                           failtestf
                               "bad token at line %d (extent %d) reported elsewhere: %A\n%s"
                               physLine
+                              extent
+                              (errs |> List.map (fun d -> d.Line, d.Col, d.Message))
+                              (showProgram injected)
+
+          testPropertyWithConfig cfg "arbitration: a deeper second junk does not steal the first-reached error's site"
+          <| fun (p: Program) (NonNegativeInt s) ->
+              let rnd = Random s
+              let tagged = renderTagged defaultCfg p
+
+              let eligible =
+                  tagged
+                  |> List.mapi (fun i (l, ok) -> i, l, ok)
+                  |> List.filter (fun (_, _, ok) -> ok)
+
+              match eligible with
+              | []
+              | [ _ ] -> () // need two distinct sites to arbitrate between
+              | _ ->
+                  // [D:diag-arbitration]: "furthest the parser REACHED", not
+                  // "latest in the file" — with two obstructions the FIRST is
+                  // where the parse stops, so the shallower (first-reached)
+                  // junk owns the report; a deeper junk downstream must not
+                  // steal it or corrupt its position.
+                  let a = rnd.Next eligible.Length
+                  let mutable b = rnd.Next eligible.Length
+
+                  while b = a do
+                      b <- rnd.Next eligible.Length
+
+                  let (ia, _, _) = eligible[a]
+                  let (ib, _, _) = eligible[b]
+                  let lo, hi = min ia ib, max ia ib
+
+                  let injected =
+                      tagged |> List.mapi (fun i (l, _) -> if i = lo || i = hi then l + " ?!?" else l)
+
+                  let firstLine = lo + 1
+                  let extent = (tagged[lo] |> fst).Length + 5
+                  let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" injected
+
+                  match diags |> List.filter (fun d -> d.Severity = "error") with
+                  | [] -> failtestf "no diagnostic for junk at lines %d and %d:\n%s" firstLine (hi + 1) (showProgram injected)
+                  | errs ->
+                      let hit =
+                          errs
+                          |> List.exists (fun d -> d.Line = firstLine && d.Col >= 1 && d.Col <= extent)
+
+                      if strictSpans && not hit then
+                          failtestf
+                              "first-reached junk at line %d (extent %d) lost its report: %A\n%s"
+                              firstLine
                               extent
                               (errs |> List.map (fun d -> d.Line, d.Col, d.Message))
                               (showProgram injected)

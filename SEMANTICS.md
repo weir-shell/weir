@@ -1153,6 +1153,49 @@ Precedents through the statuses already: no-let-param-sugar went
 pending→fixed-in-weir (retired from the table); no-mutation went
 implied→rejected when the sugar made `let mutable` parse strangely.
 
+## Diagnostics — which error you see [D:diag-arbitration]
+
+When a line has more than one thing wrong, one error reaches you. The
+rule, in your terms: **weir reports the error at the furthest point the
+parser reached in your file.** Two consequences worth knowing:
+
+- **Furthest REACHED, not latest in the file.** With two problems in
+  one statement the parse stops at the first, so that is what you see —
+  a later mistake downstream can't hide an earlier one. Across separate
+  statements each failing statement reports its own error, so you get
+  one per broken statement.
+- **The position is always physical — a real spot in your file.** The
+  assembler wraps districts and compounds in synthetic text to parse
+  them; an error never anchors there. This holds by construction, not
+  by cleanup: the consumed-separator law (a consumed `;`/`|`/record
+  head COMMITS to its element) removes the backtracks that used to
+  rewind a deep failure into a shallow, position-inflated one. The
+  furthest point reached is therefore the true cause, on the offending
+  token.
+
+Two mechanisms serve this, and they are deliberately distinct — the
+"who wins" question has one answer, not a per-error ambition contest:
+
+- **Teaching hints override the message at their own position, never
+  the position.** `x = 1 | 2` reports "'|' chains commands; pipe with
+  '|>'" exactly where the `|` sits — the hint replaces the generic
+  "expecting…" list at the furthest point, it does not move the caret.
+  A hint that once landed on an innocent line did so only because a
+  backtrack carried it there; the commit law closed that, so the hint
+  is correct at its position, not a workaround.
+- **One weir-owned escape, reserved for checks that fire inside
+  discardable speculation.** The depth guard throws past the parser's
+  error channel because it fires deep inside speculative parsing that
+  would otherwise BACKTRACK AND DISCARD it. Teaching hints never need
+  this — they fire at committed points where an ordinary fatal already
+  wins. So the channel is not generalized: overriding a message
+  (hints) and escaping a doomed speculation (depth) are two different
+  needs, and conflating them would risk throwing out of a branch that
+  should retry.
+
+One pipeline, one policy: `check`, `check --json`, and the LSP all read
+this same choice from the one `analyzeLines` path.
+
 ## Backlog (ordered by day-one impact)
 
 0. **Block effect-sequencing** (`print "a"` mid-block — F#'s other half of

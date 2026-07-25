@@ -1,5 +1,78 @@
 # Spike Notes
 
+## Diagnostics policy — who owns the error the user reads (2026-07-25)
+
+Blessed as "state the arbitration policy + reconcile three features
+that routed around it." Ground rule one (diagnose before changing)
+paid immediately, twice: the plan's premise was stale AND its
+acceptance metric was wrong.
+
+**Stale premise.** The two invariant-3 repros the plan wanted to
+"flip from current-behavior markers to true-site" were ALREADY
+true-site — seq-commit flipped the district-wrap class, arm-commit
+the nested-arm class (Tests.fs:5245 "anchors on the junk itself"
+(4,20); :5282 (6,23)). The plan was written from the pre-commit-law
+picture. So there is no instance to fix; the work is the POLICY.
+
+**What actually wins today (the diagnosis).** There is NO weir-side
+arbiter. FParsec's furthest-error merge picks one error at one
+assembled-text position; `Script.translate` maps it to a physical
+line/col via the segment table. The consumed-separator law is what
+makes that furthest position the TRUE cause: it removes the
+backtracks that used to rewind a deep failure into a shallow,
+synthetic-anchored one (the class-one "col past the line end"
+symptom). Adversarial probes (district-then-junk, compound-wrap-then-
+junk, malformed district header) all now anchor physical, on the
+junk. No remaining synthetic-anchor bug.
+
+**Diagnosis CORRECTION — "deeper wins" is wrong.** The plan's
+acceptance said "junk at two sites reports the deeper one." I encoded
+that as a new fuzz property and it FAILED at once:
+`let v0 = [ (if …) / (10+17) ?!? / 67 ] ?!?` reports at line 2 (the
+FIRST junk), not line 3 — one statement, the parse stops at the first
+obstruction. The right law is "furthest REACHED, not latest in the
+file": with two problems in one statement the first owns the report;
+across statements each reports its own. Flipped the property to
+first-reached-owns-it (a deeper junk must not steal the site) — green.
+The plan's own metric would have shipped a false policy; the property
+caught it.
+
+**The bypass-channel question, EVALUATED and rejected.** Should
+teaching errors bypass the merge entirely (throw WeirDiagnostic, catch
+at the statement boundary, like DepthExceeded)? No. The two needs are
+DISTINCT: a teaching hint OVERRIDES THE MESSAGE at a position that is
+already the furthest reached (barePipeHint fires after the whole LHS
+is consumed — failFatally suffices, given the commit law); the depth
+guard ESCAPES a position that would be DISCARDED, because it fires
+inside `atom` deep in speculative attempt/choice that backtracks (a
+failFatally there gets swallowed — observed in the hardening session).
+Generalizing the throw would risk unwinding out of a branch that
+SHOULD retry, for a benefit the commit law already delivers. Verdict:
+keep both channels, named for their two jobs.
+
+**The three routed-around features reconciled — as three CORRECT
+roles, zero code change.** barePipeHint KEEPS its `failFatally`: it is
+the same-position teaching override, not a workaround (retiring it
+would lose the teaching); its past misfire was a backtrack, closed by
+the law. arm-commit's law stays (correct on its own terms).
+DepthExceeded stays the escape channel, now NAMED as policy rather
+than a hack. None needed touching — the policy statement is what they
+were collectively implementing.
+
+**Code delta:** only the fuzzer. The single-junk span property's
+`noteHit` escape hatch (which had accepted "a backtrack note naming
+the line" as a positional hit — a concession to the district-wrap
+class) is RETIRED: dead since the commit law, so the assertion
+tightens to the primary error at the true site. Added the two-error
+arbitration property (first-reached owns the report). SEMANTICS gains
+a "Diagnostics — which error you see" section in the user's terms;
+[D:diag-arbitration] indexes it.
+
+Zero grammar change, zero language-behavior change, zero pin movement
+(the behavior was already correct — this session RATIFIES and locks
+it). Reported as a finding, not a shortfall: the plan expected pin
+movement because it believed the repros were broken; they were not.
+
 ## The freshness gate unified (+ dirty stamp, doc riders) (2026-07-25)
 
 Part two's highest-value flag: the mechanism that catches masked
