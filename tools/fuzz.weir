@@ -22,6 +22,14 @@ let cli = Args.load Cli
 let root = git rev-parse --show-toplevel | Seq.head
 cd $root
 
+// hold the deep-run lock [D:masking-mechanized] so publish.sh refuses
+// to swap the binary underfoot mid-run — the one window the start-of-run
+// freshness gate can't close. The holder is THIS weir process (a child
+// sh reports its parent's pid), alive for the whole run; a crash leaves
+// a stale lock that publish clears by liveness.
+let mypid = $(sh -c 'echo $PPID') |> Seq.head
+ci/deep-lock.sh acquire $mypid | orFail "a deep fuzz run is already live — wait for it or kill it"
+
 let seed =
     match cli.seed with
     | Some n -> $"{n}"
@@ -39,5 +47,9 @@ let fenv = Env.ofPairs [("WEIR_FUZZ_SEED", seed); ("WEIR_FUZZ_COUNT", count)]
 // line on failure [D:exit-reifiers]
 !fenv
     dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj | orFail $"deep fuzz FAILED — reproduce with: tools/fuzz.weir --seed {seed} --count {count}"
+
+// on failure orFail raised above and this never runs — the lock goes
+// stale (this process exits) and publish clears it by liveness
+ci/deep-lock.sh release
 
 print $"deep fuzz clean: seed={seed} count={count}"

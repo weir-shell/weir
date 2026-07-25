@@ -670,6 +670,22 @@ echo "e2e ok: ^ still forces the real binary through a shadow"
 
 rm -rf "$svdir"
 
+# the deep-run lock [D:masking-mechanized] — publish refuses while a live
+# holder exists; a dead holder is a stale lock any actor may clear
+LOCKSH="$(dirname "$0")/deep-lock.sh"
+"$LOCKSH" release # start clean
+"$LOCKSH" check && fail "no lock should not report a live holder"
+sleep 30 &
+lk_pid=$!
+"$LOCKSH" acquire "$lk_pid"
+[ "$("$LOCKSH" check)" = "$lk_pid" ] || fail "check must report the live holder pid"
+"$LOCKSH" acquire 999 2>/dev/null && fail "acquire must refuse while a live holder exists"
+kill "$lk_pid" 2>/dev/null
+wait "$lk_pid" 2>/dev/null || true
+"$LOCKSH" check && fail "a dead holder must read as stale (no live holder)"
+[ -f "$(dirname "$0")/../.weir-deep-run.lock" ] && fail "check must clear the stale lock"
+echo "e2e ok: deep-run lock acquires, refuses double, clears when stale"
+
 # --- weir lsp v1 (2026-07-21, LSP chain 3/3) ---------------------------
 
 if command -v python3 >/dev/null 2>&1; then

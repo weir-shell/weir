@@ -1,5 +1,38 @@
 # Spike Notes
 
+## The deep-run lock — the OWED window closes (2026-07-25)
+
+The deep-run-vs-republish race (harness-truth class, promoted watch→OWED
+on its second occurrence) is mechanized. The race: a `./publish.sh`
+DURING a live deep fuzz run swaps `~/.local/bin/weir` underfoot, so a
+metamorphic property runs `P` against the old binary and `T(P)` against
+the new one and fails against a half-swapped binary — a MANUFACTURED
+failure that reads like a real one. The freshness gate is start-of-run
+(stamp+mtime), structurally blind to a mid-run swap; this was the one
+window it could only STATE, not close.
+
+**The fix — a lock, the check-fresh.sh pattern.** `ci/deep-lock.sh`
+(acquire/release/check) is the single shared implementation: one
+lockfile (`.weir-deep-run.lock`, gitignored), one liveness definition
+(the recorded pid still running). `tools/fuzz.weir` holds it for the
+run — the holder is the weir process itself, obtained via a child sh's
+`$PPID` (weir has no getpid; the child reports its parent), alive for
+the whole run. `publish.sh` refuses to install while a LIVE holder
+exists — twice: a fail-fast check before the 30s build, and the
+authoritative barrier right before the install swap.
+
+**Staleness is decidable, so it never wedges.** A crashed run (no
+release) leaves the lock with a dead pid; `check` clears it and any
+actor proceeds. On a FAILED deep run, `orFail` raises before the
+release line — the process exits, the pid dies, the next publish clears
+the stale lock by liveness. No cleanup-on-crash needed.
+
+Verified end-to-end: `fuzz.weir` acquired (pid caught mid-run),
+`publish.sh` refused during, the lock released on clean finish; the
+e2e battery pins the acquire/refuse-double/stale-clear lifecycle. The
+check-fresh.sh header now reads "this gate checks freshness at start;
+that lock guards the middle" — one boundary, closed, not stated.
+
 ## Drop [<Positional>] — the squat, and the provenance lens (2026-07-25)
 
 Rider. `[<Positional>]` was registered with a deliberate not-yet
@@ -529,7 +562,9 @@ Second occurrence of the harness-truth race (a republish during a
 live deep run makes properties fail against a half-swapped binary).
 Mechanize: per-case stamp check or a lockfile the publisher and the
 deep runner both honor. Until then the rule is procedural: NEVER
-republish while a deep run is live.
+republish while a deep run is live. — CLOSED 2026-07-25 by the lockfile
+(ci/deep-lock.sh; fuzz.weir holds, publish.sh refuses): see "The
+deep-run lock" entry at the top.
 
 **Docs fix-up (landed in-session, mechanical).** Five rot greps came
 back zero-hit (sentinel, defaultValue, tryHead, collect, blank-line

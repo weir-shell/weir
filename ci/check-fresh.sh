@@ -18,14 +18,11 @@
 # on developers. A release job that genuinely wants the strictness sets
 # WEIR_REQUIRE_CLEAN=1 explicitly.
 #
-# The ONE window this gate does NOT close: a republish DURING a live run
-# (the binary is replaced mid-run, so a per-case check still sees a
-# matching stamp while the bytes changed underfoot — a deep fuzz run
-# comparing P and T(P) across two builds is the known case). This gate
-# is a start-of-run check, not a per-case one; until it is a lockfile
-# around publish, the standing rule holds: never republish while a
-# deep run is live. Stated here so there is one boundary, not two
-# half-known ones.
+# The window this start-of-run gate cannot see — a republish DURING a
+# live run, swapping the bytes underfoot — is closed by ci/deep-lock.sh:
+# the deep driver (tools/fuzz.weir) holds a lock for its run and
+# publish.sh refuses to install while a live holder exists. This gate
+# checks freshness at start; that lock guards the middle.
 set -euo pipefail
 
 BIN="${1:-${WEIR_BIN:-$HOME/.local/bin/weir}}"
