@@ -7,9 +7,16 @@
 # F#-native twin (shelling out from the test runtime is a worse
 # dependency) — kept in step deliberately, cross-referenced here.
 #
-# Dirty builds: a `-dirty` stamp is USABLE for local iteration (warn,
-# continue) but must never pass in CI (hard fail) — a shipped artifact
-# is not allowed to carry uncommitted source.
+# Dirty builds: a `-dirty` stamp WARNS but PASSES — a freshly built
+# dirty binary is the freshest binary, not a stale one (the mtime gate
+# below is the real staleness check; the stamp's job is identity, and a
+# dirty build's identity is "HEAD plus uncommitted work", which local
+# iteration wants). Enforcing a clean tree is a SHIPPING concern, not a
+# test-gate one: real CI publishes from a clean checkout so a dirty
+# stamp there can't arise anyway, and keying a hard-fail on the ambient
+# `CI` var (set in many non-release contexts) only ever false-positived
+# on developers. A release job that genuinely wants the strictness sets
+# WEIR_REQUIRE_CLEAN=1 explicitly.
 #
 # The ONE window this gate does NOT close: a republish DURING a live run
 # (the binary is replaced mid-run, so a per-case check still sees a
@@ -36,11 +43,11 @@ if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --short HEAD 
     stamp=$("$BIN" --version 2>/dev/null || echo none)
     case "$stamp" in
         "$head_hash"-dirty*)
-            if [ -n "${CI:-}" ]; then
-                echo "STALE BINARY: $BIN stamps '$stamp' (dirty tree) — CI requires a clean build" >&2
+            if [ -n "${WEIR_REQUIRE_CLEAN:-}" ]; then
+                echo "STALE BINARY: $BIN stamps '$stamp' (dirty tree) — WEIR_REQUIRE_CLEAN set, a clean build is required" >&2
                 exit 1
             fi
-            echo "note: $BIN is a dirty-tree build ('$stamp') — local iteration only" >&2
+            echo "note: $BIN is a dirty-tree build ('$stamp') — uncommitted source included" >&2
             ;;
         "$head_hash"*) : ;;
         *)

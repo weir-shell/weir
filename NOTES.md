@@ -116,9 +116,20 @@ publish lockfile lands. One boundary stated, not two half-known.
 `rev-parse --short` + a `git status --porcelain` check — NOT `git
 describe`, which turns tag-relative the moment a tag exists and would
 break the gate's short-hash comparison). The gate WARNS on a dirty
-build locally (iteration is fine) and HARD-FAILS in CI (`$CI` set — a
-shipped artifact may not carry uncommitted source). Verified: dirty
-tree → `9f6eca0-dirty`, gate rc=0 local / rc=1 under CI=true.
+build but PASSES.
+
+CORRECTION (same day, user hit it): the first cut HARD-FAILED on dirty
+when `$CI` was set. Wrong on two counts — a freshly built dirty binary
+is the FRESHEST binary, not a stale one (the mtime gate is the real
+staleness check; the stamp's job is identity), and real CI publishes
+from a CLEAN checkout so a dirty stamp can't even arise there — meaning
+the `$CI`-keyed hard-fail had NO true-positive case and only ever
+false-positived on developers whose environment happened to carry `CI`.
+"Don't ship dirty" is a shipping concern, not a per-consumer test-gate
+one. Fix: dirty warns everywhere; the hard-fail is an explicit opt-in
+(`WEIR_REQUIRE_CLEAN=1`) for a release job that genuinely wants it.
+Verified: dirty stamp → rc=0 plain AND under CI=true, rc=1 only under
+WEIR_REQUIRE_CLEAN.
 
 **Doc riders (three).** SKILL: capture is heavy — stream don't
 capture for big output, carrying the measured 4M-lines/44MB→573MB
