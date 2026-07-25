@@ -80,8 +80,7 @@ let kept = distinctSnips |> Seq.where plausible |> Seq.force
 kept
 |> Seq.iter (fun src ->
     let h =
-        Str.split "\n" src
-        |> feed "sha256sum" []
+        Str.split "\n" src | sha256sum
         |> Seq.head
         |> Str.sub 0 12
     File.write (Path.combine outDir $"{h}.snippet") (Str.split "\n" src))

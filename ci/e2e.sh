@@ -2318,6 +2318,30 @@ cat > "$fddir/lazy.weir" <<'WEOF'
 WEOF
 out=$(timeout 10 $BIN "$fddir/lazy.weir") || fail "feed input must be lazy (head -1 over a huge range must terminate)"
 expect "feed input laziness on the AOT binary" "1" "$out"
+
+# ---- value-headed pipelines [D:value-headed-pipe] ----
+# the bare spelling of feed: an EXPRESSION piped into an external command
+out=$($BIN -e '["a"; "b"; "c"] | tr a-z A-Z')
+expect "value-headed pipe feeds stdin" '["A"; "B"; "C"]' "$out"
+# byte-identical to the feed builtin
+a=$($BIN -e '["x"] | tr x y'); b=$($BIN -e '["x"] |> feed "tr" ["x"; "y"]')
+[ "$a" = "$b" ] || fail "value-headed pipe must equal feed: $a vs $b"
+echo "e2e ok: value-headed pipe ≡ feed, byte-identical"
+# multi-external chains
+out=$($BIN -e '["one"; "two"] | cat | wc -l')
+expect "value-headed multi-external chain" '["2"]' "$out"
+# resolution decides: a library/binding head keeps the bare-pipe teaching
+errout=$($BIN -e '[1; 2] | Seq.length' 2>&1) && fail "library head must keep the pipe hint"
+echo "$errout" | grep -qF "'|' chains commands" || fail "library-head hint: $errout"
+# type demand: scalar and seq<int> each get their teaching
+errout=$(printf '"x" | tr a b\n' | $BIN check /dev/stdin 2>&1) && fail "scalar LHS must reject"
+echo "$errout" | grep -qF "one line wraps as \`[x]\`" || fail "scalar teaching: $errout"
+errout=$(printf '[1; 2] | cat\n' | $BIN check /dev/stdin 2>&1) && fail "seq<int> LHS must reject"
+echo "$errout" | grep -qF "map show or interpolate per element" || fail "seq<int> teaching: $errout"
+# a reifier needs a single external segment (value-headed or multi are rejected identically)
+errout=$(printf '["x"] | grep x | complete\n' | $BIN check /dev/stdin 2>&1) && fail "reifier after value head must reject"
+echo "$errout" | grep -qF "single external command segment" || fail "reifier rejection: $errout"
+echo "e2e ok: value-headed pipe — resolution boundary, type teachings, reifier rule"
 rm -rf "$fddir"
 
 # ---- [<Default>]: the resting point moves [D:default-attr] ----

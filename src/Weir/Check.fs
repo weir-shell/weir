@@ -1544,7 +1544,25 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EPipe(arg, ({ Kind = ECmd _ } as cmdExpr)) ->
         result {
             let! targ = infer ctx env arg
-            do! bind ctx env arg.Span (TSeq TStr) targ.Ty
+            // a value-headed pipeline [D:value-headed-pipe] feeds the LHS as
+            // stdin — seq<string> EXACTLY, with the twin teachings pointing
+            // each mistake at its fix (a command-headed chain never reaches
+            // the error path: its LHS is already seq<string>)
+            do!
+                match resolve ctx targ.Ty with
+                | TSeq TStr -> Ok()
+                | TSeq(TVar _ as tv) -> bind ctx env arg.Span TStr tv
+                | TVar _ -> bind ctx env arg.Span (TSeq TStr) targ.Ty
+                | (TStr | TInt | TBool) as t ->
+                    err
+                        arg.Span
+                        $"a value-headed pipeline feeds seq<string> as stdin; this is {formatTy t} — one line wraps as `[x]`; a value needs show/interpolate first"
+                | TSeq elem ->
+                    err
+                        arg.Span
+                        $"a value-headed pipeline feeds seq<string> as stdin; this is seq<{formatTy elem}> — map show or interpolate per element"
+                | t -> err arg.Span $"a value-headed pipeline feeds seq<string> as stdin; this is {formatTy t}"
+
             let! tcmd = infer ctx env cmdExpr
 
             return

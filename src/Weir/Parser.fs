@@ -366,6 +366,22 @@ let mutable private sigilChainImpl: Expr option -> Parser<Expr, unit> =
 let private sigilChain (envO: Expr option) : Parser<Expr, unit> =
     fun stream -> (sigilChainImpl envO) stream
 
+// value-headed pipelines [D:value-headed-pipe]: after an expression, a
+// bare `|` whose head resolves EXTERNAL feeds the value as stdin
+// (`snips | sha256sum` ≡ `snips |> feed "sha256sum" []`). A known/library
+// head keeps the barePipeHint teaching. Forward-declared (needs the
+// command grammar below); set after cmdLineWith.
+let mutable private valueHeadedTailImpl: Expr -> Parser<Expr, unit> =
+    fun _ -> fail "valueHeadedTail not initialized"
+
+let private valueHeadedTail (lhs: Expr) : Parser<Expr, unit> =
+    fun stream -> (valueHeadedTailImpl lhs) stream
+
+// after seqExpr, EITHER a value-headed pipeline OR the barePipeHint
+// (which fatals on a bare `|` into an expression, else passes)
+let private pipeOrHint (lhs: Expr) : Parser<Expr, unit> =
+    valueHeadedTail lhs <|> (barePipeHint >>% lhs)
+
 let private sigilOpen (glyph: char) : Parser<Expr option, unit> =
     attempt (
         pchar glyph >>. spanned (opt rawWord) .>> pchar '('
@@ -676,7 +692,7 @@ let private letIn =
     choice
         [ pipe3
               getPosition
-              (patForm .>>. seqExpr .>> barePipeHint .>> keyword "in")
+              (patForm .>>. (seqExpr >>= pipeOrHint) .>> keyword "in")
               seqExpr
               (fun p (binder, value) body ->
                   { Kind = ELetPat(binder, value, body)
@@ -697,7 +713,7 @@ let private letIn =
                           else
                               fail "block-let command RHS is spine-only" stream
 
-                  (cmdRhs <|> (seqExpr .>> barePipeHint)) .>> keyword "in"
+                  (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in"
                   >>= fun value ->
                       withAmbientName name seqExpr
                       |>> fun body ->
@@ -1223,14 +1239,63 @@ let private exitCodeMarker =
     )
     |>> fun (_, span) -> ExitCodeMarker span
 
-let private cmdLineWith
-    (builtinHeads: bool)
-    (argP: Parser<Expr, unit>)
-    (sigilEnv: Expr option)
-    (r: Resolver)
-    : Parser<Expr, unit> =
-    commandSegment builtinHeads argP sigilEnv r
-    .>>. many (
+// fold a parsed pipeline — an initial head expression plus piped stages
+// and reifier markers — into one Expr. Shared by the command-headed
+// chain and the value-headed chain [D:value-headed-pipe]: the ONLY
+// difference is the head (a command segment vs an expression value), so
+// the stage/reifier desugar is one function. A reifier's segment must be
+// a single external command; a value threaded into it (`xs | grep |
+// complete`) carries as the ECmd's stdin position.
+let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
+    rest
+    |> List.fold
+        (fun acc seg ->
+            match acc, seg with
+            | Result.Error m, _ -> Result.Error m
+            | Result.Ok acc, Stage seg ->
+                Result.Ok
+                    { Kind = EPipe(acc, seg)
+                      Span = Span.union acc.Span seg.Span }
+            | Result.Ok acc,
+              (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ as marker) ->
+                let stageName, mspan, plainVar, envVar, extraArgs =
+                    match marker with
+                    | CompleteMarker sp -> "complete", sp, "completed", "completedEnv", []
+                    | SucceedsMarker sp -> "succeeds", sp, "succeeded", "succeededEnv", []
+                    | ExitCodeMarker sp -> "exitCode", sp, "exitCoded", "exitCodedEnv", []
+                    | OrFailMarker(msg, sp) -> "orFail", sp, "orFailed", "orFailedEnv", [ msg ]
+                    | Stage _ -> "", acc.Span, "", "", []
+
+                match acc.Kind with
+                | ECmd(prog, args, cenv) ->
+                    let span = Span.union acc.Span mspan
+
+                    // env sigils route through the *Env twins — the same
+                    // desugar family, env threaded up front
+                    let headVar =
+                        match cenv with
+                        | Some e ->
+                            { Kind = EApp({ Kind = EVar envVar; Span = mspan }, e)
+                              Span = mspan }
+                        | None -> { Kind = EVar plainVar; Span = mspan }
+
+                    let progArg = { Kind = EStr prog; Span = acc.Span }
+                    let argList = { Kind = EList args; Span = acc.Span }
+
+                    let applied =
+                        (extraArgs @ [ progArg; argList ])
+                        |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
+
+                    Result.Ok applied
+                // a reifier needs a SINGLE external segment [D:exit-reifiers]
+                // — a multi-segment chain (external OR value-headed) is
+                // rejected identically; stdin-carrying reification of a
+                // value-headed segment is a scoped follow-up [D:value-headed-pipe]
+                | _ -> Result.Error $"'{stageName}' must directly follow a single external command segment")
+        (Result.Ok h)
+
+let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEnv: Expr option) (r: Resolver) =
+    many (
         pipeSep
         >>. (completeMarker
              <|> succeedsMarker
@@ -1238,58 +1303,53 @@ let private cmdLineWith
              <|> orFailMarker
              <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )
+
+let private cmdLineWith
+    (builtinHeads: bool)
+    (argP: Parser<Expr, unit>)
+    (sigilEnv: Expr option)
+    (r: Resolver)
+    : Parser<Expr, unit> =
+    commandSegment builtinHeads argP sigilEnv r
+    .>>. pipedStages builtinHeads argP sigilEnv r
     >>= fun (h, rest) ->
-        let folded =
-            rest
-            |> List.fold
-                (fun acc seg ->
-                    match acc, seg with
-                    | Result.Error m, _ -> Result.Error m
-                    | Result.Ok acc, Stage seg ->
-                        Result.Ok
-                            { Kind = EPipe(acc, seg)
-                              Span = Span.union acc.Span seg.Span }
-                    | Result.Ok acc,
-                      (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ as marker) ->
-                        let stageName, mspan, plainVar, envVar, extraArgs =
-                            match marker with
-                            | CompleteMarker sp -> "complete", sp, "completed", "completedEnv", []
-                            | SucceedsMarker sp -> "succeeds", sp, "succeeded", "succeededEnv", []
-                            | ExitCodeMarker sp -> "exitCode", sp, "exitCoded", "exitCodedEnv", []
-                            | OrFailMarker(msg, sp) -> "orFail", sp, "orFailed", "orFailedEnv", [ msg ]
-                            | Stage _ -> "", acc.Span, "", "", []
-
-                        match acc.Kind with
-                        | ECmd(prog, args, cenv) ->
-                            let span = Span.union acc.Span mspan
-
-                            // env sigils route through the *Env twins — the
-                            // same desugar family, env threaded up front
-                            let headVar =
-                                match cenv with
-                                | Some e ->
-                                    { Kind = EApp({ Kind = EVar envVar; Span = mspan }, e)
-                                      Span = mspan }
-                                | None -> { Kind = EVar plainVar; Span = mspan }
-
-                            let progArg = { Kind = EStr prog; Span = acc.Span }
-                            let argList = { Kind = EList args; Span = acc.Span }
-
-                            let applied =
-                                (extraArgs @ [ progArg; argList ])
-                                |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
-
-                            Result.Ok applied
-                        | _ -> Result.Error $"'{stageName}' must directly follow a single external command segment")
-                (Result.Ok h)
-
-        match folded with
+        match foldChain h rest with
         | Result.Ok e -> preturn e
         | Result.Error m -> failFatally m
 
 let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg None r
 
 sigilChainImpl <- fun envO -> fun stream -> (cmdLineWith true cmdArg envO ambientResolver.Value) stream
+
+// a single bare pipe `|` — NOT `|>` (expression pipe) or `||` (or)
+let private singlePipe: Parser<unit, unit> =
+    attempt (pchar '|' .>> notFollowedBy (anyOf "|>")) >>. ws
+
+valueHeadedTailImpl <-
+    fun lhs ->
+        fun stream ->
+            let r = ambientResolver.Value
+
+            // gate [D:value-headed-pipe]: a single `|` then a head that
+            // resolves to an EXTERNAL command (an ECmd — a known/library
+            // head fails commandSegment and falls through to barePipeHint).
+            // The lookAhead consumes nothing; the stages re-parse from `|`.
+            let externalHeaded =
+                commandSegment true cmdArg None r
+                >>= fun seg ->
+                    match seg.Kind with
+                    | ECmd _ -> preturn ()
+                    | _ -> fail "value-headed pipe needs an external command head"
+
+            let p =
+                lookAhead (singlePipe >>. externalHeaded)
+                >>. pipedStages true cmdArg None r
+                >>= fun stages ->
+                    match foldChain lhs stages with
+                    | Result.Ok e -> preturn e
+                    | Result.Error m -> failFatally m
+
+            p stream
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
 // command-callable builtins (cd) stay ordinary functions there —
@@ -1411,7 +1471,7 @@ let private topLet (r: Resolver) =
                     { r with
                         IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n }
 
-                let rhsP = cmdLineLetRhs r' <|> (seqExpr .>> barePipeHint)
+                let rhsP = cmdLineLetRhs r' <|> ((seqExpr >>= pipeOrHint))
 
                 // the RHS spine carries the flag + the param-extended
                 // resolver, so interior block lets parse commands with
@@ -1443,13 +1503,13 @@ let private stmtWith (r: Resolver) =
                        | PVar _
                        | PCase(_, None) -> fail "plain binder takes the ident path"
                        | _ -> preturn b)
-                  .>>. (seqExpr .>> barePipeHint)
+                  .>>. ((seqExpr >>= pipeOrHint))
                   .>> eof
               )
               |>> SLetPat
               topLet r
               cmdLine r .>> eof |>> SCmd
-              seqExpr .>> barePipeHint .>> eof |>> SExpr ]
+              (seqExpr >>= pipeOrHint) .>> eof |>> SExpr ]
 
 let private noExternals =
     { IsKnown = fun _ -> true

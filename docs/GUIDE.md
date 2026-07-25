@@ -507,8 +507,9 @@ print $"{show cli.clean} {show cli.port}"
 Pulling structure out of text is one pipeline. `Str.rmatchAll` yields
 every match's groups (lazily, no Option — the absence is the empty
 seq); `(?s)`/`(?m)` inline flags handle DOTALL/MULTILINE. Map each
-match to what you want, `Seq.distinct` to dedupe, and `feed` a value
-through an external tool (`|> feed "sha256sum" []`) when you need one:
+match to what you want, `Seq.distinct` to dedupe, and pipe a value
+through an external tool (`| sha256sum` — the bare spelling of `feed`)
+when you need one:
 
 ```weir
 let text = "let a = 1\nlet b = 2\nlet a = 1"

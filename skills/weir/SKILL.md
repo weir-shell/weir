@@ -563,6 +563,15 @@ let c = Args.load Cmd
   (data-last; stdout streams back as `seq<string>`; input pulls
   lazily, stdin closes at exhaustion): `snips |> feed "sha256sum" []`.
   `feedEnv vars ...` is the env twin.
+- `xs | prog args` [D:value-headed-pipe] is the BARE spelling of the
+  same thing — an expression piped into an external command feeds it
+  as stdin (`snips | sha256sum` ≡ `snips |> feed "sha256sum" []`,
+  byte-identical). Resolution decides: an EXTERNAL head after `|` is
+  the pipe; a binding/library head keeps the `|`-chains-commands
+  teaching (spell `|>`). LHS must be `seq<string>`. Use bare for a
+  literal program name, `feed` for a computed one. (Reifiers after a
+  value head — `xs | grep | complete` — aren't wired yet: capture
+  with `$()` or use `completed`.)
 - `runEnv vars "az" [...]` / `cmdEnv vars ...` inject child-env
   (overlay: set those names, inherit the rest; parent untouched).
   `Env.fromFile "x.env"` loads the dotenv SUBSET (KEY=VALUE, optional

@@ -1516,11 +1516,13 @@ let session3Tests =
               Expect.equal (runReal "yes hi | cat | first 2" |> forceSeq) [ VStr "hi"; VStr "hi" ] ""
               Expect.isTrue (eventuallyNoSurvivors "weir-s3cc") "trivially true marker check"
           }
-          test "non-string stream into an external is rejected" {
+          test "non-string stream into an external is rejected [D:value-headed-pipe]" {
+              // the pipe-into-external teaching is shared by command chains
+              // and value-headed pipelines (one EPipe-into-ECmd arm)
               match Weir.Parser.parseLine cmdResolver "git x | map (fun s -> 1) | cat" with
               | Ok(SExpr e | SCmd e) ->
                   match typecheck env e with
-                  | Error terr -> Expect.stringContains terr.Message "expected string, got int" ""
+                  | Error terr -> Expect.stringContains terr.Message "seq<int> — map show or interpolate per element" ""
                   | Ok _ -> failtest "expected type error"
               | other -> failtest $"unexpected: {other}"
           }
@@ -3150,6 +3152,23 @@ let optionSweepTests =
               match Weir.Parser.parseStmt "[1; 2] | Seq.head" with
               | Error msg -> Expect.stringContains msg "'|' chains commands" ""
               | Ok _ -> failtest "expected the cliff"
+          }
+          test "value-headed pipeline: external head feeds; library head keeps the hint [D:value-headed-pipe]" {
+              // resolution decides — an EXTERNAL head after a value `|`
+              // desugars to a pipe into the command (stdin), reusing the
+              // EPipe-into-ECmd machinery (identical to feed)
+              match Weir.Parser.parseLine cmdResolver "[\"a\"] | cat" with
+              | Ok(SExpr e | SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "(cmd cat)" "pipes the value into the command"
+              | other -> failtest $"expected the value-headed pipe, got {other}"
+
+              match Weir.Parser.parseLine cmdResolver "[\"a\"] | grep x | cat" with
+              | Ok(SExpr e | SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "(cmd cat)" "multi-external chains fold"
+              | other -> failtest $"expected the chain, got {other}"
+
+              // a library/known head keeps the barePipeHint (not value-headed)
+              match Weir.Parser.parseLine cmdResolver "[1] | Seq.head" with
+              | Error msg -> Expect.stringContains msg "'|' chains commands" "library head keeps the hint"
+              | Ok _ -> failtest "expected the hint"
           }
           test "retired names teach their replacements [D:seq-force]" {
               Expect.stringContains (checkErr "[1] |> Seq.toList").Message "'Seq.force' is the materializer" ""

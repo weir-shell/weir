@@ -1,5 +1,56 @@
 # Spike Notes
 
+## Value-headed pipelines — `snips | sha256sum` (2026-07-25)
+
+The park opened on its own criterion, fired BY HAND: writing the miner,
+the user asked why `feed "sha256sum" []` is stringly when `cmd` is not.
+`feed` was the only command-value-family member with no bare spelling.
+(Provenance per the new lens: hand-written receipt — weight it.)
+
+**The diagnosis was the win.** `EPipe(seqExpr, ECmd)` ALREADY
+type-checks — the checker binds the arg to `seq<string>` and threads
+it as the command's stdin — and ALREADY evals to `Proc.linesWith …
+(Some stdin)`, byte-identical to `feed`. So the entire streaming
+feature is a PARSER change: after an expression LHS, a bare `|` whose
+head resolves EXTERNAL seeds the command-chain fold with the LHS
+expression instead of firing barePipeHint. No new runtime, no
+feed-desugar — the `EPipe`-into-`ECmd` machinery that command chains
+already use IS the mechanism. Extracted `foldChain` so the
+command-headed and value-headed paths share one desugar.
+
+**Resolution decides, one step further.** `xs | sha256sum` (external
+head) → value-headed pipe; `xs | Seq.length` (library) or `xs | f`
+(binding) → the barePipeHint SHARPENS, firing exactly on
+expression-into-expression, the case it was always right about. The
+gate is `commandSegment` resolving to an ECmd; a known/library head
+fails it and falls through to the hint. LHS demand is `seq<string>`
+with twin teachings (scalar → `[x]`/show; seq<int> → map show),
+shared by command chains and value-headed pipes (one checker arm —
+an existing pin's message improved as a result, named).
+
+**Scope — session 1 of the feature; the rest reported, not silently
+narrowed.** SHIPPED: streaming pipelines (single + multi-external) at
+expression positions (let-RHS, statement, captures); the miner's
+`| sha256sum` receipt closed (corpus reproduces, byte-identical).
+DEFERRED as separable chunks, each with its seam:
+- **Reifier-with-stdin** (`xs | grep | complete`): needs the reifier
+  builtins to expose `Proc.completeWith`'s existing `input` param (they
+  pass `None` today); changing their arity breaks the expression
+  spelling `completed "p" [a]`, so it wants stdin-carrying twins. Today
+  it gives the SAME "single external segment" rejection a multi-external
+  reifier gives — no new law (the plan's own multi-segment ruling).
+- **Semantic tokens** for the value-headed head: the recognizer walks
+  command-mode statements, not `EPipe`-into-`ECmd`, so `cat` in
+  `xs | cat` isn't colored yet (verified empty).
+- **Fuzzer** value-headed shapes + the `xs | prog` ≡ `xs |> feed`
+  transform law.
+- **Sigil-interior `$()`** value-headed (largely redundant — a
+  value-headed pipe is already an expression) and the district
+  rejection message (generic parse error today).
+
+Zero pin movement on legitimate programs beyond the one improved
+message; 867 unit / e2e (7 new value-headed checks) / 59 doc / green.
+
 ## The deep-run lock — the OWED window closes (2026-07-25)
 
 The deep-run-vs-republish race (harness-truth class, promoted watch→OWED
