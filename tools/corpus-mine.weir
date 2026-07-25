@@ -7,11 +7,20 @@
 // value hashed through sha256sum's stdin), Seq.distinct (dedupe as a
 // pipeline stage). Reproduces the python's published numbers.
 //
-// Usage: corpus-mine.weir <corpus-dir> <out-dir> [--wide]
+// Usage: corpus-mine.weir --corpus <dir> --out <dir> [--wide]
 
-let corpus = Seq.head args
-let outDir = Seq.item 1 args
-let wide = Seq.contains "--wide" args
+type Cli =
+    { [<Doc "corpus root scanned for .fs files">]
+      corpus: string
+      [<Doc "output directory for .snippet files">]
+      out: string
+      [<Doc "widen the filter: admit the four feature-wave shapes">]
+      wide: bool }
+
+let cli = Args.load Cli
+let corpus = cli.corpus
+let outDir = cli.out
+let wide = cli.wide
 
 // constructs weir does not have (or bounds out) regardless of wave —
 // one entry per family, substring match on the whole snippet
