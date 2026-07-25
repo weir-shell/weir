@@ -380,8 +380,11 @@ quantity semantics now.
   set instead of duplicating rules per mode). **The sugars ledger** —
   command-in-expression has exactly these spellings: `$()`/`!()`
   atoms (anywhere an expression goes), bare-command let-RHS (capture,
-  least ink where legal), and the `!` district (runs of effects);
-  computed program names use `run`/`cmd`.
+  least ink where legal), and the `!` district (runs of effects).
+  Every command head is a LITERAL program name, resolved at check
+  time — there is no computed-head tier [D:drop-command-builtins]. To
+  swap tools by a runtime condition, branch the whole command line
+  (`if hot then rg pat else grep pat`).
 - **Command-mode sigils** (2026-07-20): `$(chain)` captures a command
   chain's value in expression position; `!(chain)` desugars to
   `(chain) |> print` — eager, streaming, raising, unit. DESUGAR-ONLY:
@@ -394,7 +397,8 @@ quantity semantics now.
   parens; depth unrestricted). Bash priors: `$()` ALIGNS (recorded —
   priors that help get named too); `!()` diverges (bang-sigil row;
   invisible to the F# oracle, carried by behavioral pins). Computed
-  program names keep `run`/`cmd` (spliced heads parked). The
+  program names have no spelling — every head is a literal
+  [D:drop-command-builtins] (spliced heads parked). The
   eager-unit anti-idiom (`let cleanup = if ...`) is replaced by bare
   `if` statements.
 - **Block effect sequencing** (2026-07-20, PLAN-sequencing-and-args
@@ -575,12 +579,12 @@ quantity semantics now.
   family — command args and interpolation holes stay str/int/bool.
   Invisible interactively: the REPL and `-e` show nothing for a unit
   result (no `() : unit` trailer after `print`), F# FSI's `it` manner.
-- **`run : string -> seq<string> -> unit`** (2026-07-20) IS
-  `cmd prog argv |> print`, composed from those exact impls — every
-  lifecycle guarantee inherited, byte-identity by construction and
-  pinned. Exists for intent (`print`-ing a `git push` reads wrong) and
-  as the block effect atom. `completed` remains the spelling when the
-  exit code is data. **`Args.flag`/`Args.value`** are script-only argv
+- **Command lines** run a program from STATEMENT position: stream,
+  raise on nonzero, unit. The former `run`/`cmd` expression-position
+  builtins are RETIRED [D:drop-command-builtins] — a program in
+  expression position is captured with `$()`/`!()` or a reifier.
+  `completed` remains the spelling when the exit code is data.
+  **`Args.flag`/`Args.value`** are script-only argv
   scanners (empty-string short form for long-only flags, pinned);
   `Seq.contains/exists/forall/item/tryItem/skip` complete the access
   family — `contains` requires equatable elements (the sentinel
@@ -650,15 +654,15 @@ quantity semantics now.
   binding; `(expr)` splices an expression result. **Splice typing rule**:
   arguments must be strings, ints, or bools — rendered as single
   argv entries, never re-split (no injection class; same ownership line as
-  `cmd`); an unresolved argument type defaults to `string`. No adjacent-token
+  a command line); an unresolved argument type defaults to `string`. No adjacent-token
   concatenation: `foo$bar` is two args.
 - **`[` never heads a command** (decided 2026-07-18): quotes end a
   bareword, so a line-head string list (`["a"; "b"] |> ...`) would
   otherwise tokenize to bare `[` and PATH-hit `/usr/bin/[` — discovered
   as a capture bug during the unit-print session. The head rule excludes
   `[`-initial words in both the bare and `^`-forced paths (forced is a
-  hard error naming the alternative); `/usr/bin/[` stays reachable as
-  `cmd "[" [...]`, and `[` remains an ordinary character inside command
+  hard error naming the alternative); `/usr/bin/[` stays reachable by
+  its full path (only `[`-initial barewords are excluded), and `[` remains an ordinary character inside command
   *arguments* (`pgrep -f [m]arker`).
 - A command line's type is `seq<string>`; evaluation reuses the direct-exec
   machinery (`Proc`, `Session.Cwd`, tree-kill lifecycle — see the tripwires).
@@ -793,9 +797,9 @@ quantity semantics now.
   scope); the untyped floor (`args`, `Args.flag`, `Args.value`)
   remains, exactly Env.get under Env.load.
 - **Child-env injection** (2026-07-20, the shEnv receipt — the bicep
-  translation's strongest): `cmdEnv : seq<EnvVar> -> string ->
-  seq<string> -> seq<string>` and `runEnv` (its `|> print` desugar,
-  the run/cmd relationship verbatim, byte-identity pinned). OVERLAY
+  translation's strongest): via the env sigils `$e(...)`/`!e(...)`
+  (bind the `seq<EnvVar>`, glue it to the sigil; the `cmdEnv`/`runEnv`
+  builtins RETIRED [D:drop-command-builtins]). OVERLAY
   semantics: injected vars sit on top of the inherited environment —
   set/override those names, inherit the rest, parent process
   untouched (pinned). Removing a var has no spelling (no receipt;
@@ -808,11 +812,12 @@ quantity semantics now.
   `export`, no expansion, no substitution: sourcing is shell
   EVALUATION, Env.fromFile is a parser, and every rejected line says
   so by naming the escape (`sh -c "set -a; . file; ..."`). It feeds
-  cmdEnv, NOT Env.load (process-env snapshot, unchanged);
+  the env sigil, NOT Env.load (process-env snapshot, unchanged);
   file-to-typed-record is parked (Env.load over an arbitrary source —
   real design weight, no receipt). The SUGAR STORY is layered: Layer
-  0 is partial application — `let az = runEnv (Env.fromFile p) "az"`
-  — the house idiom. Layers 1 and 2 SHIPPED together (2026-07-20,
+  0 was partial application (`let az = runEnv ...`) — RETIRED with the
+  builtin [D:drop-command-builtins]; the env sigil (Layer 1) is now
+  the sole spelling. Layers 1 and 2 SHIPPED together (2026-07-20,
   user-opened rather than receipt-triggered — the trigger discipline
   was overridden by choice, on record): Layer 1 is the sigil env slot
   `$e(...)`/`!e(...)` — an identifier GLUED to glyph and paren (a
@@ -829,8 +834,8 @@ quantity semantics now.
   (ambient/scoped env, Session-carried) remains REJECTED,
   tombstone-style: the premise — injection, not session mutation —
   came from the receipt's own shape analysis; if deep-threading
-  friction arrives, the answer is still Layer 0 (pass the runner as a
-  value). Re-askable only against this entry.
+  friction arrives, the answer is still Layer 1 (bind the env value,
+  glue it to the sigil). Re-askable only against this entry.
 - **Multi-value CLI options — parked, idiom documented** (2026-07-20
   disposition of the bicep `App of stack * env` finding): one
   occurrence, and the two-flag reshape (`--stack X --env Y`) is clean
@@ -887,13 +892,13 @@ quantity semantics now.
   check-everything-first. The external `/bin/sh` does everything it did
   with zero special-casing: command mode `sh -c "glob* && stuff"`
   (streams, completes, pipes like any command); expression positions
-  use `cmd "sh" ["-c"; "..."]`. Consequences of a shell string remain
+  capture with `$(sh -c "...")`. Consequences of a shell string remain
   the user's — backgrounded (`&`) children are orphaned to init when sh
   exits and no tree-kill can reach them (Session-1 lifecycle tripwires
-  keep that analysis, now via the cmd spelling).
-- **`cmd : string -> seq<string> -> seq<string>`** is direct exec: weir owns
+  keep that analysis, now via the `$()` spelling).
+- **Command lines** are direct exec: weir owns
   (prog, args). No shell, zero expansion — every argument is one argv entry,
-  so there is no injection class (`cmd "echo" ["; rm -rf x"]` prints the
+  so there is no injection class (`echo "; rm -rf x"` prints the
   string). Programs containing `/` resolve against `Session.Cwd`; bare names
   resolve against PATH.
 - **Splice-defaulting soundness condition** — RESTATED under

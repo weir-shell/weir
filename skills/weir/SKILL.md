@@ -154,8 +154,8 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   match's groups, lazily; no Option (absence is the empty seq).
   `(?s)`/`(?m)` inline flags cover DOTALL/MULTILINE. The scrape idiom
   is one pipeline: `Str.rmatchAll pat text |> Seq.map Seq.head |>
-  Seq.distinct` (all matches → contents → dedup); feed a match through
-  a tool with `|> feed "sha256sum" []`.
+  Seq.distinct` (all matches → contents → dedup); pipe a match through
+  a tool with `| sha256sum`.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
   `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency
@@ -444,7 +444,7 @@ if clean then !(sh -c "echo acting")
   (`let w = cd target` applies the BINDING target). BLOCK lets inside
   bodies (and lambda bodies) take the same command RHS along a
   top-level let's spine; the single-line `let ... in` spelling stays
-  expression-only — there use `cmd "git" ["status"]` or `$()`. A
+  expression-only — there use `$(git status)`. A
   bareword `in` on a let RHS ends the command grammar; quote `"in"`
   to pass it.
 - Tuples: `(a, b)` literals, `int * string` types, `| (x, y) ->`
@@ -557,30 +557,28 @@ let c = Args.load Cmd
   No `$NAME` expansion in commands — interpolate: `-H $"token {key}"`.
 - `//` mid-token is NOT a comment: bareword URLs (`https://...`) pass
   through; comments need line start or a preceding space.
-- `run "git" ["push"]` runs a program from expression positions:
-  streams like a command line, raises on nonzero, returns unit.
-- `xs |> feed "prog" [args]` pipes a weir seq into a child's STDIN
-  (data-last; stdout streams back as `seq<string>`; input pulls
-  lazily, stdin closes at exhaustion): `snips |> feed "sha256sum" []`.
-  `feedEnv vars ...` is the env twin.
-- `xs | prog args` [D:value-headed-pipe] is the BARE spelling of the
-  same thing — an expression piped into an external command feeds it
-  as stdin (`snips | sha256sum` ≡ `snips |> feed "sha256sum" []`,
-  byte-identical). Resolution decides: an EXTERNAL head after `|` is
-  the pipe; a binding/library head keeps the `|`-chains-commands
-  teaching (spell `|>`). LHS must be `seq<string>`. Use bare for a
-  literal program name, `feed` for a computed one. Reifiers compose on
-  the tail — `files | grep -c foo | complete` reifies the (single
+- Every command head is a LITERAL program name, resolved at check
+  time — there is no computed-head tier. Command lines run from
+  STATEMENT position; for a program in EXPRESSION position, capture
+  with `$(git status)` or a reifier (`| complete` etc.). To swap tools
+  by a runtime condition, branch the whole command line — `if hot then
+  rg pat else grep pat`.
+- `xs | prog args` [D:value-headed-pipe] pipes a weir seq into an
+  external command's STDIN (data-last; stdout streams back as
+  `seq<string>`; input pulls lazily, stdin closes at exhaustion):
+  `snips | sha256sum`. Resolution decides: an EXTERNAL head after `|`
+  is the pipe; a binding/library head keeps the `|`-chains-commands
+  teaching (spell `|>`). LHS must be `seq<string>`. Reifiers compose
+  on the tail — `files | grep -c foo | complete` reifies the (single
   external) segment WITH the value as stdin (`| succeeds`/`| exitCode`/
   `| orFail` too); a MULTI-external chain still needs one segment.
-- `runEnv vars "az" [...]` / `cmdEnv vars ...` inject child-env
-  (overlay: set those names, inherit the rest; parent untouched).
-  `Env.fromFile "x.env"` loads the dotenv SUBSET (KEY=VALUE, optional
-  quotes, # comments — NO export/$VAR; those lines error, naming the
-  `sh -c "set -a; . file; ..."` escape). House idiom: partially apply
-  — `let az = runEnv (Env.fromFile p) "az"` then `az [...]`. In
-  sigils: `$e(...)`/`!e(...)` (ident GLUED to glyph and paren) injects
-  into every spawn in the chain. Line-end `!name` = env district
+- Env sigils `$e(...)`/`!e(...)` (ident GLUED to glyph and paren)
+  inject child-env into every spawn in the chain (overlay: set those
+  names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
+  loads the dotenv SUBSET (KEY=VALUE, optional quotes, # comments — NO
+  export/$VAR; those lines error, naming the `sh -c "set -a; . file;
+  ..."` escape). Bind once, glue to the sigil: `let e = Env.fromFile p`
+  then `!e(az ...)`. Line-end `!name` = env district
   (distributes over the block); a literal `!word` as a final command
   arg must be quoted. Bare `!(...)`/`!` districts and command lines
   stay env-less.

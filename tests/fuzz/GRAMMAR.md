@@ -110,13 +110,11 @@ fails.
    is idempotent, preserves per-statement sexpr shape (the respace
    guard's own predicate), and the formatted program is
    output-identical on the binary.
-5. Value-headed pipe equivalence [D:value-headed-pipe]:
-   `xs | prog args` ≡ `xs |> feed "prog" [args]`, byte-identical (rc,
-   stdout, stderr). A DEDICATED generator (literal seq LHS into a safe
-   external — cat/sort/tr/wc), not a RenderCfg flip: the shape is
-   expression-position, outside the command-line renderer, so it rides
-   its own property like the depth axis. Guards the two spellings
-   meeting the same `foldChain`.
+5. Value-headed pipe equivalence RETIRED [D:drop-command-builtins]:
+   the law compared `xs | prog args` to `xs |> feed …`; `feed` is
+   dropped (the command-value tier retired — every head is a literal),
+   so there is no second spelling. The value-headed pipe is pinned by
+   e2e + unit.
 
 Ledger equivalence claims NOT yet in the transform library (named
 exclusions): env-district/`$e`/`!e` spellings (env features are

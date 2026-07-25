@@ -1,5 +1,51 @@
 # Spike Notes
 
+## Dropping the computed-head tier — every head is a literal (2026-07-25)
+
+Removed `cmd`/`run`/`cmdEnv`/`runEnv`/`feed`/`feedEnv` — the six
+expression-position command builtins ([D:drop-command-builtins]).
+Their only job was a COMPUTED head (a program name in a variable);
+every other need — capture, effect, exit code, stdin — already has a
+better spelling. So the whole tier subtracts to: every command head is
+a LITERAL, resolved at check time.
+
+**GREP-GATED, and the gate came back empty.** The plan was stop-and-
+report if any real script had a computed head. The audit (e2e + tools
++ tests) found ZERO. The one near-miss — git-subrepo's `completedEnv
+author "git" argv` — has a LITERAL head (`"git"`); it is a reifier, not
+a dropped name, and reifiers stay this session. So the drop is pure
+subtraction, no user rewrite forced by a genuine computed head.
+
+**NO retirement hints (user, mid-session).** The first pass added a
+teaching machine — every dropped name fired a "use X instead" hint.
+The user cut it: we are in the experimental phase where anything can
+change, so teaching retirements is teaching a fiction. Pure removal;
+the dead impls sit in Builtins.fs (no FS warning), the retiredBare
+hint table keeps only its original three.
+
+**TWO SESSIONS (user decision).** The six "clean" names now; the
+REIFIER family (`completed`/`succeeded`/`orFailed`/`exitCoded` + Env/In
+twins) is its OWN session — those names are dual-use desugar targets
+`foldChain` emits for `| complete` etc., so dropping the user-callable
+spelling is an internal rename, not a subtraction. Untouched here.
+
+**The reorg (user: "push through").** `cmd "sh" ["-c"; X]` was
+pervasive in tests — the value-context idiom for a shell string. It
+rewrites to `$(sh -c X)` (capture) or bare `sh -c X` (statement);
+value-headed `xs |> feed "p" []` becomes `xs | p`; env twins become
+sigils (`!e(...)`/`$e(...)`). ~25 e2e rewrites, the resolver block
+moved above the first command test (runReal forward-ref), 5 unit tests
+retired (env-twin type tests, redundant cmd-cwd, cmd-not-found), the
+fuzz feed-equivalence property (invariant 5) retired with feed.
+
+**Tool substitution branches the line.** The tier's imagined use —
+"pick rg or grep at runtime" — reads better as `if hot then rg pat
+else grep pat`. Branch the whole command, not the head. That is the
+re-ask criterion inverted: reopen only for a head set that genuinely
+cannot be enumerated into a branch.
+
+862 unit / e2e green / 19 fuzz (feed law retired) / 59 doc / green.
+
 ## Value-headed pipelines, session 2 — the deferrals close (2026-07-25)
 
 Session 1 shipped the streaming form and deferred four chunks with their
@@ -991,6 +1037,15 @@ consumers as the output axis) waits for the family to genuinely
 need a NINTH name or a new axis — Cwd is visibly next, at the
 Session seam. When that session comes it is an EXPOSE, not a
 build: the internal spec is already the thing it would surface.
+
+[AMENDED 2026-07-25 by [D:drop-command-builtins]: the reopen axis
+is no longer "a ninth NAME" — the six head-tier constructors were
+dropped (every command head is now a literal). It is now
+SCOPES-VS-ARGUMENTS: a value that must vary the child's ENV or
+STDIN still routes through internal spec twins (no user-facing
+name — the park stays shut); the park reopens only if a value must
+vary the HEAD and that head set cannot be enumerated into a
+branch. Cwd, if it comes, is still an EXPOSE.]
 
 ## The reifier family completes — one law, four cells (2026-07-24)## The reifier family completes — one law, four cells (2026-07-24)
 

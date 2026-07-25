@@ -1344,7 +1344,6 @@ let private sndImpl: Value =
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
       "nats", seqInt, natsImpl
-      "cmd", TFun(TStr, TFun(TSeq TStr, seqStr)), cmdImpl
       "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TSeq TStr, pwdImpl
@@ -1361,10 +1360,8 @@ let private entries: (string * Ty * Value) list =
       "succeededIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBool))), succeededWithIn []
       "orFailedIn", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), orFailedWithIn []
       "exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
-      "feed", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TSeq TStr))), feedWith []
       "fail", TFun(TStr, TUnit), failImpl
       "exit", TFun(TInt, TUnit), exitImpl
-      "cmdEnv", TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TSeq TStr))), cmdEnvImpl
       "completedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))),
       VBuiltin(fun envV -> completedWith (envVarPairs envV))
@@ -1376,10 +1373,7 @@ let private entries: (string * Ty * Value) list =
       VBuiltin(fun envV -> orFailedWith (envVarPairs envV))
       "exitCodedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TInt))),
-      VBuiltin(fun envV -> exitCodedWith (envVarPairs envV))
-      "feedEnv",
-      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TSeq TStr)))),
-      VBuiltin(fun envV -> feedWith (envVarPairs envV)) ]
+      VBuiltin(fun envV -> exitCodedWith (envVarPairs envV)) ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)
@@ -1440,8 +1434,6 @@ let typeEnv: TypeEnv =
         |> Map.add "print" Check.printScheme
         |> Map.add "printerr" Check.printScheme
         |> Map.add "show" Check.showScheme
-        |> Map.add "run" (generalize (TFun(TStr, TFun(TSeq TStr, TUnit))))
-        |> Map.add "runEnv" (generalize (TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TUnit)))))
       Modules =
         moduleTable
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
@@ -1472,8 +1464,6 @@ let valueEnv: Env =
     ("print", printImpl)
     :: ("printerr", printerrImpl)
     :: ("show", showImpl)
-    :: ("run", runImpl)
-    :: ("runEnv", runEnvImpl)
     :: flat
     @ mangled
     |> Map.ofList

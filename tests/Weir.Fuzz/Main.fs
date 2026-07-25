@@ -185,45 +185,9 @@ let tests =
           // historically failed
           metamorphic "all transforms composed stay output-neutral" (fun rnd p -> Some(Transform.composedAll rnd p))
 
-          // the value-headed pipe equivalence law [D:value-headed-pipe]:
-          // `xs | prog args` ≡ `xs |> feed "prog" [args]`, byte-identical
-          // output. Both spellings meet the same foldChain by construction —
-          // this guards against the paths diverging (a dedicated generator,
-          // like the depth axis, since the shape is expression-position not
-          // a RenderCfg flip; GRAMMAR.md records it).
-          testPropertyWithConfig cfg "value-headed pipe ≡ feed, byte-identical"
-          <| fun (NonNegativeInt s) ->
-              let rnd = Random s
-
-              let words = List.init (1 + rnd.Next 4) (fun _ -> $"w{rnd.Next 1000}")
-
-              let seqLit = "[ " + (words |> List.map (fun w -> $"\"{w}\"") |> String.concat "; ") + " ]"
-
-              let prog, args =
-                  [ "cat", []; "sort", []; "tr", [ "a-z"; "A-Z" ]; "wc", [ "-l" ] ].[rnd.Next 4]
-
-              let bareArgs = args |> List.map (fun a -> " " + a) |> String.concat ""
-              let listArgs = "[ " + (args |> List.map (fun a -> $"\"{a}\"") |> String.concat "; ") + " ]"
-
-              let bare = [ $"let out = {seqLit} | {prog}{bareArgs}"; "out |> Seq.iter print" ]
-              let fed = [ $"let out = {seqLit} |> feed \"{prog}\" {listArgs}"; "out |> Seq.iter print" ]
-
-              let r0 = Runner.runProgram bare
-              let r1 = Runner.runProgram fed
-
-              if r0.TimedOut || r1.TimedOut then
-                  failtestf "hang:\n%s" (showProgram bare)
-
-              if r0.Rc <> 0 then
-                  failtestf "value-headed spelling rejected (rc=%d):\n%s\n%s" r0.Rc (showProgram bare) r0.Err
-
-              if (r1.Rc, r1.Out, r1.Err) <> (r0.Rc, r0.Out, r0.Err) then
-                  failtestf
-                      "value-headed ≠ feed\n--- bare: %A\n%s\n--- fed: %A\n%s"
-                      (r0.Rc, r0.Out)
-                      (showProgram bare)
-                      (r1.Rc, r1.Out)
-                      (showProgram fed)
+          // the value-headed pipe ≡ feed equivalence law RETIRED
+          // [D:drop-command-builtins]: feed is dropped, so there is no second
+          // spelling to compare. The value-headed pipe is pinned by e2e + unit.
 
           testPropertyWithConfig cfg "assembly/check is total on generated programs and mutated neighbors"
           <| fun (p: Program) (NonNegativeInt s) ->

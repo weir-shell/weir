@@ -98,7 +98,7 @@ not in the shipped binary. Each published binary is stamped with the
 source revision it was built from (`weir --version`), and the test
 batteries refuse to run against a stale binary.
 
-Secrets passed to a child via `runEnv`/`cmdEnv` are not echoed: a
+Secrets passed to a child via the env sigil (`!e(...)`/`$e(...)`) are not echoed: a
 failed command's error renders only the program and its arguments, and
 a `complete` record carries no environment field. A secret leaks only
 if the script itself places it in argv or interpolates it — the

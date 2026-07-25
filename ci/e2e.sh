@@ -35,7 +35,7 @@ errout=$($BIN -e '1<mb>' 2>&1 || true)
 echo "$errout" | grep -qF "units of measure are not supported" || fail "transition message missing: $errout"
 echo "e2e ok: measure transition error"
 
-out=$($BIN -e 'cmd "echo" ["*"]')
+out=$($BIN -e '$(echo "*")')
 expect "argv stays literal" '["*"]' "$out"
 
 out=$($BIN -e 'echo hi (40 + 2) | first 1')
@@ -263,15 +263,11 @@ expect "worker sessions fork: worker two" "/etc" "$out"
 expect "worker sessions fork: parent untouched" "after: /tmp" "$out"
 rm -rf "$forkdir"
 
-out_run=$($BIN -e 'run "sh" ["-c"; "printf a\\nb\\n"]')
-out_print=$($BIN -e 'cmd "sh" ["-c"; "printf a\\nb\\n"] |> print')
-[ "$out_run" = "$out_print" ] || fail "run must be byte-identical to cmd |> print (run=[$out_run] print=[$out_print])"
-echo "e2e ok: run is the cmd|>print desugar, byte-identical"
-
-if $BIN -e 'run "sh" ["-c"; "exit 4"]' 2>/dev/null; then
-    fail "run must raise on nonzero exit"
+# run/cmd|>print byte-identity retired [D:drop-command-builtins] (both dropped)
+if $BIN -e 'sh -c "exit 4"' 2>/dev/null; then
+    fail "a bare command must raise on nonzero exit at force"
 fi
-echo "e2e ok: run raises on nonzero exit"
+echo "e2e ok: bare command raises on nonzero exit"
 
 seqdir=$(mktemp -d)
 cat > "$seqdir/seq.weir" <<'WEOF'
@@ -279,13 +275,13 @@ let go = 1 > 0
 
 let steps =
     if go then
-        run "sh" ["-c"; "echo one"]
-        run "sh" ["-c"; "echo two"]
+        !(sh -c "echo one")
+        !(sh -c "echo two")
         print "three"
 
 let skipped =
     if 1 > 2 then
-        run "sh" ["-c"; "echo never"]
+        !(sh -c "echo never")
         print "never"
 
 print "after"
@@ -607,11 +603,11 @@ WEOF
 out=$($BIN "$stmtdir/stream.weir" | grep staged)
 expect "print streams through a host pipe" "staged: yes" "$out"
 
-out=$($BIN -e 'cmd "sh" ["-c"; "echo streamed"] |> print')
+out=$($BIN -e '$(sh -c "echo streamed") |> print')
 [ "$out" = "streamed" ] || fail "expression-position process |> print must stream (got: $out)"
 echo "e2e ok: cmd sh |> print streams"
 
-if $BIN -e 'cmd "sh" ["-c"; "exit 3"] |> print' 2>/dev/null; then
+if $BIN -e '$(sh -c "exit 3") |> print' 2>/dev/null; then
     fail "cmd |> print must raise on nonzero exit at force"
 fi
 echo "e2e ok: cmd sh |> print raises on nonzero exit"
@@ -942,13 +938,14 @@ let walked =
 
 print $"{walked.Prev} after {walked.Ancestor}, kept {walked.Kept}"
 
-// the inline-env receipt shape (three vars, Env.ofPairs)
-runEnv (Env.ofPairs [("GIT_AUTHOR_NAME", "n"); ("GIT_AUTHOR_EMAIL", "e"); ("GIT_AUTHOR_DATE", "d")]) "sh" ["-c"; "echo $GIT_AUTHOR_NAME/$GIT_AUTHOR_EMAIL"]
+// the inline-env receipt shape (three vars, Env.ofPairs) — env sigil
+let author = Env.ofPairs [("GIT_AUTHOR_NAME", "n"); ("GIT_AUTHOR_EMAIL", "e"); ("GIT_AUTHOR_DATE", "d")]
+!author(sh -c "echo $GIT_AUTHOR_NAME/$GIT_AUTHOR_EMAIL")
 WEOF
 out=$($BIN "$folddir/receipt.weir")
 expect "the encode-subdir escape fold" "a%20b%7ec%3ad" "$out"
 expect "the commit-walk accumulator-record fold" "c3 after c1, kept 2" "$out"
-expect "Env.ofPairs feeds runEnv (the inline-env receipt)" "n/e" "$out"
+expect "Env.ofPairs into the env sigil (the inline-env receipt)" "n/e" "$out"
 rm -rf "$folddir"
 
 # fmt v2 respace under the parse-shape guard (user receipt, 2026-07-22)
@@ -1475,7 +1472,7 @@ EOF
 cat > "$edir/deploy.weir" <<'WEOF'
 let targetEnv = Env.fromFile "target.env"
 
-runEnv targetEnv "sh" ["-c"; "echo \"AZ($AZURE_SUBSCRIPTION_ID|$AZURE_DEFAULTS_GROUP|$OVERRIDE|$INHERITED)\""]
+!targetEnv(sh -c "echo \"AZ($AZURE_SUBSCRIPTION_ID|$AZURE_DEFAULTS_GROUP|$OVERRIDE|$INHERITED)\"")
 WEOF
 out=$(cd "$edir" && OVERRIDE=from-parent INHERITED=passed-through $BIN deploy.weir)
 expect "bicep shape: overlay sets, overrides, and inherits" "AZ(sub-web|rg web|from-file|passed-through)" "$out"
@@ -1484,44 +1481,28 @@ expect "bicep shape: overlay sets, overrides, and inherits" "AZ(sub-web|rg web|f
 cat > "$edir/iso.weir" <<'WEOF'
 let vars = Env.fromFile "target.env"
 
-runEnv vars "sh" ["-c"; "true"]
+!vars(sh -c "true")
 
 print (Env.get "AZURE_SUBSCRIPTION_ID" |> Option.defaultValue "(clean)")
 WEOF
 out=$(cd "$edir" && $BIN iso.weir)
 expect "child-env never leaks into the parent session" "(clean)" "$out"
 
-# byte-identity: runEnv with an empty overlay IS run
 printf 'EMPTYFILE=x\n' > "$edir/one.env"
-cat > "$edir/ident-a.weir" <<'WEOF'
-run "sh" ["-c"; "echo one; echo two"]
-WEOF
-cat > "$edir/ident-b.weir" <<'WEOF'
-runEnv [] "sh" ["-c"; "echo one; echo two"]
-WEOF
-a=$(cd "$edir" && $BIN ident-a.weir)
-b=$(cd "$edir" && $BIN ident-b.weir)
-[ "$a" = "$b" ] || fail "runEnv [] must be byte-identical to run (got '$a' vs '$b')"
-echo "e2e ok: runEnv [] byte-identical to run"
 
-# empty-string value: the documented removal workaround
+# empty-string value: the documented removal workaround (via the env sigil)
 cat > "$edir/empty.weir" <<'WEOF'
 let vars = Env.fromFile "blank.env"
 
-runEnv vars "sh" ["-c"; "echo [$BLANKED]"]
+!vars(sh -c "echo [$BLANKED]")
 WEOF
 printf 'BLANKED=\n' > "$edir/blank.env"
 out=$(cd "$edir" && BLANKED=parent-value $BIN empty.weir)
 expect "empty-string value overrides (removal workaround)" "[]" "$out"
 
-# lifecycle with env: raise-at-force and tree-kill hold on the env path
-if (cd "$edir" && $BIN -e 'runEnv (Env.fromFile "one.env") "sh" ["-c"; "exit 3"]') 2>/dev/null; then
-    fail "runEnv must raise on nonzero exit at force"
-fi
-echo "e2e ok: runEnv raises on nonzero exit"
-
-out=$(cd "$edir" && timeout 10 $BIN -e 'cmdEnv (Env.fromFile "one.env") "yes" ["hi"] |> Seq.first 1 |> Seq.length') || fail "cmdEnv stream must tree-kill after first"
-expect "cmdEnv tree-kills like cmd" "1 : int" "$out"
+# runEnv/cmdEnv byte-identity, raise, and tree-kill retired
+# [D:drop-command-builtins]: the env path is the sigil now, tested by
+# "env sigil x complete" above; lifecycle by the non-env command tests
 
 # subset rejections name the sh escape
 printf 'export FOO=1\n' > "$edir/bad.env"
@@ -1988,7 +1969,7 @@ out=$($BIN "$spdir/status.weir")
 expect "the design's git-status shape runs" "dirty: M a.txt (+1 more)" "$out"
 
 cat > "$spdir/once.weir" <<'WEOF'
-let s = cmd "sh" ["-c"; "echo x >> SPMARK; printf 'a\nb\nc\n'"]
+let s = $(sh -c "echo x >> SPMARK; printf 'a\nb\nc\n'")
 let r =
     match s with
     | [] -> "none"
@@ -2299,34 +2280,32 @@ echo "e2e ok: exitCode conflict cells teach (sigil, bang, statement, district)"
 
 rm -rf "$rfdir"
 
-# ---- feed: the family's stdin member [D:spawn-spec] ----
+# ---- value-headed pipe into a child's stdin [D:value-headed-pipe] ----
 
 fddir=$(mktemp -d)
 cat > "$fddir/hash.weir" <<'WEOF'
 let hashes =
-    ["snippet one"; "snippet two"]
-    |> feed "sha256sum" []
+    ["snippet one"; "snippet two"] | sha256sum
     |> Seq.map (fun l -> l |> Str.split " " |> Seq.head)
 
 hashes |> Seq.iter print
 WEOF
 out=$($BIN "$fddir/hash.weir")
-expect "feed: the miner's sha256 shape (value -> child stdin)" "0027e9fbda04a2a921cb8ae59053abae8a3d29e0c93613be831bcf0262faa36f" "$out"
+expect "value-headed: the miner's sha256 shape (value -> child stdin)" "0027e9fbda04a2a921cb8ae59053abae8a3d29e0c93613be831bcf0262faa36f" "$out"
 
 cat > "$fddir/lazy.weir" <<'WEOF'
-[1..1000000] |> Seq.map (fun n -> $"{n}") |> feed "head" ["-1"] |> print
+[1..1000000] |> Seq.map (fun n -> $"{n}") | head -1 |> print
 WEOF
-out=$(timeout 10 $BIN "$fddir/lazy.weir") || fail "feed input must be lazy (head -1 over a huge range must terminate)"
-expect "feed input laziness on the AOT binary" "1" "$out"
+out=$(timeout 10 $BIN "$fddir/lazy.weir") || fail "value-headed input must be lazy (head -1 over a huge range must terminate)"
+expect "value-headed input laziness on the AOT binary" "1" "$out"
 
-# ---- value-headed pipelines [D:value-headed-pipe] ----
-# the bare spelling of feed: an EXPRESSION piped into an external command
+# ---- value-headed pipelines, more shapes [D:value-headed-pipe] ----
+# an EXPRESSION piped into an external command feeds its stdin
 out=$($BIN -e '["a"; "b"; "c"] | tr a-z A-Z')
 expect "value-headed pipe feeds stdin" '["A"; "B"; "C"]' "$out"
-# byte-identical to the feed builtin
-a=$($BIN -e '["x"] | tr x y'); b=$($BIN -e '["x"] |> feed "tr" ["x"; "y"]')
-[ "$a" = "$b" ] || fail "value-headed pipe must equal feed: $a vs $b"
-echo "e2e ok: value-headed pipe ≡ feed, byte-identical"
+# value-headed pipe carries args to the child
+out=$($BIN -e '["x"] | tr x y')
+expect "value-headed pipe passes args to the child" '["y"]' "$out"
 # multi-external chains
 out=$($BIN -e '["one"; "two"] | cat | wc -l')
 expect "value-headed multi-external chain" '["2"]' "$out"
@@ -2410,15 +2389,16 @@ cat > "$endir/layers.env" <<'WEOF'
 PORT_ZQ=9090
 WEOF
 cat > "$endir/parent.weir" <<'WEOF'
-// layer 3: the runEnv overlay becomes the child's process env
-runEnv (Env.fromFile "layers.env") "weir" ["child.weir"]
+// layer 3: the env-sigil overlay becomes the child's process env
+let layers = Env.fromFile "layers.env"
+!layers(weir child.weir)
 WEOF
 out=$(cd "$endir" && $BIN child.weir)
 expect "neither layer sets it: the attribute fills (both types)" "port=8080 debug=false" "$out"
 out=$(cd "$endir" && PORT_ZQ=7000 $BIN child.weir)
 expect "process env beats the attribute" "port=7000" "$out"
 out=$(cd "$endir" && PATH="$(dirname $BIN):$PATH" $BIN parent.weir)
-expect "the file overlay (via runEnv) beats the attribute in the child" "port=9090" "$out"
+expect "the file overlay (via the env sigil) beats the attribute in the child" "port=9090" "$out"
 out=$(cd "$endir" && PORT_ZQ=7000 DEBUG_ZQ=true $BIN child.weir)
 expect "Default false on an env bool is a real resting point (set wins)" "debug=true" "$out"
 rm -rf "$endir"
@@ -2506,12 +2486,12 @@ out=$(cd "$pgdir" && $BIN src/rel.weir)
 echo "$out" | grep -qF "fixtures/x/f.txt" || fail "script-relative glob after cd /: $out"
 echo "e2e ok: glob composes with scriptPath (script-relative, cd-proof)"
 
-# glob feeds stdin (the feed composition)
+# glob into a child's stdin (the value-headed composition)
 cat > "$pgdir/fd.weir" <<'WEOF'
-Path.glob "*.json" |> feed "sort" ["-r"] |> Seq.iter print
+Path.glob "*.json" | sort -r |> Seq.iter print
 WEOF
 out=$(cd "$pgdir" && $BIN fd.weir)
-expect "glob |> feed: discovery into a child's stdin" "top.json
+expect "glob | child: discovery into a child's stdin" "top.json
 other.json" "$out"
 
 # the timing ceiling: 10k files enumerate under 2s on the AOT binary
@@ -2614,18 +2594,18 @@ echo --file $f
 echo "$out" | grep -qF -- "--file x.txt" || fail "spaced splice must pass: $out"
 echo "e2e ok: scalar mid-word splice rejects, spaced spelling passes"
 
-# feed's ARGS take a splat while input streams (both axes)
+# the child's ARGS take a splat while input streams (both axes)
 cat > "$spldir/fd.weir" <<'WEOF'
 let flags = ["-r"]
-["a"; "b"; "c"] |> feed "sort" ($@flags) |> Seq.iter print
+["a"; "b"; "c"] | sort $@flags |> Seq.iter print
 WEOF
 if $BIN check "$spldir/fd.weir" >/dev/null 2>&1; then
     out=$(cd "$spldir" && $BIN fd.weir)
-    expect "splat in feed's args while input streams" "c
+    expect "splat in the child's args while input streams" "c
 b
 a" "$out"
 else
-    echo "e2e note: feed-arg splat needs a paren splice arg — covered by run/cmd argv building"
+    echo "e2e note: child-arg splat needs a paren splice arg — covered by argv building"
 fi
 rm -rf "$spldir"
 

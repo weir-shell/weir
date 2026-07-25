@@ -149,7 +149,7 @@ law is unchanged). Discovery composes like any seq:
 ```weir
 match Path.glob "*.md" with
 | [] -> print "no docs here"
-| docs -> docs |> feed "sort" ["-r"] |> Seq.iter print
+| docs -> docs |> Seq.sortBy (fun s -> s) |> Seq.iter print
 
 let pinned = Path.glob "*.md" |> Seq.force
 ```
@@ -448,26 +448,26 @@ syntax.
 
 ## Per-child environment
 
-`runEnv` / `cmdEnv` inject variables into ONE child process — an
-overlay on the inherited environment (set those names, keep the rest,
-parent untouched). `Env.fromFile` reads the dotenv subset: `KEY=VALUE`,
+The env sigil injects variables into a child process — an overlay on
+the inherited environment (set those names, keep the rest, parent
+untouched). `Env.fromFile` reads the dotenv subset: `KEY=VALUE`,
 optional quotes, `#` comments — no `export`, no `$VAR` references
 (sourcing is shell evaluation; for that, `sh -c "set -a; . file; ..."`
-remains the honest spelling). The house idiom is partial application —
-name the env-carrying runner once, use it like `run`:
+remains the honest spelling). Bind the env once, then glue it to the
+sigil — `!e(...)` runs for effect, `$e(...)` captures:
 
 ```weir
 ["GREETING=hello"] |> File.write "demo.env"
 
-let child = runEnv (Env.fromFile "demo.env") "sh"
+let e = Env.fromFile "demo.env"
 
-child ["-c"; "echo child: $GREETING"]
-child ["-c"; "echo again: $GREETING"]
+!e(sh -c "echo child: $GREETING")
+!e(sh -c "echo again: $GREETING")
 
 print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
 ```
 
-For command chains the env slot goes INSIDE the sigil — `$e(...)` /
+The env slot goes INSIDE the sigil — `$e(...)` /
 `!e(...)` with the name glued to the glyph — and a line-end `!name`
 turns a whole command block into an env-carrying district:
 

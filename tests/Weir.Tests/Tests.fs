@@ -101,6 +101,41 @@ let private forceSeq v =
     | VSeq items -> List.ofSeq items
     | v -> failtest $"expected a seq, got {formatValue v}"
 
+let private fakeExternals =
+    Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls"; "cat" ]
+
+let private cmdResolver: Weir.Parser.Resolver =
+    { IsKnown = fun n -> Map.containsKey n env.Values
+      IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
+      IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
+      ExternalNames = fun () -> fakeExternals }
+
+let private realResolver: Weir.Parser.Resolver =
+    { IsKnown = fun n -> Map.containsKey n env.Values
+      IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
+      IsExternal = Weir.Extern.exists
+      ExternalNames = fun () -> Weir.Extern.names () :> seq<string> }
+
+let private parseCmd input =
+    match Weir.Parser.parseLine cmdResolver input with
+    | Ok(SExpr e)
+    | Ok(SCmd e) -> e
+    | Ok other -> failtest $"expected an expression line, got {other}"
+    | Error msg -> failtest $"parse failed: {msg}"
+
+let private expectCmd input expected =
+    Expect.equal (show (parseCmd input)) expected $"parse of '{input}'"
+
+let private runReal input =
+    match Weir.Parser.parseLine realResolver input with
+    | Error msg -> failtest $"parse failed: {msg}"
+    | Ok(SExpr e)
+    | Ok(SCmd e) ->
+        match typecheck env e with
+        | Error terr -> failtest (formatError terr)
+        | Ok te -> eval valueEnv te
+    | Ok other -> failtest $"unexpected: {other}"
+
 let private expectValue input expected =
     Expect.equal (run input) expected $"eval of '{input}'"
 
@@ -730,18 +765,18 @@ let boundaryTests =
     testList
         "External command boundary"
         [ test "cmd yields stdout lines" {
-              Expect.equal (run "cmd \"sh\" [\"-c\"; \"printf 'a\\nb\\n'\"]" |> forceSeq) [ VStr "a"; VStr "b" ] ""
+              Expect.equal (runReal "sh -c \"printf 'a\\nb\\n'\"" |> forceSeq) [ VStr "a"; VStr "b" ] ""
           }
           test "cmd is lazy across the process boundary" {
               Expect.equal
-                  (run "cmd \"sh\" [\"-c\"; \"yes\"] |> first 3" |> forceSeq)
+                  (runReal "sh -c \"yes\" |> first 3" |> forceSeq)
                   [ VStr "y"; VStr "y"; VStr "y" ]
                   ""
           }
           test "failing command raises when forced" {
-              Expect.throws (fun () -> run "cmd \"sh\" [\"-c\"; \"exit 3\"]" |> forceSeq |> ignore) ""
+              Expect.throws (fun () -> runReal "sh -c \"exit 3\"" |> forceSeq |> ignore) ""
           }
-          test "unforced command runs nothing" { run "cmd \"sh\" [\"-c\"; \"exit 3\"]" |> ignore }
+          test "unforced command runs nothing" { runReal "sh -c \"exit 3\"" |> ignore }
           test "porcelain adapter parses status lines" {
               let src =
                   VSeq
@@ -785,8 +820,8 @@ let boundaryTests =
 
               try
                   let result =
-                      run
-                          $"cmd \"sh\" [\"-c\"; \"cd {dir} && git status --porcelain\"] |> from porcelain |> where (fun c -> c.Staged)"
+                      runReal
+                          $"sh -c \"cd {dir} && git status --porcelain\" |> from porcelain |> where (fun c -> c.Staged)"
                       |> forceSeq
 
                   match result with
@@ -830,7 +865,7 @@ let boundaryTests =
           }
           test "from can be let-bound" {
               expectValue
-                  "let p = from porcelain in cmd \"sh\" [\"-c\"; \"printf 'A  x.txt\\n'\"] |> p |> first 1 |> map (fun c -> c.Path)"
+                  "let p = from porcelain in [\"A  x.txt\"] |> p |> first 1 |> map (fun c -> c.Path)"
                   (VSeq [ VStr "x.txt" ])
           } ]
 
@@ -839,31 +874,31 @@ let boundaryCheckTests =
         "Boundary check errors"
         [ test "from json needs a record name" {
               Expect.stringContains
-                  (checkErr "cmd \"sh\" [\"-c\"; \"x\"] |> from json").Message
+                  (checkErr "[\"x\"] |> from json").Message
                   "needs a record name"
                   ""
           }
           test "from json rejects unknown records" {
               Expect.stringContains
-                  (checkErr "cmd \"sh\" [\"-c\"; \"x\"] |> from json Missing").Message
+                  (checkErr "[\"x\"] |> from json Missing").Message
                   "unknown type 'Missing'"
                   ""
           }
           test "from json rejects unions" {
               Expect.stringContains
-                  (checkErr "cmd \"sh\" [\"-c\"; \"x\"] |> from json Proc").Message
+                  (checkErr "[\"x\"] |> from json Proc").Message
                   "needs a record"
                   ""
           }
           test "unknown format is rejected" {
               Expect.stringContains
-                  (checkErr "cmd \"sh\" [\"-c\"; \"x\"] |> from yaml").Message
+                  (checkErr "[\"x\"] |> from yaml").Message
                   "unknown format 'yaml'"
                   ""
           }
           test "from porcelain takes no type name" {
               Expect.stringContains
-                  (checkErr "cmd \"sh\" [\"-c\"; \"x\"] |> from porcelain Proc").Message
+                  (checkErr "[\"x\"] |> from porcelain Proc").Message
                   "fixed row type"
                   ""
           }
@@ -957,7 +992,7 @@ let completionTests =
           }
           test "later pipeline stages track the element type" {
               let text =
-                  "cmd \"sh\" [\"-c\"; \"git status --porcelain\"] |> from porcelain |> where (fun c -> c."
+                  "[\"A  x.txt\"] |> from porcelain |> where (fun c -> c."
 
               Expect.equal (suggest text (text.Length - 2)) [ "c.Path"; "c.Staged"; "c.Status"; "c.Unstaged" ] ""
           }
@@ -972,7 +1007,7 @@ let completionTests =
               Expect.equal (suggest text (text.Length - 2)) [] ""
           }
           test "from json completes record names" {
-              let text = "cmd \"sh\" [\"-c\"; \"x\"] |> from json "
+              let text = "[\"x\"] |> from json "
               Expect.contains (suggest text text.Length) "FileRow" ""
               Expect.contains (suggest text text.Length) "Change" ""
           } ]
@@ -1092,14 +1127,14 @@ let lifecycleTests =
           // removed (PLAN-command-mode Session 2), this analysis changes:
           // re-derive which of these guards what.
           test "simple command: no survivors after partial consumption" {
-              run "cmd \"sh\" [\"-c\"; \"yes weir-s1-simple\"] |> first 3"
+              runReal "sh -c \"yes weir-s1-simple\" |> first 3"
               |> forceSeq
               |> ignore
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s1-simple") "yes leaked"
           }
           test "compound command: no survivors after partial consumption" {
-              run "cmd \"sh\" [\"-c\"; \"yes weir-s1-compound | grep --line-buffered weir-s1-compound\"] |> first 3"
+              runReal "sh -c \"yes weir-s1-compound | grep --line-buffered weir-s1-compound\" |> first 3"
               |> forceSeq
               |> ignore
 
@@ -1107,14 +1142,14 @@ let lifecycleTests =
           }
           test "50 completed commands leave no zombies" {
               for _ in 1..50 do
-                  run "cmd \"sh\" [\"-c\"; \"true\"]" |> forceSeq |> ignore
+                  runReal "sh -c \"true\"" |> forceSeq |> ignore
 
               let zombies = defunctChildren ()
               Expect.equal zombies 0 "defunct children accumulated"
           }
           test "50 abandoned streams leave no zombies" {
               for _ in 1..50 do
-                  run "cmd \"sh\" [\"-c\"; \"yes weir-s1-zombie\"] |> first 1"
+                  runReal "sh -c \"yes weir-s1-zombie\" |> first 1"
                   |> forceSeq
                   |> ignore
 
@@ -1142,7 +1177,7 @@ let session2Tests =
               Expect.stringContains (checkErr "[1; \"a\"]").Message "expected int, got string" ""
           }
           test "cmd passes argv verbatim: glob stays literal" {
-              Expect.equal (run "cmd \"echo\" [\"*\"]" |> forceSeq) [ VStr "*" ] ""
+              Expect.equal (runReal "echo \"*\"" |> forceSeq) [ VStr "*" ] ""
           }
           test "sh is the escape hatch: glob expands" {
               let dir = Path.Combine(Path.GetTempPath(), $"weir-s2-{System.Guid.NewGuid():N}")
@@ -1152,7 +1187,7 @@ let session2Tests =
 
               try
                   let out =
-                      run $"let d = cd \"{dir}\" in cmd \"sh\" [\"-c\"; \"echo *.txt\"]" |> forceSeq
+                      runReal $"let d = cd \"{dir}\" in $(sh -c \"echo *.txt\")" |> forceSeq
 
                   Expect.equal out [ VStr "g1.txt g2.txt" ] ""
               finally
@@ -1160,18 +1195,14 @@ let session2Tests =
                   Directory.Delete(dir, true)
           }
           test "injection attempt is inert through cmd" {
-              Expect.equal (run "cmd \"echo\" [\"; rm -rf x\"]" |> forceSeq) [ VStr "; rm -rf x" ] ""
+              Expect.equal (runReal "echo \"; rm -rf x\"" |> forceSeq) [ VStr "; rm -rf x" ] ""
           }
-          test "cd changes the spawn cwd for cmd" {
-              try
-                  Expect.equal (run "let d = cd \"/tmp\" in cmd \"pwd\" []" |> forceSeq) [ VStr "/tmp" ] ""
-              finally
-                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
-          }
+          // [D:drop-command-builtins] the "for cmd" twin retired — cmd is
+          // gone; the sh-spawn version below covers cwd-affects-spawns
           test "cd changes the spawn cwd for sh" {
               try
                   Expect.equal
-                      (run "let d = cd \"/tmp\" in cmd \"sh\" [\"-c\"; \"pwd\"]" |> forceSeq)
+                      (runReal "let d = cd \"/tmp\" in $(sh -c \"pwd\")" |> forceSeq)
                       [ VStr "/tmp" ]
                       ""
               finally
@@ -1199,59 +1230,24 @@ let session2Tests =
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
-          test "cmd not found raises with a clear message" {
-              Expect.throws (fun () -> run "cmd \"weir-no-such-prog\" []" |> forceSeq |> ignore) ""
-          }
+          // [D:drop-command-builtins] "cmd not found raises" retired — the
+          // unknown-command diagnosis lives in e2e (runner names the missing
+          // command); the cmd-builtin runtime raise is gone
           // Direct-exec lifecycle duplicates: no sh in front, so the
           // exec-optimization analysis from the Session-1 tripwire does not
           // apply — tree-kill must hold on its own.
           test "direct cmd: no survivors after partial consumption" {
-              run "cmd \"yes\" [\"weir-s2-direct\"] |> first 3" |> forceSeq |> ignore
+              runReal "yes \"weir-s2-direct\" |> first 3" |> forceSeq |> ignore
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-direct") "direct-exec child leaked"
           }
           test "direct cmd: 50 abandoned streams leave no zombies" {
               for _ in 1..50 do
-                  run "cmd \"yes\" [\"weir-s2-dz\"] |> first 1" |> forceSeq |> ignore
+                  runReal "yes \"weir-s2-dz\" |> first 1" |> forceSeq |> ignore
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-dz") "direct-exec children leaked"
               Expect.equal (defunctChildren ()) 0 "defunct children accumulated"
           } ]
 
-
-let private fakeExternals =
-    Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls"; "cat" ]
-
-let private cmdResolver: Weir.Parser.Resolver =
-    { IsKnown = fun n -> Map.containsKey n env.Values
-      IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
-      IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
-      ExternalNames = fun () -> fakeExternals }
-
-let private realResolver: Weir.Parser.Resolver =
-    { IsKnown = fun n -> Map.containsKey n env.Values
-      IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
-      IsExternal = Weir.Extern.exists
-      ExternalNames = fun () -> Weir.Extern.names () :> seq<string> }
-
-let private parseCmd input =
-    match Weir.Parser.parseLine cmdResolver input with
-    | Ok(SExpr e)
-    | Ok(SCmd e) -> e
-    | Ok other -> failtest $"expected an expression line, got {other}"
-    | Error msg -> failtest $"parse failed: {msg}"
-
-let private expectCmd input expected =
-    Expect.equal (show (parseCmd input)) expected $"parse of '{input}'"
-
-let private runReal input =
-    match Weir.Parser.parseLine realResolver input with
-    | Error msg -> failtest $"parse failed: {msg}"
-    | Ok(SExpr e)
-    | Ok(SCmd e) ->
-        match typecheck env e with
-        | Error terr -> failtest (formatError terr)
-        | Ok te -> eval valueEnv te
-    | Ok other -> failtest $"unexpected: {other}"
 
 let commandModeTests =
     testList
@@ -1481,8 +1477,8 @@ let session3Tests =
                   Path.Combine(Path.GetTempPath(), $"weir-force-{System.Guid.NewGuid():N}")
 
               try
-                  run
-                      $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] |> force in let a = s |> first 1 in let b = s |> first 1 in b"
+                  runReal
+                      $"let s = $(sh -c \"echo x >> {marker}; echo line\") |> force in let a = s |> first 1 in let b = s |> first 1 in b"
                   |> forceSeq
                   |> ignore
 
@@ -1491,8 +1487,8 @@ let session3Tests =
                   File.Delete marker
 
                   let r =
-                      run
-                          $"let s = cmd \"sh\" [\"-c\"; \"echo x >> {marker}; echo line\"] in let a = s |> first 1 |> force in let b = s |> first 1 |> force in b"
+                      runReal
+                          $"let s = $(sh -c \"echo x >> {marker}; echo line\") in let a = s |> first 1 |> force in let b = s |> first 1 |> force in b"
 
                   r |> forceSeq |> ignore
                   Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront force"
@@ -1510,7 +1506,7 @@ let session3Tests =
               Expect.throws (fun () -> run "ls |> where (fun f -> f.Bytes > 999999999) |> head" |> ignore) ""
           }
           test "stderr passes through: stdout stream stays clean" {
-              Expect.equal (runReal "cmd \"sh\" [\"-c\"; \"echo out; echo err 1>&2\"]" |> forceSeq) [ VStr "out" ] ""
+              Expect.equal (runReal "sh -c \"echo out; echo err 1>&2\"" |> forceSeq) [ VStr "out" ] ""
           }
           test "external pipes into external via stdin" {
               Expect.equal (runReal "yes hi | cat | first 2" |> forceSeq) [ VStr "hi"; VStr "hi" ] ""
@@ -3275,8 +3271,8 @@ let scriptTests =
               Expect.equal (Weir.Script.stripComment "1 + 1 // note") "1 + 1 " ""
 
               Expect.equal
-                  (Weir.Script.stripComment "cmd \"sh\" [\"-c\"; \"echo a//b\"] // real")
-                  "cmd \"sh\" [\"-c\"; \"echo a//b\"] "
+                  (Weir.Script.stripComment "sh -c \"echo a//b\" // real")
+                  "sh -c \"echo a//b\" "
                   ""
 
               Expect.equal (Weir.Script.stripComment "grep 'a//b' f") "grep 'a//b' f" ""
@@ -3536,9 +3532,9 @@ let readProbes =
               let marker = Path.Combine(Path.GetTempPath(), $"weir-sc-{System.Guid.NewGuid():N}")
 
               try
-                  expectValue $"false && (cmd \"sh\" [\"-c\"; \"touch {marker}; echo x\"] |> Seq.isEmpty)" (VBool false)
+                  Expect.equal (runReal $"false && ($(sh -c \"touch {marker}; echo x\") |> Seq.isEmpty)") (VBool false) ""
                   Expect.isFalse (File.Exists marker) "right operand must not spawn"
-                  expectValue $"true && (cmd \"sh\" [\"-c\"; \"touch {marker}; echo x\"] |> Seq.isEmpty)" (VBool false)
+                  Expect.equal (runReal $"true && ($(sh -c \"touch {marker}; echo x\") |> Seq.isEmpty)") (VBool false) ""
                   Expect.isTrue (File.Exists marker) "strict when left is true"
               finally
                   if File.Exists marker then
@@ -3969,7 +3965,7 @@ let agentFindingsTests =
               Expect.stringContains terr.Message "" ""
 
               let terr2 =
-                  checkErr "let r = { X = 1; Y = 0 } in cmd \"echo\" [{ r with X = 1 }] |> Seq.head"
+                  checkErr "let r = { X = 1; Y = 0 } in echo { r with X = 1 } |> Seq.head"
 
               Expect.stringContains terr2.Message "" ""
           }
@@ -4548,21 +4544,12 @@ let scannerTests =
 let childEnvTests =
     testList
         "Child-env injection"
-        [ test "cmdEnv types: seq<EnvVar> overlay in front of cmd's shape" {
-              let te = checkOk "cmdEnv (Env.vars) \"sh\" [\"-c\"; \"true\"]"
-              Expect.equal (formatTy te.Ty) "seq<string>" ""
-          }
-          test "runEnv types to unit (statement-legal)" {
-              let te = checkOk "runEnv (Env.vars) \"sh\" [\"-c\"; \"true\"]"
-              Expect.equal (formatTy te.Ty) "unit" ""
-          }
-          test "Env.fromFile types to seq<EnvVar>" {
+        // cmdEnv/runEnv dropped [D:drop-command-builtins]: child env goes
+        // through the env sigil `$e(...)` / district `!e(...)` (tested in
+        // e2e). Env.fromFile / Env.vars remain.
+        [ test "Env.fromFile types to seq<EnvVar>" {
               let te = checkOk "Env.fromFile \"x.env\""
               Expect.equal (formatTy te.Ty) "seq<EnvVar>" ""
-          }
-          test "cmdEnv rejects a non-EnvVar overlay" {
-              let terr = checkErr "cmdEnv [\"A=1\"] \"sh\" [\"-c\"; \"true\"]"
-              Expect.stringContains (formatError terr) "EnvVar" ""
           }
           test "fromFile: the dotenv subset parses (quotes, comments, blanks, empty)" {
               let f = System.IO.Path.GetTempFileName()
@@ -4786,7 +4773,7 @@ let tupleTests =
           test "position sweep: tuple in list, record field, seq, splice-reject" {
               expectValue "[(1, 2); (3, 4)] |> Seq.length" (VInt 2L)
 
-              let terr = checkErr "cmd \"echo\" [(1, 2)]"
+              let terr = checkErr "echo (1, 2)"
               Expect.stringContains (formatError terr) "" ""
           }
           test "tuple types in declarations: record field and multi-payload constructor" {

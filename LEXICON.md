@@ -128,10 +128,10 @@ first). The commit law makes the furthest position the true cause.
 
 **Lazy sequence / pull semantics / backpressure.** A `seq` computes
 elements on demand (pull), not eagerly. Backpressure: a slow consumer
-throttles the producer — `feed`'s input pulls as the child's pipe
-accepts, so `head -1` over a million-line source stops at the buffer,
-not the end. Proved by pull-count pins, never by inspection.
-[D:spawn-spec]
+throttles the producer — a value-headed pipe's input pulls as the
+child's pipe accepts, so `xs | head -1` over a million-line source
+stops at the buffer, not the end. Proved by pull-count pins, never by
+inspection. [D:value-headed-pipe]
 
 **Memoization vs materialization.** ⚠ The pair that caused real
 confusion. MATERIALIZATION (`Seq.force`) runs a lazy seq to a concrete
