@@ -569,9 +569,10 @@ let c = Args.load Cmd
   byte-identical). Resolution decides: an EXTERNAL head after `|` is
   the pipe; a binding/library head keeps the `|`-chains-commands
   teaching (spell `|>`). LHS must be `seq<string>`. Use bare for a
-  literal program name, `feed` for a computed one. (Reifiers after a
-  value head — `xs | grep | complete` — aren't wired yet: capture
-  with `$()` or use `completed`.)
+  literal program name, `feed` for a computed one. Reifiers compose on
+  the tail — `files | grep -c foo | complete` reifies the (single
+  external) segment WITH the value as stdin (`| succeeds`/`| exitCode`/
+  `| orFail` too); a MULTI-external chain still needs one segment.
 - `runEnv vars "az" [...]` / `cmdEnv vars ...` inject child-env
   (overlay: set those names, inherit the rest; parent untouched).
   `Env.fromFile "x.env"` loads the dotenv SUBSET (KEY=VALUE, optional

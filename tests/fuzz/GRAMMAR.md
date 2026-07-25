@@ -110,6 +110,13 @@ fails.
    is idempotent, preserves per-statement sexpr shape (the respace
    guard's own predicate), and the formatted program is
    output-identical on the binary.
+5. Value-headed pipe equivalence [D:value-headed-pipe]:
+   `xs | prog args` ≡ `xs |> feed "prog" [args]`, byte-identical (rc,
+   stdout, stderr). A DEDICATED generator (literal seq LHS into a safe
+   external — cat/sort/tr/wc), not a RenderCfg flip: the shape is
+   expression-position, outside the command-line renderer, so it rides
+   its own property like the depth axis. Guards the two spellings
+   meeting the same `foldChain`.
 
 Ledger equivalence claims NOT yet in the transform library (named
 exclusions): env-district/`$e`/`!e` spellings (env features are

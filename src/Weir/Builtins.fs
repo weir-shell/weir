@@ -267,6 +267,86 @@ let private exitCodedWith (overlay: (string * string) list) : Value =
                 VInt(int64 (Proc.streamCode overlay (Proc.resolveProg prog) argv))
             | _ -> unreachable "the checker rejects 'exitCoded' on these arguments"))
 
+// stdin-carrying reifier twins [D:value-headed-pipe]: `xs | grep foo |
+// complete` reifies the segment WITH the value as stdin. INTERNAL —
+// the public expression-position spellings (completed/succeeded/…) keep
+// their arities exactly; these take a trailing seq<string>. The input
+// param was always on Proc.completeWith / the streaming Spec — session
+// 1's named seam, now reached. (Env twins are unpopulated: a value-headed
+// pipe carries no env sigil today — spawn-park pressure note in NOTES.)
+let private completedWithIn (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            VBuiltin(fun stdinV ->
+                match progV, argsV, stdinV with
+                | VStr prog, VSeq args, VSeq stdin ->
+                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let input = stdin |> Seq.map asString
+                    let code, out, err = Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
+
+                    VRecord(
+                        completedDef.Name,
+                        Map
+                            [ "ExitCode", VInt(int64 code)
+                              "Stdout", VSeq(out |> List.map VStr :> seq<Value>)
+                              "Stderr", VSeq(err |> List.map VStr :> seq<Value>) ]
+                    )
+                | _ -> unreachable "the checker rejects 'completedIn' on these arguments")))
+
+let private succeededWithIn (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            VBuiltin(fun stdinV ->
+                match progV, argsV, stdinV with
+                | VStr prog, VSeq args, VSeq stdin ->
+                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let input = stdin |> Seq.map asString
+                    let code, _, _ = Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
+                    VBool(code = 0)
+                | _ -> unreachable "the checker rejects 'succeededIn' on these arguments")))
+
+let private exitCodedWithIn (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            VBuiltin(fun stdinV ->
+                match progV, argsV, stdinV with
+                | VStr prog, VSeq args, VSeq stdin ->
+                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let input = stdin |> Seq.map asString
+
+                    let code =
+                        Proc.streamCodeOf
+                            { Prog = Proc.resolveProg prog
+                              Args = argv
+                              Env = overlay
+                              Input = Some input }
+
+                    VInt(int64 code)
+                | _ -> unreachable "the checker rejects 'exitCodedIn' on these arguments")))
+
+let private orFailedWithIn (overlay: (string * string) list) : Value =
+    VBuiltin(fun msgV ->
+        VBuiltin(fun progV ->
+            VBuiltin(fun argsV ->
+                VBuiltin(fun stdinV ->
+                    match msgV, progV, argsV, stdinV with
+                    | VStr msg, VStr prog, VSeq args, VSeq stdin ->
+                        let argv = args |> Seq.map asString |> List.ofSeq
+                        let input = stdin |> Seq.map asString
+
+                        let code =
+                            Proc.streamCodeOf
+                                { Prog = Proc.resolveProg prog
+                                  Args = argv
+                                  Env = overlay
+                                  Input = Some input }
+
+                        if code <> 0 then
+                            failwith $"{msg} (exit {code})"
+
+                        VUnit
+                    | _ -> unreachable "the checker rejects 'orFailedIn' on these arguments"))))
+
 // the expression-side regex family [D:regex-pattern] — computed
 // patterns are fine here; an invalid runtime pattern joins the
 // boundary-validation class (raises at the call)
@@ -1275,6 +1355,12 @@ let private entries: (string * Ty * Value) list =
       "succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
       "orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
       "exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
+      // stdin-carrying twins [D:value-headed-pipe] — value-headed reifier
+      // desugar targets; internal, the public spellings above unchanged
+      "completedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))), completedWithIn []
+      "succeededIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBool))), succeededWithIn []
+      "orFailedIn", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), orFailedWithIn []
+      "exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
       "feed", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TSeq TStr))), feedWith []
       "fail", TFun(TStr, TUnit), failImpl
       "exit", TFun(TInt, TUnit), exitImpl

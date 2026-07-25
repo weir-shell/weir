@@ -215,6 +215,21 @@ expect(decode(toks["result"]["data"])
        == [(0, 0, 4, 0), (0, 5, 3, 1), (1, 0, 4, 0), (1, 5, 3, 1)],
        f"two-token delta encoding: {toks}")
 
+# value-headed pipeline [D:value-headed-pipe]: the command head colors in
+# EXPRESSION position too (the walk recurses childExprs — it was always
+# general; session 1's "empty" was a bare-statement discard error, not a
+# walk gap). A library-headed pipe emits nothing.
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let h = ["hi"] | cat\nlet n = [1] |> Seq.length\n'}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 71, "method": "textDocument/semanticTokens/full",
+      "params": {"textDocument": {"uri": URI}}})
+toks = read_msg()
+vh = decode(toks["result"]["data"])
+expect((0, 17, 3, 0) in vh, f"value-headed head 'cat' must color: {vh}")
+expect(not any(t[0] == 1 for t in vh), f"a library-headed pipe emits nothing: {vh}")
+
 # the position-matrix fixture: statement cmd, block-let RHS, district,
 # splices, shadowing, an expression stage
 FIXTURE = """let path = "/etc"

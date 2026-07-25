@@ -2338,10 +2338,31 @@ errout=$(printf '"x" | tr a b\n' | $BIN check /dev/stdin 2>&1) && fail "scalar L
 echo "$errout" | grep -qF "one line wraps as \`[x]\`" || fail "scalar teaching: $errout"
 errout=$(printf '[1; 2] | cat\n' | $BIN check /dev/stdin 2>&1) && fail "seq<int> LHS must reject"
 echo "$errout" | grep -qF "map show or interpolate per element" || fail "seq<int> teaching: $errout"
-# a reifier needs a single external segment (value-headed or multi are rejected identically)
-errout=$(printf '["x"] | grep x | complete\n' | $BIN check /dev/stdin 2>&1) && fail "reifier after value head must reject"
-echo "$errout" | grep -qF "single external command segment" || fail "reifier rejection: $errout"
-echo "e2e ok: value-headed pipe — resolution boundary, type teachings, reifier rule"
+# a value-headed single external segment now reifies (session 2) — bound,
+# it type-checks (bare, it is a discard like any non-unit expression)
+out=$(printf 'let r = ["x"] | grep x | complete\nprint (show r.ExitCode)\n' | $BIN /dev/stdin)
+expect "value-headed | complete now reifies (bind it)" "0" "$out"
+echo "e2e ok: value-headed pipe — resolution boundary, type teachings"
+# reifier-with-stdin [D:value-headed-pipe] (session 2): a value-headed
+# single external segment reifies WITH the value as stdin
+out=$($BIN -e '["apple"; "banana"; "cherry"] | grep app | complete')
+expect "value-headed | complete reifies with stdin" 'Stdout = ["apple"]' "$out"
+out=$($BIN -e '["foo"; "bar"; "foobar"] | grep -c foo | complete')
+expect "reified value-headed count (grep -c)" 'Stdout = ["2"]' "$out"
+out=$($BIN -e '["x"] | grep x | succeeds')
+expect "value-headed | succeeds" "true" "$out"
+out=$($BIN -e '["x"] | grep zzz | exitCode')
+expect "value-headed | exitCode" "1" "$out"
+# the expression-position spellings are ZERO-DIFF (unchanged arity)
+out=$($BIN -e 'completed "echo" ["hi"]')
+expect "expression-position completed unchanged" 'Stdout = ["hi"]' "$out"
+# multi-external reifier still rejects (no new law)
+errout=$(printf 'echo hi | grep h | complete\n' | $BIN check /dev/stdin 2>&1) && fail "multi-external reifier must reject"
+echo "$errout" | grep -qF "single external command segment" || fail "multi-external rule changed: $errout"
+# the district/sigil teaching names the value-headed spelling
+errout=$(printf 'if true then !\n    ["x"] | cat\n' | $BIN check /dev/stdin 2>&1) && fail "value-headed in a district must reject"
+echo "$errout" | grep -qF "value-headed pipeline bound outside" || fail "district teaching: $errout"
+echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings, district teaching"
 rm -rf "$fddir"
 
 # ---- [<Default>]: the resting point moves [D:default-attr] ----

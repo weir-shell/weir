@@ -1128,7 +1128,12 @@ let private commandSegment
                 if forced.IsSome then
                     failFatally "'[' cannot begin a command; use cmd \"[\" [...] to run the external"
                 else
-                    fail "list literal; expression mode"
+                    // [D:value-headed-pipe] this fail is DISCARDED at statement
+                    // level (the expression grammar takes the list); it only
+                    // SURFACES in command-only contexts — a district or sigil
+                    // interior — where it should teach the value-headed spelling
+                    fail
+                        "'[' is command mode here (a district or sigil interior takes command lines); feed a value into a command with a value-headed pipeline bound outside the block — `let out = xs | prog`"
             elif forced.IsSome then
                 if r.IsExternal w then
                     preturn (ExternalHead, w, span)
@@ -1258,13 +1263,21 @@ let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
                       Span = Span.union acc.Span seg.Span }
             | Result.Ok acc,
               (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ as marker) ->
-                let stageName, mspan, plainVar, envVar, extraArgs =
+                let stageName, mspan, plainVar, envVar, stdinVar, extraArgs =
                     match marker with
-                    | CompleteMarker sp -> "complete", sp, "completed", "completedEnv", []
-                    | SucceedsMarker sp -> "succeeds", sp, "succeeded", "succeededEnv", []
-                    | ExitCodeMarker sp -> "exitCode", sp, "exitCoded", "exitCodedEnv", []
-                    | OrFailMarker(msg, sp) -> "orFail", sp, "orFailed", "orFailedEnv", [ msg ]
-                    | Stage _ -> "", acc.Span, "", "", []
+                    | CompleteMarker sp -> "complete", sp, "completed", "completedEnv", "completedIn", []
+                    | SucceedsMarker sp -> "succeeds", sp, "succeeded", "succeededEnv", "succeededIn", []
+                    | ExitCodeMarker sp -> "exitCode", sp, "exitCoded", "exitCodedEnv", "exitCodedIn", []
+                    | OrFailMarker(msg, sp) -> "orFail", sp, "orFailed", "orFailedEnv", "orFailedIn", [ msg ]
+                    | Stage _ -> "", acc.Span, "", "", "", []
+
+                // a chain head is command-ish (an external segment or a
+                // command→command pipe); a VALUE head is anything else
+                let isCommandish (e: Expr) =
+                    match e.Kind with
+                    | ECmd _
+                    | EPipe(_, { Kind = ECmd _ }) -> true
+                    | _ -> false
 
                 match acc.Kind with
                 | ECmd(prog, args, cenv) ->
@@ -1287,10 +1300,25 @@ let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
                         |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
 
                     Result.Ok applied
-                // a reifier needs a SINGLE external segment [D:exit-reifiers]
-                // — a multi-segment chain (external OR value-headed) is
-                // rejected identically; stdin-carrying reification of a
-                // value-headed segment is a scoped follow-up [D:value-headed-pipe]
+                // a VALUE-headed single external segment [D:value-headed-pipe]:
+                // `xs | grep foo | complete` reifies grep WITH xs as stdin —
+                // the stdin-carrying twin, value appended. Only when the LHS
+                // is a value: a command→command LHS is the multi-external
+                // case below, rejected as always (the family's single-segment
+                // rule, unchanged).
+                | EPipe(stdinE, { Kind = ECmd(prog, args, None) }) when not (isCommandish stdinE) ->
+                    let span = Span.union acc.Span mspan
+                    let headVar = { Kind = EVar stdinVar; Span = mspan }
+                    let progArg = { Kind = EStr prog; Span = acc.Span }
+                    let argList = { Kind = EList args; Span = acc.Span }
+
+                    let applied =
+                        (extraArgs @ [ progArg; argList; stdinE ])
+                        |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
+
+                    Result.Ok applied
+                // a reifier needs a SINGLE external segment [D:exit-reifiers]:
+                // a multi-external chain is rejected as always (no new law)
                 | _ -> Result.Error $"'{stageName}' must directly follow a single external command segment")
         (Result.Ok h)
 

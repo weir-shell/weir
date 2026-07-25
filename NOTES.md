@@ -1,5 +1,60 @@
 # Spike Notes
 
+## Value-headed pipelines, session 2 — the deferrals close (2026-07-25)
+
+Session 1 shipped the streaming form and deferred four chunks with their
+seams named. Session 2 closes them; two closed with a diagnosis instead
+of a fix (ground rule one earned its keep twice).
+
+**Chunk A — reifier-with-stdin (`xs | grep foo | complete`).** The seam
+was exact: `Proc.completeWith`/the streaming `Spec` already carry the
+input param; the reifier builtins passed `None`. Four INTERNAL
+stdin-carrying twins (`completedIn`/`succeededIn`/`exitCodedIn`/
+`orFailedIn`) — the public expression-position spellings keep their
+arities ZERO-DIFF. `foldChain` gained the value-headed reifier case,
+distinguished from multi-external by an `isCommandish` check on the
+inner LHS: a value LHS → the stdin twin (value appended); a command LHS
+→ the multi-external rejection, unchanged (the family's single-segment
+rule, no new law). `files | grep -c foo | complete` reifies the count.
+
+**Chunk B — semantic tokens. DIAGNOSIS, not fix.** The plan's premise
+("the recognizer walks command-mode STATEMENTS, not EPipe-into-ECmd")
+was wrong: the walk ALREADY recurses `childExprs` and handles `TECmd`
+anywhere. Session 1's "verified empty" was the DISCARD ERROR of a bare
+`["hi"] | cat` (non-unit statement) — no typed tree to walk, not a walk
+gap. A clean value-headed pipe (`let h = ["hi"] | cat`) colors its head
+correctly. No code change; a token pin locks it. The no-op-edit lesson:
+the recognizer's entry point was already general.
+
+**Chunk C — the fuzzer's transform law.** `xs | prog args` ≡ `xs |>
+feed "prog" [args]`, byte-identical, as fuzz invariant 5. A DEDICATED
+generator (literal seq LHS into a safe external — cat/sort/tr/wc), not a
+RenderCfg flip, because the shape is expression-position (outside the
+command-line renderer) — it rides its own property like the depth axis.
+GRAMMAR.md records it. Since both spellings meet the same `foldChain`,
+the law guards against the paths ever diverging.
+
+**Chunk D — the two edges.** (D1) sigil-interior `$(xs | cat)` confirmed
+NON-parsing — the redundancy argument holds (a value-headed pipe is
+already an expression; `$()` is command-grammar), reported not fixed.
+(D2) the district/sigil value-headed pipe now TEACHES: the `[`-head fail
+message became a teaching naming the value-headed spelling. The clean
+seam — that message is DISCARDED at statement level (the expression
+grammar takes the list) and only SURFACES in command-only contexts
+(district/sigil interiors), so improving it helps exactly where the
+mistake is made, zero statement-level effect.
+
+**Spawn-park pressure note (recorded per the plan).** The reifier row's
+axis product (output × env × stdin) now has its STDIN column populated —
+but by INTERNAL twins, no new user-facing spec-type NAMES, so the parked
+user-facing spawn spec does NOT open. The env×stdin cell is unpopulated
+(a value-headed pipe carries no env sigil today). A TENTH pressure on
+the spawn family makes the expose-not-build session overdue.
+
+867 unit / e2e (reifier + district pins; one session-1 pin flipped —
+value-headed reifier now works) / 20 fuzz (+the equivalence law) / 59
+doc / green.
+
 ## LEXICON.md — the project's own vocabulary, defined (2026-07-25)
 
 Docs-only, zero src. Fifteen weeks produced a working vocabulary that
