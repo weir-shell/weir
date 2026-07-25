@@ -1,6 +1,8 @@
 # weir — plan proposal: the miner's receipts (`rmatchAll`, `feed`, `distinct` — and the last python retires)
 
-Status: PROPOSED-AMENDED (regroup 2026-07-24): `feed` [D:spawn-spec],
+Status: EXECUTED (landed 2026-07-25) — the remaining scope (Str.rmatchAll + the
+corpus-mine.weir rewrite) shipped; the python is retired, both modes reproduce
+the published numbers. Prior: PROPOSED-AMENDED (regroup 2026-07-24): `feed` [D:spawn-spec],
 `Seq.distinct` [D:seq-distinct], and `scriptPath` [D:script-path]
 SHIPPED ahead of this plan; `Seq.groupBy` already existed. REMAINING
 SCOPE: `Str.rmatchAll` (+ the join/readText decision) and the

@@ -502,6 +502,23 @@ let cli = Args.load Cli
 print $"{show cli.clean} {show cli.port}"
 ```
 
+## Scraping text
+
+Pulling structure out of text is one pipeline. `Str.rmatchAll` yields
+every match's groups (lazily, no Option — the absence is the empty
+seq); `(?s)`/`(?m)` inline flags handle DOTALL/MULTILINE. Map each
+match to what you want, `Seq.distinct` to dedupe, and `feed` a value
+through an external tool (`|> feed "sha256sum" []`) when you need one:
+
+```weir
+let text = "let a = 1\nlet b = 2\nlet a = 1"
+
+Str.rmatchAll @"let (\w+) = (\d+)" text
+|> Seq.map (fun g -> Str.join "=" g)
+|> Seq.distinct
+|> Seq.iter print
+```
+
 Field names derive kebab-case flags (`dryRun` becomes `--dry-run`)
 and unambiguous first-letter shorts; `[<Short "C">]` pins a short
 explicitly, `[<NoShort>]` suppresses one, and `--help` prints the

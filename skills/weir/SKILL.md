@@ -150,6 +150,12 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   patterns live on the expression side: `Str.isMatch pat s` (bool),
   `Str.rmatch pat s` (Option<seq<string>>) — any string, and raw
   literals read best: `Seq.where (Str.isMatch @"\.md$")`.
+  `Str.rmatchAll pat s : seq<seq<string>>` is the plural — EVERY
+  match's groups, lazily; no Option (absence is the empty seq).
+  `(?s)`/`(?m)` inline flags cover DOTALL/MULTILINE. The scrape idiom
+  is one pipeline: `Str.rmatchAll pat text |> Seq.map Seq.head |>
+  Seq.distinct` (all matches → contents → dedup); feed a match through
+  a tool with `|> feed "sha256sum" []`.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
   `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency

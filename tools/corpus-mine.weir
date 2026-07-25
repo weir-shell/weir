@@ -1,0 +1,81 @@
+#!/usr/bin/env weir
+// The corpus miner in weir [D:rmatch-all] — the rewrite that retires
+// tools/corpus-mine.py, the last python in the repo. Extracts every
+// triple-quoted snippet from a corpus of .fs files, dedupes by content,
+// and counts the weir-plausible set in two filter modes. The receipts
+// it exercises: Str.rmatchAll (every match, not the first), feed (a
+// value hashed through sha256sum's stdin), Seq.distinct (dedupe as a
+// pipeline stage). Reproduces the python's published numbers.
+//
+// Usage: corpus-mine.weir <corpus-dir> <out-dir> [--wide]
+
+let corpus = Seq.head args
+let outDir = Seq.item 1 args
+let wide = Seq.contains "--wide" args
+
+// constructs weir does not have (or bounds out) regardless of wave —
+// one entry per family, substring match on the whole snippet
+let baseRejects =
+    [ "module "; "namespace"; "open "; "[<"; "printfn"; "printf"; "sprintf"
+      "failwith"; "raise"; "try"; "exception"; "member"; "interface"
+      "abstract"; "override"; "inherit"; "static "; "struct"; "delegate"
+      "class"; "new "; "mutable"; "<-"; ":="; "let rec"; "and "
+      "seq {"; "async"; "task {"; "query"; "lazy"; "yield"; "while "
+      "for "; "do "; "use "; "downto"; ":>"; ":?"; "byref"; "nativeptr"
+      "voidptr"; "inline"; "^"; "%"; "#"; "`"; "'"
+      "float"; "decimal"; "byte"; "uint"; "int8"; "int16"; "int64"
+      "nativeint"; "System."; "List."; "Array."; "Map."; "Set."
+      "Option."; "Seq."; "ignore"; "box"; "unbox"; "typeof"; "nameof"
+      "|>"; ".."; "$"; "\\"; "()"; " :: "; "[]" ]
+
+let baseRejectRes = [ "let\\s+\\w+\\s*:"; "\\(\\s*\\|"; "\"B" ]
+
+// the four waves: rejected in the first mine's world, admitted now
+let waveRejects = [ ","; ">>"; "<<"; "@\""; " * " ]
+let waveRejectRes = [ "\\|\\s*\\d"; "\\|\\s*\""; "let\\s*\\(" ]
+
+let plausible src =
+    let lines =
+        Str.split "\n" src
+        |> Seq.where (fun l -> Str.trim l <> "")
+        |> Seq.force
+    let n = Seq.length lines
+    if n == 0 then false
+    elif n > 8 then false
+    elif not (Seq.exists (fun l -> Str.startsWith "let " (Str.trimStart l)) lines) then false
+    else
+        let toks =
+            if wide then baseRejects
+            else Seq.append baseRejects waveRejects |> Seq.force
+        let res =
+            if wide then baseRejectRes
+            else Seq.append baseRejectRes waveRejectRes |> Seq.force
+        if Seq.exists (fun t -> Str.contains t src) toks then false
+        elif Seq.exists (fun r -> Str.isMatch r src) res then false
+        else true
+
+// `\n*` inside the capture-adjacent bounds mirrors python's .strip("\n")
+let pat = "(?s)\"\"\"\\n*(.*?)\\n*\"\"\""
+
+let snippets =
+    Path.glob $"{corpus}/**/*.fs"
+    |> Seq.map (fun f ->
+        let text = File.read f |> Str.join "\n"
+        Str.rmatchAll pat text |> Seq.map Seq.head)
+    |> Seq.fold (fun acc s -> Seq.append acc s) []
+    |> Seq.force
+
+let distinctSnips = snippets |> Seq.distinct |> Seq.force
+let kept = distinctSnips |> Seq.where plausible |> Seq.force
+
+kept
+|> Seq.iter (fun src ->
+    let h =
+        Str.split "\n" src
+        |> feed "sha256sum" []
+        |> Seq.head
+        |> Str.sub 0 12
+    File.write (Path.combine outDir $"{h}.snippet") (Str.split "\n" src))
+
+let mode = if wide then "wide" else "base"
+print $"{mode}: extracted={Seq.length snippets} unique={Seq.length distinctSnips} kept={Seq.length kept}"

@@ -295,6 +295,30 @@ let private rmatchImpl: Value =
                     VUnion("None", None)
             | _ -> unreachable "the checker rejects 'rmatch' on these arguments"))
 
+// rmatchAll [D:rmatch-all]: every match's group seq, LAZILY — the
+// plural of rmatch, no Option (absence IS the empty seq). Walks via
+// Match/NextMatch so a match is computed only when the consumer pulls
+// it (the pull-count guarantee); the inner group seq is finite per
+// match. `(?s)`/`(?m)` inline flags cover DOTALL/MULTILINE, so no
+// options API grows.
+let private rmatchAllImpl: Value =
+    VBuiltin(fun patV ->
+        VBuiltin(fun subjectV ->
+            match patV, subjectV with
+            | VStr pat, VStr s ->
+                let re = compiledOrRaise pat
+
+                VSeq(
+                    seq {
+                        let mutable m = re.Match s
+
+                        while m.Success do
+                            yield VSeq [ for i in 1 .. m.Groups.Count - 1 -> VStr m.Groups[i].Value ]
+                            m <- m.NextMatch()
+                    }
+                )
+            | _ -> unreachable "the checker rejects 'rmatchAll' on these arguments"))
+
 // Path.glob [D:path-glob] — the standard subset (`*` within-segment,
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
 // matches dotfiles (a `.`-leading segment does); sorted per level
@@ -881,7 +905,8 @@ let private strMembers: (string * Ty * Value) list =
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
       "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl
       "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
-      "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl ]
+      "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
+      "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl ]
 
 // Path — string surgery over paths, System.IO.Path underneath.
 // extension keeps the dot and is "" when there is none; dir is "" at

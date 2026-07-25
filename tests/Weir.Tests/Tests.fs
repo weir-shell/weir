@@ -599,6 +599,23 @@ let streamingTests =
               Expect.equal out [ VInt 1; VInt 2 ] "first occurrences, in order"
               Expect.equal pulled.Value 4 "pulled exactly to the second novel element"
           }
+          test "Str.rmatchAll: every match's groups, lazily [D:rmatch-all]" {
+              // all matches (rmatch yields only the first), groups per match
+              expectValue
+                  "Str.rmatchAll @\"(\\w+)=(\\d+)\" \"a=1 b=2 c=3\" |> Seq.map (fun g -> Str.join \":\" g) |> Str.join \",\""
+                  (VStr "a:1,b:2,c:3")
+
+              // no matches = the empty seq (the plural needs no Option)
+              expectValue "Str.rmatchAll @\"(\\d+)\" \"none\" |> Seq.isEmpty" (VBool true)
+
+              // (?s) makes the dot span newlines — the scrape shape
+              expectValue
+                  "Str.rmatchAll \"(?s)B(.*?)B\" \"B x\\ny B B z B\" |> Seq.map Seq.head |> Str.join \"|\""
+                  (VStr " x\ny | z ")
+
+              // lazy over matches: first 2 of many yields exactly 2
+              expectValue "Str.rmatchAll @\"(\\d)\" \"12345\" |> first 2 |> Seq.length" (VInt 2L)
+          }
           test "feed pulls its INPUT lazily: an early-exiting child bounds the pulls [D:spawn-spec]" {
               // the standing laziness rule reaches inputs — the writer
               // task pulls as the pipe accepts, so `head -1` over a

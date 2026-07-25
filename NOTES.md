@@ -1,5 +1,51 @@
 # Spike Notes
 
+## The miner — Str.rmatchAll and the last python retires (2026-07-25)
+
+PLAN-miner-receipts, the remaining scope (feed / Seq.distinct /
+scriptPath shipped ahead in their own sessions; Seq.groupBy already
+existed). One new surface — `Str.rmatchAll` — and the corpus-mine.py
+rewrite as its acceptance.
+
+**`Str.rmatchAll pat s : seq<seq<string>>`** — the plural of `rmatch`,
+every match's groups lazily via a Match/NextMatch walk (a match
+computed only on pull). No Option: the plural's absence IS the empty
+seq. `(?s)`/`(?m)` inline flags cover DOTALL/MULTILINE, so no options
+API grows. The whole-file-as-string question RESOLVED to the existing
+`Str.join` (`File.read |> Str.join "\n"`); `File.readText` stays parked
+(no receipt asked for it).
+
+**The rewrite reproduces the python EXACTLY.** On the committed corpus
+(dotnet/fsharp @ 5928e91, in-container at /tmp/fsharp-corpus): base
+`extracted=4253 unique=3700 kept=76`, wide `kept=102` — count-identical
+to `tools/corpus-mine.py`, AND the kept content-SET byte-identical in
+both modes (verified by per-file content hash, order-independent). In
+0.8s. The three receipts all fire in one script: `Str.rmatchAll` (all
+triples, not the first), `Seq.distinct` (dedup as a pipeline stage, not
+threaded `seen` state — more idiomatic than the python), `feed` (each
+snippet hashed through `sha256sum`'s stdin for its filename).
+`tools/corpus-mine.py` deleted — tools/ is now python-free (the
+remaining .py are LSP/REPL protocol drivers, a different category).
+
+**Two fidelity subtleties, both handled.** (1) Python's `.strip("\n")`
+strips ONLY newlines, not whitespace — baked into the pattern as
+`(?s)"""\n*(.*?)\n*"""` rather than a weir `Str.trim` (which would strip
+spaces too and merge distinct snippets). (2) `feed` writes its input as
+LINES, so `sha256sum` sees `src\n` where python hashes `src` exactly —
+the 12-char FILENAME differs from python's by that trailing newline,
+but nothing observable does: dedup is by CONTENT (`Seq.distinct` on the
+snippet), not by hash, so the partition and the unique/kept counts are
+identical. Stated, not hidden.
+
+**Ceremony.** Builtin/Str surface only — no assembler grammar, no
+fuzzer obligation, no oracle (API not shape). `rmatchAll`'s pull-count/
+DOTALL/all-matches/empty pins landed; `feed` and `distinct` carry their
+own from prior sessions. Parks stand with criteria: Map/Set (membership
+is answered by distinct; reopen on a KEYED receipt), value-headed
+pipelines (`xs | fzf` — the grammar form of feed; reopen on the fzf
+receipt), `Seq.countBy`/`groupBy` (no receipt), `File.readText` (Str.join
+picked). 867 unit / e2e / fuzz / doc all green.
+
 ## Diagnostics policy — who owns the error the user reads (2026-07-25)
 
 Blessed as "state the arbitration policy + reconcile three features

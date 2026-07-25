@@ -44,7 +44,7 @@ is chronological (git first-commit date).
 - 2026-07-24 [EXECUTED] [PLAN-default-attr.md](PLAN-default-attr.md) — `[<Default>]`: the resting point moves
 - 2026-07-24 [EXECUTED] [PLAN-env-default.md](PLAN-env-default.md) — mini-plan: Env.load consumes `[<Default>]`
 - 2026-07-24 [EXECUTED] [PLAN-fuzzer.md](PLAN-fuzzer.md) — the assembler fuzzer: generative line-shape testing
-- 2026-07-24 [PROPOSED-AMENDED] [PLAN-miner-receipts.md](PLAN-miner-receipts.md) — plan proposal: the miner's receipts (`rmatchAll`, `feed`, `distinct` — and the last python retires)
+- 2026-07-25 [EXECUTED] [PLAN-miner-receipts.md](PLAN-miner-receipts.md) — the miner receipts: Str.rmatchAll + corpus-mine.weir (the last python retires)
 - 2026-07-24 [EXECUTED] [PLAN-multiline-lambda.md](PLAN-multiline-lambda.md) — multiline lambdas: `(fun ... ->` opens a body block
 - 2026-07-24 [EXECUTED] [PLAN-path-glob.md](PLAN-path-glob.md) — mini-plan: `Path.glob`
 - 2026-07-24 [EXECUTED] [PLAN-reifier-family.md](PLAN-reifier-family.md) — mini-plan: the reifier family completes (`| exitCode`, orFail streams)
