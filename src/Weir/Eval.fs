@@ -1137,6 +1137,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | VBool false, Some e -> eval env e
         | VBool false, None -> VUnit
         | v, _ -> unreachable $"the checker rejects a non-bool condition: {formatValue v}"
+    // TESplat [D:argv-splat] lives only in TECmd argv, expanded by
+    // argvOf; it never reaches value evaluation. Closes the match so a
+    // stray splat is a clear internal error, not a MatchFailureException.
+    | TESplat _ -> unreachable "$@ splat outside command arguments (checker confines it to argv)"
 
 and apply (fn: Value) (arg: Value) : Value =
     match fn with

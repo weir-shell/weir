@@ -4030,6 +4030,15 @@ let agentFindingsTests =
               | Ok(SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "(splat" ""
               | other -> failtest $"expected the expr splat, got {other}"
           }
+          test "splat is confined to argv — a parse error everywhere else [D:argv-splat]" {
+              // the grammar produces ESplat ONLY in command-argument
+              // position; this confinement is why infer/eval close their
+              // matches with an unreachable arm rather than a splat case
+              for src in [ "let y = $@xs"; "let y = [$@xs]"; "print ($@xs)" ] do
+                  match Weir.Parser.parseStmt src with
+                  | Error _ -> ()
+                  | Ok _ -> failtest $"$@ outside argv must be a parse error: {src}"
+          }
           test "splat type demands seq<string>, both teachings [D:argv-splat]" {
               let msgOf lines =
                   let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines

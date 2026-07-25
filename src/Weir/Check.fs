@@ -2064,6 +2064,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             $"an if without an else is unit-valued; this then-branch is {formatTy ty} — add an else"
         }
 
+    // $@ [D:argv-splat] is confined by the grammar to command-argument
+    // position, where the ECmd arm's checkArg handles it; it never
+    // reaches general inference. This arm closes the match totally so
+    // an invariant break surfaces as a clear internal error, not a raw
+    // MatchFailureException.
+    | ESplat _ -> failwith "unreachable: $@ splat outside command arguments (parser confines it to argv)"
+
 and private checkSpine
     (ctx: Ctx)
     (env: TypeEnv)
