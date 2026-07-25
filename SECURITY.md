@@ -14,6 +14,34 @@ have chosen to run. weir's job on hostile text is to reject it with a
 diagnostic, never to execute it safely. Do not run a `.weir` file you
 would not run as a shell script.
 
+## Non-claims — what weir deliberately does NOT defend
+
+The scope line above is the headline; these are its corollaries,
+each verified (a script CAN do the risky thing — weir does not stop
+it, by design):
+
+- **Path functions do not confine.** `Path.glob "../../**"` escapes
+  any directory a script imagined as a boundary, and `Path.combine`
+  follows .NET's rule — an absolute second argument WINS
+  (`Path.combine "/safe" "/etc/x"` → `/etc/x`), and `..` is not
+  normalized away. Confinement is the script's job, not weir's.
+- **Word integrity is not flag safety.** weir guarantees a value —
+  including `Path.glob` output — reaches a command as exactly one
+  argv word. It does NOT guarantee the command won't interpret that
+  word as a flag: a file named `-rf` globbed into `rm` is still
+  `-rf` to `rm`. The `--` separator is the script author's tool.
+- **The LSP operates on client text, not the filesystem.** `weir
+  lsp` analyzes the document text the editor sends over the
+  protocol; it does not read files by URI, so a `didOpen` for a
+  path outside the workspace analyzes only what the client provided.
+- **Capture is unbounded by design.** `| complete` and `Seq.force`
+  materialize their whole input in memory (`complete` a `string
+  list`, with per-line object overhead — a large multi-line capture
+  can reach ~10x its raw byte size). A child emitting gigabytes will
+  exhaust memory; the failure is a located error, not a crash, but
+  the ceiling is the box's memory. Stream (don't capture) for large
+  or unbounded output.
+
 ## What weir defends by design
 
 These are properties of the language, verified the way the rest of

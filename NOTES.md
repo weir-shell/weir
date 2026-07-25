@@ -1,5 +1,94 @@
 # Spike Notes
 
+## Safe-by-design review, part two — the surfaces outside the language (2026-07-25)
+
+Verification-only (zero src/), the four surfaces part one didn't touch.
+Most confirmed clean; the real yield was runtime resource behavior and
+the build-integrity mechanism's completeness. A test-harness lesson
+threaded the whole session: `pgrep -f "sleep 300"` MATCHES THE PROBE'S
+OWN SHELL (its command line contains the pattern) — every early
+"orphan" and "self-kill (rc 144)" was a false positive; `ps -C sleep`
+(named-process match) is the honest counter. Recorded so the next
+resource audit doesn't re-walk it.
+
+**Property 5 — runtime resource exhaustion. Mostly CONFIRMED, one doc
+flag.** Across 10k sequential `run "true"` spawns: fd count oscillates
+10–35 and does NOT grow (GC-delayed pipe finalization, bounded); RSS
+plateaus at ~19MB; zero zombies mid-run; tree-kill leaves zero orphans
+for direct children, sh-grandchildren, backgrounded-and-`wait`ed
+grandchildren, and a 15-child burst (all zero once counted with
+`ps -C`). `feed` to a non-reading child (`true`, 2M-line source): the
+writer fills the pipe, the child exits, the writer's EPIPE is swallowed
+— rc=0 "survived", no hang. Infinite `$(yes) |> Seq.force` under a
+1.5GB ceiling: a LOCATED rc=1 "Insufficient memory" at the script line,
+graceful, not a crash.
+- FLAG (doc, no code): `| complete` capture is unbounded AND
+  memory-HEAVY — 4M small lines (~44MB of text) drove RSS to 573MB,
+  ~13x, from per-`string` object overhead. Landed as a SECURITY
+  non-claim; a SKILL "stream, don't capture, for big output" line is
+  the follow-up doc rider; an optional bounded-`complete` is a park,
+  not owed.
+
+**Property 6 — the LSP as an attack surface. CONFIRMED.** The
+depth-guard placement question (the one that would have gone to the
+hardening session immediately) PASSES: a `didOpen` carrying the
+6000-paren fixture returns "expression nested too deeply (limit 500)"
+and the server keeps serving — the guard is in the PARSER
+(analyzeLines/parseLine), which is the LSP's own path, exactly where
+it belongs. Malformed framing (a `Content-Length: 100000000` with a
+short body; garbage JSON in a valid frame; invalid UTF-8 bytes) never
+kills the server. Notifications for unopened documents and hover at a
+past-EOF position return gracefully (result=None). `didOpen
+file:///etc/passwd` analyzes the client-sent TEXT, never reading the
+real file — the scope non-claim, now stated. (Minor note, not a flag:
+a huge Content-Length blocks the read loop until the stream closes —
+irrelevant for a trusted editor client.)
+
+**Property 7 — path handling. Two doc flags, the rest non-claims.**
+- FLAG (doc-or-diverge): `Path.combine` inherits .NET's absolute-
+  second-arg rule (`combine "/safe" "/etc/x"` → `/etc/x`) and does not
+  normalize `..` (`combine "/safe" "../../etc/x"` → `/safe/../../etc/x`).
+  Options with sizes: a doc line (landed as the SECURITY non-claim;
+  a SKILL note is the follow-up rider), OR a ~10-line divergence that
+  rejects an absolute second argument. Reported both; a divergence is
+  a possible future session.
+- FLAG (doc-or-align): `File.read` FOLLOWS a symlinked directory that
+  `Path.glob`'s `**` deliberately SKIPS (`File.read
+  "link/f.txt"` → the target's contents). An inconsistency, not a
+  vuln. Options: document the split (glob skips symlink dirs for
+  loop-immunity; File.*/explicit paths follow, as the shell does) or
+  align. Reported; recommend document — the behaviors are each correct
+  in isolation.
+- CONFIRMED: hostile filenames (`-rf`, `a b.txt` with a space) through
+  `Path.glob` reach a command as exactly one argv word each (argc=1).
+  Residual stated in SECURITY: word-integrity is not flag-safety.
+
+**Property 8 — the stamp/build-integrity mechanism. Two gate flags.**
+`--version` stamps `git rev-parse --short HEAD` at build — SOURCE
+revision, commit-granular. Two completeness gaps:
+- FLAG (small): NO dirty-tree marker. A build from a dirty working
+  tree stamps the clean HEAD hash, indistinguishable by `--version`
+  from a clean build. Fix: `git describe --dirty` or a
+  `git status --porcelain` check appending `-dirty` in publish.sh.
+- FLAG (small): the freshness gate is applied UNEVENLY. `ci/e2e.sh`
+  has the full guard (stamp == HEAD AND no `.fs` newer than the
+  binary). But `ci/skill-doc.sh` and `ci/timing.sh` have NO gate —
+  they run against whatever binary is installed; and the Python
+  `assert_fresh` (lsp-e2e, harness-selftest) checks the STAMP ONLY,
+  no mtime, despite a comment claiming "mtime gates still apply"
+  (they don't, in that path). So a same-HEAD-but-stale binary passes
+  three of the consumers. Fix: hoist the e2e gate into a shared
+  helper all consumers call; correct the misleading comment. The
+  concurrent-republish race (the standing OWED item) is therefore
+  NOT the only unguarded window — these are additional ones.
+
+**Deliverable:** SECURITY.md gains a Non-claims section (path funcs
+don't confine; word-integrity ≠ flag-safety; LSP reads client text;
+capture unbounded). Zero src/ changes. Flags → blessed follow-ups:
+the Path.combine divergence (optional), the freshness-gate unification
+(small, the higher-value one — it protects the whole test apparatus),
+the dirty-stamp marker (small), and the standing capture/OOM parks.
+
 ## Totality hardening — the parser survives hostile depth (2026-07-25)
 
 The safe-by-design review's Property-3 flag paid off: unbounded
