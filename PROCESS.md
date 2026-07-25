@@ -111,3 +111,21 @@ Naming incidents: five members of the stale-artifact/masked-failure
 class, the fifth committed WITH the verify rule already on this page —
 a rule that depends on remembering fails; that is the definition of a
 rule that must become a mechanism.
+
+A seventh member is a DIFFERENT shape — a guard whose documentation
+drifted from the guard: the Python `assert_fresh` copy claimed
+"mtime gates still apply" while checking only the stamp. A comment
+promising a protection that isn't there is worse than no comment; the
+fix was one gate all consumers call (`ci/check-fresh.sh`), so the
+doc and the code cannot diverge again.
+
+An instrument whose pattern can match the instrument is not a
+measurement — the harness-truth class's most dangerous variant,
+because it MANUFACTURES failures rather than masking them.
+`pgrep -f "sleep 300"` matched the probe's own shell (its command
+line contained the pattern), inventing phantom orphans and self-kills
+that would have sent a hardening session hunting a tree-kill bug that
+does not exist. Count processes by name (`ps -C sleep`), never by a
+pattern the measuring command also carries. The positive-control
+sibling of the stamp gate: make the instrument incapable of reading
+itself.

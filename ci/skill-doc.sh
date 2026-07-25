@@ -6,14 +6,10 @@ set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
-# stale-binary guard: the third time someone chased a phantom failure from
-# an outdated ~/.local/bin/weir earned this check
-if [ -d "$(dirname "$0")/../src/Weir" ] && [ -f "$BIN" ]; then
-    newer=$(find "$(dirname "$0")/../src/Weir" -path '*/obj' -prune -o -path '*/bin' -prune -o -name '*.fs' -newer "$BIN" -print -quit)
-    if [ -n "$newer" ]; then
-        echo "WARNING: $BIN is older than $newer — run ./publish.sh first" >&2
-    fi
-fi
+# stale-binary guard [D:masking-mechanized]: the ONE shared gate (was a
+# warn-only mtime check here — a doc-test validating against a stale
+# binary is exactly the masked failure the gate exists to prevent)
+"$(dirname "$0")/check-fresh.sh" "$BIN"
 DOCS=("$(dirname "$0")/../skills/weir/SKILL.md" "$(dirname "$0")/../docs/GUIDE.md")
 
 work=$(mktemp -d)

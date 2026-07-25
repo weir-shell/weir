@@ -4,28 +4,10 @@ set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
-# HARD stale-binary gates [D:masking-mechanized] — a rule that
-# depends on remembering fails; stamps make stale results
+# HARD stale-binary gate [D:masking-mechanized] — the ONE shared gate
+# (stamp == HEAD, no .fs newer than the binary), so stale results are
 # impossible rather than catchable.
-repo_root="$(dirname "$0")/.."
-if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --short HEAD >/dev/null 2>&1; then
-    head_hash=$(git -C "$repo_root" rev-parse --short HEAD)
-    stamp=$("$BIN" --version 2>/dev/null || echo none)
-    case "$stamp" in
-        "$head_hash"*) : ;;
-        *)
-            echo "STALE BINARY: $BIN stamps '$stamp', HEAD is '$head_hash' — rebuild with ./publish.sh" >&2
-            exit 1
-            ;;
-    esac
-fi
-if [ -d "$repo_root/src/Weir" ] && [ -f "$BIN" ]; then
-    newer=$(find "$repo_root/src/Weir" -path '*/obj' -prune -o -path '*/bin' -prune -o -name '*.fs' -newer "$BIN" -print -quit)
-    if [ -n "$newer" ]; then
-        echo "STALE BINARY: $BIN is older than $newer — rebuild with ./publish.sh" >&2
-        exit 1
-    fi
-fi
+"$(dirname "$0")/check-fresh.sh" "$BIN"
 
 fail() {
     echo "e2e FAIL: $1" >&2

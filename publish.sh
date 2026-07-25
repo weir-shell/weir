@@ -14,8 +14,16 @@ esac
 
 # the build STAMP [D:masking-mechanized]: harnesses assert this
 # equals HEAD before running anything — stale results become
-# impossible rather than catchable
+# impossible rather than catchable. The `-dirty` suffix marks a build
+# from an uncommitted tree (the gate warns locally, hard-fails in CI)
+# so a dirty binary can't masquerade as its clean HEAD. Built from
+# rev-parse + a porcelain check, NOT `git describe` — describe becomes
+# tag-relative the moment a tag exists and would break the gate's
+# short-hash comparison.
 stamp="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    stamp="${stamp}-dirty"
+fi
 dotnet publish src/Weir -c Release -r "$rid" -p:InformationalVersion="$stamp" -p:IncludeSourceRevisionInInformationalVersion=false
 
 mkdir -p ~/.local/bin

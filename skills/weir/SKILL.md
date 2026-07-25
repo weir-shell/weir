@@ -393,6 +393,12 @@ print x
   twins). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
+- Capture is IN MEMORY and heavy: `| complete` (and `Seq.force`) hold
+  the whole output — a `string list`, ~10x its byte size for many
+  small lines (4M lines ≈ 44MB of text measured at ~573MB RSS). For
+  big or unbounded output STREAM it (`|> Seq.iter`, `| File.write`),
+  don't capture; a gigabyte child through `complete` exhausts memory
+  (a located error, not a crash — but the ceiling is the box).
 - Typed output: `git status --porcelain | from porcelain` gives rows
   with `Path`/`Staged`/`Unstaged`/`Status`; `... | from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
@@ -444,7 +450,15 @@ if clean then !(sh -c "echo acting")
   `fst`/`snd` project PAIRS (wider tuples are a type error, as F#).
 - Paths: `Path.extension` (keeps the dot; `""` when none),
   `Path.fileName`, `Path.stem`, `Path.dir` (`""` at the top),
-  `Path.combine dir name` — System.IO semantics.
+  `Path.combine dir name` — System.IO semantics, with the two BCL
+  gotchas that come with them: an ABSOLUTE second arg WINS
+  (`Path.combine "/safe" "/etc/x"` = `/etc/x`, not nested), and `..`
+  is NOT normalized. Path functions don't confine — building a path
+  from hostile data can escape a directory you imagined as a bound;
+  that check is the script's. And `File.*`/explicit paths FOLLOW
+  symlinked dirs that `Path.glob`'s `**` deliberately skips — each is
+  correct in isolation (glob skips for loop-immunity, explicit access
+  follows as a shell does), but they are not the same rule.
 - `Path.glob "src/**/*.fs" : seq<string>` — typed discovery
   (nothing expands in argv, ever): `*` within-segment, `**`
   cross-segment (never through symlinked dirs — bash globstar),

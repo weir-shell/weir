@@ -1,5 +1,64 @@
 # Spike Notes
 
+## The freshness gate unified (+ dirty stamp, doc riders) (2026-07-25)
+
+Part two's highest-value flag: the mechanism that catches masked
+failures was itself incomplete and, worse, one copy LIED. Mechanical
+fix, zero language change (no .fs touched).
+
+**The consumer denominator (enumerated, the report's point).** Every
+binary consumer, before/after:
+- `ci/e2e.sh` — full inline gate → calls `ci/check-fresh.sh`.
+- `ci/skill-doc.sh` — WARN-only mtime, no stamp (part two read only
+  its first 20 lines and called it "NONE" — corrected here) → calls
+  the shared gate, now HARD.
+- `ci/timing.sh` — no gate → calls the shared gate.
+- `tests/lib/harness.py:assert_fresh` (used by lsp-e2e, repl-color,
+  repl-wordnav, harness-selftest) — stamp-ONLY, with a comment
+  claiming "mtime gates still apply" that WERE NOT → subprocesses the
+  shared gate (stamp+mtime), comment gone.
+- `tests/Weir.Fuzz/Runner.fs` — already a complete F# gate
+  (stamp+mtime, `-dirty`-tolerant via `StartsWith`); kept as the SOLE
+  F#-native twin (shelling out from the test runtime is a worse
+  dependency), cross-referenced from the shared script.
+- `ci/fsharp-oracle.sh` — dotnet test, no binary, correctly ungated.
+
+So: two consumers gained a gate, one lost a lie, one deduped; the
+shell+Python family now has ONE implementation (`ci/check-fresh.sh`).
+
+**The lying comment is the seventh masked-failure member, a new
+shape.** Not a stale artifact — a guard whose DOCS drifted from the
+guard, promising a protection it didn't have. Logged in PROCESS.md:
+worse than no comment; the fix is that the doc and code are now the
+same file for all shell/Python consumers.
+
+**The republish window, STATED not mechanized.** The gate is
+start-of-run, not per-case; a republish mid-run swaps the bytes while
+the stamp still matches (the deep-fuzz P-vs-T(P) case). Documented in
+`check-fresh.sh`'s header as the ONE remaining window, with the
+standing rule (never republish during a live deep run) until a
+publish lockfile lands. One boundary stated, not two half-known.
+
+**Dirty stamp.** `publish.sh` now appends `-dirty` (via
+`rev-parse --short` + a `git status --porcelain` check — NOT `git
+describe`, which turns tag-relative the moment a tag exists and would
+break the gate's short-hash comparison). The gate WARNS on a dirty
+build locally (iteration is fine) and HARD-FAILS in CI (`$CI` set — a
+shipped artifact may not carry uncommitted source). Verified: dirty
+tree → `9f6eca0-dirty`, gate rc=0 local / rc=1 under CI=true.
+
+**Doc riders (three).** SKILL: capture is heavy — stream don't
+capture for big output, carrying the measured 4M-lines/44MB→573MB
+(~13x). SKILL: the two path non-claims (Path.combine's absolute-
+second-arg + no `..` normalize; File.* follows symlinks glob skips —
+each correct in isolation). PROCESS: the pgrep lesson — an instrument
+whose pattern can match the instrument is not a measurement (the
+harness-truth class's manufactured-failure variant); count by name
+(`ps -C`), not by a pattern the measuring command carries.
+
+865 unit / 318+ e2e / 18 fuzz / 58 doc blocks, all green through the
+unified gate.
+
 ## Safe-by-design review, part two — the surfaces outside the language (2026-07-25)
 
 Verification-only (zero src/), the four surfaces part one didn't touch.

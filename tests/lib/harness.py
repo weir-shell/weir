@@ -7,24 +7,15 @@ import sys
 
 
 def assert_fresh(weir_bin, repo_root):
-    """Stamp gate: the binary's build stamp must equal git HEAD.
-    Stale results become impossible rather than catchable."""
-    head = subprocess.run(
-        ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
-        capture_output=True, text=True,
-    ).stdout.strip()
-    out = subprocess.run(
-        [weir_bin, "--version"], capture_output=True, text=True
-    ).stdout.strip()
-    if not head:
-        return  # no git (release tarball); mtime gates still apply
-    if not out.startswith(head):
-        print(
-            f"STALE BINARY: {weir_bin} stamps '{out}', HEAD is '{head}' — "
-            "rebuild with ./publish.sh",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    """The ONE freshness gate — delegates to ci/check-fresh.sh so the
+    stamp AND mtime checks have a single implementation (this used to be
+    a Python stamp-only copy whose own comment claimed mtime coverage it
+    did not have — a guard's doc drifting from the guard is the exact
+    masked failure the gate exists to prevent). Exits nonzero on stale."""
+    gate = os.path.join(repo_root, "ci", "check-fresh.sh")
+    r = subprocess.run([gate, weir_bin])
+    if r.returncode != 0:
+        sys.exit(r.returncode)
 
 
 def alive(pid):

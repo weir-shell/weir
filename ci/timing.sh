@@ -9,6 +9,10 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 EXPR_MAX_MS="${WEIR_MAX_EXPR_MS:-18}"
 CMD_MAX_MS="${WEIR_MAX_CMD_MS:-42}"
 
+# stale-binary guard [D:masking-mechanized]: the ONE shared gate — timing
+# a stale binary measures the wrong build
+"$(dirname "$0")/check-fresh.sh" "$BIN"
+
 median() {
     local expr="$1"
     for _ in $(seq 1 15); do
