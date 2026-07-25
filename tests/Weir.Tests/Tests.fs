@@ -3676,6 +3676,42 @@ let rangeTests =
               expectValue "[] |> Seq.isEmpty" (VBool true)
           } ]
 
+// [D:depth-guard]: the safe-by-design review found unbounded expression
+// depth crashed the process (SEGV) — the bound is now a machine-checked
+// invariant with a located diagnostic, not a prose promise.
+let private nestDeep opener closer n =
+    String.replicate n opener + "1" + String.replicate n closer
+
+let depthGuardTests =
+    testList
+        "Depth guard"
+        [ test "legitimate nesting is untouched (corpus max is ~11)" {
+              expectValue (nestDeep "(" ")" 100 + " + 0") (VInt 1L)
+              expectValue "[[[1]]] |> Seq.first 1 |> Seq.force |> Seq.length" (VInt 1L)
+          }
+          test "at-ceiling parens still parse (limit 500)" {
+              match Weir.Parser.parseExpr (nestDeep "(" ")" 499) with
+              | Ok _ -> ()
+              | Error m -> failtest $"depth 499 must parse, got: {m}"
+          }
+          test "over-ceiling parens diagnose, located, no crash" {
+              match Weir.Parser.parseExpr (nestDeep "(" ")" 600) with
+              | Error m -> Expect.stringContains m "nested too deeply" "located depth diagnostic"
+              | Ok _ -> failtest "depth 600 must be rejected"
+          }
+          test "over-ceiling operator spine diagnoses (parses shallow, deep AST)" {
+              let spine = List.replicate 3000 "1" |> String.concat " + "
+
+              match Weir.Parser.parseExpr spine with
+              | Error m -> Expect.stringContains m "nested too deeply" "spine caught by the post-parse gate"
+              | Ok _ -> failtest "a 3000-term spine must be rejected"
+          }
+          test "over-ceiling nested brackets diagnose, not hang (was O(2^n))" {
+              match Weir.Parser.parseExpr (nestDeep "[" "]" 800) with
+              | Error m -> Expect.stringContains m "nested too deeply" "bracket depth caught"
+              | Ok _ -> failtest "depth 800 brackets must be rejected"
+          } ]
+
 let boolBranchTests =
     testList
         "Bool branching"
@@ -5954,6 +5990,7 @@ let allTests =
           interpTests
           unitPrintTests
           rangeTests
+          depthGuardTests
           boolBranchTests
           agentFindingsTests
           fmtTests

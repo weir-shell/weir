@@ -285,8 +285,13 @@ let private negIntLit =
 let private rangeTerm, private rangeTermRef =
     createParserForwardedToRef<Expr, unit> ()
 
+// Fail the range probe fast on a list/record opener [D:range-probe]:
+// a range endpoint is never `[`/`{`, so committing to the list path
+// here is safe — and it stops rangeTerm from descending into nested
+// brackets that the backtrack would then re-parse (O(2^n) on `[[[…]]]`).
 let private rangeBody =
-    attempt (rangeTerm .>> dotdot) .>>. rangeTerm .>>. opt (dotdot >>. rangeTerm)
+    notFollowedBy (anyOf "[{")
+    >>. attempt (rangeTerm .>> dotdot) .>>. rangeTerm .>>. opt (dotdot >>. rangeTerm)
     >>= fun ((a, b), c) ->
         let start, step, stop =
             match c with
@@ -443,8 +448,42 @@ let private negAtom =
               Span = { Start = pos p; End = e.Span.End } }
     )
 
+// Depth guard [D:depth-guard]: unbounded expression depth blows the
+// native stack — the recursive-descent parser on deep NESTING (parens/
+// brackets), and check/eval's tree-walk on a deep left-spine (a long
+// `a + a + …` chain parses shallow but builds a deep AST). One ceiling,
+// two enforcement points: `deepen` stops nesting DURING the parse
+// (before the parser itself overflows); the post-parse gate in
+// parseLineFull catches the spine. The limit sits far above any real
+// program (corpus max nesting is ~11) and well below the crash floor
+// (~6000), with margin for smaller stacks.
+let private maxDepth = 500
+
+let private parseDepth = new System.Threading.ThreadLocal<int>(fun () -> 0)
+
+// Thrown past FParsec's error protocol [D:depth-guard]: a failFatally
+// here gets swallowed by the surrounding attempt/choice backtracking
+// (a shallower "expecting expression" wins the merge); an exception
+// unwinds straight to parseLineFull with the exact position and
+// message. Only fires above the ceiling, which no legitimate program
+// reaches, so it never perturbs a real parse.
+exception private DepthExceeded of Pos
+
+let private deepen (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        parseDepth.Value <- parseDepth.Value + 1
+
+        try
+            if parseDepth.Value > maxDepth then
+                raise (DepthExceeded(pos stream.Position))
+            else
+                p stream
+        finally
+            parseDepth.Value <- parseDepth.Value - 1
+
 let private atom =
-    choice
+    deepen (
+      choice
         [ attrsRejectHere >>% Unchecked.defaultof<Expr>
           negAtom
           intLit
@@ -458,7 +497,7 @@ let private atom =
           parens
           recordLit
           listLit
-          wordAtom ]
+          wordAtom ])
 
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 
@@ -987,7 +1026,23 @@ let private singleQuoted =
     |>> mkExpr
     .>> ws
 
-let private spliceVar = spanned (pchar '$' >>. rawWord |>> EVar) |>> mkExpr .>> ws
+// A splice glued into a word under construction is fatal [D:argv-splat]:
+// the glued prefix would silently drop (`--flag=$x` → `["--flag="; x]`),
+// so name the two honest spellings. Shared by `$x` and `$@xs` — the
+// scalar path teaches its own fix, the splat path teaches per-element.
+let private notMidWord (teach: string) : Parser<unit, unit> =
+    (previousCharSatisfiesNot (fun c -> c = ' ' || c = '\t') >>. failFatally teach)
+    <|> preturn ()
+
+let private spliceVar =
+    // gate the mid-word check behind the `$` (as splat gates behind `$@`)
+    // so it fires only on an actual splice, never on a plain bareword
+    lookAhead (pchar '$')
+    >>. notMidWord
+            "a splice cannot join a word under construction — spell it with a space (`--flag $x`) or an interpolated arg (`$\"--flag={x}\"`)"
+    >>. spanned (pchar '$' >>. rawWord |>> EVar)
+    |>> mkExpr
+    .>> ws
 
 // $@name / $@(expr) — the argv splat [D:argv-splat]: N words, never
 // re-split. `$@"` stays the parked interpolated-verbatim opener's
@@ -995,10 +1050,8 @@ let private spliceVar = spanned (pchar '$' >>. rawWord |>> EVar) |>> mkExpr .>> 
 // words cannot live inside one word under construction.
 let private spliceSplat: Parser<Expr, unit> =
     lookAhead (attempt (pstring "$@" .>> notFollowedBy (pchar '"')))
-    >>. ((previousCharSatisfiesNot (fun c -> c = ' ' || c = '\t')
-          >>. failFatally
-                  "a splat cannot join a word under construction — map the prefix onto the elements, or pass it as a separate argument")
-         <|> preturn ())
+    >>. notMidWord
+            "a splat cannot join a word under construction — map the prefix onto the elements, or pass it as a separate argument"
     >>. spanned (
         pstring "$@"
         >>. (choice
@@ -1409,20 +1462,59 @@ let private noExternals =
 // Some only for the single-logical-line case the runner translates.
 type ParseFailure = { Message: string; Col: int option }
 
+// Iterative max-depth probe [D:depth-guard] — the checker/evaluator
+// walk the tree recursively, so a spine past the ceiling would overflow
+// THEIR stack; this measures depth WITHOUT recursing (an explicit
+// stack), then early-exits at the first over-limit node. Catches the
+// operator/application/pipe/sequencing spines that parse shallow.
+let private exprTooDeep (root: Expr) : Span option =
+    let stack = System.Collections.Generic.Stack<Expr * int>()
+    stack.Push(root, 1)
+    let mutable hit = None
+
+    while hit.IsNone && stack.Count > 0 do
+        let node, d = stack.Pop()
+
+        if d > maxDepth then
+            hit <- Some node.Span
+        else
+            for c in exprChildren node do
+                stack.Push(c, d + 1)
+
+    hit
+
+let private stmtExprs (s: Stmt) : Expr list =
+    match s with
+    | SLet(_, v)
+    | SLetPat(_, v)
+    | SExpr v
+    | SCmd v -> [ v ]
+    | SType _ -> []
+
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
+    parseDepth.Value <- 0
 
     try
-        match run (stmtWith r) input with
-        | Success(s, _, _) -> Result.Ok s
-        | Failure(msg, err, _) ->
-            let col =
-                if err.Position.Line = 1L then
-                    Some(int err.Position.Column)
-                else
-                    None
+        try
+            match run (stmtWith r) input with
+            | Success(s, _, _) ->
+                match s |> stmtExprs |> List.tryPick exprTooDeep with
+                | Some span ->
+                    let col = if span.Start.Line = 1 then Some span.Start.Col else None
+                    Result.Error { Message = $"expression nested too deeply (limit {maxDepth})"; Col = col }
+                | None -> Result.Ok s
+            | Failure(msg, err, _) ->
+                let col =
+                    if err.Position.Line = 1L then
+                        Some(int err.Position.Column)
+                    else
+                        None
 
-            Result.Error { Message = msg; Col = col }
+                Result.Error { Message = msg; Col = col }
+        with DepthExceeded p ->
+            let col = if p.Line = 1 then Some p.Col else None
+            Result.Error { Message = $"expression nested too deeply (limit {maxDepth})"; Col = col }
     finally
         ambientResolver.Value <- noExternals
 

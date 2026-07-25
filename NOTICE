@@ -1,0 +1,13 @@
+weir
+Copyright 2026 the weir authors
+
+This product includes software developed by third parties:
+
+  FParsec (https://github.com/stephan-tolksdorf/fparsec)
+  Copyright (c) Stephan Tolksdorf.
+  Licensed under the Simplified BSD License (2-clause).
+
+FParsec is the only third-party library linked into the shipped weir
+binary. FSharp.Compiler.Service and FsCheck are test-only dependencies
+(the fidelity oracle and the fuzzer) and are not distributed with the
+binary.

@@ -110,6 +110,35 @@ let private totality (lines: string list) =
     if not finished then
         failtestf "check pipeline exceeded 5s (possible hang) on:\n%s" (showProgram lines)
 
+// the depth guard's acceptance [D:depth-guard]: a pathological-depth
+// input must DIAGNOSE (an error, not silent acceptance) within the
+// hang bound and without crashing the process — a segfault here takes
+// the whole test runner down, so survival IS the no-crash pin.
+let private depthDiagnoses (label: string) (line: string) =
+    let work =
+        System.Threading.Tasks.Task.Run(fun () ->
+            let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" [ line ]
+            diags)
+
+    let finished =
+        try
+            work.Wait 5000
+        with :? AggregateException as ae ->
+            failtestf "%s: pipeline THREW %s: %s" label (ae.InnerException.GetType().Name) ae.InnerException.Message
+
+    if not finished then
+        failtestf "%s: exceeded 5s (hang)" label
+
+    match work.Result |> List.filter (fun d -> d.Severity = "error") with
+    | [] -> failtestf "%s: expected an error diagnostic, got none" label
+    | _ -> ()
+
+let private deepNest opener closer n =
+    "let x = " + String.replicate n opener + "1" + String.replicate n closer
+
+let private opSpine n =
+    "let x = " + (List.replicate n "1" |> String.concat " + ")
+
 // per-statement parse shapes under the permissive resolver — the
 // respace guard's own predicate, reused (one shape language)
 let private shapesOf (lines: string list) : string list option =
@@ -167,6 +196,30 @@ let tests =
               totality (Mutate.swapLines rnd lines)
               totality (Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines))
               totality (Mutate.swapLines rnd (Mutate.duplicateLine rnd lines))
+
+          // Invariant 2's depth axis [D:depth-guard]: the generator
+          // favors breadth, so extreme DEPTH is pinned here explicitly —
+          // the three safe-by-design-review fixtures (two were SEGV, one
+          // was O(2^n)) become standing seeds, plus a generated sweep.
+          test "deep parens diagnose-or-bound (was SEGV ~6000)" {
+              depthDiagnoses "parens" (deepNest "(" ")" 20000)
+          }
+          test "long operator spine diagnoses-or-bound (was SEGV in check)" { depthDiagnoses "opspine" (opSpine 50000) }
+          test "nested brackets diagnose-or-bound (was O(2^n))" { depthDiagnoses "brackets" (deepNest "[" "]" 2000) }
+          test "nested records diagnose-or-bound" { depthDiagnoses "records" (deepNest "{a=" "}" 2000) }
+
+          testPropertyWithConfig cfg "arbitrary over-ceiling depth diagnoses-or-bounds"
+          <| fun (NonNegativeInt s) ->
+              let rnd = Random s
+              let d = 600 + rnd.Next 4000 // above the 500 ceiling
+
+              let line =
+                  match rnd.Next 3 with
+                  | 0 -> deepNest "(" ")" d
+                  | 1 -> deepNest "[" "]" d
+                  | _ -> opSpine d
+
+              depthDiagnoses "generated" line
 
           testPropertyWithConfig cfg "span soundness: an injected bad token is reported on its own line"
           <| fun (p: Program) (NonNegativeInt s) ->

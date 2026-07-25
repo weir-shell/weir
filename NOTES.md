@@ -1,5 +1,67 @@
 # Spike Notes
 
+## Totality hardening — the parser survives hostile depth (2026-07-25)
+
+The safe-by-design review's Property-3 flag paid off: unbounded
+expression depth was not "hardening polish", it was a memory-unsafe
+SEGV (rc 139) in a language whose SECURITY.md pitch is safe-by-design.
+Three finds, now all diagnose-or-bound (no rc 139, no hang, ~100-300ms):
+deep parens (`((…))` ≳6000), a long operator spine (`1 + 1 + …` ≳8000
+terms), nested brackets (`[[…]]`, was O(2^n)).
+
+**Diagnosis corrected the plan's premise.** The plan asserted "the two
+segfaults share ONE fix: a parse-depth guard." Probing (fmt = parse-
+only, check = parse+walk) split them: paren nesting SEGVs in `fmt`
+(parser recursive descent), but the operator spine parses fine at 20k
+(fmt=0) and SEGVs in `check` — a deep left-nested AST overflowing the
+CHECKER's tree-walk, not the parser. So it is ONE ceiling, TWO
+enforcement points, because the two overflows live in two engines:
+- `deepen` (a ThreadLocal depth counter wrapping `atom`) stops NESTING
+  during the parse, before the parser's own stack dies. It THROWS
+  `DepthExceeded` rather than `failFatally` — the fatal gets swallowed
+  by the surrounding attempt/choice backtrack (a shallower "expecting
+  expression" wins the error merge; observed directly — the located
+  message only surfaced once I switched to an exception).
+- a post-parse ITERATIVE (explicit-stack, itself crash-proof) depth
+  gate in parseLineFull catches the operator/app/pipe SPINE, which
+  parses shallow and can't be caught by a nesting counter.
+
+**The ceiling is 500, probed not guessed.** Crash floors on this
+container's stack: parens ~6000, operator spine 4000–8000. Corpus max
+nesting: 11 (one Python test file; real .weir is ≤ ~6). 500 sits ~45x
+above any legit program and ~10x below the crash floor, with margin
+for smaller stacks. Boundary pinned: depth 499 parses, 501 rejected.
+
+**The bracket hang was a SEPARATE mechanism, diagnosed first** (the
+no-op-edit lesson). Not depth — BACKTRACKING: `rangeBody`'s
+`attempt (rangeTerm .>> dotdot)` descends into nested brackets probing
+for a range's `..`, fails, backtracks, and the list path re-parses the
+SAME nested structure — 2^n (measured: 607ms→9s doubling over depths
+18→22). A range endpoint is numeric and never starts with `[`/`{`, so
+one line — `notFollowedBy (anyOf "[{")` at the range probe — commits to
+the list path on the opener and kills the exponential [D:range-probe].
+The consumed-separator law's shape, exactly as the plan anticipated
+("if `[` commits on its open, the backtrack cannot blow up"). Cost: a
+list/record as a range START (`[[1]..[3]]`, nonsensical, type-error
+before) is now a parse error — unpinned, no legit range starts there.
+The depth guard alone would NOT have fixed brackets (2^40 blows the
+clock long before depth 500); both fixes were needed.
+
+**Acceptance is the fuzzer, permanently.** Invariant 2 gains a depth
+axis (the three fixtures as seeds + a generated over-ceiling sweep) —
+closing the honest denominator the review named (the generators favor
+breadth). A crash there takes the runner down, so survival IS the
+no-crash pin. 865 unit (5 new Depth-guard) / 318+ e2e / 18 fuzz props /
+58 doc blocks, zero pin movement on legitimate programs.
+
+**Riders.** (A) mid-word scalar splice `--file=$x` now fatals like its
+splat twin [D:argv-splat] — the value was safe (isolated) but the
+prefix silently dropped; `notMidWord` is shared, gated behind the `$`
+(the first cut fired on plain barewords — 46 reds — because the check
+ran before confirming a splice was present). SKILL's "passes literally"
+wording corrected. (B) LICENSE (Apache-2.0) + NOTICE (FParsec, the
+only shipped dep) added — the Property-4 OSS-readiness follow-up.
+
 ## Safe-by-design review — the four safety properties verified (2026-07-24)
 
 Verification-only session (blessed), the security sibling of the

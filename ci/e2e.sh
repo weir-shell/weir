@@ -2557,6 +2557,19 @@ echo $@s
 echo "$errout" | grep -qF "one value? use \$x" || fail "scalar teaching: $errout"
 echo "e2e ok: splat teaches head, mid-word, and both type directions"
 
+# scalar mid-word splice mirrors the splat's fatal [D:argv-splat]: the
+# glued prefix would silently drop, so name the space/interp spellings
+errout=$(printf 'let f = "x"
+echo --file=$f
+' | $BIN check /dev/stdin 2>&1) && fail "mid-word scalar splice must reject"
+echo "$errout" | grep -qF "cannot join a word under construction" || fail "mid-word scalar teaching: $errout"
+# the spaced spelling stays legal (one argv word each)
+out=$(printf 'let f = "x.txt"
+echo --file $f
+' | $BIN /dev/stdin 2>&1)
+echo "$out" | grep -qF -- "--file x.txt" || fail "spaced splice must pass: $out"
+echo "e2e ok: scalar mid-word splice rejects, spaced spelling passes"
+
 # feed's ARGS take a splat while input streams (both axes)
 cat > "$spldir/fd.weir" <<'WEOF'
 let flags = ["-r"]

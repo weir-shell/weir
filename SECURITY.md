@@ -49,12 +49,13 @@ Check-time resolution matches run-time resolution.
 
 On any input the checker returns a located diagnostic rather than
 silently mis-executing. Totality is patrolled by the fuzzer
-(invariant 2) with an always-on strict-span floor. **Known limits are
-recorded as flags in the verification report** — pathological inputs
-(extreme nesting depth, very long operator chains, deeply nested empty
-brackets) can currently exhaust the stack or blow up parse time. These
-are availability bugs on adversarial *local* text, not execution or
-injection bugs; they are tracked for a hardening session.
+(invariant 2, including an adversarial-depth axis) with an always-on
+strict-span floor, and a parse-depth guard (limit 500) converts what
+were three stack/time blowups — extreme nesting depth, very long
+operator chains, deeply nested brackets — into located "expression
+nested too deeply" diagnostics. No input crashes the process; that is
+now a machine-checked invariant (unit `Depth guard` pins plus the
+fuzzer's depth seeds), not a prose promise.
 
 ### 4. Deployment — one binary, no runtime
 

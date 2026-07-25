@@ -88,6 +88,14 @@ fails.
    one pipeline) on every generated program and mutated neighbor
    (line deletion, ±1..3 indent perturbation, line duplication,
    adjacent-line swap, and stacked pairs): no exception, no >5s hang.
+   DEPTH AXIS [D:depth-guard]: the generators favor breadth (nesting
+   ≤ 2 above), so extreme depth is pinned separately — the three
+   safe-by-design-review fixtures (deep parens and a long operator
+   spine, both once SEGV; nested brackets, once O(2^n)) as standing
+   seeds, plus a generated sweep of over-ceiling (600–4600) parens/
+   brackets/operator-spines — each must diagnose (an error, not
+   silent acceptance) within the hang bound. A process crash here
+   takes the runner down, so survival IS the no-crash safety pin.
 3. Span soundness: a bad token (` ?!?`) appended to a random
    expression-territory line (command lines are argv territory —
    excluded by the renderer's tags) must be diagnosed. The HARD floor

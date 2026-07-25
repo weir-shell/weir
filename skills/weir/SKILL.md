@@ -122,8 +122,9 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (`let revParse r = git rev-parse $r | Seq.head`): params shadow
   PATH inside their own RHS (bindings-beat-PATH's scope; `^x` still
   forces the binary), and a spliced param defaults to string at the
-  statement boundary. Splices are WHOLE argv entries — `--file=$f`
-  passes literally; spell `--file $f` or an interp arg.
+  statement boundary. Splices are WHOLE argv entries — a mid-word
+  splice like `--file=$f` is a hard error (the prefix can't glue to
+  the value); spell `--file $f` or an interp arg `$"--file={f}"`.
 - `+` on two unknown params cannot infer (int-or-string): anchor one
   side (`x + 0`) or take data in. All single-typing operators
   (`- * / > <`) default to int; `let rec` and `mutable` are reserved
