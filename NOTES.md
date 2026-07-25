@@ -1,5 +1,35 @@
 # Spike Notes
 
+## LEXICON.md — the project's own vocabulary, defined (2026-07-25)
+
+Docs-only, zero src. Fifteen weeks produced a working vocabulary that
+existed nowhere as a unit — type-theory terms weir uses precisely,
+testing techniques adapted here, corpus-mining lingo, process idioms
+(receipt/park/pin) a newcomer reads as jargon. LEXICON.md is the fifth
+prose store, and it honours the no-fourth-store rule by DEFINING, not
+deciding: 76 entries across four sections (type theory & language
+design; testing & verification; corpus mining; process idioms), each ≤
+a paragraph, each ruling-or-rule entry pointered at its `[D:key]` or
+PROCESS §. Sourced from the five stores + GRAMMAR.md, not recollection.
+README and PROCESS now point newcomers at it.
+
+**The highest-value content is the field-divergences** — where weir
+uses a term DIFFERENTLY: type class (closed/structural/erased, not
+Haskell's open dictionaries), erasure (also names attributes),
+receipt/park/pin (process idioms with no field meaning), force/cache
+(materialization vs memoization — the pair that caused real confusion).
+
+**Findings (the session's second deliverable), reported not resolved:**
+- DOUBLE-MEANING: `scheme` (type scheme vs the "sentinel scheme"
+  checker mechanism) and `stage` (pipeline stage vs proposal-lifecycle
+  stage). Disambiguations proposed, not silently picked — the
+  one-glyph-inventory precedent at the vocabulary level.
+- UNDER-INDEXED: `district` and `sigil` have no `[D:key]` (unlike their
+  sibling `exit-reifiers`) — described in SEMANTICS/NOTES but never got
+  an index row. Proposed `[D:command-district]`/`[D:command-sigils]`
+  rows; reported not added (docs-only session; a DECISIONS row is a
+  decision, not a definition).
+
 ## Value-headed pipelines — `snips | sha256sum` (2026-07-25)
 
 The park opened on its own criterion, fired BY HAND: writing the miner,
