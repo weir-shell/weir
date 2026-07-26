@@ -113,6 +113,8 @@ let private asString (v: Value) : string =
     | VStr s -> s
     | v -> unreachable $"the checker rejects non-string command arguments: {formatValue v}"
 
+let private argStrings (args: seq<Value>) : string list = args |> Seq.map asString |> List.ofSeq
+
 let private cmdImpl: Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
@@ -121,7 +123,7 @@ let private cmdImpl: Value =
                 if prog.Trim() = "" then
                     failwith "cmd: empty program name"
 
-                let argv = args |> Seq.map asString |> List.ofSeq
+                let argv = argStrings args
                 VSeq(Proc.lines (Proc.resolveProg prog) argv None |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'cmd' on these arguments"))
 
@@ -191,7 +193,7 @@ let private completedWith (overlay: (string * string) list) : Value =
         VBuiltin(fun argsV ->
             match progV, argsV with
             | VStr prog, VSeq args ->
-                let argv = args |> Seq.map asString |> List.ofSeq
+                let argv = argStrings args
 
                 let code, stdout, stderr =
                     Proc.completeWith overlay (Proc.resolveProg prog) argv None
@@ -218,7 +220,7 @@ let private succeededWith (overlay: (string * string) list) : Value =
         VBuiltin(fun argsV ->
             match progV, argsV with
             | VStr prog, VSeq args ->
-                let argv = args |> Seq.map asString |> List.ofSeq
+                let argv = argStrings args
                 let code, _, _ = Proc.completeWith overlay (Proc.resolveProg prog) argv None
                 VBool(code = 0)
             | _ -> unreachable "the checker rejects 'succeeded' on these arguments"))
@@ -229,7 +231,7 @@ let private orFailedWith (overlay: (string * string) list) : Value =
             VBuiltin(fun argsV ->
                 match msgV, progV, argsV with
                 | VStr msg, VStr prog, VSeq args ->
-                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let argv = argStrings args
                     let code = Proc.streamCode overlay (Proc.resolveProg prog) argv
 
                     if code <> 0 then
@@ -248,7 +250,7 @@ let private feedWith (overlay: (string * string) list) : Value =
             VBuiltin(fun inputV ->
                 match progV, argsV, inputV with
                 | VStr prog, VSeq args, VSeq input ->
-                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let argv = argStrings args
                     let inputLines = input |> Seq.map asString
 
                     VSeq(
@@ -263,7 +265,7 @@ let private exitCodedWith (overlay: (string * string) list) : Value =
         VBuiltin(fun argsV ->
             match progV, argsV with
             | VStr prog, VSeq args ->
-                let argv = args |> Seq.map asString |> List.ofSeq
+                let argv = argStrings args
                 VInt(int64 (Proc.streamCode overlay (Proc.resolveProg prog) argv))
             | _ -> unreachable "the checker rejects 'exitCoded' on these arguments"))
 
@@ -280,7 +282,7 @@ let private completedWithIn (overlay: (string * string) list) : Value =
             VBuiltin(fun stdinV ->
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
-                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let argv = argStrings args
                     let input = stdin |> Seq.map asString
 
                     let code, out, err =
@@ -301,7 +303,7 @@ let private succeededWithIn (overlay: (string * string) list) : Value =
             VBuiltin(fun stdinV ->
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
-                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let argv = argStrings args
                     let input = stdin |> Seq.map asString
                     let code, _, _ = Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
                     VBool(code = 0)
@@ -313,7 +315,7 @@ let private exitCodedWithIn (overlay: (string * string) list) : Value =
             VBuiltin(fun stdinV ->
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
-                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let argv = argStrings args
                     let input = stdin |> Seq.map asString
 
                     let code =
@@ -333,7 +335,7 @@ let private orFailedWithIn (overlay: (string * string) list) : Value =
                 VBuiltin(fun stdinV ->
                     match msgV, progV, argsV, stdinV with
                     | VStr msg, VStr prog, VSeq args, VSeq stdin ->
-                        let argv = args |> Seq.map asString |> List.ofSeq
+                        let argv = argStrings args
                         let input = stdin |> Seq.map asString
 
                         let code =
@@ -1321,7 +1323,7 @@ let private cmdEnvImpl: Value =
                     if prog.Trim() = "" then
                         failwith "cmd: empty program name"
 
-                    let argv = args |> Seq.map asString |> List.ofSeq
+                    let argv = argStrings args
 
                     VSeq(
                         Seq.delay (fun () -> Proc.linesWith (envVarPairs envV) (Proc.resolveProg prog) argv None)

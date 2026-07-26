@@ -1,5 +1,64 @@
 # Spike Notes
 
+## The debt riders — the census's convictions cleared (2026-07-26)
+
+Rider-sized, zero behavior. Sequencing: ran AFTER the tier drop's
+sessions (all landed through 107e7a4) — the preferred path; nothing
+interleaved.
+
+**Resolver base record.** The census convicted ×3 verbatim (Fmt /
+Program / Script) — the sweep found a FOURTH verbatim copy in
+Repl.fs:253 (postdating or miscounted; either way the conviction's
+point, made by the copies themselves). `Script.resolver` is the one
+constructor — Script owns it: the pipeline module, first of the four
+in compile order, and it already held the exact shape as a private.
+Four call sites collapsed, ~25 lines net negative, ZERO pin movement
+(no latent divergence between the copies — all four were truly
+verbatim modulo Repl's closure spelling).
+
+**argStrings.** ×6 at census, ×11 at landing (the spawn family grew
+it) — one private local in Builtins, next to `asString`.
+
+**LEXICON re-sourced — the plan's predicted finding class, confirmed.**
+The type-class entry said "Eq is the only class": written from
+recollection, wrong since the type-classes sessions closed the set at
+{Eq, Show, Ord} [D:inferred-type-classes]. Re-sourced from the
+DECISIONS row AND the checker's class solver (Check.fs `demand`),
+which settled the per-class rules the entry now states separately:
+Eq = no function or seq anywhere, recursively; Show = no function,
+seqs DO show (wider than Eq by exactly the seq rule — same KIND of
+failable constraint, so no in-kind split to declare); Ord = int/
+string/bool EXACTLY, no structural decomposition (narrower than
+both). The hypothesis that Show might be total was checked and is
+false — `show` on a function-carrying type is a check error.
+
+**The census ledger updated in place** (bracket-amend style): both
+convictions CLEARED with pointers; the bare-pipe park's phrasing
+tightened — the diagnostics-policy session RAN and kept barePipeHint,
+so "until the policy is decided" misread as satisfied; the park now
+states its remaining narrow question (where should a bare-`|` fatal
+point when the LHS spans lines?). Deep-run-vs-republish: closed by
+ci/deep-lock.sh, confirmed struck. Alignment-stacks note: already in
+the census verbatim, nothing added. Multiline-lambda overage:
+accepted as spent, stands.
+
+**DESIGN-multiline.md → plans/** (git mv, history follows), header
+stamped EXECUTED-with-supersessions (block lets / bracket stacks /
+body-blanks / lambdas grew past the sketch; the logical-line
+reconstruction decision stands), indexed in plans/README.md marked
+as a DESIGN doc. Reference sweep: both mentions are name-citations —
+left to the index, the PLAN-sweep's own convention. ROOT INVENTORY,
+stated not assumed: CLAUDE / DECISIONS / LEXICON / NOTES /
+NOTES-agent / PROCESS / README / SECURITY / SEMANTICS all living;
+READ-ORDER + TRANSCRIPTION are the debatable pair — artifacts of the
+STANDING read gate (open thread, anchor maintained), judged
+in-service and left; they become moveable when the gate closes.
+
+**The debt list now reads**: empty, except what is deliberately
+parked with criteria (the bare-pipe narrow question; the
+fifth-alignment-feature trigger; the standing capture/OOM flags from
+the safety review — all parks, not debt).
+
 ## The names go, third pass, right reason (2026-07-26)
 
 `completed`/`succeeded`/`orFailed`/`exitCoded` + Env twins are gone as
@@ -869,9 +928,13 @@ users; the three IsKnown resolver-extension sites in Parser
   duplicated VERBATIM ×3 — Fmt.fs:58, Program.fs:11, Script.fs:1353.
   Shape: extract one constructor (Builtins or Script owns it), three
   call sites collapse, zero behavior. Size: ~30 lines net negative.
+  [CLEARED 2026-07-26, the debt rider: `Script.resolver` is the one
+  constructor — and the census UNDERCOUNTED: a fourth verbatim copy
+  sat in Repl.fs:253. All four collapsed; zero pin movement.]
 - MICRO-FLAG (rider only): `args |> Seq.map asString |> List.ofSeq`
   ×6 in Builtins.fs — one `argStrings` local would do. Not worth its
-  own session.
+  own session. [CLEARED 2026-07-26: `argStrings` landed — ×11 by
+  then; the spawn family had grown it.]
 - DESCRIBED, not flagged: the assembler's four alignment stacks
   (Brackets / PipeGroups / Compounds / Lambdas) are four bespoke
   stack disciplines over one line stream. They are NOT duplicates —
@@ -886,6 +949,11 @@ Strict spans remain red on exactly ONE class — the bare-pipe fatal —
 which is a policy question (where should a bare `|` fatal point?),
 not a bug hunt. Parks until: the policy is decided in a session that
 owns it; the fuzzer's strict-span property is the acceptance.
+[AMENDED 2026-07-26: the diagnostics-policy session RAN (77762ed)
+and KEPT barePipeHint's failFatally — "the policy is decided" no
+longer parks this. The park's remaining NARROW question: where
+should a bare-`|` fatal point when the LHS spans lines? The
+strict-span property stays the acceptance.]
 
 **Assume-resolver residue.** The question closes clean: one
 definition [D:assume-resolver] (Script.fs:1439), four consumers

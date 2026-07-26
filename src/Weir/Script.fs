@@ -1349,7 +1349,10 @@ let private baseEnvs (mode: Mode) (scriptArgs: string list) (scriptPath: string)
 
     typeEnv, valueEnv
 
-let private resolver (typeEnv: TypeEnv) : Parser.Resolver =
+// THE base resolver over a type env — one constructor behind the
+// script/fmt/REPL/CLI call sites (was ×4 verbatim; the census's
+// conviction)
+let resolver (typeEnv: TypeEnv) : Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
       IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
       IsExternal = Extern.exists

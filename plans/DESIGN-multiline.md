@@ -1,5 +1,15 @@
 # weir — multi-line scripts: design gate (PLAN-modules-and-scripts Session 3)
 
+Status: EXECUTED (landed 2026-07-17; a DESIGN gate record, not a
+plan — the kill criteria were beaten in the gate session and the
+implementation shipped with them). PARTLY SUPERSEDED in detail: the
+assembler has since grown block lets (PLAN-block-let-cmd), bracket
+stacks (PLAN-multiline-brackets), body-blank transparency
+(PLAN-body-blanks — any blank-ends-statement reading here is
+RETIRED), and multiline lambdas (PLAN-multiline-lambda). The core
+decision — logical-line reconstruction, not expression-level
+offside — stands.
+
 ## Kill criteria (written before prototyping)
 
 1. Expression suite stays green with fewer than 150 parser-lines changed.

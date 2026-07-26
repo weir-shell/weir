@@ -249,14 +249,7 @@ let private printWarnings (state: State) (te: Check.TypedExpr) =
         Console.WriteLine(Script.Color.yellow Script.Color.onStdout.Value (underline w.Span))
         Console.WriteLine(Check.formatWarning w))
 
-let private resolver (state: State) : Parser.Resolver =
-    { IsKnown =
-        fun n ->
-            Map.containsKey n state.TypeEnv.Values
-            || Map.containsKey n state.TypeEnv.Modules
-      IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
-      IsExternal = Extern.exists
-      ExternalNames = fun () -> Extern.names () :> seq<string> }
+let private resolver (state: State) : Parser.Resolver = Script.resolver state.TypeEnv
 
 let private printHint (state: State) (line: string) =
     Diagnose.hint

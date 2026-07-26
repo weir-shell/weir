@@ -7,11 +7,7 @@ open Weir.Types
 let private evalOnce (input: string) : int =
     let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv
 
-    let resolver: Parser.Resolver =
-        { IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
-          IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
-          IsExternal = Extern.exists
-          ExternalNames = fun () -> Extern.names () :> seq<string> }
+    let resolver = Script.resolver typeEnv
 
     let printHint () =
         Diagnose.hint

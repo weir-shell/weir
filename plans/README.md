@@ -9,6 +9,7 @@ is chronological (git first-commit date).
 - 2026-07-13 [EXECUTED] [PLAN-prompt-ergonomics.md](PLAN-prompt-ergonomics.md) — prompt ergonomics: command-callable builtins, diagnostics, CI, complete/collect
 - 2026-07-16 [EXECUTED] [PLAN-library.md](PLAN-library.md) — library phase: strings, head, generic unions, measure algebra
 - 2026-07-17 [EXECUTED] [PLAN-modules-and-scripts.md](PLAN-modules-and-scripts.md) — proposal: builtin modules, then a script language
+- 2026-07-17 [EXECUTED] [DESIGN-multiline.md](DESIGN-multiline.md) — DESIGN doc, not a plan: the multi-line design gate (modules-and-scripts Session 3); logical-line reconstruction decided
 - 2026-07-17 [EXECUTED] [PLAN-read-booleans-overflow.md](PLAN-read-booleans-overflow.md) — consolidated read, booleans, overflow policy, data-range battery
 - 2026-07-18 [EXECUTED] [PLAN-remove-measures.md](PLAN-remove-measures.md) — remove measures
 - 2026-07-18 [EXECUTED] [PLAN-unit-and-print.md](PLAN-unit-and-print.md) — unit, print, and the statement rule

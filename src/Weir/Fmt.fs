@@ -54,11 +54,7 @@ let qualifyFile (path: string) : int =
     else
         let typeEnv, _ = Prelude.extend Builtins.typeEnv Builtins.valueEnv
 
-        let r: Parser.Resolver =
-            { IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
-              IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
-              IsExternal = Extern.exists
-              ExternalNames = fun () -> Extern.names () :> seq<string> }
+        let r = Script.resolver typeEnv
 
         Extern.refresh ()
         let lines = System.IO.File.ReadAllLines path

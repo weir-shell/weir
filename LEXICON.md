@@ -64,11 +64,18 @@ prematurely generalized into an unusable type variable.
 no annotations required, unification + generalization.
 
 **Type class.** In Haskell, an open, global, dictionary-passing
-interface. **weir's variant is closed, structural, and erased**: `Eq`
-is the only class, its instances are decided by structure (equatable
-unless it contains a function or seq), constraints are inferred and
-checked at the USE site, and nothing is passed at run time. Not
-user-extensible — the door stays shut. [D:inferred-type-classes]
+interface. **weir's variant is closed, structural, and erased**: the
+closed set is **Eq, Show, Ord** (compiler-owned, not user-extensible —
+the door stays shut), instances are decided by structure, constraints
+are inferred and checked at the USE site, and nothing is passed at run
+time. The admission rules differ per class: **Eq** — equatable unless
+the type contains a function or a seq, anywhere, recursively
+(records/unions/tuples decompose). **Show** — showable unless it
+contains a function; seqs DO show (rendered lossily, truncated) —
+wider than Eq by exactly the seq rule, but the same KIND of failable
+constraint. **Ord** — int, string, bool EXACTLY; no structural
+decomposition (no record/union/tuple ordering) — narrower than both.
+[D:inferred-type-classes]
 
 **Constraint.** A demand attached to a type variable — "this must be
 equatable". weir infers constraints (from `==`, `show`, `Seq.sortBy`)
