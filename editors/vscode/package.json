@@ -42,7 +42,7 @@
         "weir.serverPath": {
           "type": "string",
           "default": "weir",
-          "description": "Path to the weir binary. Resolved from PATH by default; this setting is the escape hatch, not the default."
+          "description": "Path to the weir BINARY only (the client runs '<path> lsp' itself). A bare name resolves from PATH, then ~/.local/bin; an absolute path is the escape hatch."
         }
       }
     },

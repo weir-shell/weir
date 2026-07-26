@@ -167,7 +167,11 @@ before retrying.
 
 - **Server not found**: `weir lsp` assumes `weir` is on PATH — run
   `weir --version` from the same environment your editor starts in
-  (GUI editors often see a shorter PATH than your shell).
+  (GUI editors often see a shorter PATH than your shell; the VS Code
+  client also probes `~/.local/bin` and reports an actionable error).
+  Where a server-path setting exists, it takes the BINARY path only —
+  the client adds `lsp` itself; `weir lsp` in the setting is the
+  spawn-ENOENT trap.
 - **No attach**: the filetype/language didn't match — confirm the
   buffer's filetype is `weir` (`:set ft?` in vim; `hx --health weir`;
   `M-x describe-mode`). Extensionless scripts need the shebang rules
