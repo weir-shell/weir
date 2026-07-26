@@ -1,0 +1,15 @@
+{
+  "name": "tree-sitter-weir",
+  "version": "0.1.0",
+  "description": "weir grammar for tree-sitter — a highlighting renderer, not the language definition",
+  "main": "bindings/node",
+  "keywords": ["parser", "lexer", "weir"],
+  "files": ["grammar.js", "queries/*", "src/**"],
+  "tree-sitter": [
+    {
+      "scope": "source.weir",
+      "file-types": ["weir"],
+      "injection-regex": "^weir$"
+    }
+  ]
+}

@@ -1,5 +1,51 @@
 # Spike Notes
 
+## tree-sitter-weir — the renderer grammar (editor arc, session 2) (2026-07-26)
+
+editors/tree-sitter-weir/ lands: grammar.js + highlight queries +
+COMMITTED generated src/ (consumers build without Node — the
+tree-sitter convention). The README states the law extension up
+front: a RENDERER, not a second parser — `weir check`'s pipeline
+stays the one truth, the grammar over-accepts freely, no assembler
+replication (a continuation line may highlight as a fresh statement),
+never cite it as the language definition.
+
+**Repo location (the flagged decision, execution call).** The
+container cannot create a GitLab repo, so the grammar ships as a
+SUBDIRECTORY structured as a complete standalone repo. Helix consumes
+subdirs natively (`source = { git = ..., subpath = ... }`); Zed's
+grammar entries want a repo root, so the dedicated-repo split
+(tree-sitter-weir under the arquidevio namespace) is the USER'S
+action when session 3's publishing needs it — priced here, not
+silently defaulted.
+
+**Grammar shape**: token-soup with composite islands — comments,
+hash-lines (shebang/#loose), strings/raw/interp (holes admit quoted
+strings — a corpus find), attributes, let/type heads (binder name
+captured), keywords, uppercase=type, the full sigil family
+($( / $e( / $name / $@name / $@( / !( / !e( / !), operators incl.
+`>>` (a doc-block find), and a single-char stray fallback so command
+argv (--flags, paths, globs) can never ERROR.
+
+**The corpus bar: zero ERROR/MISSING** — 8 .weir files (examples/ +
+tools/) AND all 46 SKILL/GUIDE doc blocks. Two fixes the corpus
+forced: interp holes containing strings (`{$(git log -1
+"--format=%h") |> Seq.head}`), and `>>`.
+
+**Helix rendering verified in-container**: grammar built via
+`hx --grammar build` (path source; the runtime/grammars dir must
+exist — a helix quirk), health shows parser+highlights ✓, and the
+color-tracked pty reconstructor proved DIFFERENTIATED rendering on
+the flagship's commitTreeAs lines: keyword / binder-name / string /
+type / sigil-family / default = six distinct treatments. (A COLORTERM
+artifact in the probe's SGR parser briefly read everything as one
+color — the per-cell segmentation settled it.)
+
+**GitHub rendering: NOT promised.** linguist acceptance requires
+in-the-wild usage (its popularity bar: ~200 unique :user/repo hits),
+which weir does not meet. The grammar is linguist-consumable when
+that day comes; the item reopens on the criteria, not before.
+
 ## LSP requests — formatting + definition (editor arc, session 1) (2026-07-26)
 
 The two most-expected-and-silently-missing requests land

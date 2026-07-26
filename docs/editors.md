@@ -94,16 +94,31 @@ indent = { tab-width = 4, unit = "    " }
 language-servers = ["weir"]
 ```
 
-`hx --health weir` should show the server with a ✓ and its path.
+Colors come from the tree-sitter grammar
+([editors/tree-sitter-weir](../editors/tree-sitter-weir/)) — add its
+source and build it:
+
+```toml
+# languages.toml, alongside the blocks above
+[[grammar]]
+name = "weir"
+source = { git = "https://gitlab.com/arquidevio/weir", subpath = "editors/tree-sitter-weir" }
+```
+
+then `hx --grammar fetch && hx --grammar build`, and copy
+`editors/tree-sitter-weir/queries/highlights.scm` to
+`~/.config/helix/runtime/queries/weir/highlights.scm`.
+`hx --health weir` should then show server, parser, and highlights
+all ✓.
 
 Verified (Helix 25.01.1, in-container): attach ✓, diagnostic ✓
 (gutter marker + statusline count), hover ✓ (`space k`), formatting ✓
 (`:format` rewrites the buffer to `weir fmt`'s output), definition ✓
 (`gd` on a use lands on its top-level `let`), `.weir` and shebang
-detection ✓. Semantic tokens: n/a — Helix does not support LSP
-semantic tokens; its highlighting is tree-sitter-based (a weir
-tree-sitter grammar is a planned fast-follow; until then text is
-uncolored).
+detection ✓, tree-sitter highlighting ✓ (keywords, strings, types,
+binder names, and the `$`/`$@`/`!` sigil family each render
+distinctly on the flagship). LSP semantic tokens remain unsupported
+by Helix — the grammar is the coloring path.
 
 ## Emacs (eglot)
 
