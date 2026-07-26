@@ -144,6 +144,18 @@ Extension, not config — see [`editors/vscode/`](../editors/vscode/):
 the shipped client wraps the same `weir lsp` server and adds a
 TextMate grammar. Install it from there; no manual LSP wiring needed.
 
+## Zed
+
+Extension, not config — see [`editors/zed/`](../editors/zed/): the
+same `weir lsp` server plus tree-sitter highlighting (Zed has no
+other path for an unknown language). Install as a dev extension
+(Extensions → Install Dev Extension → the `editors/zed/` directory;
+needs a local Rust toolchain) until it is published.
+
+UNTESTED in the verification container (Zed is GUI-only; dev
+extensions compile locally) — the extension README carries a 5-step
+local verification list.
+
 ## Troubleshooting
 
 - **Server not found**: `weir lsp` assumes `weir` is on PATH — run

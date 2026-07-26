@@ -1,5 +1,35 @@
 # Spike Notes
 
+## The Zed extension — the arc closes (editor arc, session 3) (2026-07-26)
+
+editors/zed/ lands complete: extension.toml (grammar pinned by FULL
+sha to session 2's commit, `path` into the subdir), languages/weir/
+config.toml (path_suffixes + first_line_pattern shebang + `//` +
+tab 4 + the server), highlights.scm (shared with the grammar), and
+the ~30-line Rust glue (worktree.which "weir" → `weir lsp` — the one
+command, the VS Code client's sibling).
+
+**UNTESTED in-container, stated everywhere it matters**: Zed is
+GUI-only and dev extensions compile with a local Rust toolchain
+(neither installable here — no root, no cargo). The extension README
+carries the 5-step local verification (PATH → dev-install →
+highlighting on the flagship → diagnostic+hover → format) and the
+subdir-grammar fallback (if the installed Zed rejects `path`, the
+dedicated-repo split is the prerequisite — the priced decision from
+session 2).
+
+**Publishing prepared, NOT sent** (the plan's ruling): the README
+names the exact zed-industries/extensions steps; putting weir in a
+public registry is the user's explicit go, and the container has no
+GitHub access regardless.
+
+The editor arc is complete: LSP requests (session 1, 61c1cbb),
+tree-sitter-weir (session 2, b4a9ff8), Zed (session 3). Standing
+after: the binder-span park (definition/rename/references, one
+medium session); the dedicated-repo split when Zed publishing or a
+strict Zed version demands it; linguist when the popularity bar is
+met.
+
 ## tree-sitter-weir — the renderer grammar (editor arc, session 2) (2026-07-26)
 
 editors/tree-sitter-weir/ lands: grammar.js + highlight queries +

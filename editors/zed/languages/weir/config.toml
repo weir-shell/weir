@@ -1,0 +1,15 @@
+name = "Weir"
+grammar = "weir"
+path_suffixes = ["weir"]
+first_line_pattern = '^#!.*\bweir\b'
+line_comments = ["// "]
+tab_size = 4
+hard_tabs = false
+language_servers = ["weir"]
+
+brackets = [
+  { start = "(", end = ")", close = true, newline = false },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "{", end = "}", close = true, newline = false },
+  { start = "\"", end = "\"", close = true, newline = false },
+]

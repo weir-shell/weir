@@ -1,0 +1,19 @@
+id = "weir"
+name = "Weir"
+description = "Weir language support: diagnostics, hover, completion, formatting, go-to-definition via `weir lsp`; tree-sitter highlighting"
+version = "0.1.0"
+schema_version = 1
+authors = ["arquidev"]
+repository = "https://gitlab.com/arquidevio/weir"
+
+[language_servers.weir]
+name = "weir"
+languages = ["Weir"]
+
+# If the installed Zed rejects the `path` key (grammar-in-subdirectory),
+# the dedicated tree-sitter-weir repo split is the prerequisite — see
+# editors/tree-sitter-weir/README.md.
+[grammars.weir]
+repository = "https://gitlab.com/arquidevio/weir"
+rev = "b4a9ff8eee9673e394b2580ec740037ca646dd30"
+path = "editors/tree-sitter-weir"

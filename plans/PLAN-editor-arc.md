@@ -1,6 +1,6 @@
 # weir — the editor arc: three sessions from LSP-complete to Zed
 
-Status: BLESSED (user 2026-07-26). Three sessions, strictly ordered
+Status: EXECUTED (all three sessions landed 2026-07-26). Three sessions, strictly ordered
 only where the dependency is real: Session 1 is independent; Session 3
 rides Session 2's artifact. Origin: the editor-config session's sized
 finding (formatting unwired) plus the two advisory questions
