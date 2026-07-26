@@ -2348,8 +2348,9 @@ expect "value-headed pipe feeds stdin" '["A"; "B"; "C"]' "$out"
 # value-headed pipe carries args to the child
 out=$($BIN -e '["x"] | tr x y')
 expect "value-headed pipe passes args to the child" '["y"]' "$out"
-# multi-external chains
-out=$($BIN -e '["one"; "two"] | cat | wc -l')
+# multi-external chains — grep -c, not wc: BSD wc left-pads the count
+# and the pin asserts exact bytes (still exactly two externals)
+out=$($BIN -e '["one"; "two"] | cat | grep -c ""')
 expect "value-headed multi-external chain" '["2"]' "$out"
 # resolution decides: a library/binding head keeps the bare-pipe teaching
 errout=$($BIN -e '[1; 2] | Seq.length' 2>&1) && fail "library head must keep the pipe hint"
@@ -2568,7 +2569,7 @@ expect "glob overlap dedupes through Seq.distinct" "a.txt
 ab.md
 b.txt" "$out"
 count=$(cd "$sddir" && $BIN d.weir | wc -l)
-[ "$count" = "3" ] || fail "distinct must drop the overlap: $count lines"
+[ "$count" -eq 3 ] || fail "distinct must drop the overlap: $count lines" # -eq: BSD wc pads
 echo "e2e ok: Seq.distinct closes the glob-overlap product cell"
 rm -rf "$sddir"
 
