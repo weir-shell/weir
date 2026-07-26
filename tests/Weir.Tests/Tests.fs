@@ -942,8 +942,55 @@ let private suggest text (wordStart: int) =
 let completionTests =
     testList
         "Completion"
-        [ test "name completion from values in scope" { Expect.equal (suggest "ls |> whe" 6) [ "where" ] "" }
+        [ test "name completion from values in scope" {
+              // gained "when" when keyword suggestions began deriving
+              // from the full parser set [D:keyword-completion]
+              Expect.equal (suggest "ls |> whe" 6) [ "when"; "where" ] ""
+          }
           test "keyword completion" { Expect.contains (suggest "ma" 0) "match" "" }
+          test "keyword completion inventory: every grammar keyword offered or excluded, decided [D:keyword-completion]" {
+              // the PINNED split — a new grammar keyword fails here until
+              // its completion decision is recorded (added below as
+              // offered, or to unsuggestedKeywords with a reason beside
+              // the definition). The inventory-match pattern, applied to
+              // completion.
+              let expectedOffered =
+                  Set
+                      [ "let"
+                        "in"
+                        "fun"
+                        "true"
+                        "false"
+                        "match"
+                        "with"
+                        "type"
+                        "of"
+                        "from"
+                        "to"
+                        "if"
+                        "then"
+                        "else"
+                        "when"
+                        "elif" ]
+
+              Expect.equal
+                  (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
+                  expectedOffered
+                  "a grammar keyword arrived without a completion decision"
+
+              Expect.equal
+                  Weir.Complete.unsuggestedKeywords
+                  (Set [ "rec"; "mutable"; "function" ])
+                  "the exclusion set moved — its reasons live beside its definition"
+
+              // behavioral, through suggest itself: the once-missing
+              // control-flow words are offered, the reserved are not
+              Expect.contains (suggest "eli" 0) "elif" "elif offered"
+              Expect.contains (suggest "the" 0) "then" "then offered"
+              Expect.contains (suggest "whe" 0) "when" "when offered"
+              Expect.isFalse (suggest "functio" 0 |> List.contains "function") "reserved words are not suggested"
+              Expect.isFalse (suggest "mutabl" 0 |> List.contains "mutable") "reserved words are not suggested"
+          }
           test "lambda parameter completes from the pipeline element type" {
               let text = "ls |> where (fun f -> f."
               Expect.equal (suggest text (text.Length - 2)) [ "f.Bytes"; "f.Name"; "f.ReadOnly" ] ""

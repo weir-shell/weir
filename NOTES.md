@@ -1,5 +1,34 @@
 # Spike Notes
 
+## The keywords divergence — drift, fixed by derivation (2026-07-26)
+
+The dedupe sweep's finding #2, called and closed [D:keyword-completion].
+
+**The verdict check came first and settled it in one blame**: the
+suggestion list dates to Spike 6 (2026-07-12) — before if/then/else
+landed (07-18), before elif and when existed at all. No comment, no
+row, no curated exclusion anywhere. Drift, exactly the advisor's
+read: a list written before the keywords it was missing.
+
+**The fix is derivation, not synchronization**: completion's keywords
+are now `Parser.keywords - unsuggestedKeywords` — the same-policy-
+twice pattern closed by having one policy. The exclusion set carries
+its reasons beside its definition: rec/mutable (reserved, no
+meaning) and function (parked match-lambda sugar) — offering any
+would suggest a spelling whose only outcome is the reserved-word
+teaching error. `in` stays offered: the explicit let-in form is
+legal exactly where completion lives (REPL, -e).
+
+**The durable half is the inventory pin**: the offered/excluded split
+is pinned AS DATA, so a new grammar keyword fails the test until its
+completion decision is recorded — derivation alone would auto-offer
+silently, which is convenient and undecided; the pin makes it
+decided. (The inventory-match pattern from the highlighter grammars,
+third application.)
+
+One pre-existing pin legitimately gained an entry, named per the
+plan: `suggest "whe"` now yields when + where. 877 unit / e2e green.
+
 ## The code-block dedupe sweep — closing the census blind spot (2026-07-26)
 
 The rider that hunts what the regroup census could not see:

@@ -2,18 +2,17 @@ module Weir.Complete
 
 open Weir.Types
 
-let private keywords =
-    [ "let"
-      "fun"
-      "match"
-      "with"
-      "type"
-      "of"
-      "from"
-      "to"
-      "true"
-      "false"
-      "in" ]
+// keyword suggestions DERIVE from the parser's set — one source of
+// truth [D:keyword-completion]; the hand-kept copy here predated
+// if/then/else/elif/when and silently under-offered them for six
+// weeks. The exclusions, each with its reason:
+//   rec, mutable — reserved words with NO meaning (offering them
+//     suggests a spelling whose only outcome is the reserved-word
+//     teaching error)
+//   function — reserved for the parked match-lambda sugar; same fate
+let unsuggestedKeywords = Set [ "rec"; "mutable"; "function" ]
+
+let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 
 let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
     match ty with
