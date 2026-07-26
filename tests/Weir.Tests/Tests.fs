@@ -1615,7 +1615,8 @@ let session3Tests =
           // (POSIX printf has no \x).
           test "capture oracle: stdout line rule — CRLF, lone CR, empties kept, unterminated tail" {
               Expect.equal
-                  (runReal "sh -c 'printf \"a\\015\\012b\\015\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  (runReal "sh -c 'printf \"a\\015\\012b\\015\\012\"' | complete |> _.Stdout"
+                   |> forceSeq)
                   [ VStr "a"; VStr "b" ]
                   "CRLF splits, CR stripped"
 
@@ -1625,7 +1626,8 @@ let session3Tests =
                   "lone CR splits"
 
               Expect.equal
-                  (runReal "sh -c 'printf \"a\\012\\012b\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  (runReal "sh -c 'printf \"a\\012\\012b\\012\"' | complete |> _.Stdout"
+                   |> forceSeq)
                   [ VStr "a"; VStr ""; VStr "b" ]
                   "empty stdout lines kept"
 
@@ -1638,7 +1640,8 @@ let session3Tests =
           }
           test "capture oracle: stderr rule differs — newline-split, empties dropped, CR retained" {
               Expect.equal
-                  (runReal "sh -c 'printf \"a\\012\\012b\\012\" 1>&2' | complete |> _.Stderr" |> forceSeq)
+                  (runReal "sh -c 'printf \"a\\012\\012b\\012\" 1>&2' | complete |> _.Stderr"
+                   |> forceSeq)
                   [ VStr "a"; VStr "b" ]
                   "stderr empties dropped"
 
@@ -1649,7 +1652,8 @@ let session3Tests =
           }
           test "capture oracle: decoding — UTF-8 BOM stripped, invalid byte replaced, UTF-16 BOM switches" {
               Expect.equal
-                  (runReal "sh -c 'printf \"\\357\\273\\277x\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  (runReal "sh -c 'printf \"\\357\\273\\277x\\012\"' | complete |> _.Stdout"
+                   |> forceSeq)
                   [ VStr "x" ]
                   "UTF-8 BOM stripped"
 
@@ -1671,6 +1675,15 @@ let session3Tests =
                       "let r = $(sh -c 'printf \"x\\012y\\012\"' | complete) in (r.Stdout |> Seq.length) + (r.Stdout |> Seq.length)")
                   (VInt 4L)
                   "two enumerations of the same view agree"
+          }
+          test "capture: a line crossing the segment boundary decodes whole" {
+              // the segment store's riskiest branch [D:capture-buffer]: a
+              // 5MB single line spans the 4MB segments and assembles
+              Expect.equal
+                  (runReal
+                      "let r = $(sh -c 'head -c 5000000 /dev/zero | tr \"\\0\" a' | complete) in r.Stdout |> Seq.head |> Str.length")
+                  (VInt 5000000L)
+                  "boundary-crossing line intact"
           }
           test "complete after an external-to-external pipeline is a parse error, not silent" {
               match Weir.Parser.parseLine cmdResolver "yes hi | grep hi | complete" with

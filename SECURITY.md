@@ -35,12 +35,12 @@ it, by design):
   protocol; it does not read files by URI, so a `didOpen` for a
   path outside the workspace analyzes only what the client provided.
 - **Capture is unbounded by design.** `| complete` and `Seq.force`
-  materialize their whole input in memory (`complete` a `string
-  list`, with per-line object overhead — a large multi-line capture
-  can reach ~10x its raw byte size). A child emitting gigabytes will
-  exhaust memory; the failure is a located error, not a crash, but
-  the ceiling is the box's memory. Stream (don't capture) for large
-  or unbounded output.
+  materialize their whole input in memory (`complete` holds one byte
+  buffer + line offsets — ~2x the raw text in RSS, measured; a
+  single capture caps at the ~2GB array bound). A child emitting
+  gigabytes will exhaust memory; the failure is a located error, not
+  a crash, but the ceiling is the box's memory. Stream (don't
+  capture) for large or unbounded output.
 
 ## What weir defends by design
 

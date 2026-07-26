@@ -124,28 +124,186 @@ let streamCodeOf (s: Spec) : int =
     finally
         reap p
 
+// ---- capture representation [D:capture-buffer]: ONE byte buffer per
+// stream + line offsets; Stdout/Stderr are lazy VIEWS decoding a
+// string per pull. Same observable seq<string>, ~2x the text in RSS
+// instead of ~18x (per-string object overhead + UTF-16 were the old
+// cost). Offsets are int into one array — a single capture caps at
+// the .NET ~2GB array bound, where the old representation met OOM at
+// a fraction of that text anyway. The view holds the buffer alive
+// while referenced (the same data the old lists held).
+
+let private utf8 = System.Text.Encoding.UTF8
+
+// fixed-size segments ARE the storage — no doubling, no final
+// assembly copy, so peak touched pages ≈ the text itself (a growable
+// array's doubling+trim touched ~3x and MaxRSS keeps LOH pages)
+let private segBits = 22 // 4MB
+let private segSize = 1 <<< segBits
+let private segMask = segSize - 1
+
+type private Segments =
+    { Segs: byte[][]
+      Total: int }
+
+    member this.At(g: int) : byte = this.Segs[g >>> segBits][g &&& segMask]
+
+let private readAllBytes (stream: System.IO.Stream) : Segments =
+    let segs = ResizeArray<byte[]>()
+    let mutable total = 0
+    let mutable seg = Array.zeroCreate<byte> segSize
+    let mutable fill = 0
+    let mutable n = stream.Read(seg, fill, segSize - fill)
+
+    while n > 0 do
+        fill <- fill + n
+
+        if fill = segSize then
+            segs.Add seg
+            seg <- Array.zeroCreate segSize
+            fill <- 0
+
+        n <- stream.Read(seg, fill, segSize - fill)
+
+    total <- segs.Count * segSize + fill
+
+    if fill > 0 || segs.Count = 0 then
+        // the tail segment, trimmed exact (small)
+        System.Array.Resize(&seg, fill)
+        segs.Add seg
+
+    { Segs = segs.ToArray(); Total = total }
+
+// StreamReader's BOM detection is part of today's pinned contract: a
+// UTF-16/32 BOM SWITCHES decoding. Those captures take the fallback
+// (a real StreamReader over the bytes — byte-for-byte the old
+// behavior); everything else takes the per-line fast path.
+let private nonUtf8Bom (b: Segments) =
+    let len = b.Total
+
+    (len >= 2 && b.At 0 = 0xFFuy && b.At 1 = 0xFEuy)
+    || (len >= 2 && b.At 0 = 0xFEuy && b.At 1 = 0xFFuy)
+    || (len >= 4 && b.At 0 = 0uy && b.At 1 = 0uy && b.At 2 = 0xFEuy && b.At 3 = 0xFFuy)
+
+let private utf8BomSkip (b: Segments) =
+    if b.Total >= 3 && b.At 0 = 0xEFuy && b.At 1 = 0xBBuy && b.At 2 = 0xBFuy then
+        3
+    else
+        0
+
+// the rare-path reader (encoding-switch captures are tiny in practice)
+let private readerOver (b: Segments) =
+    let all = Array.zeroCreate<byte> b.Total
+    let mutable off = 0
+
+    for seg in b.Segs do
+        System.Array.Copy(seg, 0, all, off, seg.Length)
+        off <- off + seg.Length
+
+    new System.IO.StreamReader(new System.IO.MemoryStream(all), utf8, true)
+
+// decode one line: within a segment it is a zero-copy GetString; the
+// rare boundary-crossing line assembles a small temp first. Newline
+// bytes are hard UTF-8 sequence boundaries, so per-line decoding with
+// the default replacement fallback matches the streaming decoder.
+let private decodeAt (b: Segments) (start: int) (len: int) : string =
+    if len = 0 then
+        ""
+    else
+        let si = start >>> segBits
+
+        if (start + len - 1) >>> segBits = si then
+            utf8.GetString(b.Segs[si], start &&& segMask, len)
+        else
+            let tmp = Array.zeroCreate<byte> len
+
+            for k in 0 .. len - 1 do
+                tmp[k] <- b.At(start + k)
+
+            utf8.GetString tmp
+
+// two passes over the bytes: count lines, then fill EXACT (start,len)
+// arrays — no growable-array churn, the offsets cost is 8B/line flat.
+// isStdout selects the oracle-pinned rule: stdout = ReadLine (\n,
+// \r\n, lone \r; empties kept); stderr = \n-only split, empties
+// dropped, \r retained.
+let private scanLines (b: Segments) (isStdout: bool) : int[] * int[] =
+    let len = b.Total
+    let start0 = utf8BomSkip b
+
+    let pass (fill: bool) (starts: int[]) (lens: int[]) : int =
+        let mutable count = 0
+        let mutable i = start0
+        let mutable ls = start0
+
+        let add (s: int) (l: int) =
+            if isStdout || l > 0 then
+                if fill then
+                    starts[count] <- s
+                    lens[count] <- l
+
+                count <- count + 1
+
+        while i < len do
+            let c = b.At i
+
+            if c = 10uy then
+                add ls (i - ls)
+                i <- i + 1
+                ls <- i
+            elif c = 13uy && isStdout then
+                add ls (i - ls)
+                i <- if i + 1 < len && b.At(i + 1) = 10uy then i + 2 else i + 1
+                ls <- i
+            else
+                i <- i + 1
+
+        if ls < len then
+            add ls (len - ls)
+
+        count
+
+    let n = pass false Array.empty Array.empty
+    let starts = Array.zeroCreate<int> n
+    let lens = Array.zeroCreate<int> n
+    pass true starts lens |> ignore
+    starts, lens
+
+let private linesView (b: Segments) (isStdout: bool) : seq<string> =
+    if nonUtf8Bom b then
+        // byte-for-byte the old StreamReader behavior, eagerly (rare)
+        use r = readerOver b
+
+        if isStdout then
+            let acc = ResizeArray<string>()
+            let mutable line = r.ReadLine()
+
+            while line <> null do
+                acc.Add line
+                line <- r.ReadLine()
+
+            acc :> seq<string>
+        else
+            r.ReadToEnd().Split('\n') |> Array.filter (fun l -> l <> "") :> seq<string>
+    else
+        let starts, lens = scanLines b isStdout
+
+        seq {
+            for i in 0 .. starts.Length - 1 do
+                yield decodeAt b starts[i] lens[i]
+        }
+
 // both pipes captured to completion; the record's raw material
-let completedOf (s: Spec) : int * string list * string list =
+let completedOf (s: Spec) : int * seq<string> * seq<string> =
     use p = start true true s
 
     let stderrTask =
-        System.Threading.Tasks.Task.Run(fun () -> p.StandardError.ReadToEnd())
+        System.Threading.Tasks.Task.Run(fun () -> readAllBytes (p.StandardError.BaseStream))
 
-    let stdout =
-        let acc = ResizeArray<string>()
-        let mutable line = p.StandardOutput.ReadLine()
-
-        while line <> null do
-            acc.Add line
-            line <- p.StandardOutput.ReadLine()
-
-        List.ofSeq acc
-
-    let stderr =
-        stderrTask.Result.Split('\n') |> Array.toList |> List.filter (fun l -> l <> "")
-
+    let outBytes = readAllBytes (p.StandardOutput.BaseStream)
+    let errBytes = stderrTask.Result
     p.WaitForExit()
-    p.ExitCode, stdout, stderr
+    p.ExitCode, linesView outBytes true, linesView errBytes false
 
 // ---- the public wrappers (signatures unchanged) --------------------
 
@@ -177,14 +335,14 @@ let completeWith
     (prog: string)
     (args: string list)
     (input: seq<string> option)
-    : int * string list * string list =
+    : int * seq<string> * seq<string> =
     completedOf
         { Prog = prog
           Args = args
           Env = overlay
           Input = input }
 
-let complete (prog: string) (args: string list) (input: seq<string> option) : int * string list * string list =
+let complete (prog: string) (args: string list) (input: seq<string> option) : int * seq<string> * seq<string> =
     completeWith [] prog args input
 
 let resolveProg (prog: string) : string =

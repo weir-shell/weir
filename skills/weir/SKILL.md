@@ -400,12 +400,13 @@ print x
   value-headed and districts too). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
-- Capture is IN MEMORY and heavy: `| complete` (and `Seq.force`) hold
-  the whole output — a `string list`, ~10x its byte size for many
-  small lines (4M lines ≈ 44MB of text measured at ~573MB RSS). For
-  big or unbounded output STREAM it (`|> Seq.iter`, `| File.write`),
-  don't capture; a gigabyte child through `complete` exhausts memory
-  (a located error, not a crash — but the ceiling is the box).
+- Capture is IN MEMORY: `| complete` holds the whole output as one
+  byte buffer + line offsets (~2x the text in RSS; lines decode
+  per pull). Unbounded output is still unbounded — for gigabyte or
+  endless children STREAM it (`|> Seq.iter`, `| File.write`) instead
+  of capturing; the ceiling is the box, and a single capture caps at
+  ~2GB. `Seq.force` on decoded lines re-pays string overhead — force
+  what you need, not the world.
 - Typed output: `git status --porcelain | from porcelain` gives rows
   with `Path`/`Staged`/`Unstaged`/`Status`; `... | from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).

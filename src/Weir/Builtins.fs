@@ -202,8 +202,11 @@ let private completedWith (overlay: (string * string) list) : Value =
                     completedDef.Name,
                     Map
                         [ "ExitCode", VInt(int64 code)
-                          "Stdout", VSeq(stdout |> List.map VStr :> seq<Value>)
-                          "Stderr", VSeq(stderr |> List.map VStr :> seq<Value>) ]
+                          // lazy views over the capture buffer
+                          // [D:capture-buffer] — decode per pull, stable
+                          // on re-enumeration (the buffer is fixed)
+                          "Stdout", VSeq(stdout |> Seq.map VStr)
+                          "Stderr", VSeq(stderr |> Seq.map VStr) ]
                 )
             | _ -> unreachable "the checker rejects 'completed' on these arguments"))
 
@@ -292,8 +295,8 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                         completedDef.Name,
                         Map
                             [ "ExitCode", VInt(int64 code)
-                              "Stdout", VSeq(out |> List.map VStr :> seq<Value>)
-                              "Stderr", VSeq(err |> List.map VStr :> seq<Value>) ]
+                              "Stdout", VSeq(out |> Seq.map VStr)
+                              "Stderr", VSeq(err |> Seq.map VStr) ]
                     )
                 | _ -> unreachable "the checker rejects 'completedIn' on these arguments")))
 

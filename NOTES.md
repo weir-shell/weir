@@ -1,5 +1,50 @@
 # Spike Notes
 
+## Capture representation — one buffer, not N strings (2026-07-26)
+
+[D:capture-buffer] The safety review's one host-caused pain, measured
+then fixed: `| complete` held N line-strings (UTF-16 + ~40B/line
+object overhead) — the review's 13x, 18.4x on this session's harsher
+fixture. Now: fixed 4MB byte[] SEGMENTS as the storage + two-pass
+exact (start,len) int arrays; `Stdout`/`Stderr` are lazy views
+decoding a string per pull. Observable type unchanged — it was
+always `seq<string>`; zero pin movement across the battery.
+
+**The oracle came first** (the session's whole safety): the old
+rules pinned against the OLD binary before any change — and they are
+weirder than anyone would have written from memory: stdout is
+ReadLine (\n, \r\n, lone \r; empties kept; unterminated tail is a
+line); stderr is a DIFFERENT rule (\n-only split, empties DROPPED,
+\r retained on CRLF); UTF-8 BOM stripped; an invalid byte decodes to
+one U+FFFD (per-line GetString ≡ the streaming decoder — newline
+bytes are hard UTF-8 sequence boundaries, so the equivalence is
+structural); and a UTF-16/32 BOM SWITCHES decoding entirely
+(StreamReader's detect flag) — preserved via a rare-path fallback
+through a real StreamReader rather than silently dropped.
+
+**The numbers** (seq 1..4M, 29.5MB text): MaxRSS 555MB → 82MB
+(18.4x → 2.7x including baseline and full enumeration;
+capture-HELD is 2.13x — the ~2x target; this fixture is
+offset-pathological at 7.7B/line, so real logs land lower), wall
+0.92s → 0.42s — the buffer path is 2.2x FASTER, and the 4M capture
+now completes under a 100MB GC hard ceiling. V1 (single doubling
+array) taught the lesson worth keeping: doubling+trim TOUCHES ~3x
+the text and MaxRSS keeps LOH pages — held 5.6x despite a 2.1x live
+payload; segments+two-pass got the touched pages down to the data.
+
+**Stated, per the plan**: a view holds its buffer while referenced —
+the same data the old lists held, not a regression. Re-enumeration
+STRENGTHENS: a fixed buffer is stable, cheap, and cannot become
+effectful (pinned). Int offsets: a single capture caps at the ~2GB
+array bound — the old representation met OOM at a fraction of that
+text on the same box. Declined as specified: interning, bounding
+(the SECURITY non-claim stands, its number is now ~2x).
+
+875 unit (+4 oracle pins) / e2e all green / 20 fuzz / 59 doc /
+timing 8/19/11ms. SKILL's capture bullet and SECURITY's non-claim
+carry the new number; the Rust-rewrite thought experiment's one real
+motivation is answered in place.
+
 ## The macOS harness sweep — catalog, not cadence (2026-07-26)
 
 The third native e2e run died at `sed -i` (~line 2004 of 2700) — one
