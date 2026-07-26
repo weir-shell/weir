@@ -38,10 +38,12 @@ function resolveServer(configured: string): string | undefined {
 }
 
 export function activate(_context: vscode.ExtensionContext): void {
-  const configured = (
-    vscode.workspace.getConfiguration("weir").get<string>("serverPath") ??
-    "weir"
-  ).trim();
+  // `|| "weir"` not `?? "weir"`: a CLEARED setting arrives as the empty
+  // string, which is not nullish — the "command": "" trap
+  const configured =
+    (
+      vscode.workspace.getConfiguration("weir").get<string>("serverPath") ?? ""
+    ).trim() || "weir";
 
   const resolved = resolveServer(configured);
 
