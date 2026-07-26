@@ -18,4 +18,4 @@ ENGINE="${WEIR_CI_ENGINE:-docker}"
 "$ENGINE" run --rm \
     -v weir-nuget:/root/.nuget \
     weir-ci-run \
-    bash -ec 'dotnet test tests/Weir.Tests/Weir.Tests.fsproj && dotnet test tests/Weir.Tests/Weir.Tests.fsproj && ./publish.sh && ci/e2e.sh && dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj && ci/skill-doc.sh && ci/fsharp-oracle.sh && ci/timing.sh'
+    bash -ec 'dotnet test tests/Weir.Tests/Weir.Tests.fsproj && ./publish.sh && ci/e2e.sh && dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj && ci/skill-doc.sh && ci/fsharp-oracle.sh && ci/timing.sh'

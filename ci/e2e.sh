@@ -14,6 +14,27 @@ fail() {
     exit 1
 }
 
+# macOS ships no GNU timeout — a background-watchdog polyfill (same
+# contract: run the command, kill it after N seconds, nonzero on kill)
+if ! command -v timeout >/dev/null 2>&1; then
+    timeout() {
+        local secs=$1
+        shift
+        "$@" &
+        local pid=$!
+        (
+            sleep "$secs"
+            kill -9 "$pid" 2>/dev/null
+        ) &
+        local wd=$!
+        local rc=0
+        wait "$pid" || rc=$?
+        kill "$wd" 2>/dev/null
+        wait "$wd" 2>/dev/null || true
+        return $rc
+    }
+fi
+
 expect() {
     local desc="$1" needle="$2" out="$3"
     # -- so needles may start with '-' (e.g. "-6 : int")
