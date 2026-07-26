@@ -858,7 +858,9 @@ let boundaryTests =
                   ""
           }
           test "into feeds stdin and yields stdout" {
-              Expect.equal (run "nats |> take 3 |> to json |> into \"wc -l\"" |> forceSeq) [ VStr "3" ] ""
+              // tr strips BSD wc's left-padding — the subject is the stdin
+              // plumbing, not wc's platform formatting
+              Expect.equal (run "nats |> take 3 |> to json |> into \"wc -l | tr -d ' '\"" |> forceSeq) [ VStr "3" ] ""
           }
           test "from can be let-bound" {
               expectValue
@@ -3773,10 +3775,36 @@ let depthGuardTests =
               expectValue (nestDeep "(" ")" 100 + " + 0") (VInt 1L)
               expectValue "[[[1]]] |> Seq.first 1 |> Seq.force |> Seq.length" (VInt 1L)
           }
-          test "at-ceiling parens still parse (limit 500)" {
+          test "at-ceiling parens: parse or a located diagnostic, never a crash (limit 500, stack-probed)" {
+              // capacity between the stack probe's floor and the counted
+              // ceiling is platform-dependent BY DESIGN — big stacks parse
+              // 499, small stacks get the probe's diagnostic; a crash is
+              // the only wrong answer [D:depth-guard]
               match Weir.Parser.parseExpr (nestDeep "(" ")" 499) with
               | Ok _ -> ()
-              | Error m -> failtest $"depth 499 must parse, got: {m}"
+              | Error m ->
+                  Expect.stringContains m "nested too deeply" "the probe's diagnostic is the small-stack answer"
+          }
+          test "small-stack thread: deep parse diagnoses via the stack probe, no overflow [D:depth-guard]" {
+              // the macOS finding, emulated: test hosts there run smaller
+              // stacks than Linux's 8MB and overflowed at ~420 of 500.
+              // On a deliberately tiny stack, RETURNING at all is the
+              // no-crash pin; the probe's diagnostic is the expected path.
+              let mutable result = None
+
+              let t =
+                  System.Threading.Thread(
+                      (fun () -> result <- Some(Weir.Parser.parseExpr (nestDeep "(" ")" 499))),
+                      524288
+                  )
+
+              t.Start()
+              t.Join()
+
+              match result with
+              | Some(Error m) -> Expect.stringContains m "nested too deeply" "the probe fired before the stack ran out"
+              | Some(Ok _) -> failtest "a 512KB stack cannot fit depth 499 — the probe should have fired"
+              | None -> failtest "the parse thread produced no result"
           }
           test "over-ceiling parens diagnose, located, no crash" {
               match Weir.Parser.parseExpr (nestDeep "(" ")" 600) with

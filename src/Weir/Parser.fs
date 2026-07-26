@@ -473,7 +473,11 @@ let private negAtom =
 // (before the parser itself overflows); the post-parse gate in
 // parseLineFull catches the spine. The limit sits far above any real
 // program (corpus max nesting is ~11) and well below the crash floor
-// (~6000), with margin for smaller stacks.
+// (~6000). "Margin for smaller stacks" cannot be a constant — macOS
+// test-host threads overflowed at ~420 of the 500 — so deepen ALSO
+// probes the actual stack; the ceiling bounds cost, the probe bounds
+// the resource, and capacity between them is platform-dependent by
+// design [D:depth-guard].
 let private maxDepth = 500
 
 let private parseDepth = new System.Threading.ThreadLocal<int>(fun () -> 0)
@@ -491,7 +495,10 @@ let private deepen (p: Parser<'a, unit>) : Parser<'a, unit> =
         parseDepth.Value <- parseDepth.Value + 1
 
         try
-            if parseDepth.Value > maxDepth then
+            if
+                parseDepth.Value > maxDepth
+                || not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            then
                 raise (DepthExceeded(pos stream.Position))
             else
                 p stream
@@ -1659,7 +1666,7 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
             let col = if p.Line = 1 then Some p.Col else None
 
             Result.Error
-                { Message = $"expression nested too deeply (limit {maxDepth})"
+                { Message = $"expression nested too deeply (limit {maxDepth}, less on small stacks)"
                   Col = col }
     finally
         ambientResolver.Value <- noExternals

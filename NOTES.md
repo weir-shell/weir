@@ -1,5 +1,55 @@
 # Spike Notes
 
+## The first macOS receipts — the depth guard learns about stacks (2026-07-26)
+
+The user ran `dotnet test` on macOS (arm64, Debug) and sent back two
+failures — the first cross-platform receipts, arriving exactly on the
+phase boundary the reify-drop row predicted.
+
+**1. Stack overflow at ~420 of the 500-deep at-ceiling fixture**
+[D:depth-stack-probe]. The depth guard's ceiling carried "margin for
+smaller stacks" as a COMMENT — a constant measured on Linux's 8MB
+threads. macOS test-host worker threads are smaller, Debug/arm64
+frames fatter: the stack died before the counter reached the ceiling.
+The guard guarded the wrong resource.
+
+FIX: `deepen` now also probes the actual stack —
+`RuntimeHelpers.TryEnsureSufficientExecutionStack()` (the primitive
+System.Text.Json's recursion guards use; NativeAOT-safe) — and takes
+the existing DepthExceeded escape with the located diagnostic
+("nested too deeply (limit 500, less on small stacks)").
+
+THE DIVISION OF LABOR, restated in the row: the probe owns safety at
+any depth on any stack; the counted 500 is now purely cost +
+portability — deterministic rejection above it everywhere, bounded
+ASTs for the probe-less downstream walks (check/eval/fmt/Lsp recurse
+over the tree with no probes; the parse gate is their one choke
+point). Its only load-bearing consumer is SPINE length via the
+post-parse gate (spines parse shallow, produce deep ASTs — no probe
+can help there). Corpus max nesting is ~11; the user's
+could-it-be-lower question is answered in the row: defensible, no
+receipt, re-ask = a real script the gate rejects.
+
+The over-pinned test flipped to the law: at-ceiling parses OR
+diagnoses located — a crash is the only wrong answer; capacity
+between floor and ceiling is platform-dependent BY DESIGN. Pinned
+three ways: unit (a 512KB thread parsing depth-499 gets the
+diagnostic — this pin IS the macOS crash, reproduced in-container;
+it would have killed the test host pre-fix), e2e on the AOT binary
+(`ulimit -s 512` → located diagnostic at depth ~240, rc=1, no
+SIGSEGV; full stack still parses 499), timing unchanged (the probe
+is a compare).
+
+**2. BSD `wc -l` left-pads** — the into-test pinned GNU's output
+formatting, not weir's stdin plumbing. Now `wc -l | tr -d ' '`.
+The e2e battery has more of this class waiting for a macOS run
+(container paths, GNU-isms) — flagged, not swept: no macOS CI exists
+to keep a sweep honest.
+
+Also merged from the user's shell: publish.sh arch detection
+(3ebdeff — uname -m → linux-x64/linux-arm64/osx-arm64). weir builds
+and runs on macOS; the Zed verification ran on that build.
+
 ## Zed verified on metal — the arc's last open cell closes (2026-07-26)
 
 The user ran the 5-step verification on a real machine (macOS,

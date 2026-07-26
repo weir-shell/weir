@@ -2648,4 +2648,18 @@ else
 fi
 rm -rf "$spldir"
 
+# the depth guard's stack probe on the AOT binary [D:depth-stack-probe]:
+# a small stack must produce the located diagnostic, never a SIGSEGV
+# (the macOS finding — test hosts there run smaller stacks than Linux)
+ddir=$(mktemp -d)
+python3 -c "print('let x = ' + '('*499 + '1' + ')'*499)" > "$ddir/deep.weir" 2>/dev/null \
+    || awk 'BEGIN{s="let x = "; for(i=0;i<499;i++)s=s"("; s=s"1"; for(i=0;i<499;i++)s=s")"; print s}' > "$ddir/deep.weir"
+$BIN check "$ddir/deep.weir" >/dev/null 2>&1 || fail "depth 499 must parse on a full-size stack"
+errout=$( (ulimit -s 512; $BIN check "$ddir/deep.weir") 2>&1 ) && fail "small-stack deep parse must diagnose"
+rc=$?
+[ "$rc" -lt 128 ] || fail "small-stack deep parse crashed (rc=$rc) — the probe must fire first"
+echo "$errout" | grep -qF "nested too deeply" || fail "probe diagnostic missing: $errout"
+echo "e2e ok: depth probe diagnoses on a 512KB stack (no SIGSEGV), full stack still parses 499"
+rm -rf "$ddir"
+
 echo "e2e battery: all green"
