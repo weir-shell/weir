@@ -12,10 +12,16 @@ decisions):
 ```
 cd editors/vscode
 npm install
-npm run compile
-npx vsce package --allow-missing-repository
+npm run package
 code --install-extension weir-0.1.0.vsix
 ```
+
+`npm run package` runs the LOCAL vsce (a devDependency, current
+major) and bundles via esbuild — the vsix is the bundle + grammar +
+metadata (8 files, ~106 KB), no node_modules, no flags needed. Every
+runtime dependency compiles into `out/extension.js`, so the shipped
+surface has zero third-party modules and `npm audit` is clean at pin
+time. Requires VS Code ≥ 1.91 (the languageclient v10 floor).
 
 The `weir` binary resolves from PATH; `weir.serverPath` in settings
 is the escape hatch. `.weir` files and `#!...weir` shebang scripts

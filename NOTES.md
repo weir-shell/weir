@@ -1,5 +1,30 @@
 # Spike Notes
 
+## VS Code extension packaging hygiene (2026-07-26)
+
+The user's first real `vsce package` run surfaced six issues at once;
+all fixed:
+
+- **LICENSE**: `SEE LICENSE IN ../../LICENSE` cannot resolve outside
+  the extension dir — the root Apache-2.0 LICENSE is now copied in
+  and the field reads `Apache-2.0`.
+- **Bundling**: esbuild compiles every runtime dependency into
+  `out/extension.js` — the vsix went from 339 files / 499 KB (whole
+  node_modules) to **8 files / 106 KB**, and the SHIPPED surface has
+  zero third-party modules. esbuild skips typechecking, so `compile`
+  runs `tsc --noEmit` first (bundler moduleResolution — the
+  languageclient-v10 package-exports floor).
+- **`.vscodeignore`**: allowlist-style — bundle + grammar + metadata
+  only.
+- **Audit zero**: the 7 highs were @vscode/vsce@2's baggage (glob@7,
+  inflight, prebuild-install) plus brace-expansion under
+  languageclient v9 — vsce ^3.6 and languageclient ^10 clear all
+  (`npm audit`: 0 vulnerabilities). v10 floors the engine at
+  VS Code ≥ 1.91; bumped.
+- **`repository` field** added — `--allow-missing-repository`
+  retired; the build is now `npm install && npm run package` (the
+  LOCAL vsce via devDependency, never a stale global npx).
+
 ## The argv twins — the order-observable dedupe lands (2026-07-26)
 
 The dedupe sweep's first sized finding, executed as its own careful

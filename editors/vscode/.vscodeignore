@@ -1,0 +1,8 @@
+# the vsix ships the bundle + grammar + metadata, nothing else
+**
+!out/extension.js
+!syntaxes/**
+!language-configuration.json
+!package.json
+!README.md
+!LICENSE

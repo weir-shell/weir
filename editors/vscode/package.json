@@ -1,12 +1,12 @@
 {
   "name": "weir",
   "displayName": "weir",
-  "description": "Language support for weir, the typed shell \u2014 diagnostics, hover, and completion via `weir lsp`, plus TextMate colorization.",
+  "description": "Language support for weir, the typed shell — diagnostics, hover, and completion via `weir lsp`, plus TextMate colorization.",
   "version": "0.1.0",
   "publisher": "weir-local",
-  "license": "SEE LICENSE IN ../../LICENSE",
+  "license": "Apache-2.0",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.91.0"
   },
   "categories": [
     "Programming Languages"
@@ -78,16 +78,21 @@
     ]
   },
   "scripts": {
-    "compile": "tsc -p ./",
-    "vscode:prepublish": "npm run compile"
-  },
-  "dependencies": {
-    "vscode-languageclient": "^9.0.1"
+    "compile": "tsc --noEmit -p ./ && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "@types/vscode": "^1.85.0",
-    "@vscode/vsce": "^2.24.0",
-    "typescript": "^5.4.0"
+    "@types/vscode": "^1.91.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.4.0",
+    "esbuild": "^0.25.0",
+    "vscode-languageclient": "^10.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/arquidevio/weir"
   }
 }
