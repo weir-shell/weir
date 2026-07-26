@@ -1,5 +1,33 @@
 # Spike Notes
 
+## The argv twins — the order-observable dedupe lands (2026-07-26)
+
+The dedupe sweep's first sized finding, executed as its own careful
+session [D:argv-rules]. Oracle FIRST: four exact-string e2e pins
+against the pre-extraction binary — not contains-checks, full
+aggregated-error text INCLUDING order. The capture session's lesson
+paid again: the probes taught two things memory would not have
+written — the twins already AGREE on order (scan problems in token
+order, then fills in declaration order, shared tier before payload;
+no canonicalization needed), and a bad int yields TWO problems
+(not-an-int at scan, missing-required at fill, because the value
+stays unset) — preserved as-is; deduping that message pair would be
+a behavior change wearing a cleanup's clothes.
+
+The extraction: `argvDup`, `argvParseValue`, `argvFill` — one
+implementation each, accumulators as PARAMETERS rather than closure
+captures, so order stays the caller's; the twins' scan loops are
+untouched (partial-application aliases keep every call site
+verbatim). Placement: all three in Eval — run-time token parsing and
+Value construction; the Default policy consumed (Argv.defaultOf)
+stays check-side in Argv.fs beside the Args/Env flip. Net lines ≈ 0
+— the explicit signatures and comments ate the ~60-line estimate;
+the win is one implementation at the boundary whose promise is
+"collect every problem," where a rule fixed in one twin and not the
+other was the real risk.
+
+877 unit / e2e (+4 order-oracle pins) / 20 fuzz / timing green.
+
 ## The keywords divergence — drift, fixed by derivation (2026-07-26)
 
 The dedupe sweep's finding #2, called and closed [D:keyword-completion].

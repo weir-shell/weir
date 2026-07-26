@@ -1744,6 +1744,47 @@ echo "$errout" | grep -qF "unexpected argument 'stray'" || fail "strictness coll
 echo "$errout" | grep -qF "missing required flag '--env'" || fail "missing required collected: $errout"
 echo "e2e ok: a four-problem invocation reports all four, collected"
 
+# the argv-order oracle [D:argv-rules]: the aggregated error's ORDER is
+# the contract — scan problems in TOKEN order, then fills in
+# DECLARATION order (shared tier before payload). Exact-string pins,
+# written against the pre-extraction binary; the twins' shared rules
+# must keep this byte-identical.
+odir=$(mktemp -d)
+cat > "$odir/rec.weir" <<'WEOF'
+type Cli = { retries: int; target: string }
+let cli = Args.load Cli
+print cli.target
+WEOF
+got=$($BIN "$odir/rec.weir" --bogus --retries x 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: unknown flag '--bogus'; --retries is not an int ('x'); missing required flag '--retries'; missing required flag '--target'" ] \
+    || fail "record-twin order oracle: $got"
+echo "e2e ok: record twin: scan order then declaration-order fills (exact)"
+
+cat > "$odir/pol.weir" <<'WEOF'
+type Cli = { [<Default true>] color: bool; name: string }
+let cli = Args.load Cli
+print cli.name
+WEOF
+got=$($BIN "$odir/pol.weir" --color --no-color --name n 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: '--color' and '--no-color' are both given" ] || fail "polarity oracle: $got"
+echo "e2e ok: polarity conflict names both spellings (exact)"
+
+cat > "$odir/sh.weir" <<'WEOF'
+type PushCfg = { remote: string; depth: int }
+type Verb = | Push of PushCfg
+type Cli = { level: int; cmd: Verb }
+let cli = Args.load Cli
+print "ok"
+WEOF
+got=$($BIN "$odir/sh.weir" --level x push --depth y 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: --level is not an int ('x'); --depth is not an int ('y'); missing required flag '--level'; missing required flag '--remote'; missing required flag '--depth'" ] \
+    || fail "shared-twin two-tier order oracle: $got"
+got=$($BIN "$odir/sh.weir" push 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: missing required flag '--level'; missing required flag '--remote'; missing required flag '--depth'" ] \
+    || fail "shared-twin fill order oracle: $got"
+echo "e2e ok: shared twin: token-order scan crosses tiers; fills shared-then-payload (exact)"
+rm -rf "$odir"
+
 out=$($BIN "$tadir/cli.weir" --bogus --help); rc=$?
 [ "$rc" -eq 0 ] || fail "--help must exit 0 (got $rc)"
 echo "$out" | grep -qF -- "-c, --clean" || fail "help shows derived short truth: $out"

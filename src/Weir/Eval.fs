@@ -597,6 +597,77 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
                  @ caseLines
                  @ blocks)
 
+// the three argv-boundary rules — ONE implementation each, shared by
+// the record and shared-flags twins [D:argv-rules]. The accumulators
+// arrive as PARAMETERS, never closure captures: problem ORDER stays
+// each caller's own (scan order, then declaration-order fills —
+// pinned exact in e2e).
+
+// the resting-point fill [D:default-attr]: run-time Value construction
+// lives HERE (Eval); the Default POLICY it consumes (Argv.defaultOf)
+// is check-time schema, already shared in Argv.fs beside the Args/Env
+// flip — the check/run line is unchanged by the unification
+let private argvFill
+    (problems: ResizeArray<string>)
+    (def: RecordDef)
+    (values: System.Collections.Generic.Dictionary<string, Value>)
+    : (string * Value) list =
+    def.Fields
+    |> List.map (fun (f, ty) ->
+        match values.TryGetValue f with
+        | true, v -> f, v
+        | false, _ ->
+            match Argv.defaultOf def f with
+            | Some(AStr s) -> f, VStr s
+            | Some(AInt n) -> f, VInt n
+            | Some(ABool b) -> f, VBool b
+            | None ->
+                match ty with
+                | TBool -> f, VBool false
+                | TNamed("Option", _) -> f, VUnion("None", None)
+                | _ ->
+                    problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
+                    f, VUnit)
+
+// repeats of one spelling stay the given-twice error; opposite
+// polarities name both spellings
+let private argvDup
+    (problems: ResizeArray<string>)
+    (seen: System.Collections.Generic.HashSet<string>)
+    (polarity: System.Collections.Generic.Dictionary<string, bool>)
+    (f: string)
+    (neg: bool)
+    (flagTok: string)
+    =
+    if not (seen.Add f) then
+        let prior =
+            (match polarity.TryGetValue f with
+             | true, p -> p
+             | _ -> false)
+
+        if prior <> neg then
+            problems.Add $"'--{Argv.kebabFlag f}' and '--no-{Argv.kebabFlag f}' are both given"
+        else
+            problems.Add $"'{flagTok}' is given twice"
+
+    polarity[f] <- neg
+
+let private argvParseValue
+    (problems: ResizeArray<string>)
+    (values: System.Collections.Generic.Dictionary<string, Value>)
+    (f: string)
+    (ty: Ty)
+    (flagTok: string)
+    (raw: string)
+    =
+    match ty with
+    | TInt
+    | TNamed("Option", [ TInt ]) ->
+        match System.Int64.TryParse raw with
+        | true, n -> values[f] <- wrapOpt ty (VInt n)
+        | _ -> problems.Add $"{flagTok} is not an int ('{raw}')"
+    | _ -> values[f] <- wrapOpt ty (VStr raw)
+
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
     // minted --no-X twins ride the index as negative entries
     // [D:default-attr]; they join did-you-mean via the same list
@@ -613,28 +684,9 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
 
     // repeats of one spelling stay the given-twice error; opposite
     // polarities name both spellings
-    let dup (f: string) (neg: bool) (flagTok: string) =
-        if not (seen.Add f) then
-            let prior =
-                (match polarity.TryGetValue f with
-                 | true, p -> p
-                 | _ -> false)
+    let dup = argvDup problems seen polarity
 
-            if prior <> neg then
-                problems.Add $"'--{Argv.kebabFlag f}' and '--no-{Argv.kebabFlag f}' are both given"
-            else
-                problems.Add $"'{flagTok}' is given twice"
-
-        polarity[f] <- neg
-
-    let parseValue (f: string) (ty: Ty) (flagTok: string) (raw: string) =
-        match ty with
-        | TInt
-        | TNamed("Option", [ TInt ]) ->
-            match System.Int64.TryParse raw with
-            | true, n -> values[f] <- wrapOpt ty (VInt n)
-            | _ -> problems.Add $"{flagTok} is not an int ('{raw}')"
-        | _ -> values[f] <- wrapOpt ty (VStr raw)
+    let parseValue = argvParseValue problems values
 
     let rec go tokens =
         match tokens with
@@ -676,24 +728,7 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
 
     go tokens
 
-    let fields =
-        def.Fields
-        |> List.map (fun (f, ty) ->
-            match values.TryGetValue f with
-            | true, v -> f, v
-            | false, _ ->
-                // the resting point [D:default-attr]
-                match Argv.defaultOf def f with
-                | Some(AStr s) -> f, VStr s
-                | Some(AInt n) -> f, VInt n
-                | Some(ABool b) -> f, VBool b
-                | None ->
-                    match ty with
-                    | TBool -> f, VBool false
-                    | TNamed("Option", _) -> f, VUnion("None", None)
-                    | _ ->
-                        problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
-                        f, VUnit)
+    let fields = argvFill problems def values
 
     if problems.Count > 0 then
         failwith ($"{label}: " + String.concat "; " problems)
@@ -759,28 +794,9 @@ let private argvLoadShared
     let seen = System.Collections.Generic.HashSet<string>()
     let polarity = System.Collections.Generic.Dictionary<string, bool>()
 
-    let dup (f: string) (neg: bool) (flagTok: string) =
-        if not (seen.Add f) then
-            let prior =
-                (match polarity.TryGetValue f with
-                 | true, p -> p
-                 | _ -> false)
+    let dup = argvDup problems seen polarity
 
-            if prior <> neg then
-                problems.Add $"'--{Argv.kebabFlag f}' and '--no-{Argv.kebabFlag f}' are both given"
-            else
-                problems.Add $"'{flagTok}' is given twice"
-
-        polarity[f] <- neg
-
-    let parseValue (values: System.Collections.Generic.Dictionary<string, Value>) f ty (flagTok: string) (raw: string) =
-        match ty with
-        | TInt
-        | TNamed("Option", [ TInt ]) ->
-            match System.Int64.TryParse raw with
-            | true, n -> values[f] <- wrapOpt ty (VInt n)
-            | _ -> problems.Add $"{flagTok} is not an int ('{raw}')"
-        | _ -> values[f] <- wrapOpt ty (VStr raw)
+    let parseValue = argvParseValue problems
 
     let rec go i (ts: string list) =
         match ts with
@@ -839,24 +855,7 @@ let private argvLoadShared
      | Some(_, tok), None -> problems.Add $"unknown subcommand '{tok}'{didYouMean tok (caseTable |> List.map fst)}"
      | Some _, Some _ -> ())
 
-    let collectFields (def: RecordDef) (values: System.Collections.Generic.Dictionary<string, Value>) =
-        def.Fields
-        |> List.map (fun (f, ty) ->
-            match values.TryGetValue f with
-            | true, v -> f, v
-            | false, _ ->
-                // the resting point [D:default-attr]
-                match Argv.defaultOf def f with
-                | Some(AStr s) -> f, VStr s
-                | Some(AInt n) -> f, VInt n
-                | Some(ABool b) -> f, VBool b
-                | None ->
-                    match ty with
-                    | TBool -> f, VBool false
-                    | TNamed("Option", _) -> f, VUnion("None", None)
-                    | _ ->
-                        problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
-                        f, VUnit)
+    let collectFields def values = argvFill problems def values
 
     let sharedFields = collectFields sharedDef sharedValues
 
