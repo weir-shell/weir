@@ -58,7 +58,7 @@ and TypedKind =
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
     | TESeq of first: TypedExpr * rest: TypedExpr
-    | TEEnvLoad of def: RecordDef
+    | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
     | TEFrom of format: string * rowDef: RecordDef
     | TETo of format: string
@@ -1138,34 +1138,112 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
              | EVar tyName ->
                  match Map.tryFind tyName env.Types with
                  | Some(Record def) when def.Params.IsEmpty ->
+                     // an ENUM field [D:env-enums]: a monomorphic union,
+                     // every case 0-arity — the declared set becomes a
+                     // boundary conversion exactly like int/bool
+                     let unionOf ft =
+                         match ft with
+                         | TNamed(n, [])
+                         | TNamed("Option", [ TNamed(n, []) ]) ->
+                             match Map.tryFind n env.Types with
+                             | Some(Union u) when u.Params.IsEmpty -> Some(n, u)
+                             | _ -> None
+                         | _ -> None
+
+                     let isEnum ft =
+                         match unionOf ft with
+                         | Some(_, u) -> u.Cases |> List.forall (fun (_, p) -> p.IsNone)
+                         | None -> false
+
                      let loadable ty =
                          match ty with
                          | TStr
                          | TInt
                          | TBool
                          | TNamed("Option", [ TStr | TInt | TBool ]) -> true
-                         | _ -> false
+                         | ty -> isEnum ty
 
-                     match def.Fields |> List.tryFind (fun (_, ft) -> not (loadable ft)) with
-                     | Some(bad, badTy) ->
+                     // a payload-carrying case is a SCHEMA error, named at
+                     // check time — env values are single tokens
+                     let payloadCase =
+                         def.Fields
+                         |> List.tryPick (fun (f, ft) ->
+                             unionOf ft
+                             |> Option.bind (fun (n, u) ->
+                                 u.Cases
+                                 |> List.tryFind (fun (_, p) -> p.IsSome)
+                                 |> Option.map (fun (c, _) -> f, n, c)))
+
+                     // case-insensitive matching makes same-cased pairs
+                     // ambiguous — the Args subcommand collision's env
+                     // sibling (two rules, two conventions [D:env-enums])
+                     let caseCollision =
+                         def.Fields
+                         |> List.tryPick (fun (_, ft) ->
+                             unionOf ft
+                             |> Option.bind (fun (_, u) ->
+                                 u.Cases
+                                 |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
+                                 |> List.groupBy snd
+                                 |> List.tryPick (fun (w, g) ->
+                                     match g with
+                                     | (a, _) :: (b, _) :: _ -> Some(a, b, w)
+                                     | _ -> None)))
+
+                     // Default on an enum field: attribute literals are
+                     // string/int/bool [D:default-attr] — the resting
+                     // point spells Option + defaultValue
+                     let enumDefault =
+                         def.Fields
+                         |> List.tryPick (fun (f, ft) ->
+                             match ft, Argv.defaultOf def f with
+                             | TNamed(n, []), Some _ when isEnum ft -> Some(f, n)
+                             | _ -> None)
+
+                     match payloadCase with
+                     | Some(f, n, c) ->
                          err
                              arg.Span
-                             $"Env.load fields must be string, int, bool, or Option of these; '{bad}' is {formatTy badTy}"
+                             $"'{f}': env values are single tokens, so enum fields need 0-arity cases; case '{c}' of {n} carries a payload"
                      | None ->
-                         // the resting-point cells under ENV's field law
-                         // [D:default-attr]: text bools carry no presence
-                         // semantics, so BOTH Default literals are legal
-                         // here (the Args-side false-is-redundant cell
-                         // flips — validation is the consumer's arm)
-                         // [D:default-attr]: bool-false is LEGAL here — the
-                         // flip cell; both Default rules sit adjacent in Argv
-                         match Argv.badEnvDefault def with
-                         | Some msg -> err arg.Span msg
+
+                         match def.Fields |> List.tryFind (fun (_, ft) -> not (loadable ft)) with
+                         | Some(bad, badTy) ->
+                             err
+                                 arg.Span
+                                 $"Env.load fields must be string, int, bool, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
                          | None ->
-                             Ok
-                                 { Kind = TEEnvLoad def
-                                   Ty = TNamed(tyName, [])
-                                   Span = expr.Span }
+
+                             match caseCollision with
+                             | Some(a, b, word) -> err arg.Span $"cases '{a}' and '{b}' collide as env value '{word}'"
+                             | None ->
+
+                                 match enumDefault with
+                                 | Some(f, n) ->
+                                     err
+                                         arg.Span
+                                         $"'{f}': an enum field takes no Default (attribute literals are string/int/bool) — spell the resting point Option<{n}> with Option.defaultValue"
+                                 | None ->
+                                     // the resting-point cells under ENV's field law
+                                     // [D:default-attr]: text bools carry no presence
+                                     // semantics, so BOTH Default literals are legal
+                                     // here (the Args-side false-is-redundant cell
+                                     // flips — validation is the consumer's arm)
+                                     // [D:default-attr]: bool-false is LEGAL here — the
+                                     // flip cell; both Default rules sit adjacent in Argv
+                                     match Argv.badEnvDefault def with
+                                     | Some msg -> err arg.Span msg
+                                     | None ->
+                                         let enums =
+                                             def.Fields
+                                             |> List.choose (fun (_, ft) ->
+                                                 unionOf ft |> Option.map (fun (n, u) -> n, u.Cases |> List.map fst))
+                                             |> Map.ofList
+
+                                         Ok
+                                             { Kind = TEEnvLoad(def, enums)
+                                               Ty = TNamed(tyName, [])
+                                               Span = expr.Span }
                  | Some(Record def) -> err arg.Span $"Env.load needs a monomorphic record; '{tyName}' is generic"
                  | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
                  | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"

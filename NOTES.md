@@ -1,5 +1,54 @@
 # Spike Notes
 
+## Env.load enums — the declared set at the boundary (2026-07-26)
+
+[D:env-enums] `LOG_LEVEL: Level` loads: a 0-arity union field converts
+its env text exactly the way int/bool always did, with the DECLARED
+set as the rule — `=debgu` dies at the boundary with "expected one
+of: Debug, Info, Warn. Did you mean 'Debug'?" instead of steering a
+wrong branch three functions later. Option<Level> rides; the
+collect-then-raise reports enum problems alongside int/missing ones.
+
+**The one design choice, decided and diverging on purpose**: Env
+matching is CASE-INSENSITIVE (=DEBUG, =debug, =Debug all select
+Debug — env convention is uppercase) while Args subcommands stay
+lowercase-verbatim (`git subrepo clone`, never CLONE). Verified
+Args' exact rule before writing the row: `c.ToLowerInvariant() =
+tok`. The did-you-mean compares like the matcher (case-insensitive)
+but names the DECLARED spelling — the stock hint machinery is
+case-sensitive and called debgu→Debug distance 3; the wrapper calls
+it per-candidate on lowered pairs.
+
+**Check-time rejections, three, each teaching**: a payload-carrying
+case names itself ("env values are single tokens, so enum fields
+need 0-arity cases; case 'Carry' of LvlB carries a payload"); a
+same-cased pair (Debug/DEBUG) collides ("collide as env value
+'debug'" — the Args collision's env sibling); Default on an enum
+field names the alternative ("spell the resting point Option<Lvl>
+with Option.defaultValue"). VERIFIED before coding: the bare
+`[<Default Info>]` form never parses (the attribute grammar takes
+literals — the reachable shape is `[<Default "A">]`), and an EMPTY
+value already means miss-not-None for int (`PORT=` fails TryParse) —
+the enum empty follows the precedent.
+
+**Mechanics**: `TEEnvLoad` grew a payload — the checker packs each
+enum's case list into the node because eval has no type environment
+(TRANSCRIPTION addendum). The eval arm slots between bool and the
+unreachable catch-all. show on the loaded record was verified
+unchanged — `Some (Debug)` (non-scalar union payloads parenthesize,
+the shipped rendering; the first e2e expectation guessed wrong and
+was corrected to the pinned truth).
+
+**Session logistics, on record**: executed in an isolated WORKTREE
+(branch env-enums off c2788dc) because the diagnostics-arc session
+was live in the main tree — Tests.fs moved under the first edit
+attempt; the plan's own sequence-after clause enforced by isolation
+instead of waiting. The battery ran against a worktree-local stamped
+binary (WEIR_BIN + a lowercase shim — the publish dir names the
+binary Weir, and the overlay e2e's PATH trick found the stale
+installed weir first, a small trap worth remembering). fuzz n/a (no
+syntax). 879 unit / e2e all green / 60 doc blocks / timing 18/11ms.
+
 ## VS Code extension packaging hygiene (2026-07-26)
 
 The user's first real `vsce package` run surfaced six issues at once;
