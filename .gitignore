@@ -62,3 +62,7 @@ __pycache__/
 
 # the deep-run lock [D:masking-mechanized] — transient, per-run
 .weir-deep-run.lock
+
+
+# macos
+**/.DS_Store
