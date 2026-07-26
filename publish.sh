@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 case "$(uname -m)" in
     x86_64) rid=linux-x64 ;;
     aarch64) rid=linux-arm64 ;;
+    arm64) rid=osx-arm64 ;;
     *)
         echo "unsupported arch: $(uname -m)" >&2
         exit 1
