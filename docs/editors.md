@@ -1,0 +1,145 @@
+# Editor setup
+
+One binary, one command: every editor runs **`weir lsp`** — the
+language server over stdio, a subcommand of the same binary that runs
+your scripts, so it can never go out of sync with the language. All
+blocks below assume `weir` is on PATH.
+
+The server provides diagnostics, hover, completion, and semantic
+tokens. Two facts every block encodes, matching `weir fmt`:
+comment token `//`, indent 4 spaces.
+
+weir scripts are often extensionless (`#!/usr/bin/env weir`), so each
+block registers BOTH the `.weir` extension and shebang detection.
+
+Verification: each block below was run in a container against a real
+weir file (server attach, a deliberate error surfacing as a
+diagnostic, hover, semantic tokens) — except where marked UNTESTED.
+The per-editor result is noted at the end of its section.
+
+## Neovim (0.11+)
+
+```lua
+-- filetype: .weir files, and extensionless scripts with a weir shebang
+vim.filetype.add {
+  extension = { weir = 'weir' },
+  pattern = {
+    ['.*'] = {
+      function(_, bufnr)
+        local first = (vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or '')
+        if first:match '^#!.*weir' then
+          return 'weir'
+        end
+      end,
+      { priority = -math.huge },
+    },
+  },
+}
+
+-- the server
+vim.lsp.config('weir', {
+  cmd = { 'weir', 'lsp' },
+  filetypes = { 'weir' },
+})
+vim.lsp.enable 'weir'
+
+-- comment + indent, matching `weir fmt`
+vim.api.nvim_create_autocmd('FileType', {
+  pattern = 'weir',
+  callback = function()
+    vim.bo.commentstring = '// %s'
+    vim.bo.shiftwidth = 4
+    vim.bo.expandtab = true
+  end,
+})
+
+-- semantic tokens use weir's own token types; link them to see color
+vim.api.nvim_set_hl(0, '@lsp.type.weirCommandHead', { link = 'Function' })
+vim.api.nvim_set_hl(0, '@lsp.type.weirArgv', { link = 'String' })
+vim.api.nvim_set_hl(0, '@lsp.type.weirSplice', { link = 'Special' })
+```
+
+On Neovim 0.10 or with nvim-lspconfig, the equivalent is a custom
+server entry with the same `cmd`/`filetypes`; the filetype block is
+identical.
+
+Verified (Neovim 0.11.3, headless, in-container): attach ✓,
+diagnostic ✓, hover ✓, semantic tokens ✓ (the highlight links above
+are required for the colors to be visible — the token types are
+weir's own, not standard names), `.weir` and shebang detection ✓.
+
+## Helix
+
+`~/.config/helix/languages.toml`:
+
+```toml
+[language-server.weir]
+command = "weir"
+args = ["lsp"]
+
+[[language]]
+name = "weir"
+scope = "source.weir"
+file-types = ["weir"]
+shebangs = ["weir"]
+comment-token = "//"
+indent = { tab-width = 4, unit = "    " }
+language-servers = ["weir"]
+```
+
+`hx --health weir` should show the server with a ✓ and its path.
+
+Verified (Helix 25.01.1, in-container): attach ✓, diagnostic ✓
+(gutter marker + statusline count), hover ✓ (`space k`), `.weir` and
+shebang detection ✓. Semantic tokens: n/a — Helix does not support
+LSP semantic tokens; its highlighting is tree-sitter-based (a weir
+tree-sitter grammar is a planned fast-follow; until then text is
+uncolored).
+
+## Emacs (eglot)
+
+Emacs needs a major mode to hang the server association on. The repo
+ships a minimal one — [`editors/emacs/weir-mode.el`](../editors/emacs/weir-mode.el):
+comment syntax, `.weir` + shebang association
+(`interpreter-mode-alist`), and the eglot entry for `weir lsp`.
+
+```elisp
+(load "/path/to/weir/editors/emacs/weir-mode.el")
+;; then, in a weir buffer:
+;;   M-x eglot
+```
+
+UNTESTED: Emacs could not be installed in the verification container.
+The mode is ~20 lines of standard associations; treat it as a
+starting point and report friction. Note eglot has no built-in
+semantic-tokens support — expect diagnostics/hover/completion only.
+
+## VS Code
+
+Extension, not config — see [`editors/vscode/`](../editors/vscode/):
+the shipped client wraps the same `weir lsp` server and adds a
+TextMate grammar. Install it from there; no manual LSP wiring needed.
+
+## Troubleshooting
+
+- **Server not found**: `weir lsp` assumes `weir` is on PATH — run
+  `weir --version` from the same environment your editor starts in
+  (GUI editors often see a shorter PATH than your shell).
+- **No attach**: the filetype/language didn't match — confirm the
+  buffer's filetype is `weir` (`:set ft?` in vim; `hx --health weir`;
+  `M-x describe-mode`). Extensionless scripts need the shebang rules
+  above.
+- **No colors**: semantic tokens need client support AND visible
+  highlight groups — Neovim needs the `nvim_set_hl` links above;
+  Helix and eglot don't consume semantic tokens at all.
+- **Seeing the server's own errors**: the server logs nothing by
+  default; watch the client's LSP log (`:LspLog`/`:lua
+  vim.cmd.e(vim.lsp.get_log_path())` in Neovim, `hx -v` + the helix
+  log, `*EGLOT ... events*` buffer in Emacs). `weir check <file>`
+  reproduces any diagnostic from the CLI.
+
+## Scope
+
+The server analyzes the text the client sends; it does not read files
+the editor did not send — see [SECURITY.md](../SECURITY.md)'s
+non-claims for the boundary as stated.

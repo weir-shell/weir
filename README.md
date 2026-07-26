@@ -28,8 +28,10 @@ match changes with
   equatable type); every check is static.
 - **Tooling from the same pipeline the runner uses**: `weir check
   [--json]` (located, coded diagnostics; no evaluation), `weir lsp`
-  (diagnostics/hover/completion over stdio), a micro syntax +
-  LSP config in `editors/`, and a REPL with completion and history.
+  (diagnostics/hover/completion/semantic tokens over stdio) — editor
+  setup for Neovim/Helix/Emacs/VS Code in
+  [docs/editors.md](docs/editors.md) — and a REPL with completion
+  and history.
 
 Start with [docs/GUIDE.md](docs/GUIDE.md) -- every example in it is
 executed in CI against the release binary. The language rulebook with

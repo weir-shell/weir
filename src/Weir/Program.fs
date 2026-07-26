@@ -111,6 +111,11 @@ let main argv =
         Console.WriteLine v
         0
     | [ "lsp" ] -> Lsp.run ()
+    | "lsp" :: _ ->
+        Console.Error.WriteLine
+            "usage: weir lsp — the language server, JSON-RPC over stdio; takes no arguments.\nWire your editor to run this command: see docs/editors.md"
+
+        2
     | [ "check"; path ] -> Script.checkOnly false path
     | [ "check"; "--json"; path ] -> Script.checkOnly true path
     | [ "fmt"; "--qualify"; path ] -> Fmt.qualifyFile path

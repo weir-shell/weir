@@ -1,5 +1,59 @@
 # Spike Notes
 
+## LSP editor configuration — shipped work made visible (2026-07-26)
+
+Docs-and-packaging, zero language change. docs/editors.md carries the
+four editors; README points at it from the tooling bullet;
+editors/emacs/weir-mode.el ships the ~20-line major mode Emacs needs
+to hang the association on. Every block registers BOTH `.weir` and
+the shebang (extensionless scripts are the shell-language case most
+configs omit); comment `//` and indent 4 stated once and encoded
+everywhere — 4 is what fmt canonicalizes (verified on a nested file;
+no .editorconfig exists in-repo to contradict it).
+
+**The ruling held with one gap.** `weir lsp` is the shipped spelling,
+stdio, in `weir --help`, and the VS Code extension already wraps
+exactly it — but `weir lsp --help` fell through to script-running
+("no such script: lsp"). Fixed in Program.fs, the fmt-usage
+precedent: `"lsp" :: _` now prints usage naming docs/editors.md,
+exit 2.
+
+**The verification matrix (the point of the session).** Editors
+installed as portable builds under /tmp (no root in-container; apt
+denied — the plan's UNTESTED rule invoked only where downloads could
+not substitute):
+
+| editor | installed | attach | diagnostic | hover | tokens |
+|---|---|---|---|---|---|
+| Neovim 0.11.3 | y (tarball) | y | y (unbound msg) | y ("int") | y — 15 data ints; needs nvim_set_hl links (custom token types), stated in the doc |
+| Helix 25.01.1 | y (tarball) | y (health ✓ + live) | y (gutter ● + statusline ● 1) | y (space-k popup) | n/a — Helix has no LSP semantic tokens; tree-sitter is the fast-follow |
+| Emacs | NO (no portable build, no root) | — | — | — | — UNTESTED, marked in the doc |
+| VS Code | elsewhere | — | — | — | extension's own plan; forward-linked |
+
+Neovim ran fully headless (`-l` driver: attach wait, diagnostic wait,
+raw hover + semanticTokens/full requests, shebang filetype assert).
+Helix has no headless mode — driven through a pty with a hand-rolled
+CUP-sequence screen reconstructor (no pyte, no pip in-container); the
+reconstructed screen shows the diagnostic marker ON the error line,
+the statusline count, the hover popup's "int", and the shebang route
+attaching on an extensionless file. Both doc blocks are the TESTED
+blocks verbatim.
+
+**FINDING (sized, not fixed): textDocument/formatting is unwired.**
+The server's capabilities advertise sync/hover/completion/
+semanticTokens only — format-on-save, the most-expected LSP feature
+after diagnostics, silently does nothing in every editor above. The
+wiring is small: advertise documentFormattingProvider, handle the
+request by running the fmt pipeline on the client-sent text, return
+one whole-document TextEdit (empty on fmt's safety refusal — the
+respace guard's contract carries over). Size: a small session (~60–
+100 lines + a protocol pin in the Lsp tests). Worth doing before the
+VS Code extension ships format-on-save expectations.
+
+Troubleshooting section covers the four failure modes (PATH, filetype,
+token visibility, server logs); the SECURITY non-claim (server reads
+client-sent text only) is pointered from the doc.
+
 ## The debt riders — the census's convictions cleared (2026-07-26)
 
 Rider-sized, zero behavior. Sequencing: ran AFTER the tier drop's
