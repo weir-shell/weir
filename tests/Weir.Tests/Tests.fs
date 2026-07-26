@@ -1092,11 +1092,20 @@ let private eventuallyNoSurvivors (marker: string) : bool =
 let private defunctChildren () : int =
     let psi = ProcessStartInfo("/bin/sh")
     psi.ArgumentList.Add "-c"
-    psi.ArgumentList.Add $"ps -o stat= --ppid {System.Environment.ProcessId} | grep -c Z"
+    // BSD ps has no --ppid; `-A -o ppid=,stat=` is portable. The ps run
+    // must fail LOUDLY (exit 9): on macOS the GNU spelling errored and
+    // `grep -c Z` counted zero — the pin passed vacuously
+    psi.ArgumentList.Add
+        $"o=$(ps -A -o ppid=,stat=) || exit 9; printf '%%s\\n' \"$o\" | awk -v p={System.Environment.ProcessId} '$1 == p && $2 ~ /^Z/ {{c++}} END {{print c+0}}'"
+
     psi.RedirectStandardOutput <- true
     use p = Process.Start psi
     let out = p.StandardOutput.ReadToEnd().Trim()
     p.WaitForExit()
+
+    if p.ExitCode = 9 then
+        failwith "defunctChildren: ps itself failed — fix the ps spelling for this platform"
+
     if out = "" then 0 else int out
 
 let lifecycleTests =
@@ -1178,8 +1187,10 @@ let session2Tests =
           // [D:drop-command-builtins] the "for cmd" twin retired — cmd is
           // gone; the sh-spawn version below covers cwd-affects-spawns
           test "cd changes the spawn cwd for sh" {
+              // /usr, not /tmp: macOS's /tmp is a symlink to /private/tmp
+              // and the CHILD's getcwd reports the physical path
               try
-                  Expect.equal (runReal "let d = cd \"/tmp\" in $(sh -c \"pwd\")" |> forceSeq) [ VStr "/tmp" ] ""
+                  Expect.equal (runReal "let d = cd \"/usr\" in $(sh -c \"pwd\")" |> forceSeq) [ VStr "/usr" ] ""
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
@@ -1498,7 +1509,7 @@ let session3Tests =
               | other -> failtest $"unexpected: {other}"
           }
           test "complete reifies grep no-match without raising" {
-              match runReal "grep nomatch /etc/hostname | complete" with
+              match runReal "grep nomatch /etc/hosts | complete" with
               | VRecord("Completed", fields) ->
                   Expect.equal fields["ExitCode"] (VInt 1) "exit code"
                   Expect.equal (fields["Stdout"] |> forceSeq) [] "stdout empty"
@@ -1535,7 +1546,7 @@ let session3Tests =
               Expect.isFalse (terr.Message.Contains "|completed") "internal keys never surface"
           }
           test "complete result pipes onward" {
-              Expect.equal (runReal "grep nomatch /etc/hostname | complete |> _.ExitCode") (VInt 1) ""
+              Expect.equal (runReal "grep nomatch /etc/hosts | complete |> _.ExitCode") (VInt 1) ""
           }
           test "complete after an external-to-external pipeline is a parse error, not silent" {
               match Weir.Parser.parseLine cmdResolver "yes hi | grep hi | complete" with

@@ -46,6 +46,23 @@ The e2e battery has more of this class waiting for a macOS run
 (container paths, GNU-isms) — flagged, not swept: no macOS CI exists
 to keep a sweep honest.
 
+**SECOND BATCH, same run** (the user re-ran after the probe fix):
+
+- **/tmp is a symlink on macOS** (→ /private/tmp): the child-spawn
+  cwd test asserted the literal — a child's getcwd reports the
+  PHYSICAL path. Now `cd /usr` (real dir on both). The pwd BUILTIN
+  test was fine — it reads weir's stored path, not a child's getcwd.
+- **/etc/hostname doesn't exist on macOS**: grep exit 2 (error), not
+  1 (no-match) — the two grep-no-match pins moved to /etc/hosts.
+- **THE REAL ONE — a vacuously-passing pin**: `defunctChildren` used
+  GNU `ps --ppid`; BSD ps errored, `grep -c Z` counted zero, and the
+  zombie pin PASSED while pinning nothing — the masked-failure family
+  gains a cross-platform member (the harness-truth lesson: a probe
+  that can fail must fail LOUDLY). Now portable
+  (`ps -A -o ppid=,stat=` + awk) AND loud (ps failure → exit 9 →
+  failwith naming the platform). Re-verified with a graded positive
+  control: a real forked zombie counts 1, counts 0 after reap.
+
 Also merged from the user's shell: publish.sh arch detection
 (3ebdeff — uname -m → linux-x64/linux-arm64/osx-arm64). weir builds
 and runs on macOS; the Zed verification ran on that build.
