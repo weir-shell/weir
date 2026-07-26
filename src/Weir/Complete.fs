@@ -42,6 +42,17 @@ let private holeNames (env: TypeEnv) (e: Weir.Ast.Expr) : string list =
     walk e
     List.ofSeq acc
 
+// bind every hole name as a fresh TVar — the shared setup of the
+// pipeline-elem and repaired-statement typing paths
+let private withHoles (env: TypeEnv) (e: Weir.Ast.Expr) : TypeEnv =
+    holeNames env e
+    |> List.mapi (fun i n -> n, mono (TVar $"__hole{i}"))
+    |> List.fold
+        (fun (te: TypeEnv) (n, sch) ->
+            { te with
+                Values = Map.add n sch te.Values })
+        env
+
 let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
     match text.LastIndexOf '|' with
     | -1 -> None
@@ -51,14 +62,7 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
         match Weir.Parser.parseExpr prefix with
         | Error _ -> None
         | Ok e ->
-            let envWithHoles =
-                holeNames env e
-                |> List.mapi (fun i n -> n, mono (TVar $"__hole{i}"))
-                |> List.fold
-                    (fun (te: TypeEnv) (n, sch) ->
-                        { te with
-                            Values = Map.add n sch te.Values })
-                    env
+            let envWithHoles = withHoles env e
 
             match Weir.Check.typecheck envWithHoles e with
             | Ok te ->
@@ -187,14 +191,7 @@ let fieldsAtRepaired
 
         exprOf
         |> Option.bind (fun e ->
-            let envH =
-                holeNames env e
-                |> List.mapi (fun i n -> n, mono (TVar $"__hole{i}"))
-                |> List.fold
-                    (fun (te: TypeEnv) (n, sch) ->
-                        { te with
-                            Values = Map.add n sch te.Values })
-                    env
+            let envH = withHoles env e
 
             match Weir.Check.typecheck envH e with
             | Error _ -> None

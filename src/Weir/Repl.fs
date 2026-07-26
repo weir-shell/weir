@@ -342,12 +342,7 @@ let rec private loop (state: State) =
                         if v <> Eval.VUnit then
                             let rendered, hint = Eval.echoValue v
 
-                            let tail =
-                                match hint with
-                                | Some counts ->
-                                    let spelling = Eval.echoSpelling (te.Ty = TSeq TStr)
-                                    $" ({counts} — {spelling})"
-                                | None -> ""
+                            let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
 
                             Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
 
@@ -368,12 +363,7 @@ let rec private loop (state: State) =
                         if v <> Eval.VUnit then
                             let rendered, hint = Eval.echoValue v
 
-                            let tail =
-                                match hint with
-                                | Some counts ->
-                                    let spelling = Eval.echoSpelling (te.Ty = TSeq TStr)
-                                    $" ({counts} — {spelling})"
-                                | None -> ""
+                            let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
 
                             Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 

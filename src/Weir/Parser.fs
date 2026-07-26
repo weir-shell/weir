@@ -169,15 +169,17 @@ let private intLit =
     |>> mkExpr
     .>> ws
 
+// the one escape decoder — plain strings and interp text share it
+let private escapedChar =
+    pchar '\\'
+    >>. (anyOf "\"\\nt"
+         |>> function
+             | 'n' -> '\n'
+             | 't' -> '\t'
+             | c -> c)
+
 let private stringChar =
-    choice
-        [ satisfy (fun c -> c <> '"' && c <> '\\')
-          pchar '\\'
-          >>. (anyOf "\"\\nt"
-               |>> function
-                   | 'n' -> '\n'
-                   | 't' -> '\t'
-                   | c -> c) ]
+    choice [ satisfy (fun c -> c <> '"' && c <> '\\'); escapedChar ]
 
 let private strLit =
     spanned (between (pchar '"') (pchar '"') (manyChars stringChar) |>> EStr)
@@ -331,12 +333,7 @@ let private listLit =
 let private interpChar =
     choice
         [ satisfy (fun c -> c <> '"' && c <> '\\' && c <> '{' && c <> '}')
-          pchar '\\'
-          >>. (anyOf "\"\\nt"
-               |>> function
-                   | 'n' -> '\n'
-                   | 't' -> '\t'
-                   | c -> c) ]
+          escapedChar ]
 
 let private interpPart =
     choice
@@ -797,8 +794,10 @@ let private patLit =
           spanned (between (pchar '"') (pchar '"') (manyChars stringChar)) .>> ws
           |>> fun (s, span) -> { PKind = PStr s; PSpan = span } ]
 
-let private patParens =
-    between (str_ws "(") (str_ws ")") (sepBy1 pat (str_ws ","))
+// one-or-tuple over comma-separated patterns — shared by paren
+// interiors and binder positions (was written twice)
+let private commaPats =
+    sepBy1 pat (str_ws ",")
     |>> function
         | [ one ] -> one
         | many ->
@@ -806,6 +805,8 @@ let private patParens =
               PSpan =
                 { Start = (List.head many).PSpan.Start
                   End = (List.last many).PSpan.End } }
+
+let private patParens = between (str_ws "(") (str_ws ")") commaPats
 
 // seq patterns [D:seq-patterns]: [] and fixed-arity [p; q]
 let private patSeq =
@@ -905,15 +906,7 @@ binderParamRef.Value <-
           identSpanned |>> fun (n, span) -> { PKind = PVar n; PSpan = span }
           patParens ]
 
-binderPatRef.Value <-
-    sepBy1 pat (str_ws ",")
-    |>> function
-        | [ one ] -> one
-        | many ->
-            { PKind = PTuple many
-              PSpan =
-                { Start = (List.head many).PSpan.Start
-                  End = (List.last many).PSpan.End } }
+binderPatRef.Value <- commaPats
 
 let private fromExpr =
     spanned (

@@ -170,3 +170,12 @@ verification instrument, not a portability chore** — changing OS
 perturbs environmental assumptions the way metamorphic transforms
 perturb syntactic ones (one macOS run found this genus AND the depth
 guard's unstated 8MB-stack premise in a day).
+
+**Duplication censuses hunt BLOCKS as well as records.** The regroup
+census matched duplicated record/type SHAPES and missed a verbatim
+×3 statement block (the ELet scheme-scooping sequence) and a ×2
+word-search loop — found later by a token-window hash (6 normalized
+lines) that a twenty-line script provides when no tool does. Two
+distinct hunts, both owed: duplicated shapes AND duplicated
+statement sequences; deliberate divergences found by either get an
+adjacent comment stating why, never a merge.

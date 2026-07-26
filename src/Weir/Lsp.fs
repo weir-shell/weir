@@ -325,11 +325,13 @@ let private nodeAt (te: TypedExpr) (col: int) : TypedExpr option =
 // source). The binder's column is found textually in the `let`-headed
 // logical line, bounded by the first `=`.
 
-let private binderCol (name: string) (text: string) : int option =
-    let eq = text.IndexOf '='
-    let bound = if eq >= 0 then eq else text.Length
-    let isWord c = Char.IsLetterOrDigit c || c = '_'
-    let mutable i = 0
+let private isWord (c: char) = Char.IsLetterOrDigit c || c = '_'
+
+// word-bounded search for `name` in text[from..bound), 1-based col —
+// the ONE search behind binderCol and the type-member lookup (was
+// written twice, one session apart)
+let private wordFind (name: string) (text: string) (from: int) (bound: int) : int option =
+    let mutable i = max 0 from
     let mutable found = None
 
     while found.IsNone && i >= 0 && i + name.Length <= bound do
@@ -345,6 +347,10 @@ let private binderCol (name: string) (text: string) : int option =
 
     found
 
+let private binderCol (name: string) (text: string) : int option =
+    let eq = text.IndexOf '='
+    wordFind name text 0 (if eq >= 0 then eq else text.Length)
+
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (physLine, physCol, nameLength), or None. Pure — the handler
 /// and the unit pins share this. Scope: top-level let/letpat binders;
@@ -353,26 +359,6 @@ let private binderCol (name: string) (text: string) : int option =
 /// names, each resolving to the KType declaration site.
 let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int) option =
     let _, stmts, _, _ = Script.analyzeLines "defn" lines
-
-    let isWord (c: char) = Char.IsLetterOrDigit c || c = '_'
-
-    // word-bounded search for `name` in text[from..bound), 1-based col
-    let wordFind (name: string) (text: string) (from: int) (bound: int) =
-        let mutable i = max 0 from
-        let mutable found = None
-
-        while found.IsNone && i >= 0 && i + name.Length <= bound do
-            let j = text.IndexOf(name, i, bound - i)
-
-            if j < 0 then
-                i <- -1
-            else
-                let okL = j = 0 || not (isWord text[j - 1])
-                let okR = j + name.Length >= text.Length || not (isWord text[j + name.Length])
-
-                if okL && okR then found <- Some(j + 1) else i <- j + 1
-
-        found
 
     let wordAt (text: string) (jcol: int) : string option =
         let i = jcol - 1

@@ -168,6 +168,13 @@ let echoSpelling (elemIsString: bool) : string =
     else
         "pipe to Seq.map show |> print for all"
 
+// the clipped-echo tail (" (N of M — spelling)") — one spelling for the
+// three echo consumers (REPL let/expr arms, -e)
+let echoTail (elemIsString: bool) (hint: string option) : string =
+    match hint with
+    | Some counts -> $" ({counts} — {echoSpelling elemIsString})"
+    | None -> ""
+
 // The line-per-element renderer. Both consumers — the print builtin and the
 // runner's command-statement streaming — must call this one function; the
 // byte-identity of their output is a plan-level claim, not a coincidence.

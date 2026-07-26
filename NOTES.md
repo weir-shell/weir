@@ -1,5 +1,63 @@
 # Spike Notes
 
+## The code-block dedupe sweep — closing the census blind spot (2026-07-26)
+
+The rider that hunts what the regroup census could not see:
+duplicated STATEMENT BLOCKS, not duplicated records.
+
+**The detector (the denominator):** no CPD tool in-container, so the
+plan's twenty-line script — a token-window hash over normalized
+src/Weir lines (blank/comment lines dropped, window = 6), overlapping
+windows merged into clusters. **11 clusters.** The detector
+self-validated on its first output: it found the Argv Default pair —
+the deliberate divergence commented one rider ago — exactly as a
+cluster.
+
+**Fixed (mechanical, five, −32 net):**
+- `Eval.echoTail` — the clipped-echo tail computation ×3 (REPL let
+  arm, REPL expr arm, -e); each consumer keeps its own WriteLine
+  format.
+- `Lsp.wordFind` — the word-bounded search written TWICE by the same
+  author one session apart (binderCol, then definitionFor's local);
+  binderCol now delegates.
+- `Complete.withHoles` — the hole-binding env fold ×2
+  (pipelineElemTy, fieldsAtRepaired).
+- `Parser.commaPats` — the sepBy1→one-or-PTuple fold ×2 (paren
+  interiors, binder positions).
+- `Parser.escapedChar` — the escape decoder ×2 (stringChar,
+  interpChar).
+Zero pin movement (876 unit + e2e green) — every pair was truly
+identical; no latent divergence surfaced.
+
+**Left, with reasons:** the Check refutable-pattern enumerations ×2
+are COMPILER-GUARDED (a new PatternKind breaks both matches via
+exhaustiveness — divergence cannot be silent); the Builtins VBuiltin
+shells ×11 are the idiomatic builtin shape (bodies and teaching text
+differ — nothing to extract without losing the product); the Script
+assembler join sites are the alignment-stacks family (the census's
+non-duplicates verdict re-verified: different closing conditions);
+the generalizeLet call preambles are the RESIDUE of the previous
+dedupe (4-line arms, each body distinct).
+
+**Findings (sized, not fixed):**
+1. **The Eval argv runtime twins** — argvParseRecord and
+   argvLoadShared each carry their own `dup` polarity checker,
+   `parseValue`, and resting-point fields-fill as closures over local
+   accumulators. A closure-lift (~60 lines saved) is possible but
+   NOT mechanical: problem-collection ORDER is observable in the
+   aggregated error. Size: its own careful rider.
+2. **The keywords divergence** — Complete's suggestion list (11
+   entries) and Parser's keyword set DIFFER: completion never offers
+   if/then/elif/else/when. Drift or decision? Needs a call before
+   any merge; if drift, completion under-offers. Size: one line once
+   decided.
+3. **The Script exec catch-blocks** ×3 (ExitRequest/render/exit-1) —
+   mechanical-looking but inside the runner's exec recursion; listed
+   under the cap rather than chained.
+
+PROCESS now says the next census hunts BOTH shapes and blocks, with
+the token-window script as the floor when no tool exists.
+
 ## The checker's weight — one extraction, one duplication, one precedent (2026-07-26)
 
 The rider, executed after the capture-representation session landed
