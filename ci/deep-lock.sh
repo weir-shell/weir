@@ -22,8 +22,19 @@ LOCK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.weir-deep-run.lock"
 live_holder() {
     [ -f "$LOCK" ] || return 1
     local h
-    h=$(cat "$LOCK" 2>/dev/null || true)
-    if [ -n "$h" ] && kill -0 "$h" 2>/dev/null; then
+    # an UNREADABLE or garbage lock is not a STALE lock — refusing to
+    # guess beats silently clearing a live one [D:vacuous-probe-audit]
+    if ! h=$(cat "$LOCK" 2>/dev/null); then
+        echo "deep-lock: $LOCK exists but is unreadable — inspect it; refusing to treat as stale" >&2
+        exit 3
+    fi
+    case "$h" in
+        '' | *[!0-9]*)
+            echo "deep-lock: $LOCK holds garbage ('$h') — inspect and remove it; refusing to guess" >&2
+            exit 3
+            ;;
+    esac
+    if kill -0 "$h" 2>/dev/null; then
         printf '%s\n' "$h"
         return 0
     fi

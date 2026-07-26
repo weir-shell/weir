@@ -2671,6 +2671,21 @@ else
 fi
 rm -rf "$spldir"
 
+# deep-lock loudness [D:vacuous-probe-audit]: a garbage lock is NOT a
+# stale lock — check must exit 3 (probe-failure), never clear it, and
+# publish's consumers treat any non-1 as refuse
+LOCKFILE="$(dirname "$0")/../.weir-deep-run.lock"
+if [ -e "$LOCKFILE" ]; then
+    fail "a deep-run lock exists — not exercising the garbage-lock pin over a live lock"
+fi
+echo "not-a-pid" > "$LOCKFILE"
+rc=0
+ci/deep-lock.sh check >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 3 ] || { rm -f "$LOCKFILE"; fail "garbage lock must exit 3, got $rc"; }
+[ -f "$LOCKFILE" ] || fail "garbage lock must NOT be auto-cleared"
+rm -f "$LOCKFILE"
+echo "e2e ok: deep-lock refuses to guess on a garbage lock (exit 3, lock preserved)"
+
 # the depth guard's stack probe on the AOT binary [D:depth-stack-probe]:
 # a small stack must produce the located diagnostic, never a SIGSEGV
 # (the macOS finding — test hosts there run smaller stacks than Linux)

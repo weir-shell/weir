@@ -1,5 +1,60 @@
 # Spike Notes
 
+## The vacuous-probe audit — does this test test anything? (2026-07-26)
+
+Verification-only [D:vacuous-probe-audit]; zero src/ moves. The bar,
+now standing in PROCESS: every shelling-out probe is PORTABLE, LOUD
+(its own failure is a named test failure, never a benign value), and
+POSITIVE-CONTROLLED (or flagged "loud but uncontrolled" in writing).
+
+**The denominator: 18 probe sites/groups examined, 6 vacuity matches,
+all fixed; 2 new committed positive controls; 0 newly-red probes.**
+
+The matches:
+- `survivors` — pgrep missing/erroring read as zero survivors
+  (pattern 1+2). Now: pgrep rc>1 → exit 9 → failwith naming the
+  platform; plus a live-marker control (a sh whose argv carries the
+  marker must count ≥1, then clear after kill).
+- `defunctChildren` — the origin (fixed prior); this session
+  refactored to `defunctChildrenOf pid` and COMMITTED the control:
+  python fork-without-reap under another parent. Two construction
+  facts worth keeping: the .NET runtime auto-reaps our own children
+  (a zombie-of-us is not cheaply constructible), and bash reaps bg
+  jobs as they exit (the `sh -c 'x & sleep'` shape does NOT hold a
+  zombie — verified, rejected).
+- deep-lock — an UNREADABLE or garbage lock was silently
+  cleared-as-stale: the exact republish-mid-run race the lock
+  closes, reopened by an EACCES. Now exit 3, lock preserved,
+  e2e-pinned (garbage lock → 3, file untouched).
+- publish.sh ×2 — `if holder=$(check)` read ANY nonzero as "free",
+  so a broken probe meant PROCEED. Now rc≠1 refuses, naming the
+  probe.
+- Tests.fs "external pipes into external" — asserted survivors of a
+  marker no process ever carried, and its own message admitted it
+  ("trivially true marker check"). The marker now rides the command.
+- e2e's /etc/hostname — the unit fix's twin; landed via the
+  parallel fork (f6ce026) while this audit ran.
+
+Classified SOUND with reasons: check-fresh (fail-safe — its probe
+failing lands on the STALE side), skill-doc (zero-blocks-extracted
+is loud; the weir-error blocks are positive controls by design),
+harness.py (harness-selftest IS a committed control suite),
+the fuzz Runner gate (incident-controlled this very window — the
+12-failure stale event was the gate firing correctly), timing
+(loud under set -e), the fuzz equality detector (graded control at
+bring-up), e2e's structure (set -euo pipefail; the errout=&&fail
+pattern is two-sided), the timeout polyfill (controlled at
+introduction: pass-through + killed-hang).
+
+Loud but uncontrolled, stated: survivors' exit-9 path has no
+committed pgrep-breaking input. Uncommitted: the tree-sitter corpus
+bar is session-run; if it becomes a standing script it takes the
+template (naive re-run with a missing CLI would pass vacuously).
+
+**Zero newly-red probes** — the instruments were broken, the claims
+they guarded happened to be true. That is luck, now retired: the
+controls make the next platform's version of this loud on day one.
+
 ## The first macOS receipts — the depth guard learns about stacks (2026-07-26)
 
 The user ran `dotnet test` on macOS (arm64, Debug) and sent back two

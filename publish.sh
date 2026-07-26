@@ -19,6 +19,10 @@ esac
 if holder=$(ci/deep-lock.sh check); then
     echo "REFUSING TO PUBLISH: a deep fuzz run is live (pid $holder) — it would compare P against T(P) across two builds. Wait for it, or kill it, then retry." >&2
     exit 1
+elif [ $? -ne 1 ]; then
+    # only exit 1 means "free" — a broken probe must refuse, not proceed
+    echo "REFUSING TO PUBLISH: the deep-run lock probe itself failed — inspect .weir-deep-run.lock" >&2
+    exit 1
 fi
 
 # the build STAMP [D:masking-mechanized]: harnesses assert this
@@ -39,6 +43,9 @@ dotnet publish src/Weir -c Release -r "$rid" -p:InformationalVersion="$stamp" -p
 # — that is the one window the start-of-run freshness gate can't close.
 if holder=$("$(dirname "$0")/ci/deep-lock.sh" check); then
     echo "REFUSING TO PUBLISH: a deep fuzz run is live (pid $holder) — installing now would swap the binary mid-run, so its metamorphic properties would compare P against T(P) across two builds. Wait for it, or kill it, then retry." >&2
+    exit 1
+elif [ $? -ne 1 ]; then
+    echo "REFUSING TO PUBLISH: the deep-run lock probe itself failed — inspect .weir-deep-run.lock" >&2
     exit 1
 fi
 

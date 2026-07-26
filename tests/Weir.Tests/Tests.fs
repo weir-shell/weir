@@ -1071,11 +1071,20 @@ let rowTests =
 let private survivors (marker: string) : int =
     let psi = ProcessStartInfo("/bin/sh")
     psi.ArgumentList.Add "-c"
-    psi.ArgumentList.Add $"pgrep -f '[{marker[0]}]{marker.Substring 1}' | wc -l"
+    // pgrep rc 0 = matched, 1 = no match; anything else (or pgrep
+    // missing, 127) is the PROBE failing — loud, never a benign zero
+    // [D:vacuous-probe-audit]
+    psi.ArgumentList.Add
+        $"o=$(pgrep -f '[{marker[0]}]{marker.Substring 1}'); rc=$?; [ \"$rc\" -le 1 ] || exit 9; [ -z \"$o\" ] && echo 0 || printf '%%s\\n' \"$o\" | wc -l"
+
     psi.RedirectStandardOutput <- true
     use p = Process.Start psi
     let out = p.StandardOutput.ReadToEnd().Trim()
     p.WaitForExit()
+
+    if p.ExitCode <> 0 then
+        failwith "survivors: pgrep itself failed — fix the probe for this platform"
+
     int out
 
 let private eventuallyNoSurvivors (marker: string) : bool =
@@ -1089,14 +1098,14 @@ let private eventuallyNoSurvivors (marker: string) : bool =
 
     count = 0
 
-let private defunctChildren () : int =
+let private defunctChildrenOf (pid: int) : int =
     let psi = ProcessStartInfo("/bin/sh")
     psi.ArgumentList.Add "-c"
     // BSD ps has no --ppid; `-A -o ppid=,stat=` is portable. The ps run
     // must fail LOUDLY (exit 9): on macOS the GNU spelling errored and
     // `grep -c Z` counted zero — the pin passed vacuously
     psi.ArgumentList.Add
-        $"o=$(ps -A -o ppid=,stat=) || exit 9; printf '%%s\\n' \"$o\" | awk -v p={System.Environment.ProcessId} '$1 == p && $2 ~ /^Z/ {{c++}} END {{print c+0}}'"
+        $"o=$(ps -A -o ppid=,stat=) || exit 9; printf '%%s\\n' \"$o\" | awk -v p={pid} '$1 == p && $2 ~ /^Z/ {{c++}} END {{print c+0}}'"
 
     psi.RedirectStandardOutput <- true
     use p = Process.Start psi
@@ -1108,11 +1117,55 @@ let private defunctChildren () : int =
 
     if out = "" then 0 else int out
 
+let private defunctChildren () : int =
+    defunctChildrenOf System.Environment.ProcessId
+
 let lifecycleTests =
     testSequenced
     <| testList
         "Process lifecycle"
-        [ // TRIPWIRE PAIR: the simple case passes even without tree-kill because
+        [ // POSITIVE CONTROLS FIRST [D:vacuous-probe-audit]: every zero
+          // assertion below rests on these two counters; a counter that
+          // can break must be shown to COUNT before its zeros mean
+          // anything (the macOS vacuous-pass lesson).
+          test "positive control: the survivors probe counts a live marker" {
+              let psi = ProcessStartInfo("/bin/sh")
+              psi.ArgumentList.Add "-c"
+              // the marker lives in the sh's OWN argv (no exec)
+              psi.ArgumentList.Add "sleep 30 # weir-probe-ctl"
+              use p = Process.Start psi
+
+              try
+                  Expect.isGreaterThan (survivors "weir-probe-ctl") 0 "a live marker must count"
+              finally
+                  p.Kill(entireProcessTree = true)
+
+              Expect.isTrue (eventuallyNoSurvivors "weir-probe-ctl") "the killed control must clear"
+          }
+          test "positive control: the zombie counter counts a real zombie" {
+              // the .NET runtime auto-reaps OUR children, so the control
+              // targets the counting line at another parent: a python
+              // that forks and deliberately never reaps (python3 is
+              // already a harness dependency via tests/lib)
+              let psi = ProcessStartInfo("python3")
+              psi.ArgumentList.Add "-c"
+              psi.ArgumentList.Add "import os,time\npid=os.fork()\nif pid==0: os._exit(0)\ntime.sleep(30)"
+              use p = Process.Start psi
+
+              try
+                  let mutable n = 0
+                  let mutable tries = 20
+
+                  while n = 0 && tries > 0 do
+                      System.Threading.Thread.Sleep 100
+                      tries <- tries - 1
+                      n <- defunctChildrenOf p.Id
+
+                  Expect.isGreaterThan n 0 "the counter must see the un-reaped child"
+              finally
+                  p.Kill(entireProcessTree = true)
+          }
+          // TRIPWIRE PAIR: the simple case passes even without tree-kill because
           // sh execs a single command (one process). The compound case is the
           // real guard — sh forks pipeline children and only
           // Kill(entireProcessTree: true) reaches them. If the sh backing is
@@ -1495,8 +1548,15 @@ let session3Tests =
               Expect.equal (runReal "sh -c \"echo out; echo err 1>&2\"" |> forceSeq) [ VStr "out" ] ""
           }
           test "external pipes into external via stdin" {
-              Expect.equal (runReal "yes hi | cat | first 2" |> forceSeq) [ VStr "hi"; VStr "hi" ] ""
-              Expect.isTrue (eventuallyNoSurvivors "weir-s3cc") "trivially true marker check"
+              // the marker rides the command so the survivor check checks
+              // SOMETHING — it previously asserted a marker no process
+              // ever carried [D:vacuous-probe-audit]
+              Expect.equal
+                  (runReal "yes weir-s3cc | cat | first 2" |> forceSeq)
+                  [ VStr "weir-s3cc"; VStr "weir-s3cc" ]
+                  ""
+
+              Expect.isTrue (eventuallyNoSurvivors "weir-s3cc") "pipe children leaked"
           }
           test "non-string stream into an external is rejected [D:value-headed-pipe]" {
               // the pipe-into-external teaching is shared by command chains

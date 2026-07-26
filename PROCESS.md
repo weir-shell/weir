@@ -150,3 +150,23 @@ does not exist. Count processes by name (`ps -C sleep`), never by a
 pattern the measuring command also carries. The positive-control
 sibling of the stamp gate: make the instrument incapable of reading
 itself.
+
+**The vacuous-probe bar [D:vacuous-probe-audit]: any probe that
+shells out is portable, LOUD, and positive-controlled.** The worst
+genus found so far broke NOTHING — the zombie pin used GNU
+`ps --ppid`; BSD ps errored, `grep -c Z` read the empty stream as
+zero, and the pin passed from birth without ever measuring. Loud is
+the non-negotiable half: an instrument's own failure must be a
+NAMED test failure, never a benign-looking value (`|| true`,
+`grep -c` on a dead pipe, and count-equals-zero assertions are the
+signatures — zero must never be both the pass and the probe's
+failure mode). Positive-controlled: the probe is shown to FAIL on a
+deliberately-bad input, committed next to its zeros (a forked
+unreaped zombie counts 1; a garbage lockfile exits 3; a stale stub
+trips the gate); where a control is not cheap, the probe is flagged
+"loud but uncontrolled" in writing rather than presumed. Corollary
+for the instrument shelf: **cross-platform execution is a
+verification instrument, not a portability chore** — changing OS
+perturbs environmental assumptions the way metamorphic transforms
+perturb syntactic ones (one macOS run found this genus AND the depth
+guard's unstated 8MB-stack premise in a day).
