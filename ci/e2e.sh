@@ -107,7 +107,9 @@ rm -rf "$dir"
 out=$($BIN -e 'yes hi | cat | first 2')
 expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
 
-out=$($BIN -e 'grep nomatch /etc/hostname | complete |> _.ExitCode')
+# /etc/hosts, not /etc/hostname: the latter doesn't exist on macOS
+# (grep exit 2 = error, not the no-match 1 this pin reifies)
+out=$($BIN -e 'grep nomatch /etc/hosts | complete |> _.ExitCode')
 expect "complete reifies nonzero exit as data" "1 : int" "$out"
 
 out=$(timeout 10 $BIN -e 'bash -c "yes e | head -c 100000 1>&2; echo done" | complete |> _.ExitCode') \
@@ -681,7 +683,7 @@ rc=0; errout=$($BIN "$svdir/shadow.weir" 2>&1) || rc=$?
 echo "$errout" | grep -qF "not a function" || fail "expected an application type error: $errout"
 echo "e2e ok: script bindings shadow PATH commands (per-statement resolver)"
 
-out=$($BIN -e '$(^cat /etc/hostname) |> Seq.length')
+out=$($BIN -e '$(^cat /etc/hosts) |> Seq.length')
 echo "$out" | grep -qE "[0-9]" || fail "^cat must still force the binary: $out"
 echo "e2e ok: ^ still forces the real binary through a shadow"
 
