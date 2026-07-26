@@ -1,5 +1,30 @@
 # Spike Notes
 
+## Definition, extended — members and cases (2026-07-26)
+
+User follow-up to the arc: go-to-definition now covers record fields
+and union cases, both resolving to the KType declaration site
+[D:lsp-requests, extended]. The diagnosis beat the earlier estimate:
+match-PATTERN position needed no new machinery at all — `Pattern`
+already carries `PSpan` and `TEMatch` keeps the arm patterns, so
+`| Pull ->` resolves today, not behind the binder-span park.
+
+Four new routes in the pure `definitionFor`: expression-position
+ctors (uppercase TEVar → the union whose Cases contain it), field
+ACCESS (TEField, cursor after the target's span, target.Ty names the
+record), record-LITERAL field names (word-at-cursor on a TERecord
+node — per-field-name spans aren't kept, the text is), and pattern
+cases (PSpan walk, ctor word only — a payload binder stays null).
+The declaration column is textual, bounded by the decl's first `=`
+(members after, the type name before); multi-line decls work free
+because the logical line IS the whole declaration and translate maps
+back. Builtin types null (no declaration in the script).
+
+The binder-span park SHRINKS to exactly: params, local/block lets,
+and pattern payload binders (+ rename/references). Pinned: five new
+positions in unit (868), and three jumps through the real protocol
+via the nvim rig (ctor 3:7, field 5:28, pattern 2:7).
+
 ## The Zed extension — the arc closes (editor arc, session 3) (2026-07-26)
 
 editors/zed/ lands complete: extension.toml (grammar pinned by FULL

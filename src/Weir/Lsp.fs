@@ -347,35 +347,166 @@ let private binderCol (name: string) (text: string) : int option =
 
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (physLine, physCol, nameLength), or None. Pure — the handler
-/// and the unit pins share this.
+/// and the unit pins share this. Scope: top-level let/letpat binders;
+/// record fields (access + literal), union cases (expression AND
+/// pattern position — PSpan carries the arm's location), and type
+/// names, each resolving to the KType declaration site.
 let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int) option =
     let _, stmts, _, _ = Script.analyzeLines "defn" lines
 
+    let isWord (c: char) = Char.IsLetterOrDigit c || c = '_'
+
+    // word-bounded search for `name` in text[from..bound), 1-based col
+    let wordFind (name: string) (text: string) (from: int) (bound: int) =
+        let mutable i = max 0 from
+        let mutable found = None
+
+        while found.IsNone && i >= 0 && i + name.Length <= bound do
+            let j = text.IndexOf(name, i, bound - i)
+
+            if j < 0 then
+                i <- -1
+            else
+                let okL = j = 0 || not (isWord text[j - 1])
+                let okR = j + name.Length >= text.Length || not (isWord text[j + name.Length])
+
+                if okL && okR then found <- Some(j + 1) else i <- j + 1
+
+        found
+
+    let wordAt (text: string) (jcol: int) : string option =
+        let i = jcol - 1
+
+        if i >= 0 && i < text.Length && isWord text[i] then
+            let mutable s = i
+
+            while s > 0 && isWord text[s - 1] do
+                s <- s - 1
+
+            let mutable e = i
+
+            while e + 1 < text.Length && isWord text[e + 1] do
+                e <- e + 1
+
+            Some(text.Substring(s, e - s + 1))
+        else
+            None
+
+    // the KType declaring `tyName`: a member's column sits after the
+    // first `=`, the type name's before it (joined text spans the
+    // whole multi-line declaration; translate maps back to physical)
+    let typeSite (tyName: string) (member_: string option) =
+        stmts
+        |> List.tryPick (fun (ll, c) ->
+            match c.Kind with
+            | Script.KType d when d.Name = tyName ->
+                let eq = ll.Text.IndexOf '='
+
+                let jc =
+                    match member_ with
+                    | Some m -> wordFind m ll.Text (if eq >= 0 then eq else 0) ll.Text.Length
+                    | None -> wordFind tyName ll.Text 0 (if eq >= 0 then eq else ll.Text.Length)
+
+                jc
+                |> Option.map (fun jcol ->
+                    let pl, pc = Script.translate ll jcol
+                    (pl, pc, (member_ |> Option.defaultValue tyName).Length))
+            | _ -> None)
+
+    let unionOf (env: TypeEnv) (ctor: string) =
+        env.Types
+        |> Map.tryPick (fun tn def ->
+            match def with
+            | Union d when d.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some tn
+            | _ -> None)
+
+    let recordHasField (env: TypeEnv) (recName: string) (field: string) =
+        match Map.tryFind recName env.Types with
+        | Some(Record d) -> d.Fields |> List.exists (fun (f, _) -> f = field)
+        | _ -> false
+
+    let letSite (useHead: int) (n: string) =
+        stmts
+        |> List.filter (fun (ll, _) -> ll.Head < useHead)
+        |> List.rev
+        |> List.tryPick (fun (ll, c) ->
+            let binds =
+                match c.Kind with
+                | Script.KLet(bn, _, _) -> bn = n
+                | Script.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
+                | _ -> false
+
+            if binds then
+                binderCol n ll.Text
+                |> Option.map (fun bc ->
+                    let pl, pc = Script.translate ll bc
+                    (pl, pc, n.Length))
+            else
+                None)
+
+    // a PCase whose CTOR WORD contains the column (a payload binder is
+    // a local binder — the binder-span park, not this)
+    let rec patCaseAt (jcol: int) (p: Ast.Pattern) : string option =
+        let deeper =
+            match p.PKind with
+            | Ast.PCase(_, Some inner) -> patCaseAt jcol inner
+            | Ast.PTuple ps -> ps |> List.tryPick (patCaseAt jcol)
+            | _ -> None
+
+        match deeper with
+        | Some d -> Some d
+        | None ->
+            match p.PKind with
+            | Ast.PCase(ctor, _) when p.PSpan.Start.Col <= jcol && jcol < p.PSpan.Start.Col + ctor.Length -> Some ctor
+            | _ -> None
+
+    let rec matchCaseAt (jcol: int) (te: Check.TypedExpr) : string option =
+        let here =
+            match te.Kind with
+            | Check.TEMatch(_, arms) -> arms |> List.tryPick (fun (p, _, _) -> patCaseAt jcol p)
+            | _ -> None
+
+        match here with
+        | Some c -> Some c
+        | None -> Check.childExprs te |> List.tryPick (matchCaseAt jcol)
+
     toLogical stmts line col
     |> Option.bind (fun (useLl, chk, jcol) ->
-        teOf chk
-        |> Option.bind (fun te -> nodeAt te jcol)
-        |> Option.bind (fun node ->
-            match node.Kind with
-            | Check.TEVar n when Types.isUserName n && not (n.Contains '.') ->
-                stmts
-                |> List.filter (fun (ll, _) -> ll.Head < useLl.Head)
-                |> List.rev
-                |> List.tryPick (fun (ll, c) ->
-                    let binds =
-                        match c.Kind with
-                        | Script.KLet(bn, _, _) -> bn = n
-                        | Script.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
-                        | _ -> false
+        let env = chk.Env
 
-                    if binds then
-                        binderCol n ll.Text
-                        |> Option.map (fun bc ->
-                            let pl, pc = Script.translate ll bc
-                            (pl, pc, n.Length))
+        let fromPattern =
+            teOf chk
+            |> Option.bind (matchCaseAt jcol)
+            |> Option.bind (fun ctor -> unionOf env ctor |> Option.bind (fun tn -> typeSite tn (Some ctor)))
+
+        match fromPattern with
+        | Some r -> Some r
+        | None ->
+            teOf chk
+            |> Option.bind (fun te -> nodeAt te jcol)
+            |> Option.bind (fun node ->
+                match node.Kind with
+                | Check.TEVar n when Types.isUserName n && not (n.Contains '.') ->
+                    if Char.IsUpper n[0] then
+                        // expression-position union case
+                        unionOf env n |> Option.bind (fun tn -> typeSite tn (Some n))
                     else
-                        None)
-            | _ -> None))
+                        letSite useLl.Head n
+                | Check.TEField(target, field) when jcol > target.Span.End.Col ->
+                    (match target.Ty with
+                     | TNamed(tn, _) -> typeSite tn (Some field)
+                     | _ -> None)
+                | Check.TERecord(recName, _) ->
+                    // the literal's own words: the record name or a field
+                    wordAt useLl.Text jcol
+                    |> Option.bind (fun w ->
+                        if w = recName then
+                            typeSite recName None
+                        elif recordHasField env recName w then
+                            typeSite recName (Some w)
+                        else
+                            None)
+                | _ -> None))
 
 // ---- the server ---------------------------------------------------
 

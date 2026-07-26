@@ -2831,6 +2831,32 @@ let semanticTokenTests =
               // binder-span park; rename/references ride the same session)
               Expect.equal (Weir.Lsp.definitionFor [ "let f x = x + 1" ] 1 11) None "param -> null"
           }
+          test "definitionFor: record members and union cases resolve to the type declaration [D:lsp-requests]" {
+              let lines =
+                  [ "type Verb ="
+                    "    | Pull"
+                    "    | Push of int"
+                    ""
+                    "type Cfg = { Host: string; Port: int }"
+                    ""
+                    "let v = Pull"
+                    "let c = { Host = \"h\"; Port = 1 }"
+                    "print $\"{c.Port}\""
+                    "match v with"
+                    "| Pull -> print \"p\""
+                    "| Push n -> print $\"{n}\"" ]
+
+              // expression-position union case -> its case in the decl
+              Expect.equal (Weir.Lsp.definitionFor lines 7 9) (Some(2, 7, 4)) "ctor use -> the case"
+              // field ACCESS -> the field in the record decl
+              Expect.equal (Weir.Lsp.definitionFor lines 9 13) (Some(5, 28, 4)) "c.Port -> the Port field"
+              // record-LITERAL field name -> the field in the decl
+              Expect.equal (Weir.Lsp.definitionFor lines 8 11) (Some(5, 14, 4)) "literal Host -> the Host field"
+              // PATTERN-position case (PSpan carries it) -> the case
+              Expect.equal (Weir.Lsp.definitionFor lines 11 3) (Some(2, 7, 4)) "| Pull -> the case"
+              // a pattern PAYLOAD binder is a local binder: null (the park)
+              Expect.equal (Weir.Lsp.definitionFor lines 12 8) None "payload binder -> null"
+          }
           test "formatting request contracts: broken statements verbatim, assemble failure refuses [D:lsp-requests]" {
               // an unparseable statement never refuses the FILE — indent
               // normalizes, the broken line rides verbatim (format-on-save
