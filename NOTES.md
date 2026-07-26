@@ -1,5 +1,39 @@
 # Spike Notes
 
+## The macOS harness sweep — catalog, not cadence (2026-07-26)
+
+The third native e2e run died at `sed -i` (~line 2004 of 2700) — one
+finding per run is a bad exchange rate, so the rest was swept by
+CATALOG against ci/ + tools/ + Tests.fs instead of waiting for the
+next run. Fixed:
+
+- **`sed -i`** — BSD sed demands a suffix argument; the one site is
+  now rewrite-and-move (the portable spelling, no flag dialects).
+- **`date +%s%N`** — BSD date has no %N. e2e's two wall-clock bounds
+  now use a `now_ms` helper (python3 fallback — already a harness
+  dependency; ~30ms overhead is nothing against 900/2000ms bounds).
+  timing.sh is DIFFERENT: its 6–14ms medians would be swamped by a
+  subprocess clock, and its gates are pinned on Linux-container
+  numbers anyway — on a %N-less platform it now prints an explicit
+  STATED skip pointing at ci/local.sh (the documented-skip pattern;
+  never a silent pass [D:vacuous-probe-audit]).
+- **`mapfile`** — bash 4; macOS ships bash 3.2. skill-doc now uses
+  while-read (same array, same loudness).
+- **`sha256sum`** — absent on macOS (`shasum -a 256` emits the
+  identical digest). The value-headed hash fixture detects the tool;
+  the pinned digest is unchanged.
+
+Checked and CLEAR: `grep --line-buffered` (BSD grep has it), `find
+-print -quit` (BSD find has it), `install -m`, `seq`, `head -c`,
+process substitution under bash 3.2. Left with a note:
+tools/corpus-mine.weir names sha256sum — a Linux-workflow tool (the
+corpus lives in the container), not harness.
+
+Linux battery unchanged and green — every BSD path is behind a
+platform test, dormant here. The macOS claim is now "the catalog is
+swept", not "the file was run to the end" — the user's next native
+run is the honest check.
+
 ## The vacuous-probe audit — does this test test anything? (2026-07-26)
 
 Verification-only [D:vacuous-probe-audit]; zero src/ moves. The bar,

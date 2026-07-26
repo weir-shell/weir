@@ -1608,6 +1608,70 @@ let session3Tests =
           test "complete result pipes onward" {
               Expect.equal (runReal "grep nomatch /etc/hosts | complete |> _.ExitCode") (VInt 1) ""
           }
+          // capture oracle [D:capture-buffer]: the exact line-split and
+          // decode rules of `| complete`, pinned against the OLD
+          // representation BEFORE the buffer change — the equivalence
+          // oracle for "one buffer, not N strings". Octal via sh printf
+          // (POSIX printf has no \x).
+          test "capture oracle: stdout line rule — CRLF, lone CR, empties kept, unterminated tail" {
+              Expect.equal
+                  (runReal "sh -c 'printf \"a\\015\\012b\\015\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  [ VStr "a"; VStr "b" ]
+                  "CRLF splits, CR stripped"
+
+              Expect.equal
+                  (runReal "sh -c 'printf \"a\\015b\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  [ VStr "a"; VStr "b" ]
+                  "lone CR splits"
+
+              Expect.equal
+                  (runReal "sh -c 'printf \"a\\012\\012b\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  [ VStr "a"; VStr ""; VStr "b" ]
+                  "empty stdout lines kept"
+
+              Expect.equal
+                  (runReal "sh -c 'printf \"tail\"' | complete |> _.Stdout" |> forceSeq)
+                  [ VStr "tail" ]
+                  "unterminated final line included"
+
+              Expect.equal (runReal "sh -c 'true' | complete |> _.Stdout" |> forceSeq) [] "empty output, empty seq"
+          }
+          test "capture oracle: stderr rule differs — newline-split, empties dropped, CR retained" {
+              Expect.equal
+                  (runReal "sh -c 'printf \"a\\012\\012b\\012\" 1>&2' | complete |> _.Stderr" |> forceSeq)
+                  [ VStr "a"; VStr "b" ]
+                  "stderr empties dropped"
+
+              Expect.equal
+                  (runReal "sh -c 'printf \"e\\015\\012\" 1>&2' | complete |> _.Stderr" |> forceSeq)
+                  [ VStr "e\r" ]
+                  "stderr keeps the CR (newline-only split)"
+          }
+          test "capture oracle: decoding — UTF-8 BOM stripped, invalid byte replaced, UTF-16 BOM switches" {
+              Expect.equal
+                  (runReal "sh -c 'printf \"\\357\\273\\277x\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  [ VStr "x" ]
+                  "UTF-8 BOM stripped"
+
+              Expect.equal
+                  (runReal "sh -c 'printf \"a\\377b\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  [ VStr "a�b" ]
+                  "invalid byte becomes one replacement char"
+
+              // StreamReader's BOM detection SWITCHES encodings — part of
+              // today's contract, preserved via the fallback path
+              Expect.equal
+                  (runReal "sh -c 'printf \"\\377\\376x\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  [ VStr "੸" ]
+                  "UTF-16LE BOM switches decoding"
+          }
+          test "capture: re-enumeration is stable (Completed is materialized by definition)" {
+              Expect.equal
+                  (runReal
+                      "let r = $(sh -c 'printf \"x\\012y\\012\"' | complete) in (r.Stdout |> Seq.length) + (r.Stdout |> Seq.length)")
+                  (VInt 4L)
+                  "two enumerations of the same view agree"
+          }
           test "complete after an external-to-external pipeline is a parse error, not silent" {
               match Weir.Parser.parseLine cmdResolver "yes hi | grep hi | complete" with
               | Error msg -> Expect.stringContains msg "must directly follow a single external command segment" ""

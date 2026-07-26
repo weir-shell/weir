@@ -13,6 +13,15 @@ CMD_MAX_MS="${WEIR_MAX_CMD_MS:-42}"
 # a stale binary measures the wrong build
 "$(dirname "$0")/check-fresh.sh" "$BIN"
 
+# the gates are PINNED ON LINUX (dev-container medians); BSD date has no
+# %N, and a subprocess ms-clock's overhead would swamp the 6-14ms medians
+# being measured — an explicit STATED skip, never a silent pass
+# [D:vacuous-probe-audit]
+if [ "$(date +%N)" = "N" ] || [ -z "$(date +%N)" ]; then
+    echo "timing: SKIPPED — no nanosecond clock on this platform; the gates are pinned on Linux (ci/local.sh runs the clean-room numbers)" >&2
+    exit 0
+fi
+
 median() {
     local expr="$1"
     for _ in $(seq 1 15); do

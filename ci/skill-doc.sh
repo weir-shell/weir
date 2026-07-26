@@ -23,7 +23,9 @@ trap 'rm -rf "$work"' EXIT
 )
 
 # extract blocks from every doc: emit "<kind>\t<file>" pairs
-mapfile -t blocks < <(cat "${DOCS[@]}" | awk -v out="$work" '
+# (while-read, not mapfile: macOS ships bash 3.2)
+blocks=()
+while IFS= read -r line; do blocks+=("$line"); done < <(cat "${DOCS[@]}" | awk -v out="$work" '
     /^```weir-error$/ { kind="err"; n++; f=out"/block-"n".weir"; printf "" > f; inblock=1; print kind"\t"f; next }
     /^```weir$/       { kind="ok";  n++; f=out"/block-"n".weir"; printf "" > f; inblock=1; print kind"\t"f; next }
     /^```$/           { inblock=0; next }

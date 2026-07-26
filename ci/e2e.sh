@@ -14,6 +14,16 @@ fail() {
     exit 1
 }
 
+# BSD date has no %N — millisecond clock via python3 there (python3 is
+# already a harness dependency via tests/lib). The overhead (~30ms) is
+# fine for e2e's generous wall-clock bounds; timing.sh's tight gates
+# handle the BSD case separately.
+if [ "$(date +%N)" = "N" ] || [ -z "$(date +%N)" ]; then
+    now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
+else
+    now_ms() { echo $(($(date +%s%N) / 1000000)); }
+fi
+
 # macOS ships no GNU timeout — a background-watchdog polyfill (same
 # contract: run the command, kill it after N seconds, nonzero on kill)
 if ! command -v timeout >/dev/null 2>&1; then
@@ -261,9 +271,9 @@ out=$(cd "$scriptdir" && git init -q 2>/dev/null; cd "$scriptdir" && $BIN show.w
 echo "$out" | grep -qF "Staged = " || fail "show must render the porcelain row: $out"
 echo "e2e ok: show renders typed rows on the AOT binary"
 
-start=$(date +%s%N)
+start=$(now_ms)
 $BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "sleep 0.3" | complete)).ExitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
-elapsed_ms=$(( ($(date +%s%N) - start) / 1000000 ))
+elapsed_ms=$(($(now_ms) - start))
 [ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
 echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
 
@@ -2001,7 +2011,9 @@ let r =
 
 print r
 WEOF
-sed -i "s|SPMARK|$spdir/mark|" "$spdir/once.weir"
+# no `sed -i`: BSD sed demands a suffix argument there — rewrite-and-move
+# is the portable spelling
+sed "s|SPMARK|$spdir/mark|" "$spdir/once.weir" > "$spdir/once.weir.tmp" && mv "$spdir/once.weir.tmp" "$spdir/once.weir"
 out=$($BIN "$spdir/once.weir")
 expect "arms + rest consumption over a command seq" "a/b-c" "$out"
 [ "$(grep -c x "$spdir/mark")" = "1" ] || fail "memoize-once: expected ONE spawn, got $(grep -c x "$spdir/mark")"
@@ -2308,13 +2320,18 @@ rm -rf "$rfdir"
 # ---- value-headed pipe into a child's stdin [D:value-headed-pipe] ----
 
 fddir=$(mktemp -d)
+# macOS has no sha256sum; shasum -a 256 emits the identical digest and
+# the fixture only reads the first field
+HASHTOOL="sha256sum"
+command -v sha256sum >/dev/null 2>&1 || HASHTOOL="shasum -a 256"
 cat > "$fddir/hash.weir" <<'WEOF'
 let hashes =
-    ["snippet one"; "snippet two"] | sha256sum
+    ["snippet one"; "snippet two"] | HASHTOOL
     |> Seq.map (fun l -> l |> Str.split " " |> Seq.head)
 
 hashes |> Seq.iter print
 WEOF
+sed "s|HASHTOOL|$HASHTOOL|" "$fddir/hash.weir" > "$fddir/hash.weir.tmp" && mv "$fddir/hash.weir.tmp" "$fddir/hash.weir"
 out=$($BIN "$fddir/hash.weir")
 expect "value-headed: the miner's sha256 shape (value -> child stdin)" "0027e9fbda04a2a921cb8ae59053abae8a3d29e0c93613be831bcf0262faa36f" "$out"
 
@@ -2527,9 +2544,9 @@ cat > "$big/t.weir" <<'WEOF'
 let n = Path.glob "d/*" |> Seq.length
 print $"{n}"
 WEOF
-start=$(date +%s%N)
+start=$(now_ms)
 out=$(cd "$big" && $BIN t.weir)
-elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
+elapsed=$(($(now_ms) - start))
 expect "glob: 10k files counted" "10000" "$out"
 [ "$elapsed" -lt 2000 ] || fail "glob 10k ceiling: ${elapsed}ms"
 echo "e2e ok: glob 10k-file tree under the ceiling (${elapsed}ms)"
