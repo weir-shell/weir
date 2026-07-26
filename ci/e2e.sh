@@ -2450,6 +2450,10 @@ echo "e2e ok: the Default resting point sits below the whole env stack"
 # ---- scriptPath: the $0 gap closes [D:script-path] ----
 
 spdir=$(mktemp -d)
+# macOS: mktemp lives under the /var symlink and weir absolutizes a
+# relative script path against the PHYSICAL cwd (getcwd) — compare
+# physical to physical (pwd -P is POSIX; a no-op on Linux)
+spdir=$(cd "$spdir" && pwd -P)
 mkdir -p "$spdir/sub" "$spdir/pbin"
 cat > "$spdir/sub/where.weir" <<'WEOF'
 #!/usr/bin/env weir
