@@ -1513,10 +1513,24 @@ let session3Tests =
                   | _ -> failtest "unexpected field shapes"
               | v -> failtest $"unexpected: {formatValue v}"
           }
-          test "completed builtin is directly callable" {
-              match runReal "completed \"grep\" [\"localhost\"; \"/etc/hosts\"]" with
-              | VRecord("Completed", fields) -> Expect.equal fields["ExitCode"] (VInt 0) "found"
-              | v -> failtest $"unexpected: {formatValue v}"
+          test "the reify desugar targets are un-typeable [D:drop-reify-builtins]" {
+              // the '|' prefix cannot appear in an identifier — neither a
+              // binding nor a call can reach '|completed'; the scheme's
+              // guarantee proven, not assumed
+              match Weir.Parser.parseLine cmdResolver "let |completed = 5" with
+              | Error _ -> ()
+              | Ok s -> failtest $"binding a '|'-key must be a parse error, got {s}"
+
+              match Weir.Parser.parseLine cmdResolver "|completed \"echo\" [\"hi\"]" with
+              | Error _ -> ()
+              | Ok s -> failtest $"calling a '|'-key must be a parse error, got {s}"
+
+              // and the retired user spelling is plainly unbound — no
+              // retirement hint (phase-scoped ruling), no '|'-leak in the
+              // did-you-mean pool
+              let terr = checkErr "completed \"echo\" [\"hi\"]"
+              Expect.stringContains terr.Message "unbound variable 'completed'" ""
+              Expect.isFalse (terr.Message.Contains "|completed") "internal keys never surface"
           }
           test "complete result pipes onward" {
               Expect.equal (runReal "grep nomatch /etc/hostname | complete |> _.ExitCode") (VInt 1) ""
@@ -4024,7 +4038,7 @@ let agentFindingsTests =
           // exit-code reifiers [D:exit-reifiers]
           test "succeeds parses as complete's sibling (desugar shape)" {
               match Weir.Parser.parseLine cmdResolver "let ok = git fetch | succeeds" with
-              | Ok(SLet("ok", { Kind = EApp({ Kind = EApp({ Kind = EVar "succeeded" }, _) }, _) })) -> ()
+              | Ok(SLet("ok", { Kind = EApp({ Kind = EApp({ Kind = EVar "|succeeded" }, _) }, _) })) -> ()
               | other -> failtest $"expected the succeeded desugar, got {other}"
           }
           test "argv splat: $@name and $@(expr) desugar to ESplat [D:argv-splat]" {
@@ -4084,7 +4098,7 @@ let agentFindingsTests =
           }
           test "exitCode desugars to the exitCoded application [D:exit-reifiers]" {
               match Weir.Parser.parseLine cmdResolver "let rc = git push | exitCode" with
-              | Ok(SLet(_, e)) -> Expect.stringContains (Weir.Ast.sexpr e) "exitCoded" ""
+              | Ok(SLet(_, e)) -> Expect.stringContains (Weir.Ast.sexpr e) "|exitCoded" ""
               | other -> failtest $"expected the exitCoded desugar, got {other}"
           }
           test "exitCode conflict cells teach at parse [D:exit-reifiers]" {
@@ -4617,7 +4631,7 @@ let childEnvTests =
           }
           test "env sigil x complete: routes through completedEnv" {
               match Weir.Parser.parseLine realResolver "let r = $e(git status | complete)" with
-              | Ok(SLet("r", { Kind = EApp({ Kind = EApp({ Kind = EApp({ Kind = EVar "completedEnv" }, _) }, _) }, _) })) ->
+              | Ok(SLet("r", { Kind = EApp({ Kind = EApp({ Kind = EApp({ Kind = EVar "|completedEnv" }, _) }, _) }, _) })) ->
                   ()
               | other -> failtest $"unexpected: {other}"
           }

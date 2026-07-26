@@ -1,5 +1,12 @@
 module Weir.Types
 
+// reifier desugar targets carry an un-typeable '|' prefix
+// [D:drop-reify-builtins] — identifiers are [A-Za-z_].. so `| complete`
+// resolves them while user code cannot name them. Suggestion/completion
+// pools filter to user-typeable names.
+let isUserName (n: string) =
+    n.Length > 0 && (System.Char.IsLetter n[0] || n[0] = '_')
+
 type Ty =
     | TInt
     | TStr

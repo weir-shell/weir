@@ -393,7 +393,7 @@ let private sigilOpen (glyph: char) : Parser<Expr option, unit> =
 // conflicts [D:exit-reifiers] — reject at parse with the teaching text
 let rec private exitCodeSpine (e: Expr) : bool =
     match e.Kind with
-    | EVar("exitCoded" | "exitCodedEnv") -> true
+    | EVar("|exitCoded" | "|exitCodedEnv") -> true
     | EApp(f, _) -> exitCodeSpine f
     | _ -> false
 
@@ -1266,10 +1266,10 @@ let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
             | Result.Ok acc, (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ as marker) ->
                 let stageName, mspan, plainVar, envVar, stdinVar, extraArgs =
                     match marker with
-                    | CompleteMarker sp -> "complete", sp, "completed", "completedEnv", "completedIn", []
-                    | SucceedsMarker sp -> "succeeds", sp, "succeeded", "succeededEnv", "succeededIn", []
-                    | ExitCodeMarker sp -> "exitCode", sp, "exitCoded", "exitCodedEnv", "exitCodedIn", []
-                    | OrFailMarker(msg, sp) -> "orFail", sp, "orFailed", "orFailedEnv", "orFailedIn", [ msg ]
+                    | CompleteMarker sp -> "complete", sp, "|completed", "|completedEnv", "|completedIn", []
+                    | SucceedsMarker sp -> "succeeds", sp, "|succeeded", "|succeededEnv", "|succeededIn", []
+                    | ExitCodeMarker sp -> "exitCode", sp, "|exitCoded", "|exitCodedEnv", "|exitCodedIn", []
+                    | OrFailMarker(msg, sp) -> "orFail", sp, "|orFailed", "|orFailedEnv", "|orFailedIn", [ msg ]
                     | Stage _ -> "", acc.Span, "", "", "", []
 
                 // a chain head is command-ish (an external segment or a

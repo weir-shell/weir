@@ -197,18 +197,18 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     // (the reifier NAME stays lexical: grammar, not argv)
     let reifierHeads =
         set
-            [ "succeeded"
-              "completed"
-              "orFailed"
-              "exitCoded"
-              "succeededEnv"
-              "completedEnv"
-              "exitCodedEnv"
-              "orFailedEnv"
-              "succeededIn"
-              "completedIn"
-              "exitCodedIn"
-              "orFailedIn" ]
+            [ "|succeeded"
+              "|completed"
+              "|orFailed"
+              "|exitCoded"
+              "|succeededEnv"
+              "|completedEnv"
+              "|exitCodedEnv"
+              "|orFailedEnv"
+              "|succeededIn"
+              "|completedIn"
+              "|exitCodedIn"
+              "|orFailedIn" ]
 
     let rec spineIsReifier (te: Check.TypedExpr) =
         match te.Kind with

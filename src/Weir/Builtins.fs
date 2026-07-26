@@ -282,7 +282,9 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = args |> Seq.map asString |> List.ofSeq
                     let input = stdin |> Seq.map asString
-                    let code, out, err = Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
+
+                    let code, out, err =
+                        Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
 
                     VRecord(
                         completedDef.Name,
@@ -1350,28 +1352,35 @@ let private entries: (string * Ty * Value) list =
       "not", TFun(TBool, TBool), notImpl
       "fst", TFun(TTuple [ tA; tB ], tA), fstImpl
       "snd", TFun(TTuple [ tA; tB ], tB), sndImpl
-      "completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
-      "succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
-      "orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
-      "exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
-      // stdin-carrying twins [D:value-headed-pipe] — value-headed reifier
-      // desugar targets; internal, the public spellings above unchanged
-      "completedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))), completedWithIn []
-      "succeededIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBool))), succeededWithIn []
-      "orFailedIn", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), orFailedWithIn []
-      "exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
+      // reifier desugar targets [D:drop-reify-builtins]: '|'-prefixed so
+      // `| complete`/`| succeeds`/`| orFail`/`| exitCode` resolve them,
+      // user code cannot (identifiers are [A-Za-z_]..). Reification at
+      // expression position is `let r = cmd | complete`; a computed argv
+      // splats into the chain [D:splat-reifier-chains].
+      "|completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
+      "|succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
+      "|orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
+      "|exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
+      // stdin-carrying twins — the value-headed reifier route
+      // (`xs | grep | complete`) [D:value-headed-pipe]
+      "|completedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))), completedWithIn []
+      "|succeededIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBool))), succeededWithIn []
+      "|orFailedIn", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), orFailedWithIn []
+      "|exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
       "fail", TFun(TStr, TUnit), failImpl
       "exit", TFun(TInt, TUnit), exitImpl
-      "completedEnv",
+      // env-carrying twins — the env-sigil reifier route
+      // (`$e(cmd | complete)`)
+      "|completedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))),
       VBuiltin(fun envV -> completedWith (envVarPairs envV))
-      "succeededEnv",
+      "|succeededEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TBool))),
       VBuiltin(fun envV -> succeededWith (envVarPairs envV))
-      "orFailedEnv",
+      "|orFailedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit)))),
       VBuiltin(fun envV -> orFailedWith (envVarPairs envV))
-      "exitCodedEnv",
+      "|exitCodedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TInt))),
       VBuiltin(fun envV -> exitCodedWith (envVarPairs envV)) ]
     @ bareEntries
@@ -1461,9 +1470,6 @@ let valueEnv: Env =
         moduleTable
         |> List.collect (fun (m, members) -> members |> List.map (fun (n, _, v) -> $"{m}.{n}", v))
 
-    ("print", printImpl)
-    :: ("printerr", printerrImpl)
-    :: ("show", showImpl)
-    :: flat
+    ("print", printImpl) :: ("printerr", printerrImpl) :: ("show", showImpl) :: flat
     @ mangled
     |> Map.ofList

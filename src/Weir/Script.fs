@@ -1641,7 +1641,7 @@ let checkStatement
             // keep their standing echo behavior
             let rec exitCodeSpine (t: Check.TypedExpr) =
                 match t.Kind with
-                | Check.TEVar("exitCoded" | "exitCodedEnv") -> true
+                | Check.TEVar("|exitCoded" | "|exitCodedEnv") -> true
                 | Check.TEApp(f, _) -> exitCodeSpine f
                 | _ -> false
 
@@ -1885,7 +1885,7 @@ let analyzeLines
                          // expression mode and errors "unbound 'xx' —
                          // did you mean 'xr'?"; check's command reading
                          // must surface the same candidate
-                         let hint = didYouMean prog (Map.keys tenv.Values)
+                         let hint = didYouMean prog (Map.keys tenv.Values |> Seq.filter Types.isUserName)
 
                          diags.Add
                              { File = path

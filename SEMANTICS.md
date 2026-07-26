@@ -395,8 +395,9 @@ quantity semantics now.
   heads and remains total — a command whose argv is a runtime value
   spells `$author(git $@argv | complete)` [D:splat-reifier-chains],
   literal head, splatted argv, sigil env. The reifier builtins
-  (`completed` family) remain callable with an assembled seq; their
-  remaining role is a separate question (the Part-2 inventory).
+  (`completed` family) are RETIRED [D:drop-reify-builtins] — redundant
+  once the splat rode the chain; the desugar targets live on as
+  un-typeable `|`-prefixed keys the chain grammar alone can reach.
 - **Command-mode sigils** (2026-07-20): `$(chain)` captures a command
   chain's value in expression position; `!(chain)` desugars to
   `(chain) |> print` — eager, streaming, raising, unit. DESUGAR-ONLY:
@@ -595,7 +596,7 @@ quantity semantics now.
   raise on nonzero, unit. The former `run`/`cmd` expression-position
   builtins are RETIRED [D:drop-command-builtins] — a program in
   expression position is captured with `$()`/`!()` or a reifier.
-  `completed` remains the spelling when the exit code is data.
+  `| complete` remains the spelling when the exit code is data.
   **`Args.flag`/`Args.value`** are script-only argv
   scanners (empty-string short form for long-only flags, pinned);
   `Seq.contains/exists/forall/item/tryItem/skip` complete the access
@@ -834,8 +835,8 @@ quantity semantics now.
   was overridden by choice, on record): Layer 1 is the sigil env slot
   `$e(...)`/`!e(...)` — an identifier GLUED to glyph and paren (a
   space falls back to the old parses); the env applies to EVERY spawn
-  in the interior chain, `| complete` included (routed through
-  `completedEnv`, the same desugar family). Layer 2 is the district
+  in the interior chain, `| complete` included (routed through the
+  env-twin desugar target, the same family). Layer 2 is the district
   header — line-end `!name` distributes `!name(...)` over the block's
   lines; implemented entirely in the assembler (a MarkerKind
   classifier variant + parameterized district joins) and reparsed by
@@ -962,8 +963,9 @@ quantity semantics now.
   the typed stream, and weir does not buffer it (which also removes a
   deadlock class: a chatty-stderr child can never fill a pipe weir isn't
   reading). The opt-in capture is `complete`.
-- **`complete`** (command-mode pipe suffix) and **`completed`** (its
-  expression-mode builtin, `string -> seq<string> -> Completed`): run an
+- **`complete`** (the command-mode pipe suffix; its former
+  expression-mode builtin twin `completed` is retired
+  [D:drop-reify-builtins]): run an
   external command to completion and reify the outcome as
   `Completed = { ExitCode: int; Stdout: seq<string>; Stderr: seq<string> }` —
   **never raising on nonzero exit; the exit code is data**. This is the

@@ -397,9 +397,7 @@ print x
   Stderr }`; a COMPUTED argv splats into the chain —
   `$author(git commit-tree $@argv | complete) |> _.Stdout` (literal
   head, splatted argv, sigil env; works with all four reifiers,
-  value-headed and districts too). The `completed "prog" args`
-  builtins (+ `...Env` twins) remain callable with an assembled
-  seq. `print ()` is silent (unit
+  value-headed and districts too). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
 - Capture is IN MEMORY and heavy: `| complete` (and `Seq.force`) hold
@@ -615,7 +613,7 @@ let marker = "skill-doc"
 echo tagged $marker (40 + 2)
 sh -c "echo via-posix && echo second"
 
-let r = completed "sh" ["-c"; "exit 3"]
+let r = sh -c "exit 3" | complete
 print $"exit was {r.ExitCode}"
 
 git status --porcelain | from porcelain | Seq.map _.Path

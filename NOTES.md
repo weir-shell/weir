@@ -1,5 +1,46 @@
 # Spike Notes
 
+## The names go, third pass, right reason (2026-07-26)
+
+`completed`/`succeeded`/`orFailed`/`exitCoded` + Env twins are gone as
+user-callable names [D:drop-reify-builtins]; the desugar targets live
+on as `|`-prefixed keys only the chain grammar can reach. Mechanical —
+mostly a re-application of session 2's diff, which was green at 861
+before its own battery killed it for the WRONG REASON being wrong.
+
+**Why the third pass is different.** Session 2's argument (computed-
+head escape hatch) was false — the builtins' head was always a literal.
+The live argument is redundancy: since the splat rides reifier chains,
+the computed-argv job has a better spelling and the builtins had no
+job left. The DECISIONS row carries all three parts — wrong reason
+(dead, so nobody revives it), right reason, and the total inventory
+(flagship was the only caller and converted LAST session; this session
+touched no .weir file at all).
+
+**What moved**: 12 registrations renamed to `|`-keys; foldChain
+re-aimed; exitCodeSpine (×2), Lsp reifierHeads (×12) re-keyed;
+didYouMean + completion pools filter through Types.isUserName. e2e's
+three direct-call sites converted (piter probe → `$(sh -c ... |
+complete)`, env variant → `$e(... | complete)`, expression-position →
+`let r = echo hi | complete in r.Stdout`). SKILL's demonstration block
+→ `sh -c "exit 3" | complete`; the homonym line RETIRED from SKILL and
+the SEMANTICS complete entry — the collision is gone, one fewer thing
+to explain.
+
+**Pinned**: un-typeability (binding or calling `|completed` is a parse
+error; no `|`-leak in didYouMean — the scheme's guarantee proven);
+the four chain routes byte-identical (re-run, plus the env-sigil/
+district/value-headed/splat sweep already standing); three desugar-
+shape pins flipped to the `|`-names; the directly-callable pin retired
+1:1 for the un-typeability pin.
+
+**Phase boundary, on record**: no retirement hints is PHASE-SCOPED —
+experimental-phase policy, not doctrine. The first external user makes
+removals teachable again; `retiredBare`'s original three are the
+precedent to extend. The phase is about to change.
+
+865 unit / e2e green / 20 fuzz / 59 doc.
+
 ## The splat rides — `$author(git $@argv | complete)` (2026-07-25)
 
 The twist session [D:splat-reifier-chains]: the ugly line that survived

@@ -155,7 +155,9 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
             | _ -> None)
         |> List.sort
     else
-        (List.ofSeq (Map.keys env.Values) @ List.ofSeq (Map.keys env.Modules) @ keywords)
+        (List.ofSeq (Map.keys env.Values |> Seq.filter Types.isUserName)
+         @ List.ofSeq (Map.keys env.Modules)
+         @ keywords)
         |> List.filter (fun n -> n.StartsWith word && n <> word)
         |> List.distinct
         |> List.sort

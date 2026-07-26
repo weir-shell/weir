@@ -239,7 +239,7 @@ echo "$out" | grep -qF "Staged = " || fail "show must render the porcelain row: 
 echo "e2e ok: show renders typed rows on the AOT binary"
 
 start=$(date +%s%N)
-$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if (completed "sh" ["-c"; "sleep 0.3"]).ExitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
+$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "sleep 0.3" | complete)).ExitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
 elapsed_ms=$(( ($(date +%s%N) - start) / 1000000 ))
 [ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
 echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
@@ -2251,14 +2251,16 @@ WEOF
 out=$($BIN "$rfdir/match.weir")
 expect "the match-on-exit-code idiom (graceful cancel)" "cancelled" "$out"
 
-# env variant: the expression-position spelling
+# env variant: the env-sigil reifier at let-RHS (captures + binds the code)
 cat > "$rfdir/env.weir" <<'WEOF'
-let rc = exitCodedEnv (Env.ofPairs [("MARK", "seen")]) "sh" ["-c"; "echo mark=$MARK; exit 3"]
-print $"env code {rc}"
+let e = Env.ofPairs [("MARK", "seen")]
+let r = $e(sh -c "echo mark=$MARK; exit 3" | complete)
+r.Stdout |> Seq.iter print
+print $"env code {r.ExitCode}"
 WEOF
 out=$($BIN "$rfdir/env.weir")
-expect "exitCodedEnv streams with the overlay applied" "mark=seen" "$out"
-expect "exitCodedEnv binds the code" "env code 3" "$out"
+expect "env-sigil reifier applies the overlay" "mark=seen" "$out"
+expect "env-sigil reifier binds the code" "env code 3" "$out"
 
 # conflict cells reject with the teaching text
 errout=$(printf 'let x = $(git push | exitCode)
@@ -2332,9 +2334,9 @@ out=$($BIN -e '["x"] | grep x | succeeds')
 expect "value-headed | succeeds" "true" "$out"
 out=$($BIN -e '["x"] | grep zzz | exitCode')
 expect "value-headed | exitCode" "1" "$out"
-# the expression-position spellings are ZERO-DIFF (unchanged arity)
-out=$($BIN -e 'completed "echo" ["hi"]')
-expect "expression-position completed unchanged" 'Stdout = ["hi"]' "$out"
+# expression-position reification is the captured chain [D:drop-reify-builtins]
+out=$($BIN -e 'let r = $(echo hi | complete) in r.Stdout')
+expect "expression-position reification via \$(... | complete)" '["hi"]' "$out"
 # multi-external reifier still rejects (no new law)
 errout=$(printf 'echo hi | grep h | complete\n' | $BIN check /dev/stdin 2>&1) && fail "multi-external reifier must reject"
 echo "$errout" | grep -qF "single external command segment" || fail "multi-external rule changed: $errout"

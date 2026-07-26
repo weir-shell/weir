@@ -1161,7 +1161,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             expr.Span
                             "scriptPath is script-only (the running script's absolute path; absent in the REPL and -e)"
                     | None ->
-                        let hint = didYouMean name (Map.keys env.Values)
+                        let hint = didYouMean name (Map.keys env.Values |> Seq.filter Types.isUserName)
+
                         err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, value, body) ->
         result {
