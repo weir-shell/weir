@@ -1,0 +1,6 @@
+# Zed dev-extension build artifacts — written INTO the extension dir
+# by "Install Dev Extension" (the grammar is CLONED to grammars/)
+extension.wasm
+grammars/
+target/
+Cargo.lock

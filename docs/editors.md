@@ -154,9 +154,14 @@ other path for an unknown language). Install as a dev extension
 (Extensions → Install Dev Extension → the `editors/zed/` directory;
 needs a local Rust toolchain) until it is published.
 
-UNTESTED in the verification container (Zed is GUI-only; dev
-extensions compile locally) — the extension README carries a 5-step
-local verification list.
+Verified (Zed on macOS, dev-extension install, 2026-07-26):
+tree-sitter highlighting ✓, diagnostics ✓, hover ✓, formatting ✓.
+Not testable in the verification container (GUI-only) — verified on a
+real machine via the README's 5-step list. Two install gotchas the
+README covers: the grammar repo must be clonable by Zed (use the
+`file://` dev-mode override while the weir repo is private), and a
+failed attempt leaves a stale `grammars/` clone that must be deleted
+before retrying.
 
 ## Troubleshooting
 

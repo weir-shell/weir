@@ -1,5 +1,29 @@
 # Spike Notes
 
+## Zed verified on metal — the arc's last open cell closes (2026-07-26)
+
+The user ran the 5-step verification on a real machine (macOS,
+dev-extension install): tree-sitter highlighting ✓, diagnostics ✓
+(`unbound variable 'undefinedName'`), hover ✓, formatting ✓. The
+UNTESTED cell flips; every editor row in docs/editors.md is now
+verified end to end.
+
+Two install findings, both now in the extension README + .gitignore:
+
+- **Zed clones the grammar ANONYMOUSLY from `[grammars.weir]`, even
+  for a dev extension** — it never reads the grammar from the local
+  extension dir. The weir repo is private, so the first install
+  failed at the clone. Dev-mode fix: `repository = "file:///path/to/
+  clone"` + a COMMITTED rev. PUBLISHING CONSEQUENCE HARDENED: the
+  registry's CI clones anonymously too, so the public
+  tree-sitter-weir repo split is now a PREREQUISITE for the Zed
+  publish, not just preferred.
+- **A failed attempt poisons the retry**: Zed clones INTO the
+  extension dir (`editors/zed/grammars/`) and refuses a cached clone
+  whose origin differs from the new URL — delete `grammars/` before
+  retrying. Those artifacts (`grammars/`, `extension.wasm`,
+  `target/`) are build junk written into SOURCE; .gitignore added.
+
 ## Definition, extended — members and cases (2026-07-26)
 
 User follow-up to the arc: go-to-definition now covers record fields
