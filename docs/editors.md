@@ -5,9 +5,13 @@ language server over stdio, a subcommand of the same binary that runs
 your scripts, so it can never go out of sync with the language. All
 blocks below assume `weir` is on PATH.
 
-The server provides diagnostics, hover, completion, and semantic
-tokens. Two facts every block encodes, matching `weir fmt`:
-comment token `//`, indent 4 spaces.
+The server provides diagnostics, hover, completion, semantic tokens,
+formatting, and go-to-definition (top-level bindings; params and
+match binders return nothing for now — by design, not omission). Two
+facts every block encodes, matching `weir fmt`: comment token `//`,
+indent 4 spaces. The formatting request runs `weir fmt`'s canonical
+pipeline — editor options (tabSize etc.) are ignored by design, so a
+2-space editor still writes canonical 4-space weir.
 
 weir scripts are often extensionless (`#!/usr/bin/env weir`), so each
 block registers BOTH the `.weir` extension and shebang detection.
@@ -66,7 +70,10 @@ identical.
 Verified (Neovim 0.11.3, headless, in-container): attach ✓,
 diagnostic ✓, hover ✓, semantic tokens ✓ (the highlight links above
 are required for the colors to be visible — the token types are
-weir's own, not standard names), `.weir` and shebang detection ✓.
+weir's own, not standard names), formatting ✓ (the applied edit is
+byte-identical to `weir fmt`'s output; the editor's tabSize was
+ignored as designed), go-to-definition ✓ (a use jumps to its
+top-level `let`), `.weir` and shebang detection ✓.
 
 ## Helix
 
@@ -90,9 +97,11 @@ language-servers = ["weir"]
 `hx --health weir` should show the server with a ✓ and its path.
 
 Verified (Helix 25.01.1, in-container): attach ✓, diagnostic ✓
-(gutter marker + statusline count), hover ✓ (`space k`), `.weir` and
-shebang detection ✓. Semantic tokens: n/a — Helix does not support
-LSP semantic tokens; its highlighting is tree-sitter-based (a weir
+(gutter marker + statusline count), hover ✓ (`space k`), formatting ✓
+(`:format` rewrites the buffer to `weir fmt`'s output), definition ✓
+(`gd` on a use lands on its top-level `let`), `.weir` and shebang
+detection ✓. Semantic tokens: n/a — Helix does not support LSP
+semantic tokens; its highlighting is tree-sitter-based (a weir
 tree-sitter grammar is a planned fast-follow; until then text is
 uncolored).
 

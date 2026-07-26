@@ -1,5 +1,47 @@
 # Spike Notes
 
+## LSP requests — formatting + definition (editor arc, session 1) (2026-07-26)
+
+The two most-expected-and-silently-missing requests land
+[D:lsp-requests]. Zero language change; ~140 lines in Lsp.fs + one
+capabilities line + pins.
+
+**Formatting.** Client-sent text only, the same Fmt.formatLines the
+CLI runs, one whole-document TextEdit, editor options ignored (fmt is
+canonical — a 2-space editor still writes 4-space weir, and the nvim
+rig proved the tabSize=2 request produced canonical output). The
+plan's verify answered well: formatLines is total-ish on broken
+buffers — unparseable statements ride verbatim while indent
+normalizes, so format-on-save on a broken file stays useful; only an
+assemble failure (a dangling continuation) refuses, and the LSP maps
+that to no-edits. Both pinned.
+
+**Definition v1.** Top-level `let`/`let`-pattern bindings; null for
+params/match binders/block-lets (no binder spans in the checker —
+conservatively silent) and builtins (no source). The hover plumbing
+already had the hard half: nodeAt hands over the TEVar; the reverse
+lookup is last-binder-above (shadowing free), binder column found
+textually before the first `=`, translated back to physical. Factored
+pure (`definitionFor`) so the unit pins hit it directly — the inline
+handlers are untestable, the semanticTokensFor lesson reused.
+
+**End-to-end, both editors.** nvim headless: the applied edit is
+byte-identical to `weir fmt`; the definition range lands on the
+binder (1:5–10). helix pty: `:format` visibly rewrites 2→4; `gd`
+proven by inserting a marker at the landing site — it appears at
+`let #HEREalpha`. THE FALSE ALARM was the driver, not the server:
+helix's `w` leaves the selection head on trailing whitespace and gd
+sends the HEAD, so the first test asked for a definition at a space —
+the server's null was correct. The -vv transport log settled it in
+one read (position character:10 = the space).
+
+**The binder-span park (filed, three customers).** Full definition,
+rename, and references all need Check to record binder spans — one
+medium session shared by all three. Reopens when any is demanded by
+a real user; until then definition's nulls are the design.
+
+867 unit (+2) / e2e / fuzz / doc green.
+
 ## LSP editor configuration — shipped work made visible (2026-07-26)
 
 Docs-and-packaging, zero language change. docs/editors.md carries the

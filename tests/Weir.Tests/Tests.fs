@@ -2811,6 +2811,43 @@ let semanticTokenTests =
                   [ (1, 0, 4, 0); (1, 5, 2, 1); (1, 8, 2, 2); (1, 11, 1, 2); (1, 17, 1, 2) ]
                   "the quoted arg and the splice interior emit nothing"
           }
+          test "definitionFor: top-level lets, shadowing, and nulls [D:lsp-requests]" {
+              let lines =
+                  [ "let alpha = 1"
+                    "let beta = alpha + 1"
+                    "let alpha = beta"
+                    "print $\"{alpha + beta}\"" ]
+
+              // a use resolves to its top-level let
+              Expect.equal (Weir.Lsp.definitionFor lines 2 12) (Some(1, 5, 5)) "alpha use -> its let"
+              // shadowing: the LAST binder above the use wins
+              Expect.equal (Weir.Lsp.definitionFor lines 4 10) (Some(3, 5, 5)) "last binder above wins"
+              // a let-pattern binder is a definition site too
+              let pat = [ "let (a, b) = (1, 2)"; "print $\"{a}\"" ]
+              Expect.equal (Weir.Lsp.definitionFor pat 2 10) (Some(1, 6, 1)) "letpat binder found"
+              // builtins have no source: null
+              Expect.equal (Weir.Lsp.definitionFor [ "print 1" ] 1 2) None "builtin -> null"
+              // params carry no binder spans yet: conservatively null (the
+              // binder-span park; rename/references ride the same session)
+              Expect.equal (Weir.Lsp.definitionFor [ "let f x = x + 1" ] 1 11) None "param -> null"
+          }
+          test "formatting request contracts: broken statements verbatim, assemble failure refuses [D:lsp-requests]" {
+              // an unparseable statement never refuses the FILE — indent
+              // normalizes, the broken line rides verbatim (format-on-save
+              // on a broken buffer stays useful)
+              match Weir.Fmt.formatLines [ "let go () ="; "  let x = (((("; "  print \"hi\"" ] with
+              | Ok out ->
+                  Expect.equal
+                      out
+                      [ "let go () ="; "    let x = (((("; "    print \"hi\"" ]
+                      "reindented around the verbatim broken line"
+              | Error e -> failtest $"broken statement must not refuse the file: {e}"
+
+              // an assemble failure refuses -> the LSP answers no edits
+              match Weir.Fmt.formatLines [ "    dangling continuation" ] with
+              | Error _ -> ()
+              | Ok out -> failtest $"assemble failure must refuse, got {out}"
+          }
           test "splat spans join the splice legend [D:argv-splat]" {
               let toks =
                   Weir.Lsp.semanticTokensFor [ "let fs = [\"a\"]"; "echo go $@fs $@([\"b\"]) tail" ]

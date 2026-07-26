@@ -53,3 +53,4 @@ is chronological (git first-commit date).
 - 2026-07-24 [EXECUTED] [PLAN-semantic-tokens.md](PLAN-semantic-tokens.md) — semantic tokens: the mode boundary made visible
 - 2026-07-24 [EXECUTED] [PLAN-shared-flags.md](PLAN-shared-flags.md) — shared flags by containment: the union-typed field
 - 2026-07-24 [EXECUTED] [PLAN-spawn-spec.md](PLAN-spawn-spec.md) — mini-plan: the spawn-spec refactor + `feed`
+- 2026-07-26 [IN PROGRESS] [PLAN-editor-arc.md](PLAN-editor-arc.md) — the editor arc: LSP formatting+definition, tree-sitter-weir, Zed extension

@@ -319,6 +319,64 @@ let private nodeAt (te: TypedExpr) (col: int) : TypedExpr option =
 
     go None te
 
+// ---- go-to-definition v1 [D:lsp-requests]: top-level bindings only,
+// null otherwise (params/match binders/block-lets carry no binder
+// spans in the checker — conservatively silent; builtins have no
+// source). The binder's column is found textually in the `let`-headed
+// logical line, bounded by the first `=`.
+
+let private binderCol (name: string) (text: string) : int option =
+    let eq = text.IndexOf '='
+    let bound = if eq >= 0 then eq else text.Length
+    let isWord c = Char.IsLetterOrDigit c || c = '_'
+    let mutable i = 0
+    let mutable found = None
+
+    while found.IsNone && i >= 0 && i + name.Length <= bound do
+        let j = text.IndexOf(name, i, bound - i)
+
+        if j < 0 then
+            i <- -1
+        else
+            let okL = j = 0 || not (isWord text[j - 1])
+            let okR = j + name.Length >= text.Length || not (isWord text[j + name.Length])
+
+            if okL && okR then found <- Some(j + 1) else i <- j + 1
+
+    found
+
+/// definition site for the identifier at (1-based physical line, col):
+/// Some (physLine, physCol, nameLength), or None. Pure — the handler
+/// and the unit pins share this.
+let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int) option =
+    let _, stmts, _, _ = Script.analyzeLines "defn" lines
+
+    toLogical stmts line col
+    |> Option.bind (fun (useLl, chk, jcol) ->
+        teOf chk
+        |> Option.bind (fun te -> nodeAt te jcol)
+        |> Option.bind (fun node ->
+            match node.Kind with
+            | Check.TEVar n when Types.isUserName n && not (n.Contains '.') ->
+                stmts
+                |> List.filter (fun (ll, _) -> ll.Head < useLl.Head)
+                |> List.rev
+                |> List.tryPick (fun (ll, c) ->
+                    let binds =
+                        match c.Kind with
+                        | Script.KLet(bn, _, _) -> bn = n
+                        | Script.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
+                        | _ -> false
+
+                    if binds then
+                        binderCol n ll.Text
+                        |> Option.map (fun bc ->
+                            let pl, pc = Script.translate ll bc
+                            (pl, pc, n.Length))
+                    else
+                        None)
+            | _ -> None))
+
 // ---- the server ---------------------------------------------------
 
 let run () : int =
@@ -448,7 +506,7 @@ let run () : int =
                     |> Option.iter (fun id ->
                         respond id (fun w ->
                             w.WriteRawValue
-                                """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir"}}"""))
+                                """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir"}}"""))
                 | "initialized" -> ()
                 | "shutdown" -> idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
                 | "exit" -> running <- false
@@ -536,6 +594,71 @@ let run () : int =
                                 | None -> w.WriteNullValue()
                             | None -> w.WriteNullValue()
                         | _ -> w.WriteNullValue()
+
+                    idStr |> Option.iter (fun id -> respond id writeResult)
+                | "textDocument/definition" ->
+                    let writeResult (w: Text.Json.Utf8JsonWriter) =
+                        match docOf (), posOf () with
+                        | Some(uri, text), Some(line, col) ->
+                            let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+                            match definitionFor lines line col with
+                            | Some(pl, pc, len) ->
+                                w.WriteStartObject()
+                                w.WriteString("uri", uri)
+                                w.WritePropertyName "range"
+                                w.WriteStartObject()
+                                w.WritePropertyName "start"
+                                w.WriteStartObject()
+                                w.WriteNumber("line", pl - 1)
+                                w.WriteNumber("character", pc - 1)
+                                w.WriteEndObject()
+                                w.WritePropertyName "end"
+                                w.WriteStartObject()
+                                w.WriteNumber("line", pl - 1)
+                                w.WriteNumber("character", pc - 1 + len)
+                                w.WriteEndObject()
+                                w.WriteEndObject()
+                                w.WriteEndObject()
+                            | None -> w.WriteNullValue()
+                        | _ -> w.WriteNullValue()
+
+                    idStr |> Option.iter (fun id -> respond id writeResult)
+                | "textDocument/formatting" ->
+                    // client-sent text only (the SECURITY non-claim holds);
+                    // editor options are IGNORED — weir fmt is canonical.
+                    // formatLines keeps unparseable statements verbatim, so
+                    // format-on-save on a broken file still normalizes what
+                    // it can; an assemble failure returns no edits.
+                    let writeResult (w: Text.Json.Utf8JsonWriter) =
+                        match docOf () with
+                        | Some(_, text) ->
+                            let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+                            match Fmt.formatLines lines with
+                            | Ok formatted when formatted <> lines ->
+                                let arr = List.toArray lines
+                                let lastIdx = arr.Length - 1
+                                w.WriteStartArray()
+                                w.WriteStartObject()
+                                w.WritePropertyName "range"
+                                w.WriteStartObject()
+                                w.WritePropertyName "start"
+                                w.WriteStartObject()
+                                w.WriteNumber("line", 0)
+                                w.WriteNumber("character", 0)
+                                w.WriteEndObject()
+                                w.WritePropertyName "end"
+                                w.WriteStartObject()
+                                w.WriteNumber("line", lastIdx)
+                                w.WriteNumber("character", arr[lastIdx].Length)
+                                w.WriteEndObject()
+                                w.WriteEndObject()
+                                w.WriteString("newText", String.concat "\n" formatted)
+                                w.WriteEndObject()
+                                w.WriteEndArray()
+                            | _ -> w.WriteNullValue() // refusal or already canonical
+                        | None -> w.WriteNullValue()
 
                     idStr |> Option.iter (fun id -> respond id writeResult)
                 | "textDocument/completion" ->
