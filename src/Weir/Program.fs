@@ -105,10 +105,13 @@ let main argv =
 
         Console.WriteLine v
         0
-    | [ "lsp" ] -> Lsp.run ()
+    // LSP clients conventionally append transport argv (languageclient
+    // v10 adds --stdio/--clientProcessId to Executables) — tolerated
+    // and ignored, stdio is the only transport anyway
+    | "lsp" :: rest when rest |> List.forall (fun a -> a = "--stdio" || a.StartsWith "--clientProcessId") -> Lsp.run ()
     | "lsp" :: _ ->
         Console.Error.WriteLine
-            "usage: weir lsp — the language server, JSON-RPC over stdio; takes no arguments.\nWire your editor to run this command: see docs/editors.md"
+            "usage: weir lsp — the language server, JSON-RPC over stdio (conventional client argv like --stdio is tolerated).\nWire your editor to run this command: see docs/editors.md"
 
         2
     | [ "check"; path ] -> Script.checkOnly false path

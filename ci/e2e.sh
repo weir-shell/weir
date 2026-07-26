@@ -724,6 +724,15 @@ if command -v python3 >/dev/null 2>&1; then
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-e2e.py" || fail "lsp integration probes"
     echo "e2e ok: lsp diagnostics/hover/completion over stdio"
 
+    # conventional client argv is tolerated (languageclient v10 appends
+    # --stdio/--clientProcessId to Executables — usage-exit-2 here put
+    # the VS Code client in a crash-restart loop)
+    lspout=$(printf '' | $BIN lsp --stdio --clientProcessId=99 2>&1) || fail "lsp must tolerate conventional client argv (rc=$?)"
+    echo "$lspout" | grep -qF "usage:" && fail "conventional argv must not trip the usage arm"
+    errout=$($BIN lsp --help 2>&1) && fail "lsp --help must still exit nonzero"
+    echo "$errout" | grep -qF "usage: weir lsp" || fail "lsp --help must still teach"
+    echo "e2e ok: weir lsp tolerates --stdio/--clientProcessId, refuses the rest"
+
     # grammar drift guard: micro's '# rule:' annotations vs the
     # tmLanguage repository keys — add to BOTH or neither.
     # LIMITATION on record: this proves rule PRESENCE, not regex

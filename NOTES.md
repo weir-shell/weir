@@ -25,6 +25,21 @@ all fixed:
   retired; the build is now `npm install && npm run package` (the
   LOCAL vsce via devDependency, never a stale global npx).
 
+**The v10 landmine, found live on the user's machine**: languageclient
+v10 APPENDS transport argv (`--stdio`, `--clientProcessId=N`) to
+Executables — v9 did not — so the audit-driven bump made the server
+receive `lsp --stdio`, trip its own takes-no-arguments usage arm, exit
+2, and crash-restart five times. Two fixes: the SERVER now tolerates
+exactly the conventional client argv (`--stdio`,
+`--clientProcessId*`) and still refuses/teaches on anything else
+(e2e-pinned both ways); the client stays idiomatic v10 (the explicit
+transport now exercises the tolerance path in every real session).
+Also that session: the client resolves the binary ITSELF (PATH then
+~/.local/bin — the macOS GUI-PATH case) with actionable errors; the
+user's original ENOENT was `weir.serverPath = "weir lsp"` — the
+setting is the BINARY only, now stated in the setting text, the
+error, and docs/editors.md.
+
 ## The argv twins — the order-observable dedupe lands (2026-07-26)
 
 The dedupe sweep's first sized finding, executed as its own careful
