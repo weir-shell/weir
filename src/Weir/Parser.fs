@@ -290,8 +290,9 @@ let private rangeTerm, private rangeTermRef =
 // here is safe — and it stops rangeTerm from descending into nested
 // brackets that the backtrack would then re-parse (O(2^n) on `[[[…]]]`).
 let private rangeBody =
-    notFollowedBy (anyOf "[{")
-    >>. attempt (rangeTerm .>> dotdot) .>>. rangeTerm .>>. opt (dotdot >>. rangeTerm)
+    notFollowedBy (anyOf "[{") >>. attempt (rangeTerm .>> dotdot)
+    .>>. rangeTerm
+    .>>. opt (dotdot >>. rangeTerm)
     >>= fun ((a, b), c) ->
         let start, step, stop =
             match c with
@@ -499,21 +500,22 @@ let private deepen (p: Parser<'a, unit>) : Parser<'a, unit> =
 
 let private atom =
     deepen (
-      choice
-        [ attrsRejectHere >>% Unchecked.defaultof<Expr>
-          negAtom
-          intLit
-          tripleLit
-          verbatimLit
-          strLit
-          interpLit
-          captureSigil
-          effectSigil
-          unitLit
-          parens
-          recordLit
-          listLit
-          wordAtom ])
+        choice
+            [ attrsRejectHere >>% Unchecked.defaultof<Expr>
+              negAtom
+              intLit
+              tripleLit
+              verbatimLit
+              strLit
+              interpLit
+              captureSigil
+              effectSigil
+              unitLit
+              parens
+              recordLit
+              listLit
+              wordAtom ]
+    )
 
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 
@@ -1150,7 +1152,7 @@ let private commandSegment
 
     (lookAhead (pstring "$@")
      >>. failFatally
-             "a splat cannot head a command (N words would be N heads); computed heads stay parked — run/cmd take the program as a value")
+             "a splat cannot head a command (N words would be N heads); a command head is a literal — branch the whole command line")
     <|> (attempt head .>>. many argP)
     |>> fun ((kind, prog, span), args) ->
         let fullSpan =
@@ -1261,8 +1263,7 @@ let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
                 Result.Ok
                     { Kind = EPipe(acc, seg)
                       Span = Span.union acc.Span seg.Span }
-            | Result.Ok acc,
-              (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ as marker) ->
+            | Result.Ok acc, (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ as marker) ->
                 let stageName, mspan, plainVar, envVar, stdinVar, extraArgs =
                     match marker with
                     | CompleteMarker sp -> "complete", sp, "completed", "completedEnv", "completedIn", []
@@ -1279,6 +1280,58 @@ let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
                     | EPipe(_, { Kind = ECmd _ }) -> true
                     | _ -> false
 
+                // a reified segment's mixed literal+splat argv denotes a
+                // seq VALUE [D:splat-reifier-chains]: contiguous non-splat
+                // args chunk into list literals, each splat splices its
+                // interior seq WHOLE, folded with Seq.append. Element =
+                // one word carries through the builtin's argv (the same
+                // boundary as spawn-argv-build); ESplat never leaves argv
+                // in the AST. Splat-free argv keeps the plain list node.
+                let argvExpr (args: Expr list) : Expr =
+                    let hasSplat =
+                        args
+                        |> List.exists (fun a ->
+                            match a.Kind with
+                            | ESplat _ -> true
+                            | _ -> false)
+
+                    if not hasSplat then
+                        { Kind = EList args; Span = acc.Span }
+                    else
+                        let seqAppend (a: Expr) (b: Expr) =
+                            let span = Span.union a.Span b.Span
+
+                            let f =
+                                { Kind = EField({ Kind = EVar "Seq"; Span = span }, "append", span)
+                                  Span = span }
+
+                            { Kind = EApp({ Kind = EApp(f, a); Span = span }, b)
+                              Span = span }
+
+                        let listOf (chunk: Expr list) =
+                            { Kind = EList chunk
+                              Span = Span.union (List.head chunk).Span (List.last chunk).Span }
+
+                        let flush chunk parts =
+                            match chunk with
+                            | [] -> parts
+                            | c -> listOf (List.rev c) :: parts
+
+                        let parts, chunk =
+                            args
+                            |> List.fold
+                                (fun (parts, chunk) a ->
+                                    match a.Kind with
+                                    // the interior keeps the full `$@...`
+                                    // span (diagnostics + tokens)
+                                    | ESplat inner -> ({ inner with Span = a.Span } :: flush chunk parts, [])
+                                    | _ -> (parts, a :: chunk))
+                                ([], [])
+
+                        match List.rev (flush chunk parts) with
+                        | [] -> { Kind = EList []; Span = acc.Span }
+                        | first :: rest -> rest |> List.fold seqAppend first
+
                 match acc.Kind with
                 | ECmd(prog, args, cenv) ->
                     let span = Span.union acc.Span mspan
@@ -1293,7 +1346,7 @@ let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
                         | None -> { Kind = EVar plainVar; Span = mspan }
 
                     let progArg = { Kind = EStr prog; Span = acc.Span }
-                    let argList = { Kind = EList args; Span = acc.Span }
+                    let argList = argvExpr args
 
                     let applied =
                         (extraArgs @ [ progArg; argList ])
@@ -1310,7 +1363,7 @@ let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
                     let span = Span.union acc.Span mspan
                     let headVar = { Kind = EVar stdinVar; Span = mspan }
                     let progArg = { Kind = EStr prog; Span = acc.Span }
-                    let argList = { Kind = EList args; Span = acc.Span }
+                    let argList = argvExpr args
 
                     let applied =
                         (extraArgs @ [ progArg; argList; stdinE ])
@@ -1370,8 +1423,7 @@ valueHeadedTailImpl <-
                     | _ -> fail "value-headed pipe needs an external command head"
 
             let p =
-                lookAhead (singlePipe >>. externalHeaded)
-                >>. pipedStages true cmdArg None r
+                lookAhead (singlePipe >>. externalHeaded) >>. pipedStages true cmdArg None r
                 >>= fun stages ->
                     match foldChain lhs stages with
                     | Result.Ok e -> preturn e
@@ -1590,7 +1642,10 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                 match s |> stmtExprs |> List.tryPick exprTooDeep with
                 | Some span ->
                     let col = if span.Start.Line = 1 then Some span.Start.Col else None
-                    Result.Error { Message = $"expression nested too deeply (limit {maxDepth})"; Col = col }
+
+                    Result.Error
+                        { Message = $"expression nested too deeply (limit {maxDepth})"
+                          Col = col }
                 | None -> Result.Ok s
             | Failure(msg, err, _) ->
                 let col =
@@ -1602,7 +1657,10 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                 Result.Error { Message = msg; Col = col }
         with DepthExceeded p ->
             let col = if p.Line = 1 then Some p.Col else None
-            Result.Error { Message = $"expression nested too deeply (limit {maxDepth})"; Col = col }
+
+            Result.Error
+                { Message = $"expression nested too deeply (limit {maxDepth})"
+                  Col = col }
     finally
         ambientResolver.Value <- noExternals
 

@@ -394,9 +394,12 @@ print x
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record.
   Full inspection: `cmd | complete` gives `{ ExitCode; Stdout;
-  Stderr }`; in expression positions use the builtins:
-  `completed "prog" [args]`, `exitCoded "prog" [args]` (+ `...Env`
-  twins). `print ()` is silent (unit
+  Stderr }`; a COMPUTED argv splats into the chain —
+  `$author(git commit-tree $@argv | complete) |> _.Stdout` (literal
+  head, splatted argv, sigil env; works with all four reifiers,
+  value-headed and districts too). The `completed "prog" args`
+  builtins (+ `...Env` twins) remain callable with an assembled
+  seq. `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
 - Capture is IN MEMORY and heavy: `| complete` (and `Seq.force`) hold

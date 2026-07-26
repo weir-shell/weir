@@ -78,7 +78,13 @@ weir rejects rather than guesses.
   to zero words when empty (replacing bash's conditional-flag idiom).
   A splat cannot head a command (N heads is incoherent — the
   computed-head park) nor build a word mid-construction (N words
-  cannot live in one). The safety story GAINS: adversarial elements
+  cannot live in one). In a reified chain the splat RIDES, by desugar
+  [D:splat-reifier-chains]: the segment's mixed argv becomes
+  list-literal chunks folded with `Seq.append`, each splat's seq
+  spliced whole — element-is-one-word carries through the builtin's
+  argv (the same boundary as spawn-argv-build), and ESplat still never
+  leaves argv in the AST (the confinement pin holds literally). The
+  safety story GAINS: adversarial elements
   stay single words by the same law that made scalar splices safe.
 - **The reifier output law** [D:exit-reifiers]: output goes where the
   meaning goes. Predicates and inspectors are quiet/captured because
@@ -384,7 +390,13 @@ quantity semantics now.
   Every command head is a LITERAL program name, resolved at check
   time — there is no computed-head tier [D:drop-command-builtins]. To
   swap tools by a runtime condition, branch the whole command line
-  (`if hot then rg pat else grep pat`).
+  (`if hot then rg pat else grep pat`). Computed ARGV is not computed
+  head [D:keep-reify-builtins]: the check-time-resolution law is about
+  heads and remains total — a command whose argv is a runtime value
+  spells `$author(git $@argv | complete)` [D:splat-reifier-chains],
+  literal head, splatted argv, sigil env. The reifier builtins
+  (`completed` family) remain callable with an assembled seq; their
+  remaining role is a separate question (the Part-2 inventory).
 - **Command-mode sigils** (2026-07-20): `$(chain)` captures a command
   chain's value in expression position; `!(chain)` desugars to
   `(chain) |> print` — eager, streaming, raising, unit. DESUGAR-ONLY:

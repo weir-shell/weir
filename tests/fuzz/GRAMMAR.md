@@ -115,6 +115,13 @@ fails.
    dropped (the command-value tier retired — every head is a literal),
    so there is no second spelling. The value-headed pipe is pinned by
    e2e + unit.
+6. Splat-in-reifier equivalence [D:splat-reifier-chains]:
+   `echo m $@([ws]) | reifier` ≡ the inline-words spelling,
+   byte-identical (rc, stdout, stderr) across the four reifiers — the
+   splat's elements ride the builtin's argv with word integrity
+   intact. A DEDICATED generator (reifier chains are outside the main
+   grammar's shape list, like the depth axis); adversarial words are
+   pinned by unit + e2e, safe words swept here.
 
 Ledger equivalence claims NOT yet in the transform library (named
 exclusions): env-district/`$e`/`!e` spellings (env features are

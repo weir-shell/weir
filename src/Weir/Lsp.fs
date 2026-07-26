@@ -204,13 +204,39 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
               "succeededEnv"
               "completedEnv"
               "exitCodedEnv"
-              "orFailedEnv" ]
+              "orFailedEnv"
+              "succeededIn"
+              "completedIn"
+              "exitCodedIn"
+              "orFailedIn" ]
 
     let rec spineIsReifier (te: Check.TypedExpr) =
         match te.Kind with
         | Check.TEVar v -> Set.contains v reifierHeads
         | Check.TEApp(f, _) -> spineIsReifier f
         | _ -> false
+
+    // a splatted reified chain's argv desugars to a Seq.append fold
+    // [D:splat-reifier-chains] — walk it back to its parts; a non-list
+    // part is a splat interior carrying the full `$@...` span, tokened
+    // like the TESplat arms (whole token for $@name, delimiters for
+    // $@(expr))
+    let rec emitArgv (ll: Script.LogicalLine) (te: Check.TypedExpr) =
+        match te.Kind with
+        | Check.TEList args -> args |> List.iter (emitArg ll)
+        | Check.TEApp({ Kind = Check.TEApp({ Kind = Check.TEVar "Seq.append" }, a) }, b) ->
+            emitArgv ll a
+            emitArgv ll b
+        | _ ->
+            let s = te.Span.Start.Col
+            let len = te.Span.End.Col - s
+
+            if charAt ll s = Some '$' then
+                if charAt ll (s + 2) = Some '(' then
+                    emitSpan ll s 3 2
+                    emitSpan ll (s + len - 1) 1 2
+                else
+                    emitSpan ll s len 2
 
     let rec walk (ll: Script.LogicalLine) (te: Check.TypedExpr) =
         (match te.Kind with
@@ -220,9 +246,9 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
          | Check.TEApp({ Kind = Check.TEApp(inner,
                                             { Kind = Check.TEStr prog
                                               Span = pspan }) },
-                       { Kind = Check.TEList args }) when spineIsReifier inner ->
+                       argv) when spineIsReifier inner ->
              emitHead ll pspan.Start.Col prog
-             args |> List.iter (emitArg ll)
+             emitArgv ll argv
          | _ -> ())
 
         for c in Check.childExprs te do

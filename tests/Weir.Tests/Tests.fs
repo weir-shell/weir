@@ -768,10 +768,7 @@ let boundaryTests =
               Expect.equal (runReal "sh -c \"printf 'a\\nb\\n'\"" |> forceSeq) [ VStr "a"; VStr "b" ] ""
           }
           test "cmd is lazy across the process boundary" {
-              Expect.equal
-                  (runReal "sh -c \"yes\" |> first 3" |> forceSeq)
-                  [ VStr "y"; VStr "y"; VStr "y" ]
-                  ""
+              Expect.equal (runReal "sh -c \"yes\" |> first 3" |> forceSeq) [ VStr "y"; VStr "y"; VStr "y" ] ""
           }
           test "failing command raises when forced" {
               Expect.throws (fun () -> runReal "sh -c \"exit 3\"" |> forceSeq |> ignore) ""
@@ -873,34 +870,19 @@ let boundaryCheckTests =
     testList
         "Boundary check errors"
         [ test "from json needs a record name" {
-              Expect.stringContains
-                  (checkErr "[\"x\"] |> from json").Message
-                  "needs a record name"
-                  ""
+              Expect.stringContains (checkErr "[\"x\"] |> from json").Message "needs a record name" ""
           }
           test "from json rejects unknown records" {
-              Expect.stringContains
-                  (checkErr "[\"x\"] |> from json Missing").Message
-                  "unknown type 'Missing'"
-                  ""
+              Expect.stringContains (checkErr "[\"x\"] |> from json Missing").Message "unknown type 'Missing'" ""
           }
           test "from json rejects unions" {
-              Expect.stringContains
-                  (checkErr "[\"x\"] |> from json Proc").Message
-                  "needs a record"
-                  ""
+              Expect.stringContains (checkErr "[\"x\"] |> from json Proc").Message "needs a record" ""
           }
           test "unknown format is rejected" {
-              Expect.stringContains
-                  (checkErr "[\"x\"] |> from yaml").Message
-                  "unknown format 'yaml'"
-                  ""
+              Expect.stringContains (checkErr "[\"x\"] |> from yaml").Message "unknown format 'yaml'" ""
           }
           test "from porcelain takes no type name" {
-              Expect.stringContains
-                  (checkErr "[\"x\"] |> from porcelain Proc").Message
-                  "fixed row type"
-                  ""
+              Expect.stringContains (checkErr "[\"x\"] |> from porcelain Proc").Message "fixed row type" ""
           }
           test "piping a non-string seq into from is rejected" {
               Expect.stringContains (checkErr "nats |> from porcelain").Message "expected string, got int" ""
@@ -991,8 +973,7 @@ let completionTests =
               Expect.equal (Weir.Complete.suggest envWithQ "q." 0) [ "q.X"; "q.Y" ] ""
           }
           test "later pipeline stages track the element type" {
-              let text =
-                  "[\"A  x.txt\"] |> from porcelain |> where (fun c -> c."
+              let text = "[\"A  x.txt\"] |> from porcelain |> where (fun c -> c."
 
               Expect.equal (suggest text (text.Length - 2)) [ "c.Path"; "c.Staged"; "c.Status"; "c.Unstaged" ] ""
           }
@@ -1127,9 +1108,7 @@ let lifecycleTests =
           // removed (PLAN-command-mode Session 2), this analysis changes:
           // re-derive which of these guards what.
           test "simple command: no survivors after partial consumption" {
-              runReal "sh -c \"yes weir-s1-simple\" |> first 3"
-              |> forceSeq
-              |> ignore
+              runReal "sh -c \"yes weir-s1-simple\" |> first 3" |> forceSeq |> ignore
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s1-simple") "yes leaked"
           }
@@ -1149,9 +1128,7 @@ let lifecycleTests =
           }
           test "50 abandoned streams leave no zombies" {
               for _ in 1..50 do
-                  runReal "sh -c \"yes weir-s1-zombie\" |> first 1"
-                  |> forceSeq
-                  |> ignore
+                  runReal "sh -c \"yes weir-s1-zombie\" |> first 1" |> forceSeq |> ignore
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s1-zombie") "killed children leaked"
               let zombies = defunctChildren ()
@@ -1186,8 +1163,7 @@ let session2Tests =
               File.WriteAllText(Path.Combine(dir, "g2.txt"), "")
 
               try
-                  let out =
-                      runReal $"let d = cd \"{dir}\" in $(sh -c \"echo *.txt\")" |> forceSeq
+                  let out = runReal $"let d = cd \"{dir}\" in $(sh -c \"echo *.txt\")" |> forceSeq
 
                   Expect.equal out [ VStr "g1.txt g2.txt" ] ""
               finally
@@ -1201,10 +1177,7 @@ let session2Tests =
           // gone; the sh-spawn version below covers cwd-affects-spawns
           test "cd changes the spawn cwd for sh" {
               try
-                  Expect.equal
-                      (runReal "let d = cd \"/tmp\" in $(sh -c \"pwd\")" |> forceSeq)
-                      [ VStr "/tmp" ]
-                      ""
+                  Expect.equal (runReal "let d = cd \"/tmp\" in $(sh -c \"pwd\")" |> forceSeq) [ VStr "/tmp" ] ""
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
@@ -2838,6 +2811,15 @@ let semanticTokenTests =
                     (1, 23, 4, 1) ]
                   "head, argv, $@name whole, $@( delims, tail argv"
           }
+          test "a splatted reifier chain colors like any command chain [D:splat-reifier-chains]" {
+              let toks =
+                  Weir.Lsp.semanticTokensFor [ "let fs = [\"a\"]"; "let r = echo go $@fs tail | complete" ]
+
+              Expect.equal
+                  (toks |> List.filter (fun (l, _, _, _) -> l = 1))
+                  [ (1, 8, 4, 0); (1, 13, 2, 1); (1, 16, 4, 2); (1, 21, 4, 1) ]
+                  "head, argv, $@name whole, tail argv — the reifier name stays lexical"
+          }
           test "the shadowed-cat trio: binding wins, deletion restores, ^ forces" {
               // bound: an application — NO command tokens
               let bound =
@@ -3154,11 +3136,13 @@ let optionSweepTests =
               // desugars to a pipe into the command (stdin), reusing the
               // EPipe-into-ECmd machinery (identical to feed)
               match Weir.Parser.parseLine cmdResolver "[\"a\"] | cat" with
-              | Ok(SExpr e | SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "(cmd cat)" "pipes the value into the command"
+              | Ok(SExpr e | SCmd e) ->
+                  Expect.stringContains (Weir.Ast.sexpr e) "(cmd cat)" "pipes the value into the command"
               | other -> failtest $"expected the value-headed pipe, got {other}"
 
               match Weir.Parser.parseLine cmdResolver "[\"a\"] | grep x | cat" with
-              | Ok(SExpr e | SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "(cmd cat)" "multi-external chains fold"
+              | Ok(SExpr e | SCmd e) ->
+                  Expect.stringContains (Weir.Ast.sexpr e) "(cmd cat)" "multi-external chains fold"
               | other -> failtest $"expected the chain, got {other}"
 
               // a library/known head keeps the barePipeHint (not value-headed)
@@ -3270,10 +3254,7 @@ let scriptTests =
         [ test "comment stripper respects strings" {
               Expect.equal (Weir.Script.stripComment "1 + 1 // note") "1 + 1 " ""
 
-              Expect.equal
-                  (Weir.Script.stripComment "sh -c \"echo a//b\" // real")
-                  "sh -c \"echo a//b\" "
-                  ""
+              Expect.equal (Weir.Script.stripComment "sh -c \"echo a//b\" // real") "sh -c \"echo a//b\" " ""
 
               Expect.equal (Weir.Script.stripComment "grep 'a//b' f") "grep 'a//b' f" ""
               Expect.equal (Weir.Script.stripComment "\"esc \\\" // still string\"") "\"esc \\\" // still string\"" ""
@@ -3532,9 +3513,18 @@ let readProbes =
               let marker = Path.Combine(Path.GetTempPath(), $"weir-sc-{System.Guid.NewGuid():N}")
 
               try
-                  Expect.equal (runReal $"false && ($(sh -c \"touch {marker}; echo x\") |> Seq.isEmpty)") (VBool false) ""
+                  Expect.equal
+                      (runReal $"false && ($(sh -c \"touch {marker}; echo x\") |> Seq.isEmpty)")
+                      (VBool false)
+                      ""
+
                   Expect.isFalse (File.Exists marker) "right operand must not spawn"
-                  Expect.equal (runReal $"true && ($(sh -c \"touch {marker}; echo x\") |> Seq.isEmpty)") (VBool false) ""
+
+                  Expect.equal
+                      (runReal $"true && ($(sh -c \"touch {marker}; echo x\") |> Seq.isEmpty)")
+                      (VBool false)
+                      ""
+
                   Expect.isTrue (File.Exists marker) "strict when left is true"
               finally
                   if File.Exists marker then
@@ -3964,8 +3954,7 @@ let agentFindingsTests =
 
               Expect.stringContains terr.Message "" ""
 
-              let terr2 =
-                  checkErr "let r = { X = 1; Y = 0 } in echo { r with X = 1 } |> Seq.head"
+              let terr2 = checkErr "let r = { X = 1; Y = 0 } in echo { r with X = 1 } |> Seq.head"
 
               Expect.stringContains terr2.Message "" ""
           }
@@ -4075,7 +4064,10 @@ let agentFindingsTests =
           }
           test "splat rejects at the head and mid-word, each naming its fix [D:argv-splat]" {
               match Weir.Parser.parseLine cmdResolver "$@(xs) -la" with
-              | Error msg -> Expect.stringContains msg "N words would be N heads" ""
+              | Error msg ->
+                  Expect.stringContains msg "N words would be N heads" ""
+                  // the fix names the literal-head law, not retired builtins
+                  Expect.stringContains msg "branch the whole command line" ""
               | Ok _ -> failtest "the head splat must reject"
 
               match Weir.Parser.parseLine cmdResolver "echo --flag=$@fs" with
@@ -4132,6 +4124,41 @@ let agentFindingsTests =
               | Error msg ->
                   Expect.stringContains msg "'succeeds' must directly follow a single external command segment" ""
               | Ok s -> failtest $"expected the family error, got {s}"
+          }
+          test "a splat rides a reifier chain — argv desugars to a seq value [D:splat-reifier-chains]" {
+              // mixed literal+splat argv folds with Seq.append
+              match Weir.Parser.parseLine cmdResolver "echo one $@xs | complete" with
+              | Ok(SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "append" "the append-fold desugar"
+              | other -> failtest $"expected the splatted-reifier desugar, got {other}"
+
+              // splat-free argv keeps the plain list node (zero movement)
+              match Weir.Parser.parseLine cmdResolver "echo one two | complete" with
+              | Ok(SCmd e) -> Expect.isFalse ((Weir.Ast.sexpr e).Contains "append") "no append for splat-free argv"
+              | other -> failtest $"expected the plain desugar, got {other}"
+
+              // the env-sigil and value-headed routes take the same desugar
+              match Weir.Parser.parseLine cmdResolver "let r = $e(git commit-tree $@argv | complete)" with
+              | Ok _ -> ()
+              | Error m -> failtest $"the env route must parse: {m}"
+
+              match Weir.Parser.parseLine cmdResolver "let n = [\"a\"] | grep $@flags | exitCode" with
+              | Ok _ -> ()
+              | Error m -> failtest $"the value-headed route must parse: {m}"
+          }
+          test "splatted reifier argv: word integrity identical to the argv path [D:splat-reifier-chains]" {
+              // N elements, N words — through the BUILTIN's argv
+              Expect.equal
+                  (runReal "echo one $@([\"a\"; \"b\"]) | complete |> _.Stdout |> Seq.head")
+                  (VStr "one a b")
+                  "splat elements land as words"
+
+              // THE safety pin: adversarial elements stay single words
+              // through the reifier path, exactly as through spawn argv
+              Expect.equal
+                  (runReal
+                      "sh -c \"echo argc=$#\" self $@([\"one two\"; \"semi;colon\"; \"star*glob\"]) | complete |> _.Stdout |> Seq.head")
+                  (VStr "argc=3")
+                  "no re-split through the reifier desugar"
           }
           test "downstream stages after succeeds are gated by TYPE (complete's actual rule)" {
               // verified-not-assumed: complete allows onward stages; the

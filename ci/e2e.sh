@@ -2561,6 +2561,43 @@ WEOF
 out=$(cd "$spldir" && $BIN evil.weir)
 expect "splat: spaces/semicolons/globs stay ONE word each (no re-split)" "argc=3" "$out"
 
+# splat rides reifier chains [D:splat-reifier-chains]: THE safety pin
+# re-run through the reifier path (word integrity identical), empty
+# splat, the env-sigil route (the flagship's shape), all four reifiers,
+# value-headed, district
+cat > "$spldir/reify.weir" <<'WEOF'
+let evil = ["one two"; "semi;colon"; "star*glob"]
+let r = sh -c "echo argc=$#" self $@evil | complete
+print (r.Stdout |> Seq.head)
+
+let none = if false then ["x"] else []
+let z = sh -c "echo argc=$#" self $@none | complete
+print (z.Stdout |> Seq.head)
+
+let author = Env.ofPairs [("MARK", "sigil")]
+let argv = ["-c"; "echo m=$MARK; exit 4"]
+let s = $author(sh $@argv | complete)
+print (s.Stdout |> Seq.head)
+print $"code {s.ExitCode}"
+
+let ok = sh $@argv | succeeds
+print $"ok={ok}"
+
+let vflags = ["-c"]
+let vh = ["a"; "b"; "a"] | grep $@vflags a | complete
+print (vh.Stdout |> Seq.head)
+
+!author(sh -c "echo d=$MARK" self $@none | orFail "boom")
+WEOF
+out=$(cd "$spldir" && $BIN reify.weir)
+expect "splat through the reifier path: adversarial + empty + env sigil + value-headed + district" "argc=3
+argc=0
+m=sigil
+code 4
+ok=false
+2
+d=sigil" "$out"
+
 # the head and mid-word teachings
 errout=$(printf 'let xs = ["ls"]
 $@xs -la

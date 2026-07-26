@@ -189,6 +189,49 @@ let tests =
           // [D:drop-command-builtins]: feed is dropped, so there is no second
           // spelling to compare. The value-headed pipe is pinned by e2e + unit.
 
+          // splat-in-reifier equivalence [D:splat-reifier-chains]:
+          // `echo m $@([ws]) | reifier` ≡ the inline-words spelling,
+          // byte-identical — the splat's elements ride the builtin's argv
+          // with word integrity intact. A DEDICATED generator (reifier
+          // chains are outside the main grammar's shape list, like the
+          // depth axis); adversarial words are pinned by unit + e2e.
+          testPropertyWithConfig cfg "splatted reifier chain ≡ inline words, byte-identical"
+          <| fun (NonNegativeInt s) ->
+              let rnd = Random s
+
+              let words = List.init (1 + rnd.Next 4) (fun _ -> $"w{rnd.Next 1000}")
+
+              let listLit =
+                  "[ " + (words |> List.map (fun w -> $"\"{w}\"") |> String.concat "; ") + " ]"
+
+              let inlineWords = String.concat " " words
+
+              let reifier, reader =
+                  [ "complete", "r.Stdout |> Seq.iter print"
+                    "complete", "print $\"rc={r.ExitCode}\""
+                    "succeeds", "print $\"ok={r}\""
+                    "exitCode", "print $\"rc={r}\"" ].[rnd.Next 4]
+
+              let splatted = [ $"let r = echo m0 $@({listLit}) | {reifier}"; reader ]
+              let plain = [ $"let r = echo m0 {inlineWords} | {reifier}"; reader ]
+
+              let r0 = Runner.runProgram splatted
+              let r1 = Runner.runProgram plain
+
+              if r0.TimedOut || r1.TimedOut then
+                  failtestf "hang:\n%s" (showProgram splatted)
+
+              if r0.Rc <> 0 then
+                  failtestf "splatted reifier rejected (rc=%d):\n%s\n%s" r0.Rc (showProgram splatted) r0.Err
+
+              if (r1.Rc, r1.Out, r1.Err) <> (r0.Rc, r0.Out, r0.Err) then
+                  failtestf
+                      "splat ≠ inline\n--- splatted: %A\n%s\n--- inline: %A\n%s"
+                      (r0.Rc, r0.Out)
+                      (showProgram splatted)
+                      (r1.Rc, r1.Out)
+                      (showProgram plain)
+
           testPropertyWithConfig cfg "assembly/check is total on generated programs and mutated neighbors"
           <| fun (p: Program) (NonNegativeInt s) ->
               let rnd = Random s
@@ -205,9 +248,7 @@ let tests =
           // favors breadth, so extreme DEPTH is pinned here explicitly —
           // the three safe-by-design-review fixtures (two were SEGV, one
           // was O(2^n)) become standing seeds, plus a generated sweep.
-          test "deep parens diagnose-or-bound (was SEGV ~6000)" {
-              depthDiagnoses "parens" (deepNest "(" ")" 20000)
-          }
+          test "deep parens diagnose-or-bound (was SEGV ~6000)" { depthDiagnoses "parens" (deepNest "(" ")" 20000) }
           test "long operator spine diagnoses-or-bound (was SEGV in check)" { depthDiagnoses "opspine" (opSpine 50000) }
           test "nested brackets diagnose-or-bound (was O(2^n))" { depthDiagnoses "brackets" (deepNest "[" "]" 2000) }
           test "nested records diagnose-or-bound" { depthDiagnoses "records" (deepNest "{a=" "}" 2000) }
@@ -308,7 +349,12 @@ let tests =
                   let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" injected
 
                   match diags |> List.filter (fun d -> d.Severity = "error") with
-                  | [] -> failtestf "no diagnostic for junk at lines %d and %d:\n%s" firstLine (hi + 1) (showProgram injected)
+                  | [] ->
+                      failtestf
+                          "no diagnostic for junk at lines %d and %d:\n%s"
+                          firstLine
+                          (hi + 1)
+                          (showProgram injected)
                   | errs ->
                       let hit =
                           errs

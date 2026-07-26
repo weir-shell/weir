@@ -1,5 +1,127 @@
 # Spike Notes
 
+## The splat rides — `$author(git $@argv | complete)` (2026-07-25)
+
+The twist session [D:splat-reifier-chains]: the ugly line that survived
+the keep-reify decision (`(completedEnv author "git" argv).Stdout |>
+Seq.head`) was diagnostic — the only corner where a command is built as
+DATA rather than written. Now it's written:
+
+    $author(git commit-tree -m $msg $@parentArgs $tree | complete)
+    |> _.Stdout |> Seq.head
+
+**Part 0, both verifies landed.** `|> _.Stdout` already parses in pipe
+position (a passing unit pin used `| complete |> _.ExitCode` all along)
+— the parens-then-project smell was docs-only. And the crash the plan
+remembered was already a located rejection: the keep-reify rider
+converted it last session; the totality item was struck as done.
+
+**The confinement diagnosis (stated before coding, as demanded):
+implementation gap, not law.** The splat's story is element = one word,
+produced at spawn-argv-build and nowhere else. A reified segment IS a
+spawn with an argv: the builtins take `argv : seq<string>` and map each
+element to exactly one argv entry (`Seq.map asString` → Proc) — the
+same word boundary. The crash was representational: foldChain rebuilt
+args as `EList args`, which has no slot for an N-word element, so
+ESplat leaked into general expression position and hit the totality
+backstop. No law was loosened because none was in the way.
+
+**The fix is a desugar, not a lift.** Mixed literal+splat argv folds
+into the seq value it denotes: non-splat runs chunk into list
+literals, splat interiors splice whole (keeping the full `$@...` span
+for diagnostics and tokens), joined with `Seq.append` — the
+range-literal desugar's own node. ESplat still never leaves argv in
+the AST, so the confinement pin holds LITERALLY; zero checker/eval
+changes; splat-free chains produce the identical old node (zero pin
+movement). The interim teaching rejection retires, replaced by
+behavior.
+
+**THE safety pin held.** Adversarial elements (`"one two"`,
+`"semi;colon"`, `"star*glob"`) through the reifier path: argc=3,
+identical to spawn argv — pinned in unit AND e2e. Empty splat = zero
+words. All four reifiers × env sigil × district × value-headed swept
+in one e2e fixture. Fuzz invariant 6: splatted ≡ inline words,
+byte-identical (dedicated generator, the depth-axis pattern).
+
+**Tokens.** The Lsp reified-chain arm now walks the append fold back
+to its parts; a splat interior tokens like the TESplat arms (whole
+`$@name`, delimiters for `$@(...)`). Rider: the In twins joined
+reifierHeads — value-headed reified chains never tokened at all
+(pre-existing gap, found by reading the set). Learned en route:
+module members type as `TEVar "Seq.append"`, not TEField.
+
+**Nuances on record**: a wrong-typed splat interior in a reified chain
+gets the generic unify error, not argv's twin teachings (it's an
+ordinary Seq.append argument post-desugar). The let-RHS bare-command
+route still swallows family messages behind its backtrack —
+pre-existing, unchanged.
+
+**Part 2 inventory (report, no code).** The flagship's commitTreeAs was
+the corpus's ONLY builtin call site — and this session converted it
+(the argv-assembly line deleted, not rewritten). tools/: zero.
+Remaining uses are docs demonstrations (SKILL's `completed "sh" [...]`
+block — converts trivially if asked). EVERY SITE CONVERTS: the
+hide/drop question reopens on its merits for a separate bless — the
+homonym would resolve, the family shrinks, the internal desugar
+targets take un-typeable keys as session 2 designed.
+
+865 unit (+2: word-integrity, tokens) / e2e (+the reifier-path sweep) /
+20 fuzz (+invariant 6) / doc green.
+
+## Session 2 dies on its own gate — the reify builtins stay (2026-07-25)
+
+The owed second session of the drop (hide `completed`/`succeeded`/
+`orFailed`/`exitCoded` + Env/In twins behind un-typeable internal
+names) was EXECUTED and then REVERTED whole [D:keep-reify-builtins].
+The rename itself was clean — `|`-prefixed names ('|completed' etc.,
+un-typeable since identifiers are `[A-Za-z_]..`), foldChain re-aimed,
+suggestion/completion pools filtered, 861 unit green. The battery
+killed it: the flagship's commitTreeAs (`completedEnv author "git"
+argv`) stopped checking, and the replacement probe crashed.
+
+**The premise was wrong, and precisely how is the finding.** The plan
+mapped the tier by NAME, not capability — the same error class as the
+"six of nine are desugar-only" correction inside session 1. The drop's
+law is about HEADS: every command head is a literal, resolved at check
+time. `completed "git" argv` already satisfies it — the head is a
+literal string; what's computed is the ARGV (commit-tree's
+variable-length parent list), which the law never spoke to. The
+builtins aren't the computed-head escape hatch; they're the
+computed-argv reification path — a different, legitimate job. Hiding
+them bought zero law-level gain and removed a real capability.
+
+**Why `| complete` can't take the job**: `$@` is confined to argv
+assembly ([D:argv-splat] — the splat's whole safety story), and the
+reifier desugar moves the chain's arguments OUT of argv into the
+completed family's application. `$e(git $@argv | complete)` is
+therefore unspellable-by-construction, and lifting the confinement to
+enable it would spend real soundness work to buy a subtraction we no
+longer want.
+
+**Rider 1 — the probe found a crash.** `echo $@xs | complete` (any
+route: plain, env-sigil, value-headed) was an UNHANDLED EXCEPTION —
+the checker's ESplat arm is `failwith unreachable` because the parser
+confines splats to argv, and the reifier desugar violated the
+invariant by relocating them. rc-139-family treatment: foldChain now
+rejects located at parse, naming the confinement and the per-route
+builtin escape (`completed`/`completedEnv`/`exitCodedIn` ...). The
+let-RHS bare-command route backtracks to a generic parse error —
+family-uniform (the multi-external rejection surfaces the same way
+there). Streaming splat (`xs | sort $@flags`) untouched. Pin note:
+FParsec wraps long messages, so the unit pins assert single-word
+fragments, not phrases that can straddle a line break.
+
+**Rider 2 — a stale teaching taught retired names.** The head-splat
+rejection still said "run/cmd take the program as a value" — session
+1's gate grepped user CODE, not message TEXT. Now names the law
+(branch the whole command line), pinned.
+
+Recorded so nobody re-proposes: computed argv is not computed head
+(SEMANTICS, next to the law); the `complete`/`completed` homonym does
+two distinct jobs and keeps both names (one SKILL line, no rename).
+
+863 unit (+1 splat-ride pin) / e2e green / fuzz + doc green.
+
 ## Dropping the computed-head tier — every head is a literal (2026-07-25)
 
 Removed `cmd`/`run`/`cmdEnv`/`runEnv`/`feed`/`feedEnv` — the six
