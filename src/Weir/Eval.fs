@@ -2,6 +2,7 @@ module Weir.Eval
 
 open Weir.Types
 open Weir.Ast
+open Weir.Argv
 open Weir.Check
 
 let unreachable (why: string) : 'a = failwith $"unreachable: {why}"

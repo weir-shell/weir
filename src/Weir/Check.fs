@@ -23,119 +23,6 @@ type ArgsTarget =
     // subcommand slot
     | ArgsShared of outer: RecordDef * unionField: string * udef: UnionDef * payloads: Map<string, RecordDef>
 
-// short-flag resolution: a letter is owned or contested; contested
-// letters derive for NOBODY and error with candidates at invocation
-type ShortOwner =
-    | ShortOf of longFlag: string
-    | AmbiguousShort of longFlags: string list
-
-module Argv =
-    // field name -> kebab flag: split at lower->upper boundaries and
-    // before the last upper of an acronym run [D:typed-argv]
-    let kebabFlag (name: string) : string =
-        let sb = System.Text.StringBuilder()
-
-        for i in 0 .. name.Length - 1 do
-            let c = name[i]
-
-            let boundary =
-                i > 0
-                && System.Char.IsUpper c
-                && (System.Char.IsLower name[i - 1]
-                    || System.Char.IsDigit name[i - 1]
-                    || (i + 1 < name.Length
-                        && System.Char.IsUpper name[i - 1]
-                        && System.Char.IsLower name[i + 1]))
-
-            if boundary then
-                sb.Append '-' |> ignore
-
-            sb.Append(System.Char.ToLowerInvariant c) |> ignore
-
-        sb.ToString()
-
-    let private attrOf (def: RecordDef) (field: string) (attr: string) =
-        def.Attrs
-        |> Map.tryFind field
-        |> Option.bind (List.tryFind (fun (n, _) -> n = attr))
-
-    let docOf (def: RecordDef) (field: string) : string option =
-        match attrOf def field "Doc" with
-        | Some(_, Some(AStr d)) -> Some d
-        | _ -> None
-
-    // [D:default-attr]: the resting-point literal, when declared
-    let defaultOf (def: RecordDef) (field: string) : AttrArg option =
-        match attrOf def field "Default" with
-        | Some(_, Some a) -> Some a
-        | _ -> None
-
-    // Default-true bools mint their `--no-X` twin — the minted names
-    // join collision checks and did-you-mean, never short derivation
-    let mintedFlags (def: RecordDef) : (string * string) list =
-        def.Fields
-        |> List.choose (fun (f, ty) ->
-            match ty, defaultOf def f with
-            | TBool, Some(ABool true) -> Some(f, "no-" + kebabFlag f)
-            | _ -> None)
-
-    // (flag -> short) and (letter -> owner). Explicit [<Short>] beats
-    // derivation: the derived short retires, --help is the truth.
-    // 'h' never derives (reserved; [<Short "h">] rejects at attachment)
-    let shortTables (def: RecordDef) : Map<string, string> * Map<string, ShortOwner> =
-        let flagged = def.Fields |> List.map (fun (f, _) -> f, "--" + kebabFlag f)
-
-        let explicits =
-            flagged
-            |> List.choose (fun (f, flag) ->
-                match attrOf def f "Short" with
-                | Some(_, Some(AStr sh)) -> Some(flag, sh)
-                | _ -> None)
-
-        let taken = explicits |> List.map snd |> Set.ofList
-
-        let derivers =
-            flagged
-            |> List.filter (fun (f, _) -> (attrOf def f "Short").IsNone && (attrOf def f "NoShort").IsNone)
-            |> List.map (fun (_, flag) -> flag, string flag[2])
-            |> List.filter (fun (_, letter) -> letter <> "h" && not (Set.contains letter taken))
-
-        let derivedGroups = derivers |> List.groupBy snd
-
-        let singles =
-            derivedGroups
-            |> List.choose (fun (letter, group) ->
-                match group with
-                | [ (flag, _) ] -> Some(flag, letter)
-                | _ -> None)
-
-        let flagShorts = Map.ofList (explicits @ singles)
-
-        let shortIndex =
-            (explicits |> List.map (fun (flag, letter) -> letter, ShortOf flag))
-            @ (derivedGroups
-               |> List.map (fun (letter, group) ->
-                   match group with
-                   | [ (flag, _) ] -> letter, ShortOf flag
-                   | many -> letter, AmbiguousShort(many |> List.map fst)))
-            |> Map.ofList
-
-        flagShorts, shortIndex
-
-    // the outer record minus its subcommand slot: the shared-flags
-    // record [D:shared-flags]
-    let sharedOf (outer: RecordDef) (unionField: string) : RecordDef =
-        { outer with
-            Fields = outer.Fields |> List.filter (fun (f, _) -> f <> unionField)
-            Attrs = outer.Attrs |> Map.remove unionField }
-
-    let explicitShorts (def: RecordDef) : (string * string) list =
-        def.Fields
-        |> List.choose (fun (f, _) ->
-            match attrOf def f "Short" with
-            | Some(_, Some(AStr sh)) -> Some(f, sh)
-            | _ -> None)
-
 // retired names teach their replacement [D:seq-force] — one
 // table, both lookup sites
 let private retiredMember (m: string) (field: string) : string option =
@@ -528,6 +415,10 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
 // The sentinel scheme registered for the print builtin. The quantified name
 // is unforgeable through declarations (ctx-fresh names are aN/rN), so a
 // structural comparison against this scheme is exactly "print, unshadowed".
+// PRECEDENT WITH A CEILING: this is the ONE place a builtin's ergonomics
+// buys checker complexity (the sentinel + printArgTy + the three
+// special-cased arms) — justified for the most-used builtin, NOT to be
+// extended to a second builtin without a bless.
 let printScheme: Scheme =
     { Forall = Set.singleton "__print"
       Cs = Map.empty
@@ -892,12 +783,13 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
     | PSeqList _
     | PCase _ -> err p.PSpan "this pattern can fail; use match"
 
-// per-name generalization for destructuring binders: each bound name's
-// type generalizes INDEPENDENTLY against the env (constraints scooped
-// per name from the shared ctx)
-let private generalizeBinding (ctx: Ctx) (env: TypeEnv) (name: string, ty: Ty) : string * Scheme =
-    let final = finalTy ctx ty
-    let fa = tyVars final - envFreeVars ctx env
+// THE scheme-scooping rule, one implementation: free vars beyond the
+// env generalize; their pending constraints scoop INTO the scheme
+// (removed from ctx). Previously verbatim ×3 (both ELet arms + the
+// binding case below) — a scooping fix in one copy and not the others
+// would have been a silent generalization bug.
+let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
+    let fa = tyVars valueTy - envFreeVars ctx env
 
     let cs =
         fa
@@ -907,8 +799,15 @@ let private generalizeBinding (ctx: Ctx) (env: TypeEnv) (name: string, ty: Ty) :
             |> Option.map (fun ps -> v, ps |> List.map _.Cls |> Set.ofList))
         |> Map.ofList
 
+    // scooped constraints move INTO the scheme
     ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
-    name, { Forall = fa; Cs = cs; Ty = final }
+    { Forall = fa; Cs = cs; Ty = valueTy }
+
+// per-name generalization for destructuring binders: each bound name's
+// type generalizes INDEPENDENTLY against the env (constraints scooped
+// per name from the shared ctx) — generalizeLet's per-name sibling
+let private generalizeBinding (ctx: Ctx) (env: TypeEnv) (name: string, ty: Ty) : string * Scheme =
+    name, generalizeLet ctx env (finalTy ctx ty)
 
 let rec private isIrrefutablePat (p: Pattern) =
     match p.PKind with
@@ -1170,21 +1069,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! tvalue = infer ctx env value
             let valueTy = finalTy ctx tvalue.Ty
 
-            let scheme =
-                let fa = tyVars valueTy - envFreeVars ctx env
-
-                let cs =
-                    fa
-                    |> Set.toList
-                    |> List.choose (fun v ->
-                        Map.tryFind v ctx.Cons
-                        |> Option.map (fun ps -> v, ps |> List.map _.Cls |> Set.ofList))
-                    |> Map.ofList
-
-                // scooped constraints move INTO the scheme
-                ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
-
-                { Forall = fa; Cs = cs; Ty = valueTy }
+            let scheme = generalizeLet ctx env valueTy
 
             let! tbody =
                 infer
@@ -1272,26 +1157,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                          // semantics, so BOTH Default literals are legal
                          // here (the Args-side false-is-redundant cell
                          // flips — validation is the consumer's arm)
-                         let badDefault =
-                             def.Fields
-                             |> List.tryPick (fun (f, ft) ->
-                                 match Argv.defaultOf def f with
-                                 | None -> None
-                                 | Some a ->
-                                     match ft, a with
-                                     | TStr, AStr _
-                                     | TInt, AInt _
-                                     | TBool, ABool _ -> None
-                                     | TNamed("Option", _), _ ->
-                                         Some(
-                                             $"'{f}': optional with a default IS a default — "
-                                             + "drop the Option or the attribute"
-                                         )
-                                     | ft, _ ->
-                                         Some
-                                             $"'{f}': the Default literal does not match the field, which is {formatTy ft}")
-
-                         match badDefault with
+                         // [D:default-attr]: bool-false is LEGAL here — the
+                         // flip cell; both Default rules sit adjacent in Argv
+                         match Argv.badEnvDefault def with
                          | Some msg -> err arg.Span msg
                          | None ->
                              Ok
@@ -1311,65 +1179,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                  err expr.Span "Args.load is script-only ('args' is not available here)"
              else
                  let validateFields span (label: string) (def: RecordDef) =
-                     // the resting-point cells [D:default-attr]:
-                     // literal matches the field, Option is
-                     // contradictory, bool-false redundant
-                     let badDefault =
-                         def.Fields
-                         |> List.tryPick (fun (f, ft) ->
-                             match Argv.defaultOf def f with
-                             | None -> None
-                             | Some a ->
-                                 match ft, a with
-                                 | TStr, AStr _
-                                 | TInt, AInt _ -> None
-                                 | TBool, ABool true -> None
-                                 | TBool, ABool false ->
-                                     Some
-                                         $"{label}'{f}': [<Default false>] is redundant — presence already rests at false"
-                                 | TNamed("Option", _), _ ->
-                                     Some(
-                                         $"{label}'{f}': optional with a default IS a default — "
-                                         + "drop the Option or the attribute"
-                                     )
-                                 | ft, _ ->
-                                     Some
-                                         $"{label}'{f}': the Default literal does not match the field, which is {formatTy ft}")
-
-                     match badDefault with
+                     // Default cells / field shapes / flag collisions —
+                     // the policy lives in Argv [D:typed-argv]; the arm
+                     // keeps the span plumbing
+                     match Argv.fieldProblems label def with
                      | Some msg -> err span msg
-                     | None ->
-
-                         let badShape =
-                             def.Fields
-                             |> List.tryFind (fun (_, ft) ->
-                                 match ft with
-                                 | TStr
-                                 | TInt
-                                 | TBool
-                                 | TNamed("Option", [ TStr | TInt ]) -> false
-                                 | _ -> true)
-
-                         match badShape with
-                         | Some(f, TNamed("Option", [ TBool ])) ->
-                             err span $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
-                         | Some(f, ft) ->
-                             err
-                                 span
-                                 $"{label}Args.load fields must be string, int, bool, or Option of string|int; '{f}' is {formatTy ft}"
-                         | None ->
-                             let dupFlag =
-                                 // minted --no-X twins join the namespace
-                                 // [D:default-attr]
-                                 (def.Fields |> List.map (fun (f, _) -> f, Argv.kebabFlag f))
-                                 @ Argv.mintedFlags def
-                                 |> List.groupBy snd
-                                 |> List.tryFind (fun (_, g) -> g.Length > 1)
-
-                             match dupFlag with
-                             | Some(flag, (a, _) :: (b, _) :: _) ->
-                                 err span $"{label}fields '{a}' and '{b}' derive the same flag '--{flag}'"
-                             | _ -> Ok()
+                     | None -> Ok()
 
                  // case collisions + payload validation, shared by the bare-union
                  // and shared-flags shapes [D:shared-flags]
@@ -2191,21 +2006,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let! tvalue = infer ctx env value
             let valueTy = finalTy ctx tvalue.Ty
 
-            let scheme =
-                let fa = tyVars valueTy - envFreeVars ctx env
-
-                let cs =
-                    fa
-                    |> Set.toList
-                    |> List.choose (fun v ->
-                        Map.tryFind v ctx.Cons
-                        |> Option.map (fun ps -> v, ps |> List.map _.Cls |> Set.ofList))
-                    |> Map.ofList
-
-                // scooped constraints move INTO the scheme
-                ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
-
-                { Forall = fa; Cs = cs; Ty = valueTy }
+            let scheme = generalizeLet ctx env valueTy
 
             let! tbody =
                 check

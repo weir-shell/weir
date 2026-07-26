@@ -1,5 +1,45 @@
 # Spike Notes
 
+## The checker's weight — one extraction, one duplication, one precedent (2026-07-26)
+
+The rider, executed after the capture-representation session landed
+(the plan's own ordering caution — and it fired for real: the fork was
+mid-flight in this very tree when the rider was blessed; execution
+waited for its 0e0596f).
+
+**Item 2 first: the scheme-scooping block was verbatim ×3**, not the
+plan's ×2 — both ELet arms AND generalizeBinding carried it (the
+binding case adds only finalTy + name-pairing). One `generalizeLet`
+now owns the rule; generalizeBinding is its per-name sibling by name
+and by call. Zero pin movement — so the copies had NOT diverged; no
+finding. The census-blind-spot note, as the plan asked: the regroup
+census pattern-matched duplicated RECORDS and missed duplicated
+BLOCKS — the next sweep should grep for repeated expression sequences,
+not just repeated shapes.
+
+**Item 1: Argv policy is out of the checker.** `src/Weir/Argv.fs`
+(205 lines): ShortOwner + the schema policy (kebab, short tables,
+minted twins, sharedOf) verbatim, plus the validators extracted as
+pure `string option` functions — message text byte-identical, the
+arms keep only span plumbing (`err span msg`). THE TWO Default rules
+now sit ADJACENT with the flip stated once: Env.load ACCEPTS
+[<Default false>] (an env-backed bool genuinely rests at false),
+Args.load REJECTS it as redundant (presence already rests at false) —
+two rules on purpose, not one rule copied wrong. Check.fs: 2653 →
+2454 (−199; the plan predicted ~200). Consumers (Eval, tests) gained
+one `open`/qualifier change each; zero pin movement, e2e green
+(every Args/Env teaching message pinned there unchanged).
+
+**Item 3: the print precedent has its ceiling** — recorded beside the
+sentinel itself: the ONE place a builtin's ergonomics buys checker
+complexity, not to be extended to a second builtin without a bless.
+
+Verdict from the read, restated for the ledger: 2.5kloc was already
+lean for a checker carrying rows + three classes + exhaustiveness +
+six typed boundaries, with much of its bulk being teaching text —
+the product, not the weight. Now it is 2454 with the one
+non-typing tenant moved out.
+
 ## Capture representation — one buffer, not N strings (2026-07-26)
 
 [D:capture-buffer] The safety review's one host-caused pain, measured

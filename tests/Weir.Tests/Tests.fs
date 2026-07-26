@@ -5,6 +5,7 @@ open System.IO
 open Expecto
 open Weir.Ast
 open Weir.Types
+open Weir.Argv
 open Weir.Check
 open Weir.Eval
 
@@ -1997,11 +1998,11 @@ let typedArgvTests =
     testList
         "Typed argv"
         [ test "kebab derivation pins (the plan's examples)" {
-              Expect.equal (Weir.Check.Argv.kebabFlag "dryRun") "dry-run" ""
-              Expect.equal (Weir.Check.Argv.kebabFlag "DryRun") "dry-run" ""
-              Expect.equal (Weir.Check.Argv.kebabFlag "noFF") "no-ff" ""
-              Expect.equal (Weir.Check.Argv.kebabFlag "useHTTPSNow") "use-https-now" ""
-              Expect.equal (Weir.Check.Argv.kebabFlag "port") "port" ""
+              Expect.equal (Weir.Argv.kebabFlag "dryRun") "dry-run" ""
+              Expect.equal (Weir.Argv.kebabFlag "DryRun") "dry-run" ""
+              Expect.equal (Weir.Argv.kebabFlag "noFF") "no-ff" ""
+              Expect.equal (Weir.Argv.kebabFlag "useHTTPSNow") "use-https-now" ""
+              Expect.equal (Weir.Argv.kebabFlag "port") "port" ""
           }
           test "short tables: derive, contest, override, suppress, reserve" {
               let def name input =
@@ -2010,33 +2011,33 @@ let typedArgvTests =
                   | _ -> failtest "record expected"
 
               let shorts, index =
-                  Weir.Check.Argv.shortTables (def "S1" "type S1 = { clean: bool; verbose: bool }")
+                  Weir.Argv.shortTables (def "S1" "type S1 = { clean: bool; verbose: bool }")
 
               Expect.equal (Map.tryFind "--clean" shorts) (Some "c") "derives"
-              Expect.equal (Map.tryFind "c" index) (Some(Weir.Check.ShortOf "--clean")) "owner"
+              Expect.equal (Map.tryFind "c" index) (Some(Weir.Argv.ShortOf "--clean")) "owner"
 
               let shorts2, index2 =
-                  Weir.Check.Argv.shortTables (def "S2" "type S2 = { clean: bool; copy: bool }")
+                  Weir.Argv.shortTables (def "S2" "type S2 = { clean: bool; copy: bool }")
 
               Expect.equal (Map.tryFind "--clean" shorts2) None "contested letters derive for nobody"
 
               Expect.equal
                   (Map.tryFind "c" index2)
-                  (Some(Weir.Check.AmbiguousShort [ "--clean"; "--copy" ]))
+                  (Some(Weir.Argv.AmbiguousShort [ "--clean"; "--copy" ]))
                   "candidates kept for the error"
 
               let shorts3, _ =
-                  Weir.Check.Argv.shortTables (def "S3" "type S3 = { [<Short \"e\">] clean: bool; env: string }")
+                  Weir.Argv.shortTables (def "S3" "type S3 = { [<Short \"e\">] clean: bool; env: string }")
 
               Expect.equal (Map.tryFind "--clean" shorts3) (Some "e") "explicit wins the letter"
               Expect.equal (Map.tryFind "--env" shorts3) None "the derived short retires"
 
               let shorts4, _ =
-                  Weir.Check.Argv.shortTables (def "S4" "type S4 = { [<NoShort>] clean: bool }")
+                  Weir.Argv.shortTables (def "S4" "type S4 = { [<NoShort>] clean: bool }")
 
               Expect.equal (Map.tryFind "--clean" shorts4) None "NoShort suppresses"
 
-              let shorts5, _ = Weir.Check.Argv.shortTables (def "S5" "type S5 = { host: bool }")
+              let shorts5, _ = Weir.Argv.shortTables (def "S5" "type S5 = { host: bool }")
               Expect.equal (Map.tryFind "--host" shorts5) None "h never derives (help)"
           }
           test "Args.load types as the record; the union as the union" {
