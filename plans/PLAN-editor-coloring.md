@@ -142,11 +142,14 @@ INCREMENT 2 (member scope + a bug fix — DONE, tool-verified):
   RE2-clean (`:` included in the type match). micro now lookbehind-free
   (grep-confirmed); inventory synced (23 rules).
 
-REMAINING — the DIFFICULT items, planned separately (see
-PLAN-editor-coloring-hard.md): issue 1 (attribute split, grammar
-change), issue 6 (type-param disambiguation, external scanner), and
-BINDER-NAME scoping (Zed already has it; micro's RE2 cannot isolate the
-name after `let`, so TextMate+micro parity is the open question).
+INCREMENT 3 — the DIFFICULT items, DONE via PLAN-editor-coloring-hard.md
+(blessed + executed 2026-07-27; see its EXECUTION LOG): D-MICRO ruled
+(stated-shortfall fork, PROCESS `[D:micro-exempt]`); issue 1 (attribute
+split — tree-sitter-only, delimiters-only, `a329acb`); binder names
+(TextMate captures + micro-exempt, `ffa81b9`); issue 6 (type-param
+external scanner + TextMate lookahead + micro-exempt, `c97809c`). All six
+issues now resolved. All tool-verified; inventory 23 rules + 2 stated
+micro-exempt; 0 ERROR; full e2e green.
 
 REMAINING (superseded — see the hard-parts plan):
 - **Issue 1** — split the atomic `attribute` token into name + arg
