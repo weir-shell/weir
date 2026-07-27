@@ -956,12 +956,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
         match Map.tryFind name env with
         | Some v -> v
         | None -> unreachable $"the checker rejects unbound variable '{name}'"
-    | TELet(name, value, body) -> eval (Map.add name (eval env value) env) body
+    | TELet(name, _, value, body) -> eval (Map.add name (eval env value) env) body
     | TELetPat(pat, value, body) ->
         let bindings = bindPattern pat (eval env value)
         eval (bindings |> List.fold (fun m (n, v) -> Map.add n v m) env) body
     | TELambdaPat(pat, body) -> VClosurePat(pat, body, env)
-    | TELambda(param, body) -> VClosure(param, body, env)
+    | TELambda(param, _, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
     | TEPipe(arg, { Kind = TECmd(prog, cargs, cenvO) }) ->
         let argv = argvOf env cargs

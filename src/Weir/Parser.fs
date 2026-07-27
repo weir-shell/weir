@@ -573,7 +573,7 @@ let private postfixAtom =
         |>> fun applied ->
             match target.Kind with
             | EVar "_" when applied <> target ->
-                { Kind = ELambda("_", applied)
+                { Kind = ELambda("_", target.Span, applied)
                   Span = applied.Span }
             | _ -> applied
 
@@ -627,8 +627,8 @@ let private curryParams (ps: Pattern list) (value: Expr) : Expr =
         (fun (p: Pattern) body ->
             let kind =
                 match p.PKind with
-                | PVar n -> ELambda(n, body)
-                | PUnit -> ELambda("()", body)
+                | PVar n -> ELambda(n, p.PSpan, body)
+                | PUnit -> ELambda("()", p.PSpan, body)
                 | _ -> ELambdaPat(p, body)
 
             // span covers the param — binder diagnostics point at
@@ -705,10 +705,10 @@ let private letIn =
                     Span = { Start = pos p; End = body.Span.End } })
           getPosition
           >>= fun p ->
-              (keyword "let" >>. ident .>>. many binderParam
+              (keyword "let" >>. spanned ident .>>. many binderParam
                >>= fun (n, ps) -> rejectDupParams ps >>% (n, ps))
               .>> str_ws "="
-              >>= fun (name, ps) ->
+              >>= fun ((name, nameSpan), ps) ->
                   // the block-let command RHS [D:block-let-cmd]: the same
                   // grammar the top-level bare RHS takes (in-stop argv, one
                   // gate), live only on the assembled statement spine
@@ -723,7 +723,7 @@ let private letIn =
                   >>= fun value ->
                       withAmbientName name seqExpr
                       |>> fun body ->
-                          { Kind = ELet(name, curryParams ps value, body)
+                          { Kind = ELet(name, nameSpan, curryParams ps value, body)
                             Span = { Start = pos p; End = body.Span.End } } ]
 
 let private binOp op l r =

@@ -1,5 +1,35 @@
 # Spike Notes
 
+## Diagnostics arc, Session C — the binder-span park opens (2026-07-27)
+
+The park closed the way parks are supposed to: its criterion (a real
+user demanding local navigation) fired in the author's first hour of
+VS Code dogfooding, and the priced session ran [D:binder-spans].
+
+**Cheaper than priced, in one dimension**: pattern binders needed
+NOTHING — PSpan always carried them; only ELet/ELambda were nameless.
+The spans ride the AST (`nameSpan` from a `spanned` ident;
+`paramSpan` from each param-pattern's PSpan through curryParams; the
+`_` shorthand keeps its atom span), mirror into the typed tree, and
+the threading proved contained: 4 parser constructions, ~10 Check
+sites, 2 Eval, 1 Lsp, 7 test matches — the compiler chased every one.
+
+**The resolver is lexical**: `localDef` carries the enclosing binder
+scope down the typed tree; a use resolves to the INNERMOST binding
+(params shadow top-levels inside their lambda; outside, the
+top-level owns the use — both directions pinned). Cursor ON a binder
+stays null. The park's two conservative-null pins FLIPPED to jumps —
+the acceptance, by the plan's own definition.
+
+**Verified end to end**: unit (param/inner-let-through-block-joins/
+payload-binder/shadowing), the nvim rig over the real protocol
+(acc → 2:9, param t → 1:8), and the ORACLE re-ran green (the AST
+grew a field; no semantics moved). 883 unit / e2e / 20 fuzz / 60
+doc / 156 oracle / 17-10ms.
+
+**Unlocked, not built**: rename and references now have their
+prerequisite; each is its own bless.
+
 ## Diagnostics arc, Session B — the visibility pair (2026-07-27)
 
 Both confusing-error killers landed [PLAN-diagnostics-arc B]; 882

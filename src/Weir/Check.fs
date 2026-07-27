@@ -48,8 +48,8 @@ and TypedKind =
     | TEBool of bool
     | TEUnit
     | TEVar of string
-    | TELet of name: string * value: TypedExpr * body: TypedExpr
-    | TELambda of param: string * body: TypedExpr
+    | TELet of name: string * nameSpan: Span * value: TypedExpr * body: TypedExpr
+    | TELambda of param: string * paramSpan: Span * body: TypedExpr
     | TEApp of fn: TypedExpr * arg: TypedExpr
     | TEPipe of arg: TypedExpr * fn: TypedExpr
     | TEField of target: TypedExpr * field: string
@@ -552,7 +552,7 @@ let rec private typeBinOp
         let shorthandHint =
             let isShorthand (side: TypedExpr) =
                 match side.Kind with
-                | TELambda("_", _) -> true
+                | TELambda("_", _, _) -> true
                 | _ -> false
 
             if isShorthand l || isShorthand r then
@@ -1072,7 +1072,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         let hint = didYouMean name (Map.keys env.Values |> Seq.filter Types.isUserName)
 
                         err expr.Span $"unbound variable '{name}'{hint}"
-    | ELet(name, value, body) ->
+    | ELet(name, nameSpan, value, body) ->
         result {
             do! checkBinderName expr.Span name
             let! tvalue = infer ctx env value
@@ -1088,7 +1088,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     body
 
             return
-                { Kind = TELet(name, tvalue, tbody)
+                { Kind = TELet(name, nameSpan, tvalue, tbody)
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -1119,18 +1119,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
-    | ELambda("()", body) ->
+    | ELambda("()", pspan, body) ->
         // the unit param PINS its type — desugaring to an unconstrained
         // fresh var would generalize (`cleanup 5` would typecheck); the
         // "()" name is unforgeable, and no binding is added
-        lambdaCore env expr.Span (fun tb -> TELambda("()", tb)) TUnit [] (fun e -> infer ctx e body)
-    | ELambda(param, body) ->
+        lambdaCore env expr.Span (fun tb -> TELambda("()", pspan, tb)) TUnit [] (fun e -> infer ctx e body)
+    | ELambda(param, pspan, body) ->
         result {
             do! checkBinderName expr.Span param
             let paramTy = TVar(freshName ctx "a")
 
             return!
-                lambdaCore env expr.Span (fun tb -> TELambda(param, tb)) paramTy [ param, paramTy ] (fun e ->
+                lambdaCore env expr.Span (fun tb -> TELambda(param, pspan, tb)) paramTy [ param, paramTy ] (fun e ->
                     infer ctx e body)
         }
     | EApp _ ->
@@ -2085,7 +2085,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             do! bind ctx env pat.PSpan shape dom
             return! lambdaCore env expr.Span (fun tb -> TELambdaPat(pat, tb)) dom binds (fun e -> check ctx e body cod)
         }
-    | ELambda(param, body), TFun(dom, cod) ->
+    | ELambda(param, pspan, body), TFun(dom, cod) ->
         result {
             do! checkBinderName expr.Span param
 
@@ -2106,11 +2106,11 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                     else
                         check ctx e body cod
 
-            return! lambdaCore env expr.Span (fun tb -> TELambda(param, tb)) dom [ param, dom ] typeBody
+            return! lambdaCore env expr.Span (fun tb -> TELambda(param, pspan, tb)) dom [ param, dom ] typeBody
         }
     | ELambda _, (TInt | TStr | TBool | TSeq _ | TNamed _ as t) ->
         err expr.Span $"expected {formatTy t}, got a function"
-    | ELet(name, value, body), _ ->
+    | ELet(name, nameSpan, value, body), _ ->
         result {
             do! checkBinderName expr.Span name
             let! tvalue = infer ctx env value
@@ -2127,7 +2127,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                     expected
 
             return
-                { Kind = TELet(name, tvalue, tbody)
+                { Kind = TELet(name, nameSpan, tvalue, tbody)
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -2178,8 +2178,8 @@ let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) : Result<unit, TypeE
 let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
     let kind =
         match te.Kind with
-        | TELet(n, v, b) -> TELet(n, finalizeExpr ctx v, finalizeExpr ctx b)
-        | TELambda(p, b) -> TELambda(p, finalizeExpr ctx b)
+        | TELet(n, ns, v, b) -> TELet(n, ns, finalizeExpr ctx v, finalizeExpr ctx b)
+        | TELambda(p, ps, b) -> TELambda(p, ps, finalizeExpr ctx b)
         | TEApp(f, a) -> TEApp(finalizeExpr ctx f, finalizeExpr ctx a)
         | TEPipe(a, f) -> TEPipe(finalizeExpr ctx a, finalizeExpr ctx f)
         | TEField(t, f) -> TEField(finalizeExpr ctx t, f)
@@ -2313,9 +2313,9 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEArgsLoad _
     | TEFrom _
     | TETo _ -> []
-    | TELet(_, v, b) -> [ v; b ]
+    | TELet(_, _, v, b) -> [ v; b ]
     | TELetPat(_, v, b) -> [ v; b ]
-    | TELambda(_, b) -> [ b ]
+    | TELambda(_, _, b) -> [ b ]
     | TELambdaPat(_, b) -> [ b ]
     | TEApp(f, a) -> [ f; a ]
     | TEPipe(a, f) -> [ a; f ]

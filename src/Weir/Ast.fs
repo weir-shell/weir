@@ -43,8 +43,8 @@ and ExprKind =
     | EBool of bool
     | EUnit
     | EVar of string
-    | ELet of name: string * value: Expr * body: Expr
-    | ELambda of param: string * body: Expr
+    | ELet of name: string * nameSpan: Span * value: Expr * body: Expr
+    | ELambda of param: string * paramSpan: Span * body: Expr
     | EApp of fn: Expr * arg: Expr
     | EPipe of arg: Expr * fn: Expr
     | EField of target: Expr * field: string * fieldSpan: Span
@@ -94,9 +94,9 @@ let exprChildren (e: Expr) : Expr list =
     | EVar _
     | EFrom _
     | ETo _ -> []
-    | ELet(_, v, b) -> [ v; b ]
+    | ELet(_, _, v, b) -> [ v; b ]
     | ELetPat(_, v, b) -> [ v; b ]
-    | ELambda(_, b) -> [ b ]
+    | ELambda(_, _, b) -> [ b ]
     | ELambdaPat(_, b) -> [ b ]
     | EApp(f, x) -> [ f; x ]
     | EPipe(x, f) -> [ x; f ]
@@ -150,9 +150,9 @@ let rec sexpr (e: Expr) : string =
     | EBool b -> if b then "true" else "false"
     | EVar x -> x
     | EUnit -> "()"
-    | ELet(n, v, b) -> $"(let {n} {sexpr v} {sexpr b})"
+    | ELet(n, _, v, b) -> $"(let {n} {sexpr v} {sexpr b})"
     | ELetPat(p, v, b) -> $"(letpat {sexprPat p} {sexpr v} {sexpr b})"
-    | ELambda(p, b) -> $"(fun {p} {sexpr b})"
+    | ELambda(p, _, b) -> $"(fun {p} {sexpr b})"
     | ELambdaPat(p, b) -> $"(funpat {sexprPat p} {sexpr b})"
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"

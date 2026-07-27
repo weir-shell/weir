@@ -3147,9 +3147,9 @@ let semanticTokenTests =
               Expect.equal (Weir.Lsp.definitionFor pat 2 10) (Some(1, 6, 1)) "letpat binder found"
               // builtins have no source: null
               Expect.equal (Weir.Lsp.definitionFor [ "print 1" ] 1 2) None "builtin -> null"
-              // params carry no binder spans yet: conservatively null (the
-              // binder-span park; rename/references ride the same session)
-              Expect.equal (Weir.Lsp.definitionFor [ "let f x = x + 1" ] 1 11) None "param -> null"
+              // FLIPPED by the binder-span session [PLAN-diagnostics-arc C]:
+              // the park's conservative null became the jump
+              Expect.equal (Weir.Lsp.definitionFor [ "let f x = x + 1" ] 1 11) (Some(1, 7, 1)) "param use -> param"
           }
           test "definitionFor: record members and union cases resolve to the type declaration [D:lsp-requests]" {
               let lines =
@@ -3176,6 +3176,26 @@ let semanticTokenTests =
               Expect.equal (Weir.Lsp.definitionFor lines 11 3) (Some(2, 7, 4)) "| Pull -> the case"
               // a pattern PAYLOAD binder is a local binder: null (the park)
               Expect.equal (Weir.Lsp.definitionFor lines 12 8) None "payload binder -> null"
+          }
+          test
+              "definitionFor: LOCAL binders — inner lets, payload binders, innermost shadowing [PLAN-diagnostics-arc C]" {
+              // inner-let use -> its binder (through the block-let joins)
+              let inner =
+                  [ "let go () ="; "    let acc = 1 + 1"; "    print $\"{acc}\""; "go ()" ]
+
+              Expect.equal (Weir.Lsp.definitionFor inner 3 14) (Some(2, 9, 3)) "inner-let use -> its binder"
+
+              // payload-binder use -> the pattern binder (PSpan)
+              let pay =
+                  [ "type V = | Push of int"; "match Push 1 with"; "| Push n -> print $\"{n}\"" ]
+
+              Expect.equal (Weir.Lsp.definitionFor pay 3 22) (Some(3, 8, 1)) "payload use -> the binder"
+
+              // innermost wins: the param shadows the top-level inside f,
+              // the top-level owns the use outside
+              let shadow = [ "let x = 1"; "let f x = x + 2"; "print $\"{f x}\"" ]
+              Expect.equal (Weir.Lsp.definitionFor shadow 2 11) (Some(2, 7, 1)) "inside f: the param"
+              Expect.equal (Weir.Lsp.definitionFor shadow 3 12) (Some(1, 5, 1)) "outside f: the top-level"
           }
           test "definitionFor: the from-json type name jumps to its declaration [PLAN-diagnostics-arc A3]" {
               let lines =
@@ -4341,14 +4361,14 @@ let agentFindingsTests =
           // param-ful command RHS [D:paramful-rhs]
           test "param-ful let takes a command RHS (curried under the params)" {
               match Weir.Parser.parseLine cmdResolver "let f r = git log $r" with
-              | Ok(SLet("f", { Kind = ELambda("r", { Kind = ECmd("git", _, _) }) })) -> ()
+              | Ok(SLet("f", { Kind = ELambda("r", _, { Kind = ECmd("git", _, _) }) })) -> ()
               | other -> failtest $"expected a lambda over a command, got {other}"
           }
           test "params shadow PATH in their own RHS (the law's regression pin)" {
               // cmdResolver says EVERY bareword is an external; the param
               // must still win — identity stays identity
               match Weir.Parser.parseLine cmdResolver "let f x = x" with
-              | Ok(SLet("f", { Kind = ELambda("x", { Kind = EVar "x" }) })) -> ()
+              | Ok(SLet("f", { Kind = ELambda("x", _, { Kind = EVar "x" }) })) -> ()
               | other -> failtest $"identity became something else: {other}"
           }
           test "tuple-pattern params shadow too" {
@@ -4358,7 +4378,7 @@ let agentFindingsTests =
           }
           test "param-ful RHS keeps the in-stop" {
               match Weir.Parser.parseLine cmdResolver "let f r = git log in r" with
-              | Ok(SLet(_, { Kind = ELambda(_, { Kind = ECmd(_, args, _) }) })) ->
+              | Ok(SLet(_, { Kind = ELambda(_, _, { Kind = ECmd(_, args, _) }) })) ->
                   failtest $"the in-eating cliff, param-ful edition: {List.length args} argv words"
               | _ -> ()
           }
@@ -4744,22 +4764,22 @@ let paramSugarTests =
           test "generalizes like the lambda spelling" { expectValue "let id x = x in (id 5) + (id 7)" (VInt 12L) }
           test "statement-level parse shape" {
               match Weir.Parser.parseLine cmdResolver "let f x = x * 2" with
-              | Ok(SLet("f", { Kind = ELambda("x", _) })) -> ()
+              | Ok(SLet("f", { Kind = ELambda("x", _, _) })) -> ()
               | other -> failtest $"expected a desugared lambda, got {other}"
           }
           test
               "params now take a command RHS (the rule this pin used to state REVERSED by PLAN-paramful-rhs; splice-default-last removed the soundness bar)" {
               match Weir.Parser.parseLine cmdResolver "let f x = git status" with
-              | Ok(SLet(_, { Kind = ELambda(_, { Kind = ECmd("git", _, _) }) })) -> ()
+              | Ok(SLet(_, { Kind = ELambda(_, _, { Kind = ECmd("git", _, _) }) })) -> ()
               | other -> failtest $"expected a command RHS under the param, got {other}"
           }
           test "unit and PARENTHESIZED pattern params legal (binders session completed the arc)" {
               match Weir.Parser.parseExpr "let f () = 1 in f" with
-              | Ok { Kind = ELet(_, { Kind = ELambda("()", _) }, _) } -> ()
+              | Ok { Kind = ELet(_, _, { Kind = ELambda("()", _, _) }, _) } -> ()
               | other -> failtest $"unit param should desugar to the pinned () lambda, got {other}"
 
               match Weir.Parser.parseExpr "let f (x, y) = x in f" with
-              | Ok { Kind = ELet(_, { Kind = ELambdaPat({ PKind = PTuple _ }, _) }, _) } -> ()
+              | Ok { Kind = ELet(_, _, { Kind = ELambdaPat({ PKind = PTuple _ }, _) }, _) } -> ()
               | other -> failtest $"tuple param should desugar to ELambdaPat, got {other}"
           }
           test "HOF restriction unchanged through the sugar" {
@@ -6006,7 +6026,7 @@ let sequencingTests =
           }
           test "function RHS takes a sequenced body (bicep receipt)" {
               match Weir.Parser.parseLine cmdResolver "let f x = printerr \"a\" ; printerr \"b\"" with
-              | Ok(SLet("f", { Kind = ELambda("x", { Kind = ESeq _ }) })) -> ()
+              | Ok(SLet("f", { Kind = ELambda("x", _, { Kind = ESeq _ }) })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "let-in value takes a sequence; in still closes it" {

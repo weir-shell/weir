@@ -61,6 +61,8 @@ STATUS: EXECUTED (2026-07-27; the hole pick sharpened — see NOTES).
 
 ## Session C — the park opens: binder spans [#7, user-demanded]
 
+STATUS: EXECUTED (2026-07-27).
+
 The binder-span park's reopen criterion — "a real user demands
 definition/rename/references on locals" — has FIRED (2026-07-26,
 the author, in the first hour of VS Code dogfooding). Check records

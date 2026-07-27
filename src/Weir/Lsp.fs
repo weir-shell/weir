@@ -391,13 +391,62 @@ let rec private innerLetType (name: string) (jcol: int) (te: Check.TypedExpr) : 
     | Some t -> Some t
     | None ->
         match te.Kind with
-        | Check.TELet(n, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
+        | Check.TELet(n, _, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
             Some tvalue.Ty
         | _ -> None
 
 let private binderCol (name: string) (text: string) : int option =
     let eq = text.IndexOf '='
     wordFind name text 0 (if eq >= 0 then eq else text.Length)
+
+// pattern binders in scope, each at its own PSpan
+let rec private patScope (p: Ast.Pattern) (scope: Map<string, Span>) : Map<string, Span> =
+    match p.PKind with
+    | Ast.PVar n -> Map.add n p.PSpan scope
+    | Ast.PTuple ps -> ps |> List.fold (fun s q -> patScope q s) scope
+    | Ast.PCase(_, Some inner) -> patScope inner scope
+    | _ -> scope
+
+// lexical resolution for LOCAL binders [PLAN-diagnostics-arc C]: find
+// the use (the TEVar at the column) while carrying the enclosing
+// binder scope — innermost wins. Returns Some(Some span) = locally
+// bound there; Some None = use found, top-level territory; None = the
+// use is not in this subtree.
+let rec private localDef
+    (scope: Map<string, Span>)
+    (name: string)
+    (jcol: int)
+    (te: Check.TypedExpr)
+    : Span option option =
+    match te.Kind with
+    | Check.TEVar n when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col -> Some(Map.tryFind name scope)
+    | Check.TELet(n, nspan, tv, body) ->
+        (match localDef scope name jcol tv with
+         | Some r -> Some r
+         | None -> localDef (Map.add n nspan scope) name jcol body)
+    | Check.TELetPat(pat, tv, body) ->
+        (match localDef scope name jcol tv with
+         | Some r -> Some r
+         | None -> localDef (patScope pat scope) name jcol body)
+    | Check.TELambda(p, pspan, body) -> localDef (Map.add p pspan scope) name jcol body
+    | Check.TELambdaPat(pat, body) -> localDef (patScope pat scope) name jcol body
+    | Check.TEMatch(scrut, arms) ->
+        (match localDef scope name jcol scrut with
+         | Some r -> Some r
+         | None ->
+             arms
+             |> List.tryPick (fun (p, guard, body) ->
+                 let s2 = patScope p scope
+
+                 let inGuard =
+                     match guard with
+                     | Some g -> localDef s2 name jcol g
+                     | None -> None
+
+                 match inGuard with
+                 | Some r -> Some r
+                 | None -> localDef s2 name jcol body))
+    | _ -> Check.childExprs te |> List.tryPick (localDef scope name jcol)
 
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (physLine, physCol, nameLength), or None. Pure — the handler
@@ -507,7 +556,15 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
                         // expression-position union case
                         unionOf env n |> Option.bind (fun tn -> typeSite tn (Some n))
                     else
-                        letSite useLl.Head n
+                        // LOCAL binders first — lexical, innermost wins
+                        // (params, inner lets, pattern payload binders);
+                        // the top-level scan is the fallback
+                        // [PLAN-diagnostics-arc C]
+                        match teOf chk |> Option.bind (localDef Map.empty n jcol) with
+                        | Some(Some bspan) ->
+                            let pl, pc = Script.translate useLl bspan.Start.Col
+                            Some(pl, pc, n.Length)
+                        | _ -> letSite useLl.Head n
                 | Check.TEField(target, field) when jcol > target.Span.End.Col ->
                     (match target.Ty with
                      | TNamed(tn, _) -> typeSite tn (Some field)

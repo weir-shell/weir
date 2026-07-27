@@ -6,10 +6,10 @@ your scripts, so it can never go out of sync with the language. All
 blocks below assume `weir` is on PATH.
 
 The server provides diagnostics, hover, completion, semantic tokens,
-formatting, and go-to-definition (top-level bindings, record fields,
-union cases — in expressions and match patterns — and record-literal
-field names, each jumping to the declaration; params and local
-binders return nothing for now — by design, not omission). Two
+formatting, and go-to-definition — top-level bindings, record
+fields, union cases (expressions and match patterns), record-literal
+field names, and LOCAL binders (params, inner lets, pattern payload
+binders — lexically resolved, innermost wins). Two
 facts every block encodes, matching `weir fmt`: comment token `//`,
 indent 4 spaces. The formatting request runs `weir fmt`'s canonical
 pipeline — editor options (tabSize etc.) are ignored by design, so a
