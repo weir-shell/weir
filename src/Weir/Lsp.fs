@@ -711,6 +711,20 @@ let run () : int =
 
                 match method with
                 | "initialize" ->
+                    // resolve relative-path command heads against the
+                    // WORKSPACE ROOT, not the server's launch cwd — which
+                    // the editor chooses and Zed/VS Code choose differently,
+                    // so `ci/deep-lock.sh` was a command in one and an
+                    // unbound var in the other. rootUri (or the first
+                    // workspaceFolder) is a file:// URI; on absence keep cwd.
+                    (jStr "rootUri" ps
+                     |> Option.orElseWith (fun () -> jFirst "workspaceFolders" ps |> Option.bind (jStr "uri")))
+                    |> Option.iter (fun u ->
+                        try
+                            Session.setCwd (System.Uri(u).LocalPath)
+                        with _ ->
+                            ())
+
                     idStr
                     |> Option.iter (fun id ->
                         respond id (fun w ->

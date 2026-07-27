@@ -1475,9 +1475,11 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
 // and translate embedded positions to physical line/col
 // [D:clean-parse-dump].
 let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
-    // no-leak [D:sibling-sentinel]: FParsec may echo the assembled line;
-    // the machine sentinel must never surface — render it as ';'
-    let msg = msg.Replace(Parser.sibSepStr, ";")
+    // no-leak [D:sibling-sentinel]: FParsec may echo the assembled line OR
+    // list the sentinel as an expected token; the machine sentinel must
+    // never surface — render both the raw char and FParsec's  escape
+    // (its expected-set rendering) as ';'
+    let msg = msg.Replace(Parser.sibSepStr, ";").Replace("\\u001f", ";")
     let lines = msg.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
     let isCaret (l: string) =
@@ -1673,8 +1675,8 @@ let checkStatement
             | Ok te ->
                 // a bool-valued chain (| succeeds) as a bare statement is a
                 // DISCARDED value, not a stream — the discard family
-                // [D:exit-reifiers]; record-valued (| complete) statements
-                // keep their standing echo behavior
+                // [D:exit-reifiers]. `| complete` (a Completed record) joins
+                // it: same mistake, keyed on the distinctive value type.
                 let rec exitCodeSpine (t: Check.TypedExpr) =
                     match t.Kind with
                     | Check.TEVar("|exitCoded" | "|exitCodedEnv") -> true

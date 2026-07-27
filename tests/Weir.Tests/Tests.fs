@@ -6368,12 +6368,21 @@ let siblingSentinelTests =
               | Ok _ -> failtest "a source sentinel must not assemble"
           }
           test "no-leak: the sentinel never surfaces in a diagnostic" {
-              // a command-first body with a downstream parse error — the
-              // dump must show ';'/clean text, never the raw sentinel
-              let ds = diags [ "let f t ="; "    git status"; "    let e = ("; "    print e" ]
+              // a command-first body whose parse dump lists SEPARATORS in the
+              // expected-set — the seqSep relabel keeps the sentinel out, and
+              // cleanParseDump scrubs both the raw char AND FParsec's 
+              // escape (the form that leaked into Zed's expecting-list)
+              let noLeak (lines: string list) =
+                  let ds = diags lines
 
-              for d in ds do
-                  Expect.isFalse (d.Message.Contains Weir.Parser.sibSepStr) $"sentinel leaked: {d.Message}"
+                  for d in ds do
+                      Expect.isFalse (d.Message.Contains Weir.Parser.sibSepStr) $"raw sentinel leaked: {d.Message}"
+                      Expect.isFalse (d.Message.Contains "\\u001f") $"escaped sentinel leaked: {d.Message}"
+                      // the user-facing separator ';' is the only form allowed
+                      ()
+
+              noLeak [ "let f t ="; "    git status"; "    print a b )" ] // lists ';' in expected-set
+              noLeak [ "let f t ="; "    git status"; "    let e = ("; "    print e" ]
           }
           test "fmt output never carries the sentinel (assemble->check artifact only)" {
               match Weir.Fmt.formatLines [ "let f t ="; "    git status"; "    let e = \"x\""; "    print e" ] with

@@ -1104,7 +1104,10 @@ let private foldSeqExpr (all: Expr list) : Expr =
 // the sequencing separator [D:seq-commit][D:sibling-sentinel]: a
 // user-typed ';' OR the machine sibling sentinel. Both COMMIT (no
 // attempt) — a failing element must not un-consume the separator.
-let private seqSep = str_ws ";" <|> str_ws sibSepStr
+// the sentinel is unproduceable [D:sibling-sentinel], so it must never
+// surface in an expected-set — relabel the whole separator as ';', the
+// only form a user can type
+let private seqSep = (str_ws ";" <|> str_ws sibSepStr) <?> "';'"
 
 seqExprRef.Value <-
     // a consumed separator COMMITS to its element [D:seq-commit]: a

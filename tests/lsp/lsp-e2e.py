@@ -277,4 +277,38 @@ send({"jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": {}})
 read_msg()
 send({"jsonrpc": "2.0", "method": "exit", "params": {}})
 proc.wait(timeout=5)
+
+# rootUri sets the resolution base, NOT the server's launch cwd: a
+# relative-path command head must resolve the SAME regardless of where
+# the editor launched the server (the Zed-vs-VSCode discrepancy).
+repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+p2 = subprocess.Popen([BIN, "lsp"], cwd="/tmp",  # deliberately the WRONG cwd
+                      stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+def send2(obj):
+    b = json.dumps(obj).encode()
+    p2.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p2.stdin.flush()
+def read2():
+    length = None
+    while True:
+        line = p2.stdout.readline().strip()
+        if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
+        elif line == b"": break
+    return json.loads(p2.stdout.read(length))
+send2({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+       "params": {"rootUri": "file://" + repo}})
+read2()
+send2({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+# a script referencing a repo-relative command that EXISTS at the root
+send2({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": "file://" + repo + "/tools/fuzz.weir",
+                                    "text": open(os.path.join(repo, "tools/fuzz.weir")).read()}}})
+for _ in range(5):
+    m = read2()
+    if m.get("method") == "textDocument/publishDiagnostics":
+        rds = m["params"]["diagnostics"]
+        expect(len(rds) == 0, f"rootUri base must resolve ci/deep-lock.sh (wrong-cwd server): {rds}")
+        break
+send2({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); read2()
+send2({"jsonrpc": "2.0", "method": "exit", "params": {}}); p2.wait(timeout=5)
+
 print("lsp-e2e: all probes green")
