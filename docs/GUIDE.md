@@ -173,6 +173,29 @@ the REPL and `-e` refuse it by name.
 
 ## Defaults: the resting point moves
 
+An ENUMERATED env value declares its set as a 0-arity union — the
+typo becomes a boundary error with candidates instead of a wrong
+branch three functions later:
+
+```weir
+type Level =
+    | Debug
+    | Info
+    | Warn
+
+type LogCfg = { WEIR_GUIDE_LOG_LEVEL: Level }
+
+["WEIR_GUIDE_LOG_LEVEL=debug"] |> File.write "guide-log.env"
+let e = Env.fromFile "guide-log.env"
+!e(sh -c "echo layered")
+
+print "declared sets beat stringly config"
+```
+
+Matching is case-insensitive (`=DEBUG`, `=debug`, `=Debug` all
+select `Debug`) because env convention is uppercase; a miss reports
+`expected one of: Debug, Info, Warn` with a did-you-mean.
+
 `[<Default v>]` on an `Args.load` field keeps the field non-Option
 and fills the literal when the flag is absent — `--help` shows it.
 On a bool, `[<Default true>]` mints the `--no-x` twin: resting

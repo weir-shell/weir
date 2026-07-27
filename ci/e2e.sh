@@ -418,6 +418,39 @@ echo "$errout" | grep -qF "not an int ('abc')" || fail "collected error missing 
 echo "$errout" | grep -qF "WEIR_E2E_MISSING_ZZ is missing" || fail "collected error missing absent var: $errout"
 [ -e "$envdir/env-proof" ] || fail "boundary errors are RUNTIME class: earlier effects legitimately ran"
 echo "e2e ok: Env.load collects all problems in one boundary error (runtime class — check-time is the field-TYPE rule)"
+
+# enum fields at the boundary [D:env-enums]: any casing selects the
+# declared case; a miss carries candidates; overlays resolve first
+cat > "$envdir/enum.weir" <<'WEOF'
+type Lvl =
+    | Debug
+    | Info
+
+type EC = { WEIR_E2E_LVL: Lvl; WEIR_E2E_OLVL: Option<Lvl> }
+
+let c = Env.load EC
+print $"lvl={show c.WEIR_E2E_LVL} opt={show c.WEIR_E2E_OLVL}"
+WEOF
+out=$(WEIR_E2E_LVL=DEBUG $BIN "$envdir/enum.weir")
+expect "enum loads from uppercase (env convention)" "lvl=Debug opt=None" "$out"
+out=$(WEIR_E2E_LVL=info WEIR_E2E_OLVL=Debug $BIN "$envdir/enum.weir")
+expect "enum loads from lowercase; Option<enum> rides" "lvl=Info opt=Some (Debug)" "$out"
+errout=$(WEIR_E2E_LVL=debgu $BIN "$envdir/enum.weir" 2>&1) && fail "a bad enum value must fail the boundary"
+echo "$errout" | grep -qF "expected one of: Debug, Info" || fail "candidates missing: $errout"
+echo "$errout" | grep -qF "Did you mean 'Debug'?" || fail "hint missing: $errout"
+echo "e2e ok: enum miss carries candidates + the hint"
+
+# the overlay stack resolves BEFORE the enum conversion: a dotenv file
+# feeds the child env, the child's Env.load sees the layered value
+cat > "$envdir/lvl.env" <<'WEOF'
+WEIR_E2E_LVL=info
+WEOF
+cat > "$envdir/outer.weir" <<'WEOF'
+let e = Env.fromFile "lvl.env"
+!e(weir enum.weir)
+WEOF
+out=$(cd "$envdir" && PATH="$(dirname $BIN):$PATH" $BIN outer.weir)
+expect "enum resolves after the dotenv overlay (same as any field)" "lvl=Info opt=None" "$out"
 rm -rf "$envdir"
 
 cat > "$scriptdir/perr.weir" <<'WEOF'

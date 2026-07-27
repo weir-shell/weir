@@ -1091,7 +1091,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         tryArms arms
     | TEArgsLoad target -> argvLoad target
-    | TEEnvLoad def ->
+    | TEEnvLoad(def, enums) ->
         // snapshot at force time; collect every problem, raise ONCE
         let problems = ResizeArray<string>()
 
@@ -1126,6 +1126,36 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | "false" -> wrapOpt ty (VBool false)
                         | _ ->
                             problems.Add $"{name} is not a bool ('{v}'; exactly true or false)"
+                            VUnit
+                    | (TNamed(un, []) | TNamed("Option", [ TNamed(un, []) ])), v ->
+                        // the enum conversion [D:env-enums]: matching is
+                        // CASE-INSENSITIVE against the declared names (env
+                        // convention is uppercase — LOG_LEVEL=DEBUG, =debug
+                        // and =Debug all select Debug); an empty value is a
+                        // miss with candidates, the int rule's precedent
+                        let cases = enums |> Map.tryFind un |> Option.defaultValue []
+
+                        match
+                            cases
+                            |> List.tryFind (fun c ->
+                                System.String.Equals(c, v, System.StringComparison.OrdinalIgnoreCase))
+                        with
+                        | Some c -> wrapOpt ty (VUnion(c, None))
+                        | None ->
+                            // the hint compares like the matcher does —
+                            // case-insensitively — but names the DECLARED
+                            // spelling
+                            let hint =
+                                cases
+                                |> List.tryPick (fun c ->
+                                    if didYouMean (v.ToLowerInvariant()) [ c.ToLowerInvariant() ] <> "" then
+                                        Some $". Did you mean '{c}'?"
+                                    else
+                                        None)
+                                |> Option.defaultValue ""
+
+                            let listed = String.concat ", " cases
+                            problems.Add $"{name} is not a {un} ('{v}'; expected one of: {listed}){hint}"
                             VUnit
                     | _ -> unreachable "the checker rejects non-scalar Env.load fields"
 

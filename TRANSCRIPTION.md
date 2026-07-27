@@ -490,3 +490,17 @@ literals legal — the flip from Args is per-consumer validation, not
 shared code); the eval fill sits in the null branch AFTER the
 Option-None case, so Option+Default stays unrepresentable and any
 set var wins by construction.
+
+## Post-anchor addenda (env-enums session, 2026-07-26)
+
+The Env.load arm's field law gains the enum clause [D:env-enums]: a
+monomorphic union whose cases are all 0-arity is loadable (Option
+rides), guarded by three check-time rejections in order — a
+payload-carrying case (named), the case-insensitive collision pair,
+and Default-on-enum (naming the Option + defaultValue spelling). The
+typed node grows: `TEEnvLoad of RecordDef * Map<string, string list>`
+— the checker packs each enum's declared case list because eval has
+no type environment. The eval conversion matches case-insensitively
+against the declared names and reports misses with the full candidate
+list plus a case-insensitive did-you-mean that names the DECLARED
+spelling; an empty value is a miss (the int precedent), never None.

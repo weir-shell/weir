@@ -2204,6 +2204,128 @@ let typedArgvTests =
                   "presence already rests at false"
                   ""
           }
+          test "Env.load enum fields: the field law's union clause [D:env-enums]" {
+              let rejects env expr =
+                  match Weir.Check.typecheck env (parse expr) with
+                  | Error terr -> terr.Message
+                  | Ok _ -> failtest $"expected rejection: {expr}"
+
+              // a 0-arity union field is loadable; Option<enum> rides along
+              let e1 =
+                  argvEnv
+                  |> declare "type LvlA = Debug | Info | Warn"
+                  |> declare "type CA = { LOG_ZZQ: LvlA; OPT_ZZQ: Option<LvlA> }"
+
+              match Weir.Check.typecheck e1 (parse "Env.load CA") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "CA" "enum + Option<enum> load"
+              | Error terr -> failtest (formatError terr)
+
+              // a payload-carrying case is a check-time rejection, naming it
+              let e2 =
+                  argvEnv
+                  |> declare "type LvlB = Plain | Carry of int"
+                  |> declare "type CB = { F_ZZQ: LvlB }"
+
+              Expect.stringContains
+                  (rejects e2 "Env.load CB")
+                  "env values are single tokens, so enum fields need 0-arity cases; case 'Carry'"
+                  "the schema is wrong at check time"
+
+              // two cases differing only in casing collide (matching is
+              // case-insensitive, so the schema is ambiguous)
+              let e3 =
+                  argvEnv
+                  |> declare "type LvlC = Debug | DEBUG"
+                  |> declare "type CC = { F_ZZQ: LvlC }"
+
+              Expect.stringContains (rejects e3 "Env.load CC") "collide as env value 'debug'" ""
+
+              // Default on an enum field teaches the alternative spelling
+              let e4 =
+                  argvEnv
+                  |> declare "type LvlD = A | B"
+                  |> declare "type CD = { [<Default \"A\">] F_ZZQ: LvlD }"
+
+              Expect.stringContains (rejects e4 "Env.load CD") "Option<LvlD> with Option.defaultValue" ""
+
+              // the field-law message grew its clause
+              let e5 =
+                  argvEnv |> declare "type RD = { X: int }" |> declare "type CE = { F_ZZQ: RD }"
+
+              Expect.stringContains
+                  (rejects e5 "Env.load CE")
+                  "string, int, bool, an enum union (0-arity cases), or Option of these"
+                  ""
+          }
+          test "Env.load enum conversion: casing, candidates, collect [D:env-enums]" {
+              let env =
+                  argvEnv
+                  |> declare "type LvlE = Debug | Info | Warn"
+                  |> declare "type CF = { LOGE_ZZQ: LvlE; PORTE_ZZQ: int; OPTE_ZZQ: Option<LvlE> }"
+
+              let load () =
+                  match Weir.Check.typecheck env (parse "Env.load CF") with
+                  | Ok te -> eval valueEnv te
+                  | Error terr -> failtest (formatError terr)
+
+              let set (n: string) (v: string) =
+                  System.Environment.SetEnvironmentVariable(n, v)
+
+              try
+                  // any casing selects the declared case; Option absent = None
+                  for spelling in [ "DEBUG"; "debug"; "Debug" ] do
+                      set "LOGE_ZZQ" spelling
+                      set "PORTE_ZZQ" "1"
+
+                      match load () with
+                      | VRecord(_, fs) ->
+                          Expect.equal fs["LOGE_ZZQ"] (VUnion("Debug", None)) $"casing '{spelling}'"
+                          Expect.equal fs["OPTE_ZZQ"] (VUnion("None", None)) "absent Option is None"
+                      | v -> failtest $"unexpected: {formatValue v}"
+
+                  // a miss carries the candidates and a did-you-mean
+                  set "LOGE_ZZQ" "debgu"
+
+                  let msg =
+                      try
+                          load () |> ignore
+                          "no-raise"
+                      with ex ->
+                          ex.Message
+
+                  Expect.stringContains msg "expected one of: Debug, Info, Warn" "candidates"
+                  Expect.stringContains msg "Did you mean 'Debug'?" "the hint machinery rides"
+
+                  // collect-then-raise: a bad enum AND a bad int, one error
+                  set "PORTE_ZZQ" "nope"
+
+                  let both =
+                      try
+                          load () |> ignore
+                          "no-raise"
+                      with ex ->
+                          ex.Message
+
+                  Expect.stringContains both "is not a LvlE" "enum problem present"
+                  Expect.stringContains both "is not an int" "int problem collected alongside"
+
+                  // EMPTY is a miss with candidates (the int precedent), not None
+                  set "LOGE_ZZQ" ""
+                  set "PORTE_ZZQ" "1"
+
+                  let empty =
+                      try
+                          load () |> ignore
+                          "no-raise"
+                      with ex ->
+                          ex.Message
+
+                  Expect.stringContains empty "expected one of:" "empty = miss, matching the int rule"
+              finally
+                  set "LOGE_ZZQ" null
+                  set "PORTE_ZZQ" null
+                  set "OPTE_ZZQ" null
+          }
           test "Default fills at the resting point [D:default-attr]" {
               let e2 =
                   argvEnv

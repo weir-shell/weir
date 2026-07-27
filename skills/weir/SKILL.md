@@ -549,9 +549,17 @@ let c = Args.load Cmd
 - Environment: `Env.get "NAME"` (Option<string>) for one var;
   `Env.load Config` for typed config — declare
   `type Config = { PORT: int; DEBUG: bool; TOKEN: Option<string> }`
-  (field names = env-var names VERBATIM; scalars + Option only; bool
-  is exactly true/false), load once, typed thereafter; every missing/
-  garbage field reported in ONE error. `[<Default v>]` fills an
+  (field names = env-var names VERBATIM; scalars, 0-arity-case enum
+  unions, + Option of these; bool is exactly true/false), load once,
+  typed thereafter; every missing/garbage field reported in ONE
+  error. An ENUM field (`type Lvl = Debug | Info` + `LOG_LEVEL:
+  Lvl`) converts the var like int/bool does — matching is
+  CASE-INSENSITIVE (`=DEBUG`, `=debug`, `=Debug` all select
+  `Debug`; the CLI subcommand rule stays lowercase-verbatim — two
+  conventions, two rules), and a miss errors with the full case
+  list + a hint. Payload-carrying cases reject at check time; an
+  enum's resting point spells `Option<Lvl>` + `Option.defaultValue`
+  (Default takes literals only). `[<Default v>]` fills an
   ABSENT var (the field stays non-Option; any set var wins — the
   resting point sits below the whole overlay stack). No twin mints
   here: env bools are text, so `[<Default false>]` is legal
