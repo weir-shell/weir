@@ -134,15 +134,11 @@
     "attribute": {
       "type": "TOKEN",
       "content": {
-        "type": "SEQ",
+        "type": "CHOICE",
         "members": [
           {
             "type": "STRING",
             "value": "[<"
-          },
-          {
-            "type": "PATTERN",
-            "value": "[^>]*"
           },
           {
             "type": "STRING",

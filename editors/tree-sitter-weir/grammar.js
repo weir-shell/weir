@@ -49,7 +49,7 @@ module.exports = grammar({
     // shebang and mode lines (`#!/usr/bin/env weir`, `#loose`)
     hash_line: _ => token(prec(1, seq('#', /.*/))),
 
-    attribute: _ => token(seq('[<', /[^>]*/, '>]')),
+    attribute: _ => token(choice('[<', '>]')),
 
     // higher precedence than the bare `let`/`type` keyword fallback
     // (the fallback still fires for `let (a, b) = ...` patterns)
