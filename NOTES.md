@@ -1,5 +1,39 @@
 # Spike Notes
 
+## Diagnostics arc, Session B — the visibility pair (2026-07-27)
+
+Both confusing-error killers landed [PLAN-diagnostics-arc B]; 882
+unit / e2e / fuzz / doc / timing green, zero movement on the
+pre-existing discard and ambiguous-constraint pins.
+
+**B5 — errored statements keep their head warnings.** The Session-A
+diagnosis held: cmdHeads already walked the whole typed tree; the
+gap was that the Ok branch OWNED the walk, so a statement that
+errored lost its warnings — exactly when they explain the error
+(the bicep shape: `targ etEnv t` claimed as a command, the only
+signal a type error one line later). The Error branch now re-parses
+under the assume resolver and walks the UNTYPED tree; the warning
+spelling extracted to one local shared by both branches (the
+dedupe-sweep lesson, applied preemptively).
+
+**B6 — the cascade, and the pick the bless note demanded.** A failed
+`let NAME` now binds NAME to a hole scheme — but the plain hole
+under-delivered on first contact: weir's no-HOF rule means a
+hole-typed HEAD refuses application ("not a function, has type
+'a1"), and hole results leak into discard/constraint demands
+("ambiguous-constraint", "computes 'a2 and discards"). The landed
+pick is HOLE + ARROW-SHAPING + DESCENDANT SILENCE — poison-lite via
+the sentinel-name trick: the quantified name `__hole` survives
+instantiation (unforgeable: ctx-fresh vars are the only type-var
+namespace, the printScheme argument verbatim), checkSpine shapes an
+applied hole into an arrow of hole vars, and the discard +
+stranded-constraint sites skip hole-descended vars. Result: ONE
+real error, ZERO echoes of any species — the poison alternative's
+goal without a new type node through unify. The deferral trade
+stands as blessed: a hole unifies with anything, so a genuine
+downstream mismatch may surface only after the first error is
+fixed; one real error beats N echoes, stated here as the trade.
+
 ## Diagnostics arc, Session A — four riders, four levels of pin (2026-07-26)
 
 The dogfooding arc's opener [PLAN-diagnostics-arc]; all four landed

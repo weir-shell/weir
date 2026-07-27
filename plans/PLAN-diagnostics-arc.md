@@ -34,6 +34,8 @@ STATUS: EXECUTED (2026-07-26; all four, pinned at every level).
 
 ## Session B — the visibility pair (the confusing-error killers)
 
+STATUS: EXECUTED (2026-07-27; the hole pick sharpened — see NOTES).
+
 5. **Command-RHS heads warn** [#4]: `let e = targ etEnv t` — the
    let-RHS command grammar claims `targ` as a command head, but only
    STATEMENT-level heads get cmd-not-found warnings; the user's

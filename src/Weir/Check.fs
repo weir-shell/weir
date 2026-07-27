@@ -212,7 +212,16 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
         let mapping =
             sch.Forall
             |> Set.toList
-            |> List.map (fun v -> v, freshName ctx (if rows.Contains v then "r" else "a"))
+            |> List.map (fun v ->
+                // the hole prefix survives instantiation so the
+                // application arm can stay silent on hole-bound heads
+                // [PLAN-diagnostics-arc B6]
+                let stem =
+                    if v.StartsWith "__hole" then "__hole"
+                    elif rows.Contains v then "r"
+                    else "a"
+
+                v, freshName ctx stem)
             |> Map.ofList
 
         let rec rename ty =
@@ -1991,6 +2000,21 @@ and private checkSpine
         let! thead = infer ctx env head
         let arity = args.Length + (if piped.IsSome then 1 else 0)
 
+        // a HOLE-bound head (its let statement errored; the binding is
+        // the cascade-suppression hole) applied: shape the hole into an
+        // arrow of fresh vars so the application stays SILENT — the one
+        // real error was already reported [PLAN-diagnostics-arc B6]
+        do!
+            match finalTy ctx thead.Ty with
+            | TVar v when v.StartsWith "__hole" ->
+                let arrow =
+                    List.replicate arity ()
+                    |> List.foldBack (fun () acc -> TFun(TVar(freshName ctx "__hole"), acc))
+                    <| TVar(freshName ctx "__hole")
+
+                bind ctx env head.Span (TVar v) arrow
+            | _ -> Ok()
+
         match funParams ctx arity thead.Ty with
         | None ->
             match piped with
@@ -2226,8 +2250,11 @@ let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExp
                         |> Map.toList
                         |> List.tryPick (fun (v, ps) ->
                             match resolve ctx (TVar v) with
-                            | TVar _
-                            | TRowVar _ -> ps |> List.tryHead
+                            // hole-descended vars stay silent — the
+                            // real error was already reported
+                            // [PLAN-diagnostics-arc B6]
+                            | TVar u
+                            | TRowVar(u, _) when not (u.StartsWith "__hole") -> ps |> List.tryHead
                             | _ -> None)
 
                     match stranded with
@@ -2256,7 +2283,7 @@ let typecheckWith (env: TypeEnv) (expr: Expr) : Result<TypedExpr * Map<string, S
                 |> List.collect (fun (v, ps) ->
                     match resolve ctx (TVar v) with
                     | TVar u
-                    | TRowVar(u, _) -> ps |> List.map (fun p -> u, p)
+                    | TRowVar(u, _) when not (u.StartsWith "__hole") -> ps |> List.map (fun p -> u, p)
                     | _ -> [])
 
             match openCons |> List.tryFind (fun (u, _) -> not (resultVars.Contains u)) with

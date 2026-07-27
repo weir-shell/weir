@@ -1385,6 +1385,9 @@ let private printResult (v: Eval.Value) =
 let discardError (ty: Ty) : string option =
     match ty with
     | TUnit -> None
+    // a hole-typed statement descends from an already-reported failed
+    // let — silent, not a second complaint [PLAN-diagnostics-arc B6]
+    | TVar v when v.StartsWith "__hole" -> None
     | TSeq TUnit ->
         Some "this statement computes a seq<unit> and discards it — a lazy effect sequence never runs; use Seq.iter"
     | TSeq(TNamed("FileRow", [])) as ty ->
@@ -1870,6 +1873,31 @@ let analyzeLines
             @ (Check.childExprs te |> List.collect cmdHeads)
 
         for ll in logicalLines do
+            // ONE spelling for the head warning, shared by the Ok walk
+            // (typed) and the Error walk (parse-level) below
+            let warnMissingHead (prog: string) (startCol: int) =
+                let wl, wc = translate ll startCol
+
+                // a near-miss BINDING bridges the check/run
+                // verdict split: the runner reads this head in
+                // expression mode and errors "unbound 'xx' —
+                // did you mean 'xr'?"; check's command reading
+                // must surface the same candidate
+                let hint = didYouMean prog (Map.keys tenv.Values |> Seq.filter Types.isUserName)
+
+                diags.Add
+                    { File = path
+                      Line = wl
+                      Col = wc
+                      // the full head word squiggles, not one
+                      // char [PLAN-diagnostics-arc A4]
+                      EndLine = Some wl
+                      EndCol = Some(wc + prog.Length)
+                      Severity = "warning"
+                      Code = "cmd-not-found"
+                      Message =
+                        $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed" }
+
             match checkStatement true assumeResolver tenv ll with
             | Ok chk ->
                 chk.Warnings |> List.iter warn
@@ -1881,32 +1909,67 @@ let analyzeLines
                  | KCmd te
                  | KExpr te ->
                      for prog, span in cmdHeads te do
-                         let wl, wc = translate ll span.Start.Col
-
-                         // a near-miss BINDING bridges the check/run
-                         // verdict split: the runner reads this head in
-                         // expression mode and errors "unbound 'xx' —
-                         // did you mean 'xr'?"; check's command reading
-                         // must surface the same candidate
-                         let hint = didYouMean prog (Map.keys tenv.Values |> Seq.filter Types.isUserName)
-
-                         diags.Add
-                             { File = path
-                               Line = wl
-                               Col = wc
-                               // the full head word squiggles, not one
-                               // char [PLAN-diagnostics-arc A4]
-                               EndLine = Some wl
-                               EndCol = Some(wc + prog.Length)
-                               Severity = "warning"
-                               Code = "cmd-not-found"
-                               Message =
-                                 $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed" })
+                         warnMissingHead prog span.Start.Col)
 
                 stmts.Add(ll, chk)
                 tenv <- chk.Env
             | Error d ->
                 d.Warnings |> List.iter warn
+
+                // [PLAN-diagnostics-arc B5+B6]: an ERRORED statement
+                // still (a) surfaces its command-head warnings — no
+                // typed tree exists, so the walk is parse-level — and
+                // (b) binds its let NAMES to hole schemes so downstream
+                // uses don't cascade as "unbound". SUPPRESSION WITH
+                // DEFERRAL, deliberately: a hole unifies with anything,
+                // so a later genuine mismatch against the real type may
+                // surface only after this error is fixed — one real
+                // error beats N echoes. (The poison-type alternative —
+                // suppressing downstream errors that MENTION the name —
+                // needs a new type node through unify; declined as
+                // disproportionate.)
+                (match Parser.parseLine (assumeResolver tenv) ll.Text with
+                 | Ok stmt ->
+                     let rec eheads (e: Expr) =
+                         (match e.Kind with
+                          | ECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                          | _ -> [])
+                         @ (exprChildren e |> List.collect eheads)
+
+                     let exprs =
+                         match stmt with
+                         | SLet(_, v)
+                         | SLetPat(_, v)
+                         | SExpr v
+                         | SCmd v -> [ v ]
+                         | SType _ -> []
+
+                     for prog, span in exprs |> List.collect eheads do
+                         warnMissingHead prog span.Start.Col
+
+                     let rec patVars (p: Pattern) =
+                         match p.PKind with
+                         | PVar n -> [ n ]
+                         | PTuple ps -> ps |> List.collect patVars
+                         | PCase(_, Some inner) -> patVars inner
+                         | _ -> []
+
+                     let holeScheme =
+                         { Forall = Set.singleton "__hole"
+                           Cs = Map.empty
+                           Ty = TVar "__hole" }
+
+                     let bound =
+                         match stmt with
+                         | SLet(name, _) -> [ name ]
+                         | SLetPat(pat, _) -> patVars pat
+                         | _ -> []
+
+                     for n in bound do
+                         tenv <-
+                             { tenv with
+                                 Values = Map.add n holeScheme tenv.Values }
+                 | Error _ -> ())
 
                 diags.Add
                     { File = path

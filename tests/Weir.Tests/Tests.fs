@@ -3185,6 +3185,38 @@ let semanticTokenTests =
 
               Expect.equal (Weir.Lsp.definitionFor lines 2 33) (Some(1, 6, 4)) "Oidc use -> the type decl"
           }
+          test "an errored let warns its command heads and suppresses the unbound cascade [PLAN-diagnostics-arc B5+B6]" {
+              // B6: the failed deploy binds a HOLE — one real error,
+              // zero "unbound 'deploy'. Did you mean 'Deploy'?" echoes,
+              // and the hole's descendants (application results,
+              // constraints, discards) stay silent too
+              let lines =
+                  [ "type Cmd = | Deploy of int"
+                    "let deploy a = 1 + \"x\""
+                    "match Deploy 1 with"
+                    "| Deploy a -> print (show (deploy a))" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "b.weir" lines
+              let errors = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.hasLength errors 1 "ONE real error, zero echoes"
+              Expect.stringContains errors[0].Message "expected int, got string" "the real error"
+
+              // B5: an ERRORED statement still surfaces its command-head
+              // warnings (parse-level walk — no typed tree exists)
+              let lines2 =
+                  [ "let go t ="
+                    "    let e = targ etEnv t"
+                    "    !e"
+                    "        echo hi"
+                    "    print \"ok\"" ]
+
+              let diags2, _, _, _ = Weir.Script.analyzeLines "b2.weir" lines2
+
+              Expect.exists
+                  diags2
+                  (fun d -> d.Code = "cmd-not-found" && d.Message.Contains "targ")
+                  "the errored statement's head warns"
+          }
           test "Args/Env.load near-miss shapes teach ONE-type-name [PLAN-diagnostics-arc A1]" {
               // `Args.load C md` (a space inside the type name) used to
               // fall through to "module Args has no member 'load'" — a
