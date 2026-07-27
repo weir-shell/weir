@@ -7,6 +7,14 @@
 # (regex cannot know scope); micro's lsp-plugin token support is
 # uninvestigated, so micro renders lexical colors only
 # (checked against the keyword set and scanner pins, 2026-07-21).
+#
+# ENGINE: micro is Go RE2 — NO lookbehind, NO lookahead. Rules the
+# richer editors express with lookaround are STATED shortfalls here as
+# `# micro-exempt: <key> (<reason>)` [D:micro-exempt]; the inventory
+# e2e allows an exempt key to have no `# rule:`. This file is the SPEC,
+# but a spec is honest about what its engine cannot say.
+
+# micro-exempt: binder (RE2 has no per-capture-group colours, so `let cli` cannot colour the name apart from the keyword)
 
 filetype: weir
 

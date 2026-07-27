@@ -773,15 +773,28 @@ if command -v python3 >/dev/null 2>&1; then
     # invisible here; per-kind escape laws are verified by eye on the
     # flagship (git-subrepo's encodeSubref @-string line is the canary,
     # and a stale INSTALLED syntax copy shows there too)
+    # the drift rule, AMENDED for engine capability [D:micro-exempt]: add
+    # to both or neither, UNLESS a grammar's engine cannot express it —
+    # then the shortfall is STATED in that grammar's header
+    # (`# micro-exempt: <key> (<reason>)`) and the inventory allows it.
+    # micro is Go RE2 (no lookaround); a stated exemption keeps the rich
+    # editors rich without shipping a micro rule that is actively wrong.
     python3 - "$(dirname "$0")/.." <<'PYEOF' || fail "grammar inventories diverge (micro vs tmLanguage)"
 import json, re, sys
 root = sys.argv[1]
-micro = set(re.findall(r"^\s*# rule: ([\w-]+)$", open(f"{root}/editors/micro/weir.yaml").read(), re.M))
+src = open(f"{root}/editors/micro/weir.yaml").read()
+micro = set(re.findall(r"^\s*# rule: ([\w-]+)$", src, re.M))
+# stated exemptions: `# micro-exempt: <key> (<reason>)` — reason REQUIRED
+exempt = dict(re.findall(r"^\s*# micro-exempt: ([\w-]+) \((.+)\)$", src, re.M))
 tm = set(json.load(open(f"{root}/editors/vscode/syntaxes/weir.tmLanguage.json"))["repository"].keys())
-if micro != tm:
-    print("micro-only:", sorted(micro - tm), " tm-only:", sorted(tm - micro))
+redundant = sorted(set(exempt) & micro)       # exempt AND present = a lie
+missing = sorted(tm - micro - set(exempt))     # tm rule, no micro rule, no exemption
+micro_only = sorted(micro - tm)
+if redundant or missing or micro_only:
+    print("micro-only:", micro_only, " tm-only(unexempted):", missing,
+          " redundant-exempt:", redundant)
     sys.exit(1)
-print(f"inventories match ({len(tm)} rules)")
+print(f"inventories match ({len(micro)} rules, {len(exempt)} stated micro-exempt)")
 PYEOF
     echo "e2e ok: grammar inventories match (micro == tmLanguage)"
 

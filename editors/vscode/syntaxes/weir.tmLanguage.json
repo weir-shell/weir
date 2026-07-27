@@ -37,6 +37,9 @@
       "include": "#command-single-quote"
     },
     {
+      "include": "#binder"
+    },
+    {
       "include": "#keywords"
     },
     {
@@ -236,6 +239,17 @@
     "member": {
       "match": "\\.[a-z_][A-Za-z0-9_]*",
       "name": "variable.other.member.weir"
+    },
+    "binder": {
+      "match": "\\b(let|fun)\\s+([a-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.weir"
+        },
+        "2": {
+          "name": "variable.weir"
+        }
+      }
     }
   }
 }

@@ -138,6 +138,25 @@ friction entries deserve a re-read under it.
   pin, the echo's double-force caught at 22 pulls where the property
   allows 11, before the pin was an hour old).
 
+## Editor-grammar drift rule (engine-capability amended)
+
+A highlighting rule is added to BOTH the micro `.yaml` (the spec) and
+the VS Code tmLanguage, or NEITHER — a rule in one only is DRIFT (the
+inventory e2e proves rule PRESENCE, keyed by `# rule:` / repository
+keys). AMENDMENT [D:micro-exempt]: the drift rule prevents NEGLECT, not
+capability gaps — where a grammar's ENGINE cannot express a rule (micro
+is Go RE2: no lookaround), the shortfall is STATED in that grammar's
+header as `# micro-exempt: <key> (<reason>)`, and the inventory allows
+it. The reason is per-key, so the allowlist is DOCUMENTATION, not a
+hole (a reader of the micro file learns what it can't do rather than
+assuming completeness). Pretending a capability boundary is a
+maintenance question would either hold the rich editors down or ship a
+micro rule that is actively wrong (mis-painting `sh -c '…'` as a type
+var is worse than mis-painting `'a` as a string). The worked example:
+`type_param` — tree-sitter (external scanner) and TextMate (lookahead)
+distinguish `'a` from `'x'`; micro's RE2 cannot peek for the closing
+quote, so it is exempt with that reason.
+
 ## Fuzzer grammar membership
 
 New assembler/grammar features add their line shapes to the fuzzer's
