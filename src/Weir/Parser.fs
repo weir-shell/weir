@@ -1113,7 +1113,11 @@ let private singleQuoted =
 // so name the two honest spellings. Shared by `$x` and `$@xs` — the
 // scalar path teaches its own fix, the splat path teaches per-element.
 let private notMidWord (teach: string) : Parser<unit, unit> =
-    (previousCharSatisfiesNot (fun c -> c = ' ' || c = '\t') >>. failFatally teach)
+    // consume the '$' then anchor back [D:anchor-before-read]: the sibling
+    // cmdArg alternatives all fail at the '$', so a non-consuming fatal
+    // merges their expected-set into a dump — consuming clears it
+    (previousCharSatisfiesNot (fun c -> c = ' ' || c = '\t') >>. getPosition
+     >>= fun at -> pchar '$' >>. failFatallyAt at teach)
     <|> preturn ()
 
 let private spliceVar =
@@ -1214,8 +1218,12 @@ let private commandSegment
             else
                 fail "not an external command"
 
-    (lookAhead (pstring "$@")
-     >>. failFatally
+    // consume the trigger, then anchor back [D:anchor-before-read]: a
+    // non-consuming fatal here merges the head alternative's expected-set
+    (getPosition .>> pstring "$@"
+     >>= fun at ->
+         failFatallyAt
+             at
              "a splat cannot head a command (N words would be N heads); a command head is a literal — branch the whole command line")
     <|> (attempt head .>>. many argP)
     |>> fun ((kind, prog, span), args) ->
@@ -1646,6 +1654,26 @@ let private topLet (r: Resolver) =
                 withSpine (rhsP .>> eof) |>> fun rhs -> SLet(name, curryParams ps rhs)
     )
 
+// `let <keyword>` [D:anchor-before-read]: a keyword in the binder-name
+// slot is always an error — DOMINATE at the word so its teaching is not
+// buried under the let-parsers' merged backtrack. Must fire OUTSIDE any
+// attempt (topLet's attempt would swallow the fatal); the peek engages
+// ONLY when the name is reserved, so every real binder falls through.
+let private letKeywordGuard: Parser<Stmt, unit> =
+    attempt (
+        keyword "let" >>. getPosition .>>. spanned rawWord
+        >>= fun (at, (w, _)) ->
+            if w = "function" || keywords.Contains w then
+                preturn (at, w)
+            else
+                fail "real binder"
+    )
+    >>= fun (at, w) ->
+        if w = "function" then
+            failFatallyAt at "'function' is reserved; write 'fun x -> match x with'"
+        else
+            failFatallyAt at $"'{w}' is a keyword"
+
 let private stmtWith (r: Resolver) =
     ws
     >>. choice
@@ -1664,6 +1692,7 @@ let private stmtWith (r: Resolver) =
                   .>> eof
               )
               |>> SLetPat
+              letKeywordGuard
               topLet r
               cmdLine r .>> eof |>> SCmd
               (seqExpr >>= pipeOrHint) .>> eof |>> SExpr ]

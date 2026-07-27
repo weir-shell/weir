@@ -866,6 +866,20 @@ echo "$out" | grep -qF "'|' chains commands" || fail "bare-pipe teaching text un
 echo "$out" | grep -qvF "Expecting:" || fail "clean message, no expecting-list: $out"
 echo "e2e ok: bare-pipe caret anchors on the '|', clean teaching message"
 
+# message domination: teaching fatals surface cleanly, not buried under an
+# expecting-list; reserved-word gate stays fall-through-safe [PLAN-message-domination]
+printf 'let rec = 1\n' > "$ckdir/dom.weir"
+out=$($BIN check --json "$ckdir/dom.weir" || true)
+echo "$out" | grep -qF '"line":1,"col":5' || fail "reserved-word caret on the word: $out"
+echo "$out" | grep -qF "'rec' is a keyword" || fail "reserved teaching present: $out"
+echo "$out" | grep -qvF "Expecting:" || fail "no buried expecting-list: $out"
+printf '$@xs foo\n' > "$ckdir/dom2.weir"
+out=$($BIN check --json "$ckdir/dom2.weir" || true)
+echo "$out" | grep -qF "a splat cannot head a command" || fail "splat-head teaching surfaces: $out"
+printf 'let x = if true then 1 else 2\n' > "$ckdir/dom3.weir"
+$BIN check "$ckdir/dom3.weir" >/dev/null 2>&1 || fail "keyword fall-through must still parse (if)"
+echo "e2e ok: teaching fatals dominate; the reserved-word gate stays fall-through-safe"
+
 printf 'print "clean"\n' > "$ckdir/clean.weir"
 out=$($BIN check "$ckdir/clean.weir"); rc=$?
 [ $rc -eq 0 ] && [ -z "$out" ] || fail "clean file must exit 0 silently (rc=$rc out=$out)"

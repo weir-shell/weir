@@ -3697,6 +3697,43 @@ let optionSweepTests =
               Expect.equal (at "range step is zero" [ "let x = [1..0..5]" ]) [ (1, 13) ] "range step: on the 0"
               Expect.equal (at "duplicate parameter" [ "let f a a = 1" ]) [ (1, 9) ] "dup param: on the SECOND binder"
           }
+          test "message domination: the teaching fatal surfaces CLEANLY, not buried [D:anchor-before-read]" {
+              // finding-class (b): correct caret, but a non-consuming fatal
+              // merged the competitors' expected-set into a dump. Now the
+              // teaching wins its spot — pin the caret AND the absence of
+              // the raw expecting-list (the burial is the bug).
+              let sole (line: string) =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+
+                  match ds |> List.filter (fun d -> d.Severity = "error") with
+                  | [ d ] -> d.Line, d.Col, d.Message
+                  | other -> failtest $"expected ONE error, got {other}"
+
+              let clean (teach: string) (line: string) expectedCol =
+                  let l, c, msg = sole line
+                  Expect.equal (l, c) (1, expectedCol) $"caret for: {line}"
+                  Expect.stringContains msg teach $"teaching present: {line}"
+                  Expect.isFalse (msg.Contains "Expecting:") $"no expecting-list dump: {line} -> {msg}"
+
+              clean "a splat cannot head a command" "$@xs foo" 1
+              clean "a splice cannot join a word" "echo --flag=$x" 13
+              clean "a splat cannot join a word" "echo a$@x" 7
+              clean "'function' is reserved" "let function = 1" 5
+              clean "'rec' is a keyword" "let rec = 1" 5
+              clean "'mutable' is a keyword" "let mutable = 1" 5
+
+              // the reserved-word domination is GATED to the binder slot: a
+              // keyword must still fall through to its own parser
+              let okParses (line: string) =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+
+                  Expect.isEmpty
+                      (ds |> List.filter (fun d -> d.Severity = "error" && d.Code = "parse"))
+                      $"parses: {line}"
+
+              okParses "let x = if true then 1 else 2"
+              okParses "let y = 1 in print y"
+          }
           test "value-headed pipeline: external head feeds; library head keeps the hint [D:value-headed-pipe]" {
               // resolution decides — an EXTERNAL head after a value `|`
               // desugars to a pipe into the command (stdin), reusing the

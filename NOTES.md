@@ -1,5 +1,37 @@
 # Spike Notes
 
+## Message domination — the teaching fatal wins its spot (2026-07-27)
+
+Finding-class (b) from the anchor sweep, closed. Those sites had the
+CORRECT caret but their teaching was buried under a raw FParsec
+expecting-list, because a NON-consuming `fail`/`failFatally` fails
+where sibling alternatives also failed and FParsec MERGES their
+expected-set. Fix: the same consume-then-anchor as the caret sweep —
+consuming the trigger clears the competitors, then `failFatallyAt`
+seeks back.
+
+SPLAT family (splat head `$@`, splice/splat mid-word ×2): these spots
+are always errors, no fall-through, so consume-then-anchor dominates
+cleanly. RESERVED-WORD in the binder name (`let function/rec/mutable`)
+was the CRUX: the shared `ident`/`notKeyword` must stay NON-fatal
+because a keyword there falls through to its own parser (`many1
+postfixAtom` stops at `in` so `1 in y` closes its let; `let x = if …`
+reaches ifExpr). A blanket fatal breaks the grammar. So a dedicated
+`letKeywordGuard` gates the domination to the `let <name>` slot and
+fires OUTSIDE topLet's `attempt` — FParsec's `attempt` BACKTRACKS
+fatals too, so a fatal inside it is swallowed; the guard peeks, and
+engages only when the name is reserved, so real binders fall through.
+
+Two findings remain (their own bless): (i) **neg-int-out-of-range**
+is contested between `negIntLit` and the unary-minus operator's
+operand — both hit int-out-of-range (cols 9 vs 10), neither
+dominates, so the clean message wins and the caret drift stays; (ii)
+**reserved word in PARAM/FIELD position** (`let f rec`, `{ let = 1 }`,
+`type T = { let: int }`) fails at distinct sites with a generic
+"expecting '='", not the keyword teaching — out of the binder-name
+scope fixed here. Finding-class (c), the foldChain reifier drift, is
+untouched.
+
 ## The bare-pipe caret, and the anchor-before-the-read sweep (2026-07-27)
 
 The parked bare-pipe narrow question ("where should a bare-`|` fatal
