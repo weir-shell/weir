@@ -150,6 +150,10 @@
         {
           "type": "type_head",
           "named": true
+        },
+        {
+          "type": "type_param",
+          "named": true
         }
       ]
     }
@@ -406,6 +410,10 @@
   {
     "type": "type",
     "named": false
+  },
+  {
+    "type": "type_param",
+    "named": true
   },
   {
     "type": "when",

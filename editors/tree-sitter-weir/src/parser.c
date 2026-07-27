@@ -9,10 +9,10 @@
 #define LANGUAGE_VERSION 14
 #define STATE_COUNT 18
 #define LARGE_STATE_COUNT 14
-#define SYMBOL_COUNT 78
+#define SYMBOL_COUNT 79
 #define ALIAS_COUNT 0
-#define TOKEN_COUNT 67
-#define EXTERNAL_TOKEN_COUNT 0
+#define TOKEN_COUNT 68
+#define EXTERNAL_TOKEN_COUNT 1
 #define FIELD_COUNT 1
 #define MAX_ALIAS_SEQUENCE_LENGTH 3
 #define MAX_RESERVED_WORD_SET_SIZE 0
@@ -86,17 +86,18 @@ enum ts_symbol_identifiers {
   anon_sym_COMMA = 64,
   anon_sym_COLON = 65,
   sym_stray = 66,
-  sym_source_file = 67,
-  sym__item = 68,
-  sym_let_head = 69,
-  sym_type_head = 70,
-  sym_keyword = 71,
-  sym_boolean = 72,
-  sym_interp_string = 73,
-  sym_operator = 74,
-  sym_punctuation = 75,
-  aux_sym_source_file_repeat1 = 76,
-  aux_sym_interp_string_repeat1 = 77,
+  sym_type_param = 67,
+  sym_source_file = 68,
+  sym__item = 69,
+  sym_let_head = 70,
+  sym_type_head = 71,
+  sym_keyword = 72,
+  sym_boolean = 73,
+  sym_interp_string = 74,
+  sym_operator = 75,
+  sym_punctuation = 76,
+  aux_sym_source_file_repeat1 = 77,
+  aux_sym_interp_string_repeat1 = 78,
 };
 
 static const char * const ts_symbol_names[] = {
@@ -167,6 +168,7 @@ static const char * const ts_symbol_names[] = {
   [anon_sym_COMMA] = ",",
   [anon_sym_COLON] = ":",
   [sym_stray] = "stray",
+  [sym_type_param] = "type_param",
   [sym_source_file] = "source_file",
   [sym__item] = "_item",
   [sym_let_head] = "let_head",
@@ -248,6 +250,7 @@ static const TSSymbol ts_symbol_map[] = {
   [anon_sym_COMMA] = anon_sym_COMMA,
   [anon_sym_COLON] = anon_sym_COLON,
   [sym_stray] = sym_stray,
+  [sym_type_param] = sym_type_param,
   [sym_source_file] = sym_source_file,
   [sym__item] = sym__item,
   [sym_let_head] = sym_let_head,
@@ -527,6 +530,10 @@ static const TSSymbolMetadata ts_symbol_metadata[] = {
     .named = false,
   },
   [sym_stray] = {
+    .visible = true,
+    .named = true,
+  },
+  [sym_type_param] = {
     .visible = true,
     .named = true,
   },
@@ -1260,20 +1267,20 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
 }
 
 static const TSLexMode ts_lex_modes[STATE_COUNT] = {
-  [0] = {.lex_state = 0},
-  [1] = {.lex_state = 11},
-  [2] = {.lex_state = 11},
-  [3] = {.lex_state = 11},
-  [4] = {.lex_state = 11},
-  [5] = {.lex_state = 11},
-  [6] = {.lex_state = 11},
-  [7] = {.lex_state = 11},
-  [8] = {.lex_state = 11},
-  [9] = {.lex_state = 11},
-  [10] = {.lex_state = 11},
-  [11] = {.lex_state = 11},
-  [12] = {.lex_state = 11},
-  [13] = {.lex_state = 11},
+  [0] = {.lex_state = 0, .external_lex_state = 1},
+  [1] = {.lex_state = 11, .external_lex_state = 1},
+  [2] = {.lex_state = 11, .external_lex_state = 1},
+  [3] = {.lex_state = 11, .external_lex_state = 1},
+  [4] = {.lex_state = 11, .external_lex_state = 1},
+  [5] = {.lex_state = 11, .external_lex_state = 1},
+  [6] = {.lex_state = 11, .external_lex_state = 1},
+  [7] = {.lex_state = 11, .external_lex_state = 1},
+  [8] = {.lex_state = 11, .external_lex_state = 1},
+  [9] = {.lex_state = 11, .external_lex_state = 1},
+  [10] = {.lex_state = 11, .external_lex_state = 1},
+  [11] = {.lex_state = 11, .external_lex_state = 1},
+  [12] = {.lex_state = 11, .external_lex_state = 1},
+  [13] = {.lex_state = 11, .external_lex_state = 1},
   [14] = {.lex_state = 1},
   [15] = {.lex_state = 1},
   [16] = {.lex_state = 1},
@@ -1345,6 +1352,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(1),
     [anon_sym_COLON] = ACTIONS(1),
     [sym_stray] = ACTIONS(1),
+    [sym_type_param] = ACTIONS(1),
   },
   [STATE(1)] = {
     [sym_source_file] = STATE(17),
@@ -1420,6 +1428,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(25),
     [anon_sym_COLON] = ACTIONS(27),
     [sym_stray] = ACTIONS(7),
+    [sym_type_param] = ACTIONS(9),
   },
   [STATE(2)] = {
     [sym__item] = STATE(3),
@@ -1494,6 +1503,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(25),
     [anon_sym_COLON] = ACTIONS(27),
     [sym_stray] = ACTIONS(31),
+    [sym_type_param] = ACTIONS(33),
   },
   [STATE(3)] = {
     [sym__item] = STATE(3),
@@ -1568,6 +1578,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(64),
     [anon_sym_COLON] = ACTIONS(67),
     [sym_stray] = ACTIONS(37),
+    [sym_type_param] = ACTIONS(40),
   },
   [STATE(4)] = {
     [ts_builtin_sym_end] = ACTIONS(70),
@@ -1633,6 +1644,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(70),
     [anon_sym_COLON] = ACTIONS(74),
     [sym_stray] = ACTIONS(74),
+    [sym_type_param] = ACTIONS(70),
   },
   [STATE(5)] = {
     [ts_builtin_sym_end] = ACTIONS(76),
@@ -1698,6 +1710,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(76),
     [anon_sym_COLON] = ACTIONS(78),
     [sym_stray] = ACTIONS(78),
+    [sym_type_param] = ACTIONS(76),
   },
   [STATE(6)] = {
     [ts_builtin_sym_end] = ACTIONS(70),
@@ -1763,6 +1776,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(70),
     [anon_sym_COLON] = ACTIONS(74),
     [sym_stray] = ACTIONS(74),
+    [sym_type_param] = ACTIONS(70),
   },
   [STATE(7)] = {
     [ts_builtin_sym_end] = ACTIONS(70),
@@ -1828,6 +1842,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(70),
     [anon_sym_COLON] = ACTIONS(74),
     [sym_stray] = ACTIONS(74),
+    [sym_type_param] = ACTIONS(70),
   },
   [STATE(8)] = {
     [ts_builtin_sym_end] = ACTIONS(82),
@@ -1893,6 +1908,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(82),
     [anon_sym_COLON] = ACTIONS(84),
     [sym_stray] = ACTIONS(84),
+    [sym_type_param] = ACTIONS(82),
   },
   [STATE(9)] = {
     [ts_builtin_sym_end] = ACTIONS(86),
@@ -1958,6 +1974,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(86),
     [anon_sym_COLON] = ACTIONS(88),
     [sym_stray] = ACTIONS(88),
+    [sym_type_param] = ACTIONS(86),
   },
   [STATE(10)] = {
     [ts_builtin_sym_end] = ACTIONS(90),
@@ -2023,6 +2040,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(90),
     [anon_sym_COLON] = ACTIONS(92),
     [sym_stray] = ACTIONS(92),
+    [sym_type_param] = ACTIONS(90),
   },
   [STATE(11)] = {
     [ts_builtin_sym_end] = ACTIONS(94),
@@ -2088,6 +2106,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(94),
     [anon_sym_COLON] = ACTIONS(96),
     [sym_stray] = ACTIONS(96),
+    [sym_type_param] = ACTIONS(94),
   },
   [STATE(12)] = {
     [ts_builtin_sym_end] = ACTIONS(98),
@@ -2153,6 +2172,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(98),
     [anon_sym_COLON] = ACTIONS(100),
     [sym_stray] = ACTIONS(100),
+    [sym_type_param] = ACTIONS(98),
   },
   [STATE(13)] = {
     [ts_builtin_sym_end] = ACTIONS(102),
@@ -2218,6 +2238,7 @@ static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {
     [anon_sym_COMMA] = ACTIONS(102),
     [anon_sym_COLON] = ACTIONS(104),
     [sym_stray] = ACTIONS(104),
+    [sym_type_param] = ACTIONS(102),
   },
 };
 
@@ -2334,9 +2355,29 @@ static const TSParseActionEntry ts_parse_actions[] = {
   [128] = {.entry = {.count = 1, .reusable = true}},  ACCEPT_INPUT(),
 };
 
+enum ts_external_scanner_symbol_identifiers {
+  ts_external_token_type_param = 0,
+};
+
+static const TSSymbol ts_external_scanner_symbol_map[EXTERNAL_TOKEN_COUNT] = {
+  [ts_external_token_type_param] = sym_type_param,
+};
+
+static const bool ts_external_scanner_states[2][EXTERNAL_TOKEN_COUNT] = {
+  [1] = {
+    [ts_external_token_type_param] = true,
+  },
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+void *tree_sitter_weir_external_scanner_create(void);
+void tree_sitter_weir_external_scanner_destroy(void *);
+bool tree_sitter_weir_external_scanner_scan(void *, TSLexer *, const bool *);
+unsigned tree_sitter_weir_external_scanner_serialize(void *, char *);
+void tree_sitter_weir_external_scanner_deserialize(void *, const char *, unsigned);
+
 #ifdef TREE_SITTER_HIDE_SYMBOLS
 #define TS_PUBLIC
 #elif defined(_WIN32)
@@ -2373,6 +2414,15 @@ TS_PUBLIC const TSLanguage *tree_sitter_weir(void) {
     .lex_fn = ts_lex,
     .keyword_lex_fn = ts_lex_keywords,
     .keyword_capture_token = sym_identifier,
+    .external_scanner = {
+      &ts_external_scanner_states[0][0],
+      ts_external_scanner_symbol_map,
+      tree_sitter_weir_external_scanner_create,
+      tree_sitter_weir_external_scanner_destroy,
+      tree_sitter_weir_external_scanner_scan,
+      tree_sitter_weir_external_scanner_serialize,
+      tree_sitter_weir_external_scanner_deserialize,
+    },
     .primary_state_ids = ts_primary_state_ids,
   };
   return &language;

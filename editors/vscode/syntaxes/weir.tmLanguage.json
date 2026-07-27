@@ -34,6 +34,9 @@
       "include": "#plain-string"
     },
     {
+      "include": "#type-param"
+    },
+    {
       "include": "#command-single-quote"
     },
     {
@@ -250,6 +253,10 @@
           "name": "variable.weir"
         }
       }
+    },
+    "type-param": {
+      "match": "'[a-zA-Z_][A-Za-z0-9_]*(?![^\\n]*'(?![A-Za-z0-9_]))",
+      "name": "entity.name.type.weir"
     }
   }
 }

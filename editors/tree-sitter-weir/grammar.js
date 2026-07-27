@@ -12,6 +12,9 @@ module.exports = grammar({
 
   extras: $ => [/[ \t\r\n]/, $.comment],
 
+  // external scanner: `'a` (type param) vs `'echo x'` (command raw string)
+  externals: $ => [$.type_param],
+
   word: $ => $.identifier,
 
   rules: {
@@ -27,6 +30,7 @@ module.exports = grammar({
         $.boolean,
         $.interp_string,
         $.string,
+        $.type_param,
         $.raw_string,
         $.splat,
         $.sigil,

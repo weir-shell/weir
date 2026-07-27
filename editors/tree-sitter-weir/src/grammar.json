@@ -47,6 +47,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "type_param"
+        },
+        {
+          "type": "SYMBOL",
           "name": "raw_string"
         },
         {
@@ -681,7 +685,12 @@
   ],
   "conflicts": [],
   "precedences": [],
-  "externals": [],
+  "externals": [
+    {
+      "type": "SYMBOL",
+      "name": "type_param"
+    }
+  ],
   "inline": [],
   "supertypes": [],
   "reserved": {}

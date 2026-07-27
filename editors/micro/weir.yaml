@@ -15,6 +15,7 @@
 # but a spec is honest about what its engine cannot say.
 
 # micro-exempt: binder (RE2 has no per-capture-group colours, so `let cli` cannot colour the name apart from the keyword)
+# micro-exempt: type-param (RE2 cannot peek for a closing quote to tell `'a` (type var) from `'echo x'` (command raw string); tree-sitter uses an external scanner, TextMate a lookahead)
 
 filetype: weir
 

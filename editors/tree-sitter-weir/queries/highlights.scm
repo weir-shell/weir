@@ -21,6 +21,8 @@
 
 (constructor) @type
 
+; type params `'a` (external scanner; distinct from command raw strings)
+(type_param) @type
 (attribute) @attribute
 
 (splat) @punctuation.special
