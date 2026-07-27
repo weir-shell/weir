@@ -1,5 +1,27 @@
 # Spike Notes
 
+## `| complete` joins the discard family — the one-cell gap (2026-07-27)
+
+Live dogfooding: a bare `git status | complete` statement was
+ACCEPTED while `| succeeds` (bool) and `| exitCode` (int) were
+rejected as discards. The discard check (Script.checkStatement, the
+`SCmd` arm) matched `TBool` and the exit-code spine but not the
+`Completed` record — `complete` predated the exit-code session and
+never got its cell. Fix: one arm, keyed on the distinctive value type
+`TNamed("Completed", _)` (a type match, not a spine check — it covers
+every route uniformly, unlike `exitCode` which needs the spine because
+`int` is ambiguous). Message in the family voice with the per-cell use
+clause: "computes a Completed record and discards it — bind it (let r
+= ... | complete) or read a field (.exitCode, .stdout)"; caret at the
+reifier stage (1:14, matching `succeeds`, pinned exact — the
+anchor-before-read lesson). SWEEP confirmed: four cells, four stated
+positions (SEMANTICS reifier law) — `orFail` is EXEMPT because its
+result is unit (the assert idiom), verified by type not assumed. The
+binding path (`let r = ... | complete`) is a let-RHS, never reaches
+the SCmd arm — unchanged, pinned; value-headed `... | complete` was
+already caught by the expression `discardError` (uniform with its
+value-headed siblings); sibling pins unmoved.
+
 ## The last keyword slot — let-destructure, closed by a lexical scan (2026-07-27)
 
 `let (rec) = 1` was the one slot left. The draft priced two costly

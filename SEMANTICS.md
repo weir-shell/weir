@@ -97,7 +97,13 @@ weir rejects rather than guesses.
   capture/discard contexts at parse (`$(… | exitCode)`,
   `!(… | exitCode)`, district lines, bare statements — each error
   teaches the spelling that fits); `complete` remains the
-  captured-code cell.
+  captured-code cell. As a BARE STATEMENT the discard dimension
+  completes the table: a non-unit result thrown away is the discard
+  family, erroring at the reifier stage — `succeeds`→bool ("use it in
+  a condition"), `exitCode`→int (the `set +e; rc=$?` teaching),
+  `complete`→Completed ("read a field"); `orFail`→unit is EXEMPT
+  because unit IS the statement idiom (the assert), not by oversight.
+  Four cells, four stated positions.
 - **The consumed-separator law** [D:seq-commit] [D:arm-commit]: a
   consumed separator COMMITS to its continuation — `;` to its next
   element, an arm's `|` to its arm, a record literal to its fields

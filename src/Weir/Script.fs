@@ -1705,6 +1705,18 @@ let checkStatement
                                 + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code"
                               Origin = None }
                     )
+                // `| complete` captures a Completed record — reading it is
+                // the point, so discarding it is the family mistake
+                | TNamed("Completed", _) ->
+                    Error(
+                        typed
+                            StmtTag.Cmd
+                            { Span = te.Span
+                              Message =
+                                "this statement computes a Completed record and discards it — bind it "
+                                + "(let r = ... | complete) or read a field (.exitCode, .stdout)"
+                              Origin = None }
+                    )
                 | _ ->
                     Ok
                         { Kind = KCmd te

@@ -4873,6 +4873,29 @@ let agentFindingsTests =
                   (fun d -> d.Message.Contains "bind it (let rc = <command> | exitCode), match on it")
                   "the set +e muscle-memory hint"
           }
+          test "a discarded | complete joins the family — Completed record, stage caret [D:exit-reifiers]" {
+              // the one-cell gap: a bare `| complete` statement was accepted
+              // while its bool/int siblings were rejected. Now it errors in
+              // the family's voice at the reifier STAGE (exact col, not
+              // inherited — the anchor-before-read lesson).
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ "git status | complete" ]
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (1, 14) "caret on the `complete` stage, matching succeeds"
+                  Expect.stringContains d.Message "computes a Completed record and discards it" "the record voice"
+                  Expect.stringContains d.Message "read a field (.exitCode, .stdout)" "the per-cell use clause"
+              | other -> failtest $"expected ONE discard error, got {other}"
+
+              // the accepting path is unchanged: binding still works, and
+              // orFail (unit) is exempt by design, not by oversight
+              let ok (line: string) =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+                  Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"accepted: {line}"
+
+              ok "let r = git status | complete"
+              ok "git status | orFail \"boom\""
+          }
           test "orFail carries its message expression" {
               match Weir.Parser.parseLine cmdResolver "git fetch | orFail \"boom\"" with
               | Ok(SCmd { Kind = EApp(_, _) }) -> ()
