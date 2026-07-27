@@ -1,5 +1,30 @@
 # Spike Notes
 
+## The last keyword slot — let-destructure, closed by a lexical scan (2026-07-27)
+
+`let (rec) = 1` was the one slot left. The draft priced two costly
+routes (parse a pattern in the guard, or narrow SLetPat's attempt —
+predicted to stop, since that attempt IS the plain-vs-destructure-vs-
+letin discrimination). The user added option 1b, the cheapest that
+works: finding a keyword in an identifier slot between `let` and the
+top-level `=` is LEXICAL, not structural — so extend letKeywordGuard's
+bareword scan to skip pattern delimiters `()[]{},;_` and stop at `=`,
+no pattern parse at all. It stays outside SLetPat's attempt (a stmtWith
+alternative), so the fatal escapes. Landed clean: `let (rec)`→1:6,
+`let (a, rec)`→1:9.
+
+The one bite: the scan flagged `true`/`false` (both live in the
+keyword set), but those are LITERAL patterns — a refutable-binder
+check error, not a name error. Excluded them per patWord's rule; the
+existing refutable-binder pin caught it immediately. Option 2 was not
+attempted — the prediction that it stops held, and framing it as
+expected (the C-neg-int way) kept the session from a heroic attempt.
+
+That closes the whole message-domination arc: every keyword-name slot
+— top-level binder, params, record-decl field, record-literal field,
+match-arm/lambda/param/destructure pattern binders — now dominates.
+ZERO open keyword slots.
+
 ## The last two keyword-domination slots (2026-07-27)
 
 Both keyword slots the A+B session left as findings, now closed

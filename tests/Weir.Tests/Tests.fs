@@ -3811,6 +3811,8 @@ let optionSweepTests =
               clean "let z = match 1 with | rec -> 2" 24 // match arm (arm-commit)
               clean "let g = fun (rec) -> 1" 14 // lambda param (committed past fun)
               clean "let f (rec) = 1" 8 // curried param
+              clean "let (rec) = 1" 6 // let-destructure — the lexical scan (1b)
+              clean "let (a, rec) = (1, 2)" 9 // destructure tuple
 
               // fall-through: every legitimate pattern form is unaffected
               let okParses (line: string) =
@@ -3823,6 +3825,19 @@ let optionSweepTests =
               okParses "let z = match 5 with | n when n > 0 -> 1 | _ -> 0"
               okParses "let z = match true with | true -> 1 | false -> 0"
               okParses "let z = match [1] with | [x] -> x | _ -> 0"
+              // the binder-scan skips pattern delimiters and stops at `=`:
+              // an RHS keyword is not a binder keyword, and true/false in a
+              // destructure are LITERAL patterns (a check error, not parse)
+              okParses "let go = (let (a, b) = (1, 2) in a)"
+
+              let noParseError (line: string) =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+
+                  Expect.isEmpty
+                      (ds |> List.filter (fun d -> d.Severity = "error" && d.Code = "parse"))
+                      $"no PARSE error (check is fine): {line}"
+
+              noParseError "let (true, y) = (true, 2) in y" // refutable: a CHECK error, not parse
           }
           test "neg-int overflow dominates; the risk surface is byte-identical [D:anchor-before-read]" {
               // C of the anchor residue: the fix narrows negAtom's attempt so

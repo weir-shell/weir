@@ -1707,18 +1707,29 @@ let private topLet (r: Resolver) =
 // attempt (topLet's attempt would swallow the fatal); the peek engages
 // ONLY when the name is reserved, so every real binder falls through.
 let private letKeywordGuard: Parser<Stmt, unit> =
-    // scan the name AND its simple-ident params [D:anchor-before-read]:
-    // a keyword in any of those slots is always an error. (Keywords inside
-    // a parenthesised PARAM pattern dominate via patWord — committed past
-    // the name; only let-DESTRUCTURE `let (rec) =` stays a finding, inside
-    // SLetPat's plain-vs-destructure attempt.)
+    // scan the whole binder region for a keyword [D:anchor-before-read]:
+    // the name, its params, AND any destructure/param PATTERN. Finding a
+    // reserved word in an identifier slot between `let` and the top-level
+    // `=` is a LEXICAL question, so the scan collects barewords while
+    // skipping pattern delimiters ( ) [ ] { } , ; _ — no pattern parse,
+    // no nesting logic. Fires OUTSIDE any attempt (a stmtWith alternative
+    // before topLet/SLetPat, whose attempts would swallow the fatal); the
+    // scan STOPS at `=`, so a keyword in the RHS never counts as a binder.
+    let binderTok =
+        choice
+            [ getPosition .>>. spanned rawWord .>> ws |>> Some
+              anyOf "()[]{},;_" .>> ws >>% None ]
+
     attempt (
-        keyword "let" >>. many1 (getPosition .>>. spanned rawWord .>> ws)
-        >>= fun words ->
+        keyword "let" >>. many binderTok
+        >>= fun toks ->
             match
-                words
+                toks
+                |> List.choose id
                 |> List.tryPick (fun (at, (w, _)) ->
-                    if w = "function" || keywords.Contains w then
+                    // true/false are LITERAL patterns, not keyword names
+                    // (patWord's rule) — a refutable binder, not a parse error
+                    if (w = "function" || keywords.Contains w) && w <> "true" && w <> "false" then
                         Some(at, w)
                     else
                         None)

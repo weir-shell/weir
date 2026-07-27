@@ -893,6 +893,15 @@ echo "$out" | grep -qF '"line":1,"col":7' || fail "param keyword caret: $out"
 echo "$out" | grep -qF "'rec' is a keyword" || fail "param keyword teaching: $out"
 echo "e2e ok: foldChain anchors on the marker; param/field keyword dominates"
 
+# the last keyword slot: a keyword in a let-destructure pattern dominates
+# via the lexical binder scan [PLAN-let-destructure-keyword]
+printf 'let (rec) = 1\n' > "$ckdir/dk.weir"
+out=$($BIN check --json "$ckdir/dk.weir" || true)
+echo "$out" | grep -qF '"line":1,"col":6' || fail "let-destructure keyword caret: $out"
+echo "$out" | grep -qF "'rec' is a keyword" || fail "destructure keyword teaching: $out"
+echo "$out" | grep -qvF "Expecting:" || fail "destructure keyword not buried: $out"
+echo "e2e ok: let-destructure keyword dominates via the lexical binder scan"
+
 printf 'print "clean"\n' > "$ckdir/clean.weir"
 out=$($BIN check "$ckdir/clean.weir"); rc=$?
 [ $rc -eq 0 ] && [ -z "$out" ] || fail "clean file must exit 0 silently (rc=$rc out=$out)"
