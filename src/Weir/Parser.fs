@@ -282,22 +282,43 @@ let private updateAssign =
     (attrsRejectHere >>% Unchecked.defaultof<_>)
     <|> (updatePath .>> str_ws "=" .>>. commaExpr)
 
+// `{ <keyword> = ` is a field-assign with a reserved name — DOMINATE
+// [D:anchor-before-read] BEFORE the literal-vs-update commit-check
+// [D:arm-commit], which would otherwise bury it in the update path. The
+// decision is inside the attempt (a real field backtracks, no consume);
+// only the fatal escapes, and `{` has already committed the atom.
+let private keywordFieldGuard: Parser<ExprKind, unit> =
+    attempt (
+        getPosition .>>. spanned rawWord .>> ws .>> followedBy (str_ws "=")
+        >>= fun (at, (w, _)) ->
+            if w = "function" || keywords.Contains w then
+                preturn (at, w)
+            else
+                fail "real field"
+    )
+    >>= fun (at, w) ->
+        if w = "function" then
+            failFatallyAt at "'function' is reserved; write 'fun x -> match x with'"
+        else
+            failFatallyAt at $"'{w}' is a keyword"
+
 let private recordLit =
     spanned (
         pchar '{'
         >>. ws
-        >>. choice
-                [ // the consumed-separator law's record instance
-                  // [D:arm-commit]: the literal COMMITS on its head
-                  // (`ident =`, not `==`) — a deep field failure reports
-                  // at ITS site instead of rewinding the whole literal
-                  // into the update alternative's shallower dump
-                  attempt (lookAhead (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=')))
-                  >>. (sepBy1 fieldAssign (str_ws ";") .>> pchar '}')
-                  |>> ERecord
-                  (updateSource .>> keyword "with") .>>. sepBy1 updateAssign (str_ws ";")
-                  .>> pchar '}'
-                  |>> EUpdate ]
+        >>. (keywordFieldGuard
+             <|> choice
+                     [ // the consumed-separator law's record instance
+                       // [D:arm-commit]: the literal COMMITS on its head
+                       // (`ident =`, not `==`) — a deep field failure reports
+                       // at ITS site instead of rewinding the whole literal
+                       // into the update alternative's shallower dump
+                       attempt (lookAhead (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=')))
+                       >>. (sepBy1 fieldAssign (str_ws ";") .>> pchar '}')
+                       |>> ERecord
+                       (updateSource .>> keyword "with") .>>. sepBy1 updateAssign (str_ws ";")
+                       .>> pchar '}'
+                       |>> EUpdate ])
     )
     |>> mkExpr
     .>> ws
@@ -825,14 +846,21 @@ let private segOpp = mkOpp false
 let private pat, private patRef = createParserForwardedToRef<Pattern, unit> ()
 
 let private patWord =
-    attempt (
-        spanned rawWord
-        >>= fun (w, span) ->
-            if w = "true" || w = "false" then
-                preturn (w, span)
-            else
-                notKeyword w >>% (w, span)
-    )
+    // the keyword check DOMINATES [D:anchor-before-read], outside the
+    // word's own attempt: a keyword is never a valid pattern, so where the
+    // context is committed (a match arm past its `|`, a lambda past `fun`)
+    // the fatal surfaces the teaching; where an outer attempt encloses it
+    // (params, destructure) it is swallowed as before — no worse.
+    (attempt (spanned rawWord)
+     >>= fun (w, span) ->
+         if w = "true" || w = "false" then
+             preturn (w, span)
+         elif w = "function" then
+             failFatallyAtCol span.Start.Col "'function' is reserved; write 'fun x -> match x with'"
+         elif keywords.Contains w then
+             failFatallyAtCol span.Start.Col $"'{w}' is a keyword"
+         else
+             preturn (w, span))
     .>> ws
 
 // literal patterns [D:literal-patterns]: int and string pin

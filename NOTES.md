@@ -1,5 +1,30 @@
 # Spike Notes
 
+## The last two keyword-domination slots (2026-07-27)
+
+Both keyword slots the A+B session left as findings, now closed
+(bar one residual). ITEM 2 (pattern binders): `patWord`'s keyword
+check dominates outside its own attempt — and the predictor called
+it exactly. It surfaces where the context is committed: match arm
+(arm-commit `|`), lambda (`fun`), curried param — clean; swallowed
+only for `let (rec) =`, inside SLetPat's plain-vs-destructure attempt.
+That last one is the single remaining finding (a pattern-peeking
+guard or narrowing that commit — out of remit). ITEM 1 (record-literal
+field name) was PREDICTED to possibly need the arm-commit boundary; it
+did NOT — a `keywordFieldGuard` placed right after `{ ws`, before the
+literal-vs-update choice, dominates `{ <keyword> = ` while the
+commit-check stays untouched (decision inside the attempt so real
+fields backtrack; `{` already committed the atom so the fatal
+escapes). The prediction was cautious and the fix was cleaner — the
+inverse of C, where the prediction was right in direction but the
+mechanism cleaner still.
+
+That closes the keyword-domination class down to ONE slot:
+let-destructure. The whole message-domination arc is now: name,
+param, decl-field, record-literal-field, match-arm/lambda/param
+pattern binders — all dominate; only `let (rec) =` and the two
+already-noted commit-boundary shapes remain, each a stated finding.
+
 ## The anchor residue D — the field-type mismatch sibling (2026-07-27)
 
 Session D's residue, closed. Session D anchored the cross-statement

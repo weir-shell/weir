@@ -1,6 +1,7 @@
 # weir — the last two keyword-domination slots
 
-Status: DRAFT — the two findings left by the anchor-residue A+B
+Status: BLESSED (user 2026-07-27), EXECUTING — item 2 first, then 1.
+The two findings left by the anchor-residue A+B
 session (message-domination, [D:anchor-residue-ab]). Both are
 "a keyword in a name-required slot that still buries its teaching",
 but they live in DIFFERENT machinery than the slots already fixed, so
@@ -22,6 +23,16 @@ it?*
 ---
 
 ## 1. record-LITERAL field-name keyword  [`{ let = 1 }` → 1:11 buried]
+
+STATUS: EXECUTED (2026-07-27) — FIXED, no STOP needed. The domination
+lives OUTSIDE the commit-check after all: a `keywordFieldGuard` runs
+right after `{ ws`, BEFORE recordLit's literal-vs-update choice. It
+peeks `<word> =`, and only when the word is a keyword does it fatal
+(the decision is inside the attempt, so a real field backtracks with
+no consume; `{` has already committed the atom, so the fatal escapes).
+The arm-commit boundary is untouched. `{ let = 1 }`/`{ in = 1 }` → the
+keyword teaching at 1:11; valid records and `{ r with x = 2 }` updates
+run byte-identical (pinned end-to-end).
 
 The hard one — it sits ON a commit boundary. `recordLit` discriminates
 a literal from a copy-and-update by an ATTEMPT'd head-check
@@ -51,6 +62,18 @@ and buries.
   (`{ r with x = 1 }`, `{ x = 1 }`) — before/after.
 
 ## 2. keyword in a PATTERN binder  [`let f (rec)` → 1:8 buried]
+
+STATUS: EXECUTED (2026-07-27) — 3 of 4 positions FIXED, 1 finding.
+`patWord`'s keyword check now DOMINATES outside its own attempt
+(consume the word, `failFatallyAtCol` back). Per the predictor it
+surfaces the teaching where the context is committed — MATCH-ARM (past
+its arm-commit `|`), LAMBDA (past `fun`), and curried PARAM all clean;
+it is swallowed only for `let (rec) = …`, whose SLetPat `attempt`
+(the plain-vs-destructure discrimination — a commit boundary, out of
+remit) encloses it. FINDING left: let-destructure keyword, dominating
+it wants a pattern-peeking guard or narrowing SLetPat's attempt. The
+pattern fall-through matrix (constructors, tuples, lists, wildcards,
+`when` guards, true/false) is unaffected; deep fuzz green.
 
 Broader than params: the pattern grammar (`patParens`, `commaPats`,
 the binder pattern atoms) uses the shared `identSpanned` (non-fatal

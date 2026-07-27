@@ -3763,6 +3763,9 @@ let optionSweepTests =
               clean "'rec' is a keyword" "let f rec = 1" 7
               clean "'when' is a keyword" "let f when = 1" 7
               clean "'let' is a keyword" "type T = { let: int }" 12
+              // record-LITERAL field name: a guard BEFORE the arm-commit check
+              clean "'let' is a keyword" "let r = { let = 1 }" 11
+              clean "'in' is a keyword" "let r = { in = 1 }" 11
               // A: foldChain reifier anchors on the MARKER, not the chain end
               clean "must directly follow a single external command" "git | grep x | complete" 16
               clean "must directly follow a single external command" "git | grep x | exitCode" 16
@@ -3785,6 +3788,41 @@ let optionSweepTests =
               okParses "let f x y = x"
               okParses "let (a, b) = (1, 2)"
               okParses "type T = { a: int }"
+          }
+          test "keyword in a pattern binder dominates in committed contexts [D:anchor-before-read]" {
+              // item 2 of the keyword-slots residue: patWord's keyword check
+              // dominates OUTSIDE its own attempt, so a match arm (past its
+              // `|`), a lambda (past `fun`), and a param all surface the
+              // teaching. let-destructure stays a finding (SLetPat's attempt).
+              let sole (line: string) =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+
+                  match ds |> List.filter (fun d -> d.Severity = "error") with
+                  | [ d ] -> d.Line, d.Col, d.Message
+                  | other -> failtest $"expected ONE error, got {other}"
+
+              let clean (line: string) col =
+                  let l, c, msg = sole line
+                  Expect.equal (l, c) (1, col) $"caret: {line}"
+                  Expect.stringContains msg "'rec' is a keyword" $"teaching: {line}"
+                  Expect.isFalse (msg.Contains "Expecting:") $"no expecting-list: {line}"
+                  Expect.isFalse (msg.Contains "Other error messages") $"not buried: {line}"
+
+              clean "let z = match 1 with | rec -> 2" 24 // match arm (arm-commit)
+              clean "let g = fun (rec) -> 1" 14 // lambda param (committed past fun)
+              clean "let f (rec) = 1" 8 // curried param
+
+              // fall-through: every legitimate pattern form is unaffected
+              let okParses (line: string) =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+                  Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"parses: {line}"
+
+              okParses "let z = match Ok 1 with | Ok n -> n | _ -> 0"
+              okParses "let (a, b) = (1, 2)"
+              okParses "let z = match 1 with | _ -> 0"
+              okParses "let z = match 5 with | n when n > 0 -> 1 | _ -> 0"
+              okParses "let z = match true with | true -> 1 | false -> 0"
+              okParses "let z = match [1] with | [x] -> x | _ -> 0"
           }
           test "neg-int overflow dominates; the risk surface is byte-identical [D:anchor-before-read]" {
               // C of the anchor residue: the fix narrows negAtom's attempt so
