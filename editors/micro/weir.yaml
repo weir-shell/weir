@@ -40,7 +40,7 @@ rules:
     - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
     # field/annotation types: the lowercase ident after ':' is a type
     # rule: field-type
-    - type: "(?<=:)\\s*[a-z_][A-Za-z0-9_]*"
+    - type: ":[ \\t]*[a-z_][A-Za-z0-9_]*"
 
     # ---- numbers (int only; ranges lex as int .. int) ----
     # rule: numbers
@@ -74,6 +74,10 @@ rules:
     - symbol.operator: "(==|<>|<=|>=|->|\\.\\.|&&|\\|\\||::)"
     - symbol.operator: "[+\\-*/<>=;,]"
     - symbol.operator: "\\|"
+
+    # ---- module members & field access (ident after '.') ----
+    # rule: member
+    - identifier.var: "\\.[a-z_][A-Za-z0-9_]*"
 
     # ---- field-access shorthand ----
     # rule: field-sugar

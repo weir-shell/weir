@@ -70,6 +70,9 @@
       "include": "#splice"
     },
     {
+      "include": "#member"
+    },
+    {
       "include": "#field-sugar"
     },
     {
@@ -229,6 +232,10 @@
           "name": "entity.name.type.weir"
         }
       }
+    },
+    "member": {
+      "match": "\\.[a-z_][A-Za-z0-9_]*",
+      "name": "variable.other.member.weir"
     }
   }
 }

@@ -36,3 +36,7 @@
 ; binder name [issue 2] — flat siblings, anchored on the ':' punctuation
 ((punctuation) @_colon . (identifier) @type
  (#eq? @_colon ":"))
+
+; module members & field access: the identifier right after '.' [issue 3]
+((operator) @_dot . (identifier) @property
+ (#eq? @_dot "."))

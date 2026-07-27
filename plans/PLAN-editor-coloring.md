@@ -128,7 +128,27 @@ REPL-coloring plan drew (static grammar vs the LSP). Zed gains this
 only if/when Zed's LSP path grows semantic-token support — a separate,
 larger effort.
 
-REMAINING (increment 2 — grammar changes + one clarification):
+INCREMENT 2 (member scope + a bug fix — DONE, tool-verified):
+- **Issue 3** — the VS Code symptom was diagnosed with the real
+  TextMate engine + the LSP: the grammar ALREADY scoped `Args`/`Cli` as
+  `entity.name.type` and emitted NO semantic tokens — "uniform except
+  let" was Nord under-distinguishing PLUS members being unscoped. Fix:
+  module members / field access (`.member`) now scope
+  `variable.other.member` (TextMate + micro) / `@property` (Zed), so
+  `Seq.head` is module(type) + member(member). Verified via the
+  TextMate engine and `tree-sitter query`.
+- **BUG FIX** (caught here): increment 1's micro field-type used
+  `(?<=:)` — micro is Go RE2, which has NO lookbehind. Rewrote it
+  RE2-clean (`:` included in the type match). micro now lookbehind-free
+  (grep-confirmed); inventory synced (23 rules).
+
+REMAINING — the DIFFICULT items, planned separately (see
+PLAN-editor-coloring-hard.md): issue 1 (attribute split, grammar
+change), issue 6 (type-param disambiguation, external scanner), and
+BINDER-NAME scoping (Zed already has it; micro's RE2 cannot isolate the
+name after `let`, so TextMate+micro parity is the open question).
+
+REMAINING (superseded — see the hard-parts plan):
 - **Issue 1** — split the atomic `attribute` token into name + arg
   nodes (regen), then color arg literals; the no-ERROR corpus pin.
 - **Issue 6** — the type-param token per D3 across all three grammars
