@@ -1507,11 +1507,18 @@ let checkStatement
     let r = mkR tenv
 
     let typed (tag: StmtTag) (terr: Check.TypeError) =
-        let physLine, physCol = translate ll terr.Span.Start.Col
+        // an Origin is already physical, recorded by the statement that
+        // owned the access [D:row-provenance] — it bypasses translate
+        let physLine, physCol, physEnd =
+            match terr.Origin with
+            | Some(ol, oc, len) -> ol, oc, Some(ol, oc + len)
+            | None ->
+                let pl, pc = translate ll terr.Span.Start.Col
+                pl, pc, Some(translate ll terr.Span.End.Col)
 
         { PhysLine = physLine
           PhysCol = physCol
-          PhysEnd = Some(translate ll terr.Span.End.Col)
+          PhysEnd = physEnd
           Tag = Some tag
           HasCol = true
           Span = Some terr.Span
@@ -1524,172 +1531,186 @@ let checkStatement
               let physLine, physCol = translate ll w.Span.Start.Col
               physLine, physCol, w.Message ]
 
-    match Parser.parseLineFull r ll.Text with
-    | Error f ->
-        // FParsec's primary error is often IRRELEVANT when the real cause
-        // is an unresolvable command head (the backtrack note buries it).
-        // Retry under the assume-resolver: if that parses, the failure IS
-        // missing commands — name them precisely instead of the dump.
-        let missingHeads =
-            match Parser.parseLineFull (assumeResolver tenv) ll.Text with
-            | Error _ -> []
-            | Ok stmt ->
-                let e =
-                    match stmt with
-                    | SLet(_, e)
-                    | SLetPat(_, e)
-                    | SExpr e
-                    | SCmd e -> Some e
-                    | SType _ -> None
+    // physical translator for the checker's boundary-crossing
+    // positions [D:row-provenance]; reset so non-statement consumers
+    // (Complete, tests) never see a stale statement
+    Check.toPhys.Value <- Some(translate ll)
 
-                let rec heads (e: Expr) =
-                    (match e.Kind with
-                     | ECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
-                     | _ -> [])
-                    @ (exprChildren e |> List.collect heads)
+    try
+        match Parser.parseLineFull r ll.Text with
+        | Error f ->
+            // FParsec's primary error is often IRRELEVANT when the real cause
+            // is an unresolvable command head (the backtrack note buries it).
+            // Retry under the assume-resolver: if that parses, the failure IS
+            // missing commands — name them precisely instead of the dump.
+            let missingHeads =
+                match Parser.parseLineFull (assumeResolver tenv) ll.Text with
+                | Error _ -> []
+                | Ok stmt ->
+                    let e =
+                        match stmt with
+                        | SLet(_, e)
+                        | SLetPat(_, e)
+                        | SExpr e
+                        | SCmd e -> Some e
+                        | SType _ -> None
 
-                e |> Option.map heads |> Option.defaultValue []
+                    let rec heads (e: Expr) =
+                        (match e.Kind with
+                         | ECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                         | _ -> [])
+                        @ (exprChildren e |> List.collect heads)
 
-        match missingHeads with
-        | (prog, span) :: rest ->
-            let physLine, physCol = translate ll span.Start.Col
+                    e |> Option.map heads |> Option.defaultValue []
 
-            let others =
-                match rest |> List.map fst |> List.distinct |> List.filter ((<>) prog) with
-                | [] -> ""
-                | more ->
-                    let joined = String.concat ", " more
-                    $" (also missing: {joined})"
+            match missingHeads with
+            | (prog, span) :: rest ->
+                let physLine, physCol = translate ll span.Start.Col
 
-            Error
-                { PhysLine = physLine
-                  PhysCol = physCol
-                  PhysEnd = Some(translate ll span.End.Col)
-                  Tag = None
-                  HasCol = true
-                  Span = Some span
-                  Parse = true
-                  Message =
-                    $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or run it through sh -c"
-                  Warnings = [] }
-        | [] ->
-            let physLine, physCol, hasCol =
-                match f.Col with
-                | Some col ->
-                    let l, c = translate ll col
-                    l, c, true
-                | None -> ll.Head, 1, false
+                let others =
+                    match rest |> List.map fst |> List.distinct |> List.filter ((<>) prog) with
+                    | [] -> ""
+                    | more ->
+                        let joined = String.concat ", " more
+                        $" (also missing: {joined})"
 
-            Error
-                { PhysLine = physLine
-                  PhysCol = physCol
-                  PhysEnd = None
-                  Tag = None
-                  HasCol = hasCol
-                  Span = None
-                  Parse = true
-                  Message = cleanParseDump ll f.Message
-                  Warnings = [] }
-    | Ok(SType decl) ->
-        match Check.checkDecl tenv decl with
-        | Error terr -> Error(typed StmtTag.Type terr)
-        | Ok tenv' ->
-            Ok
-                { Kind = KType decl
-                  Env = tenv'
-                  Warnings = [] }
-    | Ok(SLetPat(pat, e)) ->
-        match Check.typecheckBinder tenv pat e with
-        | Error terr -> Error(typed StmtTag.LetPat terr)
-        | Ok(te, schemes) ->
-            Ok
-                { Kind = KLetPat(pat, schemes, te)
-                  Env =
-                    { tenv with
-                        Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
-                  Warnings = warningsOf te }
-    | Ok(SLet(name, e)) ->
-        // SLet carries the name as a bare string, so re-derive its own
-        // columns from the statement text (grammar: ws `let` ws name)
-        // [D:squiggle-on-binder]
-        let nameSpan =
-            let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+")
-
-            if m.Success then
-                { Start = { Line = 1; Col = m.Length + 1 }
-                  End =
-                    { Line = 1
-                      Col = m.Length + 1 + name.Length } }
-            else
-                e.Span
-
-        match
-            Check.checkBinderName nameSpan name
-            |> Result.bind (fun () -> Check.typecheckWith tenv e)
-        with
-        | Error terr -> Error(typed StmtTag.Let terr)
-        | Ok(te, cs) ->
-            let scheme = generalizeWith cs te.Ty
-
-            Ok
-                { Kind = KLet(name, scheme, te)
-                  Env =
-                    { tenv with
-                        Values = Map.add name scheme tenv.Values }
-                  Warnings = warningsOf te }
-    | Ok(SCmd e) ->
-        match Check.typecheck tenv e with
-        | Error terr -> Error(typed StmtTag.Cmd terr)
-        | Ok te ->
-            // a bool-valued chain (| succeeds) as a bare statement is a
-            // DISCARDED value, not a stream — the discard family
-            // [D:exit-reifiers]; record-valued (| complete) statements
-            // keep their standing echo behavior
-            let rec exitCodeSpine (t: Check.TypedExpr) =
-                match t.Kind with
-                | Check.TEVar("|exitCoded" | "|exitCodedEnv") -> true
-                | Check.TEApp(f, _) -> exitCodeSpine f
-                | _ -> false
-
-            match te.Ty with
-            | TBool ->
-                Error(
-                    typed
-                        StmtTag.Cmd
-                        { Span = te.Span
-                          Message =
-                            "this statement computes a bool and discards it — bind it "
-                            + "(let ok = ... | succeeds) or use it in a condition" }
-                )
-            // `set +e; cmd; rc=$?` muscle memory lands here [D:exit-reifiers]
-            | TInt when exitCodeSpine te ->
-                Error(
-                    typed
-                        StmtTag.Cmd
-                        { Span = te.Span
-                          Message =
-                            "this statement computes the exit code and discards it — bind it "
-                            + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code" }
-                )
-            | _ ->
-                Ok
-                    { Kind = KCmd te
-                      Env = tenv
-                      Warnings = warningsOf te }
-    | Ok(SExpr e) ->
-        match Check.typecheck tenv e with
-        | Error terr -> Error(typed StmtTag.Expr terr)
-        | Ok te ->
-            match (if gateExprs then discardError te.Ty else None) with
-            | Some msg ->
                 Error
-                    { typed StmtTag.Expr { Span = e.Span; Message = msg } with
-                        Warnings = warningsOf te }
-            | None ->
+                    { PhysLine = physLine
+                      PhysCol = physCol
+                      PhysEnd = Some(translate ll span.End.Col)
+                      Tag = None
+                      HasCol = true
+                      Span = Some span
+                      Parse = true
+                      Message =
+                        $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or run it through sh -c"
+                      Warnings = [] }
+            | [] ->
+                let physLine, physCol, hasCol =
+                    match f.Col with
+                    | Some col ->
+                        let l, c = translate ll col
+                        l, c, true
+                    | None -> ll.Head, 1, false
+
+                Error
+                    { PhysLine = physLine
+                      PhysCol = physCol
+                      PhysEnd = None
+                      Tag = None
+                      HasCol = hasCol
+                      Span = None
+                      Parse = true
+                      Message = cleanParseDump ll f.Message
+                      Warnings = [] }
+        | Ok(SType decl) ->
+            match Check.checkDecl tenv decl with
+            | Error terr -> Error(typed StmtTag.Type terr)
+            | Ok tenv' ->
                 Ok
-                    { Kind = KExpr te
-                      Env = tenv
+                    { Kind = KType decl
+                      Env = tenv'
+                      Warnings = [] }
+        | Ok(SLetPat(pat, e)) ->
+            match Check.typecheckBinder tenv pat e with
+            | Error terr -> Error(typed StmtTag.LetPat terr)
+            | Ok(te, schemes) ->
+                Ok
+                    { Kind = KLetPat(pat, schemes, te)
+                      Env =
+                        { tenv with
+                            Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
                       Warnings = warningsOf te }
+        | Ok(SLet(name, e)) ->
+            // SLet carries the name as a bare string, so re-derive its own
+            // columns from the statement text (grammar: ws `let` ws name)
+            // [D:squiggle-on-binder]
+            let nameSpan =
+                let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+")
+
+                if m.Success then
+                    { Start = { Line = 1; Col = m.Length + 1 }
+                      End =
+                        { Line = 1
+                          Col = m.Length + 1 + name.Length } }
+                else
+                    e.Span
+
+            match
+                Check.checkBinderName nameSpan name
+                |> Result.bind (fun () -> Check.typecheckWith tenv e)
+            with
+            | Error terr -> Error(typed StmtTag.Let terr)
+            | Ok(te, cs, origins) ->
+                let scheme = generalizeWithOrigins cs origins te.Ty
+
+                Ok
+                    { Kind = KLet(name, scheme, te)
+                      Env =
+                        { tenv with
+                            Values = Map.add name scheme tenv.Values }
+                      Warnings = warningsOf te }
+        | Ok(SCmd e) ->
+            match Check.typecheck tenv e with
+            | Error terr -> Error(typed StmtTag.Cmd terr)
+            | Ok te ->
+                // a bool-valued chain (| succeeds) as a bare statement is a
+                // DISCARDED value, not a stream — the discard family
+                // [D:exit-reifiers]; record-valued (| complete) statements
+                // keep their standing echo behavior
+                let rec exitCodeSpine (t: Check.TypedExpr) =
+                    match t.Kind with
+                    | Check.TEVar("|exitCoded" | "|exitCodedEnv") -> true
+                    | Check.TEApp(f, _) -> exitCodeSpine f
+                    | _ -> false
+
+                match te.Ty with
+                | TBool ->
+                    Error(
+                        typed
+                            StmtTag.Cmd
+                            { Span = te.Span
+                              Message =
+                                "this statement computes a bool and discards it — bind it "
+                                + "(let ok = ... | succeeds) or use it in a condition"
+                              Origin = None }
+                    )
+                // `set +e; cmd; rc=$?` muscle memory lands here [D:exit-reifiers]
+                | TInt when exitCodeSpine te ->
+                    Error(
+                        typed
+                            StmtTag.Cmd
+                            { Span = te.Span
+                              Message =
+                                "this statement computes the exit code and discards it — bind it "
+                                + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code"
+                              Origin = None }
+                    )
+                | _ ->
+                    Ok
+                        { Kind = KCmd te
+                          Env = tenv
+                          Warnings = warningsOf te }
+        | Ok(SExpr e) ->
+            match Check.typecheck tenv e with
+            | Error terr -> Error(typed StmtTag.Expr terr)
+            | Ok te ->
+                match (if gateExprs then discardError te.Ty else None) with
+                | Some msg ->
+                    Error
+                        { typed
+                              StmtTag.Expr
+                              { Span = e.Span
+                                Message = msg
+                                Origin = None } with
+                            Warnings = warningsOf te }
+                | None ->
+                    Ok
+                        { Kind = KExpr te
+                          Env = tenv
+                          Warnings = warningsOf te }
+    finally
+        Check.toPhys.Value <- None
 
 // ---------------------------------------------------------------------------
 // weir check [--json] [D:check-lsp-chain]. Check-everything, no
@@ -1957,7 +1978,8 @@ let analyzeLines
                      let holeScheme =
                          { Forall = Set.singleton "__hole"
                            Cs = Map.empty
-                           Ty = TVar "__hole" }
+                           Ty = TVar "__hole"
+                           RowOrigins = Map.empty }
 
                      let bound =
                          match stmt with

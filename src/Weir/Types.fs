@@ -79,12 +79,19 @@ type Cls =
 type Scheme =
     { Forall: Set<string>
       Cs: Map<string, Set<Cls>>
-      Ty: Ty }
+      Ty: Ty
+      // row-field PROVENANCE [D:row-provenance]: quantified row var ->
+      // (field, physLine, physCol, len) of the access that demanded it —
+      // translated to PHYSICAL at generalization (spans die at statement
+      // boundaries), rehydrated at instantiation, reported by the
+      // row-vs-record discharge
+      RowOrigins: Map<string, (string * int * int * int) list> }
 
 let generalize (ty: Ty) : Scheme =
     { Forall = tyVars ty
       Cs = Map.empty
-      Ty = ty }
+      Ty = ty
+      RowOrigins = Map.empty }
 
 // generalization with the checker's constraint residue: only
 // constraints on vars actually quantified ride into the scheme
@@ -93,12 +100,28 @@ let generalizeWith (cs: Map<string, Set<Cls>>) (ty: Ty) : Scheme =
 
     { Forall = fa
       Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
-      Ty = ty }
+      Ty = ty
+      RowOrigins = Map.empty }
+
+// generalizeWith + row origins [D:row-provenance], filtered like Cs:
+// only origins for quantified row vars ride into the scheme
+let generalizeWithOrigins
+    (cs: Map<string, Set<Cls>>)
+    (origins: Map<string, (string * int * int * int) list>)
+    (ty: Ty)
+    : Scheme =
+    let fa = tyVars ty
+
+    { Forall = fa
+      Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
+      Ty = ty
+      RowOrigins = origins |> Map.filter (fun v _ -> fa.Contains v) }
 
 let mono (ty: Ty) : Scheme =
     { Forall = Set.empty
       Cs = Map.empty
-      Ty = ty }
+      Ty = ty
+      RowOrigins = Map.empty }
 
 // attribute arguments [D:attributes]: literal-only, the splice family
 type AttrArg =

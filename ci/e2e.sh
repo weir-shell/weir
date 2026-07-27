@@ -822,6 +822,21 @@ echo "$out" | grep -qF '"code":"cmd-not-found"' || fail "cmd-not-found json: $ou
 echo "$out" | grep -qF '"endCol":9' || fail "full-word endCol (nosuchzz = cols 1-8): $out"
 echo "e2e ok: cmd-not-found spans the full head word"
 
+# row provenance: cross-statement no-field errors point at the ACCESS,
+# with the meet in the message [PLAN-diagnostics-arc D]
+cat > "$ckdir/prov.weir" <<'WEOF'
+type T = { BicepPath: string; Name: string }
+let quality t =
+    print (t.BicepPath2)
+let mk = { BicepPath = "b"; Name = "n" }
+quality mk
+WEOF
+out=$($BIN check --json "$ckdir/prov.weir" || true)
+echo "$out" | grep -qF '"line":3,"col":14' || fail "provenance position (the access): $out"
+echo "$out" | grep -qF '"endCol":24' || fail "provenance covers the field word: $out"
+echo "$out" | grep -qF "(the value becomes a T at 5:1)" || fail "the meet note: $out"
+echo "e2e ok: row provenance points at the access, meet in the note"
+
 printf 'print "clean"\n' > "$ckdir/clean.weir"
 out=$($BIN check "$ckdir/clean.weir"); rc=$?
 [ $rc -eq 0 ] && [ -z "$out" ] || fail "clean file must exit 0 silently (rc=$rc out=$out)"

@@ -77,6 +77,18 @@ exactly as designed.
 
 ## Session D — row-constraint provenance [#5, highest locality value]
 
+STATUS: EXECUTED (2026-07-27). The bless hypothesis was HALF-right:
+spans exist and within-statement reporting was already origin-exact —
+the 62/107 case is CROSS-statement, where the row escapes via
+generalization (schemes carried no spans) and instantiate re-stamps
+fields with the call-site span. Not a rider: schemes now carry
+PHYSICAL origins (logical spans cannot cross the statement boundary),
+recorded at generalization via a Script-set translator, rehydrated at
+instantiation, and the no-field discharge error POSITIONS at the
+access with the meet as the message note. Scope held to no-field;
+the field-type MISMATCH sibling still reports at the meet (flagged
+in NOTES). See [D:row-provenance].
+
 `t.BicepPath2` written at 62:32 errors at 107:15 — the row
 constraint from the field access carries no provenance, so the
 error surfaces where the row MEETS the nominal record (the call

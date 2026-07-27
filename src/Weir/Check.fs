@@ -3,7 +3,13 @@ module Weir.Check
 open Weir.Ast
 open Weir.Types
 
-type TypeError = { Span: Span; Message: string }
+// Origin [D:row-provenance]: a PHYSICAL (line, col, len) override for
+// where the error points — set when the true cause lives in another
+// statement, whose logical spans this statement cannot translate.
+type TypeError =
+    { Span: Span
+      Message: string
+      Origin: (int * int * int) option }
 
 let formatError (e: TypeError) : string =
     $"[{e.Span.Start.Line}:{e.Span.Start.Col}-{e.Span.End.Col}] type error: {e.Message}"
@@ -12,6 +18,13 @@ type Warning = { Span: Span; Message: string }
 
 let formatWarning (w: Warning) : string =
     $"[{w.Span.Start.Line}:{w.Span.Start.Col}-{w.Span.End.Col}] warning: {w.Message}"
+
+// The logical-col -> (physLine, physCol) translator for the statement
+// being checked [D:row-provenance]: Script sets it around each
+// checkStatement; None for non-statement consumers (Complete, tests),
+// where provenance simply does not record.
+let toPhys: System.Threading.ThreadLocal<(int -> int * int) option> =
+    new System.Threading.ThreadLocal<_>(fun () -> None)
 
 // Args.load targets [D:typed-argv] — the record is the flags shape,
 // the union is the subcommand front door (case -> payload def)
@@ -78,7 +91,11 @@ type private ResultBuilder() =
 
 let private result = ResultBuilder()
 
-let private err (span: Span) (msg: string) : Result<'a, TypeError> = Error { Span = span; Message = msg }
+let private err (span: Span) (msg: string) : Result<'a, TypeError> =
+    Error
+        { Span = span
+          Message = msg
+          Origin = None }
 
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
     err span $"expected {formatTy expected}, got {formatTy actual}"
@@ -122,6 +139,9 @@ type private Ctx =
     { mutable Fresh: int
       mutable Subst: Map<string, Ty>
       mutable Rows: Map<string, Map<string, Ty * Span>>
+      // physical field-access origins for INSTANTIATED row vars
+      // [D:row-provenance], rehydrated from the scheme's RowOrigins
+      mutable RowOrigins: Map<string, (string * int * int * int) list>
       mutable Cons: Map<string, Pending list>
       // splice/hole vars whose scalar defaulting is DEFERRED to the
       // statement boundary [D:splice-default-last]: defaulting fired
@@ -133,6 +153,7 @@ let private newCtx () =
     { Fresh = 0
       Subst = Map.empty
       Rows = Map.empty
+      RowOrigins = Map.empty
       Cons = Map.empty
       PendingSplices = [] }
 
@@ -236,6 +257,12 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                 match Map.tryFind r mapping with
                 | Some r' ->
                     ctx.Rows <- Map.add r' (fields' |> List.map (fun (f, t) -> f, (t, span)) |> Map.ofList) ctx.Rows
+
+                    // provenance rides the instantiation [D:row-provenance]
+                    match Map.tryFind r sch.RowOrigins with
+                    | Some os -> ctx.RowOrigins <- Map.add r' os ctx.RowOrigins
+                    | None -> ()
+
                     TRowVar(r', fields')
                 | None -> TRowVar(r, fields')
             | TFun(a, b) -> TFun(rename a, rename b)
@@ -393,7 +420,23 @@ and private dischargeRow
                 | Some(_, declTy) -> bind ctx env fspan (substParams def.Params targs declTy) ft
                 | None ->
                     let hint = didYouMean field (List.map fst def.Fields)
-                    err fspan $"{name} has no field '{field}'{hint}"))
+
+                    // cross-statement provenance [D:row-provenance]: point
+                    // at the recorded access; the meet stays in the message
+                    let origin =
+                        Map.tryFind r ctx.RowOrigins
+                        |> Option.bind (List.tryFind (fun (f, _, _, _) -> f = field))
+
+                    match origin, toPhys.Value with
+                    | Some(_, ol, oc, len), Some tr ->
+                        let ml, mc = tr fspan.Start.Col
+
+                        Error
+                            { Span = fspan
+                              Message =
+                                $"{name} has no field '{field}'{hint} (the value becomes a {name} at {ml}:{mc})"
+                              Origin = Some(ol, oc, len) }
+                    | _ -> err fspan $"{name} has no field '{field}'{hint}"))
     | Some(Union _) -> err span $"{name} is a union; only records have fields"
     | None -> err span $"unknown type '{name}'"
 
@@ -410,6 +453,19 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
                 ctx.Cons
                 |> Map.remove r1
                 |> Map.add r2 (ps @ (Map.tryFind r2 ctx.Cons |> Option.defaultValue []))
+        | None -> ()
+
+        // origins merge with the rows [D:row-provenance]; r2's win per field
+        match Map.tryFind r1 ctx.RowOrigins with
+        | Some os1 ->
+            let os2 = Map.tryFind r2 ctx.RowOrigins |> Option.defaultValue []
+
+            let merged =
+                os2
+                @ (os1
+                   |> List.filter (fun (f, _, _, _) -> os2 |> List.forall (fun (g, _, _, _) -> g <> f)))
+
+            ctx.RowOrigins <- ctx.RowOrigins |> Map.remove r1 |> Map.add r2 merged
         | None -> ()
 
         allOk (Map.toList fields1) (fun (field, (ft, fspan)) ->
@@ -431,7 +487,8 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
 let printScheme: Scheme =
     { Forall = Set.singleton "__print"
       Cs = Map.empty
-      Ty = TFun(TVar "__print", TUnit) }
+      Ty = TFun(TVar "__print", TUnit)
+      RowOrigins = Map.empty }
 
 let private isPrintFamily (env: TypeEnv) (name: string) =
     (name = "print" || name = "printerr")
@@ -444,7 +501,8 @@ let private isPrintFamily (env: TypeEnv) (name: string) =
 let showScheme: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Show ] ]
-      Ty = TFun(TVar "a", TStr) }
+      Ty = TFun(TVar "a", TStr)
+      RowOrigins = Map.empty }
 
 // Seq.contains — an ordinary constrained scheme
 // `Eq a => a -> seq<a> -> bool` [D:inferred-type-classes], served by
@@ -452,13 +510,15 @@ let showScheme: Scheme =
 let containsScheme: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Eq ] ]
-      Ty = TFun(TVar "a", TFun(TSeq(TVar "a"), TBool)) }
+      Ty = TFun(TVar "a", TFun(TSeq(TVar "a"), TBool))
+      RowOrigins = Map.empty }
 
 // Seq.distinct : Eq a => seq<a> -> seq<a> [D:seq-distinct]
 let distinctScheme: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Eq ] ]
-      Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a")) }
+      Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a"))
+      RowOrigins = Map.empty }
 
 
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
@@ -792,6 +852,31 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
     | PSeqList _
     | PCase _ -> err p.PSpan "this pattern can fail; use match"
 
+// row provenance [D:row-provenance]: field-access positions for the
+// given row vars, PHYSICAL — logical spans cannot cross the statement
+// boundary. A field that arrived via an instantiated scheme keeps its
+// original origin over the local span. Empty when no translator is
+// ambient (Complete, tests).
+let private rowOriginsFor (ctx: Ctx) (vars: Set<string>) : Map<string, (string * int * int * int) list> =
+    match toPhys.Value with
+    | None -> Map.empty
+    | Some tr ->
+        vars
+        |> Set.toList
+        |> List.choose (fun v ->
+            Map.tryFind v ctx.Rows
+            |> Option.map (fun fields ->
+                let prior = Map.tryFind v ctx.RowOrigins |> Option.defaultValue []
+
+                v,
+                [ for KeyValue(field, (_, fspan)) in fields ->
+                      match prior |> List.tryFind (fun (f, _, _, _) -> f = field) with
+                      | Some o -> o
+                      | None ->
+                          let pl, pc = tr fspan.Start.Col
+                          field, pl, pc, fspan.End.Col - fspan.Start.Col ]))
+        |> Map.ofList
+
 // THE scheme-scooping rule, one implementation: free vars beyond the
 // env generalize; their pending constraints scoop INTO the scheme
 // (removed from ctx). Previously verbatim ×3 (both ELet arms + the
@@ -799,6 +884,7 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
 // would have been a silent generalization bug.
 let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
     let fa = tyVars valueTy - envFreeVars ctx env
+    let origins = rowOriginsFor ctx fa
 
     let cs =
         fa
@@ -810,7 +896,11 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
 
     // scooped constraints move INTO the scheme
     ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
-    { Forall = fa; Cs = cs; Ty = valueTy }
+
+    { Forall = fa
+      Cs = cs
+      Ty = valueTy
+      RowOrigins = origins }
 
 // per-name generalization for destructuring binders: each bound name's
 // type generalizes INDEPENDENTLY against the env (constraints scooped
@@ -2264,7 +2354,10 @@ let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExp
                             "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
                     | None -> Ok(te, schemes)
 
-let typecheckWith (env: TypeEnv) (expr: Expr) : Result<TypedExpr * Map<string, Set<Cls>>, TypeError> =
+let typecheckWith
+    (env: TypeEnv)
+    (expr: Expr)
+    : Result<TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list>, TypeError> =
     let ctx = newCtx ()
 
     match infer ctx env expr with
@@ -2298,7 +2391,9 @@ let typecheckWith (env: TypeEnv) (expr: Expr) : Result<TypedExpr * Map<string, S
                     |> List.map (fun (u, ps) -> u, ps |> List.map (fun (_, p) -> p.Cls) |> Set.ofList)
                     |> Map.ofList
 
-                Ok(te, residue)
+                // origins ride out with the residue [D:row-provenance]:
+                // the SLet scheme is built OUTSIDE this ctx
+                Ok(te, residue, rowOriginsFor ctx resultVars)
 
 // the typed tree's child list — tooling walks (LSP hover, command-head
 // collection) share this instead of re-deriving the case list
@@ -2337,7 +2432,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
             | IStr _ -> None)
 
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
-    typecheckWith env expr |> Result.map fst
+    typecheckWith env expr |> Result.map (fun (te, _, _) -> te)
 
 let rec private validateTy
     (env: TypeEnv)
@@ -2510,7 +2605,8 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                     let ctorScheme payload =
                         { Forall = allowed + tyVars (ctorTy payload)
                           Cs = Map.empty
-                          Ty = ctorTy payload }
+                          Ty = ctorTy payload
+                          RowOrigins = Map.empty }
 
                     let values =
                         cases

@@ -3237,6 +3237,41 @@ let semanticTokenTests =
                   (fun d -> d.Code = "cmd-not-found" && d.Message.Contains "targ")
                   "the errored statement's head warns"
           }
+          test "row provenance: a bad field access errors at the ACCESS, not the call [PLAN-diagnostics-arc D]" {
+              // the bicep 62/107 shape reduced: quality's t.BicepPath2
+              // is the bug; the call that supplies the T is only the meet
+              let lines =
+                  [ "type T = { BicepPath: string; Name: string }"
+                    "let quality t ="
+                    "    print (t.BicepPath2)"
+                    "let mk = { BicepPath = \"b\"; Name = \"n\" }"
+                    "quality mk" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (3, 14) "positions at the access"
+                  Expect.equal (d.EndLine, d.EndCol) (Some 3, Some 24) "covers the field word"
+                  Expect.stringContains d.Message "Did you mean 'BicepPath'?" "the hint survives"
+                  Expect.stringContains d.Message "(the value becomes a T at 5:1)" "the meet is the note"
+              | other -> failtest $"expected ONE error, got {other}"
+
+              // a DIRECT access on the concrete value stays where it was:
+              // no origin recorded, no note
+              let direct =
+                  [ "type T = { BicepPath: string }"
+                    "let mk = { BicepPath = \"b\" }"
+                    "print (mk.BicepPath2)" ]
+
+              let diags2, _, _, _ = Weir.Script.analyzeLines "pin2.weir" direct
+
+              match diags2 |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (3, 11) "unchanged position"
+                  Expect.isFalse (d.Message.Contains "becomes a") "no meet note"
+              | other -> failtest $"expected ONE error, got {other}"
+          }
           test "Args/Env.load near-miss shapes teach ONE-type-name [PLAN-diagnostics-arc A1]" {
               // `Args.load C md` (a space inside the type name) used to
               // fall through to "module Args has no member 'load'" — a
@@ -4389,7 +4424,7 @@ let agentFindingsTests =
                   match stmt with
                   | SLet(_, e) ->
                       match Weir.Check.typecheckWith env e with
-                      | Ok(te, _) -> Expect.equal (formatTy te.Ty) "string -> seq<string>" ""
+                      | Ok(te, _, _) -> Expect.equal (formatTy te.Ty) "string -> seq<string>" ""
                       | Error terr -> failtest (formatError terr)
                   | _ -> ()
               | other -> failtest $"parse failed: {other}"
@@ -5482,7 +5517,7 @@ let typeClassTests =
               match Weir.Parser.parseStmt "let same x y = x == y" with
               | Ok(SLet(_, e)) ->
                   match Weir.Check.typecheckWith env e with
-                  | Ok(te, cs) ->
+                  | Ok(te, cs, _) ->
                       let sch = Weir.Types.generalizeWith cs te.Ty
                       Expect.isTrue (sch.Cs |> Map.exists (fun _ s -> s.Contains Weir.Types.Cls.Eq)) "Eq rides"
                   | Error terr -> failtest (formatError terr)

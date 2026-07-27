@@ -291,7 +291,13 @@ let rec private loop (state: State) =
                 |> Option.iter (underline >> Script.Color.red Script.Color.onStdout.Value >> Console.WriteLine)
 
                 (match d.Span with
-                 | Some sp -> Console.WriteLine(Check.formatError { Span = sp; Message = d.Message })
+                 | Some sp ->
+                     Console.WriteLine(
+                         Check.formatError
+                             { Span = sp
+                               Message = d.Message
+                               Origin = None }
+                     )
                  | None -> Console.WriteLine d.Message)
 
                 // hint only where the pre-pipeline REPL hinted (expression

@@ -1,5 +1,60 @@
 # Spike Notes
 
+## Diagnostics arc, Session D — row provenance crosses the statement boundary (2026-07-27)
+
+The bless note's diagnosis question, answered: spans EXIST
+(ctx.Rows carries `Ty * Span`; dischargeRow already errs at the
+field's fspan) and within-statement reporting was already
+origin-exact — the bicep 62/107 case is CROSS-statement. The row
+escapes through generalization (schemes carried no spans), and
+instantiate re-registered every field with the call-site span:
+provenance died at the generalize→instantiate boundary. So D stayed
+a session, not a rider — the fix is representation, not reporting.
+
+The design pivot: a raw Span cannot ride a scheme across
+statements — it would later translate through the WRONG statement's
+line map. Origins are captured PHYSICALLY at the boundary (the
+warnings-translation precedent): `Check.toPhys` is an ambient
+ThreadLocal translator that Script.checkStatement sets around each
+statement's check (try/finally), so `generalizeLet` records
+`(field, physLine, physCol, len)` per quantified row var into
+`Scheme.RowOrigins`, and the SLet path — which generalizes OUTSIDE
+the checker via `generalizeWith` — exports origins alongside the
+constraint residue from `typecheckWith` (the residue channel was
+exactly the precedent). Instantiate rehydrates into a ctx side
+table, mergeRows merges it, re-generalization chains it (a prior
+origin outranks the local span, so provenance survives
+function-calls-function). The no-field discharge then POSITIONS at
+the access via `TypeError.Origin` (physical override, honored in
+Script's diag builder) with the meet as the message note:
+`T has no field 'BicepPath2'. Did you mean 'BicepPath'? (the value
+becomes a T at 5:1)`. Complete/tests see no ambient translator and
+record nothing — zero signature churn on typecheck entries.
+
+Movement, all intended-class: the pinned b5 shape (error 5:1 →
+3:14-24, the field word itself), and within-statement inner-let
+discharge (`let f = fun t -> t.Bogus in f {A=1}`) now also points
+at the access with the note. Direct access on a concrete value:
+byte-identical, pinned. Full battery green (884 unit — one new pin
+pair — e2e + prov block, 60 doc, 156 oracle, fuzz, lsp, timing
+8-17ms medians).
+
+FLAGGED, not fixed: the field-type MISMATCH sibling (right field
+name, wrong type, cross-statement) still reports at the meet — the
+`bind` inside dischargeRow's Some arm doesn't consult origins. Same
+mechanism applies when someone hits it; needs its own small bless.
+
+INCIDENT, recorded for process honesty: the casing rider fork
+committed its gate stop (60106ca, correctly NOTES-only) but then
+KEPT SWEEPING the rename in the live tree and was killed mid-sweep,
+leaving ~350 uncommitted lines including wire-format breakage its
+own gate exists to prevent (`from json` refusing `"Name"` keys —
+live-observed as 37 unit failures). The runaway sweep was reverted
+to the gate-stopped state (preserved at
+/tmp/fork-runaway-plus-sessionD-*.patch) and Session D replayed
+onto the clean tree. The gate note below stands as written: no
+rename is IN; the wire-format bless is still the owed decision.
+
 ## Builtin-fields-lowercase rider — STOPPED AT THE GATE (2026-07-27)
 
 The blessed rider's own gate fired on its first probe; per its rule

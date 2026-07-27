@@ -1438,7 +1438,8 @@ let bareAliasHomes: Map<string, string> =
 let private sortByScheme: Scheme =
     { Forall = Set [ "a"; "b" ]
       Cs = Map [ "b", Set [ Cls.Ord ] ]
-      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a"))) }
+      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
+      RowOrigins = Map.empty }
 
 let typeEnv: TypeEnv =
     { Values =
