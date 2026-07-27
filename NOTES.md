@@ -1,5 +1,26 @@
 # Spike Notes
 
+## The anchor residue D — the field-type mismatch sibling (2026-07-27)
+
+Session D's residue, closed. Session D anchored the cross-statement
+NO-FIELD error at the access with the meet as a note; the sibling —
+right field, WRONG type, cross-statement — still reported at the meet,
+an asymmetry worse than either behavior alone. The load-bearing
+diagnose-first question ("does the mismatch flow through
+dischargeRow's Some-arm, or unify earlier?") answered YES: the
+Some-arm's `bind … fspan …` produced "expected int, got string" at the
+meet, and the origin was already populated (same access mechanism as
+no-field). So the fix factored the origin-positioning into a shared
+`atAccess` helper (RowOrigins + TypeError.Origin + meet note, all
+Session D machinery) and applied it to both arms. Cross-stmt mismatch
+moved 5:1 → 3:25; within-statement byte-identical (no origin → no
+note); no-field unchanged; oracle green.
+
+That closes the whole anchor residue (A/B/C/D). Findings that remain
+their own future blesses: the record-LITERAL field-name keyword and
+parenthesised-param-pattern keywords (both inside recordLit's
+field-vs-update commit-check [D:arm-commit]).
+
 ## The anchor residue C — neg-int, the predicted-hard case that wasn't (2026-07-27)
 
 Ran alone as the plan required. The prediction ("the `-` is the unary

@@ -415,28 +415,39 @@ and private dischargeRow
         dischargeCons ctx env r (TNamed(name, targs))
         |> Result.bind (fun () ->
 
+            // cross-statement provenance [D:row-provenance]: point at the
+            // recorded ACCESS, meet as the message note — shared by the
+            // no-field arm AND the field-TYPE-mismatch arm (the sibling)
+            let atAccess field fspan (baseMsg: string) : Result<unit, TypeError> =
+                let origin =
+                    Map.tryFind r ctx.RowOrigins
+                    |> Option.bind (List.tryFind (fun (f, _, _, _) -> f = field))
+
+                match origin, toPhys.Value with
+                | Some(_, ol, oc, len), Some tr ->
+                    let ml, mc = tr fspan.Start.Col
+
+                    Error
+                        { Span = fspan
+                          Message = $"{baseMsg} (the value becomes a {name} at {ml}:{mc})"
+                          Origin = Some(ol, oc, len) }
+                | _ ->
+                    Error
+                        { Span = fspan
+                          Message = baseMsg
+                          Origin = None }
+
             allOk constraints (fun (field, (ft, fspan)) ->
                 match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
-                | Some(_, declTy) -> bind ctx env fspan (substParams def.Params targs declTy) ft
+                | Some(_, declTy) ->
+                    match bind ctx env fspan (substParams def.Params targs declTy) ft with
+                    | Ok() -> Ok()
+                    // the mismatch's own message ("expected X, got Y"),
+                    // re-anchored at the access like its no-field sibling
+                    | Error e -> atAccess field fspan e.Message
                 | None ->
                     let hint = didYouMean field (List.map fst def.Fields)
-
-                    // cross-statement provenance [D:row-provenance]: point
-                    // at the recorded access; the meet stays in the message
-                    let origin =
-                        Map.tryFind r ctx.RowOrigins
-                        |> Option.bind (List.tryFind (fun (f, _, _, _) -> f = field))
-
-                    match origin, toPhys.Value with
-                    | Some(_, ol, oc, len), Some tr ->
-                        let ml, mc = tr fspan.Start.Col
-
-                        Error
-                            { Span = fspan
-                              Message =
-                                $"{name} has no field '{field}'{hint} (the value becomes a {name} at {ml}:{mc})"
-                              Origin = Some(ol, oc, len) }
-                    | _ -> err fspan $"{name} has no field '{field}'{hint}"))
+                    atAccess field fspan $"{name} has no field '{field}'{hint}"))
     | Some(Union _) -> err span $"{name} is a union; only records have fields"
     | None -> err span $"unknown type '{name}'"
 

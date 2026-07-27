@@ -165,6 +165,17 @@ int-out-of-range at cols 9 vs 10, neither dominates.
 
 ## D. cross-statement field-type MISMATCH sibling  [Session D residue]
 
+STATUS: EXECUTED (2026-07-27). The load-bearing question answered: the
+mismatch DOES flow through `dischargeRow`'s Some-arm (`bind … fspan …`
+reported "expected int, got string" at the meet 5:1), and the origin
+IS populated for the mismatch path (same field-access mechanism as the
+no-field case). Factored the origin-positioning into a shared
+`atAccess` helper and applied it to BOTH arms: the mismatch keeps its
+own message ("expected X, got Y") re-anchored at the access with the
+meet as the note. Cross-stmt mismatch moved 5:1 → 3:25; within-stmt
+mismatch byte-identical (no origin, no note); no-field (Session D)
+unchanged; oracle green.
+
 SIZE: small-medium. Independent subsystem (checker, not parser) —
 run any time.
 

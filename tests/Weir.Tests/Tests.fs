@@ -3280,6 +3280,42 @@ let semanticTokenTests =
                   Expect.isFalse (d.Message.Contains "becomes a") "no meet note"
               | other -> failtest $"expected ONE error, got {other}"
           }
+          test "row provenance: the TYPE-mismatch sibling also anchors at the access [PLAN-open-findings D]" {
+              // right field name, WRONG type, cross-statement: t.count is
+              // forced to string but T.count is int. Was reported at the
+              // meet; now at the access, meet as the note (the no-field
+              // sibling's shape, sharing the atAccess helper)
+              let lines =
+                  [ "type T = { count: int }"
+                    "let f t ="
+                    "    print (Str.length t.count)"
+                    "let mk = { count = 1 }"
+                    "f mk" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (3, 25) "positions at the access, not the meet (was 5:1)"
+                  Expect.stringContains d.Message "expected int, got string" "the mismatch message"
+                  Expect.stringContains d.Message "(the value becomes a T at 5:1)" "the meet is the note"
+              | other -> failtest $"expected ONE error, got {other}"
+
+              // WITHIN-statement mismatch is unchanged: direct at the access,
+              // no meet note (no cross-statement origin recorded)
+              let within =
+                  [ "type T = { count: int }"
+                    "let mk = { count = 1 }"
+                    "print (Str.length mk.count)" ]
+
+              let d2, _, _, _ = Weir.Script.analyzeLines "pin2.weir" within
+
+              match d2 |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.stringContains d.Message "expected string, got int" "the mismatch"
+                  Expect.isFalse (d.Message.Contains "becomes a") "no meet note within a statement"
+              | other -> failtest $"expected ONE error, got {other}"
+          }
           test "Args/Env.load near-miss shapes teach ONE-type-name [PLAN-diagnostics-arc A1]" {
               // `Args.load C md` (a space inside the type name) used to
               // fall through to "module Args has no member 'load'" — a
