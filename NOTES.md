@@ -1,5 +1,41 @@
 # Spike Notes
 
+## Builtin-fields-lowercase rider — STOPPED AT THE GATE (2026-07-27)
+
+The blessed rider's own gate fired on its first probe; per its rule
+("any hit on (1) ⇒ report and stop"), NO rename happened. The five
+answers, recorded for the follow-up bless:
+
+1. **`to json` — HIT, confirmed live.** The writer emits
+   `WritePropertyName kv.Key` — field names verbatim — and builtin
+   records are reachable: `ls |> Seq.first 1 |> to json` emits
+   `{"Bytes":79817,"Name":"SEMANTICS.md","ReadOnly":false}` today.
+   Builtin field names ARE wire format; lowercasing them is a
+   serialized-output change wearing a rename's clothes.
+2. **`from json T` — HIT, same species.** `TryGetProperty(name)`
+   matches JSON keys verbatim against the def's fields, and builtin
+   defs are reachable (`from json FileRow` is a passing unit pin,
+   including the `to json |> from json FileRow` roundtrip). External
+   JSON carrying `Bytes`/`Name` keys would stop parsing.
+3. **Porcelain — CLEAN.** `porcelainRow` maps git's columns
+   positionally (`line[0]`, `line[1]`, `Substring 3`); the field
+   names are construction literals with no coupling to git's format.
+4. **`show` — renders field names**, as expected; the sweep surface
+   naming builtin fields is ~76 grep hits in unit + ~24 in e2e
+   (a superset count; the show-render pins proper are a subset).
+5. **LSP/completion — CLEAN.** Zero hardcoded builtin field strings
+   in Lsp/Complete/Fmt; those surfaces follow the defs.
+
+THE DECISION NOW OWED (its own bless, as the rider priced): "do we
+also change the wire format?" — the rider's argument (casing
+consistency) applies to the wire too, and the phase-boundary
+urgency (pre-publication = cheap, post = migration story) applies
+DOUBLY to json keys. If blessed, the roundtrip pin moves with both
+sides and the coordinated rename is the rider resurrected at
+session size; if declined, builtin fields stay PascalCase and THAT
+becomes the recorded reason (wire compatibility beats casing
+symmetry). Either way the answer belongs in a row, not in drift.
+
 ## Diagnostics arc, Session C — the binder-span park opens (2026-07-27)
 
 The park closed the way parks are supposed to: its criterion (a real
