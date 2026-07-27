@@ -149,6 +149,29 @@ command-single-quote region. micro exempt: RE2 cannot peek for the closer
 CLI: two type_params on the flagship line; TextMate engine: both `'a` →
 entity.name.type, all command strings preserved). 0 ERROR clean+malformed.
 
+**Follow-up — field-declaration names** (`5e0e45d`, user-reported after
+the six): a record's field NAMES rendered in the TYPE colour (all
+`entity.name.type` / `@type`) because they are Pascal-case and the casing
+law paints uppercase as type — so the whole record body was monochrome,
+in ALL THREE grammars (not VS-Code-only; the LSP legend is command-only,
+emits nothing on a record decl). Fix: field-decl names → `@property` /
+`variable.other.property` (matches the member scope, so fields and member
+access read alike), a deliberate exception to "uppercase = type" for the
+field-declaration position. tree-sitter: a name-before-`:` query placed
+BEFORE field-type (both anchor the `:`; the pattern that captures `:` LAST
+owns the type-after-`:` render — a highlight-crate quirk found via
+`tree-sitter highlight`, last-wins confirmed the same way). TextMate: a
+`^`-anchored lookahead rule (`^\s*(name)(?=\s*:)`) — the lookahead leaves
+the `:` for field-type, the `^` anchor keeps `let x: int` binders out.
+micro-exempt: field-name (RE2 no lookahead + whole-match single colour).
+Inventory now 23 rules + 3 stated micro-exempt (binder, type-param,
+field-name). Verified on `tree-sitter highlight` (field names cyan, types
+red, `let x:` binder untouched, member access intact) and the TextMate
+engine. NOTE for future rig use: `tree-sitter highlight` needs a
+`tree-sitter.json` with `file-types:["weir"]` + a HOME with a theme config
+(`$HOME/.config/tree-sitter/config.json`); create the json temporarily
+(it flips generate to ABI15 — remove before committing).
+
 VERIFICATION: tree-sitter CLI (captures + 0-ERROR corpus, clean AND
 malformed) and the vscode-textmate + oniguruma engine, per the standing
 container-verification discipline — never by eye. Inventory e2e green (23
