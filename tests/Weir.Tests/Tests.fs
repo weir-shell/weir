@@ -3713,7 +3713,9 @@ let optionSweepTests =
                   let l, c, msg = sole line
                   Expect.equal (l, c) (1, expectedCol) $"caret for: {line}"
                   Expect.stringContains msg teach $"teaching present: {line}"
-                  Expect.isFalse (msg.Contains "Expecting:") $"no expecting-list dump: {line} -> {msg}"
+                  // BOTH burial markers — pinning one leaves the other free
+                  Expect.isFalse (msg.Contains "Expecting:") $"no expecting-list: {line} -> {msg}"
+                  Expect.isFalse (msg.Contains "Other error messages") $"not buried: {line} -> {msg}"
 
               clean "a splat cannot head a command" "$@xs foo" 1
               clean "a splice cannot join a word" "echo --flag=$x" 13
@@ -3721,9 +3723,16 @@ let optionSweepTests =
               clean "'function' is reserved" "let function = 1" 5
               clean "'rec' is a keyword" "let rec = 1" 5
               clean "'mutable' is a keyword" "let mutable = 1" 5
+              // B: keyword in the PARAM and record-DECL field slots
+              clean "'rec' is a keyword" "let f rec = 1" 7
+              clean "'when' is a keyword" "let f when = 1" 7
+              clean "'let' is a keyword" "type T = { let: int }" 12
+              // A: foldChain reifier anchors on the MARKER, not the chain end
+              clean "must directly follow a single external command" "git | grep x | complete" 16
+              clean "must directly follow a single external command" "git | grep x | exitCode" 16
 
-              // the reserved-word domination is GATED to the binder slot: a
-              // keyword must still fall through to its own parser
+              // GATED: every keyword must still fall through to its parser —
+              // the risk matrix (heads of their own constructs)
               let okParses (line: string) =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
 
@@ -3732,7 +3741,14 @@ let optionSweepTests =
                       $"parses: {line}"
 
               okParses "let x = if true then 1 else 2"
+              okParses "let a = if false then 1 elif true then 2 else 3"
+              okParses "let a = match 1 with | x when x > 0 -> 1 | _ -> 0"
+              okParses "let a = fun x -> x"
               okParses "let y = 1 in print y"
+              okParses "let a = let b = 1 in let c = 2 in b"
+              okParses "let f x y = x"
+              okParses "let (a, b) = (1, 2)"
+              okParses "type T = { a: int }"
           }
           test "value-headed pipeline: external head feeds; library head keeps the hint [D:value-headed-pipe]" {
               // resolution decides — an EXTERNAL head after a value `|`

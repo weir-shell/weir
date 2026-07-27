@@ -133,6 +133,26 @@ REACHED, not latest-in-file (two problems in one statement report the
 first). The commit law makes the furthest position the true cause.
 [D:diag-arbitration]
 
+**Anchor before the read.** A parser error's caret belongs on its
+TRIGGER token, captured BEFORE the trigger is consumed — `failFatally`
+fires at the CURRENT position, so a consume-then-fail site drifts past
+its token (trailing ws even crosses physical lines in assembled
+statements). Shape: `failFatallyAt`/`failFatallyAtCol` — consume the
+trigger (which CLEARS the competing "expected" errors that sit there,
+so the message does not bury), then Seek back to the anchor. Caveat:
+clean ONLY where the anchor position has no surviving competitor;
+where one remains (neg-int's `-` is the unary-minus operator's spot)
+the expected-set re-merges. [D:anchor-before-read] [D:message-domination]
+
+**A fatal inside an `attempt` is not a fatal.** FParsec's `attempt`
+backtracks fatal errors too, so a `failFatally` inside speculative
+`attempt`/`choice` is ADVISORY — it will be swallowed. A teaching error
+that must survive needs one of: an anchor OUTSIDE the attempt (the
+`letKeywordGuard` fires before topLet's attempt), an exception channel
+(`DepthExceeded` throws past the protocol), or a commit point ahead of
+it (the consumed-separator law). Three sightings: arm-commit, the depth
+guard, the reserved-word gate. [D:anchor-before-read] [D:depth-guard]
+
 **Lazy sequence / pull semantics / backpressure.** A `seq` computes
 elements on demand (pull), not eagerly. Backpressure: a slow consumer
 throttles the producer — a value-headed pipe's input pulls as the

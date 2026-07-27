@@ -61,6 +61,17 @@ parser also contests re-merges its expecting-list (the
 message-domination class) — anchor there only once that class is
 closed.
 
+Corollary — **a fatal inside an `attempt` is not a fatal**: FParsec
+backtracks fatals too, so a teaching `failFatally` in speculative
+`attempt`/`choice` is silently swallowed (the worst failure mode — it
+looks implemented and passes any test that only checks the message is
+not worse). A teaching that must survive needs an anchor OUTSIDE the
+attempt, an exception channel, or a commit point ahead of it. So a new
+guard states its enclosing attempt boundary, and its pin asserts the
+teaching REACHES the user (text present + neither burial marker), not
+just "no crash". Sightings: arm-commit, the depth guard, the
+reserved-word gate (LEXICON).
+
 ## Done-when intent rule
 
 Done-when clauses bind to INTENT. When a session's work dissolves a

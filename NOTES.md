@@ -1,5 +1,37 @@
 # Spike Notes
 
+## The anchor residue A+B — foldChain + param/field keywords (2026-07-27)
+
+The A+B session of PLAN-open-findings. First to run, so it OWES the
+property: **a fatal inside an `attempt` is not a fatal** — FParsec
+backtracks fatals, so a `failFatally` in speculative attempt/choice is
+advisory. Now in LEXICON and PROCESS with its three sightings
+(arm-commit, the depth guard's thrown `DepthExceeded`, and this
+session's reserved-word gate firing outside topLet's attempt). The
+worst failure mode it names: a guard placed INSIDE an attempt looks
+implemented and passes any not-worse test while doing nothing — so B's
+per-slot work started by identifying each slot's attempt boundary.
+
+A (foldChain): the sweep called this anchor "ambiguous" — WRONG on
+re-read, recorded (a finding is a claim, not a fact, and that one was
+made under sweep pressure). foldChain already holds each segment's
+span; its one real error branch (a reifier not following a single
+external command) is owned by the marker. Widened the error to carry
+the span, both callers `failFatallyAtCol` — the marker has no
+surviving competitor, so it dominates clean.
+
+B (name-required slots): PARAM keyword dominates via `letKeywordGuard`
+EXTENDED to scan the name + simple-ident params (it fires outside
+topLet's attempt — the boundary that makes it work); record-DECL field
+via `fieldNameDecl` (typeDecl commits, the fatal propagates). The
+keyword×position matrix (if/then/else/elif/match/when/fun/let/in/type)
+confirms every keyword still heads its own construct. FINDINGS left:
+the record-LITERAL field (`{ let = 1 }`) and keywords inside a
+parenthesised param pattern both sit inside recordLit's
+field-vs-update commit-check [D:arm-commit] — reworking that boundary
+is out of the residue's remit. neg-int (C) and the field-type mismatch
+(D) are their own sessions still.
+
 ## Message domination — the teaching fatal wins its spot (2026-07-27)
 
 Finding-class (b) from the anchor sweep, closed. Those sites had the

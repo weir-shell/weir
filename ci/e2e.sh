@@ -880,6 +880,19 @@ printf 'let x = if true then 1 else 2\n' > "$ckdir/dom3.weir"
 $BIN check "$ckdir/dom3.weir" >/dev/null 2>&1 || fail "keyword fall-through must still parse (if)"
 echo "e2e ok: teaching fatals dominate; the reserved-word gate stays fall-through-safe"
 
+# anchor residue A+B: foldChain reifier anchors on the marker; keyword in
+# param/field slots dominates [PLAN-open-findings]
+printf 'git | grep x | complete\n' > "$ckdir/fc.weir"
+out=$($BIN check --json "$ckdir/fc.weir" || true)
+echo "$out" | grep -qF '"line":1,"col":16' || fail "foldChain anchors on the marker: $out"
+echo "$out" | grep -qF "must directly follow a single external command" || fail "reifier teaching present: $out"
+echo "$out" | grep -qvF "Other error messages" || fail "reifier teaching not buried: $out"
+printf 'let f rec = 1\n' > "$ckdir/pk.weir"
+out=$($BIN check --json "$ckdir/pk.weir" || true)
+echo "$out" | grep -qF '"line":1,"col":7' || fail "param keyword caret: $out"
+echo "$out" | grep -qF "'rec' is a keyword" || fail "param keyword teaching: $out"
+echo "e2e ok: foldChain anchors on the marker; param/field keyword dominates"
+
 printf 'print "clean"\n' > "$ckdir/clean.weir"
 out=$($BIN check "$ckdir/clean.weir"); rc=$?
 [ $rc -eq 0 ] && [ -z "$out" ] || fail "clean file must exit 0 silently (rc=$rc out=$out)"

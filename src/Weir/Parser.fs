@@ -1325,7 +1325,9 @@ let private exitCodeMarker =
 // the stage/reifier desugar is one function. A reifier's segment must be
 // a single external command; a value threaded into it (`xs | grep |
 // complete`) carries as the ECmd's stdin position.
-let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
+// the error carries the OFFENDING segment's span [D:anchor-before-read]
+// so the caller anchors on it, not the chain's drifted end
+let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string * Span> =
     rest
     |> List.fold
         (fun acc seg ->
@@ -1444,7 +1446,7 @@ let private foldChain (h: Expr) (rest: Seg list) : Result<Expr, string> =
                     Result.Ok applied
                 // a reifier needs a SINGLE external segment [D:exit-reifiers]:
                 // a multi-external chain is rejected as always (no new law)
-                | _ -> Result.Error $"'{stageName}' must directly follow a single external command segment")
+                | _ -> Result.Error($"'{stageName}' must directly follow a single external command segment", mspan))
         (Result.Ok h)
 
 let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEnv: Expr option) (r: Resolver) =
@@ -1468,7 +1470,7 @@ let private cmdLineWith
     >>= fun (h, rest) ->
         match foldChain h rest with
         | Result.Ok e -> preturn e
-        | Result.Error m -> failFatally m
+        | Result.Error(m, sp) -> failFatallyAtCol sp.Start.Col m
 
 let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg None r
 
@@ -1499,7 +1501,7 @@ valueHeadedTailImpl <-
                 >>= fun stages ->
                     match foldChain lhs stages with
                     | Result.Ok e -> preturn e
-                    | Result.Error m -> failFatally m
+                    | Result.Error(m, sp) -> failFatallyAtCol sp.Start.Col m
 
             p stream
 
@@ -1557,8 +1559,19 @@ let private attrSpec =
 
 let private attrList = str_ws "[<" >>. sepBy1 attrSpec (str_ws ";") .>> str_ws ">]"
 
+// a record-decl field name DOMINATES on a keyword [D:anchor-before-read]:
+// typeDecl is committed past `type T = {`, so the fatal propagates (no
+// enclosing attempt to swallow it, unlike the shared `ident`)
+let private fieldNameDecl: Parser<string, unit> =
+    getPosition .>>. spanned rawWord .>> ws
+    >>= fun (at, (w, _)) ->
+        if keywords.Contains w then
+            failFatallyAt at $"'{w}' is a keyword"
+        else
+            preturn w
+
 let private fieldDecl =
-    opt attrList .>>. (ident .>> str_ws ":") .>>. tySyn
+    opt attrList .>>. (fieldNameDecl .>> str_ws ":") .>>. tySyn
     |>> fun ((attrs, name), ty) -> name, ty, defaultArg attrs []
 
 let private recordBody =
@@ -1660,13 +1673,23 @@ let private topLet (r: Resolver) =
 // attempt (topLet's attempt would swallow the fatal); the peek engages
 // ONLY when the name is reserved, so every real binder falls through.
 let private letKeywordGuard: Parser<Stmt, unit> =
+    // scan the name AND its simple-ident params [D:anchor-before-read]:
+    // a keyword in any of those slots is always an error. (Keywords inside
+    // a parenthesised param pattern are the record-literal-field's sibling
+    // finding — a separate commit boundary, left stated.)
     attempt (
-        keyword "let" >>. getPosition .>>. spanned rawWord
-        >>= fun (at, (w, _)) ->
-            if w = "function" || keywords.Contains w then
-                preturn (at, w)
-            else
-                fail "real binder"
+        keyword "let" >>. many1 (getPosition .>>. spanned rawWord .>> ws)
+        >>= fun words ->
+            match
+                words
+                |> List.tryPick (fun (at, (w, _)) ->
+                    if w = "function" || keywords.Contains w then
+                        Some(at, w)
+                    else
+                        None)
+            with
+            | Some hit -> preturn hit
+            | None -> fail "real binder(s)"
     )
     >>= fun (at, w) ->
         if w = "function" then
