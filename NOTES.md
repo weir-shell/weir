@@ -1,5 +1,35 @@
 # Spike Notes
 
+## The Self module (+ pid) — introspection grouped (2026-07-27)
+
+`args`/`stdin`/`scriptPath` moved under a `Self` module and `pid`
+joined them, so `let mypid = $(sh -c 'echo $PPID') |> Seq.head` becomes
+`acquire $"{Self.pid}"` and the tool that motivated the feature
+(fuzz.weir) deletes its workaround. Feasibility was the easy
+part — module members are already mangled `"Module.member"` value
+keys, so a value member is no different from a function member; the
+per-run injection just moved from bare `Values` to a `Modules` entry
++ mangled `Values` in baseEnvs.
+
+The one real risk was the plan's flagged finding, and re-verifying it
+with a PIN (not a grep) EARNED its keep: `Args.load`'s script-only
+gate keyed on the bare `args` binding's presence, not just
+Session.ScriptArgs — so removing `args` made `Args.load` wrongly
+report "script-only". Caught the instant the argv tests ran; fixed by
+gating on the `Self` module's presence instead. The lesson banked: a
+"reads X directly" source claim is a hypothesis until a pin proves the
+absence of a second reader.
+
+Two smaller catches: `Self.pid` is an int (kept — a PID reads as a
+number; the type-vs-string question was weighed and the payoff of
+string was one `show`, erased anyway by interpolation), so a command
+uses it as `$"{Self.pid}"` — argv is strings, the hole converts inline;
+and a bare name at STATEMENT HEAD is a command candidate
+(cmd-not-found), so the move-to-Self teaching fires
+in EXPRESSION position, where it matters. The clean break needed no
+new machinery — the existing bare-name->module-member teacher already
+says "'args' moved into a module; use 'Self.args'".
+
 ## `| complete` joins the discard family — the one-cell gap (2026-07-27)
 
 Live dogfooding: a bare `git status | complete` statement was

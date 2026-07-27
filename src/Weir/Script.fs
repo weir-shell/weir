@@ -1325,6 +1325,18 @@ type private CheckedStmt =
     | CType of decl: Decl
     | CNoop
 
+// the Self module [D:self-module]: script/process introspection grouped
+// under one name, freeing the bare `args`/`stdin`/`scriptPath` for users.
+// Members are per-run, so they inject here (not in static Builtins); the
+// type side is a Modules entry, the value side mangled "Self.member" keys
+// — module access checks `EField {EVar "Self"} field` -> TEVar "Self.field"
+let selfMembers: Map<string, Scheme> =
+    Map
+        [ "pid", generalize TInt
+          "args", generalize (TSeq TStr)
+          "stdin", generalize (TSeq TStr)
+          "scriptPath", generalize TStr ]
+
 let private baseEnvs (mode: Mode) (scriptArgs: string list) (scriptPath: string) =
     let typeEnv =
         match mode with
@@ -1335,11 +1347,7 @@ let private baseEnvs (mode: Mode) (scriptArgs: string list) (scriptPath: string)
 
     let typeEnv =
         { typeEnv with
-            Values =
-                typeEnv.Values
-                |> Map.add "args" (generalize (TSeq TStr))
-                |> Map.add "stdin" (generalize (TSeq TStr))
-                |> Map.add "scriptPath" (generalize TStr) }
+            Modules = typeEnv.Modules |> Map.add "Self" selfMembers }
 
     let stdinStream =
         Eval.VSeq(
@@ -1357,9 +1365,10 @@ let private baseEnvs (mode: Mode) (scriptArgs: string list) (scriptPath: string)
 
     let valueEnv =
         valueEnv
-        |> Map.add "args" (Eval.VSeq(scriptArgs |> List.map Eval.VStr :> seq<Eval.Value>))
-        |> Map.add "stdin" stdinStream
-        |> Map.add "scriptPath" (Eval.VStr scriptPath)
+        |> Map.add "Self.pid" (Eval.VInt(int64 System.Environment.ProcessId))
+        |> Map.add "Self.args" (Eval.VSeq(scriptArgs |> List.map Eval.VStr :> seq<Eval.Value>))
+        |> Map.add "Self.stdin" stdinStream
+        |> Map.add "Self.scriptPath" (Eval.VStr scriptPath)
 
     typeEnv, valueEnv
 
@@ -1840,11 +1849,7 @@ let analyzeLines
 
     let typeEnv0 =
         { typeEnv0 with
-            Values =
-                typeEnv0.Values
-                |> Map.add "args" (generalize (TSeq TStr))
-                |> Map.add "stdin" (generalize (TSeq TStr))
-                |> Map.add "scriptPath" (generalize TStr) }
+            Modules = typeEnv0.Modules |> Map.add "Self" selfMembers }
 
     Extern.refresh ()
 

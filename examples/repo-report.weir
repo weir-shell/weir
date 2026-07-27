@@ -8,7 +8,7 @@ type Health =
 
 // first arg, or the current directory — a seq pattern on argv
 let target =
-    match args with
+    match Self.args with
     | [] -> "."
     | t :: _ -> t
 

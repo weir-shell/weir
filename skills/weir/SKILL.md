@@ -18,11 +18,12 @@ stops being true fails the build.
   `Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read` — including in
   command pipelines (`| Seq.map Str.trim`). Bare names (`map`, `where`)
   exist only in the REPL and `#loose` scripts. If unsure, qualify.
-- `args : seq<string>`, `stdin : seq<string>`, and
-  `scriptPath : string` (the script's own ABSOLUTE path, resolved at
-  startup before any `cd`; symlinks unresolved like bash's `$0`)
-  exist in scripts only. `scriptPath |> Path.dir` is the dirname-$0
-  idiom.
+- The `Self` module groups a script's own facts, script-only (absent
+  in the REPL and `-e`): `Self.args : seq<string>`,
+  `Self.stdin : seq<string>`, `Self.pid : int` (the process id), and
+  `Self.scriptPath : string` (the script's own ABSOLUTE path, resolved
+  at startup before any `cd`; symlinks unresolved like bash's `$0`).
+  `Self.scriptPath |> Path.dir` is the dirname-$0 idiom.
 
 ## The statement rule (most important)
 

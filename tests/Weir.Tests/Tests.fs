@@ -2039,8 +2039,9 @@ let typedArgvTests =
     // check-side battery [D:typed-argv]; runtime behavior pins live in
     // e2e (Session.ScriptArgs is ambient global state)
     let argvEnv =
+        // script mode = the Self module present [D:self-module]
         { env with
-            Values = env.Values |> Map.add "args" (generalize (TSeq TStr)) }
+            Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers }
 
     let argvCheck input =
         Weir.Check.typecheck argvEnv (parse input)
@@ -2491,11 +2492,17 @@ let typedArgvTests =
                   "scriptPath is script-only"
                   ""
 
-              // in scripts it types as string (analyzeLines carries it)
+              // in scripts it types as string, now via Self [D:self-module]
               let diags, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "print (scriptPath |> Path.dir)" ]
+                  Weir.Script.analyzeLines "pin.weir" [ "print (Self.scriptPath |> Path.dir)" ]
 
               Expect.isEmpty diags "scripts know their own path"
+
+              // the bare name teaches the move (the clean-break migration)
+              let moved, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "print (scriptPath |> Path.dir)" ]
+
+              Expect.exists moved (fun d -> d.Message.Contains "use 'Self.scriptPath'") "bare name teaches Self"
           }
           test "scriptPath coexists with Args.load (no interaction)" {
               let diags, _, _, _ =
@@ -2503,10 +2510,35 @@ let typedArgvTests =
                       "pin.weir"
                       [ "type Cli = { quiet: bool }"
                         "let cli = Args.load Cli"
-                        "print (scriptPath |> Path.dir)"
+                        "print (Self.scriptPath |> Path.dir)"
                         "print $\"{show cli.quiet}\"" ]
 
               Expect.isEmpty diags "both boundary reads in one script"
+          }
+          test "the Self module: members type in scripts; bare names teach the move [D:self-module]" {
+              let clean lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"types: {lines}"
+
+              clean [ "let n = Self.pid + 1"; "print n" ] // pid is int (arithmetic)
+              clean [ "Self.args |> Seq.iter print" ]
+              clean [ "Self.stdin |> Seq.length |> print" ]
+              clean [ "print (Self.scriptPath |> Path.dir)" ]
+
+              // clean break: every bare name teaches its Self home
+              let teaches name (lines: string list) =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+                  Expect.exists
+                      diags
+                      (fun d -> d.Message.Contains $"use 'Self.{name}'")
+                      $"bare '{name}' teaches Self.{name}"
+
+              // in EXPRESSION position (bare at statement head is a command
+              // candidate — a cmd-not-found warning, a different path)
+              teaches "args" [ "print (Seq.length args)" ]
+              teaches "stdin" [ "print (Seq.length stdin)" ]
+              teaches "scriptPath" [ "print scriptPath" ]
           }
           test "script-only: without args in scope Args.load rejects by name" {
               let e2 = env |> declare "type C = { env: string }"

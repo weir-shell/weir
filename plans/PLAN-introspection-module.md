@@ -1,7 +1,14 @@
 # weir — the introspection module (+ `pid`)
 
-Status: DRAFT — awaiting bless. Groups the script/process introspection
-globals under one module and adds `pid`. Origin: live dogfooding — a
+Status: BLESSED (user 2026-07-27), EXECUTING. RULINGS: D1 = `Self`
+(accumulation argument); D1b = `Self.scriptPath` not `Self.path`
+(disambiguation + the name matches the script-only boundary; `path`/
+`sourcePath` rejected); D2 = clean break, no bare aliases (the
+did-you-mean teaches the migration). Added pins: `Args.load`/`Env.load`
+re-verified with a PIN (the one finding that would turn a rename into a
+behavior change); `Self.pid` stable across reads (the property
+fuzz.weir's lock liveness depends on). Groups the script/process
+introspection globals under `Self` and adds `pid`. Origin: live dogfooding — a
 script needs its own PID and today writes
 `let mypid = $(sh -c 'echo $PPID') |> Seq.head`, a shell-out for a
 value the runtime already knows; and the bare globals `args`/`stdin`/
@@ -35,6 +42,14 @@ and the plan proceeds; the whole rename keys off it.
 - **Bare aliases kept** — the `bareAliasHomes` mechanism (Builtins.fs:
   1470) already supports a member available both qualified and bare;
   softer migration, but two spellings for one thing.
+
+STATUS UPDATE: EXECUTED (2026-07-27). All rulings implemented; the
+re-verified finding (Args.load's script-only gate keyed on the bare
+`args` binding, not just Session.ScriptArgs) was caught by pin and
+fixed (gate on the `Self` module's presence). `pid` int → command
+splices use `show Self.pid` (argv is strings). Corpus/docs migrated;
+898 unit, e2e (Self.pid stable-positive + scriptPath), 60 doc, 156
+oracle, lsp-e2e, fuzz 4000, freshness — all green.
 
 ## Feasibility — CONFIRMED (diagnosed before drafting)
 

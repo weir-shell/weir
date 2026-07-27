@@ -1363,8 +1363,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             ->
             // Args.load T — the sixth typed-boundary instance [D:typed-argv]:
             // Env.load's sibling; the union acceptance is the delta
-            (if not (Map.containsKey "args" env.Values) then
-                 err expr.Span "Args.load is script-only ('args' is not available here)"
+            // script-mode signal = the Self module [D:self-module] (injected
+            // per-run by baseEnvs; absent in the REPL and -e). Args.load reads
+            // Session.ScriptArgs at eval, so this is purely the availability gate.
+            (if not (Map.containsKey "Self" env.Modules) then
+                 err expr.Span "Args.load is script-only (Self.args is not available here)"
              else
                  let validateFields span (label: string) (def: RecordDef) =
                      // Default cells / field shapes / flag collisions —

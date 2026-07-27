@@ -886,12 +886,18 @@ quantity semantics now.
   The rule is script-only: the REPL and `-e` keep `it`-style auto-print
   (ephemeral lines are not the PS output-pollution bug class; durable
   scripts are).
-- **Script inputs**: `args : seq<string>` (argv after the script name) and
-  `stdin : seq<string>` (lazy, one-shot — `Seq.force` it if reused) exist
-  only in scripts, not the REPL (the REPL owns its own stdin). Children
-  inherit the process stdin unless a value is piped into them; the `stdin`
-  binding reads the same underlying stream, so consuming it both ways is
-  user error, as in any shell.
+- **Script inputs — the `Self` module** [D:self-module]: a script's own
+  facts group under `Self`, script-only (absent in the REPL and `-e`,
+  which refuse the members by name). `Self.args : seq<string>` (argv
+  after the script name), `Self.stdin : seq<string>` (lazy, one-shot —
+  `Seq.force` it if reused), `Self.pid : int` (the process id), and
+  `Self.scriptPath : string` (the absolute path, resolved at startup
+  before any `cd`). Children inherit the process stdin unless a value is
+  piped into them; `Self.stdin` reads the same underlying stream, so
+  consuming it both ways is user error, as in any shell. Bare `args`/
+  `stdin`/`scriptPath` were RETIRED into `Self` (freeing the names for
+  users); a bare use is an unbound-var error whose did-you-mean names the
+  `Self` member.
 - **Exit codes**: 0 on success; 1 on check errors (before any effect) and
   on runtime errors (at the fault, prior effects done); 2 for CLI misuse.
   A raising external maps to generic 1 — the child's code does not

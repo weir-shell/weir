@@ -158,17 +158,23 @@ A batch splats into a command with `$@` — N files, N words, nothing
 re-split: `git add $@(Path.glob "*.txt" |> Seq.force)`. Relative
 patterns resolve against the cwd at ENUMERATION — the lazy seam:
 `|> Seq.force` pins the batch before a `cd`. Script-relative batches
-ride `scriptPath`:
-`Path.glob $"{scriptPath |> Path.dir}/fixtures/**/*.txt"`.
+ride `Self.scriptPath`:
+`Path.glob $"{Self.scriptPath |> Path.dir}/fixtures/**/*.txt"`.
 
-## A script's own location
+## A script's own facts — the `Self` module
 
-`scriptPath : string` is the running script's absolute path —
+`Self` groups what a running script knows about itself: `Self.args`,
+`Self.stdin`, `Self.pid : int` (the process id — `acquire $"{Self.pid}"`
+replaces the `$(sh -c 'echo $PPID')` shell-out), and
+`Self.scriptPath : string`.
+
+`Self.scriptPath` is the running script's absolute path —
 resolved at startup against the invocation cwd, before any `cd`
 runs, symlinks left unresolved (bash's `$0` behavior). The
-dirname-$0 idiom is `scriptPath |> Path.dir`; if you need symlinks
-resolved, the command spelling is
-`$(realpath $scriptPath) |> Seq.head`. Script-only, like `args` —
+dirname-$0 idiom is `Self.scriptPath |> Path.dir`; if you need
+symlinks resolved, the command spelling is
+`$(realpath $"{Self.scriptPath}") |> Seq.head`. Script-only, like the
+rest of `Self` —
 the REPL and `-e` refuse it by name.
 
 ## Defaults: the resting point moves
@@ -574,7 +580,7 @@ records-over-tuples ruling, extended to argv). `[<Positional>]` is not
 a registered attribute; what is dropped is the typed, declared,
 help-generating path, NOT the ability to read operands. The untyped
 floor remains for hand-rolled shapes: `Args.flag "--clean" "-c"` and
-`Args.value "--out"` scan the raw `args` seq, and multi-value options
+`Args.value "--out"` scan the raw `Self.args` seq, and multi-value options
 reshape as one flag per value (`--stack X --env Y`).
 
 ## Parallelism

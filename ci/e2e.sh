@@ -168,7 +168,7 @@ type Tag = Big | Small
 let names = ls |> Seq.map _.name
 names |> Seq.first 1 |> print
 echo spliced (40 + 2)
-args |> Seq.head |> print
+Self.args |> Seq.head |> print
 WEOF
 chmod +x "$scriptdir/task.weir"
 out=$(cd "$scriptdir" && WEIR_BIN_PATH=1 $BIN task.weir firstarg)
@@ -1385,7 +1385,7 @@ let classify n =
     | 1 -> "one"
     | n -> $"many ({n})"
 
-let mode = args |> Seq.tryHead |> Option.defaultValue "count"
+let mode = Self.args |> Seq.tryHead |> Option.defaultValue "count"
 
 match mode with
 | "count" -> print (classify 1)
@@ -2013,7 +2013,7 @@ WEOF
 out=$(HOME=/tmp $BIN "$tadir/both.weir" --env prod)
 expect "Args.load composes with Env.load" "prod true" "$out"
 
-printf 'print (args |> Str.join ",")\n' > "$tadir/slice.weir"
+printf 'print (Self.args |> Str.join ",")\n' > "$tadir/slice.weir"
 out=$($BIN "$tadir/slice.weir" --a b c)
 expect "script args start AFTER the script path" "--a,b,c" "$out"
 
@@ -2628,7 +2628,7 @@ mkdir -p "$spdir/sub" "$spdir/pbin"
 cat > "$spdir/sub/where.weir" <<'WEOF'
 #!/usr/bin/env weir
 cd ..
-print (scriptPath |> Path.dir)
+print (Self.scriptPath |> Path.dir)
 WEOF
 chmod +x "$spdir/sub/where.weir"
 cp "$spdir/sub/where.weir" "$spdir/pbin/where.weir"
@@ -2649,6 +2649,23 @@ echo "e2e ok: shebang-on-PATH resolves to the script, not the interpreter"
 errout=$($BIN -e 'scriptPath' 2>&1) && fail "-e must refuse scriptPath"
 echo "$errout" | grep -qF "scriptPath is script-only" || fail "the teaching: $errout"
 echo "e2e ok: scriptPath refused outside scripts with its teaching"
+
+# ---- Self.pid: introspection replaces the $PPID shell-out [D:self-module] ----
+cat > "$spdir/pid.weir" <<'WEOF'
+let a = Self.pid
+let b = Self.pid
+print (a == b)
+print (a > 0)
+WEOF
+out=$($BIN "$spdir/pid.weir")
+[ "$(echo "$out" | sed -n 1p)" = "true" ] || fail "Self.pid must be STABLE across reads: $out"
+[ "$(echo "$out" | sed -n 2p)" = "true" ] || fail "Self.pid must be a positive int: $out"
+# it IS the running process (matches the OS view of the child)
+printf 'print Self.pid\n' > "$spdir/pid2.weir"
+got=$($BIN "$spdir/pid2.weir")
+echo "$got" | grep -qE '^[0-9]+$' || fail "Self.pid prints an int: $got"
+echo "e2e ok: Self.pid is a stable positive int (the $PPID shell-out retires)"
+
 rm -rf "$spdir"
 
 # ---- Path.glob [D:path-glob]: typed discovery, nothing expands ----
@@ -2697,7 +2714,7 @@ expect "glob: Seq.force pins the answer before cd" "forced-pinned: 2" "$out"
 # script-relative discovery: the scriptPath gate's payoff
 cat > "$pgdir/src/rel.weir" <<'WEOF'
 cd /
-Path.glob $"{scriptPath |> Path.dir}/../fixtures/**/*.txt" |> Seq.iter print
+Path.glob $"{Self.scriptPath |> Path.dir}/../fixtures/**/*.txt" |> Seq.iter print
 WEOF
 out=$(cd "$pgdir" && $BIN src/rel.weir)
 echo "$out" | grep -qF "fixtures/x/f.txt" || fail "script-relative glob after cd /: $out"
