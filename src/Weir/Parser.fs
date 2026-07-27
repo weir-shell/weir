@@ -1709,8 +1709,9 @@ let private topLet (r: Resolver) =
 let private letKeywordGuard: Parser<Stmt, unit> =
     // scan the name AND its simple-ident params [D:anchor-before-read]:
     // a keyword in any of those slots is always an error. (Keywords inside
-    // a parenthesised param pattern are the record-literal-field's sibling
-    // finding — a separate commit boundary, left stated.)
+    // a parenthesised PARAM pattern dominate via patWord — committed past
+    // the name; only let-DESTRUCTURE `let (rec) =` stays a finding, inside
+    // SLetPat's plain-vs-destructure attempt.)
     attempt (
         keyword "let" >>. many1 (getPosition .>>. spanned rawWord .>> ws)
         >>= fun words ->
