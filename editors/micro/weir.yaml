@@ -38,6 +38,9 @@ rules:
     # uppercase declares — one rule covers all three) ----
     # rule: types
     - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
+    # field/annotation types: the lowercase ident after ':' is a type
+    # rule: field-type
+    - type: "(?<=:)\\s*[a-z_][A-Za-z0-9_]*"
 
     # ---- numbers (int only; ranges lex as int .. int) ----
     # rule: numbers

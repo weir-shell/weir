@@ -23,11 +23,16 @@
 
 (attribute) @attribute
 
-(splat) @special
-(sigil) @special
-(splice) @special
-(bang_sigil) @special
-(district_marker) @special
+(splat) @punctuation.special
+(sigil) @punctuation.special
+(splice) @punctuation.special
+(bang_sigil) @punctuation.special
+(district_marker) @punctuation.special
 
 (operator) @operator
 (punctuation) @punctuation.bracket
+
+; record field types: the identifier right after ':' is a type, not a
+; binder name [issue 2] — flat siblings, anchored on the ':' punctuation
+((punctuation) @_colon . (identifier) @type
+ (#eq? @_colon ":"))

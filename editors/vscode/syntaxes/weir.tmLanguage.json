@@ -1,38 +1,83 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "information_for_contributors": [
-    "PORTED from editors/micro/weir.yaml, rule for rule — the micro file is the SPEC.",
+    "PORTED from editors/micro/weir.yaml, rule for rule \u2014 the micro file is the SPEC.",
     "Maintenance rule: a rule existing in one grammar only is DRIFT; add to BOTH or neither.",
     "The inventory test (ci/e2e.sh) diffs micro's '# rule:' annotations against this file's repository keys.",
     "Dialect delta: Oniguruma lookbehind/lookahead is used ONLY where it simplifies an existing micro rule (comment/district/single-quote guards; the verbatim end), never to add rules micro lacks.",
     "Command-mode single quotes: the opener needs a preceding space/line-start so apostrophes in comments (GUIDE's, don't) never open a region; a mid-word ' never opens one either, matching command arg tokenization.",
     "Raw kinds: verbatim @\"...\" has one escape (\"\" = a quote, via lookahead on the end); triple \"\"\"...\"\"\" has none at all and closes at the FIRST triple (FCS-verdict-pinned).",
-    "The Regex pattern literal is its own RAW literal kind that paints as a string region — do not 'fix' the highlighting to imply string escapes inside it."
+    "The Regex pattern literal is its own RAW literal kind that paints as a string region \u2014 do not 'fix' the highlighting to imply string escapes inside it."
   ],
   "name": "weir",
   "scopeName": "source.weir",
   "patterns": [
-    { "include": "#comment" },
-    { "include": "#shebang" },
-    { "include": "#directive" },
-    { "include": "#interp-string" },
-    { "include": "#raw-triple" },
-    { "include": "#raw-verbatim" },
-    { "include": "#plain-string" },
-    { "include": "#command-single-quote" },
-    { "include": "#keywords" },
-    { "include": "#reserved" },
-    { "include": "#bool" },
-    { "include": "#not" },
-    { "include": "#types" },
-    { "include": "#numbers" },
-    { "include": "#sigil-open" },
-    { "include": "#district-marker" },
-    { "include": "#force-prefix" },
-    { "include": "#splice" },
-    { "include": "#field-sugar" },
-    { "include": "#attribute" },
-    { "include": "#operators" }
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#shebang"
+    },
+    {
+      "include": "#directive"
+    },
+    {
+      "include": "#interp-string"
+    },
+    {
+      "include": "#raw-triple"
+    },
+    {
+      "include": "#raw-verbatim"
+    },
+    {
+      "include": "#plain-string"
+    },
+    {
+      "include": "#command-single-quote"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#reserved"
+    },
+    {
+      "include": "#bool"
+    },
+    {
+      "include": "#not"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#field-type"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#sigil-open"
+    },
+    {
+      "include": "#district-marker"
+    },
+    {
+      "include": "#force-prefix"
+    },
+    {
+      "include": "#splice"
+    },
+    {
+      "include": "#field-sugar"
+    },
+    {
+      "include": "#attribute"
+    },
+    {
+      "include": "#operators"
+    }
   ],
   "repository": {
     "comment": {
@@ -104,20 +149,43 @@
       "end": "\"",
       "name": "string.interpolated.weir",
       "patterns": [
-        { "match": "\\\\.", "name": "constant.character.escape.weir" },
-        { "match": "\\{\\{|\\}\\}", "name": "constant.character.escape.weir" },
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.weir"
+        },
+        {
+          "match": "\\{\\{|\\}\\}",
+          "name": "constant.character.escape.weir"
+        },
         {
           "begin": "\\{",
           "end": "\\}",
           "name": "meta.interpolation.weir",
           "patterns": [
-            { "match": "\\b(if|then|elif|else|when|match|with|fun|let|in)\\b", "name": "keyword.control.weir" },
-            { "include": "#bool" },
-            { "include": "#types" },
-            { "include": "#numbers" },
-            { "include": "#field-sugar" },
-            { "match": "\\|>|==|<>|<=|>=|->|\\.\\.|::|[+\\-*/<>=]", "name": "keyword.operator.weir" },
-            { "match": "\\b[a-z_][A-Za-z0-9_]*\\b", "name": "variable.other.weir" }
+            {
+              "match": "\\b(if|then|elif|else|when|match|with|fun|let|in)\\b",
+              "name": "keyword.control.weir"
+            },
+            {
+              "include": "#bool"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#field-sugar"
+            },
+            {
+              "match": "\\|>|==|<>|<=|>=|->|\\.\\.|::|[+\\-*/<>=]",
+              "name": "keyword.operator.weir"
+            },
+            {
+              "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.weir"
+            }
           ]
         }
       ]
@@ -132,7 +200,10 @@
       "end": "\"(?!\")",
       "name": "string.quoted.verbatim.weir",
       "patterns": [
-        { "match": "\"\"", "name": "constant.character.escape.weir" }
+        {
+          "match": "\"\"",
+          "name": "constant.character.escape.weir"
+        }
       ]
     },
     "plain-string": {
@@ -140,13 +211,24 @@
       "end": "\"",
       "name": "string.quoted.double.weir",
       "patterns": [
-        { "match": "\\\\.", "name": "constant.character.escape.weir" }
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.weir"
+        }
       ]
     },
     "command-single-quote": {
       "begin": "(?<=^|[ \\t])'",
       "end": "'",
       "name": "string.quoted.single.weir"
+    },
+    "field-type": {
+      "match": "(:)\\s*([a-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "2": {
+          "name": "entity.name.type.weir"
+        }
+      }
     }
   }
 }
