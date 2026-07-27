@@ -158,6 +158,60 @@ to the gate-stopped state (preserved at
 /tmp/fork-runaway-plus-sessionD-*.patch) and Session D replayed
 onto the clean tree. The gate note below stands as written: no
 rename is IN; the wire-format bless is still the owed decision.
+## Builtin fields go lowercase — the gate's question answered (2026-07-27)
+
+The stop below got its answer the same day: **field names are the
+wire contract, so choosing lowercase fields is choosing lowercase
+keys — there was no second decision.** The rider resurrected at
+session size with the wire change riding [D:builtin-fields-lowercase].
+
+**The rename**: five defs, thirteen fields — FileRow
+`name`/`bytes`/`readOnly`, Change `status`/`staged`/`unstaged`/`path`,
+Completed `exitCode`/`stdout`/`stderr`, Group `key`/`items` (the def
+census's find — the gate had only priced four defs), EnvVar
+`name`/`value`. Type names stay uppercase; they declare. Wire today:
+`ls |> Seq.first 1 |> to json` →
+`{"bytes":…,"name":…,"readOnly":false}`.
+
+**Ordinal order held**: within every def, lowercasing moved no field
+past another (bytes<name<readOnly, exitCode<stderr<stdout, …), so
+Map-iteration order in `show`/`to json` — and the completion lists'
+sorted order — changed only in spelling. The four completion
+field-list pins re-pin that literally.
+
+**Pins that moved SEMANTICALLY (3)**, everything else textually:
+"typo in field is rejected with exact span and a hint" and "row
+discharge through a let reports the typo at the use site" respell
+their probe `Bytse`→`bytse` — against lowercase `bytes` the old probe
+sits at distance 3, past the hint threshold, so the old spelling
+would have silently degraded the pins to hint-less errors; and "field
+prefix narrows the suggestions" types `f.b` for `f.B`. Textual
+movers, named: the roundtrip coherence pin (`ls |> to json |> from
+json FileRow` — both sides together, the point of the exercise), the
+`show` render pin (`{ bytes = 0; name = "a.txt"; readOnly = false }`),
+the five `from json` JSON-literal pins, the porcelain fixture +
+`fields["path"]` asserts, the Env.pair/ofPairs/fromFile pins, the
+groupBy `_.key`/`g.items` pins, the FileRow row-poly and checker-error
+pins, ~18 e2e exitCode-family lines plus the `_.name`/`_.path`/
+`_.bytes` probes, lsp-e2e's ls-row and EnvVar-hole completions.
+
+**The battery caught two sites the grep denominator missed** —
+tools/loc.weir (Group fields; the e2e repo-scripts gate failed with
+`Group has no field 'Items'. Did you mean 'items'?` — the free
+teaching doing its job on us first) and ci/timing.sh's expression
+probe. Also swept: the Parser capture teaching now says "read
+.exitCode"; git-subrepo/bicep-deploy/repo-report examples; SKILL,
+GUIDE, SEMANTICS, README, SECURITY field references. User records
+keep their freedom — bicep's `t.Name`, jira-branch's `issue.Key`
+stayed, correctly, PascalCase.
+
+**No retirement hints**, phase-scoped per [D:drop-reify-builtins] —
+and none needed: `has no field 'ExitCode' … Did you mean 'exitCode'?`
+is distance 1; the migration teaches itself.
+
+Battery: 883 unit / e2e all green (lsp included) / 20 fuzz / 60
+skill-doc blocks / 156 oracle / timing 8·17·11ms. Diff 223+/223− —
+a pure rename.
 
 ## Builtin-fields-lowercase rider — STOPPED AT THE GATE (2026-07-27)
 

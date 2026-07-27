@@ -326,11 +326,11 @@ print x
 ```
 
 ```weir
-// the exit-code idioms: succeeds is ExitCode == 0 EXACTLY — grep's
+// the exit-code idioms: succeeds is exitCode == 0 EXACTLY — grep's
 // no-match (1) is FALSE here; reach for | complete when codes are data
 let found = grep -c NOPE_XYZ /etc/hostname | succeeds
 let detail = grep -c NOPE_XYZ /etc/hostname | complete
-print (if found then "?" else $"no match is false; code {detail.ExitCode}")
+print (if found then "?" else $"no match is false; code {detail.exitCode}")
 ```
 
 ```weir
@@ -390,12 +390,12 @@ print x
   districts; `cmd | exitCode` STREAMS and reifies the code as INT,
   never raises — bind it or match it (`| 130 ->` for cancels); a
   bare/`!()`/`$()` position is a teaching error ($() captures — use
-  `| complete` there). **`succeeds` is ExitCode == 0, exactly** —
+  `| complete` there). **`succeeds` is exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record.
-  Full inspection: `cmd | complete` gives `{ ExitCode; Stdout;
-  Stderr }`; a COMPUTED argv splats into the chain —
-  `$author(git commit-tree $@argv | complete) |> _.Stdout` (literal
+  Full inspection: `cmd | complete` gives `{ exitCode; stdout;
+  stderr }`; a COMPUTED argv splats into the chain —
+  `$author(git commit-tree $@argv | complete) |> _.stdout` (literal
   head, splatted argv, sigil env; works with all four reifiers,
   value-headed and districts too). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
@@ -408,7 +408,7 @@ print x
   ~2GB. `Seq.force` on decoded lines re-pays string overhead — force
   what you need, not the world.
 - Typed output: `git status --porcelain | from porcelain` gives rows
-  with `Path`/`Staged`/`Unstaged`/`Status`; `... | from json T` needs
+  with `path`/`staged`/`unstaged`/`status`; `... | from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
 - `!` runs commands: parens for one inline (`!(git pull)`), LINE-END
   `!` for a block below — indented bare command lines, one per line
@@ -600,7 +600,7 @@ let c = Args.load Cmd
   the body. Guard lines before a block result work:
   `if x == "" then fail "usage"` then the result line at same indent.
 - `exit n` exits with code n silently (propagation:
-  `if r.ExitCode <> 0 then exit (r.ExitCode)`); `fail "msg"` is
+  `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
   the message-carrying exit-1. No try/finally — for cleanup-always,
   reify with `| complete`, clean up, then propagate.
 - Blank lines are TRANSPARENT while a statement is open — bodies,
@@ -623,9 +623,9 @@ echo tagged $marker (40 + 2)
 sh -c "echo via-posix && echo second"
 
 let r = sh -c "exit 3" | complete
-print $"exit was {r.ExitCode}"
+print $"exit was {r.exitCode}"
 
-git status --porcelain | from porcelain | Seq.map _.Path
+git status --porcelain | from porcelain | Seq.map _.path
 ```
 
 ## Diagnostics and exiting

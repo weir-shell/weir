@@ -140,7 +140,7 @@ let rawConfig file key = git config --file $file $key | complete
 
 let configGet file key =
     let r = rawConfig file key
-    if r.ExitCode == 0 then r.Stdout |> Seq.tryHead |> Option.defaultValue "" else ""
+    if r.exitCode == 0 then r.stdout |> Seq.tryHead |> Option.defaultValue "" else ""
 
 let makeRef name target = !(git update-ref $name $target)
 
@@ -229,7 +229,7 @@ let assertRepoReady ctx =
     !
         // --exit-code instead of --quiet: orFail streams, so the
         // failing paths SHOW [D:exit-reifiers]
-        git diff-files --exit-code --ignore-submodules | orFail "Can't pull subrepo. Unstaged changes."
+        git diff-files --exit-code --ignore-submodules | orFail "Can't pull subrepo. unstaged changes."
         git diff-index --quiet --cached --ignore-submodules HEAD | orFail "Can't pull subrepo. Index has changes."
 
 // ---- fetch (bash: subrepo:fetch) --------------------------------
@@ -263,7 +263,7 @@ let subdirTree subdir commit =
 let commitTreeAs date email name msg tree parents =
     let author = Env.ofPairs ["GIT_AUTHOR_DATE", date; "GIT_AUTHOR_EMAIL", email; "GIT_AUTHOR_NAME", name]
     let parentArgs = parents |> Seq.fold (fun acc p -> ["-p"; p] |> Seq.append acc) []
-    $author(git commit-tree -m $msg $@parentArgs $tree | complete) |> _.Stdout |> Seq.head
+    $author(git commit-tree -m $msg $@parentArgs $tree | complete) |> _.stdout |> Seq.head
 
 type Walk = {
     Prev: string
@@ -277,9 +277,9 @@ type Walk = {
 // .gitrepo reference moved (the merge-method join)
 let graftStep ctx w commit =
     let blob = $(git config --blob $"{commit}:{ctx.Gitrepo}" subrepo.commit | complete)
-    if blob.ExitCode <> 0 then w // no .gitrepo in this commit: skip
+    if blob.exitCode <> 0 then w // no .gitrepo in this commit: skip
     else
-        let gCommit = blob.Stdout |> Seq.tryHead |> Option.defaultValue ""
+        let gCommit = blob.stdout |> Seq.tryHead |> Option.defaultValue ""
         let parentsLine = $(git show -s --format=%P $commit) |> Seq.tryHead |> Option.defaultValue ""
         let isChild = (w.Ancestor == "") || (parentsLine |> Str.contains (w.Ancestor))
         if not isChild then w // not on the single selected path: skip
@@ -353,10 +353,10 @@ let pull ctx0 =
         graftBranch ctx branch
         let localHead = revParse branch
         let joined = $(git merge-tree --write-tree $branch $"refs/subrepo/{ctx.Subref}/fetch" | complete)
-        if joined.ExitCode <> 0 then
-            JoinConflict (joined.Stdout |> Seq.append (joined.Stderr) |> Str.join "\n")
+        if joined.exitCode <> 0 then
+            JoinConflict (joined.stdout |> Seq.append (joined.stderr) |> Str.join "\n")
         else
-            let tree = joined.Stdout |> Seq.head
+            let tree = joined.stdout |> Seq.head
             let merged =
                 $(git commit-tree -p $localHead -p $"refs/subrepo/{ctx.Subref}/fetch" -m $"subrepo pull merge" $tree)
                 |> Seq.head
@@ -434,10 +434,10 @@ let init subdir remote branch =
 let push force ctx0 =
     let branch = $"subrepo/{ctx0.Subref}"
     let fetched = $(git fetch --no-tags --quiet (ctx0.Repo.Remote) (ctx0.Repo.Branch) | complete)
-    let fetchErr = fetched.Stderr |> Str.join "\n"
+    let fetchErr = fetched.stderr |> Str.join "\n"
     let newUpstream =
-        (fetched.ExitCode <> 0) && (fetchErr |> Str.toLower |> Str.contains "couldn't find remote ref")
-    if (fetched.ExitCode <> 0) && not newUpstream then fail $"Fetch for push failed: {fetchErr}"
+        (fetched.exitCode <> 0) && (fetchErr |> Str.toLower |> Str.contains "couldn't find remote ref")
+    if (fetched.exitCode <> 0) && not newUpstream then fail $"Fetch for push failed: {fetchErr}"
     let ctx =
         if newUpstream then ctx0
         else

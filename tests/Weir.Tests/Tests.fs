@@ -148,7 +148,7 @@ let private runReal input =
 let private expectValue input expected =
     Expect.equal (run input) expected $"eval of '{input}'"
 
-let acceptance = "ls |> where (fun f -> f.Bytes > 1048576) |> first 5"
+let acceptance = "ls |> where (fun f -> f.bytes > 1048576) |> first 5"
 
 let parserTests =
     testList
@@ -159,7 +159,7 @@ let parserTests =
           test "comparison binds looser than plus" { expectParse "1 + 2 > 2" "(> (+ 1 2) 2)" }
           test "lambda body extends right" { expectParse "fun x -> x + 1" "(fun x (+ x 1))" }
           test "let-in" { expectParse "let x = 1 in x" "(let x 1 x)" }
-          test "field access chains" { expectParse "f.Bytes > 1048576" "(> f.Bytes 1048576)" }
+          test "field access chains" { expectParse "f.bytes > 1048576" "(> f.bytes 1048576)" }
           test "shell pipe is pipe" { expectParse "ls |> where p |> first 5" "((ls |> (where p)) |> (first 5))" }
           test "less-than without space parses as comparison (transition-recognizer guard)" {
               expectParse "1<2" "(< 1 2)"
@@ -193,16 +193,16 @@ let checkerTests =
               Expect.equal (checkOk acceptance).Ty Weir.Builtins.seqFileRow ""
           }
           test "typo in field is rejected with exact span and a hint" {
-              let input = "ls |> where (fun f -> f.Bytse > 1048576) |> first 5"
+              let input = "ls |> where (fun f -> f.bytse > 1048576) |> first 5"
               let terr = checkErr input
-              let expectedStart = input.IndexOf "Bytse" + 1
+              let expectedStart = input.IndexOf "bytse" + 1
               Expect.equal terr.Span.Start.Col expectedStart "start col"
               Expect.equal terr.Span.End.Col (expectedStart + 5) "end col"
-              Expect.stringContains terr.Message "FileRow has no field 'Bytse'" ""
-              Expect.stringContains terr.Message "Did you mean 'Bytes'?" ""
+              Expect.stringContains terr.Message "FileRow has no field 'bytse'" ""
+              Expect.stringContains terr.Message "Did you mean 'bytes'?" ""
           }
           test "lambda body of wrong type reports expected vs actual" {
-              let terr = checkErr "ls |> where (fun f -> f.Bytes) |> first 5"
+              let terr = checkErr "ls |> where (fun f -> f.bytes) |> first 5"
               Expect.stringContains terr.Message "expected bool, got int" ""
           }
           test "unbound variable gets a hint" {
@@ -252,11 +252,11 @@ let evalTests =
           }
           test "where by string field" {
               expectValue
-                  "ls |> where (fun f -> f.Name == \"c.log\")"
+                  "ls |> where (fun f -> f.name == \"c.log\")"
                   (VSeq [ Weir.Builtins.file "c.log" 1048576 false ])
           }
           test "where by bool field" {
-              expectValue "ls |> where (fun f -> f.ReadOnly)" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
+              expectValue "ls |> where (fun f -> f.readOnly)" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "first truncates" {
               expectValue
@@ -327,12 +327,12 @@ let evalTests =
           test "closure captures environment" { expectValue "let y = 40 in (fun x -> x + y) 2" (VInt 42) }
           test "partially applied polymorphic builtin stays polymorphic" {
               expectValue
-                  "let firstTwo = first 2 in ls |> firstTwo |> where (fun f -> f.ReadOnly)"
+                  "let firstTwo = first 2 in ls |> firstTwo |> where (fun f -> f.readOnly)"
                   (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "lambda in polymorphic position without data now checks via rows" {
               expectValue
-                  "let staged = where (fun f -> f.ReadOnly) in ls |> staged"
+                  "let staged = where (fun f -> f.readOnly) in ls |> staged"
                   (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "shadowing" { expectValue "let x = 1 in let x = 2 in x" (VInt 2) }
@@ -345,7 +345,7 @@ let rejectedAtCheckTests =
         [ test "unbound variable" { checkErr "nope" |> ignore }
           test "applying a non-function" { checkErr "1 2" |> ignore }
           test "string plus int" { checkErr "\"a\" + 1" |> ignore }
-          test "field typo in a pipeline" { checkErr "ls |> where (fun f -> f.Bytse > 1)" |> ignore }
+          test "field typo in a pipeline" { checkErr "ls |> where (fun f -> f.bytse > 1)" |> ignore }
           test "wrong argument to a builtin" { checkErr "double \"x\"" |> ignore }
           test "piping a seq into an int function" { checkErr "ls |> double" |> ignore }
           test "let-bound bare lambda cannot infer without annotations" {
@@ -617,7 +617,7 @@ let streamingTests =
               let infinite = Seq.initInfinite (fun i -> Weir.Builtins.file $"f{i}" i false)
 
               let result =
-                  runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.Bytes > 1) |> first 5"
+                  runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.bytes > 1) |> first 5"
                   |> forceSeq
 
               Expect.equal (List.length result) 5 "exactly five rows"
@@ -702,7 +702,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.Bytes > 1) |> first 2"
+              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1) |> first 2"
               |> forceSeq
               |> ignore
 
@@ -716,7 +716,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.Bytes > 1) |> first 5"
+              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1) |> first 5"
               |> ignore
 
               Expect.equal pulled.Value 0 "evaluation alone must not enumerate"
@@ -749,10 +749,10 @@ let polymorphismTests =
     testList
         "Pipe-directed instantiation"
         [ test "where instantiates from the piped seq" {
-              Expect.equal (checkOk "ls |> where (fun f -> f.ReadOnly)").Ty Weir.Builtins.seqFileRow ""
+              Expect.equal (checkOk "ls |> where (fun f -> f.readOnly)").Ty Weir.Builtins.seqFileRow ""
           }
           test "map changes the element type" {
-              Expect.equal (checkOk "ls |> map (fun f -> f.Bytes)").Ty (TSeq TInt) ""
+              Expect.equal (checkOk "ls |> map (fun f -> f.bytes)").Ty (TSeq TInt) ""
           }
           test "map over ints still works" {
               Expect.equal (run "nats |> map (fun x -> x * x) |> take 3" |> forceSeq) [ VInt 0; VInt 1; VInt 4 ] ""
@@ -761,11 +761,11 @@ let polymorphismTests =
               Expect.equal (run "nats |> map double |> take 3" |> forceSeq) [ VInt 0; VInt 2; VInt 4 ] ""
           }
           test "full application instantiates from the trailing data argument" {
-              expectValue "where (fun f -> f.ReadOnly) ls |> first 1" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
+              expectValue "where (fun f -> f.readOnly) ls |> first 1" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "instantiation mismatch is reported" {
               Expect.stringContains
-                  (checkErr "nats |> where (fun f -> f.ReadOnly)").Message
+                  (checkErr "nats |> where (fun f -> f.readOnly)").Message
                   "only records have fields"
                   ""
           } ]
@@ -797,10 +797,10 @@ let boundaryTests =
                   VRecord(
                       "Change",
                       Map
-                          [ "Status", VStr status
-                            "Staged", VBool staged
-                            "Unstaged", VBool unstaged
-                            "Path", VStr path ]
+                          [ "status", VStr status
+                            "staged", VBool staged
+                            "unstaged", VBool unstaged
+                            "path", VStr path ]
                   )
 
               Expect.equal
@@ -827,13 +827,13 @@ let boundaryTests =
               try
                   let result =
                       runReal
-                          $"sh -c \"cd {dir} && git status --porcelain\" |> from porcelain |> where (fun c -> c.Staged)"
+                          $"sh -c \"cd {dir} && git status --porcelain\" |> from porcelain |> where (fun c -> c.staged)"
                       |> forceSeq
 
                   match result with
                   | [ VRecord("Change", fields) ] ->
-                      Expect.equal fields["Path"] (VStr "staged.txt") "path"
-                      Expect.equal fields["Staged"] (VBool true) "staged"
+                      Expect.equal fields["path"] (VStr "staged.txt") "path"
+                      Expect.equal fields["staged"] (VBool true) "staged"
                   | other -> failtest $"unexpected result: {other}"
               finally
                   Directory.Delete(dir, true)
@@ -841,25 +841,25 @@ let boundaryTests =
           test "to json serializes records as ndjson" {
               Expect.equal
                   (run "ls |> first 1 |> to json" |> forceSeq)
-                  [ VStr """{"Bytes":0,"Name":"a.txt","ReadOnly":false}""" ]
+                  [ VStr """{"bytes":0,"name":"a.txt","readOnly":false}""" ]
                   ""
           }
           test "json roundtrip preserves rows" {
               Expect.equal (run "ls |> to json |> from json FileRow" |> forceSeq) fakeFiles ""
           }
           test "from json validates field types" {
-              let src = VSeq [ VStr """{"Name":"x","Bytes":"big","ReadOnly":false}""" ]
+              let src = VSeq [ VStr """{"name":"x","bytes":"big","readOnly":false}""" ]
 
               Expect.throws (fun () -> runWith [ "src", src ] "src |> from json FileRow" |> forceSeq |> ignore) ""
           }
           test "from json rejects missing fields" {
-              let src = VSeq [ VStr """{"Name":"x"}""" ]
+              let src = VSeq [ VStr """{"name":"x"}""" ]
 
               Expect.throws (fun () -> runWith [ "src", src ] "src |> from json FileRow" |> forceSeq |> ignore) ""
           }
           test "from json ignores extra fields" {
               let src =
-                  VSeq [ VStr """{"Name":"x","Size":1,"Bytes":1048576,"ReadOnly":true,"Extra":42}""" ]
+                  VSeq [ VStr """{"name":"x","Size":1,"bytes":1048576,"readOnly":true,"Extra":42}""" ]
 
               Expect.equal
                   (runWith [ "src", src ] "src |> from json FileRow" |> forceSeq)
@@ -873,7 +873,7 @@ let boundaryTests =
           }
           test "from can be let-bound" {
               expectValue
-                  "let p = from porcelain in [\"A  x.txt\"] |> p |> first 1 |> map (fun c -> c.Path)"
+                  "let p = from porcelain in [\"A  x.txt\"] |> p |> first 1 |> map (fun c -> c.path)"
                   (VSeq [ VStr "x.txt" ])
           } ]
 
@@ -908,23 +908,23 @@ let shorthandTests =
     testList
         "Underscore shorthand and escapes"
         [ test "underscore field access desugars to a lambda" {
-              expectParse "where _.ReadOnly" "(where (fun _ _.ReadOnly))"
+              expectParse "where _.readOnly" "(where (fun _ _.readOnly))"
           }
           test "where with shorthand filters" {
-              expectValue "ls |> where _.ReadOnly" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
+              expectValue "ls |> where _.readOnly" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "map with shorthand projects" {
-              Expect.equal (checkOk "ls |> map _.Bytes").Ty (TSeq TInt) ""
+              Expect.equal (checkOk "ls |> map _.bytes").Ty (TSeq TInt) ""
 
-              Expect.equal (run "ls |> map _.Name |> first 2" |> forceSeq) [ VStr "a.txt"; VStr "b.bin" ] ""
+              Expect.equal (run "ls |> map _.name |> first 2" |> forceSeq) [ VStr "a.txt"; VStr "b.bin" ] ""
           }
           test "shorthand chains through nested records" { expectParse "map _.A.B" "(map (fun _ _.A.B))" }
           test "shorthand in a larger expression gets the targeted hint" {
-              let terr = checkErr "ls |> where (_.Bytes > 9) |> first \"x\""
+              let terr = checkErr "ls |> where (_.bytes > 9) |> first \"x\""
               Expect.stringContains terr.Message "_.Field is a whole function" ""
           }
           test "byte literals filter correctly" {
-              expectValue "ls |> where (fun f -> f.Bytes > 2097152) |> map _.Name" (VSeq [ VStr "b.bin"; VStr "d.iso" ])
+              expectValue "ls |> where (fun f -> f.bytes > 2097152) |> map _.name" (VSeq [ VStr "b.bin"; VStr "d.iso" ])
           }
           test "bare underscore is not an expression" {
               Expect.stringContains (checkErr "_ + 1").Message "unbound variable '_'" ""
@@ -936,10 +936,10 @@ let shorthandTests =
               expectValue "\"back\\\\slash\"" (VStr "back\\slash")
           }
           test "escaped strings survive a json roundtrip" {
-              let src = VSeq [ VStr """{"Name":"a\"b","Bytes":1048576,"ReadOnly":false}""" ]
+              let src = VSeq [ VStr """{"name":"a\"b","bytes":1048576,"readOnly":false}""" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from json FileRow |> map _.Name" |> forceSeq)
+                  (runWith [ "src", src ] "src |> from json FileRow |> map _.name" |> forceSeq)
                   [ VStr "a\"b" ]
                   ""
           } ]
@@ -1001,11 +1001,11 @@ let completionTests =
           }
           test "lambda parameter completes from the pipeline element type" {
               let text = "ls |> where (fun f -> f."
-              Expect.equal (suggest text (text.Length - 2)) [ "f.Bytes"; "f.Name"; "f.ReadOnly" ] ""
+              Expect.equal (suggest text (text.Length - 2)) [ "f.bytes"; "f.name"; "f.readOnly" ] ""
           }
           test "lambda param completes inside a record literal (the user receipt)" {
               let text = "ls |> Seq.map (fun x -> { Line = x."
-              Expect.equal (suggest text (text.Length - 2)) [ "x.Bytes"; "x.Name"; "x.ReadOnly" ] ""
+              Expect.equal (suggest text (text.Length - 2)) [ "x.bytes"; "x.name"; "x.readOnly" ] ""
           }
           test "mid-line cursor: callers truncate at the cursor (the contract)" {
               // the receipt: `{ Line = x. })` with the cursor after the
@@ -1016,12 +1016,12 @@ let completionTests =
               let full = "ls |> Seq.map (fun x -> { Line = x. })"
               let upto = full.Substring(0, full.Length - 3)
               let ws = full.Length - 5
-              Expect.equal (suggest upto ws) [ "x.Bytes"; "x.Name"; "x.ReadOnly" ] "truncated: fields"
+              Expect.equal (suggest upto ws) [ "x.bytes"; "x.name"; "x.readOnly" ] "truncated: fields"
               Expect.equal (suggest full ws) [] "untruncated would kill every match"
           }
           test "field prefix narrows the suggestions" {
-              let text = "ls |> where (fun f -> f.B"
-              Expect.equal (suggest text (text.Length - 3)) [ "f.Bytes" ] ""
+              let text = "ls |> where (fun f -> f.b"
+              Expect.equal (suggest text (text.Length - 3)) [ "f.bytes" ] ""
           }
           test "bound record variable completes its fields" {
               let envWithQ =
@@ -1033,13 +1033,13 @@ let completionTests =
           test "later pipeline stages track the element type" {
               let text = "[\"A  x.txt\"] |> from porcelain |> where (fun c -> c."
 
-              Expect.equal (suggest text (text.Length - 2)) [ "c.Path"; "c.Staged"; "c.Status"; "c.Unstaged" ] ""
+              Expect.equal (suggest text (text.Length - 2)) [ "c.path"; "c.staged"; "c.status"; "c.unstaged" ] ""
           }
           test "holes: unbound args in a known pipeline still type the element" {
               // n is an enclosing param (unbound here) - Seq.skip's result
               // type falls out of unification anyway (the targetEnv objection)
               let text = "Seq.skip n ls |> map (fun f -> f."
-              Expect.contains (suggest text (text.Length - 2)) "f.Name" ""
+              Expect.contains (suggest text (text.Length - 2)) "f.name" ""
           }
           test "no fields on a non-record element" {
               let text = "nats |> map (fun x -> x."
@@ -1055,18 +1055,18 @@ let rowTests =
     testList
         "Row polymorphism"
         [ test "field projection lambda infers a row type" {
-              match (checkOk "fun f -> f.ReadOnly").Ty with
-              | TFun(TRowVar(_, [ "ReadOnly", TVar _ ]), TVar _) -> ()
+              match (checkOk "fun f -> f.readOnly").Ty with
+              | TFun(TRowVar(_, [ "readOnly", TVar _ ]), TVar _) -> ()
               | t -> failtest $"expected a row-typed projection, got {formatTy t}"
           }
           test "field usage constrains the row" {
-              match (checkOk "fun f -> f.Bytes > 1048576").Ty with
-              | TFun(TRowVar(_, [ "Bytes", TInt ]), TBool) -> ()
-              | t -> failtest $"expected {{ Bytes: int; .. }} -> bool, got {formatTy t}"
+              match (checkOk "fun f -> f.bytes > 1048576").Ty with
+              | TFun(TRowVar(_, [ "bytes", TInt ]), TBool) -> ()
+              | t -> failtest $"expected {{ bytes: int; .. }} -> bool, got {formatTy t}"
           }
           test "row-typed filter discharges against FileRow" {
               expectValue
-                  "let staged = where _.ReadOnly in ls |> staged"
+                  "let staged = where _.readOnly in ls |> staged"
                   (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "one row-polymorphic projection reused across two record types" {
@@ -1087,19 +1087,19 @@ let rowTests =
                   Expect.equal (eval valueEnv te) (VInt 4) "0+1 and 0+1+2"
           }
           test "row discharge through a let reports the typo at the use site" {
-              let input = "let f = where (fun c -> c.Bytse > 1) in ls |> f"
+              let input = "let f = where (fun c -> c.bytse > 1) in ls |> f"
               let terr = checkErr input
-              Expect.stringContains terr.Message "FileRow has no field 'Bytse'" ""
-              Expect.stringContains terr.Message "Did you mean 'Bytes'?" ""
+              Expect.stringContains terr.Message "FileRow has no field 'bytse'" ""
+              Expect.stringContains terr.Message "Did you mean 'bytes'?" ""
               Expect.equal terr.Span.Start.Col (input.LastIndexOf "f" + 1) "span points at the use"
           }
           test "direct pipeline typo keeps the exact field span" {
-              let input = "ls |> where (fun c -> c.Bytse > 1)"
+              let input = "ls |> where (fun c -> c.bytse > 1)"
               let terr = checkErr input
-              Expect.equal terr.Span.Start.Col (input.IndexOf "Bytse" + 1) "span points at the typo"
+              Expect.equal terr.Span.Start.Col (input.IndexOf "bytse" + 1) "span points at the typo"
           }
           test "row discharge checks the field type" {
-              let terr = checkErr "let f = where (fun c -> c.Name > 1) in ls |> f"
+              let terr = checkErr "let f = where (fun c -> c.name > 1) in ls |> f"
               Expect.stringContains terr.Message "expected string, got int" ""
           }
           test "record missing a constrained field is rejected" {
@@ -1121,7 +1121,7 @@ let rowTests =
               checkErr "fun y -> let g = fun x -> y in (g 1 + 1) + (g 2 + \"s\")" |> ignore
           }
           test "row types survive the REPL display" {
-              Expect.equal (formatTy (checkOk "where _.ReadOnly").Ty |> fun s -> s.Contains "ReadOnly") true ""
+              Expect.equal (formatTy (checkOk "where _.readOnly").Ty |> fun s -> s.Contains "readOnly") true ""
           } ]
 
 let private survivors (marker: string) : int =
@@ -1594,11 +1594,11 @@ let session3Tests =
           test "force is polymorphic" { expectValue "[1; 2] |> force |> sum" (VInt 3) }
           test "head extracts the element" {
               expectValue "[1; 2] |> head" (VInt 1)
-              expectValue "ls |> map _.Name |> head" (VStr "a.txt")
+              expectValue "ls |> map _.name |> head" (VStr "a.txt")
               Expect.equal (checkOk "pwd |> head").Ty TStr "singleton extraction types to the element"
           }
           test "head on an empty sequence raises" {
-              Expect.throws (fun () -> run "ls |> where (fun f -> f.Bytes > 999999999) |> head" |> ignore) ""
+              Expect.throws (fun () -> run "ls |> where (fun f -> f.bytes > 999999999) |> head" |> ignore) ""
           }
           test "stderr passes through: stdout stream stays clean" {
               Expect.equal (runReal "sh -c \"echo out; echo err 1>&2\"" |> forceSeq) [ VStr "out" ] ""
@@ -1627,15 +1627,15 @@ let session3Tests =
           test "complete reifies grep no-match without raising" {
               match runReal "grep nomatch /etc/hosts | complete" with
               | VRecord("Completed", fields) ->
-                  Expect.equal fields["ExitCode"] (VInt 1) "exit code"
-                  Expect.equal (fields["Stdout"] |> forceSeq) [] "stdout empty"
-                  Expect.equal (fields["Stderr"] |> forceSeq) [] "stderr empty"
+                  Expect.equal fields["exitCode"] (VInt 1) "exit code"
+                  Expect.equal (fields["stdout"] |> forceSeq) [] "stdout empty"
+                  Expect.equal (fields["stderr"] |> forceSeq) [] "stderr empty"
               | v -> failtest $"unexpected: {formatValue v}"
           }
           test "complete captures stderr and nonzero exit" {
               match runReal "^ls /weir-definitely-not | complete" with
               | VRecord("Completed", fields) ->
-                  match fields["ExitCode"], fields["Stderr"] with
+                  match fields["exitCode"], fields["stderr"] with
                   | VInt code, VSeq errs ->
                       Expect.isTrue (code > 0) "nonzero exit"
                       Expect.isFalse (Seq.isEmpty errs) "stderr captured"
@@ -1662,7 +1662,7 @@ let session3Tests =
               Expect.isFalse (terr.Message.Contains "|completed") "internal keys never surface"
           }
           test "complete result pipes onward" {
-              Expect.equal (runReal "grep nomatch /etc/hosts | complete |> _.ExitCode") (VInt 1) ""
+              Expect.equal (runReal "grep nomatch /etc/hosts | complete |> _.exitCode") (VInt 1) ""
           }
           // capture oracle [D:capture-buffer]: the exact line-split and
           // decode rules of `| complete`, pinned against the OLD
@@ -1671,64 +1671,64 @@ let session3Tests =
           // (POSIX printf has no \x).
           test "capture oracle: stdout line rule — CRLF, lone CR, empties kept, unterminated tail" {
               Expect.equal
-                  (runReal "sh -c 'printf \"a\\015\\012b\\015\\012\"' | complete |> _.Stdout"
+                  (runReal "sh -c 'printf \"a\\015\\012b\\015\\012\"' | complete |> _.stdout"
                    |> forceSeq)
                   [ VStr "a"; VStr "b" ]
                   "CRLF splits, CR stripped"
 
               Expect.equal
-                  (runReal "sh -c 'printf \"a\\015b\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  (runReal "sh -c 'printf \"a\\015b\\012\"' | complete |> _.stdout" |> forceSeq)
                   [ VStr "a"; VStr "b" ]
                   "lone CR splits"
 
               Expect.equal
-                  (runReal "sh -c 'printf \"a\\012\\012b\\012\"' | complete |> _.Stdout"
+                  (runReal "sh -c 'printf \"a\\012\\012b\\012\"' | complete |> _.stdout"
                    |> forceSeq)
                   [ VStr "a"; VStr ""; VStr "b" ]
                   "empty stdout lines kept"
 
               Expect.equal
-                  (runReal "sh -c 'printf \"tail\"' | complete |> _.Stdout" |> forceSeq)
+                  (runReal "sh -c 'printf \"tail\"' | complete |> _.stdout" |> forceSeq)
                   [ VStr "tail" ]
                   "unterminated final line included"
 
-              Expect.equal (runReal "sh -c 'true' | complete |> _.Stdout" |> forceSeq) [] "empty output, empty seq"
+              Expect.equal (runReal "sh -c 'true' | complete |> _.stdout" |> forceSeq) [] "empty output, empty seq"
           }
           test "capture oracle: stderr rule differs — newline-split, empties dropped, CR retained" {
               Expect.equal
-                  (runReal "sh -c 'printf \"a\\012\\012b\\012\" 1>&2' | complete |> _.Stderr"
+                  (runReal "sh -c 'printf \"a\\012\\012b\\012\" 1>&2' | complete |> _.stderr"
                    |> forceSeq)
                   [ VStr "a"; VStr "b" ]
                   "stderr empties dropped"
 
               Expect.equal
-                  (runReal "sh -c 'printf \"e\\015\\012\" 1>&2' | complete |> _.Stderr" |> forceSeq)
+                  (runReal "sh -c 'printf \"e\\015\\012\" 1>&2' | complete |> _.stderr" |> forceSeq)
                   [ VStr "e\r" ]
                   "stderr keeps the CR (newline-only split)"
           }
           test "capture oracle: decoding — UTF-8 BOM stripped, invalid byte replaced, UTF-16 BOM switches" {
               Expect.equal
-                  (runReal "sh -c 'printf \"\\357\\273\\277x\\012\"' | complete |> _.Stdout"
+                  (runReal "sh -c 'printf \"\\357\\273\\277x\\012\"' | complete |> _.stdout"
                    |> forceSeq)
                   [ VStr "x" ]
                   "UTF-8 BOM stripped"
 
               Expect.equal
-                  (runReal "sh -c 'printf \"a\\377b\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  (runReal "sh -c 'printf \"a\\377b\\012\"' | complete |> _.stdout" |> forceSeq)
                   [ VStr "a�b" ]
                   "invalid byte becomes one replacement char"
 
               // StreamReader's BOM detection SWITCHES encodings — part of
               // today's contract, preserved via the fallback path
               Expect.equal
-                  (runReal "sh -c 'printf \"\\377\\376x\\012\"' | complete |> _.Stdout" |> forceSeq)
+                  (runReal "sh -c 'printf \"\\377\\376x\\012\"' | complete |> _.stdout" |> forceSeq)
                   [ VStr "੸" ]
                   "UTF-16LE BOM switches decoding"
           }
           test "capture: re-enumeration is stable (Completed is materialized by definition)" {
               Expect.equal
                   (runReal
-                      "let r = $(sh -c 'printf \"x\\012y\\012\"' | complete) in (r.Stdout |> Seq.length) + (r.Stdout |> Seq.length)")
+                      "let r = $(sh -c 'printf \"x\\012y\\012\"' | complete) in (r.stdout |> Seq.length) + (r.stdout |> Seq.length)")
                   (VInt 4L)
                   "two enumerations of the same view agree"
           }
@@ -1737,7 +1737,7 @@ let session3Tests =
               // 5MB single line spans the 4MB segments and assembles
               Expect.equal
                   (runReal
-                      "let r = $(sh -c 'head -c 5000000 /dev/zero | tr \"\\0\" a' | complete) in r.Stdout |> Seq.head |> Str.length")
+                      "let r = $(sh -c 'head -c 5000000 /dev/zero | tr \"\\0\" a' | complete) in r.stdout |> Seq.head |> Str.length")
                   (VInt 5000000L)
                   "boundary-crossing line intact"
           }
@@ -1804,7 +1804,7 @@ let stringTests =
           }
           test "Seq.sortBy over scalar keys" {
               Expect.equal
-                  (run "ls |> Seq.sortBy _.Bytes |> map _.Name" |> forceSeq)
+                  (run "ls |> Seq.sortBy _.bytes |> map _.name" |> forceSeq)
                   [ VStr "a.txt"; VStr "c.log"; VStr "d.iso"; VStr "b.bin" ]
                   "by size"
 
@@ -1916,11 +1916,11 @@ let genericsTests =
           }
           test "Seq.groupBy lands on generic Group records" {
               Expect.equal
-                  (run "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> map _.Key" |> forceSeq)
+                  (run "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> map _.key" |> forceSeq)
                   [ VBool true; VBool false ]
                   "keys"
 
-              expectValue "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> head |> (fun g -> g.Items) |> sum" (VInt 3)
+              expectValue "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> head |> (fun g -> g.items) |> sum" (VInt 3)
 
               Expect.equal
                   (formatTy (checkOk "[1; 2] |> Seq.groupBy (fun x -> x)").Ty)
@@ -2543,7 +2543,7 @@ let chooseTests =
               match
                   runWith
                       [ "ls", VSeq infinite ]
-                      "ls |> Seq.choose (fun f -> if f.Bytes > 2 then Some f.Bytes else None) |> first 2 |> Seq.sum"
+                      "ls |> Seq.choose (fun f -> if f.bytes > 2 then Some f.bytes else None) |> first 2 |> Seq.sum"
               with
               | VInt n -> Expect.equal n 7L "3 + 4"
               | v -> failtest $"unexpected {v}"
@@ -2551,7 +2551,7 @@ let chooseTests =
           test "all-None yields empty" { expectValue "[1; 2; 3] |> Seq.choose (fun x -> None) |> Seq.length" (VInt 0L) }
           test "constraint-free: no Eq/Ord obligation on either side" {
               Expect.equal
-                  (formatTy (checkOk "ls |> Seq.choose (fun f -> Some f.Name) |> Seq.head").Ty)
+                  (formatTy (checkOk "ls |> Seq.choose (fun f -> Some f.name) |> Seq.head").Ty)
                   "string"
                   "row-projecting chooser types through"
           }
@@ -2923,7 +2923,7 @@ let replColorTests =
           test "paint transparency: strip after colorize is the identity" {
               let fixtures =
                   [ "let x = 1 + 2"
-                    "ls |> where (fun f -> f.Bytes > 10)"
+                    "ls |> where (fun f -> f.bytes > 10)"
                     "let s = @\"unclosed raw to eol"
                     "let t = \"\"\"triple \\ and \" inside\"\"\""
                     "git log --oneline // trailing comment"
@@ -2959,7 +2959,7 @@ let replColorTests =
           }
           test "redraw-cost ceiling: 1000 pathological 200-char lines" {
               let line =
-                  String.replicate 5 "let ZZig = $(git log) |> where (fun f -> f.Bytes > 12) ; "
+                  String.replicate 5 "let ZZig = $(git log) |> where (fun f -> f.bytes > 12) ; "
                   + "@\"tail"
 
               let sw = System.Diagnostics.Stopwatch.StartNew()
@@ -3037,7 +3037,7 @@ let seqPatternTests =
               match
                   runWith
                       [ "ls", VSeq counted ]
-                      "match ls with | [] -> 0 | [a] -> a.Bytes | [p; q] -> p.Bytes | x :: rest -> x.Bytes + (rest |> Seq.map _.Bytes |> Seq.sum)"
+                      "match ls with | [] -> 0 | [a] -> a.bytes | [p; q] -> p.bytes | x :: rest -> x.bytes + (rest |> Seq.map _.bytes |> Seq.sum)"
               with
               | VInt n ->
                   Expect.equal n 15L "1 + 2+3+4+5"
@@ -3685,11 +3685,11 @@ let optionSweepTests =
           }
           test "Seq.tryFind is data-last and Option-returning" {
               expectValue
-                  "ls |> Seq.tryFind _.ReadOnly |> Option.map _.Name |> Option.defaultValue \"none\""
+                  "ls |> Seq.tryFind _.readOnly |> Option.map _.name |> Option.defaultValue \"none\""
                   (VStr "b.bin")
 
               expectValue
-                  "ls |> Seq.tryFind (fun f -> f.Bytes > 999999999) |> Option.map _.Name |> Option.defaultValue \"none\""
+                  "ls |> Seq.tryFind (fun f -> f.bytes > 999999999) |> Option.map _.name |> Option.defaultValue \"none\""
                   (VStr "none")
           }
           test "Str.tryIndexOf and Str.sub compose" {
@@ -3706,7 +3706,7 @@ let optionSweepTests =
               Expect.stringContains ex.Message "out of bounds" ""
           }
           test "match on Seq.tryHead pins the full idiom" {
-              expectValue "match ls |> Seq.tryHead with | Some f -> f.Name | None -> \"empty\"" (VStr "a.txt")
+              expectValue "match ls |> Seq.tryHead with | Some f -> f.name | None -> \"empty\"" (VStr "a.txt")
           } ]
 
 
@@ -3714,14 +3714,14 @@ let moduleTests =
     testList
         "Builtin modules"
         [ test "qualified members work and freshen per use" {
-              expectValue "ls |> Seq.map _.Name |> Seq.head" (VStr "a.txt")
+              expectValue "ls |> Seq.map _.name |> Seq.head" (VStr "a.txt")
 
               expectValue
-                  "([1] |> Seq.map double |> Seq.head) + (Str.length (Seq.head (ls |> Seq.map _.Name)))"
+                  "([1] |> Seq.map double |> Seq.head) + (Str.length (Seq.head (ls |> Seq.map _.name)))"
                   (VInt 7)
           }
           test "bare hot-path aliases still bind" {
-              expectValue "ls |> where _.ReadOnly |> map _.Name |> head" (VStr "b.bin")
+              expectValue "ls |> where _.readOnly |> map _.name |> head" (VStr "b.bin")
               expectValue "split \",\" \"a,b\" |> join \";\"" (VStr "a;b")
           }
           test "Option members are qualified-only" {
@@ -3752,7 +3752,7 @@ let moduleTests =
           }
           test "moved names hint their qualified home" {
               Expect.stringContains (checkErr "[] |> defaultTo 1").Message "use 'Option.defaultValue'" ""
-              Expect.stringContains (checkErr "ls |> groupBy _.ReadOnly").Message "use 'Seq.groupBy'" ""
+              Expect.stringContains (checkErr "ls |> groupBy _.readOnly").Message "use 'Seq.groupBy'" ""
           }
           test "module member completion" {
               Expect.contains (suggest "Seq.tr" 0) "Seq.tryHead" ""
@@ -3790,10 +3790,10 @@ let scriptTests =
           }
           test "fmt qualifies bare uses span-precisely" {
               let line, n =
-                  Weir.Fmt.qualifyLine realResolver "ls |> map _.Name |> where (contains \"x\")"
+                  Weir.Fmt.qualifyLine realResolver "ls |> map _.name |> where (contains \"x\")"
 
               Expect.equal n 3 "three rewrites"
-              Expect.equal line "ls |> Seq.map _.Name |> Seq.where (Str.contains \"x\")" ""
+              Expect.equal line "ls |> Seq.map _.name |> Seq.where (Str.contains \"x\")" ""
           }
           test "fmt leaves splices and fields alone" {
               let line, n = Weir.Fmt.qualifyLine realResolver "git checkout $map"
@@ -3801,9 +3801,9 @@ let scriptTests =
               Expect.equal line "git checkout $map" ""
           }
           test "fmt leaves already-qualified lines alone" {
-              let line, n = Weir.Fmt.qualifyLine realResolver "ls |> Seq.map _.Name"
+              let line, n = Weir.Fmt.qualifyLine realResolver "ls |> Seq.map _.name"
               Expect.equal n 0 ""
-              Expect.equal line "ls |> Seq.map _.Name" ""
+              Expect.equal line "ls |> Seq.map _.name" ""
           } ]
 
 
@@ -3927,9 +3927,9 @@ let multilineTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "logical line joins continuations" {
-              match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.Name" ] with
+              match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.name" ] with
               | Ok [ ll ] ->
-                  Expect.equal ll.Text "let x = ls |> Seq.map _.Name" "joined"
+                  Expect.equal ll.Text "let x = ls |> Seq.map _.name" "joined"
                   Expect.equal ll.Head 1 "head line"
                   Expect.equal (Weir.Script.translate ll 9) (2, 5) "col 9 is line 2 col 5"
                   Expect.equal (Weir.Script.translate ll 1) (1, 1) "head col maps to itself"
@@ -4001,7 +4001,7 @@ let readProbes =
           }
           test "(d) module member freshens across conflicting types in one expression" {
               expectValue
-                  "((ls |> Seq.map _.Name |> Seq.head) == \"a.txt\") && (([1] |> Seq.map (fun x -> x * 2) |> Seq.head) == 2)"
+                  "((ls |> Seq.map _.name |> Seq.head) == \"a.txt\") && (([1] |> Seq.map (fun x -> x * 2) |> Seq.head) == 2)"
                   (VBool true)
           }
           test "(e) generalized row binding with Option-typed field: independent discharge per use" {
@@ -4288,10 +4288,10 @@ let boolBranchTests =
               Expect.stringContains (formatError terr) "add an else" "names the fix"
           }
           test "row constraints merge across branches" {
-              let te = checkOk "fun f -> if f.ReadOnly then f.Bytes else 0"
+              let te = checkOk "fun f -> if f.readOnly then f.bytes else 0"
 
               Expect.equal
-                  (Weir.Check.typecheck env (parse "ls |> Seq.map (fun f -> if f.ReadOnly then f.Bytes else 0)")
+                  (Weir.Check.typecheck env (parse "ls |> Seq.map (fun f -> if f.readOnly then f.bytes else 0)")
                    |> Result.isOk)
                   true
                   "discharges against FileRow"
@@ -4302,15 +4302,15 @@ let boolBranchTests =
           }
           test "branch-merged row constraints conflict at discharge, not before" {
               // pre-discharge: both fields legally share one row variable
-              let te = checkOk "fun f -> if f.ReadOnly then f.Name else f.Bytes"
+              let te = checkOk "fun f -> if f.readOnly then f.name else f.bytes"
 
               match te.Ty with
               | TFun(TRowVar _, TVar _) -> ()
               | t -> failtest $"expected a row-constrained function, got {formatTy t}"
 
-              // discharge against FileRow exposes the Name/Bytes conflict
+              // discharge against FileRow exposes the Name/bytes conflict
               let terr =
-                  checkErr "ls |> Seq.map (fun f -> if f.ReadOnly then f.Name else f.Bytes)"
+                  checkErr "ls |> Seq.map (fun f -> if f.readOnly then f.name else f.bytes)"
 
               Expect.stringContains (formatError terr) "expected" "conflict surfaces at discharge"
           }
@@ -4557,8 +4557,8 @@ let agentFindingsTests =
               Expect.stringContains terr.Message "binding names start lowercase" ""
           }
           test "Env.pair and Env.ofPairs construct EnvVar" {
-              expectValue "(Env.pair \"K\" \"v\").Name" (VStr "K")
-              expectValue "Env.ofPairs [(\"A\", \"1\"); (\"B\", \"2\")] |> Seq.map _.Value |> Seq.head" (VStr "1")
+              expectValue "(Env.pair \"K\" \"v\").name" (VStr "K")
+              expectValue "Env.ofPairs [(\"A\", \"1\"); (\"B\", \"2\")] |> Seq.map _.value |> Seq.head" (VStr "1")
           }
           // exit-code reifiers [D:exit-reifiers]
           test "succeeds parses as complete's sibling (desugar shape)" {
@@ -4687,7 +4687,7 @@ let agentFindingsTests =
           test "splatted reifier argv: word integrity identical to the argv path [D:splat-reifier-chains]" {
               // N elements, N words — through the BUILTIN's argv
               Expect.equal
-                  (runReal "echo one $@([\"a\"; \"b\"]) | complete |> _.Stdout |> Seq.head")
+                  (runReal "echo one $@([\"a\"; \"b\"]) | complete |> _.stdout |> Seq.head")
                   (VStr "one a b")
                   "splat elements land as words"
 
@@ -4695,7 +4695,7 @@ let agentFindingsTests =
               // through the reifier path, exactly as through spawn argv
               Expect.equal
                   (runReal
-                      "sh -c \"echo argc=$#\" self $@([\"one two\"; \"semi;colon\"; \"star*glob\"]) | complete |> _.Stdout |> Seq.head")
+                      "sh -c \"echo argc=$#\" self $@([\"one two\"; \"semi;colon\"; \"star*glob\"]) | complete |> _.stdout |> Seq.head")
                   (VStr "argc=3")
                   "no re-split through the reifier desugar"
           }
@@ -4887,7 +4887,7 @@ let showTests =
     testList
         "show"
         [ test "records render REPL-shaped" {
-              expectValue "show (ls |> Seq.head)" (VStr "{ Bytes = 0; Name = \"a.txt\"; ReadOnly = false }")
+              expectValue "show (ls |> Seq.head)" (VStr "{ bytes = 0; name = \"a.txt\"; readOnly = false }")
           }
           test "unions, seqs, scalars" {
               expectValue "show (Some 3)" (VStr "Some 3")
@@ -5123,7 +5123,7 @@ let childEnvTests =
               System.IO.File.WriteAllLines(f, [ "A=1"; "B='sq val'"; "C=\"dq\" # note"; "# comment"; ""; "D=" ])
 
               let got =
-                  run ("Env.fromFile \"" + f + "\" |> Seq.map (fun e -> e.Value) |> Seq.force")
+                  run ("Env.fromFile \"" + f + "\" |> Seq.map (fun e -> e.value) |> Seq.force")
                   |> forceSeq
 
               Expect.equal got [ VStr "1"; VStr "sq val"; VStr "dq"; VStr "" ] ""
@@ -5204,7 +5204,7 @@ let childEnvTests =
               let f = System.IO.Path.GetTempFileName()
               System.IO.File.WriteAllLines(f, [ "LIT='$HOME'" ])
 
-              let got = run ("Env.fromFile \"" + f + "\" |> Seq.map _.Value |> Seq.head")
+              let got = run ("Env.fromFile \"" + f + "\" |> Seq.map _.value |> Seq.head")
 
               Expect.equal got (VStr "$HOME") ""
               System.IO.File.Delete f
@@ -5504,7 +5504,7 @@ let typeClassTests =
           }
           test "rows x Eq: field-type constraint rides and solves at a good record" {
               let e =
-                  parse "let eqn = fun a -> fun b -> a.Bytes == b.Bytes in eqn (ls |> Seq.head) (ls |> Seq.head)"
+                  parse "let eqn = fun a -> fun b -> a.bytes == b.bytes in eqn (ls |> Seq.head) (ls |> Seq.head)"
 
               match Weir.Check.typecheck env e with
               | Ok te -> Expect.equal (formatTy te.Ty) "bool" ""
@@ -5512,9 +5512,9 @@ let typeClassTests =
           }
           test "rows x Eq x generalization: both a row and a class constraint survive the scheme" {
               // eqn : Eq b => { r with Name: b } -> b -> bool  (shape-level check:
-              // accepted at FileRow.Name=string, rejected at a function)
+              // accepted at FileRow.name=string, rejected at a function)
               let ok =
-                  parse "let eqn = fun a -> fun x -> a.Name == x in eqn (ls |> Seq.head) \"n\""
+                  parse "let eqn = fun a -> fun x -> a.name == x in eqn (ls |> Seq.head) \"n\""
 
               match Weir.Check.typecheck env ok with
               | Ok te -> Expect.equal (formatTy te.Ty) "bool" ""
@@ -6296,7 +6296,7 @@ let indexerTests =
         [ test "xs[i] desugars to Seq.item" { expectValue "[\"a\"; \"b\"][1]" (VStr "b") }
           test "chains and composes with fields and sigils" {
               expectValue "[[1; 2]; [3; 4]][1][0]" (VInt 3L)
-              expectValue "(ls |> Seq.force)[0].Name" (VStr "a.txt")
+              expectValue "(ls |> Seq.force)[0].name" (VStr "a.txt")
           }
           test "the whitespace rule: space means application (F# 6 dotless precedent)" {
               expectValue "Seq.sum [1; 2]" (VInt 3L)
@@ -6460,7 +6460,7 @@ let operatorTests =
           }
           test "common filter shape works" {
               expectValue
-                  "ls |> where (fun f -> f.Name <> \"a.txt\" && f.Bytes <= 3145728)"
+                  "ls |> where (fun f -> f.name <> \"a.txt\" && f.bytes <= 3145728)"
                   (VSeq
                       [ Weir.Builtins.file "c.log" 1048576 false
                         Weir.Builtins.file "d.iso" 3145728 false ])
@@ -6469,7 +6469,7 @@ let operatorTests =
               expectValue "not true" (VBool false)
 
               expectValue
-                  "ls |> where (fun f -> not f.ReadOnly) |> first 1"
+                  "ls |> where (fun f -> not f.readOnly) |> first 1"
                   (VSeq [ Weir.Builtins.file "a.txt" 0 false ])
           }
           test "and-or require bools" {
@@ -6501,12 +6501,12 @@ let adversarialTests =
               expectValue "let x = 1 in let x = \"s\" in x + \"!\"" (VStr "s!")
           }
           test "inferred element type contradicts use two stages later" {
-              let terr = checkErr "nats |> map (fun x -> x * x) |> where (fun x -> x.ReadOnly)"
+              let terr = checkErr "nats |> map (fun x -> x * x) |> where (fun x -> x.readOnly)"
               Expect.stringContains terr.Message "only records have fields" ""
           }
           test "row constraint conflicts with the declared field type" {
               Expect.stringContains
-                  (checkErr "let g = fun r -> r.Name > 1 in ls |> where g").Message
+                  (checkErr "let g = fun r -> r.name > 1 in ls |> where g").Message
                   "expected string, got int"
                   ""
           }
@@ -6540,7 +6540,7 @@ let adversarialTests =
           }
           test "1.4 row is closed after nominal discharge" {
               Expect.stringContains
-                  (checkErr "ls |> where (fun f -> f.Bytes > 1) |> where (fun f -> f.Nonexistent == 1)").Message
+                  (checkErr "ls |> where (fun f -> f.bytes > 1) |> where (fun f -> f.Nonexistent == 1)").Message
                   "FileRow has no field 'Nonexistent'"
                   ""
           }
@@ -6582,7 +6582,7 @@ let adversarialTests =
                         VStr "R  plain.txt -> renamed.txt" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from porcelain |> map _.Path" |> forceSeq)
+                  (runWith [ "src", src ] "src |> from porcelain |> map _.path" |> forceSeq)
                   [ VStr "spaced name.txt"
                     VStr "qu\"ote.txt"
                     VStr "café.txt"

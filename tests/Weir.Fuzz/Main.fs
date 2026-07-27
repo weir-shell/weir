@@ -207,8 +207,8 @@ let tests =
               let inlineWords = String.concat " " words
 
               let reifier, reader =
-                  [ "complete", "r.Stdout |> Seq.iter print"
-                    "complete", "print $\"rc={r.ExitCode}\""
+                  [ "complete", "r.stdout |> Seq.iter print"
+                    "complete", "print $\"rc={r.exitCode}\""
                     "succeeds", "print $\"ok={r}\""
                     "exitCode", "print $\"rc={r}\"" ].[rnd.Next 4]
 

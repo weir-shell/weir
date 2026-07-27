@@ -14,7 +14,7 @@ Three properties, in the order they matter:
    stop the script with `file:line:col` and a hint, before any side
    effect. Bash tells you about your mistake halfway through making it.
 2. **Command output is typed data.** `git status --porcelain | from
-   porcelain` is a sequence of records with `Path`/`Staged` fields,
+   porcelain` is a sequence of records with `path`/`staged` fields,
    not a string soup.
 3. **It starts in ~7ms** — a single AOT binary, fine for shebangs.
 
@@ -73,15 +73,15 @@ lazy generators; `[a; b; c]` literals are eager values.
 ```weir
 let big =
     ls
-    |> Seq.where (fun f -> f.Bytes > 1024)
-    |> Seq.map (_.Name >> Path.stem)
+    |> Seq.where (fun f -> f.bytes > 1024)
+    |> Seq.map (_.name >> Path.stem)
 
 big |> print
 
 [1..10] |> Seq.where (fun n -> n > 7) |> Seq.iter (fun n -> print $"{n}")
 ```
 
-`_.Name` is field-access shorthand, and composing it with a `Path`
+`_.name` is field-access shorthand, and composing it with a `Path`
 helper (`extension`, `fileName`, `stem`, `dir`, `combine`) is the
 house spelling for filename surgery in a pipeline.
 
@@ -226,8 +226,8 @@ One law: **output goes where the meaning goes.**
 
 | spelling | output | result |
 |---|---|---|
-| `cmd \| succeeds` | silent | `bool` (`ExitCode == 0`, exactly) |
-| `cmd \| complete` | captured | `{ ExitCode; Stdout; Stderr }` |
+| `cmd \| succeeds` | silent | `bool` (`exitCode == 0`, exactly) |
+| `cmd \| complete` | captured | `{ exitCode; stdout; stderr }` |
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
 
@@ -460,7 +460,7 @@ raise, reify the run:
 
 ```weir
 let r = git log --oneline -1 | complete
-print $"exit {r.ExitCode}"
+print $"exit {r.exitCode}"
 ```
 
 Multi-line scripts: a statement starts at column 0, indented lines
@@ -603,11 +603,11 @@ whether a step failed or not, reify the fallible middle with
 ```weir
 let r = sh -c "exit 0" | complete
 sh -c "echo cleanup runs either way"
-if r.ExitCode <> 0 then exit (r.ExitCode)
+if r.exitCode <> 0 then exit (r.exitCode)
 ```
 
 For the two commonest exit-code shapes there is sugar:
-`cmd | succeeds` is the bool (`succeeds` means ExitCode == 0 exactly —
+`cmd | succeeds` is the bool (`succeeds` means exitCode == 0 exactly —
 grep's no-match counts as false; use `| complete` when codes are
 data), and `cmd | orFail "msg"` is the one-line assert — unit on
 success, `msg (exit N)` raised on failure, at home as a statement or

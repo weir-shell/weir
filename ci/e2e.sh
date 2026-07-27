@@ -55,7 +55,7 @@ expect() {
 out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
 
-out=$($BIN -e 'ls |> where (fun f -> f.Bytes > 1048576) |> first 5' 2>&1); rc=$?
+out=$($BIN -e 'ls |> where (fun f -> f.bytes > 1048576) |> first 5' 2>&1); rc=$?
 [ $rc -eq 0 ] || fail "flagship pipeline must run measure-free: $out"
 echo "e2e ok: flagship pipeline, bare bytes"
 
@@ -108,7 +108,7 @@ dir=$(mktemp -d)
     echo n > untracked.txt
 )
 
-out=$(printf 'cd "%s"\ngit status --porcelain | from porcelain | where _.Staged | map _.Path\n^ls\nlet pat = "a"\ngrep -l $pat staged.txt\n:q\n' "$dir" | $BIN)
+out=$(printf 'cd "%s"\ngit status --porcelain | from porcelain | where _.staged | map _.path\n^ls\nlet pat = "a"\ngrep -l $pat staged.txt\n:q\n' "$dir" | $BIN)
 expect "cd + porcelain + staged filter" '["staged.txt"]' "$out"
 expect "^ls forces external" 'untracked.txt' "$out"
 expect "bound-variable splice into grep" '["staged.txt"]' "$out"
@@ -119,10 +119,10 @@ expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
 
 # /etc/hosts, not /etc/hostname: the latter doesn't exist on macOS
 # (grep exit 2 = error, not the no-match 1 this pin reifies)
-out=$($BIN -e 'grep nomatch /etc/hosts | complete |> _.ExitCode')
+out=$($BIN -e 'grep nomatch /etc/hosts | complete |> _.exitCode')
 expect "complete reifies nonzero exit as data" "1 : int" "$out"
 
-out=$(timeout 10 $BIN -e 'bash -c "yes e | head -c 100000 1>&2; echo done" | complete |> _.ExitCode') \
+out=$(timeout 10 $BIN -e 'bash -c "yes e | head -c 100000 1>&2; echo done" | complete |> _.exitCode') \
     || fail "chatty-stderr deadlock under complete (timeout)"
 expect "concurrent stderr drain under complete" "0 : int" "$out"
 
@@ -132,13 +132,13 @@ expect "stderr passthrough keeps stdout stream clean" '["out"]' "$out"
 out=$($BIN -e 'sh -c "echo a && echo b"')
 expect "POSIX one-liner via the external shell" '["a"; "b"]' "$out"
 
-out=$($BIN -e 'sh -c "exit 7" | complete |> _.ExitCode')
+out=$($BIN -e 'sh -c "exit 7" | complete |> _.exitCode')
 expect "sh lines can complete now (old builtin boundary gone)" "7 : int" "$out"
 
 out=$($BIN -e 'match Ok 3 with | Ok v -> v | Error e -> Str.length e')
 expect "prelude Result with cross-arm inference" "3 : int" "$out"
 
-out=$($BIN -e 'ls |> Seq.sortBy _.Bytes |> Seq.map _.Name |> Seq.head' 2>/dev/null | head -1)
+out=$($BIN -e 'ls |> Seq.sortBy _.bytes |> Seq.map _.name |> Seq.head' 2>/dev/null | head -1)
 expect "qualified module pipeline" " : string" "$out"
 
 out=$($BIN -e '[] |> Seq.tryHead |> Option.defaultValue 9')
@@ -165,7 +165,7 @@ cat > "$scriptdir/task.weir" <<'WEOF'
 #!/usr/bin/env weir
 // strict by default
 type Tag = Big | Small
-let names = ls |> Seq.map _.Name
+let names = ls |> Seq.map _.name
 names |> Seq.first 1 |> print
 echo spliced (40 + 2)
 args |> Seq.head |> print
@@ -268,11 +268,11 @@ let staged =
 staged |> Seq.iter (fun c -> print (show c))
 WEOF
 out=$(cd "$scriptdir" && git init -q 2>/dev/null; cd "$scriptdir" && $BIN show.weir)
-echo "$out" | grep -qF "Staged = " || fail "show must render the porcelain row: $out"
+echo "$out" | grep -qF "staged = " || fail "show must render the porcelain row: $out"
 echo "e2e ok: show renders typed rows on the AOT binary"
 
 start=$(now_ms)
-$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "sleep 0.3" | complete)).ExitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
+$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "sleep 0.3" | complete)).exitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
 elapsed_ms=$(($(now_ms) - start))
 [ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
 echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
@@ -347,7 +347,7 @@ let captured = $(sh -c "echo x && echo y") |> Seq.length
 print $"captured: {captured}"
 
 let code = $(sh -c "exit 5" | complete)
-print $"code: {code.ExitCode}"
+print $"code: {code.exitCode}"
 WEOF
 out=$($BIN "$sigdir/sig.weir")
 for needle in eff-one eff-two "captured: 2" "code: 5"; do
@@ -552,7 +552,7 @@ rm -rf "$faildir"
 bigdir=$(mktemp -d)
 truncate -s 3G "$bigdir/sparse.bin"
 touch "$bigdir/empty.txt"
-out=$(printf 'cd "%s"\nls |> Seq.where (fun f -> f.Bytes > 2147483647) |> Seq.map _.Name\nls |> Seq.where (fun f -> f.Bytes == 0) |> Seq.map _.Name\n:q\n' "$bigdir" | $BIN)
+out=$(printf 'cd "%s"\nls |> Seq.where (fun f -> f.bytes > 2147483647) |> Seq.map _.name\nls |> Seq.where (fun f -> f.bytes == 0) |> Seq.map _.name\n:q\n' "$bigdir" | $BIN)
 expect ">2GB file survives int64 end to end" "sparse.bin" "$out"
 expect "0-byte file filters exactly" "empty.txt" "$out"
 rm -rf "$bigdir"
@@ -1538,7 +1538,7 @@ let got = $e(sh -c "echo cap: $MARK") |> Seq.head
 print got
 
 let r = $e(sh -c "exit 7" | complete)
-print $"complete-env exit {r.ExitCode}"
+print $"complete-env exit {r.exitCode}"
 
 let tag = "spliced"
 !e(sh -c $"echo {tag}: $MARK")
@@ -1728,7 +1728,7 @@ echo "e2e ok: the statement-head guard bounds an unclosed bracket"
 
 cat > "$gdir/exit.weir" <<'WEOF'
 let r = sh -c "exit 4" | complete
-if r.ExitCode <> 0 then exit (r.ExitCode)
+if r.exitCode <> 0 then exit (r.exitCode)
 print "unreached-on-failure"
 WEOF
 rc=0; $BIN "$gdir/exit.weir" >/dev/null 2>&1 || rc=$?
@@ -2411,8 +2411,8 @@ expect "the match-on-exit-code idiom (graceful cancel)" "cancelled" "$out"
 cat > "$rfdir/env.weir" <<'WEOF'
 let e = Env.ofPairs [("MARK", "seen")]
 let r = $e(sh -c "echo mark=$MARK; exit 3" | complete)
-r.Stdout |> Seq.iter print
-print $"env code {r.ExitCode}"
+r.stdout |> Seq.iter print
+print $"env code {r.exitCode}"
 WEOF
 out=$($BIN "$rfdir/env.weir")
 expect "env-sigil reifier applies the overlay" "mark=seen" "$out"
@@ -2483,21 +2483,21 @@ errout=$(printf '[1; 2] | cat\n' | $BIN check /dev/stdin 2>&1) && fail "seq<int>
 echo "$errout" | grep -qF "map show or interpolate per element" || fail "seq<int> teaching: $errout"
 # a value-headed single external segment now reifies (session 2) — bound,
 # it type-checks (bare, it is a discard like any non-unit expression)
-out=$(printf 'let r = ["x"] | grep x | complete\nprint (show r.ExitCode)\n' | $BIN /dev/stdin)
+out=$(printf 'let r = ["x"] | grep x | complete\nprint (show r.exitCode)\n' | $BIN /dev/stdin)
 expect "value-headed | complete now reifies (bind it)" "0" "$out"
 echo "e2e ok: value-headed pipe — resolution boundary, type teachings"
 # reifier-with-stdin [D:value-headed-pipe] (session 2): a value-headed
 # single external segment reifies WITH the value as stdin
 out=$($BIN -e '["apple"; "banana"; "cherry"] | grep app | complete')
-expect "value-headed | complete reifies with stdin" 'Stdout = ["apple"]' "$out"
+expect "value-headed | complete reifies with stdin" 'stdout = ["apple"]' "$out"
 out=$($BIN -e '["foo"; "bar"; "foobar"] | grep -c foo | complete')
-expect "reified value-headed count (grep -c)" 'Stdout = ["2"]' "$out"
+expect "reified value-headed count (grep -c)" 'stdout = ["2"]' "$out"
 out=$($BIN -e '["x"] | grep x | succeeds')
 expect "value-headed | succeeds" "true" "$out"
 out=$($BIN -e '["x"] | grep zzz | exitCode')
 expect "value-headed | exitCode" "1" "$out"
 # expression-position reification is the captured chain [D:drop-reify-builtins]
-out=$($BIN -e 'let r = $(echo hi | complete) in r.Stdout')
+out=$($BIN -e 'let r = $(echo hi | complete) in r.stdout')
 expect "expression-position reification via \$(... | complete)" '["hi"]' "$out"
 # multi-external reifier still rejects (no new law)
 errout=$(printf 'echo hi | grep h | complete\n' | $BIN check /dev/stdin 2>&1) && fail "multi-external reifier must reject"
@@ -2736,24 +2736,24 @@ expect "splat: spaces/semicolons/globs stay ONE word each (no re-split)" "argc=3
 cat > "$spldir/reify.weir" <<'WEOF'
 let evil = ["one two"; "semi;colon"; "star*glob"]
 let r = sh -c "echo argc=$#" self $@evil | complete
-print (r.Stdout |> Seq.head)
+print (r.stdout |> Seq.head)
 
 let none = if false then ["x"] else []
 let z = sh -c "echo argc=$#" self $@none | complete
-print (z.Stdout |> Seq.head)
+print (z.stdout |> Seq.head)
 
 let author = Env.ofPairs [("MARK", "sigil")]
 let argv = ["-c"; "echo m=$MARK; exit 4"]
 let s = $author(sh $@argv | complete)
-print (s.Stdout |> Seq.head)
-print $"code {s.ExitCode}"
+print (s.stdout |> Seq.head)
+print $"code {s.exitCode}"
 
 let ok = sh $@argv | succeeds
 print $"ok={ok}"
 
 let vflags = ["-c"]
 let vh = ["a"; "b"; "a"] | grep $@vflags a | complete
-print (vh.Stdout |> Seq.head)
+print (vh.stdout |> Seq.head)
 
 !author(sh -c "echo d=$MARK" self $@none | orFail "boom")
 WEOF

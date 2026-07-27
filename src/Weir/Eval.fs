@@ -320,10 +320,10 @@ let private porcelainRow (def: RecordDef) (line: string) : Value =
     VRecord(
         def.Name,
         Map
-            [ "Status", VStr(string x + string y)
-              "Staged", VBool(x <> ' ' && x <> '?')
-              "Unstaged", VBool(y <> ' ')
-              "Path", VStr path ]
+            [ "status", VStr(string x + string y)
+              "staged", VBool(x <> ' ' && x <> '?')
+              "unstaged", VBool(y <> ' ')
+              "path", VStr path ]
     )
 
 let private fromAdapter (fmt: string) (def: RecordDef) : Value =
@@ -926,7 +926,7 @@ let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * strin
             |> Seq.map (fun item ->
                 match item with
                 | VRecord(_, fields) ->
-                    (match Map.tryFind "Name" fields, Map.tryFind "Value" fields with
+                    (match Map.tryFind "name" fields, Map.tryFind "value" fields with
                      | Some(VStr n), Some(VStr value) -> n, value
                      | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
                 | _ -> unreachable "the checker rejects non-EnvVar overlay entries")

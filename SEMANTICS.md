@@ -201,7 +201,7 @@ weir rejects rather than guesses.
   application of a list literal (`Seq.sum [1; 2]` unchanged) —
   immediacy is decided by span adjacency, so the atoms' whitespace
   handling is untouched. Chains (`m[1][0]`), field composition
-  (`row[0].Name`), sigil composition (`$(git branch)[0]`), and the
+  (`row[0].name`), sigil composition (`$(git branch)[0]`), and the
   underscore shorthand (`_[0]` = `fun x -> x[0]`, extending `_.Field`)
   all follow from the desugar. weir note vs F#: F#'s `seq` has no
   indexer (only list/array) — weir's one sequence type takes it,
@@ -284,7 +284,7 @@ mandatory prior reading if quantities-with-conversion ever returns as an
 evidenced plan. Old scripts using `1<mb>` or `int<m>` get a transition
 error ("units of measure are not supported"); the recognizer retires at the
 1.0 grammar freeze. `FileRow.Size` (truncated megabytes) was deleted
-with the measures; `Bytes : int` is the survivor — field names carry
+with the measures; `bytes : int` is the survivor — field names carry
 quantity semantics now.
 
 ## Operators and syntax
@@ -360,7 +360,7 @@ quantity semantics now.
 - `==`/`<>` unify their operands first, then require the resolved type to be
   equatable: no sequences or functions, checked recursively through records
   and unions. Unification means one-sided resolution is fine —
-  `fun f -> f.Name == "tmp"` binds the field's type to `string` (this is the
+  `fun f -> f.name == "tmp"` binds the field's type to `string` (this is the
   mechanism behind the §1.2 conflicting-demands rejection); only a type still
   unresolved *after* unification is rejected.
 - Binary operators on two unresolved type variables: every operator with
@@ -471,7 +471,7 @@ quantity semantics now.
   `fail` (no checker surface); raises an intentional-exit carrier the
   runner returns SILENTLY — `fail` keeps exit-1 with a located
   message, `exit` is the propagation spelling
-  (`if r.ExitCode <> 0 then exit (r.ExitCode)`).
+  (`if r.exitCode <> 0 then exit (r.exitCode)`).
 - **`let f x y = e` defines a curried function** (2026-07-20 — the
   corpus-mining session's top yield became a feature the same day, on
   agent-prior evidence: F#'s most common line shape). Pure parser
@@ -967,10 +967,10 @@ quantity semantics now.
   expression-mode builtin twin `completed` is retired
   [D:drop-reify-builtins]): run an
   external command to completion and reify the outcome as
-  `Completed = { ExitCode: int; Stdout: seq<string>; Stderr: seq<string> }` —
+  `Completed = { exitCode: int; stdout: seq<string>; stderr: seq<string> }` —
   **never raising on nonzero exit; the exit code is data**. This is the
   chosen exit-code policy (closes backlog: grep's no-match exit 1 is now
-  `grep pat file | complete |> _.ExitCode`); a per-command allowlist was
+  `grep pat file | complete |> _.exitCode`); a per-command allowlist was
   rejected (grep's 1 is no-match but its 2 is a real error). `| complete`
   must directly follow a single external command segment (parse error
   otherwise) — it consumes the process, not the lines; the design is the
@@ -1009,7 +1009,7 @@ quantity semantics now.
   `substring start len subject`. The idiom's other half:
   `Option.defaultValue` (eager; `Option.defaultWith` takes a thunk) and
   `Option.map`, so an Option in a pipeline does not force a match —
-  `ls |> Seq.tryFind _.ReadOnly |> Option.map _.Name |> Option.defaultValue "none"`. The
+  `ls |> Seq.tryFind _.readOnly |> Option.map _.name |> Option.defaultValue "none"`. The
   interim 0-or-1-seq idiom is retired (it never became case law, as
   intended). The singleton extraction is `pwd |> head : string`.
 - **String builtins are data-last, curried — needle/pattern first, subject

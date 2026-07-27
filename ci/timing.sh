@@ -34,7 +34,7 @@ median() {
 
 $BIN -e '1 + 1' > /dev/null # warm the fs cache
 
-expr_ms=$(median 'ls |> where (fun f -> f.Bytes > 1048576) |> first 5')
+expr_ms=$(median 'ls |> where (fun f -> f.bytes > 1048576) |> first 5')
 cmd_ms=$(median 'echo hi | first 1')
 
 # whole-file check on a representative script — this median is the LSP's

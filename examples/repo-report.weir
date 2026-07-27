@@ -41,22 +41,22 @@ let status =
 print status
 
 // a bare-comma destructuring binder: two views of the same rows
-let staged, unstaged = changes |> Seq.where _.Staged, changes |> Seq.where _.Unstaged
+let staged, unstaged = changes |> Seq.where _.staged, changes |> Seq.where _.unstaged
 
 print $"counts: {staged |> Seq.length} staged, {unstaged |> Seq.length} unstaged"
 
 print "staged:"
 
 staged
-    |> Seq.map (fun c -> $"  {c.Path}")
+    |> Seq.map (fun c -> $"  {c.path}")
     |> print
 
 print "largest files:"
 
 ls
-    |> Seq.sortByDescending _.Bytes
+    |> Seq.sortByDescending _.bytes
     |> Seq.first 3
-    |> Seq.map (fun f -> $"  {f.Name} ({f.Bytes} bytes)")
+    |> Seq.map (fun f -> $"  {f.name} ({f.bytes} bytes)")
     |> print
 
 print "recent commits:"

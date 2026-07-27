@@ -415,7 +415,7 @@ let private captureSigil =
             >>= fun chain ->
                 (if exitCodeSpine chain then
                      failFatally
-                         "exitCode streams; $() captures — use '| complete' inside $() and read .ExitCode, or move the exitCode chain to a let RHS"
+                         "exitCode streams; $() captures — use '| complete' inside $() and read .exitCode, or move the exitCode chain to a let RHS"
                  else
                      preturn chain)
                 .>> (pchar ')'

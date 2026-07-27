@@ -97,7 +97,7 @@ send({"jsonrpc": "2.0", "id": 4, "method": "textDocument/completion",
       "params": {"textDocument": {"uri": URI}, "position": {"line": 2, "character": 10}}})
 comp = read_msg()
 labels = [c["label"] for c in comp["result"]]
-expect(any("Name" in l for l in labels), f"record fields missing: {labels[:10]}")
+expect(any("name" in l for l in labels), f"record fields missing: {labels[:10]}")
 
 # textEdit ranges: dot completion replaces the WHOLE dotted word (the
 # Env.Env.fromFile doubling), and paren-nested completion still offers
@@ -144,7 +144,7 @@ read_msg()
 send({"jsonrpc": "2.0", "id": 44, "method": "textDocument/completion",
       "params": {"textDocument": {"uri": URI}, "position": {"line": 1, "character": 44}}})
 labels = [c["label"] for c in read_msg()["result"]]
-expect(labels == ["e.Name", "e.Value"], f"hole inference should give exactly EnvVar fields: {labels}")
+expect(labels == ["e.name", "e.value"], f"hole inference should give exactly EnvVar fields: {labels}")
 
 # error-recovery completion: a BROKEN statement's other lines type the
 # param ("in let quality t we know what t is") — exact row fields, not

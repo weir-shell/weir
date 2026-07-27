@@ -8,13 +8,13 @@ open Weir.Eval
 let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
-      Fields = [ "Name", TStr; "Bytes", TInt; "ReadOnly", TBool ]
+      Fields = [ "name", TStr; "bytes", TInt; "readOnly", TBool ]
       Attrs = Map.empty }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
 let file (name: string) (bytes: int64) (readOnly: bool) : Value =
-    VRecord(fileRow.Name, Map [ "Name", VStr name; "Bytes", VInt bytes; "ReadOnly", VBool readOnly ])
+    VRecord(fileRow.Name, Map [ "name", VStr name; "bytes", VInt bytes; "readOnly", VBool readOnly ])
 
 let private realLs: Value =
     VSeq(
@@ -105,7 +105,7 @@ let private notImpl: Value =
 let changeDef: RecordDef =
     { Name = "Change"
       Params = []
-      Fields = [ "Status", TStr; "Staged", TBool; "Unstaged", TBool; "Path", TStr ]
+      Fields = [ "status", TStr; "staged", TBool; "unstaged", TBool; "path", TStr ]
       Attrs = Map.empty }
 
 let private asString (v: Value) : string =
@@ -183,7 +183,7 @@ let private toListImpl: Value =
 let completedDef: RecordDef =
     { Name = "Completed"
       Params = []
-      Fields = [ "ExitCode", TInt; "Stdout", TSeq TStr; "Stderr", TSeq TStr ]
+      Fields = [ "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
       Attrs = Map.empty }
 
 // completedWith is the shared body; completed IS the empty overlay and
@@ -201,19 +201,19 @@ let private completedWith (overlay: (string * string) list) : Value =
                 VRecord(
                     completedDef.Name,
                     Map
-                        [ "ExitCode", VInt(int64 code)
+                        [ "exitCode", VInt(int64 code)
                           // lazy views over the capture buffer
                           // [D:capture-buffer] — decode per pull, stable
                           // on re-enumeration (the buffer is fixed)
-                          "Stdout", VSeq(stdout |> Seq.map VStr)
-                          "Stderr", VSeq(stderr |> Seq.map VStr) ]
+                          "stdout", VSeq(stdout |> Seq.map VStr)
+                          "stderr", VSeq(stderr |> Seq.map VStr) ]
                 )
             | _ -> unreachable "the checker rejects 'completed' on these arguments"))
 
 let private completedImpl: Value = completedWith []
 
 // the exit-code reifiers [D:exit-reifiers], under the one law: output
-// goes where the meaning goes. succeeds is ExitCode == 0 EXACTLY,
+// goes where the meaning goes. succeeds is exitCode == 0 EXACTLY,
 // output captured-and-discarded (a predicate is silent); orFail and
 // exitCode STREAM (their output is for the human — the result travels
 // separately): orFail raises `msg (exit N)` on nonzero, exitCode
@@ -294,9 +294,9 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                     VRecord(
                         completedDef.Name,
                         Map
-                            [ "ExitCode", VInt(int64 code)
-                              "Stdout", VSeq(out |> Seq.map VStr)
-                              "Stderr", VSeq(err |> Seq.map VStr) ]
+                            [ "exitCode", VInt(int64 code)
+                              "stdout", VSeq(out |> Seq.map VStr)
+                              "stderr", VSeq(err |> Seq.map VStr) ]
                     )
                 | _ -> unreachable "the checker rejects 'completedIn' on these arguments")))
 
@@ -734,7 +734,7 @@ let private tB = TVar "b"
 let groupDef: RecordDef =
     { Name = "Group"
       Params = [ "k"; "v" ]
-      Fields = [ "Key", TVar "k"; "Items", TSeq(TVar "v") ]
+      Fields = [ "key", TVar "k"; "items", TSeq(TVar "v") ]
       Attrs = Map.empty }
 
 // pairwise/zip produce tuples [D:tuples-reversal]
@@ -775,7 +775,7 @@ let private groupByImpl: Value =
 
                             VRecord(
                                 groupDef.Name,
-                                Map [ "Key", keyValue; "Items", VSeq(List.ofSeq group :> seq<Value>) ]
+                                Map [ "key", keyValue; "items", VSeq(List.ofSeq group :> seq<Value>) ]
                             )))
                 )
             | v -> unreachable $"the checker rejects 'groupBy' on {formatValue v}"))
@@ -1058,7 +1058,7 @@ let private argsMembers: (string * Ty * Value) list =
 let envVarDef: RecordDef =
     { Name = "EnvVar"
       Params = []
-      Fields = [ "Name", TStr; "Value", TStr ]
+      Fields = [ "name", TStr; "value", TStr ]
       Attrs = Map.empty }
 
 // Env.fromFile parses the DOTENV SUBSET only: KEY=VALUE, optional
@@ -1153,7 +1153,7 @@ let private envFromFileImpl: Value =
                     |> Seq.indexed
                     |> Seq.choose (fun (i, raw) -> parseDotenvLine path (i + 1) raw)
                     |> Seq.map (fun (k, value) ->
-                        VRecord(envVarDef.Name, Map [ "Name", VStr k; "Value", VStr value ])))
+                        VRecord(envVarDef.Name, Map [ "name", VStr k; "value", VStr value ])))
             )
         | v -> unreachable $"the checker rejects 'Env.fromFile' on {formatValue v}")
 
@@ -1163,7 +1163,7 @@ let private envPairImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun v ->
             match n, v with
-            | VStr n, VStr v -> VRecord("EnvVar", Map [ "Name", VStr n; "Value", VStr v ])
+            | VStr n, VStr v -> VRecord("EnvVar", Map [ "name", VStr n; "value", VStr v ])
             | _ -> unreachable "the checker rejects 'Env.pair' on these arguments"))
 
 let private envOfPairsImpl: Value =
@@ -1174,7 +1174,7 @@ let private envOfPairsImpl: Value =
                 items
                 |> Seq.map (fun p ->
                     match p with
-                    | VTuple [ VStr n; VStr v ] -> VRecord("EnvVar", Map [ "Name", VStr n; "Value", VStr v ])
+                    | VTuple [ VStr n; VStr v ] -> VRecord("EnvVar", Map [ "name", VStr n; "value", VStr v ])
                     | v -> unreachable $"the checker rejects 'Env.ofPairs' elements: {formatValue v}")
             )
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
@@ -1199,7 +1199,7 @@ let private envMembers: (string * Ty * Value) list =
               System.Environment.GetEnvironmentVariables()
               |> Seq.cast<System.Collections.DictionaryEntry>
               |> Seq.map (fun e ->
-                  VRecord(envVarDef.Name, Map [ "Name", VStr(string e.Key); "Value", VStr(string e.Value) ])))
+                  VRecord(envVarDef.Name, Map [ "name", VStr(string e.Key); "value", VStr(string e.Value) ])))
       )
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 
@@ -1310,7 +1310,7 @@ let private envVarPairs (v: Value) : (string * string) list =
         |> Seq.map (fun item ->
             match item with
             | VRecord(_, fields) ->
-                match fields["Name"], fields["Value"] with
+                match fields["name"], fields["value"] with
                 | VStr n, VStr value -> n, value
                 | _ -> unreachable "the checker rejects non-EnvVar overlay entries"
             | _ -> unreachable "the checker rejects non-EnvVar overlay entries")

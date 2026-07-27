@@ -125,7 +125,7 @@ let streamCodeOf (s: Spec) : int =
         reap p
 
 // ---- capture representation [D:capture-buffer]: ONE byte buffer per
-// stream + line offsets; Stdout/Stderr are lazy VIEWS decoding a
+// stream + line offsets; stdout/stderr are lazy VIEWS decoding a
 // string per pull. Same observable seq<string>, ~2x the text in RSS
 // instead of ~18x (per-string object overhead + UTF-16 were the old
 // cost). Offsets are int into one array — a single capture caps at
