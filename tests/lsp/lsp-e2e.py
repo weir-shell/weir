@@ -65,6 +65,18 @@ hover = read_msg()
 expect(hover["result"] and "seq<int>" in hover["result"]["contents"]["value"],
        f"hover should show seq<int>: {hover}")
 
+# hover an INNER-let binder -> the bound VALUE's type, not the
+# enclosing let-in's body type [PLAN-diagnostics-arc A2]
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": "let f n =\n    let xs = [\"a\"; \"b\"]\n    xs |> Seq.iter print\nf 1\n"}]}})
+read_msg()  # diagnostics
+send({"jsonrpc": "2.0", "id": 22, "method": "textDocument/hover",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 1, "character": 8}}})
+hover2 = read_msg()
+expect(hover2["result"] and "seq<string>" in hover2["result"]["contents"]["value"],
+       f"inner binder should hover its value type: {hover2}")
+
 # completion after Seq. -> members
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI},

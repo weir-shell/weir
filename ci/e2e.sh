@@ -782,6 +782,13 @@ echo "$out" | grep -qF '"code":"casing-law"' || fail "json code field: $out"
 echo "$out" | grep -qF '"line":1' || fail "json line field: $out"
 echo "e2e ok: weir check --json carries file/line/col/code"
 
+# cmd-not-found squiggles the WHOLE head word [PLAN-diagnostics-arc A4]
+printf 'nosuchzz foo bar\n' > "$ckdir/word.weir"
+out=$($BIN check --json "$ckdir/word.weir" || true)
+echo "$out" | grep -qF '"code":"cmd-not-found"' || fail "cmd-not-found json: $out"
+echo "$out" | grep -qF '"endCol":9' || fail "full-word endCol (nosuchzz = cols 1-8): $out"
+echo "e2e ok: cmd-not-found spans the full head word"
+
 printf 'print "clean"\n' > "$ckdir/clean.weir"
 out=$($BIN check "$ckdir/clean.weir"); rc=$?
 [ $rc -eq 0 ] && [ -z "$out" ] || fail "clean file must exit 0 silently (rc=$rc out=$out)"

@@ -54,3 +54,4 @@ is chronological (git first-commit date).
 - 2026-07-24 [EXECUTED] [PLAN-shared-flags.md](PLAN-shared-flags.md) — shared flags by containment: the union-typed field
 - 2026-07-24 [EXECUTED] [PLAN-spawn-spec.md](PLAN-spawn-spec.md) — mini-plan: the spawn-spec refactor + `feed`
 - 2026-07-26 [EXECUTED] [PLAN-editor-arc.md](PLAN-editor-arc.md) — the editor arc: LSP formatting+definition, tree-sitter-weir, Zed extension
+- 2026-07-26 [IN PROGRESS] [PLAN-diagnostics-arc.md](PLAN-diagnostics-arc.md) — the dogfooding diagnostics arc: ten findings, five sessions (A→E)

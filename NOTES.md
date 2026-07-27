@@ -1,5 +1,36 @@
 # Spike Notes
 
+## Diagnostics arc, Session A — four riders, four levels of pin (2026-07-26)
+
+The dogfooding arc's opener [PLAN-diagnostics-arc]; all four landed
+in one pass, 879 unit / e2e / lsp-e2e / timing green.
+
+- **A1, the load near-miss teaching**: the module-member-missing arm
+  now claims `Args.load`/`Env.load` before did-you-mean — "takes ONE
+  record (or union) type name, e.g. Args.load Config". One fix site
+  covers ALL bad shapes (zero args, two args from a space inside the
+  type name, extra args) because they all route through the same
+  member lookup. Pinned ×3 in unit.
+- **A2, hover on inner-let binders**: binder names are not expression
+  nodes, so nodeAt returned the enclosing let-in (the BODY's type —
+  unit at the end of an effect function). The hover now detects a
+  binder position textually (`let ` before the word) and walks for
+  the innermost TELet of that name, showing the bound VALUE's type.
+  Top-level lets unchanged (their KLet-scheme fallback already
+  worked). Pinned over the protocol in lsp-e2e.py.
+- **A3, `from json T` jumps**: definitionFor gains the TEFrom node —
+  the adapter's type name resolves to its declaration. Unit-pinned.
+- **A4, full-word squiggles**: cmd-not-found diags carried
+  EndCol=None and the LSP defaults a None end to col+1 — the
+  one-character squiggle. Now EndLine/EndCol span the head word.
+  Pinned in check --json e2e.
+
+Session-B intel banked while here: cmdHeads ALREADY walks the whole
+tree — the real B#4 bug is that an ERRORED statement's head warnings
+are never emitted (the Ok-branch owns the walk), which is exactly
+when they would explain the error. The fix is a parse-level walk on
+the Error branch, not an extension of the typed walk.
+
 ## VS Code extension packaging hygiene (2026-07-26)
 
 The user's first real `vsce package` run surfaced six issues at once;

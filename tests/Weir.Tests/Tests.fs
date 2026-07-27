@@ -3055,6 +3055,27 @@ let semanticTokenTests =
               // a pattern PAYLOAD binder is a local binder: null (the park)
               Expect.equal (Weir.Lsp.definitionFor lines 12 8) None "payload binder -> null"
           }
+          test "definitionFor: the from-json type name jumps to its declaration [PLAN-diagnostics-arc A3]" {
+              let lines =
+                  [ "type Oidc = { value: string }"
+                    "let toks = [\"{}\"] |> from json Oidc |> Seq.force"
+                    "print \"x\"" ]
+
+              Expect.equal (Weir.Lsp.definitionFor lines 2 33) (Some(1, 6, 4)) "Oidc use -> the type decl"
+          }
+          test "Args/Env.load near-miss shapes teach ONE-type-name [PLAN-diagnostics-arc A1]" {
+              // `Args.load C md` (a space inside the type name) used to
+              // fall through to "module Args has no member 'load'" — a
+              // lie: load is an ARM, not a member
+              Expect.stringContains (checkErr "Args.load").Message "takes ONE record or union type name" "zero args"
+
+              Expect.stringContains
+                  (checkErr "Args.load Cmd extra").Message
+                  "takes ONE record or union type name"
+                  "the space-in-the-type-name shape (two args)"
+
+              Expect.stringContains (checkErr "Env.load Cfg md").Message "takes ONE record type name" "the Env twin"
+          }
           test "formatting request contracts: broken statements verbatim, assemble failure refuses [D:lsp-requests]" {
               // an unparseable statement never refuses the FILE — indent
               // normalizes, the broken line rides verbatim (format-on-save

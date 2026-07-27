@@ -1441,6 +1441,14 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | None ->
                 match retiredMember m field with
                 | Some teach -> return! err fieldSpan $"'{m}.{field}' is retired: {teach}"
+                | None when field = "load" && (m = "Args" || m = "Env") ->
+                    // load is a bespoke ARM, not a member — reaching here
+                    // means the shape missed it: a space inside the type
+                    // name (two arguments), extra arguments, or none
+                    // [PLAN-diagnostics-arc A1]
+                    let union = if m = "Args" then " or union" else ""
+
+                    return! err fieldSpan $"{m}.load takes ONE record{union} type name, e.g. {m}.load Config"
                 | None ->
                     let hint = didYouMean field (Map.keys members)
                     return! err fieldSpan $"module {m} has no member '{field}'{hint}"

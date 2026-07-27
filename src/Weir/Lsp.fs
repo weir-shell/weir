@@ -347,6 +347,54 @@ let private wordFind (name: string) (text: string) (from: int) (bound: int) : in
 
     found
 
+let private wordAt (text: string) (jcol: int) : string option =
+    let i = jcol - 1
+
+    if i >= 0 && i < text.Length && isWord text[i] then
+        let mutable s = i
+
+        while s > 0 && isWord text[s - 1] do
+            s <- s - 1
+
+        let mutable e = i
+
+        while e + 1 < text.Length && isWord text[e + 1] do
+            e <- e + 1
+
+        Some(text.Substring(s, e - s + 1))
+    else
+        None
+
+// the word at the cursor when it is a LET BINDER (the non-space text
+// before it ends with the `let` keyword) [PLAN-diagnostics-arc A2]
+let private letBinderAt (text: string) (jcol: int) : string option =
+    wordAt text jcol
+    |> Option.filter (fun _ ->
+        let mutable s = jcol - 1
+
+        while s > 0 && isWord text[s - 1] do
+            s <- s - 1
+
+        let before = text.Substring(0, s).TrimEnd()
+
+        before.EndsWith "let"
+        && (before.Length = 3 || not (isWord before[before.Length - 4])))
+
+// the innermost inner-let binding `name` whose span contains the
+// column: hover shows the bound VALUE's type (the binder is not an
+// expression node — nodeAt alone sees the enclosing let-in, whose
+// type is the body's) [PLAN-diagnostics-arc A2]
+let rec private innerLetType (name: string) (jcol: int) (te: Check.TypedExpr) : Ty option =
+    let deeper = Check.childExprs te |> List.tryPick (innerLetType name jcol)
+
+    match deeper with
+    | Some t -> Some t
+    | None ->
+        match te.Kind with
+        | Check.TELet(n, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
+            Some tvalue.Ty
+        | _ -> None
+
 let private binderCol (name: string) (text: string) : int option =
     let eq = text.IndexOf '='
     wordFind name text 0 (if eq >= 0 then eq else text.Length)
@@ -359,24 +407,6 @@ let private binderCol (name: string) (text: string) : int option =
 /// names, each resolving to the KType declaration site.
 let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int) option =
     let _, stmts, _, _ = Script.analyzeLines "defn" lines
-
-    let wordAt (text: string) (jcol: int) : string option =
-        let i = jcol - 1
-
-        if i >= 0 && i < text.Length && isWord text[i] then
-            let mutable s = i
-
-            while s > 0 && isWord text[s - 1] do
-                s <- s - 1
-
-            let mutable e = i
-
-            while e + 1 < text.Length && isWord text[e + 1] do
-                e <- e + 1
-
-            Some(text.Substring(s, e - s + 1))
-        else
-            None
 
     // the KType declaring `tyName`: a member's column sits after the
     // first `=`, the type name's before it (joined text spans the
@@ -492,6 +522,11 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
                             typeSite recName (Some w)
                         else
                             None)
+                // `from json T`: the adapter's type name jumps to its
+                // declaration [PLAN-diagnostics-arc A3]
+                | Check.TEFrom(_, rowDef) ->
+                    wordAt useLl.Text jcol
+                    |> Option.bind (fun w -> if w = rowDef.Name then typeSite rowDef.Name None else None)
                 | _ -> None))
 
 // ---- the server ---------------------------------------------------
@@ -688,16 +723,25 @@ let run () : int =
                             let _, stmts, _, _ = analyze uri text
 
                             match toLogical stmts line col with
-                            | Some(_, chk, jcol) ->
+                            | Some(ll, chk, jcol) ->
+                                // an inner-let BINDER hovers as its bound
+                                // value's type [PLAN-diagnostics-arc A2]
+                                let binderTy =
+                                    letBinderAt ll.Text jcol
+                                    |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
+
                                 let fromExpr = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
 
                                 let tyStr =
-                                    match fromExpr with
-                                    | Some node -> Some(formatTy node.Ty)
+                                    match binderTy with
+                                    | Some t -> Some(formatTy t)
                                     | None ->
-                                        match chk.Kind with
-                                        | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
-                                        | _ -> None
+                                        match fromExpr with
+                                        | Some node -> Some(formatTy node.Ty)
+                                        | None ->
+                                            match chk.Kind with
+                                            | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
+                                            | _ -> None
 
                                 match tyStr with
                                 | Some t ->

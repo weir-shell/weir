@@ -1894,8 +1894,10 @@ let analyzeLines
                              { File = path
                                Line = wl
                                Col = wc
-                               EndLine = None
-                               EndCol = None
+                               // the full head word squiggles, not one
+                               // char [PLAN-diagnostics-arc A4]
+                               EndLine = Some wl
+                               EndCol = Some(wc + prog.Length)
                                Severity = "warning"
                                Code = "cmd-not-found"
                                Message =
