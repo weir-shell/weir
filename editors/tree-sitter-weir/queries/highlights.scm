@@ -34,6 +34,14 @@
 (operator) @operator
 (punctuation) @punctuation.bracket
 
+; record field DECLARATION names: an identifier/constructor immediately
+; before ':' is a field member, not a type — the casing law paints
+; uppercase as @type, so this override reclaims field names as @property.
+; MUST precede the field-type query: both anchor on the ':' punctuation,
+; and the pattern that captures ':' LAST owns the type-after-':' render
+((constructor) @property . (punctuation) @_c (#eq? @_c ":"))
+((identifier) @property . (punctuation) @_c (#eq? @_c ":"))
+
 ; record field types: the identifier right after ':' is a type, not a
 ; binder name [issue 2] — flat siblings, anchored on the ':' punctuation
 ((punctuation) @_colon . (identifier) @type

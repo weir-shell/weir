@@ -55,6 +55,9 @@
       "include": "#not"
     },
     {
+      "include": "#field-name"
+    },
+    {
       "include": "#types"
     },
     {
@@ -257,6 +260,14 @@
     "type-param": {
       "match": "'[a-zA-Z_][A-Za-z0-9_]*(?![^\\n]*'(?![A-Za-z0-9_]))",
       "name": "entity.name.type.weir"
+    },
+    "field-name": {
+      "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:)",
+      "captures": {
+        "1": {
+          "name": "variable.other.property.weir"
+        }
+      }
     }
   }
 }

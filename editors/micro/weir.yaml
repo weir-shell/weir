@@ -16,6 +16,7 @@
 
 # micro-exempt: binder (RE2 has no per-capture-group colours, so `let cli` cannot colour the name apart from the keyword)
 # micro-exempt: type-param (RE2 cannot peek for a closing quote to tell `'a` (type var) from `'echo x'` (command raw string); tree-sitter uses an external scanner, TextMate a lookahead)
+# micro-exempt: field-name (RE2 has no lookahead to require a following `:` without consuming it, and colours a whole match one colour, so it cannot scope a record field name apart from the `:` and the type after it)
 
 filetype: weir
 
