@@ -3750,6 +3750,31 @@ let optionSweepTests =
               okParses "let (a, b) = (1, 2)"
               okParses "type T = { a: int }"
           }
+          test "neg-int overflow dominates; the risk surface is byte-identical [D:anchor-before-read]" {
+              // C of the anchor residue: the fix narrows negAtom's attempt so
+              // the operand's out-of-range fatal escapes instead of being
+              // swallowed and merged (a fatal inside an attempt is not a
+              // fatal). Corrected diagnosis: NOT parsed-twice (negIntLit is
+              // range-only) — negAtom's own attempt was the swallower.
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "let x = -99999999999999999999" ]
+
+              match ds |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (1, 10) "on the offending digits"
+                  Expect.stringContains d.Message "out of range" "the teaching"
+                  Expect.isFalse (d.Message.Contains "Expecting:") "not buried"
+                  Expect.isFalse (d.Message.Contains "Other error messages") "not buried"
+              | other -> failtest $"expected ONE error, got {other}"
+
+              // the risk surface — prefix minus, subtraction, spaced range
+              // step, and application-vs-subtraction — UNCHANGED
+              expectValue "let a = 5 in a - 1" (VInt 4L)
+              expectValue "let a = 5 in a-1" (VInt 4L)
+              expectValue "-5" (VInt -5L)
+              expectValue "[10.. -1 ..8] |> Seq.length" (VInt 3L)
+              expectValue "let f x = x + 100 in f -1" (VInt 99L)
+          }
           test "value-headed pipeline: external head feeds; library head keeps the hint [D:value-headed-pipe]" {
               // resolution decides — an EXTERNAL head after a value `|`
               // desugars to a pipe into the command (stdin), reusing the

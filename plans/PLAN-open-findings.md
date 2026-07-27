@@ -120,6 +120,23 @@ record-literal field name, record-decl field name).
 
 ## C. neg-int-out-of-range, contested  [domination residue (i)]
 
+STATUS: EXECUTED (2026-07-27, alone). The predicted-hard case turned
+out CLEANER than the prediction — the premise ("parsed TWICE by
+negIntLit and prefix-minus") was WRONG on diagnosis (negIntLit is
+RANGE-ONLY; general expressions use `negAtom`). The real root: for
+`let x = -N`, `negAtom`'s operand `intLit` hits int-out-of-range, and
+`negAtom`'s OWN `attempt` SWALLOWS that fatal (the property this
+residue documented — a fatal inside an attempt is not a fatal), then
+the merge buries it. FIX = the property in action, NOT the plan's
+three options (both broke the risk surface): narrow negAtom's
+`attempt` to cover only the prefix DETECTION, so the operand parses
+OUTSIDE it and its fatal propagates. This narrows an EXISTING attempt
+(applies the documented property), not a new consumed-separator commit
+— and the entire risk surface (`a - 1`, `a-1`, `-5`, `[10.. -1 ..8]`,
+`f -1`) is BYTE-IDENTICAL before/after (pinned), so the stop-condition
+did not trigger. Overflow now reports "int literal out of range" at
+1:10 (the digits), clean.
+
 SIZE: small but tricky. **RUNS ALONE.** The mechanism already
 PREDICTS the difficulty: the anchor is the `-`, which is the unary
 minus operator's contested spot — a competitor survives there, so

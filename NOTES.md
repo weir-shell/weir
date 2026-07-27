@@ -1,5 +1,29 @@
 # Spike Notes
 
+## The anchor residue C — neg-int, the predicted-hard case that wasn't (2026-07-27)
+
+Ran alone as the plan required. The prediction ("the `-` is the unary
+minus's contested spot, so seek-back buries") pointed the right way
+but its stated PREMISE was wrong — the THIRD claim-not-fact correction
+of this arc (after the sweep's "ambiguous" and A's foldChain).
+"Parsed twice by negIntLit and prefix-minus" is false: `negIntLit` is
+RANGE-ONLY; a plain `let x = -N` goes through `negAtom` (prefix minus).
+The real swallower was `negAtom`'s OWN `attempt` eating the operand's
+int-out-of-range fatal — the exact property this residue had just
+documented, biting one function over.
+
+So the fix was the property applied, not the plan's three options
+(option 1 breaks `-5`/`f -1`; option 2 breaks range steps): narrow
+negAtom's attempt to the prefix DETECTION only, so the operand parses
+outside it and its fatal escapes. Because that narrows an EXISTING
+attempt rather than adding a consumed-separator commit, and because
+the whole risk surface is BYTE-IDENTICAL (`a - 1`, `a-1`, `-5`,
+`[10.. -1 ..8]`, and the spacing-sensitive `f -1`=99 application — all
+pinned before/after), the plan's stop-condition never triggered. The
+overflow now reports at the digits (1:10), clean. Lesson banked: a
+prediction can be right in direction and wrong in mechanism — diagnose
+even the cases the plan calls known-hard.
+
 ## The anchor residue A+B — foldChain + param/field keywords (2026-07-27)
 
 The A+B session of PLAN-open-findings. First to run, so it OWES the

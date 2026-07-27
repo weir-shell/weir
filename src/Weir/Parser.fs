@@ -498,11 +498,17 @@ let private negAtom =
         >>. getPosition
         .>> pchar '-'
         .>> notFollowedBy (anyOf " \t>")
-        .>>. postfixAtomFwd
-        |>> fun (p, e) ->
+    )
+    // the attempt covers only the prefix DETECTION [D:anchor-before-read]:
+    // once committed to prefix-minus the operand parses OUTSIDE it, so a
+    // failing operand (an out-of-range literal) propagates its fatal
+    // instead of being swallowed by the attempt (a fatal inside an attempt
+    // is not a fatal) and merged into a dump
+    >>= fun p ->
+        postfixAtomFwd
+        |>> fun e ->
             { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
               Span = { Start = pos p; End = e.Span.End } }
-    )
 
 // Depth guard [D:depth-guard]: unbounded expression depth blows the
 // native stack — the recursive-descent parser on deep NESTING (parens/
