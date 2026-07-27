@@ -853,6 +853,19 @@ echo "$out" | grep -qvF "Expecting:" || fail "no raw expecting-list expected: $o
 printf '%s' "$out" | grep -q "$(printf '\037')" && fail "sentinel leaked into a diagnostic: $out"
 echo "e2e ok: command-first body reports at the head, no EOF dump, no sentinel leak"
 
+# bare-pipe caret anchors ON the '|', not the space after [PLAN-anchor-before-read]
+cat > "$ckdir/bp.weir" <<'WEOF'
+let names =
+    []
+    |> Seq.map _.name
+    | Seq.distinct
+WEOF
+out=$($BIN check --json "$ckdir/bp.weir" || true)
+echo "$out" | grep -qF '"line":4,"col":5' || fail "bare-pipe caret on the '|': $out"
+echo "$out" | grep -qF "'|' chains commands" || fail "bare-pipe teaching text unchanged: $out"
+echo "$out" | grep -qvF "Expecting:" || fail "clean message, no expecting-list: $out"
+echo "e2e ok: bare-pipe caret anchors on the '|', clean teaching message"
+
 printf 'print "clean"\n' > "$ckdir/clean.weir"
 out=$($BIN check "$ckdir/clean.weir"); rc=$?
 [ $rc -eq 0 ] && [ -z "$out" ] || fail "clean file must exit 0 silently (rc=$rc out=$out)"

@@ -42,6 +42,25 @@ inventory (tests/POSITIONS.md) — pin or explicit exclusion per
 position, enumerated in session notes. Naming incident: the let-RHS
 sequencing miss. The inventory is maintained, not re-derived.
 
+## Anchor-before-the-read rule
+
+A parser error's caret must anchor on the position of its TRIGGER
+token, captured BEFORE the trigger is consumed — never wherever the
+stream drifted after. `failFatally`/`err` fire at the CURRENT stream
+position, so a consume-then-fail site reports past its token (the
+trailing whitespace even crosses physical lines in assembled
+statements). The shape: capture the position first (or seek back to
+it after consuming — `failFatallyAt`/`failFatallyAtCol`, which
+consume to clear the competing "expected" errors at the spot, then
+Seek to the anchor). Any NEW located parse diagnostic states its
+anchor and pins the exact line:col, not a contains-check. Naming
+incidents: caseDecl (lowercase union case, 39:5 not 38:7) and the
+bare-pipe caret (`|`+1 everywhere) — the two instances that earned
+this bar. Standing caveat: seeking to an anchor that a sibling
+parser also contests re-merges its expecting-list (the
+message-domination class) — anchor there only once that class is
+closed.
+
 ## Done-when intent rule
 
 Done-when clauses bind to INTENT. When a session's work dissolves a

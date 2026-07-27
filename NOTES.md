@@ -1,5 +1,81 @@
 # Spike Notes
 
+## The bare-pipe caret, and the anchor-before-the-read sweep (2026-07-27)
+
+The parked bare-pipe narrow question ("where should a bare-`|` fatal
+point when the LHS spans lines?") got its receipts — and they
+DISSOLVED the question. The multi-line record LHS I'd sketched as
+having three defensible carets behaves IDENTICALLY to the flat
+pipeline LHS: LHS shape and line-span are irrelevant. There was no
+position law, just one off-by-one — the caret sat on the whitespace
+AFTER the `|`, everywhere, because `failFatally` fires at the current
+stream position and the `|` (plus its trailing ws, which crosses
+physical lines in an assembled statement) had been consumed first.
+
+FIX SHAPE (`failFatallyAt`/`failFatallyAtCol`): consume the trigger
+(this CLEARS the competing "expected" errors that sit at that spot —
+a plain lookAhead-restore keeps the fatal non-consuming, so `<|>`
+merges them back into a dump), then Seek the stream back to the
+captured anchor and raise the fatal there. `run` reads err.Position,
+so the seek is the whole mechanism. Caret now lands ON the `|` in all
+three shapes; message text unchanged.
+
+### The sweep — anchor-before-the-read's SECOND sighting
+
+The first was caseDecl (a lowercase union case validated AFTER
+consuming the word + trailing ws, landing 39:5 not 38:7). Two
+instances is this project's convert-a-lesson-into-a-sweep threshold.
+Every consume-then-fail parser site, with the minimal shape's caret:
+
+| site | trigger | expected | before | verdict |
+|---|---|---|---|---|
+| bare-pipe `\|` | the `\|` | on `\|` | ws after (`\|`+1) | FIXED |
+| int-out-of-range (expr) | the number | its start | its end | FIXED |
+| int-out-of-range (pattern) | the number | the literal | its end | FIXED |
+| measure (expr `5<m>`) | the literal | its start | past it | FIXED |
+| measure (type `int<m>`) | the `<` | the `<` | past it | FIXED |
+| range step zero | the `0` step | the step | range end | FIXED |
+| duplicate parameter | 2nd binder | 2nd binder | the `=` | FIXED |
+| `;` does-not-chain (warn) | the `;` | on `;` | on `;` | CLEAN |
+| `>` / `>>` redirect (warn) | the redirect | on it | on it | CLEAN |
+| discarded exitCode | the reifier | on it | on it | CLEAN |
+| cmd-not-found `^head` | the head | on head | on head | CLEAN |
+| depth-guard | over-deep node | node span | node span | CLEAN |
+| neg-int-out-of-range | the number | on `-` | its end | FINDING (a) |
+| splat head / mid / bare `$@` | the splice | on it | on it (ok) | FINDING (b) |
+| reserved function/rec/mutable | the word | on word | on word (ok) | FINDING (b) |
+| multi-external / reifier fold | the segment | ? | chain end | FINDING (c) |
+
+Denominator: every `failFatally`/`err`/warning site that emits a
+located diagnostic. 7 caret drifts FIXED via the shared anchor
+helper; 5 already clean; 3 finding-classes left for their own bless:
+
+- **(a) neg-int-out-of-range**: the anchor is the `-`, but that is
+  the unary-minus operator's contested spot — seeking there drops the
+  fatal where the opp also failed, and FParsec MERGES the
+  expecting-list into a dump. So the clean message wins and the caret
+  drift stays; coupled to (b). The seek-back trick is clean ONLY when
+  the anchor position has no competing parser (why every FIXED site
+  works and this one doesn't).
+- **(b) message-domination class**: splat ×3 and the reserved-word
+  errors have CORRECT carets, but their non-consuming `fail`/
+  `failFatally` merges competitors into a buried "Other error
+  messages" dump. Distinct from caret drift — the caret is right, the
+  MESSAGE is polluted. Its own class (make the teaching fatal
+  dominate), out of this sweep's position-only scope.
+- **(c) multi-external / reifier foldChain**: the caret drifts to the
+  chain's end, but foldChain builds the error from a computed string
+  with no per-segment positions, and WHICH segment owns it is
+  ambiguous. Needs foldChain to thread positions — a restructure,
+  reported not guessed.
+
+### The park retires
+
+The bare-pipe park [was: "where should a bare-`|` fatal point when the
+LHS spans lines?"] is RETIRED with that archaeology: the question was
+"which line?"; the answer was "off by one column, everywhere." No
+position law existed to decide. Its strict-span acceptance is met.
+
 ## The sibling sentinel — command mode stops at the machine's ';' (2026-07-27)
 
 Session E's blessed successor (Option B). The assembler now joins

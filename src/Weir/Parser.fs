@@ -119,9 +119,30 @@ let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
 // EXPRESSION is not an operator — name the spelling instead of
 // dumping the token set (`||` and `|>` belong to the expression
 // grammar and never reach this check)
+// failFatally, ANCHORED [D:anchor-before-read]: raise the fatal at a
+// captured position, not wherever the stream drifted after consuming the
+// trigger. Consuming the trigger first is what clears the competing
+// "expected" errors at that spot (a plain lookAhead-restore keeps the
+// fatal non-consuming, so <|> merges them back in); seeking to the anchor
+// then reports ON the trigger. `run` reads err.Position, so the seek is
+// the whole mechanism.
+let private failFatallyAt (anchor: Position) (msg: string) : Parser<'a, unit> =
+    fun stream ->
+        stream.Seek anchor.Index
+        Reply(ReplyStatus.FatalError, messageError msg)
+
+// same anchor by COLUMN, for sites whose token is already captured as a
+// Span (parse runs on one assembled logical line, so Index = Col - 1)
+let private failFatallyAtCol (col: int) (msg: string) : Parser<'a, unit> =
+    fun stream ->
+        stream.Seek(int64 (col - 1))
+        Reply(ReplyStatus.FatalError, messageError msg)
+
 let private barePipeHint: Parser<unit, unit> =
-    (attempt (pchar '|' .>> notFollowedBy (anyOf "|>"))
-     >>. failFatally "'|' chains commands; pipe expressions with '|>'")
+    // a bare `|` after a completed EXPRESSION [D:pipe-hint]; anchor the
+    // caret ON the `|`, not the ws after it [D:anchor-before-read]
+    (attempt (getPosition .>> pchar '|' .>> notFollowedBy (anyOf "|>"))
+     >>= fun pipePos -> failFatallyAt pipePos "'|' chains commands; pipe expressions with '|>'")
     <|> preturn ()
 
 // non-field positions name the scope decision [D:attributes]
@@ -172,12 +193,15 @@ let private updateSource, private updateSourceRef =
 
 let private intLit =
     spanned (
-        many1Satisfy isDigit .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
-        >>= fun (digits, m) ->
+        // anchor at the literal's start [D:anchor-before-read]: the fail
+        // fires after consuming the digits (and the measure), so seek back
+        getPosition
+        .>>. (many1Satisfy isDigit .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>')))
+        >>= fun (at, (digits, m)) ->
             match m, System.Int64.TryParse digits with
-            | Some _, _ -> failFatally "units of measure are not supported; use bare int"
+            | Some _, _ -> failFatallyAt at "units of measure are not supported; use bare int"
             | None, (true, n) -> preturn (EInt n)
-            | None, (false, _) -> failFatally $"int literal out of range (64-bit): {digits}"
+            | None, (false, _) -> failFatallyAt at $"int literal out of range (64-bit): {digits}"
     )
     |>> mkExpr
     .>> ws
@@ -292,6 +316,10 @@ let private negIntLit =
         >>= fun digits ->
             match System.Int64.TryParse digits with
             | true, n -> preturn (EInt(-n))
+            // NOT anchored [D:anchor-before-read]: seeking to the '-' would
+            // drop the fatal into the unary-minus operator's contested spot
+            // and merge its expecting-list — a message-domination FINDING,
+            // coupled to that separate class; the clean message wins here
             | false, _ -> failFatally $"int literal out of range (64-bit): -{digits}"
     )
     |>> mkExpr
@@ -315,7 +343,8 @@ let private rangeBody =
             | None -> a, { Kind = EInt 1L; Span = a.Span }, b
 
         match step.Kind with
-        | EInt 0L -> failFatally "range step is zero"
+        // anchor on the step, not the range's end [D:anchor-before-read]
+        | EInt 0L -> failFatallyAtCol step.Span.Start.Col "range step is zero"
         | _ -> preturn (start, step, stop)
 
 // [a..s..b] is pure sugar for Seq.range a s b; [a; b; c] stays an eager list.
@@ -624,15 +653,26 @@ let private binderPat, private binderPatRef =
 // duplicate params reject in BOTH sugar positions [D:fun-sugar];
 // explicit nested lambdas may still shadow.
 let private rejectDupParams (ps: Pattern list) =
-    let names =
+    let named =
         ps
         |> List.choose (fun p ->
             match p.PKind with
-            | PVar n -> Some n
+            | PVar n -> Some(n, p)
             | _ -> None)
 
-    match names |> List.groupBy id |> List.tryFind (fun (_, g) -> List.length g > 1) with
-    | Some(n, _) -> failFatally $"duplicate parameter '{n}'"
+    let dup =
+        named
+        |> List.groupBy fst
+        |> List.tryPick (fun (n, g) ->
+            if List.length g > 1 then
+                Some(n, snd (List.item 1 g))
+            else
+                None)
+
+    match dup with
+    // anchor on the SECOND binder, not the '=' that closed the params
+    // [D:anchor-before-read]
+    | Some(n, p2) -> failFatallyAtCol p2.PSpan.Start.Col $"duplicate parameter '{n}'"
     | None -> preturn ()
 
 let private curryParams (ps: Pattern list) (value: Expr) : Expr =
@@ -795,11 +835,12 @@ let private patLit =
     choice
         [ attempt (spanned (pstring "()") .>> ws)
           |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
-          attempt (spanned (opt (pchar '-') .>>. many1Satisfy isDigit) .>> ws)
-          >>= fun ((neg, digits), span) ->
+          attempt (getPosition .>>. spanned (opt (pchar '-') .>>. many1Satisfy isDigit) .>> ws)
+          >>= fun (at, ((neg, digits), span)) ->
               match System.Int64.TryParse((if neg.IsSome then "-" else "") + digits) with
               | true, n -> preturn { PKind = PInt n; PSpan = span }
-              | false, _ -> failFatally $"int literal out of range (64-bit): {digits}"
+              // anchor at the literal start [D:anchor-before-read]
+              | false, _ -> failFatallyAt at $"int literal out of range (64-bit): {digits}"
           spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"") .>> ws
           |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
           spanned (pstring "@\"" >>. verbatimBody .>> pchar '"') .>> ws
@@ -1472,10 +1513,12 @@ tySynRef.Value <-
           >>= fun w ->
               match w with
               | "int" ->
-                  opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws
-                  >>= (function
-                  | Some _ -> failFatally "units of measure are not supported; use bare int"
-                  | None -> preturn TInt)
+                  // anchor at the measure's '<' [D:anchor-before-read]
+                  getPosition .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws
+                  >>= (fun (at, m) ->
+                      match m with
+                      | Some _ -> failFatallyAt at "units of measure are not supported; use bare int"
+                      | None -> preturn TInt)
               | "string" -> ws >>% TStr
               | "bool" -> ws >>% TBool
               | "unit" -> ws >>% TUnit

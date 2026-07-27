@@ -3644,6 +3644,59 @@ let optionSweepTests =
               | Error msg -> Expect.stringContains msg "'|' chains commands" ""
               | Ok _ -> failtest "expected the cliff"
           }
+          test "the bare-pipe caret sits ON the '|', not the space after [D:anchor-before-read]" {
+              // the parked narrow question dissolved: LHS shape/line-span
+              // is irrelevant — all three shapes were off by exactly the
+              // consumed '|'+ws. Exact line:col, not a contains-check.
+              let caret lines =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+                  ds
+                  |> List.filter (fun d -> d.Message.Contains "'|' chains commands")
+                  |> List.map (fun d -> d.Line, d.Col)
+
+              // single-line: '|' is column 22 (was 23, the trailing space)
+              Expect.equal (caret [ "[] |> Seq.map _.name | Seq.distinct" ]) [ (1, 22) ] "single-line pipeline LHS"
+
+              // multi-line pipeline LHS: '|' is 4:5 (was 4:6)
+              Expect.equal
+                  (caret [ "let names ="; "    []"; "    |> Seq.map _.name"; "    | Seq.distinct" ])
+                  [ (4, 5) ]
+                  "multi-line pipeline LHS"
+
+              // multi-line record LHS: identical behavior — 4:5 (was 4:6)
+              Expect.equal
+                  (caret [ "let counts ="; "    { Head = 1"; "      Tail = 3 }"; "    | Seq.map show" ])
+                  [ (4, 5) ]
+                  "multi-line record LHS (same as the flat pipeline — no position law)"
+          }
+          test "anchor sweep: consume-then-fail sites report ON their trigger [D:anchor-before-read]" {
+              // the class the bare-pipe fix generalized — each caret sits on
+              // the offending token, not where the stream drifted after it.
+              // exact line:col, filtered to the clean teaching message.
+              let at (msg: string) lines =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+                  ds
+                  |> List.filter (fun d -> d.Message.Contains msg)
+                  |> List.map (fun d -> d.Line, d.Col)
+
+              Expect.equal
+                  (at "out of range" [ "let x = 99999999999999999999" ])
+                  [ (1, 9) ]
+                  "int-out-of-range: on the literal start, not its end"
+
+              Expect.equal (at "units of measure" [ "let x = 5<m>" ]) [ (1, 9) ] "measure (expr): on the literal start"
+              Expect.equal (at "units of measure" [ "type T = { a: int<m> }" ]) [ (1, 18) ] "measure (type): on the '<'"
+
+              Expect.equal
+                  (at "out of range" [ "match 1 with"; "| 99999999999999999999 -> 1"; "| _ -> 0" ])
+                  [ (2, 3) ]
+                  "int-out-of-range (pattern): on the literal"
+
+              Expect.equal (at "range step is zero" [ "let x = [1..0..5]" ]) [ (1, 13) ] "range step: on the 0"
+              Expect.equal (at "duplicate parameter" [ "let f a a = 1" ]) [ (1, 9) ] "dup param: on the SECOND binder"
+          }
           test "value-headed pipeline: external head feeds; library head keeps the hint [D:value-headed-pipe]" {
               // resolution decides — an EXTERNAL head after a value `|`
               // desugars to a pipe into the command (stdin), reusing the
