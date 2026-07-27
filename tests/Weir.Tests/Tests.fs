@@ -14,6 +14,14 @@ let private parse input =
     | Ok e -> e
     | Error msg -> failtest $"parse failed: {msg}"
 
+// [D:sibling-sentinel] the assembler joins STATEMENT siblings with the
+// machine sentinel, not ';' (command mode stops at it; a user ';' does
+// not). Assembler-text pins spell the join as a readable ';'; asmSib
+// rewrites that display ';' to the sentinel the assembler emits.
+// Bracket field/element separators stay a literal ';' — never wrap those.
+let private asmSib (s: string) =
+    s.Replace(" ; ", " " + Weir.Parser.sibSepStr + " ")
+
 // the span-free sexpr renderer moved to Ast (shared with fmt's
 // respace safety check [D:fmt-respace]); these aliases keep the pins
 let private show = Weir.Ast.sexpr
@@ -2730,7 +2738,7 @@ let bracketContinuationTests =
 
               Expect.equal
                   (joined [ "let f x ="; "    printerr \"a\""; ""; "    printerr \"b\"" ])
-                  "let f x = printerr \"a\" ; printerr \"b\""
+                  (asmSib "let f x = printerr \"a\" ; printerr \"b\"")
                   "mid-body gap"
           }
           test "gap positions inside brackets: first, mid, before-close" {
@@ -3451,7 +3459,7 @@ let multilineLambdaTests =
                         4, "    )"
                         5, "    3" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let v = xs |> Seq.iter (fun r -> print r ) ; 3" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let v = xs |> Seq.iter (fun r -> print r ) ; 3") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "body at the opener's indent is a continuation, not a sibling (F#-parity)" {
@@ -3513,7 +3521,7 @@ let multilineLambdaTests =
                         3, "        print r)"
                         4, "    40" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let v = xs |> Seq.iter (fun r -> print r) ; 40" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let v = xs |> Seq.iter (fun r -> print r) ; 40") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "nested multiline lambdas pop innermost-first" {
@@ -3529,7 +3537,7 @@ let multilineLambdaTests =
               | Ok [ ll ] ->
                   Expect.equal
                       ll.Text
-                      "rows |> Seq.iter (fun row -> row |> Seq.iter (fun c -> print c ) ; print \"row-done\" )"
+                      (asmSib "rows |> Seq.iter (fun row -> row |> Seq.iter (fun c -> print c ) ; print \"row-done\" )")
                       ""
               | other -> failtest $"unexpected: {other}"
           }
@@ -5170,21 +5178,21 @@ let childEnvTests =
                         3, "        git pull"
                         4, "    print \"x\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f t = (if c then !e(git pull)) ; print \"x\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f t = (if c then !e(git pull)) ; print \"x\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "standalone marker: dedent after the district sequences (latent bare-! bug)" {
               match
                   Weir.Script.assemble [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f x = !e(git pull) ; printerr \"OK\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = !e(git pull) ; printerr \"OK\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "standalone bare marker: same sequencing on dedent" {
               match
                   Weir.Script.assemble [ 1, "let f x ="; 2, "    !"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f x = !(git pull) ; printerr \"OK\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = !(git pull) ; printerr \"OK\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "district header x pipes: continuation keeps the wrap" {
@@ -5668,7 +5676,7 @@ let productMatrixTests =
         [ // A x F: comment inside a compound body is transparent
           test "A x F: comment between compound-body siblings keeps grouping" {
               match Weir.Script.assemble [ 1, "if c then"; 2, "    eff1"; 4, "    eff2" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "if c then eff1 ; eff2" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if c then eff1 ; eff2") ""
               | other -> failtest $"unexpected: {other}"
           }
           // C x E: pipe line after a blank
@@ -5699,13 +5707,13 @@ let productMatrixTests =
               match
                   Weir.Script.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 3, ""; 4, "    printerr \"b\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f x = printerr \"a\" ; printerr \"b\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = printerr \"a\" ; printerr \"b\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           // F x G: sibling `;` joins across a transparent comment
           test "F x G: sibling sequencing joins across a comment line" {
               match Weir.Script.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 4, "    printerr \"b\"" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f x = printerr \"a\" ; printerr \"b\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = printerr \"a\" ; printerr \"b\"") ""
               | other -> failtest $"unexpected: {other}"
           } ]
 
@@ -5715,14 +5723,14 @@ let offsideTests =
         [ // the bicep bite: a sibling at the if's own indent closes it
           test "offside close: sibling at head indent wraps the if" {
               match Weir.Script.assemble [ 1, "let t ="; 2, "    if c then fail \"u\""; 3, "    { Name = s }" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "let t = (if c then fail \"u\") ; { Name = s }" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let t = (if c then fail \"u\") ; { Name = s }") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "offside close: the silent variant no longer swallows" {
               match
                   Weir.Script.assemble [ 1, "let f c ="; 2, "    if c then printerr \"a\""; 3, "    printerr \"b\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f c = (if c then printerr \"a\") ; printerr \"b\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f c = (if c then printerr \"a\") ; printerr \"b\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "else extends the compound instead of closing it" {
@@ -5743,12 +5751,12 @@ let offsideTests =
                         3, "    else b"
                         4, "    printerr \"z\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f c = (if c then a else b) ; printerr \"z\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f c = (if c then a else b) ; printerr \"z\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "deeper siblings still join INTO the body (the greedy protectorate)" {
               match Weir.Script.assemble [ 1, "if c then"; 2, "    eff1"; 3, "    eff2" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "if c then eff1 ; eff2" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if c then eff1 ; eff2") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "nested dedent closes through both levels" {
@@ -5760,12 +5768,12 @@ let offsideTests =
                         4, "        eff2"
                         5, "    printerr \"z\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f x = (if c then eff1 ; eff2) ; printerr \"z\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = (if c then eff1 ; eff2) ; printerr \"z\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "sequential ifs: first closes, second stays open at statement end" {
               match Weir.Script.assemble [ 1, "let f c ="; 2, "    if a then x"; 3, "    if b then y" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f c = (if a then x) ; if b then y" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f c = (if a then x) ; if b then y") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "match closes at a sibling too" {
@@ -5776,7 +5784,8 @@ let offsideTests =
                         3, "    | A -> printerr \"a\""
                         4, "    printerr \"z\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let v = (match x with | A -> printerr \"a\") ; printerr \"z\"" ""
+              | Ok [ ll ] ->
+                  Expect.equal ll.Text (asmSib "let v = (match x with | A -> printerr \"a\") ; printerr \"z\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "district x offside: closing sibling wraps the marker's if" {
@@ -5787,7 +5796,7 @@ let offsideTests =
                         3, "        git pull"
                         4, "    print \"x\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let f t = (if c then !(git pull)) ; print \"x\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f t = (if c then !(git pull)) ; print \"x\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "record continuation: bare fields get separators" {
@@ -6049,14 +6058,14 @@ let sequencingTests =
           }
           test "assembler: same-indent siblings sequence" {
               match Weir.Script.assemble [ 1, "let w ="; 2, "    print \"a\""; 3, "    print \"b\"" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "let w = print \"a\" ; print \"b\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let w = print \"a\" ; print \"b\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "assembler: let-close beats sibling; sequence resumes after" {
               match
                   Weir.Script.assemble [ 1, "let w ="; 2, "    let a = 1"; 3, "    print \"x\""; 4, "    print \"y\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let w = let a = 1 in print \"x\" ; print \"y\"" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let w = let a = 1 in print \"x\" ; print \"y\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "function RHS takes a sequenced body (bicep receipt)" {
@@ -6086,6 +6095,72 @@ let sequencingTests =
                       Expect.exists ws (fun w -> w.Message.Contains "does not chain") "warned"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
+          } ]
+
+let siblingSentinelTests =
+    // [D:sibling-sentinel] — the diagnostics-arc Session E successor:
+    // command mode stops at the machine sibling boundary, so a
+    // command-first body sequences instead of over-running to EOF.
+    let diags lines =
+        let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+        ds
+
+    testList
+        "Sibling sentinel"
+        [ test "ACCEPTANCE: cmd then let..in body parses as a real sequence" {
+              // was the backtrack-to-EOF dump; now a clean ESeq whose
+              // first element is the command
+              match
+                  Weir.Parser.parseLine
+                      realResolver
+                      ("let f t = git status" + Weir.Parser.sibSepStr + "let e = \"x\" in print e")
+              with
+              | Ok(SLet("f", { Kind = ELambda("t", _, { Kind = ESeq({ Kind = ECmd("git", _, _) }, _) }) })) -> ()
+              | other -> failtest $"expected ESeq(cmd, ...), got: {other}"
+          }
+          test "ACCEPTANCE: the repro reports AT THE COMMAND HEAD, not at EOF" {
+              // a command as the first body sibling is a discarded
+              // non-unit — the seq-unit rule fires ON the command head,
+              // no 'end of input stream', no raw expecting-list
+              let ds = diags [ "let f t ="; "    git status"; "    let e = \"x\""; "    print e" ]
+
+              match ds |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (2, 5) "at the command head"
+                  Expect.notEqual d.Code "parse" "not a parse dump"
+                  Expect.isFalse (d.Message.Contains "end of the input stream") "no EOF note"
+                  Expect.isFalse (d.Message.Contains "Expecting:") "no raw expecting-list"
+              | other -> failtest $"expected ONE error at the head, got {other}"
+          }
+          test "user ';' is byte-identical: one command, a bareword arg, the prior-bleed warning" {
+              // the whole reason B beat A — a user-typed ';' on one line
+              // is STILL a command with a ';' argv word that warns
+              match Weir.Parser.parseLine cmdResolver "git status ; echo hi" with
+              | Ok(SCmd({ Kind = ECmd("git", args, _) })) ->
+                  Expect.isTrue
+                      (args |> List.exists (fun a -> a.Kind = EStr ";"))
+                      "the ';' is a bareword arg, not a separator"
+              | other -> failtest $"expected one command swallowing ';', got: {other}"
+          }
+          test "unproduceable: the sentinel in SOURCE is rejected at assembly" {
+              match Weir.Script.assemble [ 1, "print \"a\"" + Weir.Parser.sibSepStr + "print \"b\"" ] with
+              | Error e -> Expect.stringContains e "illegal control character" "rejected as illegal"
+              | Ok _ -> failtest "a source sentinel must not assemble"
+          }
+          test "no-leak: the sentinel never surfaces in a diagnostic" {
+              // a command-first body with a downstream parse error — the
+              // dump must show ';'/clean text, never the raw sentinel
+              let ds = diags [ "let f t ="; "    git status"; "    let e = ("; "    print e" ]
+
+              for d in ds do
+                  Expect.isFalse (d.Message.Contains Weir.Parser.sibSepStr) $"sentinel leaked: {d.Message}"
+          }
+          test "fmt output never carries the sentinel (assemble->check artifact only)" {
+              match Weir.Fmt.formatLines [ "let f t ="; "    git status"; "    let e = \"x\""; "    print e" ] with
+              | Ok lines ->
+                  for l in lines do
+                      Expect.isFalse (l.Contains Weir.Parser.sibSepStr) $"sentinel in fmt output: {l}"
+              | Error e -> failtest $"fmt failed: {e}"
           } ]
 
 let sigilTests =
@@ -6573,6 +6648,7 @@ let allTests =
           showTests
           seqAccessTests
           sequencingTests
+          siblingSentinelTests
           offsideTests
           productMatrixTests
           casingTests

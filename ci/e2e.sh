@@ -837,6 +837,22 @@ echo "$out" | grep -qF '"endCol":24' || fail "provenance covers the field word: 
 echo "$out" | grep -qF "(the value becomes a T at 5:1)" || fail "the meet note: $out"
 echo "e2e ok: row provenance points at the access, meet in the note"
 
+# sibling sentinel: a command-first body sequences instead of running
+# to EOF; the error reports AT THE COMMAND HEAD, no raw expecting-list
+# [PLAN-sibling-sentinel]
+cat > "$ckdir/sib.weir" <<'WEOF'
+let f t =
+    git status
+    let e = "x"
+    print e
+WEOF
+out=$($BIN check --json "$ckdir/sib.weir" || true)
+echo "$out" | grep -qF '"line":2,"col":5' || fail "sibling sentinel points at the command head: $out"
+echo "$out" | grep -qvF "end of the input stream" || fail "no EOF dump expected: $out"
+echo "$out" | grep -qvF "Expecting:" || fail "no raw expecting-list expected: $out"
+printf '%s' "$out" | grep -q "$(printf '\037')" && fail "sentinel leaked into a diagnostic: $out"
+echo "e2e ok: command-first body reports at the head, no EOF dump, no sentinel leak"
+
 printf 'print "clean"\n' > "$ckdir/clean.weir"
 out=$($BIN check "$ckdir/clean.weir"); rc=$?
 [ $rc -eq 0 ] && [ -z "$out" ] || fail "clean file must exit 0 silently (rc=$rc out=$out)"

@@ -1,5 +1,109 @@
 # Spike Notes
 
+## The sibling sentinel — command mode stops at the machine's ';' (2026-07-27)
+
+Session E's blessed successor (Option B). The assembler now joins
+STATEMENT-siblings with a machine sentinel (U+001F), not `;`. A
+command-first body (`cmd` then `let x = … in body`) used to run
+command mode past the sibling boundary, mis-parse, and fail at the
+joined line's EOF with a raw expecting-list; now command mode stops
+at the sentinel, `seqExpr` sequences on it compositionally, and
+topLet's RHS command branch folds a real `ESeq(ECmd, …)`. The repro
+reports AT THE COMMAND HEAD (the ordinary seq-unit discard rule),
+no EOF note, no dump.
+
+THE ENGINEERING that made this low-risk: the sentinel join is the
+SAME 3-char width as `" ; "`, so `joinedStart` and every
+segment-table offset are byte-identical — `translate` did not move.
+The strict-spans deep run (4000+ cases, on by default) is the
+acceptance and stayed green. Only the statement-sibling join
+changed (`JStmtSibling`); bracket field/element `;` (`JSibling`) and
+district-internal `;` (`JDistrictSibling` — district lines are
+commands, no inner `let` possible, so the bug can't occur) stay
+literal `;`. That scope split is why the ~20 assembler-text pins
+moved (statement siblings) while the record/list/district ones did
+NOT — the test helper `asmSib` rewrites a display `;` to the
+sentinel for exactly the statement-sibling pins.
+
+USER-`;` IS BYTE-IDENTICAL (the whole reason B beat A): `git status
+; echo hi` on one line still parses as ONE command with a `;` argv
+word and still warns "';' does not chain" — the machine sentinel is
+a DISTINCT token, so machine structure and user text never compete.
+UNPRODUCEABLE: assemble rejects any source line carrying the
+sentinel ("illegal control character"); it never surfaces
+(cleanParseDump scrubs it to `;`; fmt builds output from the
+original physical lines and only uses the sentinel-bearing `ll.Text`
+as an internal structural oracle — the equality check and the
+respace shape guard, which parses the sentinel as a separator and
+renders a sentinel-free sexpr). FMT QUESTION ANSWERED: fmt can SEE
+it but never RENDERS it — it dies at the assemble→check boundary.
+
+FUZZER: the `joinSiblings` transform now routes every block-form
+print-sibling THROUGH the sentinel and asserts it stays equivalent
+to the single-line `;` form (the load-bearing check). It stays
+print-only BY NECESSITY, not convenience: for a bare command
+sibling the two forms are DELIBERATELY not equivalent
+(block-sentinel = real ESeq; single-line `;` = swallowed argv), so
+the command-first shape cannot be a metamorphic pair — pinned
+directly in Tests "Sibling sentinel" and e2e instead. GRAMMAR.md
+invariant-1 carries that note.
+
+## Diagnostics arc, Session E — DIAGNOSIS, stopped for a grammar bless (2026-07-27)
+
+The backtrack-to-EOF dump is NOT a typo-diagnostics problem. `head er`
+alone parses clean (both words are command tokens). The failing shape
+needs a second ingredient, minimal:
+
+    let f t =
+        git status          -- any bare EXTERNAL command, FIRST in the body
+        let e = "x"
+        print e
+
+→ `4:12: error [parse]: Note: The error occurred at the end of the
+input stream. Expecting: …`. Bisected and instrumented (dumped the
+assembled logical line): the assembler joins to
+`let f t = git status ; let e = "x" in print e`. topLet
+(Parser.fs:1531) parses the RHS as `cmdLineLetRhs r' <|> (seqExpr …)`,
+command mode FIRST — it engages only when the first body token
+resolves external. `;` is a cmdWordChar (Parser.fs:1028), so command
+mode greedily eats the assembler's sibling `;` AND the inner
+`let e = "x"` as barewords, halting at the bareword `in` (the
+cmdArgWith-true guard, Parser.fs:1096). It succeeds as a command that
+ends mid-statement; the leftover `in print e` fails the `.>> eof`;
+topLet is attempt-wrapped so it rolls fully back; the expression
+fallback re-parses the whole line as nested `let…in` and runs to EOF.
+BOTH plan smells (useless EOF position, raw expecting-list —
+cleanParseDump touches neither `Note:` nor `Expecting:`) are
+downstream of this ONE over-consumption. Diagnostic proof points:
+known-name head (`header …`) → expression mode → parses; command NOT
+first → expression mode → clean `unbound 'git'` at the head; command
+first → the EOF dump. A bare external command as a mid-body sibling
+is effectively an UNSUPPORTED shape — real code puts commands in
+`$()` captures or `!e` districts; the `head er` typo demotes a
+known-name application into a bare command and lands in the hole.
+
+MERGE ANSWER (the bless note's required question): E does NOT merge
+with the parked bare-pipe narrow question ("where should a bare-`|`
+fatal point when the LHS spans lines"). That is a `|`-fatal POSITION
+law (the fatal is correct, only its multi-line position is open); E
+is a command-mode `;`-BOUNDARY mis-parse (no `|` involved, and the
+program is one a user reasonably expects to parse). They share only
+the furthest-reached arbitration family and the symptom shape; the
+fixes are disjoint. The bare-pipe park stays open on its own terms.
+
+STOP per the plan — the honest fix wants a commit-point / grammar
+boundary decision, three options:
+- A: command args stop at `;` (cleanest; but moves the user-typed
+  `;`-does-not-chain warning pins — `git status ; echo hi` would
+  parse as two sequenced commands instead of one command + `;` arg).
+- B: the assembler injects a DISTINCT sibling separator (sentinel,
+  not `;`) so command mode never crosses it while user `;` keeps its
+  teaching — preserves the warning; touches assembler + parser +
+  translate. RECOMMENDED.
+- C: diagnostics-only — detect "command RHS stalled at an `in` it
+  can't eat" and report at the command head. Papers over the shape
+  without making `cmd ; let…in` PARSE; not recommended.
+
 ## Diagnostics arc, Session D — row provenance crosses the statement boundary (2026-07-27)
 
 The bless note's diagnosis question, answered: spans EXIST
@@ -1805,6 +1909,14 @@ and KEPT barePipeHint's failFatally — "the policy is decided" no
 longer parks this. The park's remaining NARROW question: where
 should a bare-`|` fatal point when the LHS spans lines? The
 strict-span property stays the acceptance.]
+[AMENDED 2026-07-27, the sibling-sentinel session [D:sibling-sentinel]
+checked the merge and DECLINED it: Session E's command-mode-boundary
+defect is NOT this park. That was "where does a bare `|` fatal point"
+(a POSITION law for a correct fatal); this park stays exactly that.
+The sentinel fixed a command-mode `;`-BOUNDARY MIS-PARSE — different
+law, disjoint fix, common ancestor only in the furthest-reached
+arbitration family. Do not re-propose the merge; the park's own
+narrow question is untouched and still open.]
 
 **Assume-resolver residue.** The question closes clean: one
 definition [D:assume-resolver] (Script.fs:1439), four consumers

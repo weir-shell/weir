@@ -93,6 +93,19 @@ let private isIdentCont c = isLetter c || isDigit c || c = '_'
 let private ws: Parser<unit, unit> = spaces
 let private str_ws s = pstring s >>. ws
 
+// The sibling sentinel [D:sibling-sentinel]: the assembler joins body
+// statement-siblings with THIS instead of ';' so command mode — which
+// swallows a user-typed ';' as a bareword arg (the prior-bleed
+// teaching, kept) — STOPS at the machine boundary. Same width as
+// " ; " (3 chars) so every span mapping through the segment table is
+// byte-identical. Unproduceable: assemble rejects any source line
+// carrying it, so it reaches the grammar ONLY from the assembler (the
+// '|'-key precedent — a token user text cannot form).
+[<Literal>]
+let sibSep = '\u001F'
+
+let sibSepStr = System.String(sibSep, 1)
+
 let private pos (p: Position) : Pos =
     { Line = int p.Line
       Col = int p.Column }
@@ -998,29 +1011,36 @@ commaExprRef.Value <-
             { Kind = ETuple all
               Span = Span.union first.Span (List.last all).Span }
 
+// right-nested ESeq over a non-empty element list — shared by seqExpr
+// and topLet's command-first RHS so both fold identically
+let private foldSeqExpr (all: Expr list) : Expr =
+    List.foldBack
+        (fun e acc ->
+            match acc with
+            | None -> Some e
+            | Some tail ->
+                Some
+                    { Kind = ESeq(e, tail)
+                      Span = Span.union e.Span tail.Span })
+        all
+        None
+    |> Option.defaultWith (fun () -> failwith "foldSeqExpr: empty")
+
+// the sequencing separator [D:seq-commit][D:sibling-sentinel]: a
+// user-typed ';' OR the machine sibling sentinel. Both COMMIT (no
+// attempt) — a failing element must not un-consume the separator.
+let private seqSep = str_ws ";" <|> str_ws sibSepStr
+
 seqExprRef.Value <-
-    // a consumed ';' COMMITS to its element [D:seq-commit]: a failing
-    // element must not un-consume the ';' — the backtrack would re-parse
-    // the tail OUTSIDE its let-in scope, where check's assume-resolver
-    // claims the then-unknown binding as a phantom command
-    commaExpr .>>. many (str_ws ";" >>. commaExpr)
+    // a consumed separator COMMITS to its element [D:seq-commit]: a
+    // failing element must not un-consume it — the backtrack would
+    // re-parse the tail OUTSIDE its let-in scope, where check's
+    // assume-resolver claims the then-unknown binding as a phantom command
+    commaExpr .>>. many (seqSep >>. commaExpr)
     |>> fun (first, rest) ->
         match rest with
         | [] -> first
-        | _ ->
-            let all = first :: rest
-
-            List.foldBack
-                (fun e acc ->
-                    match acc with
-                    | None -> Some e
-                    | Some tail ->
-                        Some
-                            { Kind = ESeq(e, tail)
-                              Span = Span.union e.Span tail.Span })
-                all
-                None
-            |> Option.get
+        | _ -> foldSeqExpr (first :: rest)
 
 let private segExpr = segOpp.ExpressionParser
 
@@ -1033,6 +1053,9 @@ let private cmdWordChar c =
     && c <> '"'
     && c <> '\''
     && c <> '$'
+    // command mode STOPS at the machine sibling boundary
+    // [D:sibling-sentinel]; a user ';' is still a bareword (prior-bleed)
+    && c <> sibSep
 
 let private cmdWord = many1Satisfy cmdWordChar
 
@@ -1551,7 +1574,18 @@ let private topLet (r: Resolver) =
                     { r with
                         IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n }
 
-                let rhsP = cmdLineLetRhs r' <|> ((seqExpr >>= pipeOrHint))
+                // command-first body [D:sibling-sentinel]: the command
+                // is ONE statement; the sentinel-separated tail (inner
+                // block-lets and expressions) sequences AFTER it, so
+                // `cmd ⟨sib⟩ let x = … in body` parses as a real ESeq
+                // instead of command mode over-running the boundary. A
+                // user ';' after the command is still a bareword arg
+                // (eaten by cmdArg), so only the machine sentinel splits.
+                let rhsCmd =
+                    cmdLineLetRhs r' .>>. many (str_ws sibSepStr >>. commaExpr)
+                    |>> fun (h, rest) -> foldSeqExpr (h :: rest)
+
+                let rhsP = rhsCmd <|> ((seqExpr >>= pipeOrHint))
 
                 // the RHS spine carries the flag + the param-extended
                 // resolver, so interior block lets parse commands with

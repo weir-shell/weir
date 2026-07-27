@@ -106,6 +106,31 @@ anywhere else.
 
 ## Session E — the backtrack-to-EOF dump [#10, diagnosis-first]
 
+STATUS: DIAGNOSED then FIXED by the blessed successor
+PLAN-sibling-sentinel (Option B), EXECUTED 2026-07-27 — see
+[D:sibling-sentinel]. Root cause found
+and it is NOT the typo: `head er` alone parses (both become command
+tokens). The trigger is a bare EXTERNAL command as the FIRST sibling
+statement of a multi-line body followed by an inner `let…in` —
+minimal repro `let f t =` / `git status` / `let e = "x"` / `print e`.
+The assembler joins to `let f t = git status ; let e = "x" in print
+e`; topLet (Parser.fs:1531) tries command mode first
+(`cmdLineLetRhs <|> seqExpr`), `;` is a cmdWordChar (Parser.fs:1028)
+so command mode swallows the sibling `;` and the inner `let e = "x"`
+as barewords, stops at bareword `in`, succeeds mid-statement; the
+leftover `in print e` fails `.>> eof`, the attempt rolls back, and
+the expression fallback runs to EOF — hence the useless position and
+the raw expecting-list (cleanParseDump touches neither Note: nor
+Expecting:). BOTH plan smells trace to this one over-consumption.
+MERGE ANSWER (bless note): E does NOT merge with the parked bare-pipe
+narrow question — that is a `|`-fatal POSITION law; E is a
+command-mode `;`-boundary MIS-PARSE. They share only the
+furthest-reached family and the symptom shape; disjoint fixes; the
+park stays open. STOP per the plan: the fix wants a commit-point /
+grammar boundary decision (three options, in NOTES) — grammar
+surgery, not diagnostics polish. Awaiting the direction bless before
+any code.
+
 A space at 78:8 (`head er` inside the ten-line `azureLogin`
 statement) reports at 86:73 as "Note: The error occurred at the end
 of the input stream" plus a raw FParsec expecting-list. Two smells,

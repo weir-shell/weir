@@ -79,7 +79,19 @@ fails.
    Stroustrup bracket groups, pipeline stages); district marker form
    ↔ explicit `!(...)` lines; bare command RHS ↔ `$(...)`; block
    siblings ↔ single-line `;` (print-only bodies — the probed
-   boundary: inner lets spell `in`, commands take `;` as argv);
+   boundary: inner lets spell `in`, commands take `;` as argv).
+   [D:sibling-sentinel] block statement-siblings now assemble with the
+   MACHINE SENTINEL (U+001F), not `;`, so this transform routes every
+   block-form print-sibling THROUGH the sentinel and asserts it stays
+   equivalent to the single-line `;` form — the load-bearing span/
+   behavior check the sentinel must preserve (strict-spans deep run,
+   4000+ cases, green; same 3-char join width keeps `translate`
+   byte-identical). The restriction to print bodies is now BY
+   NECESSITY, not convenience: for a bare command sibling the two
+   forms are DELIBERATELY NOT equivalent (block-sentinel sequences a
+   real ESeq; single-line `;` is a swallowed argv word), so the
+   command-first shape cannot be a metamorphic pair — it is pinned
+   directly instead (Tests "Sibling sentinel");
    Stroustrup ↔ inline bracket styles; multiline lambda ↔ its
    single-line `;`/`in`-joined form; and ALL of it COMPOSED in one
    property (random subsets of every flip + re-indent + comments +

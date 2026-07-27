@@ -532,7 +532,10 @@ type private Pend =
 // the insertion.
 type private Join =
     | JIn // let-close: text + " in " + piece
-    | JSibling // sequencing (and record field separators): " ; "
+    | JSibling // bracket field/element separators: " ; "
+    | JStmtSibling // statement-sibling sequencing [D:sibling-sentinel]:
+    // " <sentinel> " — same width as " ; " so span arithmetic is
+    // identical, but command mode stops at it (a user ';' does not)
     | JSpace // plain continuation: " "
     | JDistrictOpen of strip: int * opener: string // strip the armed marker, wrap
     | JDistrictSibling of opener: string // text + " ; " + opener + piece + ")"
@@ -546,6 +549,10 @@ let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) 
             ll.Text + sep + piece, ll.Text.Length + sep.Length
         | JSibling ->
             let sep = " ; "
+            ll.Text + sep + piece, ll.Text.Length + sep.Length
+        | JStmtSibling ->
+            // same 3-char width as " ; " — translate arithmetic unchanged
+            let sep = " " + Parser.sibSepStr + " "
             ll.Text + sep + piece, ll.Text.Length + sep.Length
         | JSpace ->
             let sep = " "
@@ -620,6 +627,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
             (fun state (lineNo, raw) ->
                 match state with
                 | Error e -> Error e
+                | Ok _ when raw.Contains Parser.sibSep ->
+                    // unproduceability [D:sibling-sentinel]: the machine
+                    // sibling token can never come from source — reject it
+                    // at the one place text becomes logical lines
+                    Error $"line {lineNo}: illegal control character in source"
                 | Ok(current, acc, blankSinceHead) ->
                     let inOpenBrace =
                         match current with
@@ -988,8 +1000,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         | (k, _) :: rest when indent = k && k > lambdaFloor ->
                                                             rest, JIn
                                                         // same-indent sibling = block sequencing
+                                                        // [D:sibling-sentinel]: the machine boundary,
+                                                        // NOT a user ';' — command mode stops here
                                                         | _ when indent = siblingLevel && indent > lambdaFloor ->
-                                                            p.Lets, JSibling
+                                                            p.Lets, JStmtSibling
                                                         | _ -> p.Lets, JSpace
 
                                                     let lets =
@@ -1031,7 +1045,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     // the first line after a dangling head; the level
                                                     // rides into the lambda entry as its pop restore
                                                     let stmtLevel =
-                                                        if join = JSibling || join = JIn || p.PrevDangles then
+                                                        if join = JStmtSibling || join = JIn || p.PrevDangles then
                                                             indent
                                                         else
                                                             p.StmtLevel
@@ -1461,6 +1475,9 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
 // and translate embedded positions to physical line/col
 // [D:clean-parse-dump].
 let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
+    // no-leak [D:sibling-sentinel]: FParsec may echo the assembled line;
+    // the machine sentinel must never surface — render it as ';'
+    let msg = msg.Replace(Parser.sibSepStr, ";")
     let lines = msg.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
     let isCaret (l: string) =
