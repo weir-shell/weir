@@ -3437,15 +3437,12 @@ let semanticTokenTests =
               let onInner = Weir.Lsp.hoverType il 2 9 |> Option.defaultValue "" // inner `g`
               Expect.stringContains onInner "g (a: string) (b: string) : bool" "annotated inner let"
 
-              // FALLBACK: a builtin WITHOUT named params -> the arrow type
-              // (Str.trim has a doc, so it's the first line before the doc)
-              let fb = [ "let r = Str.trim \"  x  \"" ]
-              let onFallback = Weir.Lsp.hoverType fb 1 13 |> Option.defaultValue "" // Str.trim (no Params)
+              // FALLBACK: a USAGE of a user function (names are reached at
+              // DECLARATIONS, not use sites) -> the arrow type
+              let fb = [ "let myFn a b = Str.contains a b"; "let z = myFn \"x\" \"y\"" ]
+              let onFallback = Weir.Lsp.hoverType fb 2 10 |> Option.defaultValue "" // `myFn` at the USE
 
-              Expect.equal
-                  (onFallback.Split('\n').[0])
-                  "string -> string"
-                  "unnamed -> arrow fallback, no annotated parens"
+              Expect.equal onFallback "string -> string -> bool" "a usage -> arrow fallback, no annotated parens"
           }
           test "annotated signature is presentation-only: formatTy (errors) stays the arrow [D:annotated-signature]" {
               // the arrow formatter is untouched — errors quote what the
@@ -3475,6 +3472,35 @@ let semanticTokenTests =
                   terr.Message
                   "'double' takes at most 1 argument(s), but got 2"
                   "the error text is unchanged"
+          }
+          test "builtin docs: every named member's Params count fits its arrow depth [D:annotated-signature]" {
+              // a name count exceeding the arrow depth renders a broken
+              // signature — verify names pair with real parameters
+              let rec arrowDepth t =
+                  match t with
+                  | TFun(_, cod) -> 1 + arrowDepth cod
+                  | _ -> 0
+
+              let typeOf (name: string) =
+                  match Map.tryFind name env.Values with
+                  | Some sch -> Some sch.Ty
+                  | None ->
+                      match name.Split '.' with
+                      | [| m; mem |] ->
+                          Map.tryFind m env.Modules
+                          |> Option.bind (Map.tryFind mem)
+                          |> Option.map (fun s -> s.Ty)
+                      | _ -> None
+
+              for KeyValue(name, d) in Weir.Builtins.builtinDocs do
+                  if not (List.isEmpty d.Params) then
+                      match typeOf name with
+                      | Some ty ->
+                          Expect.isLessThanOrEqual
+                              d.Params.Length
+                              (arrowDepth ty)
+                              $"'{name}': {d.Params.Length} names but arrow depth {arrowDepth ty}"
+                      | None -> () // boundary/reifier forms are not plain values — skip
           }
           test "builtin docs: Env.load's doc shows on `load`, NOT on the module Env or the type arg [D:builtin-docs]" {
               let lines = [ "type Cfg = { name: string }"; "let c = Env.load Cfg" ]
