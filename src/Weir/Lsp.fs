@@ -530,6 +530,25 @@ let rec private varUseType (name: string) (te: Check.TypedExpr) : Ty option =
     | Check.TEVar n when n = name -> Some te.Ty
     | _ -> Check.childExprs te |> List.tryPick (varUseType name)
 
+/// the parameter names of a curried value — the lambda chain a `let f a b`
+/// desugars to; the annotated signature reads them off the binder spans
+/// [D:annotated-signature]
+let rec private lambdaParamNames (te: Check.TypedExpr) : string list =
+    match te.Kind with
+    | Check.TELambda(p, _, body) -> p :: lambdaParamNames body
+    | _ -> []
+
+/// the annotated signature of the inner-let binding `name` at the column —
+/// the sibling of innerLetType that renders names, not just the arrow type
+let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : string option =
+    match Check.childExprs te |> List.tryPick (innerLetSig name jcol) with
+    | Some s -> Some s
+    | None ->
+        match te.Kind with
+        | Check.TELet(n, _, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
+            Some(formatSignature n (lambdaParamNames tvalue) tvalue.Ty)
+        | _ -> None
+
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (physLine, physCol, nameLength), or None. Pure — the handler
 /// and the unit pins share this. Scope: top-level let/letpat binders;
@@ -695,9 +714,11 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
 
     match toLogical stmts line col with
     | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
-        let binderTy =
+        // an inner-let binder hovers as its ANNOTATED signature (names +
+        // types), degrading to the arrow when it has no named params
+        let binderSig =
             letBinderAt ll.Text jcol
-            |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
+            |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetSig name jcol))
 
         let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
         let node = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
@@ -750,10 +771,28 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
             | Some({ Kind = Check.TEVar vn } as n) when Some vn = word -> Some(formatTy n.Ty)
             | _ -> None
 
+        // a builtin hovers as its annotated signature (names from the doc,
+        // types from the node) [D:annotated-signature]. A zero-param value
+        // (`Self.pid : int`) renders name-and-type with no parens; a FUNCTION
+        // with no named params degrades to the arrow (fallback below).
+        let builtinSig =
+            node
+            |> Option.bind (fun n ->
+                match n.Kind with
+                | Check.TEVar name when Map.containsKey name Builtins.builtinDocs ->
+                    let d = Builtins.builtinDocs[name]
+
+                    match n.Ty with
+                    | TFun _ when List.isEmpty d.Params -> None // unnamed function -> arrow
+                    | _ -> Some(formatSignature name d.Params n.Ty)
+                | _ -> None)
+
         let ty =
             fieldInLiteral
             |> Option.orElse constructorSig
-            |> Option.orElseWith (fun () -> binderTy |> Option.orElse paramTy |> Option.map formatTy)
+            |> Option.orElse binderSig
+            |> Option.orElse builtinSig
+            |> Option.orElseWith (fun () -> paramTy |> Option.map formatTy)
             |> Option.orElse exactUse
             |> Option.orElseWith (fun () ->
                 word
@@ -762,9 +801,10 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
             |> Option.orElseWith (fun () -> node |> Option.map (fun n -> formatTy n.Ty))
             |> Option.orElseWith (fun () ->
                 match chk.Kind with
-                // the top-level scheme only ON the binder name — never as a
-                // fallback for an unresolved position in the statement
-                | Script.KLet(name, sch, _) when word = Some name -> Some(formatTy sch.Ty)
+                // a top-level let hovers as its annotated signature, ON the
+                // binder name only — never a fallback for an unresolved spot
+                | Script.KLet(name, sch, te) when word = Some name ->
+                    Some(formatSignature name (lambdaParamNames te) sch.Ty)
                 | Script.KType decl -> word |> Option.bind (declHover decl)
                 | _ -> None)
 
@@ -1240,6 +1280,30 @@ let run () : int =
                             for label in items |> List.distinct |> List.truncate 200 do
                                 w.WriteStartObject()
                                 w.WriteString("label", label)
+
+                                // the annotated signature as `detail` — the
+                                // other surface names are read on
+                                // [D:annotated-signature]
+                                let sigDetail =
+                                    Map.tryFind label Builtins.builtinDocs
+                                    |> Option.filter (fun d -> not (List.isEmpty d.Params))
+                                    |> Option.bind (fun d ->
+                                        let tyOf =
+                                            match Map.tryFind label env.Values with
+                                            | Some sch -> Some sch.Ty
+                                            | None ->
+                                                match label.Split '.' with
+                                                | [| m; mem |] ->
+                                                    Map.tryFind m env.Modules
+                                                    |> Option.bind (Map.tryFind mem)
+                                                    |> Option.map (fun s -> s.Ty)
+                                                | _ -> None
+
+                                        tyOf |> Option.map (fun ty -> formatSignature label d.Params ty))
+
+                                match sigDetail with
+                                | Some s -> w.WriteString("detail", s)
+                                | None -> ()
 
                                 // a user `///` doc wins; else the builtin's
                                 // doc (Seq.map, print, …) [D:builtin-docs]

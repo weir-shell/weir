@@ -1,5 +1,40 @@
 # Spike Notes
 
+## Annotated signature rendering — hover shows parameter names (2026-07-28)
+
+A builtin hovered as `string -> string -> bool` — which argument is
+which was invisible. Now it hovers as the annotated DECLARATION form:
+`Str.isMatch (pattern: string) (subject: string) : bool`. The form was
+chosen over two alternatives because it is the only one that lies about
+nothing: a `pattern: string -> …` pseudo-type is not weir syntax (paste
+it into source, get a parse error), and a man-page usage line is weaker
+and not copy-pasteable. Valid F# declaration syntax, and the shape a
+user writes when wrapping a member — for an F# sibling, that coherence
+is the whole argument.
+
+One rule, degrading gracefully: annotated when parameter names are
+KNOWN, arrow otherwise. Names come from two places — builtins carry a
+`BuiltinDoc.Params` field (SEPARATE, never parsed from the prose, which
+is D1's F#-literal trap again), and user declarations read them off the
+binder-span lambda chain. Everything else — lambdas, expressions,
+partial applications, unnamed builtins — falls back to the arrow, and
+every fallback is pinned, not silent. A zero-param value is
+`Self.pid : int`, no empty parens.
+
+The load-bearing distinction is presentation vs computation: the arrow
+`formatTy` is untouched, so type ERRORS quote exactly what they did
+before (pinned byte-identical). `formatSignature` is a second view of
+the same type, for hover and completion only — not a second type
+system.
+
+This also amends `///` half 2's template before its writing pass runs:
+name every parameter (`subject` beats `stringToMatch` — the naming
+forces clarity, and it is the part of the docs read most), keep the
+signature declaration-shaped even for data-last members
+(`Seq.choose (f: 'a -> Option<'b>) (xs: seq<'a>)`), and let the EXAMPLE
+carry the piped idiom (`xs |> Seq.choose f`). Signature says what it is;
+example says how it is written.
+
 ## Hover completeness — reference sites, patterns, silence (2026-07-28)
 
 Five dogfooding reports against the shipped hover, all one diagnosis:
