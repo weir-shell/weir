@@ -128,6 +128,10 @@
           "named": true
         },
         {
+          "type": "raw_verbatim",
+          "named": true
+        },
+        {
           "type": "sigil",
           "named": true
         },
@@ -377,6 +381,10 @@
   },
   {
     "type": "raw_string",
+    "named": true
+  },
+  {
+    "type": "raw_verbatim",
     "named": true
   },
   {

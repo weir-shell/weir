@@ -9,6 +9,7 @@
 ((comment) @comment.documentation (#match? @comment.documentation "^///"))
 
 (string) @string
+(raw_verbatim) @string
 (raw_string) @string
 (interp_string) @string
 (interp_text) @string

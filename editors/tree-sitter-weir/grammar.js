@@ -29,6 +29,7 @@ module.exports = grammar({
         $.keyword,
         $.boolean,
         $.interp_string,
+        $.raw_verbatim,
         $.string,
         $.type_param,
         $.raw_string,
@@ -83,6 +84,13 @@ module.exports = grammar({
 
     string: _ =>
       token(seq('"', repeat(choice(/[^"\\]/, /\\./)), '"')),
+
+    // @"..." verbatim [D:raw-strings]: a backslash is an ORDINARY char (NOT
+    // an escape — the regular-string `\\.` rule does not belong here), the
+    // ONLY escape is "" for a literal quote, and the string closes on the
+    // first lone ". Without this, @"\" mis-scanned as an escaped quote and
+    // swallowed the rest of the file (Zed/tree-sitter only; TextMate had it).
+    raw_verbatim: _ => token(seq('@"', repeat(choice(/[^"]/, '""')), '"')),
 
     raw_string: _ => token(seq("'", /[^'\n]*/, "'")),
 
