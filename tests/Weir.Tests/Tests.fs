@@ -1030,6 +1030,19 @@ let completionTests =
 
               Expect.equal (Weir.Complete.suggest envWithQ "q." 0) [ "q.X"; "q.Y" ] ""
           }
+          test "module completion offers bespoke arms: Args.load / Env.load (user receipt)" {
+              // load is a checker ARM, not a member-map entry — completion
+              // must surface it beside the ordinary members, from the one
+              // source the checker's error path also reads
+              Expect.equal (suggest "Args." 0) [ "Args.flag"; "Args.load"; "Args.value" ] "Args.load beside flag/value"
+
+              Expect.equal
+                  (suggest "Env." 0)
+                  [ "Env.fromFile"; "Env.get"; "Env.load"; "Env.ofPairs"; "Env.pair"; "Env.vars" ]
+                  "Env.load in the sorted members"
+
+              Expect.equal (suggest "Args.lo" 0) [ "Args.load" ] "prefix narrows to the arm"
+          }
           test "later pipeline stages track the element type" {
               let text = "[\"A  x.txt\"] |> from porcelain |> where (fun c -> c."
 
@@ -3244,6 +3257,31 @@ let semanticTokenTests =
                     "print \"x\"" ]
 
               Expect.equal (Weir.Lsp.definitionFor lines 2 33) (Some(1, 6, 4)) "Oidc use -> the type decl"
+          }
+          test "definitionFor: Env.load / Args.load target type jumps to its declaration (user receipt)" {
+              // the bespoke arm absorbs the type-name argument (no TEVar),
+              // so it resolves off the load node's own def
+              let envLines = [ "type TokenEnv = { name: string }"; "let tok = Env.load TokenEnv" ]
+
+              Expect.equal (Weir.Lsp.definitionFor envLines 2 22) (Some(1, 6, 8)) "Env.load TokenEnv -> the type decl"
+
+              let argsLines = [ "type Cli = { verbose: bool }"; "let c = Args.load Cli" ]
+              Expect.equal (Weir.Lsp.definitionFor argsLines 2 20) (Some(1, 6, 3)) "Args.load Cli -> the type decl"
+          }
+          test "hoverType: a lambda param shows its own type, not the enclosing arrow (user receipt)" {
+              // t is used via field access -> an OPEN ROW; the bug showed
+              // the param carrying the function's `... -> ...` arrow because
+              // nodeAt fell back to the lambda. The param must show only its
+              // own domain type.
+              let lines = [ "let snapshot t = t.name" ]
+              let onName = Weir.Lsp.hoverType lines 1 6 // on `snapshot`
+              let onParam = Weir.Lsp.hoverType lines 1 14 // on the param `t`
+              Expect.isTrue (onName |> Option.exists (fun s -> s.Contains "->")) "the function shows an arrow type"
+              Expect.isSome onParam "the param hovers to something"
+
+              Expect.isFalse
+                  (onParam |> Option.exists (fun s -> s.Contains "->"))
+                  "the param shows its own type, no arrow"
           }
           test "an errored let warns its command heads and suppresses the unbound cascade [PLAN-diagnostics-arc B5+B6]" {
               // B6: the failed deploy binds a HOLE — one real error,

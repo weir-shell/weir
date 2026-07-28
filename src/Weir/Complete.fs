@@ -97,9 +97,14 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
         | Some members ->
             let prefix = word.Substring(head.Length + 1)
 
-            members
-            |> Map.keys
+            // bespoke ARMS (`Args.load`/`Env.load`) are not in the member
+            // map — offer them too, from the one source the checker uses
+            let special =
+                Weir.Check.specialModuleMembers |> Map.tryFind head |> Option.defaultValue []
+
+            Seq.append (Map.keys members) special
             |> Seq.filter (fun m -> m.StartsWith prefix)
+            |> Seq.distinct
             |> Seq.sort
             |> Seq.map (fun m -> $"{head}.{m}")
             |> List.ofSeq

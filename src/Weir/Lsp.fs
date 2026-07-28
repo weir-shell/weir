@@ -395,6 +395,18 @@ let rec private innerLetType (name: string) (jcol: int) (te: Check.TypedExpr) : 
             Some tvalue.Ty
         | _ -> None
 
+// a lambda PARAM binder at the column shows its OWN type (the domain of
+// the enclosing lambda), not the arrow type nodeAt would surface — the
+// param binder is not an expression node, so nodeAt falls back to the
+// lambda itself and shows `dom -> cod` for the parameter [D:lsp-v1]
+let rec private paramTypeAt (jcol: int) (te: Check.TypedExpr) : Ty option =
+    match Check.childExprs te |> List.tryPick (paramTypeAt jcol) with
+    | Some t -> Some t
+    | None ->
+        match te.Kind, te.Ty with
+        | Check.TELambda(_, pspan, _), TFun(dom, _) when pspan.Start.Col <= jcol && jcol < pspan.End.Col -> Some dom
+        | _ -> None
+
 let private binderCol (name: string) (text: string) : int option =
     let eq = text.IndexOf '='
     wordFind name text 0 (if eq >= 0 then eq else text.Length)
@@ -447,6 +459,33 @@ let rec private localDef
                  | Some r -> Some r
                  | None -> localDef s2 name jcol body))
     | _ -> Check.childExprs te |> List.tryPick (localDef scope name jcol)
+
+/// hover type text at (1-based physical line, col), or None. Pure — the
+/// handler and the unit pins share this. Priority: an inner-let BINDER
+/// shows its bound value's type; a lambda PARAM binder shows its own type
+/// (the domain, not the arrow nodeAt would find); else the typed node at
+/// the column; else the statement's top-level scheme [D:lsp-v1].
+let hoverType (lines: string list) (line: int) (col: int) : string option =
+    let _, stmts, _, _ = Script.analyzeLines "hover" lines
+
+    toLogical stmts line col
+    |> Option.bind (fun (ll, chk, jcol) ->
+        let binderTy =
+            letBinderAt ll.Text jcol
+            |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
+
+        let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
+        let fromExpr = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
+
+        match binderTy |> Option.orElse paramTy with
+        | Some t -> Some(formatTy t)
+        | None ->
+            match fromExpr with
+            | Some node -> Some(formatTy node.Ty)
+            | None ->
+                match chk.Kind with
+                | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
+                | _ -> None)
 
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (physLine, physCol, nameLength), or None. Pure — the handler
@@ -584,6 +623,21 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
                 | Check.TEFrom(_, rowDef) ->
                     wordAt useLl.Text jcol
                     |> Option.bind (fun w -> if w = rowDef.Name then typeSite rowDef.Name None else None)
+                // `Env.load T` / `Args.load T`: the target TYPE name jumps to
+                // its declaration — the bespoke arm absorbs the argument, so
+                // it is no TEVar; resolve it off the load node's own def
+                | Check.TEEnvLoad(def, _) ->
+                    wordAt useLl.Text jcol
+                    |> Option.bind (fun w -> if w = def.Name then typeSite def.Name None else None)
+                | Check.TEArgsLoad target ->
+                    let tyName =
+                        match target with
+                        | Check.ArgsRecord def -> def.Name
+                        | Check.ArgsUnion(udef, _) -> udef.Name
+                        | Check.ArgsShared(outer, _, _, _) -> outer.Name
+
+                    wordAt useLl.Text jcol
+                    |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
                 | _ -> None))
 
 // ---- the server ---------------------------------------------------
@@ -790,40 +844,18 @@ let run () : int =
                 | "textDocument/hover" ->
                     let writeResult (w: Text.Json.Utf8JsonWriter) =
                         match docOf (), posOf () with
-                        | Some(uri, text), Some(line, col) ->
-                            let _, stmts, _, _ = analyze uri text
+                        | Some(_, text), Some(line, col) ->
+                            let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                            match toLogical stmts line col with
-                            | Some(ll, chk, jcol) ->
-                                // an inner-let BINDER hovers as its bound
-                                // value's type [PLAN-diagnostics-arc A2]
-                                let binderTy =
-                                    letBinderAt ll.Text jcol
-                                    |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
-
-                                let fromExpr = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
-
-                                let tyStr =
-                                    match binderTy with
-                                    | Some t -> Some(formatTy t)
-                                    | None ->
-                                        match fromExpr with
-                                        | Some node -> Some(formatTy node.Ty)
-                                        | None ->
-                                            match chk.Kind with
-                                            | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
-                                            | _ -> None
-
-                                match tyStr with
-                                | Some t ->
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "contents"
-                                    w.WriteStartObject()
-                                    w.WriteString("kind", "plaintext")
-                                    w.WriteString("value", t)
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-                                | None -> w.WriteNullValue()
+                            match hoverType lines line col with
+                            | Some t ->
+                                w.WriteStartObject()
+                                w.WritePropertyName "contents"
+                                w.WriteStartObject()
+                                w.WriteString("kind", "plaintext")
+                                w.WriteString("value", t)
+                                w.WriteEndObject()
+                                w.WriteEndObject()
                             | None -> w.WriteNullValue()
                         | _ -> w.WriteNullValue()
 

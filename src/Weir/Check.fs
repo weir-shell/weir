@@ -53,6 +53,20 @@ let private retiredBare (name: string) : string option =
     | "defaultTo" -> Some "renamed: use 'Option.defaultValue' (or 'Option.defaultWith' for a thunk)"
     | _ -> None
 
+/// Members that live as bespoke checker ARMS, not as entries in a
+/// module's member map: `Args.load`/`Env.load` resolve a record/union
+/// TYPE name, so their scheme is not a plain member. Completion must
+/// still offer them, and the "no member" error must read them as
+/// known-but-misused, not a typo — one source so the two stay in step.
+let specialModuleMembers: Map<string, string list> =
+    Map [ "Args", [ "load" ]; "Env", [ "load" ] ]
+
+let private isSpecialMember (m: string) (field: string) : bool =
+    specialModuleMembers
+    |> Map.tryFind m
+    |> Option.defaultValue []
+    |> List.contains field
+
 type TypedExpr = { Kind: TypedKind; Ty: Ty; Span: Span }
 
 and TypedKind =
@@ -1632,7 +1646,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | None ->
                 match retiredMember m field with
                 | Some teach -> return! err fieldSpan $"'{m}.{field}' is retired: {teach}"
-                | None when field = "load" && (m = "Args" || m = "Env") ->
+                | None when isSpecialMember m field ->
                     // load is a bespoke ARM, not a member — reaching here
                     // means the shape missed it: a space inside the type
                     // name (two arguments), extra arguments, or none
