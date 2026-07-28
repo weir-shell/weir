@@ -2151,7 +2151,26 @@ and private checkSpine
 
                 match thead.Kind with
                 | TEVar name when available > 0 ->
-                    return! err head.Span $"'{name}' takes at most {available} argument(s), but got {args.Length}"
+                    // point AT the first extra argument, not the head — and
+                    // when it sits on a different PHYSICAL line, the extra
+                    // args are an indented continuation the writer likely
+                    // meant as a separate statement [D:over-apply-continuation]
+                    let extra = List.tryItem available args
+
+                    let onContinuation =
+                        match toPhys.Value, extra with
+                        | Some tr, Some ex -> fst (tr head.Span.Start.Col) <> fst (tr ex.Span.Start.Col)
+                        | _ -> false
+
+                    let hint =
+                        if onContinuation then
+                            "; these are an indented continuation of the line above — a separate statement must start at that line's indent, not deeper"
+                        else
+                            ""
+
+                    let span = extra |> Option.map (fun e -> e.Span) |> Option.defaultValue head.Span
+
+                    return! err span $"'{name}' takes at most {available} argument(s), but got {args.Length}{hint}"
                 | _ ->
                     return!
                         err

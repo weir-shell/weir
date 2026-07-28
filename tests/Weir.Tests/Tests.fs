@@ -3498,6 +3498,24 @@ let semanticTokenTests =
               let onPayload = Weir.Lsp.hoverType lines 3 31 |> Option.defaultValue "" // `s`, the payload binder
               Expect.equal onPayload "string" "the payload binder's OWN type, not the arm's int"
           }
+          test
+              "over-application on an indented continuation points at the extra args + hints the indent [D:over-apply-continuation]" {
+              // the misleading case: `deleteBranch branch` indented DEEPER
+              // than `makeRef …` is slurped as extra arguments — the error
+              // must land on the continuation, not the head, and say so
+              let lines =
+                  [ "let makeRef a b = a"
+                    "let deleteBranch x = x"
+                    "let branch = \"b\""
+                    "let f ="
+                    "    makeRef \"x\" branch"
+                    "        deleteBranch branch" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "c.weir" lines
+              let d = diags |> List.find (fun x -> x.Message.Contains "takes at most")
+              Expect.equal d.Line 6 "points at the CONTINUATION line (line 6), not the head (line 5)"
+              Expect.stringContains d.Message "indented continuation" "the hint names the real cause (the indent)"
+          }
           test "an errored let warns its command heads and suppresses the unbound cascade [PLAN-diagnostics-arc B5+B6]" {
               // B6: the failed deploy binds a HOLE — one real error,
               // zero "unbound 'deploy'. Did you mean 'Deploy'?" echoes,
