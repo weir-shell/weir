@@ -91,9 +91,10 @@ rules:
     - symbol.operator: "[+\\-*/<>=;,]"
     - symbol.operator: "\\|"
 
-    # ---- module members & field access (ident after '.') ----
+    # ---- module members & field access (ident after '.'; any case —
+    # PascalCase fields like `ctx.Repo` are members, not types) ----
     # rule: member
-    - identifier.var: "\\.[a-z_][A-Za-z0-9_]*"
+    - identifier.var: "\\.[A-Za-z_][A-Za-z0-9_]*"
 
     # ---- field-access shorthand ----
     # rule: field-sugar

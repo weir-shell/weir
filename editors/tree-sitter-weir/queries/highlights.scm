@@ -73,3 +73,9 @@
 ; module members & field access: the identifier right after '.' [issue 3]
 ((operator) @_dot . (identifier) @property
  (#eq? @_dot "."))
+
+; a PascalCase field access (`ctx.Repo`) tokenizes as a constructor after
+; '.', so the casing law paints it @type — reclaim it as a member. An
+; identifier immediately after '.' is a member regardless of case.
+((operator) @_dot . (constructor) @property
+ (#eq? @_dot "."))
