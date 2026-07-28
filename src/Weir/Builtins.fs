@@ -1491,9 +1491,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd "One `git status --porcelain` line: status, staged, unstaged, path. From `from porcelain`." None None
           "FileRow", bd "A directory entry: name, bytes, readOnly. From `ls`." None None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
-          "Group", bd "A key and its items, from `Seq.groupBy`." None None
-          "Result",
-          bd "A success (`Ok`) or failure (`Error`) value — you construct it; no builtin returns one." None None ]
+          "Group", bd "A key and its items, from `Seq.groupBy`." None None ]
 
 /// map a reifier's internal key (|completed, |completedEnv, |completedIn,
 /// and the succeeded/orFailed/exitCoded families) back to the surface

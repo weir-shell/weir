@@ -1,5 +1,30 @@
 # Spike Notes
 
+## Result removed — the apologizing doc (2026-07-28)
+
+Documenting the builtin types in half 2 surfaced a smell: `Result`'s doc
+had to apologize — "you construct it; no builtin returns one." A type
+whose hover explains why it's useless is a type that hasn't earned its
+place. So: is it needed? No. Zero uses in scripts, examples, corpus, or
+docs; no builtin produces or consumes one; and weir's error model has no
+gap for it — expected absence is `Option` (the `try*` family), command
+outcomes are `Completed`/exit-codes/`succeeds`/`orFail`, and the
+unrecoverable ones raise (`fail`, `Seq.head []`, overflow) to exit. A
+recoverable-error-with-a-payload channel has no home: weir routes
+"recoverable" to Option and "structured" to Completed. Option earns its
+place — `tryFind`/`get`/`tryToInt` return one; Result never did.
+
+Its one real job was a TEST FIXTURE — a single test exercised a 2-param
+generic union with cross-arm inference, and Result was the only 2-param
+union in the tree. That is not a reason to ship a type; it is a reason to
+declare `type Either<'a,'e> = Left of 'a | Right of 'e` in the test env,
+which is what the coverage moved to (the `Proc` ctor-values pattern
+already existed). A type should not exist in the language solely to be
+checked. Removal fits the subtractive line — computed-head tier,
+reify-builtins, `sh`, measures — and teaches itself: a stale `Ok`/`Error`
+is an unbound-constructor error. Reversible if a Result-returning family
+is ever designed; none is.
+
 ## Builtin docs — half 2 (2026-07-28)
 
 The content half: every builtin member gets a hover/completion doc,

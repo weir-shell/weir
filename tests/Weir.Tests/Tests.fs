@@ -52,6 +52,9 @@ let private env =
     let e =
         preludeTypeEnv
         |> declare "type Proc = Running of int | Stopped"
+        // a 2-param generic union — the type-system fixture that Result
+        // used to be, now a local declaration [D:no-result]
+        |> declare "type Either<'a, 'e> = Left of 'a | Right of 'e"
         |> declare "type Point = { X: int; Y: int }"
         // record-update battery: two records sharing an int field N
         |> declare "type UpdP = { UpN: int; UpT: string }"
@@ -67,7 +70,8 @@ let private env =
             |> Map.add "double" (generalize (TFun(TInt, TInt))) }
 
 let private ctorValues =
-    [ "type Proc = Running of int | Stopped" ]
+    [ "type Proc = Running of int | Stopped"
+      "type Either<'a, 'e> = Left of 'a | Right of 'e" ]
     |> List.collect (fun d ->
         match (parseDecl d).Body with
         | DUnion cases -> constructorValues cases
@@ -1882,9 +1886,10 @@ let genericsTests =
           test "match binds at the instantiated type" {
               expectValue "match Some 5 with | Some x -> x + 1 | None -> 0" (VInt 6)
           }
-          test "Result infers across arms" {
-              Expect.equal (checkOk "match Ok 3 with | Ok v -> v | Error e -> Str.length e").Ty (TInt) ""
-              expectValue "match Error \"boom\" with | Ok v -> v | Error e -> Str.length e" (VInt 4)
+          test "a 2-param generic union infers across arms" {
+              // was the Result fixture; Result left the prelude [D:no-result]
+              Expect.equal (checkOk "match Left 3 with | Left v -> v | Right e -> Str.length e").Ty (TInt) ""
+              expectValue "match Right \"boom\" with | Left v -> v | Right e -> Str.length e" (VInt 4)
           }
           test "missing None is a hard error" {
               let terr = checkErr "match Some 1 with | Some x -> x"
@@ -4031,7 +4036,7 @@ let optionSweepTests =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"parses: {line}"
 
-              okParses "let z = match Ok 1 with | Ok n -> n | _ -> 0"
+              okParses "let z = match Some 1 with | Some n -> n | _ -> 0"
               okParses "let (a, b) = (1, 2)"
               okParses "let z = match 1 with | _ -> 0"
               okParses "let z = match 5 with | n when n > 0 -> 1 | _ -> 0"
