@@ -186,3 +186,115 @@ the editors that can express it (with micro's shortfall stated if RE2
 blocks it); binder names color in VS Code (+ Zed already); D-MICRO is
 ruled and the inventory e2e reflects it; every fix tool-verified; no
 parse regressions.
+
+## FOLLOW-UP — record-CONSTRUCTION field names (user-found 2026-07-28, FIXED 2026-07-28)
+
+The field-name fix (`5e0e45d`, above) reclaims a name as `@property`
+ONLY at the DECLARATION site — every grammar anchors the reclaim on a
+following `:`. A record CONSTRUCTION expression uses `=`, not `:`, so
+its field names fall through to the casing law and render as `@type`.
+
+Repro (token inspector confirms `entity.name.type.weir` on `BicepPath`):
+
+```
+let toTarget a = {
+    BicepPath = $"bicep/apps/stacks/{a.stack}/{a.env}.bicepparam"
+    Stack = a.stack
+    Env = a.env
+    Name = $"{a.stack}-{a.env}-apps"
+}
+```
+
+Same root cause in ALL THREE grammars (micro already field-name-exempt):
+- TextMate `field-name`: `^\s*(Ident)(?=\s*:)` — colon-only lookahead.
+- tree-sitter: `((identifier)/(constructor) @property . (punctuation)
+  (#eq? ":"))` — colon-only anchor.
+- micro: field-name is RE2-exempt regardless.
+
+DISAMBIGUATION TRAP (why this is not a one-line lookahead widen to
+`[:=]`): "uppercase ident before `=`" is ALSO the type-definition head.
+`type Target = { … }` must stay `@type`; `{ BicepPath = … }` must become
+`@property`. tree-sitter has no distinct record-construction node today
+(no `record`/`field_init` in `grammar.js`), so disambiguating there
+likely needs a small grammar node, not just a query — otherwise a `=`
+query recolors `type T =` heads. TextMate can lean on a safer heuristic
+(reclaim `^\s*[A-Z]\w*(?=\s*=)` scoped inside a `{…}` block, or accept
+that `type`/`let` lines never START with a bare capitalized ident and
+widen the line rule) — but that heuristic itself is a decision to bless.
+
+Lowercase construction fields (`stack = …`) are NOT visually wrong today
+(the casing law only fires on `[A-Z]`), so the bug is scoped to
+Pascal-case field names — which is the common case for records.
+
+FIX SHIPPED 2026-07-28 (both follow-ups, one increment): TextMate broadened
+`field-name` lookahead `(?=\s*:)` -> `(?=\s*[:=])` — the `^`-anchor keeps a
+let-binding's last param OFF (a param is never at line start; `let` is), so
+`let statusRefs ctx =` leaves `ctx` unscoped, VERIFIED. tree-sitter added
+`((constructor) @property . (operator) @_eq (#eq? @_eq "="))` — CONSTRUCTOR
+form only (uppercase, the casing-law victims; the identifier form would
+reclaim a param before `=`), and the anchored adjacent-sibling operator
+excludes `type X =` / `let x =` because their name sits INSIDE a
+type_head/let_head node, NOT a sibling of the `=` (confirmed by
+`tree-sitter parse`). micro stays field-name-exempt (lookahead), exemption
+reason widened to `:`/`=`. LIMITATION (stated): the `^`-anchor / line-start
+reliance means only MULTILINE (one-field-per-line) records colour; inline
+`{ A = 1; B = 2 }` fields stay type-coloured — but that was ALREADY true for
+the declaration form, so no regression, just an unclosed edge. Verified on
+the vscode-textmate+oniguruma engine and `tree-sitter query` (captures
+dumped, last-wins confirmed), 0 ERROR, inventory e2e green (24 rules).
+
+## FOLLOW-UP — lowercase types outside annotation position (user-found 2026-07-28, FIXED 2026-07-28)
+
+Sibling of the construction-fields gap, dual axis. Lowercase type names
+get `@type` ONLY after a `:` — the `field-type` rule is colon-anchored in
+every grammar. So a lowercase type in ANY other type position is
+unscoped and renders in default foreground.
+
+Repro (inspector shows `string` with NO selector, only `source.weir`):
+
+```
+type PullOutcome =
+    | Pulled
+    | UpToDate
+    | JoinConflict of string string
+```
+
+The `string` after `of` is uncolored. UPPERCASE payloads (`of Foo`) DO
+color — the casing-law `types` rule (`\b[A-Z]…`) fires anywhere — so the
+gap is specifically LOWERCASE types (`string`, `int`, `bool`, `unit`, …)
+away from a `:`.
+
+Second sighting (generic args), same root cause: `branch: Option<string>`
+— the inner `string` is "Other". `field-type` grabs only the FIRST
+lowercase ident IMMEDIATELY after `:`; here `:` is followed by `Option`
+(uppercase, colored by `types`) and the nested `string` sits after `<`,
+unreachable by any colon-anchored rule. So even a colon-present
+annotation leaves nested/generic lowercase types uncolored
+(`Map<string, int>`, `List<string>` all the same).
+
+The three type-color rules and their reach:
+- `types` — `\b[A-Z]…` — uppercase, any position (OK).
+- `field-type` — `(:)\s*([a-z_]…)` — lowercase, ONLY after `:`.
+- `type-param` — `'a`.
+
+Nothing covers lowercase types after `of` (union-case payload), after
+`->` (function signatures `string -> int`), or inside generic args
+(`List<string>`). Same in tree-sitter (lowercase → `@type` only via the
+colon-anchored field-type query; `(constructor) @type` is uppercase-only)
+and micro (field-type colon-anchored). All three share the assumption
+"lowercase type ⇒ preceded by `:`", which only holds for annotations.
+
+FIX SHIPPED 2026-07-28: the cleaner key than "positional introducers" —
+weir has EXACTLY FOUR lowercase types (`int`/`string`/`bool`/`unit`, from
+Types.fs), because the casing law makes every OTHER type uppercase. So a
+CLOSED WORD LIST is the whole lowercase-type universe and colours them in
+every position (of/-> /generics/tuples), no lookahead, no positional
+gymnastics — expressible in ALL THREE engines (micro RE2 included, so NOT
+exempt). New rule `builtin-types` = `\b(int|string|bool|unit)\b` ->
+entity.name.type in TextMate + micro (+ interp holes for parity); tree-sitter
+`((identifier) @type (#any-of? @type "int" "string" "bool" "unit"))` placed
+EARLY so later position overrides (field-name/member) win a rare collision
+(a field/member named like a builtin). Inventory grew 23 -> 24 rules, still
+matched. `field-type` is now effectively redundant with builtin-types (both
+only ever hit the four builtins after `:`) but LEFT IN — removing it is
+spec/inventory churn for zero visible gain. Verified both engines, 0 ERROR.

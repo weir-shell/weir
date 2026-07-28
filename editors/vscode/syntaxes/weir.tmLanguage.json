@@ -61,6 +61,9 @@
       "include": "#types"
     },
     {
+      "include": "#builtin-types"
+    },
+    {
       "include": "#field-type"
     },
     {
@@ -124,6 +127,10 @@
       "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
       "name": "entity.name.type.weir"
     },
+    "builtin-types": {
+      "match": "\\b(int|string|bool|unit)\\b",
+      "name": "entity.name.type.weir"
+    },
     "numbers": {
       "match": "\\b[0-9]+\\b",
       "name": "constant.numeric.weir"
@@ -183,6 +190,9 @@
             },
             {
               "include": "#types"
+            },
+            {
+              "include": "#builtin-types"
             },
             {
               "include": "#numbers"
@@ -262,7 +272,7 @@
       "name": "entity.name.type.weir"
     },
     "field-name": {
-      "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:)",
+      "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\s*[:=])",
       "captures": {
         "1": {
           "name": "variable.other.property.weir"

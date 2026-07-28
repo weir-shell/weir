@@ -1,0 +1,37 @@
+// weir × Nord — token color rule.
+// Paste into your VS Code user/workspace settings.json. Scoped to the
+// "Nord" theme; standard scopes (comments, strings, numbers, keyword.control)
+// inherit from the theme — this only overrides weir's CUSTOM scopes plus the
+// type/field distinction. Colors are the Nord palette (slot noted per line).
+// If your theme's display name is a Nord variant, change the [Nord] selectors.
+{
+  "editor.tokenColorCustomizations": {
+    "[Nord]": {
+      "textMateRules": [
+        // — types vs fields —
+        { "scope": "entity.name.type.weir",          "settings": { "foreground": "#8FBCBB" } }, // nord7  Frost — types & 'a params
+        { "scope": "variable.other.property.weir",   "settings": { "foreground": "#D8DEE9" } }, // nord4  record field names (plain fg, distinct from type)
+        { "scope": "variable.other.member.weir",     "settings": { "foreground": "#D8DEE9" } }, // nord4  member / field access
+        { "scope": "variable.weir",                  "settings": { "foreground": "#D8DEE9" } }, // nord4  binder names
+        { "scope": "variable.other.weir",            "settings": { "foreground": "#D8DEE9" } }, // nord4  variables
+
+        // — weir-specific markers the base theme doesn't know —
+        { "scope": "variable.other.splice.weir",     "settings": { "foreground": "#B48EAD" } }, // nord15 purple — splice island
+        { "scope": "keyword.other.sigil.weir",       "settings": { "foreground": "#B48EAD" } }, // nord15 — $ / ! sigils
+        { "scope": "keyword.other.district.weir",    "settings": { "foreground": "#B48EAD" } }, // nord15 — command-district marker
+        { "scope": "keyword.other.force.weir",       "settings": { "foreground": "#81A1C1" } }, // nord9  — force keyword
+        { "scope": "keyword.other.reserved.weir",    "settings": { "foreground": "#BF616A", "fontStyle": "italic" } }, // nord11 red — rec/mutable/function (reserved, unusable)
+        { "scope": "keyword.operator.attribute.weir", "settings": { "foreground": "#81A1C1" } } // nord9  — [< >] attribute delimiters
+      ]
+    }
+  },
+  "editor.semanticTokenColorCustomizations": {
+    "[Nord]": {
+      "rules": {
+        "weirCommandHead": "#88C0D0", // nord8  Frost — external program head (command mode)
+        "weirArgv":        "#A3BE8C", // nord14 green — literal argv words
+        "weirSplice":      "#B48EAD"  // nord15 purple — splice marker in command mode
+      }
+    }
+  }
+}

@@ -21,6 +21,14 @@
 
 (constructor) @type
 
+; the four lowercase builtin types (int/string/bool/unit). The casing law
+; makes every OTHER type uppercase (a @type constructor), so this closed set
+; is the whole lowercase-type universe; catches them in EVERY position
+; (of/-> /generic args) the `:`-anchored field-type query cannot reach.
+; Placed EARLY so the later position overrides (field-name, member) win for
+; the rare collision (a member/field named like a builtin).
+((identifier) @type (#any-of? @type "int" "string" "bool" "unit"))
+
 ; type params `'a` (external scanner; distinct from command raw strings)
 (type_param) @type
 (attribute) @attribute
@@ -41,6 +49,16 @@
 ; and the pattern that captures ':' LAST owns the type-after-':' render
 ((constructor) @property . (punctuation) @_c (#eq? @_c ":"))
 ((identifier) @property . (punctuation) @_c (#eq? @_c ":"))
+
+; record CONSTRUCTION field names: a constructor immediately before '=' is a
+; field being assigned (`{ BicepPath = ... }`), not a type. Only the
+; constructor (uppercase) form — the casing law is what mis-paints those as
+; @type; a lowercase field reads as a plain identifier already, and matching
+; identifiers here would wrongly reclaim a let-binding's last PARAM before '='.
+; The '=' must be exactly one token (#eq? excludes '==' comparisons), and the
+; anchor to an adjacent-sibling operator excludes `type X =` and `let x =`
+; (their name sits INSIDE a type_head/let_head node, not a sibling of the '=').
+((constructor) @property . (operator) @_eq (#eq? @_eq "="))
 
 ; record field types: the identifier right after ':' is a type, not a
 ; binder name [issue 2] — flat siblings, anchored on the ':' punctuation

@@ -16,7 +16,7 @@
 
 # micro-exempt: binder (RE2 has no per-capture-group colours, so `let cli` cannot colour the name apart from the keyword)
 # micro-exempt: type-param (RE2 cannot peek for a closing quote to tell `'a` (type var) from `'echo x'` (command raw string); tree-sitter uses an external scanner, TextMate a lookahead)
-# micro-exempt: field-name (RE2 has no lookahead to require a following `:` without consuming it, and colours a whole match one colour, so it cannot scope a record field name apart from the `:` and the type after it)
+# micro-exempt: field-name (RE2 has no lookahead to require a following `:` or `=` without consuming it, and colours a whole match one colour, so it cannot scope a record field name — declaration `Field:` or construction `Field=` — apart from the punctuation and the type/value after it)
 
 filetype: weir
 
@@ -51,6 +51,12 @@ rules:
     # field/annotation types: the lowercase ident after ':' is a type
     # rule: field-type
     - type: ":[ \\t]*[a-z_][A-Za-z0-9_]*"
+    # the four lowercase builtin types (int/string/bool/unit) — the casing
+    # law makes every OTHER type uppercase, so this closed set is the whole
+    # lowercase-type universe; catches them in EVERY position (of/-> /generic
+    # args) where the `:`-anchored field-type rule cannot reach
+    # rule: builtin-types
+    - type: "\\b(int|string|bool|unit)\\b"
 
     # ---- numbers (int only; ranges lex as int .. int) ----
     # rule: numbers
@@ -112,6 +118,7 @@ rules:
                     - statement: "\\b(if|then|elif|else|when|match|with|fun|let|in)\\b"
                     - constant.bool: "\\b(true|false)\\b"
                     - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
+                    - type: "\\b(int|string|bool|unit)\\b"
                     - constant.number: "\\b[0-9]+\\b"
                     - special: "_\\.[A-Za-z][A-Za-z0-9_]*"
                     - symbol.operator: "\\|>"
