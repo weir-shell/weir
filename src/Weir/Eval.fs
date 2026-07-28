@@ -489,7 +489,9 @@ let private scopeDef (sharedDef: RecordDef) (payloadDef: RecordDef option) : Rec
     | Some pd ->
         { sharedDef with
             Fields = sharedDef.Fields @ pd.Fields
-            Attrs = pd.Attrs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Attrs }
+            Attrs = pd.Attrs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Attrs
+            // the two-tier help draws --help text from BOTH tiers [D:doc-help]
+            Docs = pd.Docs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Docs }
     | None -> sharedDef
 
 // pass 1 of the shared-flags scan: shared flags float, the FIRST

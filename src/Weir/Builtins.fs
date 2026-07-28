@@ -9,7 +9,8 @@ let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
       Fields = [ "name", TStr; "bytes", TInt; "readOnly", TBool ]
-      Attrs = Map.empty }
+      Attrs = Map.empty
+      Docs = Map.empty }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
@@ -106,7 +107,8 @@ let changeDef: RecordDef =
     { Name = "Change"
       Params = []
       Fields = [ "status", TStr; "staged", TBool; "unstaged", TBool; "path", TStr ]
-      Attrs = Map.empty }
+      Attrs = Map.empty
+      Docs = Map.empty }
 
 let private asString (v: Value) : string =
     match v with
@@ -184,7 +186,8 @@ let completedDef: RecordDef =
     { Name = "Completed"
       Params = []
       Fields = [ "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
-      Attrs = Map.empty }
+      Attrs = Map.empty
+      Docs = Map.empty }
 
 // completedWith is the shared body; completed IS the empty overlay and
 // completedEnv the env-sigil desugar target — the cmd/cmdEnv pattern.
@@ -735,7 +738,8 @@ let groupDef: RecordDef =
     { Name = "Group"
       Params = [ "k"; "v" ]
       Fields = [ "key", TVar "k"; "items", TSeq(TVar "v") ]
-      Attrs = Map.empty }
+      Attrs = Map.empty
+      Docs = Map.empty }
 
 // pairwise/zip produce tuples [D:tuples-reversal]
 let private pairwiseImpl: Value =
@@ -1059,7 +1063,8 @@ let envVarDef: RecordDef =
     { Name = "EnvVar"
       Params = []
       Fields = [ "name", TStr; "value", TStr ]
-      Attrs = Map.empty }
+      Attrs = Map.empty
+      Docs = Map.empty }
 
 // Env.fromFile parses the DOTENV SUBSET only: KEY=VALUE, optional
 // single/double quotes around VALUE, # full-line and trailing

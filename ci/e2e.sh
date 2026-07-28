@@ -1845,7 +1845,7 @@ rm -rf "$gdir"
 # attributes (PLAN-attributes): check-time, erased, registered names
 adir=$(mktemp -d)
 cat > "$adir/attrs.weir" <<'WEOF'
-type Cfg = { [<Short "c"; Doc "count">] Count: int; Name: string; [<NoShort>] Loud: bool }
+type Cfg = { [<Short "c">] Count: int; Name: string; [<NoShort>] Loud: bool }
 let c = { Count = 1; Name = "x"; Loud = false }
 let c2 = { c with Count = 2 }
 print $"{c2.Count} {show c.Loud}"
@@ -1854,20 +1854,26 @@ out=$($BIN "$adir/attrs.weir")
 expect "attributed record constructs, updates, shows — erased" "2 false" "$out"
 
 cat > "$adir/attrs-json.weir" <<'WEOF'
-type J = { [<Doc "the n">] N: int }
+type J = {
+    /// the n
+    N: int
+}
 let j = echo '{"N": 5}' | from json J | Seq.head
 print j.N
 WEOF
 out=$($BIN "$adir/attrs-json.weir")
-expect "from json loads an attributed record identically" "5" "$out"
+expect "from json loads a documented record identically (/// inert)" "5" "$out"
 
 cat > "$adir/attrs-env.weir" <<'WEOF'
-type EC = { [<Doc "the home dir">] HOME: string }
+type EC = {
+    /// the home dir
+    HOME: string
+}
 let cfg = Env.load EC
 print (Str.length cfg.HOME > 0)
 WEOF
 out=$(HOME=/tmp $BIN "$adir/attrs-env.weir")
-expect "Env.load on a Doc'd config field is inert-legal" "true" "$out"
+expect "Env.load on a documented config field is inert-legal (/// hover-only)" "true" "$out"
 
 errout=$($BIN -e 'type T = { [<Shrot "c">] A: int }' 2>&1) && fail "unknown attribute must reject"
 echo "$errout" | grep -qF "unknown attribute 'Shrot'" || fail "unknown attribute names the error: $errout"
@@ -1891,7 +1897,13 @@ rm -rf "$adir"
 # the attributes plan's carried done-when clauses discharge here
 tadir=$(mktemp -d)
 cat > "$tadir/cli.weir" <<'WEOF'
-type Cli = { [<Doc "clean first">] clean: bool; verbose: bool; port: Option<int>; env: string }
+type Cli = {
+    /// clean first
+    clean: bool
+    verbose: bool
+    port: Option<int>
+    env: string
+}
 let cli = Args.load Cli
 print $"{show cli.clean} {show cli.verbose} {show cli.port} {cli.env}"
 WEOF
@@ -1951,10 +1963,30 @@ rm -rf "$odir"
 out=$($BIN "$tadir/cli.weir" --bogus --help); rc=$?
 [ "$rc" -eq 0 ] || fail "--help must exit 0 (got $rc)"
 echo "$out" | grep -qF -- "-c, --clean" || fail "help shows derived short truth: $out"
-echo "$out" | grep -qF "clean first" || fail "help shows Doc text: $out"
+echo "$out" | grep -qF "clean first" || fail "help shows the /// first line: $out"
 echo "$out" | grep -qF -- "--env <string>" || fail "help shows valued flags: $out"
 echo "$out" | grep -qF "required" || fail "help shows requiredness: $out"
-echo "e2e ok: --help derives usage (short truth + Doc) BEFORE validation, exit 0"
+echo "e2e ok: --help derives usage (short truth + /// doc) BEFORE validation, exit 0"
+
+# multi-line ///: --help shows ONLY the first line; the rest is hover-only [D:doc-help]
+cat > "$tadir/multi.weir" <<'WEOF'
+type Cli = {
+    /// terse help line
+    /// a second line, hover-only
+    verbose: bool
+}
+let c = Args.load Cli
+print "x"
+WEOF
+out=$($BIN "$tadir/multi.weir" --help)
+echo "$out" | grep -qF "terse help line" || fail "multi-line ///: --help shows line one: $out"
+echo "$out" | grep -qF "second line" && fail "multi-line ///: --help must NOT show line two: $out"
+echo "e2e ok: --help renders the /// FIRST line only (subsequent lines hover-only)"
+
+# the retired [<Doc>] is now the ordinary unknown-attribute error [D:doc-help]
+errout=$($BIN -e 'type T = { [<Doc "x">] A: int }' 2>&1) && fail "[<Doc>] must reject"
+echo "$errout" | grep -qF "unknown attribute 'Doc'" || fail "[<Doc>] is unregistered: $errout"
+echo "e2e ok: [<Doc>] retired — now the unknown-attribute error"
 
 cat > "$tadir/short.weir" <<'WEOF'
 type Cli = { [<Short "e">] clean: bool; env: string }
@@ -2069,8 +2101,8 @@ type Ctx =
       Repo: string }
 
 type Cli =
-    { [<Short "c"; Doc "count">] count: int
-      [<Doc "notes">]
+    { [<Short "c">] count: int
+      [<NoShort>]
       verbose: bool }
 
 let pairs =
@@ -2596,7 +2628,8 @@ rm -rf "$fddir"
 dadir=$(mktemp -d)
 cat > "$dadir/cli.weir" <<'WEOF'
 type Cli = {
-    [<Default 10000; Doc "cases per invariant">]
+    [<Default 10000>]
+    /// cases per invariant
     count: int
     [<Default true>]
     color: bool
@@ -2618,6 +2651,7 @@ errout=$($BIN "$dadir/cli.weir" --no-colr 2>&1) && fail "minted typo must reject
 echo "$errout" | grep -qF "Did you mean '--no-color'?" || fail "minted did-you-mean: $errout"
 out=$($BIN "$dadir/cli.weir" --help)
 echo "$out" | grep -qF "default: 10000" || fail "help shows the literal default: $out"
+echo "$out" | grep -qF "cases per invariant" || fail "help shows the /// doc beside the default: $out"
 echo "$out" | grep -qF -- "default: on — --no-color disables" || fail "help shows the bool resting point: $out"
 echo "e2e ok: Default fills, mints, teaches, and renders (the help-shape pin)"
 

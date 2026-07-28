@@ -1954,17 +1954,13 @@ let attributeTests =
           test "registered attributes attach and the record works unchanged" {
               let env' =
                   env
-                  |> declare
-                      "type Cfg = { [<Short \"c\"; Doc \"count\">] Count: int; Name: string; [<NoShort>] Loud: bool }"
+                  |> declare "type Cfg = { [<Short \"c\">] Count: int; Name: string; [<NoShort>] Loud: bool }"
 
               match Map.tryFind "Cfg" env'.Types with
               | Some(Record def) ->
                   Expect.equal (List.map fst def.Fields) [ "Count"; "Name"; "Loud" ] "fields unchanged"
 
-                  Expect.equal
-                      (Map.find "Count" def.Attrs)
-                      [ "Short", Some(AStr "c"); "Doc", Some(AStr "count") ]
-                      "attrs recorded"
+                  Expect.equal (Map.find "Count" def.Attrs) [ "Short", Some(AStr "c") ] "attrs recorded"
 
                   Expect.equal (Map.find "Loud" def.Attrs) [ "NoShort", None ] "argless recorded"
               | other -> failtest $"expected a record def, got {other}"
@@ -1999,13 +1995,14 @@ let attributeTests =
               let terr = env |> declErr "type T = { [<NoShort true>] A: int }"
               Expect.stringContains terr.Message "takes no argument" ""
           }
-          test "Doc wants a non-empty string" {
-              let terr = env |> declErr "type T = { [<Doc \"\">] A: int }"
-              Expect.stringContains terr.Message "non-empty string" ""
-          }
+          // [<Doc>]'s own validator pins retire with the attribute [D:doc-help]
           test "duplicate attribute on one field is rejected" {
-              let terr = env |> declErr "type T = { [<Doc \"a\"; Doc \"b\">] A: int }"
-              Expect.stringContains terr.Message "duplicate attribute 'Doc'" ""
+              let terr = env |> declErr "type T = { [<Short \"a\"; Short \"b\">] A: int }"
+              Expect.stringContains terr.Message "duplicate attribute 'Short'" ""
+          }
+          test "the retired [<Doc>] is now an unknown attribute [D:doc-help]" {
+              let terr = env |> declErr "type T = { [<Doc \"x\">] A: int }"
+              Expect.stringContains terr.Message "unknown attribute 'Doc'" ""
           }
           test "Short and NoShort conflict on one field" {
               let terr = env |> declErr "type T = { [<NoShort; Short \"d\">] B: int }"
@@ -2024,10 +2021,10 @@ let attributeTests =
           }
           // products [D:attributes]
           test "generic record carries attrs as declaration data" {
-              let env' = env |> declare "type GB<'a> = { [<Doc \"v\">] V: 'a }"
+              let env' = env |> declare "type GB<'a> = { [<Short \"v\">] V: 'a }"
 
               match Map.tryFind "GB" env'.Types with
-              | Some(Record def) -> Expect.equal (Map.find "V" def.Attrs) [ "Doc", Some(AStr "v") ] ""
+              | Some(Record def) -> Expect.equal (Map.find "V" def.Attrs) [ "Short", Some(AStr "v") ] ""
               | other -> failtest $"expected a record def, got {other}"
 
               match Weir.Check.typecheck env' (parse "let b = { V = \"s\" } in b.V") with
@@ -2658,10 +2655,10 @@ let bracketContinuationTests =
               Expect.equal
                   (joined
                       [ "type Cli ="
-                        "    { [<Doc \"count\">]"
+                        "    { [<Short \"c\">]"
                         "      count: int"
                         "      verbose: bool }" ])
-                  "type Cli = { [<Doc \"count\">] count: int ; verbose: bool }"
+                  "type Cli = { [<Short \"c\">] count: int ; verbose: bool }"
                   ""
           }
           test "list elements join as siblings" {
@@ -6600,7 +6597,7 @@ let offsideTests =
               match
                   Weir.Script.assemble
                       [ 1, "type C = {"
-                        2, "    [<Doc \"d\">]"
+                        2, "    [<Short \"d\">]"
                         3, "     subdir: string"
                         4, "    force: bool"
                         5, "}" ]
@@ -6611,7 +6608,7 @@ let offsideTests =
               match
                   Weir.Script.assemble
                       [ 1, "type C = {"
-                        2, "    [<Doc \"d\">]"
+                        2, "    [<Short \"d\">]"
                         3, "    subdir: string"
                         4, "    force: bool"
                         5, "}" ]

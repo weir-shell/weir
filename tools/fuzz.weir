@@ -11,9 +11,10 @@
 // count's default is a LITERAL (the attribute); seed's is COMPUTED
 // (fresh nanoseconds — Option + code)
 type Cli = {
-    [<Doc "FsCheck replay seed (fresh nanoseconds when omitted)">]
+    /// FsCheck replay seed (fresh nanoseconds when omitted)
     seed: Option<int>
-    [<Default 10000; Doc "cases per invariant">]
+    [<Default 10000>]
+    /// cases per invariant
     count: int
 }
 

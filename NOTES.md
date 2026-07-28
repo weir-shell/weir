@@ -1,5 +1,38 @@
 # Spike Notes
 
+## /// feeds --help — the Doc attribute retires (2026-07-28)
+
+`--help` used to read its text from a `[<Doc "…">]` attribute while
+hover read the `///` doc — two stores for one fact, free to drift.
+Now there is one: `--help` takes the `///` doc's FIRST line, and
+`[<Doc>]` is gone from the registry (a stale one is now the ordinary
+unknown-attribute error). This is the 6th time the project chose an
+invariant-by-architecture over a pin (after [D:doc-comments]'s five):
+hover and help read the same source, so "they agree" is not a test —
+it is the representation. A `[<Help>]` rename was on the table and
+rejected: it keeps two sources that can still disagree, which is the
+disease.
+
+The interesting part was the bridge. Docs live OUT-OF-BAND
+([D:doc-comments]) — position-keyed, never on the AST — because
+erasure should be a property of the representation, not a discipline.
+But `--help` renders at EVAL off the `RecordDef` that `Args.load`
+captured at CHECK, and that def has no docs. Rather than thread docs
+through the typed tree (undoing the whole point), the runner enriches
+`env.Types[decl].Docs` in `Script.run`'s fold the instant a `type`
+decl checks — which is BEFORE the following `Args.load` reads it, so
+the captured def already carries them. `RecordDef.Docs` is check-time
+data, erased exactly like `Attrs`; only the run path fills it (hover
+never needed it, check never renders help). Both help tiers merge in
+`scopeDef`; the alignment lint still governs a crooked doc.
+
+Migration bit back once: a `///` only attaches when it sits DIRECTLY
+above its field. An attribute line between doc and field breaks it,
+and an inline `{ /// text` is a trailing comment, not a doc line — so
+every inline `[<Doc>]` record had to reshape to `[<attr>]` / `///` /
+field on their own lines. Not a text swap; the corpus, the docs, and
+the e2e fixtures all reflowed.
+
 ## Annotated signature rendering — hover shows parameter names (2026-07-28)
 
 A builtin hovered as `string -> string -> bool` — which argument is

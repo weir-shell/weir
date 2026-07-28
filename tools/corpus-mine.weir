@@ -10,12 +10,13 @@
 // Usage: corpus-mine.weir --corpus <dir> --out <dir> [--wide]
 
 type Cli =
-    { [<Doc "corpus root scanned for .fs files">]
-      corpus: string
-      [<Doc "output directory for .snippet files">]
-      out: string
-      [<Doc "widen the filter: admit the four feature-wave shapes">]
-      wide: bool }
+    {
+        /// corpus root scanned for .fs files
+        corpus: string
+        /// output directory for .snippet files
+        out: string
+        /// widen the filter: admit the four feature-wave shapes
+        wide: bool }
 
 let cli = Args.load Cli
 let corpus = cli.corpus

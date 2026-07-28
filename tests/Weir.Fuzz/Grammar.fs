@@ -65,7 +65,7 @@ type Stmt =
     | SLetUnionMatch of name: string * uVar: string * arms: (string * string option * Expr) list
     | SPrint of Expr
     | SIf of bid: int * Cond * Stmt list // unit body
-    | STypeRec of string * (string option * string * VTy) list * RecStyle // (Doc attr, field, ty)
+    | STypeRec of string * (string option * string * VTy) list * RecStyle // (/// doc, field, ty) [D:doc-help]
     | STypeUnion of string * (string * VTy option) list * multiline: bool * bid: int
     | SRecLet of binder: string * tyName: string * (string * Expr) list * RecStyle
     | SUnionLet of binder: string * case: string * payload: Expr option
@@ -258,10 +258,10 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
             for st in body do
                 emitStmt (ind + 4 + extra bid) st
         | STypeRec(n, fields, style) ->
-            let fieldText (attr, f, ty) =
-                match attr with
-                | Some d -> $"[<Doc \"{d}\">] {f}: {tyText ty}"
-                | None -> $"{f}: {tyText ty}"
+            // inline styles have no line above the field for a `///` doc, so
+            // they carry none; only the own-line RStroustrup style docs its
+            // fields [D:doc-help] (the [<Doc>] attribute retired)
+            let fieldText (_attr, f, ty) = $"{f}: {tyText ty}"
 
             let style =
                 match style with
@@ -279,9 +279,9 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                 for (attr, f, ty) in fields do
                     match attr with
                     | Some d ->
-                        // the attr-dangle spelling: attr line + field line
-                        // form ONE entry, both at the anchor column
-                        emit entryInd $"[<Doc \"{d}\">]"
+                        // a `///` doc + its field form ONE entry, both at the
+                        // anchor column (the doc-alignment lint governs this)
+                        emit entryInd $"/// {d}"
                         emit entryInd $"{f}: {tyText ty}"
                     | None -> emit entryInd $"{f}: {tyText ty}"
 

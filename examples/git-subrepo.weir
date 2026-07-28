@@ -41,60 +41,60 @@ type PullOutcome =
 // ---- the front door: a typed union over subcommands [D:typed-argv]
 
 type StatusArgs = {
-    [<Doc "the subrepo directory">]
+    /// the subrepo directory
     subdir: string
 }
 
 type FetchArgs = {
-    [<Doc "the subrepo directory">]
+    /// the subrepo directory
     subdir: string
 }
 
 type PullArgs = {
-    [<Doc "the subrepo directory">]
+    /// the subrepo directory
     subdir: string
-    [<Doc "pull even if the branch exists">]
+    /// pull even if the branch exists
     force: bool
 }
 
 type CloneArgs = {
-    [<Doc "the upstream repository url">]
+    /// the upstream repository url
     remote: string
-    [<Doc "the directory to clone into">]
+    /// the directory to clone into
     subdir: string
-    [<Doc "the upstream branch (default: the remote HEAD branch)">]
+    /// the upstream branch (default: the remote HEAD branch)
     branch: Option<string>
 }
 
 type InitArgs = {
-    [<Doc "the directory to convert into a subrepo">]
+    /// the directory to convert into a subrepo
     subdir: string
     remote: Option<string>
     branch: Option<string>
 }
 
 type PushArgs = {
-    [<Doc "the subrepo directory">]
+    /// the subrepo directory
     subdir: string
-    [<Doc "push even when upstream moved">]
+    /// push even when upstream moved
     force: bool
 }
 
 type BranchArgs = {
-    [<Doc "the subrepo directory">]
+    /// the subrepo directory
     subdir: string
 }
 
 type CommitArgs = {
-    [<Doc "the subrepo directory">]
+    /// the subrepo directory
     subdir: string
     force: bool
 }
 
 type CleanArgs = {
-    [<Doc "the subrepo directory">]
+    /// the subrepo directory
     subdir: string
-    [<Doc "also delete every refs/subrepo ref for the subdir">]
+    /// also delete every refs/subrepo ref for the subdir
     force: bool
 }
 
@@ -112,9 +112,9 @@ type Cmd =
 // shared flags by containment [D:shared-flags]: quiet/verbose declared
 // ONCE; the union field is the subcommand slot
 type Cli = {
-    [<Doc "suppress progress output">]
+    /// suppress progress output
     quiet: bool
-    [<Doc "narrate each step to stderr">]
+    /// narrate each step to stderr
     verbose: bool
     cmd: Cmd
 }

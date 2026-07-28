@@ -24,9 +24,9 @@ composition, not type complexity.
 - full-coverage match over a union value (payload binders int/string)
 - `print` statements (interp markers); `if ... then` unit bodies
   (nested ifs, prints, headed districts)
-- record type decls: inline, Stroustrup, aligned styles; `[<Doc>]`
-  field attributes inline and in the attr-dangle spelling (attr line +
-  field line as one aligned entry)
+- record type decls: inline, Stroustrup, aligned styles; `///` field
+  docs in the Stroustrup style (doc line + field line as one aligned
+  entry, governed by the doc-alignment lint)
 - union type decls: single-line and multi-line `|` case lists;
   tuple-free payloads (`of int` / `of string`)
 - record literals: inline, Stroustrup, aligned (measured anchors)
