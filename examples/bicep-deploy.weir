@@ -32,9 +32,9 @@ type Oidc = { value: string }
 // the typed front door: three subcommands, one flags shape —
 // --help derives, unknown subcommands did-you-mean
 type CmdArgs = {
-    [<Doc "the bicep stack">]
+    /// the bicep stack
     stack: string
-    [<Doc "the target environment">]
+    /// the target environment
     env: string
 }
 

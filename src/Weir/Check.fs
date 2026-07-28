@@ -2535,10 +2535,9 @@ let private attrRegistry: Map<string, AttrArg option -> string option> =
           (function
           | None -> None
           | Some _ -> Some "takes no argument")
-          "Doc",
-          (function
-          | Some(AStr s) when s <> "" -> None
-          | _ -> Some "expects a non-empty string")
+          // [<Doc>] RETIRED [D:doc-help] — a `///` above the field is the one
+          // source; a stale `[<Doc "x">]` is now the ordinary unknown-attribute
+          // error (the did-you-mean over the remaining names).
           "Default",
           (function
           | Some(AStr _ | AInt _ | ABool _) -> None
@@ -2621,7 +2620,10 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                             { Name = decl.Name
                               Params = decl.Params
                               Fields = plain
-                              Attrs = attrs }
+                              Attrs = attrs
+                              // the runner enriches this from the `///` docs
+                              // after checkDecl [D:doc-help]
+                              Docs = Map.empty }
 
                     return
                         { env with

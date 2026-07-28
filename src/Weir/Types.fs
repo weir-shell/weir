@@ -157,7 +157,12 @@ type RecordDef =
       Fields: (string * Ty) list
       // check-time data, FULLY ERASED [D:attributes] — never reaches
       // eval, Value, show, json, or equatability
-      Attrs: Map<string, (string * AttrArg option) list> }
+      Attrs: Map<string, (string * AttrArg option) list>
+      // field -> the `///` doc's FIRST line, the derived --help text
+      // [D:doc-help]. `--help` reads this instead of the retired
+      // [<Doc>] attribute; hover still reads the full doc out-of-band.
+      // Same check-time-erased nature as Attrs.
+      Docs: Map<string, string> }
 
 type UnionDef =
     { Name: string

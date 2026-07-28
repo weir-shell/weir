@@ -123,7 +123,8 @@ Record fields also take attributes, F#'s syntax:
 
 ```weir
 type Cli = {
-    [<Short "C"; Doc "clean first">]
+    [<Short "C">]
+    /// clean first
     Clean: bool
     Target: string
 }
@@ -134,11 +135,12 @@ print cli.Target
 
 They are check-time data, fully erased at runtime — `cli` above is
 indistinguishable from a bare `Cli`. The names are a closed registry
-(`Short`, `NoShort`, `Doc`, `Default`); a typo like `[<Shrot "c">]`
+(`Short`, `NoShort`, `Default`); a typo like `[<Shrot "c">]`
 is a check error with a did-you-mean. Their consumers — typed argv
-deriving `-C` and `--help` text from the declaration — are a coming
+deriving `-C` from the declaration — are a coming
 feature; until then attributes are legal-and-inert documentation the
-checker validates.
+checker validates. (Help text is not an attribute: the `///` doc's
+first line feeds `--help` directly — see below.)
 
 ## File batches: glob is a function, not an expansion
 
@@ -216,9 +218,10 @@ LITERAL defaults take the attribute; COMPUTED defaults keep
 
 ```weir
 type Cli = {
-    [<Doc "replay seed (fresh when omitted)">]
+    /// replay seed (fresh when omitted)
     seed: Option<int>
-    [<Default 10000; Doc "cases per invariant">]
+    [<Default 10000>]
+    /// cases per invariant
     count: int
 }
 
@@ -479,7 +482,10 @@ Doc comments: a `///` line attaches to the declaration right below it
 (a blank line breaks the link) and renders on hover and in completion
 — on let bindings, `type` declarations, record fields, and union
 cases. The editor shows the type first, then the doc. A doc must sit at
-its declaration's indent; `weir fmt` keeps it there.
+its declaration's indent; `weir fmt` keeps it there. On an `Args.load`
+field the doc does double duty: its FIRST line is the field's `--help`
+text (hover still shows the whole doc). One source — help and hover
+cannot drift.
 
 ## Per-child environment
 
@@ -527,7 +533,8 @@ thereafter:
 
 ```weir
 type Cli = {
-    [<Short "C"; Doc "clean the target first">]
+    [<Short "C">]
+    /// clean the target first
     clean: bool
 
     port: Option<int>
@@ -558,8 +565,8 @@ Str.rmatchAll @"let (\w+) = (\d+)" text
 Field names derive kebab-case flags (`dryRun` becomes `--dry-run`)
 and unambiguous first-letter shorts; `[<Short "C">]` pins a short
 explicitly, `[<NoShort>]` suppresses one, and `--help` prints the
-derived usage — flags, types, optionality, the short truth, and
-`[<Doc>]` text — even on otherwise-invalid invocations. `bool`
+derived usage — flags, types, optionality, the short truth, and each
+field's `///` first line — even on otherwise-invalid invocations. `bool`
 fields are presence flags, `string`/`int` are required, `Option`
 makes them optional. Loading is STRICT and collected: unknown flags
 (with did-you-mean), unexpected arguments, missing requireds, and

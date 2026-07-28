@@ -44,10 +44,10 @@ let private attrOf (def: RecordDef) (field: string) (attr: string) =
     |> Map.tryFind field
     |> Option.bind (List.tryFind (fun (n, _) -> n = attr))
 
-let docOf (def: RecordDef) (field: string) : string option =
-    match attrOf def field "Doc" with
-    | Some(_, Some(AStr d)) -> Some d
-    | _ -> None
+// the derived --help text for a field: the `///` doc's FIRST line
+// [D:doc-help]. `[<Doc>]` retired — one source, hover and --help agree
+// by construction. The runner populated `def.Docs` from the source.
+let docOf (def: RecordDef) (field: string) : string option = Map.tryFind field def.Docs
 
 // [D:default-attr]: the resting-point literal, when declared
 let defaultOf (def: RecordDef) (field: string) : AttrArg option =

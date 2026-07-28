@@ -2207,6 +2207,28 @@ let checkOnly (json: bool) (path: string) : int =
         else
             0
 
+// [D:doc-help] the `///` first-line help for the fields of the type decl
+// on `ll`, keyed by field name. A field's DocAttach sits at the field's own
+// physical line, so scope by the decl's physical lines (its Segments); a
+// field name is unique within a decl. An EMPTY first line -> no help entry
+// (silence beats a mystery), same as no doc.
+let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string, string> =
+    let physLines = ll.Segments |> List.map (fun (_, p, _) -> p) |> Set.ofList
+    let arr = List.toArray rawLines
+
+    docAttachments rawLines
+    |> List.choose (fun d ->
+        match d.Doc with
+        | first :: _ when
+            first <> ""
+            && Set.contains d.Line physLines
+            && d.Line - 1 < arr.Length
+            && d.Col - 1 + d.Len <= arr[d.Line - 1].Length
+            ->
+            Some(arr[d.Line - 1].Substring(d.Col - 1, d.Len), first)
+        | _ -> None)
+    |> Map.ofList
+
 let run (path: string) (scriptArgs: string list) : int =
     if not (IO.File.Exists path) then
         Console.Error.WriteLine $"weir: no such script: {path}"
@@ -2319,7 +2341,29 @@ let run (path: string) (scriptArgs: string list) : int =
                                         | KCmd te -> CCmd te
                                         | KExpr te -> CExpr te
 
-                                    Ok(chk.Env, (ll.Head, stmt) :: acc))
+                                    // enrich a record's Docs from the `///`
+                                    // field docs, so --help reads them
+                                    // [D:doc-help]; the Args.load arm (checked
+                                    // later, the type comes first) captures it
+                                    let env' =
+                                        match chk.Kind with
+                                        | KType decl ->
+                                            let docs = fieldDocsFor rawLines ll
+
+                                            if Map.isEmpty docs then
+                                                chk.Env
+                                            else
+                                                { chk.Env with
+                                                    Types =
+                                                        chk.Env.Types
+                                                        |> Map.change
+                                                            decl.Name
+                                                            (Option.map (function
+                                                                | Record rd -> Record { rd with Docs = docs }
+                                                                | u -> u)) }
+                                        | _ -> chk.Env
+
+                                    Ok(env', (ll.Head, stmt) :: acc))
                         (Ok(typeEnv0, []))
 
                 match checkedProgram with

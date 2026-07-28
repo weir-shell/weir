@@ -7,7 +7,11 @@ type Issue = { Key: string; Title: string }
 
 // typed argv [D:typed-argv]: --clean derives -c anyway; the explicit
 // [<Short>] pins the contract against future fields stealing it
-type Cli = { [<Short "c"; Doc "reset to main first">] clean: bool }
+type Cli =
+    {
+        [<Short "c">]
+        /// reset to main first
+        clean: bool }
 let cli = Args.load Cli
 
 let branch = git rev-parse --abbrev-ref HEAD | Seq.head

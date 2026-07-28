@@ -418,7 +418,7 @@ let pins =
       pin "F#-rejects-this: attribute in expression position" "let x = [<Short \"c\">] 1\n" Same
       pin
           "attributes: multiple in one list, semicolon-separated"
-          "type T = { [<Short \"c\"; Doc \"count\">] A: int }\nlet t = { A = 1 }\n"
+          "type T = { [<Short \"c\"; Default 5>] A: int }\nlet t = { A = 1 }\n"
           (Diverges "attributes-registered")
 
       // --- named divergences, refereed from both sides ---

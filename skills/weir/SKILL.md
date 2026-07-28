@@ -15,7 +15,9 @@ stops being true fails the build.
   declaration immediately below it (a blank line breaks the link) and
   shows on hover and in completion — at let bindings, `type` decls,
   record fields, and union cases; a doc must align with what it
-  describes. Statements end at column 0 (the next col-0
+  describes. On an `Args.load` field the doc's FIRST line is also its
+  `--help` text (hover shows the whole doc) — one source, so help and
+  hover can't drift. Statements end at column 0 (the next col-0
   line) — blank lines and comment lines are both transparent inside
   a statement, so blocks group freely with gaps.
 - Scripts are STRICT: every library name is module-qualified —
@@ -100,7 +102,7 @@ print $"branches: {branches}"
   indent — `type Cli = {` / four-space fields / `}`. The aligned
   style (`{ x` with column-aligned fields) stays accepted.
 - Record fields take attributes, F#'s syntax: `[<Short "c">]`,
-  `[<Doc "text">]`, `[<NoShort>]`, `[<Default v>]` — `;`-separated
+  `[<NoShort>]`, `[<Default v>]` — `;`-separated
   lists, literal args only (string/int/bool). Attributes are
   check-time data, fully erased: an attributed record is the same
   type as a bare one. The name set is CLOSED — an unregistered name
@@ -109,7 +111,12 @@ print $"branches: {branches}"
   fields only.
 
 ```weir
-type Cli = { [<Short "C"; Doc "clean first">] Clean: bool; Target: string }
+type Cli = {
+    [<Short "C">]
+    /// clean first
+    Clean: bool
+    Target: string
+}
 let args = { Clean = true; Target = "prod" }
 print args.Target
 ```
@@ -529,13 +536,18 @@ if clean then !(sh -c "echo acting")
   the subcommand slot are check errors. STRICT: unknown flags (did-you-mean), unexpected
   arguments, repeats, missing requireds — all collected into ONE
   boundary error. `--help` prints derived usage (short truth +
-  `[<Doc>]` text), exit 0, even on invalid invocations. No
+  the `///` doc's first line), exit 0, even on invalid invocations. No
   positionals — spell operands as flags. The untyped floor:
   `Args.flag "--clean" "-c"` (bool), `Args.value "--out"`
   (Option of the next token).
 
 ```weir
-type Cli = { [<Short "C"; Doc "clean first">] clean: bool; port: Option<int> }
+type Cli = {
+    [<Short "C">]
+    /// clean first
+    clean: bool
+    port: Option<int>
+}
 let cli = Args.load Cli
 print $"{show cli.clean} {show cli.port}"
 ```
