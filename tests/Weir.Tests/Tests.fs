@@ -3283,6 +3283,109 @@ let semanticTokenTests =
                   (onParam |> Option.exists (fun s -> s.Contains "->"))
                   "the param shows its own type, no arrow"
           }
+          test "doc comments: /// attaches to the next declaration; a blank breaks it [D:doc-comments]" {
+              let attached =
+                  [ "/// The token env."; "/// Two lines."; "type TokenEnv = { name: string }" ]
+
+              Expect.equal
+                  (Weir.Script.docAttachments attached
+                   |> List.map (fun d -> d.Line, d.Col, d.Len, d.Doc))
+                  [ (3, 6, 8, [ "The token env."; "Two lines." ]) ]
+                  "a contiguous /// run attaches to the type name at (3,6,8), lines accumulated in order"
+
+              // a blank line between the doc and the declaration BREAKS it
+              Expect.equal
+                  (Weir.Script.docAttachments [ "/// orphan"; ""; "type T = { x: int }" ])
+                  []
+                  "blank-separated /// does not attach"
+
+              Expect.equal
+                  (Weir.Script.docAttachments [ "/// doc"; "let inc x = x + 1" ]
+                   |> List.map (fun d -> d.Line, d.Col, d.Doc))
+                  [ (2, 5, [ "doc" ]) ]
+                  "let binder name is the key"
+          }
+          test "doc comments: hover shows type FIRST, then the /// doc [D:doc-comments]" {
+              let lines = [ "/// Adds one."; "let inc x = x + 1"; "print (inc 1)" ]
+              let s = Weir.Lsp.hoverType lines 2 5 |> Option.defaultValue "" // on `inc`
+              Expect.stringContains s "->" "the type is present"
+              Expect.stringContains s "Adds one." "the doc is present"
+              Expect.isTrue (s.IndexOf "->" < s.IndexOf "Adds one.") "type first, then doc"
+
+              // hovering elsewhere on the line (the value) shows type only, no doc
+              let onValue = Weir.Lsp.hoverType lines 2 15
+
+              Expect.isFalse
+                  (onValue |> Option.exists (fun v -> v.Contains "Adds one."))
+                  "the doc shows only on the documented NAME"
+          }
+          test "doc comments: hover is type-first + doc at the type-decl and field positions [D:doc-comments]" {
+              let lines =
+                  [ "/// The config record."
+                    "type Cfg = {"
+                    "    /// the host name"
+                    "    Host: string"
+                    "}" ]
+
+              let onType = Weir.Lsp.hoverType lines 2 6 |> Option.defaultValue "" // Cfg
+              Expect.stringContains onType "Host: string" "type name renders the record structure"
+              Expect.stringContains onType "The config record." "and its doc"
+
+              let onField = Weir.Lsp.hoverType lines 4 5 |> Option.defaultValue "" // Host
+              Expect.stringContains onField "string" "field shows its type"
+              Expect.stringContains onField "the host name" "and its doc"
+              Expect.isTrue (onField.IndexOf "string" < onField.IndexOf "the host") "type first, then doc"
+          }
+          test "doc comments: hover a union case shows its signature + doc [D:doc-comments]" {
+              let lines =
+                  [ "type Outcome ="; "    /// merge hit a conflict"; "    | Conflict of string" ]
+
+              let onCase = Weir.Lsp.hoverType lines 3 7 |> Option.defaultValue "" // Conflict
+              Expect.stringContains onCase "Conflict of string" "the case signature"
+              Expect.stringContains onCase "merge hit a conflict" "and its doc"
+          }
+          test "doc comments: a misaligned /// errors — both field and case; aligned is clean [D:doc-comments]" {
+              let hasAlign (ls: string list) =
+                  let d, _, _, _ = Weir.Script.analyzeLines "d.weir" ls
+                  d |> List.exists (fun x -> x.Code = "doc-align")
+
+              // aligned field doc: clean
+              Expect.isFalse
+                  (hasAlign [ "type Cfg = {"; "    /// the host"; "    Host: string"; "}" ])
+                  "a doc at the field's own column is clean"
+
+              // field doc one column short of the field: error
+              Expect.isTrue
+                  (hasAlign [ "type Cfg = {"; "  /// the host"; "    Host: string"; "}" ])
+                  "a doc off the field's anchor errors"
+
+              // union case doc misaligned: error (the other direction)
+              Expect.isTrue
+                  (hasAlign [ "type Outcome ="; "        /// merge conflict"; "    | Conflict of string" ])
+                  "a doc off the union case's anchor errors"
+
+              // a top-level doc at column 1 above a column-1 let: clean
+              Expect.isFalse (hasAlign [ "/// adds one"; "let inc x = x + 1" ]) "top-level doc aligns at column 1"
+          }
+          test "doc comments: fmt preserves docs, canonicalizes /// to the field anchor, is idempotent [D:doc-comments]" {
+              let src =
+                  [ "/// The record."; "type Cfg = {"; "  /// the host"; "    Host: string"; "}" ]
+
+              match Weir.Fmt.formatLines src with
+              | Error e -> failtestf "fmt failed: %s" e
+              | Ok out ->
+                  Expect.isTrue (out |> List.exists (fun l -> l.Contains "The record.")) "top doc preserved"
+                  Expect.isTrue (out |> List.exists (fun l -> l.Contains "the host")) "field doc preserved"
+
+                  let indent (s: string) = s.Length - s.TrimStart().Length
+                  let docLine = out |> List.find (fun l -> l.Contains "the host")
+                  let fieldLine = out |> List.find (fun l -> l.Contains "Host:")
+                  Expect.equal (indent docLine) (indent fieldLine) "the /// is canonicalized to the field's anchor"
+
+                  match Weir.Fmt.formatLines out with
+                  | Ok out2 -> Expect.equal out2 out "fmt is idempotent with docs present"
+                  | Error e -> failtestf "second fmt failed: %s" e
+          }
           test "an errored let warns its command heads and suppresses the unbound cascade [PLAN-diagnostics-arc B5+B6]" {
               // B6: the failed deploy binds a HOLE — one real error,
               // zero "unbound 'deploy'. Did you mean 'Deploy'?" echoes,

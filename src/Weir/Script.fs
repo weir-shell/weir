@@ -78,6 +78,92 @@ let stripComment (line: string) : string =
 
     if cut >= 0 then line.Substring(0, cut) else line
 
+// ---- `///` doc comments [D:doc-comments] -------------------------
+// Docs are OUT-OF-BAND metadata about a source LOCATION, never part of
+// the program's meaning: Value/Eval/Check never see one, so runtime is
+// byte-identical BY ARCHITECTURE (nothing to erase, nothing to pin).
+// The key is the PHYSICAL (line, col, len) of the documented name,
+// never the name itself (shadowing / inner lets / duplicate field
+// names). Hover and completion look attachments up by that position.
+
+/// The doc lines attached to one declaration, with the physical
+/// (1-based line, 1-based col, length) of the name they document.
+type DocAttach =
+    { Line: int
+      Col: int
+      Len: int
+      Doc: string list }
+
+let private isDocLine (raw: string) : bool = raw.TrimStart().StartsWith "///"
+
+/// the text of a `///` line: after the three slashes, one optional
+/// leading space consumed (so `/// x` and `///x` both yield "x")
+let private docText (raw: string) : string =
+    let t = raw.TrimStart().Substring 3
+    if t.StartsWith " " then t.Substring 1 else t
+
+/// the documented NAME's (1-based col, len) on a declaration line: the
+/// identifier after `let`/`type`, after `|` (union case), or leading
+/// (a record field). None when the line has no such name.
+let private declName (raw: string) : (int * int) option =
+    let code = stripComment raw
+    let trimmed = code.TrimStart()
+    let indent = code.Length - trimmed.Length
+
+    let identAt (from: int) : (int * int) option =
+        let mutable i = from
+
+        while i < code.Length && (code[i] = ' ' || code[i] = '\t') do
+            i <- i + 1
+
+        if i < code.Length && (System.Char.IsLetter code[i] || code[i] = '_') then
+            let s = i
+
+            while i < code.Length && (System.Char.IsLetterOrDigit code[i] || code[i] = '_') do
+                i <- i + 1
+
+            Some(s + 1, i - s)
+        else
+            None
+
+    if trimmed.StartsWith "let " then identAt (indent + 3)
+    elif trimmed.StartsWith "type " then identAt (indent + 4)
+    elif trimmed.StartsWith "|" then identAt (indent + 1)
+    elif trimmed = "" then None
+    else identAt indent
+
+/// Pure pass: a contiguous run of `///` lines attaches to the
+/// declaration on the next CODE line; a blank OR a plain `//` line
+/// breaks the run (the contiguity law).
+let docAttachments (lines: string list) : DocAttach list =
+    let mutable pending: string list = []
+    let acc = System.Collections.Generic.List<DocAttach>()
+
+    lines
+    |> List.iteri (fun idx raw ->
+        let ln = idx + 1
+
+        if isDocLine raw then
+            pending <- pending @ [ docText raw ]
+        elif raw.Trim() = "" then
+            pending <- []
+        elif (stripComment raw).Trim() = "" then
+            pending <- [] // a plain // comment-only line breaks contiguity
+        else
+            if not (List.isEmpty pending) then
+                match declName raw with
+                | Some(col, len) ->
+                    acc.Add
+                        { Line = ln
+                          Col = col
+                          Len = len
+                          Doc = pending }
+                | None -> ()
+
+            pending <- [])
+
+    List.ofSeq acc
+
 // In-string mask over a line — TRUE where a char sits inside any
 // string kind (plain/single/verbatim/triple). The scanner family's
 // third consumer face [D:fmt-respace]: respacing must never touch
@@ -1835,6 +1921,51 @@ let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
     w.WriteString("message", d.Message)
     w.WriteEndObject()
 
+// doc-comment ALIGNMENT lint [D:doc-comments]: a `///` attaches to the
+// declaration below it, so it must sit at that declaration's indent —
+// the entry anchor, exactly as an attribute line does. Docs are INERT
+// (dropped before assembly), so a misaligned one cannot mis-parse: this
+// is a LINT, not the parse-time attribute machinery. Pinned both ways
+// (doc above a field, doc above a union case).
+let private docMisalignments (path: string) (lines: string list) : Diagnostic list =
+    let indent (s: string) = s.Length - s.TrimStart().Length
+    let arr = List.toArray lines
+    let diags = ResizeArray<Diagnostic>()
+    let mutable runStart = -1 // index of the first `///` in the pending run
+
+    lines
+    |> List.iteri (fun idx raw ->
+        if isDocLine raw then
+            (if runStart < 0 then
+                 runStart <- idx)
+        elif raw.Trim() = "" || (stripComment raw).Trim() = "" then
+            runStart <- -1 // a blank / plain-// breaks the run — no attachment, no claim
+        else
+            (if runStart >= 0 then
+                 match declName raw with
+                 | Some _ ->
+                     let anchor = indent raw
+
+                     for k in runStart .. idx - 1 do
+                         let di = indent arr[k]
+
+                         if di <> anchor then
+                             diags.Add
+                                 { File = path
+                                   Line = k + 1
+                                   Col = di + 1
+                                   EndLine = None
+                                   EndCol = None
+                                   Severity = "error"
+                                   Code = "doc-align"
+                                   Message =
+                                     $"this /// doc sits at column {di + 1}, but the declaration it documents is at column {anchor + 1} — a doc aligns with what it describes" }
+                 | None -> ())
+
+            runStart <- -1)
+
+    List.ofSeq diags
+
 // full analysis for tooling (the LSP re-frames this): diagnostics AND
 // the successfully-checked statements with their logical lines — plus
 // the initial env, so consumers can pick the in-scope env per position
@@ -2039,7 +2170,10 @@ let analyzeLines
                       Code = codeOf d.Parse d.Message
                       Message = d.Message }
 
-        List.ofSeq assemblyDiags @ List.ofSeq diags, List.ofSeq stmts, typeEnv0, logicalLines
+        List.ofSeq assemblyDiags @ List.ofSeq diags @ docMisalignments path rawLines,
+        List.ofSeq stmts,
+        typeEnv0,
+        logicalLines
 
 let checkOnly (json: bool) (path: string) : int =
     if not (IO.File.Exists path) then

@@ -1,5 +1,64 @@
 # Spike Notes
 
+## `///` doc comments — half 1 (2026-07-28)
+
+The machinery half of PLAN-doc-comments: `///` attaches to the
+declaration below it, shows on hover (type first) and in completion,
+at the five declaration positions. Half 2 (builtin docs) consumes it.
+
+Two verifies set the shape, reported before any edit. (1) `///` already
+lexes as an ordinary comment everywhere — `stripComment` cuts at the
+first `//` regardless of a third slash, and comment-only lines drop
+transparent — so `///` was ALREADY inert in a running script; the
+feature is an ATTACHMENT change, not a tokenizer change. That one fact
+rippled through the design: because `///` is dropped before assembly,
+attach + hover + completion need ZERO assembler changes. (2) the
+doc-test extractor scans markdown ```weir fences from SKILL/GUIDE only —
+making `///` examples executable is a real extractor addition, deferred
+to half 2 as its template input.
+
+Storage was the fork, and the answer inverted the plan's letter to keep
+its spirit. The plan said "the AST carries them, the typed tree mirrors
+them" (the binder-spans precedent). The user's argument stood the
+comparison on the project's own criterion: **erasure is better as a
+property of the representation than as a pin**. Store docs OUT-OF-BAND —
+a pure `Script.docAttachments` pass over raw lines, keyed by the
+physical (line,col,len) of the documented name — and Value/Eval/Check
+never see a doc, so the plan's "pin byte-identical runtime" guards
+nothing because nothing can observe it. Fifth instance of
+invariant-by-architecture-over-pin (one-pipeline, emergent-bound,
+one-spawn, capture-views). A doc is metadata about a source LOCATION,
+not program meaning; the binder-spans churn bought a field the resolver
+READS — docs would buy a field no arm reads. Key by position, never
+name (shadowing, inner lets, two records with a like-named field).
+Stated residue: a future `weir doc` command is fine (same pass), but a
+typed consumer wanting "the doc for this resolved symbol" goes through
+the key, not the node — chosen, not defaulted.
+
+The alignment guard got the same treatment. The plan wanted `///` woven
+into the entry-start / attribute machinery, citing the `>]`-dangle
+precedent (a misaligned entry once surfaced a misleading RUNTIME error).
+But that precedent is about PARSE-affecting lines: an attribute a column
+off changes what the assembler builds. Docs are inert — a misaligned
+`///` cannot mis-parse, nothing for the parse-time machinery to protect.
+Misalignment is a LINT (`Script.docMisalignments`, both directions
+pinned), not assembler surgery — lower risk AND more correct. fmt
+canonicalizes each `///` to its following declaration's formatted anchor
+as a post-pass; docs being transparent to assembly, the re-indent never
+changes the logical lines, so fmt's safety re-check holds and it stays
+idempotent.
+
+Hover at the type/field/case positions needed real work regardless of
+storage — those aren't expression nodes, so `nodeAt` finds nothing.
+`declHover` reads the `KType` decl and renders the type's structure, a
+field's type, or a case's signature — type first, then the doc.
+
+Coloring: a distinct `comment.line.documentation` scope, all three
+grammars (verified on the vscode-textmate and tree-sitter engines),
+inventory 24->25. Param docs parked (structured-doc design; params
+already hover their types). 907 unit pins; the erasure "pin" is the
+absence of one, by design.
+
 ## The Self module (+ pid) — introspection grouped (2026-07-27)
 
 `args`/`stdin`/`scriptPath` moved under a `Self` module and `pid`

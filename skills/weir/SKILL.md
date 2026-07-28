@@ -11,7 +11,11 @@ stops being true fails the build.
   `--check` for CI; `--qualify` converts `#loose` scripts to strict.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
-- Comments are `//`. Statements end at column 0 (the next col-0
+- Comments are `//`. A `///` line is a DOC comment: it attaches to the
+  declaration immediately below it (a blank line breaks the link) and
+  shows on hover and in completion — at let bindings, `type` decls,
+  record fields, and union cases; a doc must align with what it
+  describes. Statements end at column 0 (the next col-0
   line) — blank lines and comment lines are both transparent inside
   a statement, so blocks group freely with gaps.
 - Scripts are STRICT: every library name is module-qualified —
