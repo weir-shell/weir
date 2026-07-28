@@ -1,5 +1,56 @@
 # Spike Notes
 
+## Builtin docs — half 2 (2026-07-28)
+
+The content half: every builtin member gets a hover/completion doc,
+reusing half 1's out-of-band representation (`Builtins.builtinDocs`,
+keyed by the name at a use site; Value/Eval/Check never see it).
+
+D1 — whether examples are EXECUTABLE — was the gating decision, and the
+answer came from a mechanism the plan didn't weigh. The plan framed it
+as (a) extend the extractor to parse example lines out of F# string
+literals in bash, vs (b) mirror the example in a doc-tested markdown
+file and have the hover POINT at it; it leaned toward (b) because the
+F#-literal parsing (escaping, multi-line) is fiddly. But the example is
+already weir CODE the registry holds — so weir runs it: an Expecto test
+iterates `builtinDocs` and runs each Example through the same check+eval
+path, asserting success. That is (a)'s prize (rot-proof, on the build's
+critical path) without (a)'s cost (no bash, no F#-literal parsing) and
+without (b)'s loss (the example stays IN the hover, not a pointer to
+elsewhere). A rotted example now fails the suite by name.
+
+The template is fixed: Summary (imperative, never restating the
+signature — half 1 renders the type first), an optional executable
+Example, an optional Pointer that names the LAW a member obeys (quoted
+from the ledgers: force memoizes for reuse+timing, pmap is
+ordered/eager/first-error, Env.load names the field law, Args.load the
+three shapes). Members whose only honest example touches the filesystem,
+stdin, or raises (File.read/write, Env.fromFile/load, Args.load, Self.*,
+fail, exit) are summary-only — the template allows it, and a fake
+one-liner that returns `false` teaches nothing.
+
+Hover resolves the name off the typed node — TEVar for members and bare
+names, and the boundary forms explicitly (TEEnvLoad/TEArgsLoad/TEFrom/
+TETo key into the registry, since they carry their own node, not a
+TEVar). Both surfaces were verified over the PROTOCOL (initialize +
+didOpen + hover / completion against `weir lsp`), because "the doc text
+reaches the client for a builtin" is a distinct path from the pure
+function the unit test pins.
+
+Coverage is FULL (~97/97): Seq 30, Str 19, Option 3, Env 6, Args 3,
+File 4, Path 6, Self 4, bare 7, boundary 5, reifiers 4, types 6. The two
+follow-ups the first pass named turned out to be the same shape of gap
+the boundary forms were — a node kind hover didn't yet key on — and
+closed the same way. The reifiers DO leave a TEVar node after all:
+`complete` desugars to the un-typeable `|completed` key (plus Env/In
+twins) carried at the surface span, so `reifierSurface` maps that back
+to the surface name. Builtin types are the one genuinely node-less case
+(a type name is no expression), so hover adds a word-at-cursor fallback —
+safe because type names are uppercase and distinctive. One find while
+enumerating types: `Result` is Prelude-declared (`Ok of 'a | Error of
+'e`) but no builtin returns one, so its doc states that plainly rather
+than pretend a source ("you construct it; no builtin returns one").
+
 ## `///` doc comments — half 1 (2026-07-28)
 
 The machinery half of PLAN-doc-comments: `///` attaches to the
