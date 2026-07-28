@@ -460,32 +460,80 @@ let rec private localDef
                  | None -> localDef s2 name jcol body))
     | _ -> Check.childExprs te |> List.tryPick (localDef scope name jcol)
 
-/// hover type text at (1-based physical line, col), or None. Pure — the
-/// handler and the unit pins share this. Priority: an inner-let BINDER
-/// shows its bound value's type; a lambda PARAM binder shows its own type
-/// (the domain, not the arrow nodeAt would find); else the typed node at
-/// the column; else the statement's top-level scheme [D:lsp-v1].
+/// hover text at (1-based physical line, col), or None. Pure — the
+/// handler and the unit pins share this. TYPE FIRST, then the `///`
+/// doc, when the cursor is on a documented name [D:doc-comments]. Type
+/// priority: an inner-let BINDER shows its bound value's type; a lambda
+/// PARAM binder shows its own type (the domain, not the arrow nodeAt
+/// would find); else the typed node at the column; else the statement's
+/// top-level scheme [D:lsp-v1].
+/// hover for a `type` declaration position (KType): the type NAME
+/// renders its definition, a FIELD name its type, a union CASE its
+/// signature — so "type first" holds at the field/case/type positions
+/// too [D:doc-comments].
+let private declHover (decl: Ast.Decl) (word: string) : string option =
+    match decl.Body with
+    | Ast.DRecord fields ->
+        if word = decl.Name then
+            let body =
+                fields
+                |> List.map (fun (n, ty, _) -> $"{n}: {formatTy ty}")
+                |> String.concat "; "
+
+            Some $"{{ {body} }}"
+        else
+            fields
+            |> List.tryPick (fun (n, ty, _) -> if n = word then Some(formatTy ty) else None)
+    | Ast.DUnion cases ->
+        let caseSig (n, tyO) =
+            match tyO with
+            | Some t -> $"{n} of {formatTy t}"
+            | None -> n
+
+        if word = decl.Name then
+            Some(cases |> List.map caseSig |> String.concat " | ")
+        else
+            cases
+            |> List.tryPick (fun (n, tyO) -> if n = word then Some(caseSig (n, tyO)) else None)
+
 let hoverType (lines: string list) (line: int) (col: int) : string option =
-    let _, stmts, _, _ = Script.analyzeLines "hover" lines
+    let tyStr =
+        let _, stmts, _, _ = Script.analyzeLines "hover" lines
 
-    toLogical stmts line col
-    |> Option.bind (fun (ll, chk, jcol) ->
-        let binderTy =
-            letBinderAt ll.Text jcol
-            |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
+        toLogical stmts line col
+        |> Option.bind (fun (ll, chk, jcol) ->
+            let binderTy =
+                letBinderAt ll.Text jcol
+                |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
 
-        let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
-        let fromExpr = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
+            let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
+            let fromExpr = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
 
-        match binderTy |> Option.orElse paramTy with
-        | Some t -> Some(formatTy t)
-        | None ->
-            match fromExpr with
-            | Some node -> Some(formatTy node.Ty)
+            match binderTy |> Option.orElse paramTy with
+            | Some t -> Some(formatTy t)
             | None ->
-                match chk.Kind with
-                | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
-                | _ -> None)
+                match fromExpr with
+                | Some node -> Some(formatTy node.Ty)
+                | None ->
+                    match chk.Kind with
+                    | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
+                    | Script.KType decl -> wordAt ll.Text jcol |> Option.bind (declHover decl)
+                    | _ -> None)
+
+    // the `///` doc for the declaration whose NAME span holds the cursor
+    let doc =
+        Script.docAttachments lines
+        |> List.tryPick (fun d ->
+            if d.Line = line && d.Col <= col && col < d.Col + d.Len then
+                Some(String.concat "\n" d.Doc)
+            else
+                None)
+
+    match tyStr, doc with
+    | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc
+    | Some t, None -> Some t
+    | None, Some d -> Some d // field/case/type-decl: doc even where no type resolves yet
+    | None, None -> None
 
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (physLine, physCol, nameLength), or None. Pure — the handler
@@ -1035,6 +1083,19 @@ let run () : int =
                                 else
                                     items
 
+                            // completion detail [D:doc-comments]: the `///`
+                            // doc for a documented name. Name-keyed HERE (a
+                            // completion item IS a name; last-wins on a shared
+                            // name) — the position-keyed map stays for hover
+                            let docByName =
+                                Script.docAttachments (List.ofArray lines)
+                                |> List.choose (fun d ->
+                                    if d.Line - 1 < lines.Length && d.Col - 1 + d.Len <= lines[d.Line - 1].Length then
+                                        Some(lines[d.Line - 1].Substring(d.Col - 1, d.Len), String.concat "\n" d.Doc)
+                                    else
+                                        None)
+                                |> Map.ofList
+
                             w.WriteStartArray()
 
                             // textEdit with an explicit range: clients replace
@@ -1044,6 +1105,11 @@ let run () : int =
                             for label in items |> List.distinct |> List.truncate 200 do
                                 w.WriteStartObject()
                                 w.WriteString("label", label)
+
+                                match Map.tryFind label docByName with
+                                | Some doc -> w.WriteString("documentation", doc)
+                                | None -> ()
+
                                 w.WritePropertyName "textEdit"
                                 w.WriteStartObject()
                                 w.WritePropertyName "range"

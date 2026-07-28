@@ -3,6 +3,11 @@
 (comment) @comment
 (hash_line) @comment
 
+; /// doc comments colour distinctly from // — the third slash. A
+; query override (comment token already spans the whole run); placed
+; after the plain @comment so last-wins reclaims the /// ones.
+((comment) @comment.documentation (#match? @comment.documentation "^///"))
+
 (string) @string
 (raw_string) @string
 (interp_string) @string

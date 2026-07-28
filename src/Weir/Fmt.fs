@@ -99,7 +99,31 @@ let qualifyFile (path: string) : int =
 // text. Comments keep their text; re-flowing stays parked.
 // Pipe-headed lines keep the column-0 shell style if they use it.
 
-let formatLines (body: string list) : Result<string list, string> =
+// `///` doc canonicalization [D:doc-comments]: a doc rides the indent of
+// the declaration it attaches to (the line right after the run, if that
+// is real code). Docs are transparent to assembly, so re-indenting one
+// never changes the logical lines — the safety re-check still holds, and
+// the output is always clean under the doc-alignment lint. Idempotent:
+// an already-anchored doc is left where it is.
+let private canonicalizeDocs (out: string list) : string list =
+    let isDoc (s: string) = s.TrimStart().StartsWith "///"
+    let isCode (s: string) = (Script.stripComment s).Trim() <> ""
+    let arr = List.toArray out
+
+    for i in 0 .. arr.Length - 1 do
+        if isDoc arr[i] then
+            let mutable j = i + 1
+
+            while j < arr.Length && isDoc arr[j] do
+                j <- j + 1
+
+            if j < arr.Length && isCode arr[j] then
+                let anchor = arr[j].Length - arr[j].TrimStart().Length
+                arr[i] <- String.replicate anchor " " + arr[i].TrimStart()
+
+    List.ofArray arr
+
+let private formatLinesCore (body: string list) : Result<string list, string> =
     // trailing whitespace is never significant (strings are single-line and
     // close with a quote), so both equivalence passes compare TrimEnd'd code
     let commentOnly (raw: string) =
@@ -346,6 +370,9 @@ let formatLines (body: string list) : Result<string list, string> =
                         |> List.mapi (fun i (pre, post) -> if Set.contains (i + 1) revertLines then pre else post)
 
                     Ok final
+
+let formatLines (body: string list) : Result<string list, string> =
+    formatLinesCore body |> Result.map canonicalizeDocs
 
 let formatFile (checkOnly: bool) (path: string) : int =
     if not (System.IO.File.Exists path) then

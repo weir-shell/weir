@@ -475,6 +475,12 @@ comment lines are transparent, so blocks group freely with gaps. An
 indented `let` closes at the next line of the same indent — F# light
 syntax.
 
+Doc comments: a `///` line attaches to the declaration right below it
+(a blank line breaks the link) and renders on hover and in completion
+— on let bindings, `type` declarations, record fields, and union
+cases. The editor shows the type first, then the doc. A doc must sit at
+its declaration's indent; `weir fmt` keeps it there.
+
 ## Per-child environment
 
 The env sigil injects variables into a child process — an overlay on

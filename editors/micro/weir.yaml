@@ -164,6 +164,17 @@ rules:
         end: "'"
         rules: []
 
+    # ---- doc comments (///): a distinct region BEFORE the plain
+    # comment so the third slash wins the tie (region openers are tried
+    # in order); the `comment.doc` group lets a theme brighten docs,
+    # falling back to `comment` when it does not. RE2 needs no lookahead
+    # here — three literal slashes — so this is NOT micro-exempt. ----
+    # rule: doc-comment
+    - comment.doc:
+        start: "(^|[ \t])///"
+        end: "$"
+        rules: []
+
     # ---- comments (weir rule: // at line start or after whitespace;
     # bareword URLs in command lines stay uncolored). A REGION, and
     # deliberately LAST: pattern rules overwrite earlier pattern

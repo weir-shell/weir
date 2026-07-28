@@ -13,6 +13,9 @@
   "scopeName": "source.weir",
   "patterns": [
     {
+      "include": "#doc-comment"
+    },
+    {
       "include": "#comment"
     },
     {
@@ -95,6 +98,10 @@
     }
   ],
   "repository": {
+    "doc-comment": {
+      "match": "(?:^|(?<=[ \\t]))///.*$",
+      "name": "comment.line.documentation.weir"
+    },
     "comment": {
       "match": "(?:^|(?<=[ \\t]))//.*$",
       "name": "comment.line.double-slash.weir"
