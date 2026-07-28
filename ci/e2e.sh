@@ -806,6 +806,19 @@ print(f"inventories match ({len(micro)} rules, {len(exempt)} stated micro-exempt
 PYEOF
     echo "e2e ok: grammar inventories match (micro == tmLanguage)"
 
+    # tree-sitter highlight DRIFT guard: the Zed extension bundles its own
+    # copy of highlights.scm (Zed reads languages/<lang>/, not the grammar
+    # repo's queries), so the two MUST stay identical — six coloring fixes
+    # updated only the canonical copy and left Zed's stale (raw_verbatim
+    # uncoloured -> gray strings, missing member/field/type reclaims). Same
+    # grammar, same query engine, standard captures: identical is the invariant.
+    if ! diff -q "$(dirname "$0")/../editors/tree-sitter-weir/queries/highlights.scm" \
+        "$(dirname "$0")/../editors/zed/languages/weir/highlights.scm" >/dev/null; then
+        echo "FAIL: Zed highlights.scm has drifted from tree-sitter-weir/queries — copy the canonical over" >&2
+        exit 1
+    fi
+    echo "e2e ok: Zed highlights == the canonical tree-sitter-weir queries"
+
     # --- REPL line editor under a pty (2026-07-21) ---------------------
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
     echo "e2e ok: repl Ctrl+Left/Right word navigation"
