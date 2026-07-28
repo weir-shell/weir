@@ -496,75 +496,39 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             cases
             |> List.tryPick (fun (n, tyO) -> if n = word then Some(caseSig (n, tyO)) else None)
 
-let hoverType (lines: string list) (line: int) (col: int) : string option =
-    // (type text, builtin doc for the resolved name) at the cursor
-    let resolved =
-        let _, stmts, _, _ = Script.analyzeLines "hover" lines
+/// a keyword, an operator, punctuation, whitespace, or the wildcard `_`
+/// hovers as NOTHING — never the enclosing node's type [D:hover-silence].
+/// A wrong `unit`/`int` on the most-hovered tokens teaches the user that
+/// hover lies; null is the honest answer. Runs BEFORE the enclosing-node
+/// fallback, scoped by what the cursor is ON — identifiers, numbers, and
+/// bool literals still answer.
+let private onSilentToken (text: string) (jcol: int) : bool =
+    if jcol < 1 || jcol > text.Length then
+        true
+    else
+        let c = text[jcol - 1]
 
-        toLogical stmts line col
-        |> Option.map (fun (ll, chk, jcol) ->
-            let binderTy =
-                letBinderAt ll.Text jcol
-                |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
+        if System.Char.IsLetterOrDigit c || c = '_' then
+            match wordAt text jcol with
+            | Some "_" -> true // the wildcard pattern
+            | Some "true"
+            | Some "false" -> false // bool LITERALS (in the keyword set) answer
+            | Some w -> Set.contains w Parser.keywords
+            | None -> false
+        else
+            true // operator / punctuation / whitespace
 
-            let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
-            let node = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
+// hoverType is defined AFTER definitionFor — it composes with it for the
+// Group 1a lookup (a usage / field / case reference resolves to its
+// declaration site, and the `///` doc is read there) [D:hover-completeness].
 
-            let ty =
-                match binderTy |> Option.orElse paramTy with
-                | Some t -> Some(formatTy t)
-                | None ->
-                    match node with
-                    | Some n -> Some(formatTy n.Ty)
-                    | None ->
-                        match chk.Kind with
-                        | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
-                        | Script.KType decl -> wordAt ll.Text jcol |> Option.bind (declHover decl)
-                        | _ -> None
-
-            // a builtin's doc [D:builtin-docs] — out-of-band, half 1's
-            // representation. The name comes off the typed node (TEVar for
-            // members/bare, mapped back from the reifier's |completed key;
-            // the boundary forms carry their own node), and — for a builtin
-            // TYPE name, which is no expression node — off the word at the
-            // cursor as a fallback.
-            let nodeDoc =
-                node
-                |> Option.bind (fun n ->
-                    match n.Kind with
-                    | Check.TEVar name -> Some(Builtins.reifierSurface name |> Option.defaultValue name)
-                    | Check.TEEnvLoad _ -> Some "Env.load"
-                    | Check.TEArgsLoad _ -> Some "Args.load"
-                    | Check.TEFrom(fmt, _) -> Some $"from {fmt}"
-                    | Check.TETo fmt -> Some $"to {fmt}"
-                    | _ -> None)
-                |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)
-
-            let wordDoc =
-                wordAt ll.Text jcol |> Option.bind (fun w -> Map.tryFind w Builtins.builtinDocs)
-
-            let builtinDoc =
-                nodeDoc |> Option.orElse wordDoc |> Option.map Builtins.renderBuiltinDoc
-
-            ty, builtinDoc)
-
-    let tyStr = resolved |> Option.bind fst
-
-    // a user `///` doc at the cursor wins; else the builtin's doc
-    let doc =
-        Script.docAttachments lines
-        |> List.tryPick (fun d ->
-            if d.Line = line && d.Col <= col && col < d.Col + d.Len then
-                Some(String.concat "\n" d.Doc)
-            else
-                None)
-        |> Option.orElse (resolved |> Option.bind snd)
-
-    match tyStr, doc with
-    | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc
-    | Some t, None -> Some t
-    | None, Some d -> Some d
-    | None, None -> None
+/// the type of a local binder (a pattern PAYLOAD binder, an inner let)
+/// read from a USE of it in the typed tree — the binder position itself
+/// is no expression node, but its uses carry the type [Group 2].
+let rec private varUseType (name: string) (te: Check.TypedExpr) : Ty option =
+    match te.Kind with
+    | Check.TEVar n when n = name -> Some te.Ty
+    | _ -> Check.childExprs te |> List.tryPick (varUseType name)
 
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (physLine, physCol, nameLength), or None. Pure — the handler
@@ -718,6 +682,143 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
                     wordAt useLl.Text jcol
                     |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
                 | _ -> None))
+
+/// hover text at (1-based physical line, col), or None. Pure. TYPE first,
+/// then the `///` doc. Silence guard first [D:hover-silence]; then the
+/// type from the binder/param/typed-node/scheme, with a field IN A LITERAL
+/// resolved to the FIELD's type (not the record's) [Group 1c]; then the
+/// doc — at the cursor for a declaration, or at the RESOLVED declaration
+/// site for a usage / field / case reference (definitionFor) [Group 1a],
+/// else the builtin's [D:builtin-docs].
+let hoverType (lines: string list) (line: int) (col: int) : string option =
+    let _, stmts, _, _ = Script.analyzeLines "hover" lines
+
+    match toLogical stmts line col with
+    | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
+        let binderTy =
+            letBinderAt ll.Text jcol
+            |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
+
+        let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
+        let node = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
+
+        // Group 1c: a field NAME in a record literal `{ Field = … }` hovers
+        // as the FIELD's type, not the record's (nodeAt sees only TERecord)
+        let fieldInLiteral =
+            match node with
+            | Some { Kind = Check.TERecord(recName, _) } ->
+                wordAt ll.Text jcol
+                |> Option.bind (fun w ->
+                    match Map.tryFind recName chk.Env.Types with
+                    | Some(Record def) ->
+                        def.Fields
+                        |> List.tryPick (fun (f, fty) -> if f = w then Some(formatTy fty) else None)
+                    | _ -> None)
+            | _ -> None
+
+        // Group 2: a union CASE — in a pattern (`| Pulled n ->`) or as a
+        // value (`Pulled ctx`) — hovers as its constructor signature. Keyed
+        // off the word (pattern positions are no expression node); skipped
+        // at the type DECLARATION, where declHover renders it instead.
+        let constructorSig =
+            match chk.Kind with
+            | Script.KType _ -> None
+            | _ ->
+                wordAt ll.Text jcol
+                |> Option.bind (fun w ->
+                    chk.Env.Types
+                    |> Map.tryPick (fun tn def ->
+                        match def with
+                        | Union d ->
+                            d.Cases
+                            |> List.tryPick (fun (c, payload) ->
+                                if c = w then
+                                    match payload with
+                                    | Some pty -> Some $"{c} : {formatTy pty} -> {tn}"
+                                    | None -> Some $"{c} : {tn}"
+                                else
+                                    None)
+                        | _ -> None))
+
+        let word = wordAt ll.Text jcol
+
+        // an EXACT use of a name (TEVar at the cursor) wins; else a pattern
+        // PAYLOAD binder resolved from a use of it [Group 2]; else the
+        // enclosing node's type; else the binder-name scheme / declaration.
+        let exactUse =
+            match node with
+            | Some({ Kind = Check.TEVar vn } as n) when Some vn = word -> Some(formatTy n.Ty)
+            | _ -> None
+
+        let ty =
+            fieldInLiteral
+            |> Option.orElse constructorSig
+            |> Option.orElseWith (fun () -> binderTy |> Option.orElse paramTy |> Option.map formatTy)
+            |> Option.orElse exactUse
+            |> Option.orElseWith (fun () ->
+                word
+                |> Option.bind (fun w -> teOf chk |> Option.bind (varUseType w))
+                |> Option.map formatTy)
+            |> Option.orElseWith (fun () -> node |> Option.map (fun n -> formatTy n.Ty))
+            |> Option.orElseWith (fun () ->
+                match chk.Kind with
+                // the top-level scheme only ON the binder name — never as a
+                // fallback for an unresolved position in the statement
+                | Script.KLet(name, sch, _) when word = Some name -> Some(formatTy sch.Ty)
+                | Script.KType decl -> word |> Option.bind (declHover decl)
+                | _ -> None)
+
+        let nodeDoc =
+            node
+            |> Option.bind (fun n ->
+                match n.Kind with
+                | Check.TEVar name -> Some(Builtins.reifierSurface name |> Option.defaultValue name)
+                | Check.TEEnvLoad _ -> Some "Env.load"
+                | Check.TEArgsLoad _ -> Some "Args.load"
+                | Check.TEFrom(fmt, _) -> Some $"from {fmt}"
+                | Check.TETo fmt -> Some $"to {fmt}"
+                | _ -> None)
+            |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)
+
+        let wordDoc =
+            wordAt ll.Text jcol |> Option.bind (fun w -> Map.tryFind w Builtins.builtinDocs)
+
+        let builtinDoc =
+            nodeDoc |> Option.orElse wordDoc |> Option.map Builtins.renderBuiltinDoc
+
+        // the `///` doc: at the cursor for a DECLARATION site (half 1's key)
+        let sourceDoc =
+            Script.docAttachments lines
+            |> List.tryPick (fun d ->
+                if d.Line = line && d.Col <= col && col < d.Col + d.Len then
+                    Some(String.concat "\n" d.Doc)
+                else
+                    None)
+
+        // Group 1a: a usage / field / case REFERENCE resolves to its
+        // declaration site (definitionFor), and the doc is read there —
+        // shadowing falls out (definitionFor is innermost-wins)
+        let usageDoc =
+            match sourceDoc with
+            | Some _ -> None
+            | None ->
+                definitionFor lines line col
+                |> Option.bind (fun (dl, dc, _) ->
+                    Script.docAttachments lines
+                    |> List.tryPick (fun d ->
+                        if d.Line = dl && d.Col = dc then
+                            Some(String.concat "\n" d.Doc)
+                        else
+                            None))
+
+        let doc = sourceDoc |> Option.orElse usageDoc |> Option.orElse builtinDoc
+
+        match ty, doc with
+        | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc
+        | Some t, None -> Some t
+        | None, Some d -> Some d
+        | None, None -> None
+    | _ -> None
 
 // ---- the server ---------------------------------------------------
 

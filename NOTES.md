@@ -1,5 +1,55 @@
 # Spike Notes
 
+## Hover completeness — reference sites, patterns, silence (2026-07-28)
+
+Five dogfooding reports against the shipped hover, all one diagnosis:
+half 1 wired hover at DECLARATION sites; every report is a hover at a
+REFERENCE, a PATTERN, or a TOKEN, where `nodeAt` finds nothing and falls
+back to the enclosing expression — whose type is usually `unit`/`int`.
+
+Group 3 first, per the plan — cheapest, highest value: a wrong `unit` on
+the most-hovered tokens teaches the user that hover lies. `onSilentToken`
+returns null for a keyword / operator / punctuation / whitespace / `_`,
+BEFORE the enclosing-node fallback, scoped by what the cursor is ON. The
+one subtlety: `true`/`false` are in the keyword set but are LITERALS, so
+they answer.
+
+Groups 1a/1c/2 all reduce to "the machinery exists, only the wiring is
+missing." 1a composes with `definitionFor` — a usage / field / case
+reference resolves to its declaration site, and the `///` doc is read
+there (so `hoverType` moved BELOW `definitionFor`); shadowing is free
+(innermost-wins). 1c: a field in a LITERAL is only a `TERecord` node, so
+it showed the record type — resolve the field's own type off the record
+def. 2: a union case in a pattern is no expression node, so key the
+constructor signature off the WORD (skipped at the type decl, where
+declHover renders it); the payload binder is no node either, but its USES
+carry the type (`varUseType`) — which had to beat the enclosing-match
+fallback, so the order is exact-TEVar-use, then use-of-the-word, then the
+enclosing node, and the KLet scheme fires ONLY on the binder name.
+
+Group 1b (module-member hover) was already shipped in half 2 — the plan
+named it the half-2 prerequisite, but half 2 wired `TEVar -> builtinDocs`
+already. So half 2 did not, in fact, wait on this.
+
+The matrix (site / expected / before / verdict):
+
+| hover site | expected | before | verdict |
+|---|---|---|---|
+| `let`/`if`/`then`/`else`/`in` | nothing | enclosing type | FIXED G3 |
+| `\|` / `->` / `=` / `;` / brackets | nothing | enclosing type | FIXED G3 |
+| `_` wildcard | nothing | enclosing type | FIXED G3 |
+| a binding usage | type + decl doc | type only | FIXED 1a |
+| a module member | type + doc | type + doc | DONE (half 2) |
+| field access `t.f` | field type + doc | field type only | FIXED 1c |
+| field in literal `{ F = }` | field type + doc | record type | FIXED 1c |
+| pattern constructor | signature + doc | nothing | FIXED G2 |
+| payload binder | its own type | nothing | FIXED G2 |
+| an identifier / literal | its type | its type | UNCHANGED (negative) |
+
+Pinned per group, nulls included, at least one per group over the
+PROTOCOL (the helix false-alarm precedent: a null at a space is a correct
+answer). 915 unit + 4 protocol probes; e2e + timing green.
+
 ## Result removed — the apologizing doc (2026-07-28)
 
 Documenting the builtin types in half 2 surfaced a smell: `Result`'s doc
