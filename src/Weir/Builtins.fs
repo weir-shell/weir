@@ -1263,12 +1263,22 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
 type BuiltinDoc =
     { Summary: string
       Example: string option
-      Pointer: string option }
+      Pointer: string option
+      // parameter names for the annotated hover signature
+      // [D:annotated-signature] — a SEPARATE field, never parsed out of
+      // the prose (that is D1's F#-literal trap). Empty -> arrow fallback.
+      // Half 2's writing pass names every parameter; this is a sample.
+      Params: string list }
 
 let private bd (summary: string) (example: string option) (pointer: string option) : BuiltinDoc =
     { Summary = summary
       Example = example
-      Pointer = pointer }
+      Pointer = pointer
+      Params = [] }
+
+/// name a member's parameters for the annotated signature (a `{ bd … with
+/// Params = … }` shorthand for the sample; the full pass is half 2)
+let private named (ps: string list) (d: BuiltinDoc) : BuiltinDoc = { d with Params = ps }
 
 /// keyed as the name appears at a use site: `Seq.map`, a bare `print`,
 /// `Env.load`. Filled set by set; coverage is reported as a fraction.
@@ -1281,6 +1291,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Apply a function to every element, lazily."
               (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.force")
               None
+          |> named [ "f"; "xs" ]
           "Seq.where",
           bd
               "Keep the elements a predicate accepts, lazily."
@@ -1291,6 +1302,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Map and drop the None results in one lazy pass."
               (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.force")
               None
+          |> named [ "f"; "xs" ]
           "Seq.fold",
           bd
               "Left-fold: thread an accumulator through the elements."
@@ -1363,6 +1375,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd "Apply a function inside a Some, pass None through." (Some "Option.map (fun x -> x + 1) (Some 5)") None
           "Option.defaultValue",
           bd "The Some value, or a fallback when None." (Some "Option.defaultValue 0 (Some 5)") None
+          |> named [ "fallback"; "opt" ]
           "Option.defaultWith",
           bd
               "Like defaultValue, but the fallback is computed only when None."
@@ -1391,7 +1404,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.toUpper", bd "Uppercase (invariant culture)." (Some "Str.toUpper \"abc\"") None
           "Str.split", bd "Split on a separator into a sequence." (Some "Str.split \",\" \"a,b,c\" |> Seq.force") None
           "Str.join", bd "Join a sequence of strings with a separator." (Some "Str.join \",\" [\"a\"; \"b\"]") None
-          "Str.replace", bd "Replace every occurrence of a substring." (Some "Str.replace \"a\" \"b\" \"aba\"") None
+          "Str.replace",
+          bd "Replace every occurrence of a substring." (Some "Str.replace \"a\" \"b\" \"aba\"") None
+          |> named [ "old"; "new"; "s" ]
           "Str.length", bd "The number of characters." (Some "Str.length \"abc\"") None
           "Str.sub", bd "A substring by start index and length." (Some "Str.sub 0 2 \"abc\"") None
           "Str.toInt", bd "Parse an int (raises on a non-number)." (Some "Str.toInt \"42\"") None
@@ -1400,6 +1415,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.tryIndexOf", bd "The index of a substring as an Option." (Some "Str.tryIndexOf \"b\" \"abc\"") None
           "Str.isMatch",
           bd "True when a regex matches anywhere in the string." (Some "Str.isMatch \"[0-9]+\" \"x42\"") None
+          |> named [ "pattern"; "subject" ]
           "Str.rmatch",
           bd "The first regex match's groups as an Option of a sequence." (Some "Str.rmatch \"([0-9]+)\" \"x42\"") None
           "Str.rmatchAll",
