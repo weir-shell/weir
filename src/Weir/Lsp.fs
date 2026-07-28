@@ -768,15 +768,18 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
                 | Script.KType decl -> word |> Option.bind (declHover decl)
                 | _ -> None)
 
+        // the boundary-form nodes span the WHOLE form (`Env.load TokenEnv`),
+        // so gate each to the word that names it — hovering the module `Env`
+        // or the type argument must NOT surface `load`'s doc; only `load` does
         let nodeDoc =
             node
             |> Option.bind (fun n ->
                 match n.Kind with
                 | Check.TEVar name -> Some(Builtins.reifierSurface name |> Option.defaultValue name)
-                | Check.TEEnvLoad _ -> Some "Env.load"
-                | Check.TEArgsLoad _ -> Some "Args.load"
-                | Check.TEFrom(fmt, _) -> Some $"from {fmt}"
-                | Check.TETo fmt -> Some $"to {fmt}"
+                | Check.TEEnvLoad _ when word = Some "load" -> Some "Env.load"
+                | Check.TEArgsLoad _ when word = Some "load" -> Some "Args.load"
+                | Check.TEFrom(fmt, _) when word = Some "from" || word = Some fmt -> Some $"from {fmt}"
+                | Check.TETo fmt when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
                 | _ -> None)
             |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)
 

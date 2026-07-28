@@ -3412,11 +3412,16 @@ let semanticTokenTests =
               Expect.stringContains h "Seq.force" "the executable example is present"
               Expect.isTrue (h.IndexOf "->" < h.IndexOf "every element") "type first, then doc"
           }
-          test "builtin docs: boundary forms hover (Env.load resolves via its own node) [D:builtin-docs]" {
+          test "builtin docs: Env.load's doc shows on `load`, NOT on the module Env or the type arg [D:builtin-docs]" {
               let lines = [ "type Cfg = { name: string }"; "let c = Env.load Cfg" ]
-              let h = Weir.Lsp.hoverType lines 2 11 |> Option.defaultValue "" // on Env.load
-              Expect.stringContains h "typed record" "the Env.load summary reaches hover through TEEnvLoad"
-              Expect.stringContains h "field law" "and its law pointer"
+
+              let onLoad = Weir.Lsp.hoverType lines 2 14 |> Option.defaultValue "" // on `load`
+              Expect.stringContains onLoad "typed record" "the Env.load summary reaches hover on `load`"
+              Expect.stringContains onLoad "field law" "and its law pointer"
+
+              // the reported bug: hovering the module `Env` must NOT surface load's doc
+              let onEnv = Weir.Lsp.hoverType lines 2 10 |> Option.defaultValue "" // on `Env`
+              Expect.isFalse (onEnv.Contains "field law") "hovering the module Env does not surface load's doc"
           }
           test "builtin docs: reifier hover maps the |completed key back to complete [D:builtin-docs]" {
               let lines = [ "let c = echo hi | complete" ]
