@@ -135,8 +135,16 @@ expect "POSIX one-liner via the external shell" '["a"; "b"]' "$out"
 out=$($BIN -e 'sh -c "exit 7" | complete |> _.exitCode')
 expect "sh lines can complete now (old builtin boundary gone)" "7 : int" "$out"
 
-out=$($BIN -e 'match Ok 3 with | Ok v -> v | Error e -> Str.length e')
-expect "prelude Result with cross-arm inference" "3 : int" "$out"
+# a 2-param generic union checks + evals through the binary (was the
+# prelude-Result pin; Result removed [D:no-result], the fixture is now a
+# locally-declared Either)
+eitherdir=$(mktemp -d)
+cat > "$eitherdir/either.weir" <<'WEOF'
+type Either<'a, 'e> = Left of 'a | Right of 'e
+print (match Left 3 with | Left v -> v | Right e -> Str.length e)
+WEOF
+out=$($BIN "$eitherdir/either.weir")
+expect "a declared 2-param generic union: cross-arm inference through the binary" "3" "$out"
 
 out=$($BIN -e 'ls |> Seq.sortBy _.bytes |> Seq.map _.name |> Seq.head' 2>/dev/null | head -1)
 expect "qualified module pipeline" " : string" "$out"

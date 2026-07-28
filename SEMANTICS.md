@@ -266,7 +266,7 @@ weir rejects rather than guesses.
   `None == Some 1` instantiates and binds — then the resolved type must be
   equatable, recursively through applied constructors (`Option<int>` yes,
   `Option<int -> int>` no).
-- **The prelude** is plain weir source (Option, Result) evaluated through the
+- **The prelude** is plain weir source (Option) evaluated through the
   ordinary declaration path at session start — no host-registered special
   types — and embedded in the binary, so the single-file story holds.
 - **Rows are records-only and close on discharge**: field access on an unknown

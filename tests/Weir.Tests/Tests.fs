@@ -52,6 +52,9 @@ let private env =
     let e =
         preludeTypeEnv
         |> declare "type Proc = Running of int | Stopped"
+        // a 2-param generic union — the type-system fixture that Result
+        // used to be, now a local declaration [D:no-result]
+        |> declare "type Either<'a, 'e> = Left of 'a | Right of 'e"
         |> declare "type Point = { X: int; Y: int }"
         // record-update battery: two records sharing an int field N
         |> declare "type UpdP = { UpN: int; UpT: string }"
@@ -67,7 +70,8 @@ let private env =
             |> Map.add "double" (generalize (TFun(TInt, TInt))) }
 
 let private ctorValues =
-    [ "type Proc = Running of int | Stopped" ]
+    [ "type Proc = Running of int | Stopped"
+      "type Either<'a, 'e> = Left of 'a | Right of 'e" ]
     |> List.collect (fun d ->
         match (parseDecl d).Body with
         | DUnion cases -> constructorValues cases
@@ -1882,9 +1886,10 @@ let genericsTests =
           test "match binds at the instantiated type" {
               expectValue "match Some 5 with | Some x -> x + 1 | None -> 0" (VInt 6)
           }
-          test "Result infers across arms" {
-              Expect.equal (checkOk "match Ok 3 with | Ok v -> v | Error e -> Str.length e").Ty (TInt) ""
-              expectValue "match Error \"boom\" with | Ok v -> v | Error e -> Str.length e" (VInt 4)
+          test "a 2-param generic union infers across arms" {
+              // was the Result fixture; Result left the prelude [D:no-result]
+              Expect.equal (checkOk "match Left 3 with | Left v -> v | Right e -> Str.length e").Ty (TInt) ""
+              expectValue "match Right \"boom\" with | Left v -> v | Right e -> Str.length e" (VInt 4)
           }
           test "missing None is a hard error" {
               let terr = checkErr "match Some 1 with | Some x -> x"
@@ -3425,6 +3430,74 @@ let semanticTokenTests =
               Expect.stringContains h "finished command" "the Completed type doc via the word fallback"
               Expect.stringContains h "complete" "names where you get one"
           }
+          test
+              "hover: keywords / operators / wildcard are silent; identifiers & literals still answer [D:hover-silence]" {
+              let lines = [ "let x = if true then 1 else 2" ]
+
+              let none c m =
+                  Expect.isNone (Weir.Lsp.hoverType lines 1 c) m
+              // the silence matrix — a wrong `unit`/`int` on these teaches hover lies
+              none 1 "let"
+              none 7 "="
+              none 9 "if"
+              none 18 "then"
+              none 25 "else"
+              none 16 "a space between tokens"
+              // the negatives: real tokens one column over still answer
+              Expect.isSome (Weir.Lsp.hoverType lines 1 5) "the binder x answers"
+              Expect.equal (Weir.Lsp.hoverType lines 1 13) (Some "bool") "the true literal answers"
+              Expect.equal (Weir.Lsp.hoverType lines 1 22) (Some "int") "the int literal answers"
+
+              // match arm: `match` / `with` / `|` / `->` / `_` all silent
+              let m = [ "let r = match 1 with | 1 -> 10 | _ -> 0" ]
+
+              let noneM c mm =
+                  Expect.isNone (Weir.Lsp.hoverType m 1 c) mm
+
+              noneM 9 "match"
+              noneM 17 "with"
+              noneM 22 "| (match arm)"
+              noneM 26 "-> (arrow)"
+              noneM 34 "_ (wildcard)"
+          }
+          test
+              "hover: a usage shows its declaration's doc; a field in a literal shows the FIELD's type + doc [D:hover-completeness]" {
+              // 1a: a usage of a documented binding resolves to the decl doc
+              let use_ = [ "/// bumps by one"; "let inc x = x + 1"; "let y = inc 5" ]
+              let onUsage = Weir.Lsp.hoverType use_ 3 9 |> Option.defaultValue "" // `inc` at the call site
+              Expect.stringContains onUsage "->" "the usage shows the type"
+              Expect.stringContains onUsage "bumps by one" "and the DECLARATION's doc (resolved via definitionFor)"
+
+              // 1c literal: a field name in `{ Field = … }` shows the field's type + doc
+              let lit =
+                  [ "type Target = {"
+                    "    /// the bicep path"
+                    "    BicepPath: string"
+                    "}"
+                    "let t = { BicepPath = \"b\" }" ]
+
+              let onField = Weir.Lsp.hoverType lit 5 12 |> Option.defaultValue "" // BicepPath in the literal
+              Expect.stringContains onField "string" "the FIELD's type, not the record"
+              Expect.isFalse (onField.Contains "Target") "not the record type Target"
+              Expect.stringContains onField "the bicep path" "and the field's doc"
+          }
+          test
+              "hover: a pattern constructor shows its signature; the payload binder shows its OWN type [D:hover-completeness]" {
+              // the payload type (string) deliberately differs from the arm
+              // result (int) — so the binder must resolve to its OWN type,
+              // not the enclosing match's. `r` is bound to a PR value so the
+              // constructor pattern has a known union to match.
+              let lines =
+                  [ "type PR = Pulled of string | Idle"
+                    "let r = Pulled \"x\""
+                    "let g = match r with | Pulled s -> Str.length s | Idle -> 0" ]
+
+              let onCtor = Weir.Lsp.hoverType lines 3 26 |> Option.defaultValue "" // `Pulled` in the pattern
+              Expect.stringContains onCtor "Pulled : string -> PR" "the constructor signature"
+
+              let onPayload = Weir.Lsp.hoverType lines 3 31 |> Option.defaultValue "" // `s`, the payload binder
+              Expect.equal onPayload "string" "the payload binder's OWN type, not the arm's int"
+          }
           test "an errored let warns its command heads and suppresses the unbound cascade [PLAN-diagnostics-arc B5+B6]" {
               // B6: the failed deploy binds a HOLE — one real error,
               // zero "unbound 'deploy'. Did you mean 'Deploy'?" echoes,
@@ -4031,7 +4104,7 @@ let optionSweepTests =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"parses: {line}"
 
-              okParses "let z = match Ok 1 with | Ok n -> n | _ -> 0"
+              okParses "let z = match Some 1 with | Some n -> n | _ -> 0"
               okParses "let (a, b) = (1, 2)"
               okParses "let z = match 1 with | _ -> 0"
               okParses "let z = match 5 with | n when n > 0 -> 1 | _ -> 0"
