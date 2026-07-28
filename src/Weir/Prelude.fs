@@ -3,9 +3,12 @@ module Weir.Prelude
 open Weir.Ast
 open Weir.Types
 
-let source =
-    [ "type Option<'a> = Some of 'a | None"
-      "type Result<'a, 'e> = Ok of 'a | Error of 'e" ]
+// Option is the only prelude type: weir's error model is exceptions
+// (`fail`/partial builtins), exit codes, and `Completed` from command
+// interaction — never a Result value. `Option` earns its place (the
+// `try*` family returns one); a Result nothing produced or consumed was
+// removed [D:no-result].
+let source = [ "type Option<'a> = Some of 'a | None" ]
 
 let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
     source
