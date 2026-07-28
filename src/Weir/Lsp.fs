@@ -497,30 +497,60 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             |> List.tryPick (fun (n, tyO) -> if n = word then Some(caseSig (n, tyO)) else None)
 
 let hoverType (lines: string list) (line: int) (col: int) : string option =
-    let tyStr =
+    // (type text, builtin doc for the resolved name) at the cursor
+    let resolved =
         let _, stmts, _, _ = Script.analyzeLines "hover" lines
 
         toLogical stmts line col
-        |> Option.bind (fun (ll, chk, jcol) ->
+        |> Option.map (fun (ll, chk, jcol) ->
             let binderTy =
                 letBinderAt ll.Text jcol
                 |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetType name jcol))
 
             let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
-            let fromExpr = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
+            let node = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
 
-            match binderTy |> Option.orElse paramTy with
-            | Some t -> Some(formatTy t)
-            | None ->
-                match fromExpr with
-                | Some node -> Some(formatTy node.Ty)
+            let ty =
+                match binderTy |> Option.orElse paramTy with
+                | Some t -> Some(formatTy t)
                 | None ->
-                    match chk.Kind with
-                    | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
-                    | Script.KType decl -> wordAt ll.Text jcol |> Option.bind (declHover decl)
-                    | _ -> None)
+                    match node with
+                    | Some n -> Some(formatTy n.Ty)
+                    | None ->
+                        match chk.Kind with
+                        | Script.KLet(_, sch, _) -> Some(formatTy sch.Ty)
+                        | Script.KType decl -> wordAt ll.Text jcol |> Option.bind (declHover decl)
+                        | _ -> None
 
-    // the `///` doc for the declaration whose NAME span holds the cursor
+            // a builtin's doc [D:builtin-docs] — out-of-band, half 1's
+            // representation. The name comes off the typed node (TEVar for
+            // members/bare, mapped back from the reifier's |completed key;
+            // the boundary forms carry their own node), and — for a builtin
+            // TYPE name, which is no expression node — off the word at the
+            // cursor as a fallback.
+            let nodeDoc =
+                node
+                |> Option.bind (fun n ->
+                    match n.Kind with
+                    | Check.TEVar name -> Some(Builtins.reifierSurface name |> Option.defaultValue name)
+                    | Check.TEEnvLoad _ -> Some "Env.load"
+                    | Check.TEArgsLoad _ -> Some "Args.load"
+                    | Check.TEFrom(fmt, _) -> Some $"from {fmt}"
+                    | Check.TETo fmt -> Some $"to {fmt}"
+                    | _ -> None)
+                |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)
+
+            let wordDoc =
+                wordAt ll.Text jcol |> Option.bind (fun w -> Map.tryFind w Builtins.builtinDocs)
+
+            let builtinDoc =
+                nodeDoc |> Option.orElse wordDoc |> Option.map Builtins.renderBuiltinDoc
+
+            ty, builtinDoc)
+
+    let tyStr = resolved |> Option.bind fst
+
+    // a user `///` doc at the cursor wins; else the builtin's doc
     let doc =
         Script.docAttachments lines
         |> List.tryPick (fun d ->
@@ -528,11 +558,12 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
                 Some(String.concat "\n" d.Doc)
             else
                 None)
+        |> Option.orElse (resolved |> Option.bind snd)
 
     match tyStr, doc with
     | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc
     | Some t, None -> Some t
-    | None, Some d -> Some d // field/case/type-decl: doc even where no type resolves yet
+    | None, Some d -> Some d
     | None, None -> None
 
 /// definition site for the identifier at (1-based physical line, col):
@@ -1106,7 +1137,14 @@ let run () : int =
                                 w.WriteStartObject()
                                 w.WriteString("label", label)
 
-                                match Map.tryFind label docByName with
+                                // a user `///` doc wins; else the builtin's
+                                // doc (Seq.map, print, …) [D:builtin-docs]
+                                match
+                                    Map.tryFind label docByName
+                                    |> Option.orElse (
+                                        Map.tryFind label Builtins.builtinDocs |> Option.map Builtins.renderBuiltinDoc
+                                    )
+                                with
                                 | Some doc -> w.WriteString("documentation", doc)
                                 | None -> ()
 

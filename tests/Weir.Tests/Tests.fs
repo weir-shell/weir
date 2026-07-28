@@ -3386,6 +3386,45 @@ let semanticTokenTests =
                   | Ok out2 -> Expect.equal out2 out "fmt is idempotent with docs present"
                   | Error e -> failtestf "second fmt failed: %s" e
           }
+          test "builtin docs: every doc example runs clean [D:builtin-docs]" {
+              // D1 = (a) EXECUTABLE, weir-side: the Example is registry DATA
+              // run through the same check+eval path, not prose parsed from
+              // an F# literal. A rotted example fails the build here.
+              for KeyValue(name, d) in Weir.Builtins.builtinDocs do
+                  match d.Example with
+                  | None -> ()
+                  | Some ex ->
+                      try
+                          run ex |> ignore
+                      with e ->
+                          failtestf "the doc example for '%s' failed to run: %s\n%s" name ex e.Message
+          }
+          test "builtin docs: hover on a builtin shows its type first, then the doc [D:builtin-docs]" {
+              let lines = [ "let r = [1;2;3] |> Seq.map (fun x -> x + 1) |> Seq.force" ]
+              let h = Weir.Lsp.hoverType lines 1 22 |> Option.defaultValue "" // on Seq.map
+              Expect.stringContains h "->" "the type is present"
+              Expect.stringContains h "every element" "the summary is present"
+              Expect.stringContains h "Seq.force" "the executable example is present"
+              Expect.isTrue (h.IndexOf "->" < h.IndexOf "every element") "type first, then doc"
+          }
+          test "builtin docs: boundary forms hover (Env.load resolves via its own node) [D:builtin-docs]" {
+              let lines = [ "type Cfg = { name: string }"; "let c = Env.load Cfg" ]
+              let h = Weir.Lsp.hoverType lines 2 11 |> Option.defaultValue "" // on Env.load
+              Expect.stringContains h "typed record" "the Env.load summary reaches hover through TEEnvLoad"
+              Expect.stringContains h "field law" "and its law pointer"
+          }
+          test "builtin docs: reifier hover maps the |completed key back to complete [D:builtin-docs]" {
+              let lines = [ "let c = echo hi | complete" ]
+              let h = Weir.Lsp.hoverType lines 1 22 |> Option.defaultValue "" // on `complete`
+              Expect.stringContains h "Completed record" "the reifier's doc reaches hover through TEVar |completed"
+              Expect.stringContains h "output goes where the meaning goes" "the reifier law pointer"
+          }
+          test "builtin docs: a builtin type name hovers its doc (word-at-cursor fallback) [D:builtin-docs]" {
+              let lines = [ "type W = { c: Completed }" ]
+              let h = Weir.Lsp.hoverType lines 1 18 |> Option.defaultValue "" // on `Completed`
+              Expect.stringContains h "finished command" "the Completed type doc via the word fallback"
+              Expect.stringContains h "complete" "names where you get one"
+          }
           test "an errored let warns its command heads and suppresses the unbound cascade [PLAN-diagnostics-arc B5+B6]" {
               // B6: the failed deploy binds a HOLE — one real error,
               // zero "unbound 'deploy'. Did you mean 'Deploy'?" echoes,

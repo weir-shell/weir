@@ -1253,6 +1253,263 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Args", argsMembers
       "Env", envMembers ]
 
+// ---- builtin docs [D:builtin-docs] (PLAN-doc-comments half 2) --------
+// OUT-OF-BAND, exactly as half 1: Value/Eval/Check never see a doc. The
+// Example is executable DATA (run by the doc-example test), not prose
+// parsed from a literal — so a builtin hover is the only doc that cannot
+// rot. Rendered TYPE-FIRST by the LSP (half 1's declHover layout), so the
+// Summary never restates the signature; the Pointer names the LAW or
+// boundary a member obeys (quoted from SEMANTICS/DECISIONS, not memory).
+type BuiltinDoc =
+    { Summary: string
+      Example: string option
+      Pointer: string option }
+
+let private bd (summary: string) (example: string option) (pointer: string option) : BuiltinDoc =
+    { Summary = summary
+      Example = example
+      Pointer = pointer }
+
+/// keyed as the name appears at a use site: `Seq.map`, a bare `print`,
+/// `Env.load`. Filled set by set; coverage is reported as a fraction.
+let builtinDocs: Map<string, BuiltinDoc> =
+    Map
+        [
+          // ---- Seq: lazy sequences (weir has no list type) ----
+          "Seq.map",
+          bd
+              "Apply a function to every element, lazily."
+              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.force")
+              None
+          "Seq.where",
+          bd
+              "Keep the elements a predicate accepts, lazily."
+              (Some "[1; 2; 3] |> Seq.where (fun x -> x > 1) |> Seq.force")
+              None
+          "Seq.choose",
+          bd
+              "Map and drop the None results in one lazy pass."
+              (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.force")
+              None
+          "Seq.fold",
+          bd
+              "Left-fold: thread an accumulator through the elements."
+              (Some "[1; 2; 3] |> Seq.fold (fun acc x -> acc + x) 0")
+              None
+          "Seq.force",
+          bd
+              "Materialize a lazy sequence, caching it."
+              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.force")
+              (Some "force once, then reuse freely — it memoizes (the two customers: reuse and timing).")
+          "Seq.head", bd "The first element (raises on empty)." (Some "Seq.head [1; 2; 3]") None
+          "Seq.tryHead", bd "The first element as an Option, None when empty." (Some "Seq.tryHead [1; 2; 3]") None
+          "Seq.tryFind",
+          bd
+              "The first element a predicate accepts, as an Option."
+              (Some "[1; 2; 3] |> Seq.tryFind (fun x -> x > 1)")
+              None
+          "Seq.item",
+          bd "The element at a zero-based index (raises out of range)." (Some "[1; 2; 3] |> Seq.item 0") None
+          "Seq.tryItem", bd "The element at an index as an Option." (Some "[1; 2; 3] |> Seq.tryItem 0") None
+          "Seq.take", bd "The first n elements, lazily." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.force") None
+          "Seq.first", bd "The first n elements." (Some "[1; 2; 3] |> Seq.first 2 |> Seq.force") None
+          "Seq.skip",
+          bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.force") None
+          "Seq.length", bd "Count the elements (forces the sequence)." (Some "Seq.length [1; 2; 3]") None
+          "Seq.isEmpty", bd "True when the sequence has no elements." (Some "Seq.isEmpty [1; 2; 3]") None
+          "Seq.sum", bd "Add the elements of an int sequence." (Some "Seq.sum [1; 2; 3]") None
+          "Seq.contains", bd "True when an element is present." (Some "Seq.contains 2 [1; 2; 3]") None
+          "Seq.exists",
+          bd "True when any element satisfies a predicate." (Some "[1; 2; 3] |> Seq.exists (fun x -> x > 2)") None
+          "Seq.forall",
+          bd "True when every element satisfies a predicate." (Some "[1; 2; 3] |> Seq.forall (fun x -> x > 0)") None
+          "Seq.distinct",
+          bd "Drop duplicate elements, keeping first order." (Some "[1; 1; 2] |> Seq.distinct |> Seq.force") None
+          "Seq.append", bd "Concatenate two sequences, lazily." (Some "Seq.append [1; 2] [3; 4] |> Seq.force") None
+          "Seq.sortBy", bd "Order by a key projection." (Some "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.force") None
+          "Seq.sortByDescending",
+          bd
+              "Order by a key projection, descending."
+              (Some "[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.force")
+              None
+          "Seq.iter",
+          bd "Run a unit-returning effect over each element." (Some "[1; 2; 3] |> Seq.iter (fun x -> ())") None
+          "Seq.pairwise",
+          bd "Adjacent pairs: (e0,e1), (e1,e2), and so on." (Some "[1; 2; 3] |> Seq.pairwise |> Seq.force") None
+          "Seq.zip",
+          bd
+              "Pair two sequences element-wise, stopping at the shorter."
+              (Some "Seq.zip [1; 2] [3; 4] |> Seq.force")
+              None
+          "Seq.range", bd "A lazy arithmetic range: start, step, stop." (Some "Seq.range 1 1 5 |> Seq.force") None
+          "Seq.groupBy",
+          bd
+              "Group elements by a key into Group records."
+              (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.force")
+              None
+          "Seq.pmap",
+          bd
+              "Map in parallel across worker threads."
+              (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.force")
+              (Some "ordered, eager, ProcessorCount workers; the first error wins.")
+          "Seq.piter",
+          bd
+              "Run an effect over each element in parallel."
+              (Some "[1; 2; 3] |> Seq.piter (fun x -> ())")
+              (Some "workers fork the session (worker-local cd, dies at join).")
+
+          // ---- Option ----
+          "Option.map",
+          bd "Apply a function inside a Some, pass None through." (Some "Option.map (fun x -> x + 1) (Some 5)") None
+          "Option.defaultValue",
+          bd "The Some value, or a fallback when None." (Some "Option.defaultValue 0 (Some 5)") None
+          "Option.defaultWith",
+          bd
+              "Like defaultValue, but the fallback is computed only when None."
+              (Some "Option.defaultWith (fun () -> 0) None")
+              None
+
+          // ---- bare / hot-path ----
+          "print", bd "Write a value and a trailing newline to stdout." (Some "print \"hi\"") None
+          "printerr", bd "Write a value and a newline to stderr." (Some "printerr \"oops\"") None
+          "show", bd "Render a value to its string form (total; functions show opaquely)." (Some "show [1; 2; 3]") None
+          "not", bd "Boolean negation." (Some "not true") None
+          "force", bd "Materialize a lazy sequence, caching it (the bare Seq.force)." (Some "[1; 2; 3] |> force") None
+          "fail",
+          bd "Stop with a message and exit code 1." None (Some "message-carrying; `exit n` is the bare-code spelling.")
+          "exit", bd "Exit the process with a status code." None None
+
+          // ---- Str ----
+          "Str.contains", bd "True when a substring is present." (Some "\"abc\" |> Str.contains \"b\"") None
+          "Str.startsWith",
+          bd "True when the string starts with a prefix." (Some "\"abc\" |> Str.startsWith \"a\"") None
+          "Str.endsWith", bd "True when the string ends with a suffix." (Some "\"abc\" |> Str.endsWith \"c\"") None
+          "Str.trim", bd "Drop leading and trailing whitespace." (Some "Str.trim \"  x  \"") None
+          "Str.trimStart", bd "Drop leading whitespace." (Some "Str.trimStart \"  x\"") None
+          "Str.trimEnd", bd "Drop trailing whitespace." (Some "Str.trimEnd \"x  \"") None
+          "Str.toLower", bd "Lowercase (invariant culture)." (Some "Str.toLower \"ABC\"") None
+          "Str.toUpper", bd "Uppercase (invariant culture)." (Some "Str.toUpper \"abc\"") None
+          "Str.split", bd "Split on a separator into a sequence." (Some "Str.split \",\" \"a,b,c\" |> Seq.force") None
+          "Str.join", bd "Join a sequence of strings with a separator." (Some "Str.join \",\" [\"a\"; \"b\"]") None
+          "Str.replace", bd "Replace every occurrence of a substring." (Some "Str.replace \"a\" \"b\" \"aba\"") None
+          "Str.length", bd "The number of characters." (Some "Str.length \"abc\"") None
+          "Str.sub", bd "A substring by start index and length." (Some "Str.sub 0 2 \"abc\"") None
+          "Str.toInt", bd "Parse an int (raises on a non-number)." (Some "Str.toInt \"42\"") None
+          "Str.tryToInt",
+          bd "Parse an int as an Option, None when it is not a number." (Some "Str.tryToInt \"42\"") None
+          "Str.tryIndexOf", bd "The index of a substring as an Option." (Some "Str.tryIndexOf \"b\" \"abc\"") None
+          "Str.isMatch",
+          bd "True when a regex matches anywhere in the string." (Some "Str.isMatch \"[0-9]+\" \"x42\"") None
+          "Str.rmatch",
+          bd "The first regex match's groups as an Option of a sequence." (Some "Str.rmatch \"([0-9]+)\" \"x42\"") None
+          "Str.rmatchAll",
+          bd
+              "Every regex match's groups, as a sequence of sequences."
+              (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.force")
+              None
+
+          // ---- Path (pure string ops; glob touches the filesystem) ----
+          "Path.dir", bd "The directory part of a path." (Some "Path.dir \"a/b/c\"") None
+          "Path.fileName", bd "The final component of a path." (Some "Path.fileName \"a/b.txt\"") None
+          "Path.stem", bd "The file name without its extension." (Some "Path.stem \"a/b.txt\"") None
+          "Path.extension", bd "The extension, including the dot." (Some "Path.extension \"a.txt\"") None
+          "Path.combine", bd "Join two path segments." (Some "Path.combine \"a\" \"b\"") None
+          "Path.glob",
+          bd
+              "Match a glob against the filesystem (lazy; globstar skips symlinks)."
+              (Some "Path.glob \"*.nope123\" |> Seq.force")
+              None
+
+          // ---- File (read/write touch the filesystem — no inline example) ----
+          "File.exists", bd "True when a path exists." (Some "File.exists \"README.md\"") None
+          "File.read", bd "Read a file's lines lazily." None None
+          "File.write", bd "Write a sequence of lines to a file (overwrites)." None None
+          "File.append", bd "Append a sequence of lines to a file." None None
+
+          // ---- Env ----
+          "Env.get", bd "A process environment variable as an Option." (Some "Env.get \"PATH\"") None
+          "Env.vars", bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.force") None
+          "Env.pair", bd "Build one EnvVar from a name and value." (Some "Env.pair \"K\" \"V\"") None
+          "Env.ofPairs",
+          bd "Build EnvVar records from name/value tuples." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.force") None
+          "Env.fromFile", bd "Read `.env` lines (KEY=value) as EnvVar records." None None
+          "Env.load",
+          bd
+              "Load the environment into a typed record (scalars, Option, bool)."
+              None
+              (Some "the field law: field names are verbatim; check-time validates the field TYPES.")
+
+          // ---- Args ----
+          "Args.flag",
+          bd "True when a --flag (or its short form) is present in argv." (Some "Args.flag \"verbose\"") None
+          "Args.value", bd "The value of a --name option as an Option." (Some "Args.value \"name\"") None
+          "Args.load",
+          bd
+              "Parse argv into a typed record or union."
+              None
+              (Some "three shapes: a record, a union of subcommands, or a record containing a union.")
+
+          // ---- Self (per-run introspection) ----
+          "Self.pid", bd "This process's id." None None
+          "Self.args", bd "The script's argument vector." None None
+          "Self.stdin", bd "This process's standard input, as lazy lines." None None
+          "Self.scriptPath", bd "The path of the running script." None None
+
+          // ---- boundary forms: adapters between text and typed data ----
+          "from json",
+          bd "Parse a JSON line stream into a declared record type." None (Some "a pipe stage: xs |> from json Config.")
+          "from porcelain",
+          bd
+              "Parse `git status --porcelain` lines into Change records."
+              None
+              (Some "a pipe stage: xs |> from porcelain.")
+          "to json",
+          bd "Render a sequence of records or primitives to JSON lines." None (Some "a pipe stage: xs |> to json.")
+
+          // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
+          // Surface names; the typed tree carries the un-typeable |completed
+          // key (+ Env/In twins), mapped back by reifierSurface below. ----
+          "complete",
+          bd
+              "Reify a command chain to a Completed record (exitCode, stdout, stderr)."
+              None
+              (Some "the reifier law: output goes where the meaning goes.")
+          "succeeds",
+          bd "Reify a command to a bool: did it exit zero?" None (Some "the reifier law: the meaning is the verdict.")
+          "orFail",
+          bd
+              "Stream a command's output, raising with a message on a nonzero exit."
+              None
+              (Some "the reifier law: output streams, the exit is the meaning.")
+          "exitCode",
+          bd "Reify a command to its integer exit code." None (Some "the reifier law: the meaning is the code.")
+
+          // ---- types: a hover renders the structure; the value here is
+          // WHEN you get one ----
+          "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
+          "Change",
+          bd "One `git status --porcelain` line: status, staged, unstaged, path. From `from porcelain`." None None
+          "FileRow", bd "A directory entry: name, bytes, readOnly. From `ls`." None None
+          "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
+          "Group", bd "A key and its items, from `Seq.groupBy`." None None
+          "Result",
+          bd "A success (`Ok`) or failure (`Error`) value — you construct it; no builtin returns one." None None ]
+
+/// map a reifier's internal key (|completed, |completedEnv, |completedIn,
+/// and the succeeded/orFailed/exitCoded families) back to the surface
+/// name a user wrote, so hover keys the doc [D:builtin-docs].
+let reifierSurface (name: string) : string option =
+    if name.StartsWith "|completed" then Some "complete"
+    elif name.StartsWith "|succeeded" then Some "succeeds"
+    elif name.StartsWith "|orFailed" then Some "orFail"
+    elif name.StartsWith "|exitCoded" then Some "exitCode"
+    else None
+
+/// the hover/completion text: summary, then example, then pointer — each
+/// on its own line, in the order half 1 renders after the type.
+let renderBuiltinDoc (d: BuiltinDoc) : string =
+    [ Some d.Summary; d.Example; d.Pointer ] |> List.choose id |> String.concat "\n"
+
 let private bareAliases: Set<string> =
     Set
         [ "map"
