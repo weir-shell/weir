@@ -121,3 +121,21 @@ all five positions; misaligned docs error like misaligned attributes;
 fmt preserves and canonicalizes them; completion items carry them;
 runtime is byte-identical; the doc-test answer is in the report as
 half 2's template input; all green.
+
+## Amendment — annotated signatures (2026-07-28) [D:annotated-signature]
+
+Half 2's template gains the ANNOTATED SIGNATURE (shipped separately on
+the `annotated-signatures` branch, landing before half 2's writing
+pass). Every builtin entry's writing pass MUST:
+
+- **name every parameter** — `BuiltinDoc.Params` carries the names (a
+  separate field, never parsed from prose); hover renders
+  `name (p1: t1) (p2: t2) : result`. `subject` beats `stringToMatch` —
+  the naming forces clarity, and it is the part of the docs read most.
+- keep the signature **declaration-shaped even for data-last members**:
+  `Seq.choose (f: 'a -> Option<'b>) (xs: seq<'a>) : seq<'b>`.
+- let the **example** show the piped idiom (`xs |> Seq.choose f`).
+
+Division: the signature says WHAT it is; the example says HOW it is
+written. A sample of 5 members is named on the annotated-signatures
+branch to prove the path; naming the rest is this half's content work.

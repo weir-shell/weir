@@ -3281,7 +3281,11 @@ let semanticTokenTests =
               let lines = [ "let snapshot t = t.name" ]
               let onName = Weir.Lsp.hoverType lines 1 6 // on `snapshot`
               let onParam = Weir.Lsp.hoverType lines 1 14 // on the param `t`
-              Expect.isTrue (onName |> Option.exists (fun s -> s.Contains "->")) "the function shows an arrow type"
+              // the function shows its (annotated) signature naming the param
+              Expect.isTrue
+                  (onName |> Option.exists (fun s -> s.Contains "snapshot (t:"))
+                  "the function shows its signature"
+
               Expect.isSome onParam "the param hovers to something"
 
               Expect.isFalse
@@ -3313,9 +3317,9 @@ let semanticTokenTests =
           test "doc comments: hover shows type FIRST, then the /// doc [D:doc-comments]" {
               let lines = [ "/// Adds one."; "let inc x = x + 1"; "print (inc 1)" ]
               let s = Weir.Lsp.hoverType lines 2 5 |> Option.defaultValue "" // on `inc`
-              Expect.stringContains s "->" "the type is present"
+              Expect.stringContains s "inc (x: int) : int" "the annotated signature is present"
               Expect.stringContains s "Adds one." "the doc is present"
-              Expect.isTrue (s.IndexOf "->" < s.IndexOf "Adds one.") "type first, then doc"
+              Expect.isTrue (s.IndexOf "inc (x: int)" < s.IndexOf "Adds one.") "type first, then doc"
 
               // hovering elsewhere on the line (the value) shows type only, no doc
               let onValue = Weir.Lsp.hoverType lines 2 15
@@ -3411,6 +3415,66 @@ let semanticTokenTests =
               Expect.stringContains h "every element" "the summary is present"
               Expect.stringContains h "Seq.force" "the executable example is present"
               Expect.isTrue (h.IndexOf "->" < h.IndexOf "every element") "type first, then doc"
+          }
+          test
+              "hover: annotated signature for named builtins + user decls; arrow fallback when unnamed [D:annotated-signature]" {
+              // a builtin with named params (sampled) renders the annotated form
+              let b = [ "let r = Str.isMatch \"[0-9]+\" \"x42\"" ]
+              let onBuiltin = Weir.Lsp.hoverType b 1 14 |> Option.defaultValue "" // Str.isMatch
+
+              Expect.stringContains
+                  onBuiltin
+                  "Str.isMatch (pattern: string) (subject: string) : bool"
+                  "annotated builtin signature"
+
+              // a user top-level let: names from the binder spans
+              let u = [ "let deploy a b = Str.contains a b"; "let z = deploy \"x\" \"y\"" ]
+              let onUser = Weir.Lsp.hoverType u 1 8 |> Option.defaultValue "" // the `deploy` binder
+              Expect.stringContains onUser "deploy (a: string) (b: string) : bool" "annotated user declaration"
+
+              // an inner let, likewise (the params get concrete types from use)
+              let il = [ "let f x ="; "    let g a b = Str.contains a b"; "    g x x" ]
+              let onInner = Weir.Lsp.hoverType il 2 9 |> Option.defaultValue "" // inner `g`
+              Expect.stringContains onInner "g (a: string) (b: string) : bool" "annotated inner let"
+
+              // FALLBACK: a builtin WITHOUT named params -> the arrow type
+              // (Str.trim has a doc, so it's the first line before the doc)
+              let fb = [ "let r = Str.trim \"  x  \"" ]
+              let onFallback = Weir.Lsp.hoverType fb 1 13 |> Option.defaultValue "" // Str.trim (no Params)
+
+              Expect.equal
+                  (onFallback.Split('\n').[0])
+                  "string -> string"
+                  "unnamed -> arrow fallback, no annotated parens"
+          }
+          test "annotated signature is presentation-only: formatTy (errors) stays the arrow [D:annotated-signature]" {
+              // the arrow formatter is untouched — errors quote what the
+              // checker COMPUTED; the annotated form is hover PRESENTATION
+              let ty = TFun(TStr, TFun(TStr, TBool))
+
+              Expect.equal
+                  (Weir.Types.formatTy ty)
+                  "string -> string -> bool"
+                  "formatTy: the arrow, what errors byte-identically quote"
+
+              Expect.equal
+                  (Weir.Types.formatSignature "Str.isMatch" [ "pattern"; "subject" ] ty)
+                  "Str.isMatch (pattern: string) (subject: string) : bool"
+                  "formatSignature: the annotated form, hover/completion only"
+
+              // a zero-param value renders name-and-type, no parens
+              Expect.equal
+                  (Weir.Types.formatSignature "Self.pid" [] TInt)
+                  "Self.pid : int"
+                  "zero-param: no empty parens"
+
+              // a real type error still quotes the arrow (byte-identical)
+              let terr = checkErr "double 1 2"
+
+              Expect.stringContains
+                  terr.Message
+                  "'double' takes at most 1 argument(s), but got 2"
+                  "the error text is unchanged"
           }
           test "builtin docs: Env.load's doc shows on `load`, NOT on the module Env or the type arg [D:builtin-docs]" {
               let lines = [ "type Cfg = { name: string }"; "let c = Env.load Cfg" ]

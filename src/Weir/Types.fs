@@ -53,6 +53,28 @@ let rec formatTy (ty: Ty) : string =
         let argStr = args |> List.map formatTy |> String.concat ", "
         $"{name}<{argStr}>"
 
+/// the annotated DECLARATION form for hover [D:annotated-signature]:
+/// `name (p1: t1) (p2: t2) : result`, decomposing `ty` by the given
+/// parameter names (the arrow tail beyond the named params is the
+/// result). Valid F# declaration syntax — claims nothing false. Zero
+/// names -> `name : ty`, no empty parens. The plain arrow `formatTy`
+/// stays the fallback (unnamed values) and the truth for type errors.
+let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
+    let rec split names t =
+        match names, t with
+        | n :: rest, TFun(dom, cod) ->
+            let ps, result = split rest cod
+            (n, dom) :: ps, result
+        | _ -> [], t
+
+    match split paramNames ty with
+    | [], _ -> $"{name} : {formatTy ty}"
+    | ps, result ->
+        let rendered =
+            ps |> List.map (fun (n, t) -> $"({n}: {formatTy t})") |> String.concat " "
+
+        $"{name} {rendered} : {formatTy result}"
+
 let rec tyVars (ty: Ty) : Set<string> =
     match ty with
     | TVar v -> Set.singleton v
