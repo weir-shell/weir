@@ -663,24 +663,42 @@ let rec private spine (e: Expr) : Expr * Expr list =
         head, args @ [ arg ]
     | _ -> e, []
 
-let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeError> =
-    allOk def.Fields (fun (name, ty) ->
-        match ty with
-        | TInt
-        | TStr
-        | TBool -> Ok()
-        | ty -> err span $"field '{name}' has type {formatTy ty}; json rows support int, string and bool fields")
-
-let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
-    match elem with
+// the JSON boundary field law [D:json-option], the ONE list both
+// directions share: a scalar (int/string/bool) or an Option of one.
+// A missing key or an explicit null reads as None (a key is missing-or-
+// null in the format, unlike env's absence-only or argv's flag). NOT
+// Option<Option<_>>, NOT Option of a record or seq — the boundary needs
+// a flat row.
+let private jsonScalar (ty: Ty) : bool =
+    match ty with
     | TInt
     | TStr
-    | TBool -> Ok()
-    | TNamed(n, []) ->
-        match Map.tryFind n env.Types with
-        | Some(Record def) -> jsonableRecord span def
+    | TBool -> true
+    | _ -> false
+
+let private jsonFieldOk (ty: Ty) : bool =
+    jsonScalar ty
+    || (match ty with
+        | TNamed("Option", [ inner ]) -> jsonScalar inner
+        | _ -> false)
+
+let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeError> =
+    allOk def.Fields (fun (name, ty) ->
+        if jsonFieldOk ty then
+            Ok()
+        else
+            err span $"field '{name}' has type {formatTy ty}; json rows support int, string, bool, and Option of those")
+
+let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
+    if jsonFieldOk elem then
+        Ok()
+    else
+        match elem with
+        | TNamed(n, []) ->
+            match Map.tryFind n env.Types with
+            | Some(Record def) -> jsonableRecord span def
+            | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
         | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
-    | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
 
 // One Regex instance per distinct literal, shared by check and eval
 // (the snippet-hash-cache precedent). INTERPRETED mode only —

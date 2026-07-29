@@ -55,6 +55,8 @@ let private env =
         // a 2-param generic union — the type-system fixture that Result
         // used to be, now a local declaration [D:no-result]
         |> declare "type Either<'a, 'e> = Left of 'a | Right of 'e"
+        // a record with an Option<scalar> field — the JSON-boundary fixture [D:json-option]
+        |> declare "type JOpt = { name: string; age: Option<int> }"
         |> declare "type Point = { X: int; Y: int }"
         // record-update battery: two records sharing an int field N
         |> declare "type UpdP = { UpN: int; UpT: string }"
@@ -869,6 +871,62 @@ let boundaryTests =
                   (runWith [ "src", src ] "src |> from json FileRow" |> forceSeq)
                   [ Weir.Builtins.file "x" 1048576 true ]
                   ""
+          }
+          test "from json: an Option field reads present as Some, missing AND null as None [D:json-option]" {
+              let src =
+                  VSeq
+                      [ VStr """{"name":"a","age":5}"""
+                        VStr """{"name":"b"}"""
+                        VStr """{"name":"c","age":null}""" ]
+
+              Expect.equal
+                  (runWith [ "src", src ] "src |> from json JOpt |> Seq.map _.age" |> forceSeq)
+                  [ VUnion("Some", Some(VInt 5L)); VUnion("None", None); VUnion("None", None) ]
+                  "present -> Some; missing and null both -> None"
+          }
+          test "to json omits a None field; the Option roundtrip holds [D:json-option]" {
+              let src = VSeq [ VStr """{"name":"a","age":5}"""; VStr """{"name":"b"}""" ]
+
+              Expect.equal
+                  (runWith [ "src", src ] "src |> from json JOpt |> to json" |> forceSeq)
+                  [ VStr """{"age":5,"name":"a"}"""; VStr """{"name":"b"}""" ]
+                  "Some writes the scalar; None OMITS its key (the fork)"
+
+              let once = runWith [ "src", src ] "src |> from json JOpt" |> forceSeq
+
+              let twice =
+                  runWith [ "src", src ] "src |> from json JOpt |> to json |> from json JOpt"
+                  |> forceSeq
+
+              Expect.equal twice once "to json |> from json is identity with a None field"
+          }
+          test
+              "json boundary: null-in-required teaches Option; nested Option and Option-of-record reject [D:json-option]" {
+              // null in a REQUIRED field -> runtime error naming the fix
+              let srcNull = VSeq [ VStr """{"name":null,"age":5}""" ]
+
+              let msg =
+                  try
+                      runWith [ "src", srcNull ] "src |> from json JOpt" |> forceSeq |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains msg "declare it Option" "null-in-required names the remedy"
+
+              // nested Option<Option<int>> rejects at check, naming the set
+              let eNested = env |> declare "type JN = { z: Option<Option<int>> }"
+
+              match typecheck eNested (parse "src |> from json JN") with
+              | Error terr -> Expect.stringContains terr.Message "json rows support" "nested Option rejected"
+              | Ok _ -> failtest "nested Option should reject"
+
+              // Option of a record rejects (the boundary needs a flat row)
+              let eRec = env |> declare "type JR = { r: Option<Point> }"
+
+              match typecheck eRec (parse "src |> from json JR") with
+              | Error _ -> ()
+              | Ok _ -> failtest "Option of a record should reject"
           }
           test "into feeds stdin and yields stdout" {
               // tr strips BSD wc's left-padding — the subject is the stdin

@@ -219,12 +219,23 @@ let private jsonLine (v: Value) : string =
         | VInt n -> writer.WriteNumberValue n
         | VStr s -> writer.WriteStringValue s
         | VBool b -> writer.WriteBooleanValue b
+        // Option [D:json-option]: Some writes its scalar; a bare None at the
+        // element level is a null line (a None FIELD is OMITTED, below)
+        | VUnion("Some", Some inner) -> write inner
+        | VUnion("None", None) -> writer.WriteNullValue()
         | VRecord(_, fields) ->
             writer.WriteStartObject()
 
             for kv in fields do
-                writer.WritePropertyName kv.Key
-                write kv.Value
+                // THE FORK [D:json-option]: a None field OMITS its key — a
+                // weir-produced payload looks like the ecosystem's (gh /
+                // kubectl / docker inspect omit rather than null). Missing
+                // and null both read back as None, so the roundtrip holds.
+                match kv.Value with
+                | VUnion("None", None) -> ()
+                | _ ->
+                    writer.WritePropertyName kv.Key
+                    write kv.Value
 
             writer.WriteEndObject()
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
@@ -242,19 +253,35 @@ let private jsonRow (def: RecordDef) (line: string) : Value =
 
     let root = doc.RootElement
 
+    // read a scalar of type `scalarTy` from an already-fetched, non-null
+    // property [D:json-option]
+    let readScalar (name: string) (scalarTy: Ty) (prop: System.Text.Json.JsonElement) =
+        match scalarTy, prop.ValueKind with
+        | TInt, System.Text.Json.JsonValueKind.Number -> VInt(prop.GetInt64())
+        | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
+        | TBool, System.Text.Json.JsonValueKind.True -> VBool true
+        | TBool, System.Text.Json.JsonValueKind.False -> VBool false
+        | ty, kind -> failwith $"from json: field '{name}' expected {formatTy ty}, got {kind} in: {line}"
+
     let readField (name: string, ty: Ty) =
         let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
-
-        if not (root.TryGetProperty(name, &prop)) then
-            failwith $"from json: missing field '{name}' in: {line}"
+        let present = root.TryGetProperty(name, &prop)
+        let isNull = present && prop.ValueKind = System.Text.Json.JsonValueKind.Null
 
         let value =
-            match ty, prop.ValueKind with
-            | TInt, System.Text.Json.JsonValueKind.Number -> VInt(prop.GetInt64())
-            | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
-            | TBool, System.Text.Json.JsonValueKind.True -> VBool true
-            | TBool, System.Text.Json.JsonValueKind.False -> VBool false
-            | ty, kind -> failwith $"from json: field '{name}' expected {formatTy ty}, got {kind} in: {line}"
+            match ty with
+            // an Option<scalar> field: missing key OR explicit null -> None;
+            // a present scalar -> Some it
+            | TNamed("Option", [ inner ]) ->
+                if not present || isNull then
+                    VUnion("None", None)
+                else
+                    VUnion("Some", Some(readScalar name inner prop))
+            // a required field: missing or null both fail — null names the fix
+            | _ when not present -> failwith $"from json: missing field '{name}' in: {line}"
+            | _ when isNull ->
+                failwith $"from json: field '{name}' is null; declare it Option<{formatTy ty}> to allow it, in: {line}"
+            | _ -> readScalar name ty prop
 
         name, value
 

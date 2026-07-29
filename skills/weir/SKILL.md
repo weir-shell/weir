@@ -422,6 +422,11 @@ print x
 - Typed output: `git status --porcelain | from porcelain` gives rows
   with `path`/`staged`/`unstaged`/`status`; `... | from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
+  Fields are `int`/`string`/`bool` or `Option` of one. An `Option`
+  field reads a missing key OR an explicit `null` as `None`; a
+  required field that is `null` errors, naming the fix. `to json`
+  OMITS a `None` field's key (matching `gh`/`kubectl`), so the
+  roundtrip holds.
 - `!` runs commands: parens for one inline (`!(git pull)`), LINE-END
   `!` for a block below — indented bare command lines, one per line
   (no expressions, no `let`, no nested `!()` inside; leading `|`
