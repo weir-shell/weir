@@ -928,6 +928,53 @@ let boundaryTests =
               | Error _ -> ()
               | Ok _ -> failtest "Option of a record should reject"
           }
+          test "module marker parses: bare and named [D:modules-v1]" {
+              match Weir.Parser.parseLine cmdResolver "module Git" with
+              | Ok(SModule(Some "Git", _)) -> ()
+              | other -> failtest $"expected SModule Git, got {other}"
+
+              match Weir.Parser.parseLine cmdResolver "module" with
+              | Ok(SModule(None, _)) -> ()
+              | other -> failtest $"expected bare SModule, got {other}"
+          }
+          test "import parses: plain and aliased; path is a literal string [D:modules-v1]" {
+              match Weir.Parser.parseLine cmdResolver "import \"./lib/paths.weir\"" with
+              | Ok(SImport("./lib/paths.weir", _, None)) -> ()
+              | other -> failtest $"expected SImport, got {other}"
+
+              match Weir.Parser.parseLine cmdResolver "import \"./x.weir\" as P" with
+              | Ok(SImport("./x.weir", _, Some("P", _))) -> ()
+              | other -> failtest $"expected aliased SImport, got {other}"
+
+              Expect.isError (Weir.Parser.parseLine cmdResolver "import foo") "a bare word is not a literal path"
+          }
+          test "module and import are reserved words [D:modules-v1]" {
+              Expect.isError (Weir.Parser.parseLine cmdResolver "let import = 1") "import reserved"
+              Expect.isError (Weir.Parser.parseLine cmdResolver "let module = 1") "module reserved"
+          }
+          test "the named record literal constructs a specific type, no field-set inference [D:modules-v1]" {
+              // Point { .. } resolves to Point directly (EApp(EVar Point, ERecord)
+              // is intercepted since a record type name is never a value)
+              Expect.equal
+                  (run "Point { X = 1; Y = 2 }")
+                  (VRecord("Point", Map [ "X", VInt 1L; "Y", VInt 2L ]))
+                  "named literal builds the record"
+
+              match typecheck env (parse "Point { X = 1; Y = 2 }") with
+              | Ok te -> Expect.equal te.Ty (TNamed("Point", [])) "typed as Point"
+              | Error terr -> failtest (formatError terr)
+
+              // a partial named literal names the missing field
+              match typecheck env (parse "Point { X = 1 }") with
+              | Error terr -> Expect.stringContains terr.Message "missing" "partial named literal names the gap"
+              | Ok _ -> failtest "a partial named literal should reject"
+          }
+          test "a constructor applied to a bare record still applies (zero movement) [D:modules-v1]" {
+              // Some { .. } is NOT a named record — Some is a ctor, not a type
+              match typecheck env (parse "Some { X = 1; Y = 2 }") with
+              | Ok te -> Expect.equal te.Ty (TNamed("Option", [ TNamed("Point", []) ])) "Some applied to a Point"
+              | Error terr -> failtest (formatError terr)
+          }
           test "into feeds stdin and yields stdout" {
               // tr strips BSD wc's left-padding — the subject is the stdin
               // plumbing, not wc's platform formatting
@@ -1041,7 +1088,10 @@ let completionTests =
                         "then"
                         "else"
                         "when"
-                        "elif" ]
+                        "elif"
+                        // statement starters like let/type [D:modules-v1]
+                        "module"
+                        "import" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)

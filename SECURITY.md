@@ -30,10 +30,14 @@ it, by design):
   argv word. It does NOT guarantee the command won't interpret that
   word as a flag: a file named `-rf` globbed into `rm` is still
   `-rf` to `rm`. The `--` separator is the script author's tool.
-- **The LSP operates on client text, not the filesystem.** `weir
-  lsp` analyzes the document text the editor sends over the
-  protocol; it does not read files by URI, so a `didOpen` for a
-  path outside the workspace analyzes only what the client provided.
+- **The LSP reads client text plus import-reachable files.** `weir
+  lsp` analyzes the document text the editor sends over the protocol
+  AND, since user modules landed [D:modules-v1], the files reachable
+  by `import` from an open document — an open dependency from its
+  editor buffer, an unopened one from disk (buffer-over-disk,
+  decision 14). It never reads a file the open documents do not
+  import; resolution is the same check-time path the CLI uses, so the
+  server evaluates nothing.
 - **Capture is unbounded by design.** `| complete` and `Seq.force`
   materialize their whole input in memory (`complete` holds one byte
   buffer + line offsets — ~2x the raw text in RSS, measured; a

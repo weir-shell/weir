@@ -2990,4 +2990,161 @@ echo "$errout" | grep -qF "nested too deeply" || fail "probe diagnostic missing:
 echo "e2e ok: depth probe diagnoses on a 512KB stack (no SIGSEGV), full stack still parses 499"
 rm -rf "$ddir"
 
+# ---- user modules and imports, session 1 [D:modules-v1] -------------------
+mdir=$(mktemp -d)
+cat > "$mdir/paths.weir" <<'WEOF'
+module Paths
+type Ctx = { root: string; name: string }
+let make r n = { root = r; name = n }
+let describe c = c.root
+WEOF
+
+# happy path: import, qualified member use, a record type crossing
+cat > "$mdir/main.weir" <<'WEOF'
+import "./paths.weir"
+let c = Paths.make "r" "n"
+print (Paths.describe c)
+print c.name
+WEOF
+out=$($BIN "$mdir/main.weir")
+expect "import: qualified member use + a record type crossing the boundary" "r
+n" "$out"
+
+# a module is checkable in isolation (an entry point)
+$BIN check "$mdir/paths.weir" >/dev/null 2>&1 || fail "a clean module must check in isolation"
+echo "e2e ok: a module checks alone (weir check lib.weir)"
+
+# the qualified literal always resolves, even under field-set ambiguity
+cat > "$mdir/disambig.weir" <<'WEOF'
+import "./paths.weir"
+type Local = { root: string; name: string }
+let l = Local { root = "x"; name = "y" }
+let c = Paths.Ctx { root = "a"; name = "b" }
+print l.root
+print c.name
+WEOF
+out=$($BIN "$mdir/disambig.weir")
+expect "the qualified/named literal disambiguates same-field-set records" "x
+b" "$out"
+
+# a clean named-literal file checks without spurious warnings (the
+# assume-command rule must not read an uppercase type name as a command)
+$BIN check "$mdir/disambig.weir" 2>&1 | grep -q . && fail "a clean named-literal module produced diagnostics" || echo "e2e ok: named literals check clean under the assume-command rule"
+
+# a bare literal matching TWO in-scope records is ambiguous, naming both
+cat > "$mdir/ambig.weir" <<'WEOF'
+import "./paths.weir"
+type Local = { root: string; name: string }
+let x = { root = "a"; name = "b" }
+WEOF
+out=$($BIN check "$mdir/ambig.weir" 2>&1 || true)
+expect "a bare literal matching two records is ambiguous, naming both" "ambiguous record literal; it matches: Ctx, Local" "$out"
+
+# alias
+cat > "$mdir/aliased.weir" <<'WEOF'
+import "./paths.weir" as P
+print (P.describe (P.make "aa" "bb"))
+WEOF
+out=$($BIN "$mdir/aliased.weir")
+expect "import ... as Name binds the module under the alias" "aa" "$out"
+
+# running a module errors, naming the escape
+printf 'import "./paths.weir"\n' > "$mdir/e_run.weir"
+out=$($BIN "$mdir/paths.weir" 2>&1 || true)
+expect "running a module errors: it declares, it does not run" "a module declares; it does not run" "$out"
+
+# importing a non-module names the fix
+printf 'let x = 1\nprint x\n' > "$mdir/plain.weir"
+printf 'import "./plain.weir"\n' > "$mdir/e_notmod.weir"
+out=$($BIN check "$mdir/e_notmod.weir" 2>&1 || true)
+expect "importing a non-module names the fix (add module, or invoke as a command)" "is not a module; add \`module\` at the top" "$out"
+
+# a missing import puts the RESOLVED ABSOLUTE path in the message
+printf 'import "./nope.weir"\n' > "$mdir/e_missing.weir"
+out=$($BIN check "$mdir/e_missing.weir" 2>&1 || true)
+expect "a missing import names the resolved absolute path" "cannot resolve import: no file at $mdir/nope.weir" "$out"
+
+# self-import has its own message
+printf 'import "./e_self.weir"\nprint "hi"\n' > "$mdir/e_self.weir"
+out=$($BIN check "$mdir/e_self.weir" 2>&1 || true)
+expect "self-import has its own message" "a file cannot import itself" "$out"
+
+# declaration-only: a module cannot hold a command or bare expression
+printf 'module B\nlet x = 1\nprint x\n' > "$mdir/declonly.weir"
+out=$($BIN check "$mdir/declonly.weir" 2>&1 || true)
+expect "a module is declaration-only (direct check enforces it)" "a module declares only" "$out"
+
+# weak purity: a module 'let' cannot run a command at import
+printf 'module W\nlet head = git rev-parse HEAD\n' > "$mdir/weak.weir"
+out=$($BIN check "$mdir/weak.weir" 2>&1 || true)
+expect "weak purity: a module let cannot run a command at import" "cannot run a command at import" "$out"
+
+# the graph [D:modules-v1]: transitive imports resolve and evaluate; a
+# module can import and use another module's members
+printf 'module D\nlet base = 10\n' > "$mdir/deep.weir"
+printf 'module M\nimport "./deep.weir"\nlet doubled = D.base * 2\n' > "$mdir/mid.weir"
+printf 'import "./mid.weir"\nprint (show M.doubled)\n' > "$mdir/transitive.weir"
+out=$($BIN "$mdir/transitive.weir" 2>&1)
+expect "transitive imports resolve and evaluate (top -> mid -> deep)" "20" "$out"
+
+# a diamond's shared module is checked once and evaluates; both sides see it
+printf 'module S\nlet v = 5\n' > "$mdir/shared.weir"
+printf 'module L\nimport "./shared.weir"\nlet x = S.v + 1\n' > "$mdir/left.weir"
+printf 'module R\nimport "./shared.weir"\nlet y = S.v + 2\n' > "$mdir/right.weir"
+printf 'import "./left.weir"\nimport "./right.weir"\nprint (show (L.x + R.y))\n' > "$mdir/diamond.weir"
+out=$($BIN "$mdir/diamond.weir" 2>&1)
+expect "a diamond shares one module across both paths" "13" "$out"
+
+# an import cycle is a check error naming the loop, at its closing edge
+printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"
+printf 'module CB\nimport "./ca.weir"\nlet b = 2\n' > "$mdir/cb.weir"
+printf 'import "./ca.weir"\nprint "hi"\n' > "$mdir/ecycle.weir"
+out=$($BIN check "$mdir/ecycle.weir" 2>&1 || true)
+expect "an import cycle is named as a loop" "import cycle: ca.weir → cb.weir → ca.weir" "$out"
+
+# a deep error reports at the deepest module's OWN site
+printf 'module DBad\nlet x = Str.trim 5\n' > "$mdir/dbad.weir"
+printf 'module MBad\nimport "./dbad.weir"\nlet y = 1\n' > "$mdir/mbad.weir"
+printf 'import "./mbad.weir"\nprint "hi"\n' > "$mdir/tbad.weir"
+out=$($BIN check "$mdir/tbad.weir" 2>&1 || true)
+expect "a transitive error reports at the deepest module's own site" "$mdir/dbad.weir:2:18: error" "$out"
+
+# the import path is a literal string only
+printf 'import foo\n' > "$mdir/e_litpath.weir"
+out=$($BIN check "$mdir/e_litpath.weir" 2>&1 || true)
+expect "the import path must be a literal string" "import takes a literal string path" "$out"
+
+# multi-file diagnostics [D:modules-v1]: a module-CONTENT error reports at
+# the module's OWN file:line, PLUS an "imported here" note at the import line
+cat > "$mdir/broken.weir" <<'WEOF'
+module Broken
+let bad = Str.trim 5
+WEOF
+printf 'import "./broken.weir"\nprint "hi"\n' > "$mdir/e_broken.weir"
+out=$($BIN check "$mdir/e_broken.weir" 2>&1 || true)
+expect "a module error reports at its OWN site" "$mdir/broken.weir:2:20: error" "$out"
+expect "an imported-here note points at the import line" "$mdir/e_broken.weir:1:8: note" "$out"
+
+# check --json carries the module's own file per diagnostic
+out=$($BIN check --json "$mdir/e_broken.weir" 2>&1 || true)
+expect "check --json carries the module's file identity" "\"file\":\"$mdir/broken.weir\"" "$out"
+
+# import is script-only (-e has no file to resolve against)
+out=$($BIN -e 'import "./x.weir"' 2>&1 || true)
+expect "import is script-only (-e rejects it)" "import is script-only" "$out"
+
+# module / import are reserved words
+out=$($BIN -e 'let import = 1' 2>&1 || true)
+expect "import is a reserved word" "'import' is a keyword" "$out"
+
+# Self.scriptPath is the FILE's own path; Self.entryPath is the invoked
+# script's (a process fact) [D:modules-v1] (decision 12)
+printf 'module Sp\nlet where () = Self.scriptPath\nlet entry () = Self.entryPath\n' > "$mdir/sp.weir"
+printf 'import "./sp.weir"\nprint (Sp.where ())\nprint (Sp.entry ())\n' > "$mdir/spmain.weir"
+out=$($BIN "$mdir/spmain.weir" 2>&1)
+expect "a module's Self.scriptPath is its OWN file" "$mdir/sp.weir" "$out"
+expect "a module's Self.entryPath is the invoked script" "$mdir/spmain.weir" "$out"
+
+rm -rf "$mdir"
+
 echo "e2e battery: all green"

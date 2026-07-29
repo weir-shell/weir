@@ -123,6 +123,12 @@ type Stmt =
     | SExpr of Expr
     | SCmd of Expr
     | SType of Decl
+    // the module marker [D:modules-v1] — `module` (name from filename) or
+    // `module Name`; kwSpan aims the running-a-module and ordering errors
+    | SModule of name: string option * kwSpan: Span
+    // `import "path"` / `import "path" as Name` [D:modules-v1] — path is a
+    // literal string; alias (uppercase) is the namespace override
+    | SImport of path: string * pathSpan: Span * alias: (string * Span) option
 
 // Span-free sexpr rendering — the parse-SHAPE language. Two consumers:
 // the test suite's parse pins and fmt's respace safety check (a
@@ -213,3 +219,7 @@ let sexprStmt (s: Stmt) : string =
     | SExpr e -> $"(sexpr {sexpr e})"
     | SCmd e -> $"(scmd {sexpr e})"
     | SType d -> $"(stype {d.Name})"
+    | SModule(None, _) -> "(module)"
+    | SModule(Some n, _) -> $"(module {n})"
+    | SImport(path, _, None) -> $"(import \"{path}\")"
+    | SImport(path, _, Some(a, _)) -> $"(import \"{path}\" as {a})"

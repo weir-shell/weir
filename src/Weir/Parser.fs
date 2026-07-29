@@ -27,6 +27,11 @@ let keywords =
           "elif"
           "rec"
           "mutable"
+          // the module system's two words [D:modules-v1]: reserved so a
+          // bare `module`/`import` never resolves as an identifier or a
+          // command head (keyword-domination)
+          "module"
+          "import"
           // reserved for the parked match-lambda sugar [D:block-let-cmd
           // rider]: the future form breaks nothing
           "function" ]
@@ -1746,10 +1751,38 @@ let private letKeywordGuard: Parser<Stmt, unit> =
         else
             failFatallyAt at $"'{w}' is a keyword"
 
+// module + import statements [D:modules-v1] — top-level, no `=`, no body.
+// A module/alias name is uppercase (the casing law: uppercase declares).
+let private upperName (role: string) : Parser<string * Span, unit> =
+    spanned rawWord .>> ws
+    >>= fun (w, sp) ->
+        if System.Char.IsUpper w[0] then
+            preturn (w, sp)
+        else
+            fail $"{role} must be uppercase"
+
+// `module` (name derived from the filename) or `module Name`
+let private moduleDecl: Parser<Stmt, unit> =
+    pipe2
+        (spanned (pstring "module" .>> notFollowedBy (satisfy isIdentCont)) .>> ws)
+        (opt (upperName "a module name") .>> eof)
+        (fun (_, kwSpan) nameOpt -> SModule(Option.map fst nameOpt, kwSpan))
+
+// `import "path"` / `import "path" as Name` — the path is a LITERAL string
+// (resolution is check-time); anything else gets the teaching error
+let private importDecl: Parser<Stmt, unit> =
+    keyword "import"
+    >>. (spanned (between (pchar '"') (pchar '"') (manyChars stringChar)) .>> ws
+         <|> failFatally "import takes a literal string path, e.g. import \"./lib/paths.weir\"")
+    .>>. (opt (keyword "as" >>. upperName "an import alias") .>> eof)
+    |>> fun ((path, pathSpan), aliasOpt) -> SImport(path, pathSpan, aliasOpt)
+
 let private stmtWith (r: Resolver) =
     ws
     >>. choice
-            [ typeDecl .>> eof
+            [ moduleDecl
+              importDecl
+              typeDecl .>> eof
               // destructuring let statement (pattern binder, expression RHS);
               // fully attempt-wrapped so `let (x, y) = v in body` backtracks
               // to the expression grammar's letIn form
@@ -1807,7 +1840,9 @@ let private stmtExprs (s: Stmt) : Expr list =
     | SLetPat(_, v)
     | SExpr v
     | SCmd v -> [ v ]
-    | SType _ -> []
+    | SType _
+    | SModule _
+    | SImport _ -> []
 
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r

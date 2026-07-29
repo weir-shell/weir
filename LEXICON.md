@@ -24,6 +24,15 @@ content.
 
 ## 1. Type theory and language design
 
+**Module.** weir's unit of code sharing and namespacing. A builtin
+namespace (`Seq`, `Str`, `Env`, `Args`, `Self`) and a user-authored
+one (a file marked `module`) are the SAME concept with different
+origins — both are a named bag of members reached by qualified access
+(`Seq.map`, `Git.revParse`), both live in `TypeEnv.Modules`. "library"
+and "package" are RETIRED as synonyms; "dependency" survives for the
+RELATIONSHIP (the dependency graph), and "import" is the verb and the
+statement. [D:modules-v1]
+
 **Row polymorphism.** A record type is a set of named fields; a
 function can accept "any record that HAS these fields" without naming
 the whole type. weir uses open-row compatibility for the

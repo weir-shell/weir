@@ -1269,7 +1269,79 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EApp _ ->
         let head, args = spine expr
 
+        // the named / qualified record literal [D:modules-v1]: `Ctx { .. }`
+        // parses as EApp(EVar Ctx, ERecord) and `Git.Ctx { .. }` as
+        // EApp(EField(Git, Ctx), ERecord). A record TYPE name is never a
+        // value, so this only fires where a bare application would ERROR —
+        // zero movement on `Some { .. }` (Some is a ctor, not a type).
+        let namedRecord (typeName: string) (fields: (string * Span * Expr) list) =
+            result {
+                let def =
+                    match Map.tryFind typeName env.Types with
+                    | Some(Record d) -> d
+                    | _ -> failwith "named record target is not a record"
+
+                match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
+                | Some dup ->
+                    let _, dupSpan, _ = fields |> List.findBack (fun (n, _, _) -> n = dup)
+                    return! err dupSpan $"duplicate field '{dup}'"
+                | None ->
+                    let litNames = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
+                    let defNames = def.Fields |> List.map fst |> Set.ofList
+
+                    if litNames <> defNames then
+                        let show s = String.concat ", " (Set.toList s)
+
+                        let detail =
+                            [ if not (Set.isEmpty (Set.difference defNames litNames)) then
+                                  $"missing {show (Set.difference defNames litNames)}"
+                              if not (Set.isEmpty (Set.difference litNames defNames)) then
+                                  $"unknown {show (Set.difference litNames defNames)}" ]
+                            |> String.concat "; "
+
+                        return! err expr.Span $"record '{typeName}' has fields {show defNames} ({detail})"
+                    else
+                        let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
+
+                        let checkField (name: string, _: Span, value: Expr) =
+                            let declaredTy =
+                                def.Fields
+                                |> List.find (fun (f, _) -> f = name)
+                                |> snd
+                                |> substParams def.Params targs
+
+                            check ctx env value declaredTy |> Result.map (fun tv -> name, tv)
+
+                        let! tfields =
+                            fields
+                            |> List.fold
+                                (fun acc f ->
+                                    acc |> Result.bind (fun ts -> checkField f |> Result.map (fun t -> t :: ts)))
+                                (Ok [])
+
+                        return
+                            { Kind = TERecord(def.Name, List.rev tfields)
+                              Ty = TNamed(def.Name, targs)
+                              Span = expr.Span }
+            }
+
         match head.Kind, args with
+        | EVar tyName, [ { Kind = ERecord fields } ] when
+            (match Map.tryFind tyName env.Types with
+             | Some(Record _) -> true
+             | _ -> false)
+            && not (Map.containsKey tyName env.Values)
+            ->
+            namedRecord tyName fields
+        | EField({ Kind = EVar m }, tyName, _), [ { Kind = ERecord fields } ] when
+            (match Map.tryFind m env.ModuleTypes with
+             | Some ts -> Set.contains tyName ts
+             | None -> false)
+            && (match Map.tryFind tyName env.Types with
+                | Some(Record _) -> true
+                | _ -> false)
+            ->
+            namedRecord tyName fields
         | EField({ Kind = EVar "Env" }, "load", _), [ arg ] when
             not (Map.containsKey "Env" env.Values) && Map.containsKey "Env" env.Modules
             ->

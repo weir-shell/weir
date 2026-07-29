@@ -22,7 +22,7 @@ let private evalOnce (input: string) : int =
     // [D:one-pipeline]: -e is a consumer; non-expression kinds are
     // rejected AFTER checking, so an ill-typed let reports its real
     // error rather than the form message
-    match Script.checkStatement false (fun _ -> resolver) typeEnv ll with
+    match Script.checkStatement false (fun _ -> resolver) Script.scriptOnlyImport typeEnv ll with
     | Error d ->
         (if d.Parse then
              Console.Error.WriteLine input
@@ -63,6 +63,13 @@ let private evalOnce (input: string) : int =
             1
         | Script.KLetPat _ ->
             Console.Error.WriteLine "-e evaluates one expression; use 'let (x, y) = ... in ...'"
+            1
+        | Script.KModule _ ->
+            Console.Error.WriteLine "-e takes an expression, not a module declaration"
+            1
+        | Script.KImport _ ->
+            // unreachable: scriptOnlyImport rejects the import before this
+            Console.Error.WriteLine "import is script-only"
             1
         | Script.KExpr te
         | Script.KCmd te ->

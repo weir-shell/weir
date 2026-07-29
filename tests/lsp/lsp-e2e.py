@@ -311,4 +311,47 @@ for _ in range(5):
 send2({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); read2()
 send2({"jsonrpc": "2.0", "method": "exit", "params": {}}); p2.wait(timeout=5)
 
+# ---- modules: per-URI diagnostics + buffer-over-disk (session 4) ----
+# A module's error lands on the module's OWN uri (even when only the entry is
+# open), and an OPEN dependency's unsaved buffer wins over disk (decision 14).
+import tempfile
+td = tempfile.mkdtemp()
+modp = os.path.join(td, "mod.weir"); entryp = os.path.join(td, "main.weir")
+open(modp, "w").write("module Mod\nlet base = 10\n")               # clean on disk
+open(entryp, "w").write('import "./mod.weir"\nprint (show Mod.base)\n')
+p3 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+def send3(o):
+    b = json.dumps(o).encode()
+    p3.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p3.stdin.flush()
+def read3():
+    length = None
+    while True:
+        line = p3.stdout.readline().strip()
+        if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
+        elif line == b"": break
+    return json.loads(p3.stdout.read(length))
+send3({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}); read3()
+entry_uri = "file://" + entryp; mod_uri = "file://" + modp
+send3({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": entry_uri, "text": open(entryp).read()}}})
+got = {}
+for _ in range(3):
+    m = read3()
+    if m.get("method") == "textDocument/publishDiagnostics":
+        got[m["params"]["uri"]] = m["params"]["diagnostics"]; break
+expect(got.get(entry_uri) == [], f"a clean entry importing a clean module publishes empty: {got}")
+# open the module with a BROKEN buffer (disk stays clean)
+send3({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": mod_uri, "text": "module Mod\nlet base = Str.trim 5\n"}}})
+seen = {}
+for _ in range(5):
+    m = read3()
+    if m.get("method") == "textDocument/publishDiagnostics":
+        seen[m["params"]["uri"]] = m["params"]["diagnostics"]
+        if seen.get(mod_uri): break
+expect(mod_uri in seen and any("expected string" in d["message"] for d in seen[mod_uri]),
+       f"a module error publishes on its OWN uri, buffer over disk: {seen}")
+send3({"jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": {}}); read3()
+send3({"jsonrpc": "2.0", "method": "exit", "params": {}}); p3.wait(timeout=5)
+
 print("lsp-e2e: all probes green")
