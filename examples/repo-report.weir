@@ -21,8 +21,8 @@ print $"=== repo report: {workdir} ==="
 // turns it into typed rows
 let changes =
     git status --porcelain
-    | from porcelain
-    | Seq.force
+    |> from porcelain
+    |> Seq.force
 
 // [] matches emptiness on the seq directly; cons is for when the
 // head is worth BINDING — a wildcard completes this one

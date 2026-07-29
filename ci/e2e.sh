@@ -69,7 +69,7 @@ echo "e2e ok: measure transition error"
 out=$($BIN -e '$(echo "*")')
 expect "argv stays literal" '["*"]' "$out"
 
-out=$($BIN -e 'echo hi (40 + 2) | first 1')
+out=$($BIN -e 'echo hi (40 + 2) |> first 1')
 expect "command mode with splice" '["hi 42"]' "$out"
 
 out=$($BIN -e '[1..5] |> Seq.length')
@@ -91,7 +91,7 @@ rm -rf "$rangedir"
 out=$($BIN -e 'let n = 40 + 2 in $"answer: {n} {{ok}}"')
 expect "string interpolation with brace escapes" '"answer: 42 {ok}"' "$out"
 
-out=$($BIN -e 'echo $"n={40 + 2}" | first 1')
+out=$($BIN -e 'echo $"n={40 + 2}" |> first 1')
 expect "interpolated string is one argv entry" '["n=42"]' "$out"
 
 dir=$(mktemp -d)
@@ -108,13 +108,13 @@ dir=$(mktemp -d)
     echo n > untracked.txt
 )
 
-out=$(printf 'cd "%s"\ngit status --porcelain | from porcelain | where _.staged | map _.path\n^ls\nlet pat = "a"\ngrep -l $pat staged.txt\n:q\n' "$dir" | $BIN)
+out=$(printf 'cd "%s"\ngit status --porcelain |> from porcelain |> where _.staged |> map _.path\n^ls\nlet pat = "a"\ngrep -l $pat staged.txt\n:q\n' "$dir" | $BIN)
 expect "cd + porcelain + staged filter" '["staged.txt"]' "$out"
 expect "^ls forces external" 'untracked.txt' "$out"
 expect "bound-variable splice into grep" '["staged.txt"]' "$out"
 rm -rf "$dir"
 
-out=$($BIN -e 'yes hi | cat | first 2')
+out=$($BIN -e 'yes hi | cat |> first 2')
 expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
 
 # /etc/hosts, not /etc/hostname: the latter doesn't exist on macOS
@@ -164,7 +164,7 @@ branchdir=$(mktemp -d)
     git branch feature/b
     git branch keep-me
 )
-out=$(printf 'cd "%s"\ngit branch | map trim | where (startsWith "feature") | join ","\n:q\n' "$branchdir" | $BIN)
+out=$(printf 'cd "%s"\ngit branch |> map trim |> where (startsWith "feature") |> join ","\n:q\n' "$branchdir" | $BIN)
 expect "git-branch-cleanup dogfood task" '"feature/a,feature/b"' "$out"
 rm -rf "$branchdir"
 
@@ -270,8 +270,8 @@ expect "comment lines transparent inside blocks" "3" "$out"
 cat > "$scriptdir/show.weir" <<'WEOF'
 let staged =
     git status --porcelain
-    | from porcelain
-    | Seq.first 1
+    |> from porcelain
+    |> Seq.first 1
 
 staged |> Seq.iter (fun c -> print (show c))
 WEOF
@@ -1036,7 +1036,7 @@ rm -rf "$shdir"
 pfdir=$(mktemp -d)
 (cd "$pfdir" && git init -q . && git -c user.email=a@a -c user.name=a commit -q --allow-empty -m x)
 cat > "$pfdir/forms.weir" <<'WEOF'
-let revParse r = git rev-parse $r | Seq.head
+let revParse r = git rev-parse $r |> Seq.head
 let asSigil r = $(git rev-parse $r) |> Seq.head
 let headLog () = git log --format=%s -1
 print (if revParse "HEAD" == asSigil "HEAD" then "EQUAL" else "DIFF")
@@ -1240,7 +1240,7 @@ errout=$($BIN -e 'match "a" with | Regex "(a)" v -> v | _ -> ""' 2>&1 || true)
 echo "$errout" | grep -qF "regex literals are raw" || fail "the raw-only rider hint is missing: $errout"
 echo "e2e ok: the Regex position is raw-only"
 
-out=$($BIN -e 'echo (@"\n") | Seq.head')
+out=$($BIN -e 'echo (@"\n") |> Seq.head')
 expect "verbatim splice is one literal argv entry" '\n' "$out"
 rm -rf "$rawdir"
 
@@ -1858,7 +1858,7 @@ type J = {
     /// the n
     N: int
 }
-let j = echo '{"N": 5}' | from json J | Seq.head
+let j = echo '{"N": 5}' |> from json J |> Seq.head
 print j.N
 WEOF
 out=$($BIN "$adir/attrs-json.weir")
@@ -2288,8 +2288,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bldir=$(mktemp -d)
 cat > "$bldir/forms.weir" <<'WEOF'
 let graft c =
-    let tree = git rev-parse $"{c}^{{tree}}" | Seq.head
-    let short = git rev-parse --short $c | Seq.head
+    let tree = git rev-parse $"{c}^{{tree}}" |> Seq.head
+    let short = git rev-parse --short $c |> Seq.head
     let ok = git rev-parse --verify $c | succeeds
     $"{short}:{ok} {tree}"
 
@@ -2316,7 +2316,7 @@ expect "block names shadow PATH at depth (the failing-first pin)" "safe" "$out"
 cat > "$bldir/force.weir" <<'WEOF'
 let f y =
     let zzshadow = fun a -> a
-    let z = ^zzshadow y | Seq.head
+    let z = ^zzshadow y |> Seq.head
     z
 
 print (f "x")
@@ -2854,7 +2854,7 @@ spldir=$(mktemp -d)
 cat > "$spldir/add.weir" <<'WEOF'
 let files = Path.glob "*.txt" |> Seq.force
 git add $@files
-git status --porcelain | Seq.where (Str.startsWith "A ") | Seq.iter print
+git status --porcelain |> Seq.where (Str.startsWith "A ") |> Seq.iter print
 WEOF
 out=$(cd "$spldir" && $BIN add.weir)
 expect "splat: glob into git add (N files, N words)" "A  a.txt

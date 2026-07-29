@@ -666,9 +666,16 @@ quantity semantics now.
   binding, or quote arguments. One shared mechanism (`Diagnose.hint`), not
   per-case hacks.
 - **Command grammar**: `head bareword* ((| or |>) segment)*`; each pipe segment
-  re-enters the mode decision, so `git log | grep x | first 2` flows
-  external→external→expression. `|` is accepted as `|>` in command mode only;
-  expression mode remains `|>`-only.
+  re-enters the mode decision. **The pipe rule [D:pipe-rhs-decides] — the
+  RIGHT-HAND side decides the glyph:** `|` when the stage is a program or a
+  reifier (command grammar), `|>` when it is a function. That is the whole
+  table (`cmd|cmd`, `expr|cmd`, `cmd|reifier` take `|`; `cmd|fn`, `expr|fn`
+  take `|>`), symmetric, no exceptions. So `git log | grep x |> first 2`
+  flows external→external (`|`)→function (`|>`). A mismatch teaches both
+  ways: `cmd | fn` → "'|' chains commands; pipe expressions with '|>'";
+  `expr |> cmd` → "'|>' applies functions; feed a program with '|'", each
+  anchored on the glyph/program. Adapters (`from json`/`from porcelain`/`to
+  json`) are functions → `|>`.
 - **Arguments**: barewords run until whitespace, `|`, `(`, `)`, quotes, `$`, or
   end of line — `/`, `.`, `-`, `=`, `%` are ordinary characters. `"..."`
   (with escapes) and `'...'` (raw) produce single args. `$name` splices a
@@ -1051,7 +1058,7 @@ quantity semantics now.
 - **A command-headed line commits to command mode**: once the first segment
   parses as a command, there is no backtrack to expression parsing for the
   rest of the line — errors after that point are command-line errors (this is
-  why `git status | first 1 | complete` reports the marker rule instead of a
+  why `git status |> first 1 | complete` reports the marker rule instead of a
   generic expression error).
 - **External-to-external pipes feed stdin**: `git log | grep x` wires the
   left stream (which must be `seq<string>`) into the right command's stdin.

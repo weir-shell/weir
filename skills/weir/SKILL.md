@@ -22,7 +22,7 @@ stops being true fails the build.
   a statement, so blocks group freely with gaps.
 - Scripts are STRICT: every module member is qualified —
   `Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read` — including in
-  command pipelines (`| Seq.map Str.trim`). Bare names (`map`, `where`)
+  command pipelines (`|> Seq.map Str.trim`). Bare names (`map`, `where`)
   exist only in the REPL and `#loose` scripts. If unsure, qualify.
 - The `Self` module groups a script's own facts, script-only (absent
   in the REPL and `-e`): `Self.args : seq<string>`,
@@ -56,7 +56,7 @@ stops being true fails the build.
 let files = git ls-files
 print $"tracked: {files |> Seq.length}"
 ["a"; "b"] |> Seq.iter print
-git ls-files | Seq.first 1
+git ls-files |> Seq.first 1
 ```
 
 ```weir-error
@@ -131,7 +131,7 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   `fun`). Params are idents, `()`, or PARENTHESIZED irrefutable
   patterns (`let dist (x, y) = ...`) — no type annotations. A
   param-ful let TAKES a command RHS
-  (`let revParse r = git rev-parse $r | Seq.head`): params shadow
+  (`let revParse r = git rev-parse $r |> Seq.head`): params shadow
   PATH inside their own RHS (bindings-beat-PATH's scope; `^x` still
   forces the binary), and a spliced param defaults to string at the
   statement boundary. Splices are WHOLE argv entries — a mid-word
@@ -178,7 +178,7 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   worker output inside the worker (`Seq.head`/`Seq.force`) if its cd
   matters.
 - A `let` RHS takes command mode wherever lets go — top level AND
-  inside bodies (`let tree = git rev-parse $c | Seq.head` in a
+  inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
   function); `$()` covers sub-expression positions. `function` is
   reserved (write `fun x -> match x with`).
 - No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
@@ -419,8 +419,8 @@ print x
   of capturing; the ceiling is the box, and a single capture caps at
   ~2GB. `Seq.force` on decoded lines re-pays string overhead — force
   what you need, not the world.
-- Typed output: `git status --porcelain | from porcelain` gives rows
-  with `path`/`staged`/`unstaged`/`status`; `... | from json T` needs
+- Typed output: `git status --porcelain |> from porcelain` gives rows
+  with `path`/`staged`/`unstaged`/`status`; `... |> from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
   Fields are `int`/`string`/`bool` or `Option` of one. An `Option`
   field reads a missing key OR an explicit `null` as `None`; a
@@ -469,13 +469,13 @@ if clean then !(sh -c "echo acting")
 - Command sigils work ANYWHERE in expressions: `$(git branch)` captures
   output (`seq<string>`, pipes onward); `!(git push)` runs-and-streams
   (unit, raises on nonzero). On a top-level `let` RHS prefer the bare
-  chain (`let b = git branch | Seq.head`); sigils are for positions
+  chain (`let b = git branch |> Seq.head`); sigils are for positions
   bare cannot reach. The block effect idiom:
   `if clean then` + indented `!(...)` lines. Interiors are ordinary
   command chains (splices, pipes, `| complete`). `!` is NOT bash
   history/extglob and `;` still does not chain inside them.
 - A top-level `let` RHS takes command lines — param-ful included
-  (`let f r = git rev-parse $r | Seq.head`): `let files = git ls-files`
+  (`let f r = git rev-parse $r |> Seq.head`): `let files = git ls-files`
   binds `seq<string>`; `let r = git status | complete` binds the
   record. Externals only — builtins stay functions there
   (`let w = cd target` applies the BINDING target). BLOCK lets inside
@@ -665,7 +665,7 @@ sh -c "echo via-posix && echo second"
 let r = sh -c "exit 3" | complete
 print $"exit was {r.exitCode}"
 
-git status --porcelain | from porcelain | Seq.map _.path
+git status --porcelain |> from porcelain |> Seq.map _.path
 ```
 
 ## Diagnostics and exiting

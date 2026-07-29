@@ -1496,14 +1496,16 @@ let commandModeTests =
               Expect.equal (show (parseCmd "ls -la")) "(ls (- 0 la))" "parses as application of -la"
               Expect.stringContains (checkErr "ls - la").Message "unbound variable 'la'" ""
           }
-          test "command pipes into expression stage" {
-              expectCmd "git log | first 5" "((cmd git \"log\") |> (first 5))"
+          test "'|' before an expression stage is a parse error — the RHS decides [D:pipe-rhs-decides]" {
+              match Weir.Parser.parseLine cmdResolver "git log | first 5" with
+              | Error msg -> Expect.stringContains msg "'|' chains commands; pipe expressions with '|>'" ""
+              | Ok _ -> failtest "cmd | expr must error under the pipe rule"
           }
           test "pipe accepts |> in command mode too" {
               expectCmd "git log |> first 5" "((cmd git \"log\") |> (first 5))"
           }
           test "external to external to expression" {
-              expectCmd "git log | grep x | first 2" "(((cmd git \"log\") |> (cmd grep \"x\")) |> (first 2))"
+              expectCmd "git log | grep x |> first 2" "(((cmd git \"log\") |> (cmd grep \"x\")) |> (first 2))"
           }
           test "unknown head without PATH hit falls back to expression" {
               match Weir.Parser.parseLine cmdResolver "gti status" with
@@ -1526,7 +1528,7 @@ let commandModeTests =
               | Ok _ -> failtest "expected parse failure"
           }
           test "command line types as seq<string>" {
-              match Weir.Parser.parseLine cmdResolver "git status | first 1" with
+              match Weir.Parser.parseLine cmdResolver "git status |> first 1" with
               | Ok(SExpr e | SCmd e) ->
                   match typecheck env e with
                   | Ok te -> Expect.equal te.Ty (TSeq TStr) ""
@@ -1560,7 +1562,7 @@ let commandModeTests =
           }
           test "real exec: command pipes into first" {
               Expect.equal
-                  (runReal "yes weir-s3-pipe | first 2" |> forceSeq)
+                  (runReal "yes weir-s3-pipe |> first 2" |> forceSeq)
                   [ VStr "weir-s3-pipe"; VStr "weir-s3-pipe" ]
                   ""
 
@@ -1733,7 +1735,7 @@ let session3Tests =
               // SOMETHING — it previously asserted a marker no process
               // ever carried [D:vacuous-probe-audit]
               Expect.equal
-                  (runReal "yes weir-s3cc | cat | first 2" |> forceSeq)
+                  (runReal "yes weir-s3cc | cat |> first 2" |> forceSeq)
                   [ VStr "weir-s3cc"; VStr "weir-s3cc" ]
                   ""
 
@@ -1742,7 +1744,7 @@ let session3Tests =
           test "non-string stream into an external is rejected [D:value-headed-pipe]" {
               // the pipe-into-external teaching is shared by command chains
               // and value-headed pipelines (one EPipe-into-ECmd arm)
-              match Weir.Parser.parseLine cmdResolver "git x | map (fun s -> 1) | cat" with
+              match Weir.Parser.parseLine cmdResolver "git x |> map (fun s -> 1) | cat" with
               | Ok(SExpr e | SCmd e) ->
                   match typecheck env e with
                   | Error terr -> Expect.stringContains terr.Message "seq<int> — map show or interpolate per element" ""
@@ -1872,7 +1874,7 @@ let session3Tests =
               | Ok _ -> failtest "expected parse failure"
           }
           test "complete after a non-external stage is a parse error" {
-              match Weir.Parser.parseLine realResolver "git status | first 1 | complete" with
+              match Weir.Parser.parseLine realResolver "git status |> first 1 | complete" with
               | Error msg -> Expect.stringContains msg "must directly follow a single external command segment" ""
               | Ok _ -> failtest "expected parse failure"
           }
@@ -3246,7 +3248,7 @@ let blockLetCmdTests =
                     IsExternal = fun n -> n = "echo"
                     ExternalNames = fun () -> Seq.empty }
 
-              match Weir.Parser.parseLine r "let f x = let w = echo alpha \"in\" beta | Seq.head in w" with
+              match Weir.Parser.parseLine r "let f x = let w = echo alpha \"in\" beta |> Seq.head in w" with
               | Ok _ -> ()
               | Error e -> failtest $"quoted-in must pass as argv: {e}"
           }
@@ -3931,7 +3933,7 @@ let semanticTokenTests =
           }
           test "expression stages after | emit nothing; reifiers emit nothing" {
               let toks =
-                  Weir.Lsp.semanticTokensFor [ "git status --porcelain | Seq.map Str.trim" ]
+                  Weir.Lsp.semanticTokensFor [ "git status --porcelain |> Seq.map Str.trim" ]
 
               Expect.equal
                   toks
@@ -4840,7 +4842,7 @@ let unitPrintTests =
               | Ok(SCmd _) -> ()
               | other -> failtest $"expected SCmd, got {other}"
 
-              match Weir.Parser.parseLine cmdResolver "git branch | map trim" with
+              match Weir.Parser.parseLine cmdResolver "git branch |> map trim" with
               | Ok(SCmd _) -> ()
               | other -> failtest $"expected SCmd for the chain, got {other}"
 
@@ -5363,7 +5365,7 @@ let agentFindingsTests =
               // the single-external-segment family rule (statement level —
               // the let-RHS chain rejects mid-chain stages earlier, with
               // the bare-pipe hint, family-uniformly)
-              match Weir.Parser.parseLine cmdResolver "git log | Seq.first 1 | exitCode" with
+              match Weir.Parser.parseLine cmdResolver "git log |> Seq.first 1 | exitCode" with
               | Error msg -> Expect.stringContains msg "single external command segment" ""
               | Ok _ -> failtest "exitCode must keep the family's segment rule"
           }
@@ -6957,7 +6959,7 @@ let sigilTests =
           }
           test "sigils x strict mode: grammar, not resolution" {
               // the sigil works in strict scripts; interior expr stages qualify
-              match Weir.Parser.parseLine realResolver "let x = $(git branch | Seq.map Str.trim)" with
+              match Weir.Parser.parseLine realResolver "let x = $(git branch |> Seq.map Str.trim)" with
               | Ok(SLet _) -> ()
               | other -> failtest $"unexpected: {other}"
           } ]
