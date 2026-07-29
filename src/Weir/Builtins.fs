@@ -1584,14 +1584,20 @@ let builtinDocs: Map<string, BuiltinDoc> =
 
           // ---- boundary forms: adapters between text and typed data ----
           "from json",
-          bd "Parse a JSON line stream into a declared record type." None (Some "a pipe stage: xs |> from json Config.")
+          bd
+              "Parse a JSON line stream into a declared record type. Fields are int/string/bool or Option of one; an Option field reads a missing key or null as None."
+              None
+              (Some "a pipe stage: xs |> from json Config.")
           "from porcelain",
           bd
               "Parse `git status --porcelain` lines into Change records."
               None
               (Some "a pipe stage: xs |> from porcelain.")
           "to json",
-          bd "Render a sequence of records or primitives to JSON lines." None (Some "a pipe stage: xs |> to json.")
+          bd
+              "Render a sequence of records or primitives to JSON lines. A None field omits its key (so from json reads it back as None)."
+              None
+              (Some "a pipe stage: xs |> to json.")
 
           // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
           // Surface names; the typed tree carries the un-typeable |completed

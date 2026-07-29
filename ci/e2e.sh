@@ -1864,6 +1864,19 @@ WEOF
 out=$($BIN "$adir/attrs-json.weir")
 expect "from json loads a documented record identically (/// inert)" "5" "$out"
 
+# Option<scalar> at the JSON boundary [D:json-option]: present -> Some,
+# missing/null -> None, and to json OMITS the None key so it roundtrips.
+cat > "$adir/json-option.weir" <<'WEOF'
+type R = { name: string; age: Option<int> }
+let rows = ["{\"name\":\"a\",\"age\":5}"; "{\"name\":\"b\"}"; "{\"name\":\"c\",\"age\":null}"]
+rows |> from json R |> to json |> Seq.iter print
+WEOF
+out=$($BIN "$adir/json-option.weir")
+expect "json Option: Some writes, None (missing or null) omits the key" \
+'{"age":5,"name":"a"}
+{"name":"b"}
+{"name":"c"}' "$out"
+
 cat > "$adir/attrs-env.weir" <<'WEOF'
 type EC = {
     /// the home dir

@@ -1053,7 +1053,10 @@ quantity semantics now.
 - **`sortBy : ('a -> 'b) -> seq<'a> -> seq<'a>`** — the key must evaluate to
   an int, string, or bool; anything else is a runtime error (the type system
   has no comparability constraint — same check-at-the-boundary posture as
-  `from json` field types). **`groupBy` is deferred to the generics session
+  `from json` field types, which are a scalar or `Option` of one
+  [D:json-option]: a missing key or explicit `null` reads as `None`, a
+  `null` in a required field errors naming the fix, and `to json` omits a
+  `None` field's key so the roundtrip holds). **`groupBy` is deferred to the generics session
   with a reason**: its honest shape `{ Key: 'b; Items: seq<'a> }` requires
   generic records, which do not exist yet; a string-keyed fake would be case
   law in the wrong direction. `isEmpty : seq<'a> -> bool` completes the set.
