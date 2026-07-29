@@ -20,7 +20,7 @@ stops being true fails the build.
   hover can't drift. Statements end at column 0 (the next col-0
   line) — blank lines and comment lines are both transparent inside
   a statement, so blocks group freely with gaps.
-- Scripts are STRICT: every library name is module-qualified —
+- Scripts are STRICT: every module member is qualified —
   `Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read` — including in
   command pipelines (`| Seq.map Str.trim`). Bare names (`map`, `where`)
   exist only in the REPL and `#loose` scripts. If unsure, qualify.
@@ -437,6 +437,24 @@ print x
 - The glyph law: weir has no `!`-negation — negation is the word
   `not`; `!` means DO IT. And no `\`-escape for commands — `^ls`
   forces the PATH binary.
+- Modules & imports (share code between scripts): a file that starts
+  with `module` (or `module Name`) is a MODULE — importable,
+  declaration-only (`type`/`let` only, no commands or bare
+  expressions), not runnable. Import it with `import "./lib/x.weir"`
+  (a literal path, first in the file before declarations) or
+  `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
+  `X.helper`, `X.Ctx` types cross the boundary. Construct an imported
+  record with the qualified literal `X.Ctx { field = v; ... }` (or
+  `Ctx { ... }` when the name is unambiguous); a bare `{ ... }` still
+  works when exactly one record in scope has those fields. The alias
+  defaults to the module's declared name (or the capitalized
+  filename). Errors are named: running a module, importing a
+  non-module, a self-import, a module `let` that runs a command
+  (wrap it in a function), or a missing file (the message shows the
+  resolved absolute path). Resolution is check-time — nothing loads
+  at runtime. `import` is script-only (not `-e`/REPL). Imports are
+  transitive (a module may import); a shared module is checked once
+  (diamonds collapse) and an import cycle is a named check error.
 
 ```weir
 let clean = not (1 == 2)

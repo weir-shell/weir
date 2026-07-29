@@ -176,7 +176,13 @@ type TypeDef =
 type TypeEnv =
     { Values: Map<string, Scheme>
       Modules: Map<string, Map<string, Scheme>>
-      Types: Map<string, TypeDef> }
+      Types: Map<string, TypeDef>
+      // imported modules [D:modules-v1]: alias -> the type names that
+      // module exported. Types themselves live flat in `Types` (plain
+      // name, so signatures/field-access/bare literals resolve); this
+      // records provenance so the qualified literal `Git.Ctx { .. }`
+      // can confirm the module owns that type. Empty for single-file.
+      ModuleTypes: Map<string, Set<string>> }
 
 let editDistance (a: string) (b: string) : int =
     let d = Array2D.create (a.Length + 1) (b.Length + 1) 0

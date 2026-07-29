@@ -26,7 +26,9 @@ let qualifyLine (r: Parser.Resolver) (line: string) : string * int =
             | SCmd e -> collectBareUses e
             | SLet(_, e) -> collectBareUses e
             | SLetPat(_, e) -> collectBareUses e
-            | SType _ -> []
+            | SType _
+            | SModule _
+            | SImport _ -> []
 
         let applicable =
             uses

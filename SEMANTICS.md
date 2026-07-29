@@ -818,6 +818,44 @@ quantity semantics now.
   stdout, exit 0. Script-only (`args`'
   scope); the untyped floor (`args`, `Args.flag`, `Args.value`)
   remains, exactly Env.get under Env.load.
+- **Modules and imports** [D:modules-v1] (arc session 1; design in
+  plans/DESIGN-modules-and-imports.md) — the unit of sharing is a
+  FILE marked `module` (or `module Name`), top-level, no `=`/body;
+  `module`/`import` are reserved words. A module is
+  DECLARATION-ONLY (`type`/`let`; a `let` whose RHS runs a command is
+  rejected — the weak-purity rule, walked to lambda boundaries so a
+  param-ful `let f r = git …` is a deferred function), so it is
+  checkable in isolation and `weir check lib.weir` enforces exactly
+  what an import would. `import "path" [as Name]` takes a LITERAL
+  string path, resolved at CHECK time by one function to an absolute,
+  normalized path (symlinks unresolved, the `Path.glob` precedent);
+  a missing file names the resolved path. Nothing loads at runtime —
+  check-before-effects survives the file boundary. Access is ALWAYS
+  qualified (`X.member`, `X.Ctx`): the module's values (and union
+  ctors) join `Modules[alias]`, its types join the flat type pool by
+  plain name (so signatures, field access, and bare `{ … }` literals
+  resolve unchanged), and a new `ModuleTypes` map records provenance
+  for the qualified literal `X.Ctx { … }` (which, with the unqualified
+  `Ctx { … }`, always resolves regardless of field-set ambiguity — a
+  checker interception of `EApp(typeName, ERecord)`, so a constructor
+  applied to a record like `Some { … }` is untouched). Named errors:
+  running a module ("a module declares; it does not run"), importing
+  a non-module, a self-import, and a cross-module type-name clash (a
+  session-1 limit). Import is script-only (not `-e`/REPL). A
+  module-CONTENT error reports at the module's OWN file:line with an
+  "imported here" `note` at the import line (decision 13, session 2);
+  `check --json` carries a `file` per diagnostic. THE GRAPH (session
+  3): imports are TRANSITIVE (a module may import); a shared module is
+  checked ONCE (a cache keyed by normalized absolute path, so diamonds
+  collapse); an import CYCLE is a check error naming the loop by file
+  name (decision 9). A module exports only its OWN types (no
+  re-export, decision 3) — it uses an imported type internally freely,
+  but an importer must import that module to name the type. THE LSP
+  (session 4): diagnostics publish PER URI (a module's error lands on
+  its own file, even unopened); an open dependency's unsaved buffer
+  wins over disk; editing a dependency re-checks its importers
+  (decision 14). Deferred in-arc: multi-error-per-module recovery, the
+  decl-above-import ordering error (decision 5).
 - **Child-env injection** (2026-07-20, the shEnv receipt — the bicep
   translation's strongest): via the env sigils `$e(...)`/`!e(...)`
   (bind the `seq<EnvVar>`, glue it to the sigil; the `cmdEnv`/`runEnv`
@@ -895,7 +933,11 @@ quantity semantics now.
   after the script name), `Self.stdin : seq<string>` (lazy, one-shot —
   `Seq.force` it if reused), `Self.pid : int` (the process id), and
   `Self.scriptPath : string` (the absolute path, resolved at startup
-  before any `cd`). Children inherit the process stdin unless a value is
+  before any `cd`). With modules [D:modules-v1] `Self.scriptPath` is the
+  FILE'S OWN path — a module sees its own — while `Self.entryPath :
+  string` is the INVOKED script's, a process fact like `args`/`stdin`
+  (the same in every module); in the entry the two coincide. Children
+  inherit the process stdin unless a value is
   piped into them; `Self.stdin` reads the same underlying stream, so
   consuming it both ways is user error, as in any shell. Bare `args`/
   `stdin`/`scriptPath` were RETIRED into `Self` (freeing the names for

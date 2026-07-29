@@ -256,7 +256,9 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
 
     for (ll, chk) in stmts do
         match chk.Kind with
-        | Script.KType _ -> ()
+        | Script.KType _
+        | Script.KModule _
+        | Script.KImport _ -> ()
         | Script.KLet(_, _, te)
         | Script.KLetPat(_, _, te)
         | Script.KCmd te
@@ -266,9 +268,25 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
 
 // ---- analysis helpers ---------------------------------------------
 
+// URIs on the wire, filesystem paths for import resolution [D:modules-v1]
+let internal uriToPath (uri: string) : string =
+    if uri.StartsWith "file:" then
+        System.Uri(uri).LocalPath
+    else
+        uri
+
+let internal pathToUri (path: string) : string =
+    if path.StartsWith "file:" then
+        path
+    else
+        System.Uri(path).AbsoluteUri
+
 let private analyze (uri: string) (text: string) =
     let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
-    let diags, stmts, env0, lls = Script.analyzeLines uri lines
+    // analyze against the real PATH so imports resolve relative to the file;
+    // diagnostics come back File-identified (the entry + its modules)
+    let path = uriToPath uri
+    let diags, stmts, env0, lls = Script.analyzeLines path lines
     diags, stmts, env0, lls
 
 // find the containing logical line among ALL assembled lines
@@ -295,7 +313,9 @@ let private toLogical (stmts: (Script.LogicalLine * Script.CheckedStatement) lis
 
 let private teOf (chk: Script.CheckedStatement) =
     match chk.Kind with
-    | Script.KType _ -> None
+    | Script.KType _
+    | Script.KModule _
+    | Script.KImport _ -> None
     | Script.KLet(_, _, te)
     | Script.KLetPat(_, _, te)
     | Script.KCmd te
@@ -869,6 +889,18 @@ let run () : int =
     let stdin' = Console.OpenStandardInput()
     let docs = Collections.Generic.Dictionary<string, string>()
 
+    // buffer-over-disk [D:modules-v1]: an imported file open in the editor is
+    // read from its (possibly unsaved) buffer, else disk (decision 14)
+    Script.importSourceOverride.Value <-
+        Some(fun absPath ->
+            match docs.TryGetValue(pathToUri absPath) with
+            | true, text -> Some(text.Replace("\r\n", "\n").Split('\n') |> Array.toList)
+            | _ ->
+                if IO.File.Exists absPath then
+                    Some(IO.File.ReadAllLines absPath |> Array.toList)
+                else
+                    None)
+
     let readMessage () : string option =
         // headers are ASCII lines ending \r\n; blank line then body
         let mutable contentLength = -1
@@ -907,9 +939,10 @@ let run () : int =
 
             Some(Text.Encoding.UTF8.GetString buf)
 
-    let publishDiagnostics (uri: string) (text: string) =
-        let diags, _, _, _ = analyze uri text
+    // URIs published with diagnostics last cycle — cleared when they go clean
+    let publishedUris = Collections.Generic.HashSet<string>()
 
+    let publishFor (uri: string) (diags: Script.Diagnostic list) =
         notify "textDocument/publishDiagnostics" (fun w ->
             w.WriteStartObject()
             w.WriteString("uri", uri)
@@ -933,7 +966,15 @@ let run () : int =
                 w.WriteNumber("character", ec - 1)
                 w.WriteEndObject()
                 w.WriteEndObject()
-                w.WriteNumber("severity", (if d.Severity = "warning" then 2 else 1))
+
+                w.WriteNumber(
+                    "severity",
+                    (match d.Severity with
+                     | "warning" -> 2
+                     | "note" -> 3
+                     | _ -> 1)
+                )
+
                 w.WriteString("code", d.Code)
                 w.WriteString("source", "weir")
                 w.WriteString("message", d.Message)
@@ -941,6 +982,57 @@ let run () : int =
 
             w.WriteEndArray()
             w.WriteEndObject())
+
+    // re-check EVERY open doc, publish PER URI [D:modules-v1]: a module's
+    // diagnostics land on the module's own file (even unopened), and an
+    // importer re-checks when a dependency it reads changes. Files that went
+    // clean since last cycle are published empty (cleared).
+    let refreshAll () =
+        let byUri = Collections.Generic.Dictionary<string, ResizeArray<Script.Diagnostic>>()
+
+        for kv in Seq.toList docs do
+            let diags, _, _, _ = analyze kv.Key kv.Value
+
+            for d in diags do
+                let du = pathToUri d.File
+
+                match byUri.TryGetValue du with
+                | true, b -> b.Add d
+                | _ ->
+                    let b = ResizeArray()
+                    b.Add d
+                    byUri[du] <- b
+
+        // one publish per relevant URI: a file with diagnostics, every OPEN
+        // doc (empty if clean), and any previously-diagnosed file now clean
+        let toPublish = Collections.Generic.Dictionary<string, Script.Diagnostic list>()
+
+        for kv in byUri do
+            // the same file can be diagnosed both directly (open) and as a
+            // dependency of another open doc; dedup by position+message,
+            // keeping the richer span (EndCol present)
+            toPublish[kv.Key] <-
+                (kv.Value
+                 |> Seq.sortByDescending (fun d -> d.EndCol.IsSome)
+                 |> Seq.distinctBy (fun d -> d.Line, d.Col, d.Severity, d.Code, d.Message)
+                 |> List.ofSeq)
+
+        for kv in docs do
+            if not (toPublish.ContainsKey kv.Key) then
+                toPublish[kv.Key] <- []
+
+        for uri in publishedUris do
+            if not (toPublish.ContainsKey uri) then
+                toPublish[uri] <- []
+
+        for kv in toPublish do
+            publishFor kv.Key kv.Value
+
+        publishedUris.Clear()
+
+        for kv in toPublish do
+            if not (List.isEmpty kv.Value) then
+                publishedUris.Add kv.Key |> ignore
 
     let mutable running = true
     let mutable exitCode = 0
@@ -1016,7 +1108,8 @@ let run () : int =
                          match jStr "uri" td, jStr "text" td with
                          | Some uri, Some text ->
                              docs[uri] <- text
-                             publishDiagnostics uri text
+                             // re-check all: this doc AND any open importer of it
+                             refreshAll ()
                          | _ -> ()
                      | None -> ())
                 | "textDocument/didChange" ->
@@ -1025,13 +1118,15 @@ let run () : int =
                          match jStr "uri" td, jStr "text" change with
                          | Some uri, Some text ->
                              docs[uri] <- text
-                             publishDiagnostics uri text
+                             refreshAll ()
                          | _ -> ()
                      | _ -> ())
                 | "textDocument/didClose" ->
                     jObj "textDocument" ps
                     |> Option.bind (jStr "uri")
-                    |> Option.iter (fun uri -> docs.Remove uri |> ignore)
+                    |> Option.iter (fun uri ->
+                        docs.Remove uri |> ignore
+                        refreshAll ())
                 | "textDocument/semanticTokens/full" ->
                     let writeResult (w: Text.Json.Utf8JsonWriter) =
                         match docOf () with

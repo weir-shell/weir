@@ -1578,9 +1578,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
 
           // ---- Self (per-run introspection) ----
           "Self.pid", bd "This process's id." None None
-          "Self.args", bd "The script's argument vector." None None
-          "Self.stdin", bd "This process's standard input, as lazy lines." None None
-          "Self.scriptPath", bd "The path of the running script." None None
+          "Self.args", bd "The invoked script's argument vector (a process fact — the same in every module)." None None
+          "Self.stdin", bd "This process's standard input, as lazy lines (a process fact)." None None
+          "Self.scriptPath", bd "The path of the FILE reading it — a module sees its own path." None None
+          "Self.entryPath",
+          bd "The path of the INVOKED script (a process fact — the same in every module, unlike scriptPath)." None None
 
           // ---- boundary forms: adapters between text and typed data ----
           "from json",
@@ -1851,7 +1853,8 @@ let typeEnv: TypeEnv =
               changeDef.Name, Record changeDef
               completedDef.Name, Record completedDef
               groupDef.Name, Record groupDef
-              envVarDef.Name, Record envVarDef ] }
+              envVarDef.Name, Record envVarDef ]
+      ModuleTypes = Map.empty }
 
 let typeEnvStrict: TypeEnv =
     { typeEnv with

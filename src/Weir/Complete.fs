@@ -191,7 +191,9 @@ let fieldsAtRepaired
             | Weir.Ast.SLetPat(_, e) -> Some e
             | Weir.Ast.SExpr e
             | Weir.Ast.SCmd e -> Some e
-            | Weir.Ast.SType _ -> None
+            | Weir.Ast.SType _
+            | Weir.Ast.SModule _
+            | Weir.Ast.SImport _ -> None
 
         exprOf
         |> Option.bind (fun e ->

@@ -1403,13 +1403,47 @@ let private scriptBody (rawLines: string list) : Mode * string list * int =
     | first :: rest when first.Trim() = "#loose" -> Loose, rest, shebangOffset + 1
     | _ -> Strict, afterShebang, shebangOffset
 
-type private CheckedStmt =
+type CheckedStmt =
     | CLet of name: string * te: Check.TypedExpr
     | CLetPat of binder: Weir.Ast.Pattern * te: Check.TypedExpr
     | CExpr of te: Check.TypedExpr
     | CCmd of te: Check.TypedExpr
     | CType of decl: Decl
     | CNoop
+    // an imported module's replayable body [D:modules-v1] — evaluated once
+    // at exec into the module's own venv, exposed as `alias.member`
+    | CImport of LoadedModule
+
+// a checked, imported module [D:modules-v1]. Its check-time contributions
+// (Members -> Modules[Alias], TypeDefs -> Types, TypeNames -> ModuleTypes)
+// merge into the importer's tenv; Body replays at exec to build the
+// module's values. AbsPath is the normalized identity (symlinks unresolved).
+and LoadedModule =
+    { Alias: string
+      // the module's OWN name (declared or filename-derived), independent
+      // of a site's `as` — a cached module re-aliases from this [D:modules-v1]
+      NaturalName: string
+      AbsPath: string
+      TypeDefs: (string * TypeDef) list
+      Members: (string * Scheme) list
+      TypeNames: string list
+      Body: CheckedStmt list }
+
+// an import failure [D:modules-v1]. File=Some for a MODULE-CONTENT error —
+// reported at the module's OWN site (Line/Col into that file) plus an
+// "imported here" note at the import line; File=None for an import-STATEMENT
+// error (self-import, missing file, not-a-module) reported at the import line.
+and ImportError =
+    { File: string option
+      Line: int
+      Col: int
+      Message: string }
+
+// resolves an `import` to a checked module, or an ImportError [D:modules-v1].
+// The caller binds it to the importing file's directory; the script-only
+// (-e/REPL) and nested-import variants just return Error. Args: the literal
+// path, its span (for error placement), the optional `as` alias.
+and ImportLoader = string -> Span -> string option -> Result<LoadedModule, ImportError>
 
 // the Self module [D:self-module]: script/process introspection grouped
 // under one name, freeing the bare `args`/`stdin`/`scriptPath` for users.
@@ -1421,7 +1455,11 @@ let selfMembers: Map<string, Scheme> =
         [ "pid", generalize TInt
           "args", generalize (TSeq TStr)
           "stdin", generalize (TSeq TStr)
-          "scriptPath", generalize TStr ]
+          // scriptPath = the FILE'S OWN path (a module sees its own);
+          // entryPath = the INVOKED script's, a process fact like args/stdin
+          // — the same for every file in the run [D:modules-v1] (decision 12)
+          "scriptPath", generalize TStr
+          "entryPath", generalize TStr ]
 
 let private baseEnvs (mode: Mode) (scriptArgs: string list) (scriptPath: string) =
     let typeEnv =
@@ -1454,7 +1492,11 @@ let private baseEnvs (mode: Mode) (scriptArgs: string list) (scriptPath: string)
         |> Map.add "Self.pid" (Eval.VInt(int64 System.Environment.ProcessId))
         |> Map.add "Self.args" (Eval.VSeq(scriptArgs |> List.map Eval.VStr :> seq<Eval.Value>))
         |> Map.add "Self.stdin" stdinStream
+        // the entry IS the invoked script, so its own path and the entry
+        // path coincide here; a module later overrides scriptPath with its
+        // own while entryPath rides along as a process fact
         |> Map.add "Self.scriptPath" (Eval.VStr scriptPath)
+        |> Map.add "Self.entryPath" (Eval.VStr scriptPath)
 
     typeEnv, valueEnv
 
@@ -1518,6 +1560,11 @@ type CheckedKind =
     | KLetPat of binder: Pattern * schemes: (string * Scheme) list * te: Check.TypedExpr
     | KCmd of te: Check.TypedExpr
     | KExpr of te: Check.TypedExpr
+    // the module marker [D:modules-v1] — makes the file a module (decl-only,
+    // not runnable); the runner turns it into the running-a-module error
+    | KModule of name: string option * kwSpan: Span
+    // a resolved import [D:modules-v1] — its Env merge already applied
+    | KImport of LoadedModule
 
 [<RequireQualifiedAccess>]
 type StmtTag =
@@ -1536,6 +1583,12 @@ type StmtDiag =
       Span: Span option // None for parse failures
       Parse: bool // parse error (FParsec text) vs type error (message)
       Message: string
+      // multi-file [D:modules-v1]: File=Some when PhysLine/PhysCol point
+      // into ANOTHER file (a module's own error site); Note carries an
+      // extra (line, col, message) in the CURRENT file (the import-line
+      // "imported here"). Both default to None (single-file).
+      File: string option
+      Note: (int * int * string) option
       // the runner prints warnings even when the discard gate then
       // errors (standing behavior) — they travel with the diag
       Warnings: (int * int * string) list }
@@ -1559,6 +1612,11 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
                 || (n.Length > 0
                     && System.Char.IsLetter n[0]
                     && not (Parser.isKeyword n)
+                    // a declared type or module is never a command — else the
+                    // named literal `Ctx { .. }` / `Paths.Ctx { .. }` mis-parses
+                    // under check's assume-command rule [D:modules-v1]
+                    && not (Map.containsKey n tenv.Types)
+                    && not (Map.containsKey n tenv.Modules)
                     && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
 
 // mkR builds the resolver FROM THE CURRENT ENV per statement, so
@@ -1612,9 +1670,19 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
 
     go true [] lines |> List.filter (fun l -> l.Trim() <> "") |> String.concat "\n"
 
+// merge a loaded module into the importer's env [D:modules-v1]: values
+// (and union ctors) under Modules[Alias], types flat under their plain
+// name, and the provenance for the qualified literal under ModuleTypes.
+let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
+    { tenv with
+        Modules = Map.add lm.Alias (Map.ofList lm.Members) tenv.Modules
+        Types = lm.TypeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
+        ModuleTypes = Map.add lm.Alias (Set.ofList lm.TypeNames) tenv.ModuleTypes }
+
 let checkStatement
     (gateExprs: bool)
     (mkR: TypeEnv -> Parser.Resolver)
+    (loadImport: ImportLoader)
     (tenv: TypeEnv)
     (ll: LogicalLine)
     : Result<CheckedStatement, StmtDiag> =
@@ -1638,6 +1706,8 @@ let checkStatement
           Span = Some terr.Span
           Parse = false
           Message = terr.Message
+          File = None
+          Note = None
           Warnings = [] }
 
     let warningsOf te =
@@ -1667,7 +1737,9 @@ let checkStatement
                         | SLetPat(_, e)
                         | SExpr e
                         | SCmd e -> Some e
-                        | SType _ -> None
+                        | SType _
+                        | SModule _
+                        | SImport _ -> None
 
                     let rec heads (e: Expr) =
                         (match e.Kind with
@@ -1698,6 +1770,8 @@ let checkStatement
                       Parse = true
                       Message =
                         $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or run it through sh -c"
+                      File = None
+                      Note = None
                       Warnings = [] }
             | [] ->
                 let physLine, physCol, hasCol =
@@ -1716,6 +1790,8 @@ let checkStatement
                       Span = None
                       Parse = true
                       Message = cleanParseDump ll f.Message
+                      File = None
+                      Note = None
                       Warnings = [] }
         | Ok(SType decl) ->
             match Check.checkDecl tenv decl with
@@ -1835,8 +1911,341 @@ let checkStatement
                         { Kind = KExpr te
                           Env = tenv
                           Warnings = warningsOf te }
+        | Ok(SModule(nameOpt, kwSpan)) ->
+            // the marker adds no bindings; decl-only enforcement and the
+            // running-a-module error are the caller's (loadModule / run)
+            Ok
+                { Kind = KModule(nameOpt, kwSpan)
+                  Env = tenv
+                  Warnings = [] }
+        | Ok(SImport(path, pathSpan, aliasOpt)) ->
+            let importLine, importCol = translate ll pathSpan.Start.Col
+
+            // a module-CONTENT error (File=Some) reports at the module's OWN
+            // site [D:modules-v1], with an "imported here" note at the import
+            // line; an import-STATEMENT error reports at the import line
+            let importDiag (e: ImportError) =
+                match e.File with
+                | Some mf ->
+                    { PhysLine = e.Line
+                      PhysCol = e.Col
+                      PhysEnd = None
+                      Tag = None
+                      HasCol = true
+                      Span = None
+                      Parse = false
+                      Message = e.Message
+                      File = Some mf
+                      // point at THIS level's import; the outermost (entry)
+                      // level runs last, so its note (in the entry file) wins
+                      Note = Some(importLine, importCol, "imported here")
+                      Warnings = [] }
+                | None ->
+                    { PhysLine = importLine
+                      PhysCol = importCol
+                      PhysEnd = Some(translate ll pathSpan.End.Col)
+                      Tag = None
+                      HasCol = true
+                      Span = Some pathSpan
+                      Parse = false
+                      Message = e.Message
+                      File = None
+                      Note = None
+                      Warnings = [] }
+
+            let stmtErr msg =
+                importDiag
+                    { File = None
+                      Line = 0
+                      Col = 0
+                      Message = msg }
+
+            match loadImport path pathSpan (aliasOpt |> Option.map fst) with
+            | Error e -> Error(importDiag e)
+            | Ok lm when Map.containsKey lm.Alias tenv.Modules ->
+                Error(
+                    stmtErr
+                        $"the name '{lm.Alias}' is already a module in scope; import it under a different name with 'as'"
+                )
+            | Ok lm ->
+                match lm.TypeNames |> List.tryFind (fun n -> Map.containsKey n tenv.Types) with
+                | Some clash ->
+                    Error(
+                        stmtErr
+                            $"import '{lm.Alias}' declares a type '{clash}' that is already declared here; rename one (cross-module same-name types are not yet distinguishable)"
+                    )
+                | None ->
+                    Ok
+                        { Kind = KImport lm
+                          Env = mergeModule tenv lm
+                          Warnings = [] }
     finally
         Check.toPhys.Value <- None
+
+// ---- the module loader [D:modules-v1] ------------------------------------
+// A module's OWN base env: builtins (strict) + prelude + Self, with
+// Self.scriptPath = the module's own path. Pure — no stdin/args/Session
+// wiring, so loading a module never disturbs the entry's process facts.
+let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
+    let te, ve = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+
+    { te with
+        Modules = te.Modules |> Map.add "Self" selfMembers },
+    ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
+
+// the ONE import path resolver [D:modules-v1]: absolute + normalized (for
+// identity and, later, caching); symlinks stay UNRESOLVED — the Path.glob
+// precedent, two links to one file are two files.
+let private resolveImportPath (importingAbsPath: string) (path: string) : string =
+    let dir = IO.Path.GetDirectoryName importingAbsPath
+    IO.Path.GetFullPath(IO.Path.Combine(dir, path))
+
+// F#'s filename fallback for a bare `module`: capitalize the base name. A
+// non-identifier filename has no derivation (name it, or import `as`).
+let private deriveModuleName (absPath: string) : string option =
+    let bare = IO.Path.GetFileNameWithoutExtension absPath
+
+    if
+        bare.Length > 0
+        && System.Char.IsLetter bare[0]
+        && bare |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+    then
+        Some(string (System.Char.ToUpper bare[0]) + bare.Substring 1)
+    else
+        None
+
+// does evaluating this RHS at import RUN a command? — the weak purity rule
+// [D:modules-v1]. Eager positions only, STOPS at lambdas: a command in a
+// lambda body is deferred, so a param-ful `let f r = git …` is a function,
+// not an import-time effect; only a paramless `let x = git …` is rejected.
+let rec private runsCommandT (te: Check.TypedExpr) : bool =
+    match te.Kind with
+    | Check.TECmd _ -> true
+    | Check.TELambda _
+    | Check.TELambdaPat _ -> false
+    | _ -> Check.childExprs te |> List.exists runsCommandT
+
+// buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
+// content is read through it (open editor buffers first, then disk) so an
+// unsaved dependency checks against what the user sees; None -> CLI, plain
+// disk (decision 14).
+let importSourceOverride: (string -> string list option) option ref = ref None
+
+let private readImportSource (absPath: string) : string list option =
+    match importSourceOverride.Value with
+    | Some f -> f absPath
+    | None ->
+        if IO.File.Exists absPath then
+            Some(IO.File.ReadAllLines absPath |> Array.toList)
+        else
+            None
+
+// resolve + check an imported module to a LoadedModule, or an ImportError.
+// THE GRAPH [D:modules-v1]: `cache` (normalized abs path -> module) checks a
+// shared module ONCE (diamonds); `chain` is the current DFS path of importing
+// files, so a repeat is a cycle. Transitive: a reached module's own imports
+// resolve too, sharing the cache with this module pushed on the chain.
+let rec loadModuleCached
+    (cache: System.Collections.Generic.Dictionary<string, LoadedModule>)
+    (chain: string list)
+    (importingAbsPath: string)
+    (path: string)
+    (importAs: string option)
+    : Result<LoadedModule, ImportError> =
+    let absPath = resolveImportPath importingAbsPath path
+
+    // an import-STATEMENT error reports at the import line (File=None)
+    let stmt msg =
+        Error
+            { File = None
+              Line = 0
+              Col = 0
+              Message = msg }
+
+    let notAModule =
+        stmt $"{absPath} is not a module; add `module` at the top, or invoke it as a command"
+
+    if absPath = importingAbsPath then
+        stmt "a file cannot import itself"
+    elif List.contains absPath chain then
+        // a cycle — same detector as self-import, different rendering
+        // (decision 9): render the loop by file name
+        let recent = chain |> List.takeWhile ((<>) absPath)
+
+        let loop =
+            (absPath :: (List.rev recent @ [ absPath ]))
+            |> List.map IO.Path.GetFileName
+            |> String.concat " → "
+
+        stmt $"import cycle: {loop}"
+    elif cache.ContainsKey absPath then
+        // a diamond's shared module is checked ONCE; re-alias per import site
+        let cached = cache[absPath]
+
+        Ok
+            { cached with
+                Alias = importAs |> Option.defaultValue cached.NaturalName }
+    elif (readImportSource absPath) |> Option.isNone then
+        stmt $"cannot resolve import: no file at {absPath}"
+    else
+        let rawLines = readImportSource absPath |> Option.get
+        let _, body, bodyOffset = scriptBody rawLines
+
+        let assembled =
+            body
+            |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+            |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
+            |> List.map (fun (n, raw) -> n, stripComment raw)
+            |> assemble
+
+        match assembled with
+        | Error msg -> stmt $"{absPath}: {msg}"
+        | Ok [] -> notAModule
+        | Ok(first :: rest) ->
+            let baseTenv, _ = moduleBaseEnvs absPath
+
+            match Parser.parseLineFull (resolver baseTenv) first.Text with
+            | Ok(SModule(declName, _)) ->
+                let natural = declName |> Option.orElseWith (fun () -> deriveModuleName absPath)
+
+                match importAs |> Option.orElse natural with
+                | None ->
+                    stmt
+                        $"cannot derive a module name from '{IO.Path.GetFileName absPath}'; name it (module Name) or import it as a name (import \"…\" as Name)"
+                | Some alias ->
+                    // transitive: a reached module's OWN imports resolve, sharing
+                    // the cache, with this module pushed on the chain
+                    let childLoader: ImportLoader =
+                        fun p _ a -> loadModuleCached cache (absPath :: chain) absPath p a
+
+                    // a module-CONTENT error reports at the module's OWN site
+                    let at line col msg : Result<_, ImportError> =
+                        Error
+                            { File = Some absPath
+                              Line = line
+                              Col = col
+                              Message = msg }
+
+                    let rec go (tenv: TypeEnv) (accBody: CheckedStmt list) (stmts: LogicalLine list) =
+                        match stmts with
+                        | [] -> Ok(tenv, List.rev accBody)
+                        | (ll: LogicalLine) :: tail ->
+                            match checkStatement true resolver childLoader tenv ll with
+                            | Error d ->
+                                // a DEEPER module's error (File already set)
+                                // propagates unchanged; this module's OWN error
+                                // takes this module's site
+                                match d.File with
+                                | Some _ ->
+                                    Error
+                                        { File = d.File
+                                          Line = d.PhysLine
+                                          Col = d.PhysCol
+                                          Message = d.Message }
+                                | None -> at d.PhysLine d.PhysCol d.Message
+                            | Ok chk ->
+                                match chk.Kind with
+                                | KType decl -> go chk.Env (CType decl :: accBody) tail
+                                | KImport lm -> go chk.Env (CImport lm :: accBody) tail
+                                | KLet(_, _, te) when runsCommandT te ->
+                                    at
+                                        ll.Head
+                                        1
+                                        "a module 'let' cannot run a command at import — wrap it in a function (let f () = …), the command runs when a script calls it"
+                                | KLetPat(_, _, te) when runsCommandT te ->
+                                    at ll.Head 1 "a module 'let' cannot run a command at import"
+                                | KLet(name, _, te) -> go chk.Env (CLet(name, te) :: accBody) tail
+                                | KLetPat(pat, _, te) -> go chk.Env (CLetPat(pat, te) :: accBody) tail
+                                | KModule _ -> at ll.Head 1 "a file has at most one 'module' marker, and it comes first"
+                                | KCmd _
+                                | KExpr _ ->
+                                    at
+                                        ll.Head
+                                        1
+                                        "a module declares only — 'type' and 'let', no commands or bare expressions"
+
+                    match go baseTenv [] rest with
+                    | Error e -> Error e
+                    | Ok(finalTenv, moduleBody) ->
+                        // a module exports only its OWN types (from its Body's
+                        // decls), NOT what it transitively imported (no re-export,
+                        // decision 3); Members already exclude imported ones
+                        // (those live under Modules[·], not Values)
+                        let typeDefs =
+                            moduleBody
+                            |> List.choose (function
+                                | CType decl ->
+                                    Map.tryFind decl.Name finalTenv.Types |> Option.map (fun d -> decl.Name, d)
+                                | _ -> None)
+
+                        let members =
+                            finalTenv.Values
+                            |> Map.toList
+                            |> List.filter (fun (n, _) -> not (Map.containsKey n baseTenv.Values))
+
+                        let loaded =
+                            { Alias = alias
+                              NaturalName = natural |> Option.defaultValue alias
+                              AbsPath = absPath
+                              TypeDefs = typeDefs
+                              Members = members
+                              TypeNames = typeDefs |> List.map fst
+                              Body = moduleBody }
+
+                        cache[absPath] <- loaded
+                        Ok loaded
+            | Ok _ -> notAModule
+            | Error _ -> notAModule
+
+// the module-body replayer [D:modules-v1]: evaluate a checked module's Body
+// in its OWN clean env (Self.scriptPath is the module's; process facts ride
+// from the entry), exposing a NESTED import's members as `alias.member` for
+// this module's own lets. Returns the module's venv (bindings under bare
+// names); the caller exposes THIS module's Members qualified.
+let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
+    let _, mBase0 = moduleBaseEnvs lm.AbsPath
+    let mBase = procFacts |> List.fold (fun m (k, v) -> Map.add k v m) mBase0
+
+    let expose (alias: string) (members: (string * Scheme) list) (from: Eval.Env) (into: Eval.Env) =
+        members
+        |> List.fold
+            (fun acc (n, _) ->
+                match Map.tryFind n from with
+                | Some v -> Map.add $"{alias}.{n}" v acc
+                | None -> acc)
+            into
+
+    let rec replay (mv: Eval.Env) body =
+        match body with
+        | [] -> mv
+        | CType decl :: t ->
+            let mv' =
+                match decl.Body with
+                | DUnion cases -> Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) mv
+                | DRecord _ -> mv
+
+            replay mv' t
+        | CLet(name, te) :: t -> replay (Map.add name (Eval.eval mv te) mv) t
+        | CLetPat(pat, te) :: t ->
+            let bs = Eval.bindPattern pat (Eval.eval mv te)
+            replay (bs |> List.fold (fun m (n, v) -> Map.add n v m) mv) t
+        | CImport nested :: t ->
+            let nestedVenv = replayModule procFacts nested
+            replay (expose nested.Alias nested.Members nestedVenv mv) t
+        | _ :: t -> replay mv t
+
+    replay mBase lm.Body
+
+// the -e / REPL import loader [D:modules-v1]: there is no file to resolve
+// relative paths against, so import is script-only (decision 12)
+let scriptOnlyImport: ImportLoader =
+    fun _ _ _ ->
+        Error
+            { File = None
+              Line = 0
+              Col = 0
+              Message =
+                "import is script-only — it needs a file to resolve its path against (not available with -e or in the REPL)" }
 
 // ---------------------------------------------------------------------------
 // weir check [--json] [D:check-lsp-chain]. Check-everything, no
@@ -1982,6 +2391,13 @@ let analyzeLines
         { typeEnv0 with
             Modules = typeEnv0.Modules |> Map.add "Self" selfMembers }
 
+    // imports resolve relative to the file being checked [D:modules-v1];
+    // one cache per check dedups a diamond, one chain catches a cycle
+    let analyzeImport: ImportLoader =
+        let absPath = IO.Path.GetFullPath path
+        let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
+        fun p _ alias -> loadModuleCached cache [ absPath ] absPath p alias
+
     Extern.refresh ()
 
     // CHECK-ONLY consumers assume unknown heads are commands, so a
@@ -2054,6 +2470,16 @@ let analyzeLines
 
         let mutable tenv = typeEnv0
 
+        // a module file [D:modules-v1] is checkable in isolation: direct
+        // `weir check` enforces the same decl-only + weak-purity rules an
+        // import would (decision 10)
+        let isModule =
+            match logicalLines with
+            | first :: _ ->
+                let t = first.Text.TrimStart()
+                t = "module" || t.StartsWith "module "
+            | [] -> false
+
         let rec cmdHeads (te: Check.TypedExpr) =
             (match te.Kind with
              | Check.TECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, te.Span ]
@@ -2086,18 +2512,45 @@ let analyzeLines
                       Message =
                         $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed" }
 
-            match checkStatement true assumeResolver tenv ll with
+            match checkStatement true assumeResolver analyzeImport tenv ll with
             | Ok chk ->
                 chk.Warnings |> List.iter warn
 
                 (match chk.Kind with
-                 | KType _ -> ()
+                 | KType _
+                 | KModule _
+                 | KImport _ -> ()
                  | KLet(_, _, te)
                  | KLetPat(_, _, te)
                  | KCmd te
                  | KExpr te ->
                      for prog, span in cmdHeads te do
                          warnMissingHead prog span.Start.Col)
+
+                (if isModule then
+                     let violation =
+                         match chk.Kind with
+                         | KCmd _
+                         | KExpr _ -> Some "a module declares only — 'type' and 'let', no commands or bare expressions"
+                         | KLet(_, _, te)
+                         | KLetPat(_, _, te) when runsCommandT te ->
+                             Some "a module 'let' cannot run a command at import — wrap it in a function (let f () = …)"
+                         | _ -> None
+
+                     match violation with
+                     | Some msg ->
+                         let wl, wc = translate ll 1
+
+                         diags.Add
+                             { File = path
+                               Line = wl
+                               Col = wc
+                               EndLine = None
+                               EndCol = None
+                               Severity = "error"
+                               Code = "module-rule"
+                               Message = msg }
+                     | None -> ())
 
                 stmts.Add(ll, chk)
                 tenv <- chk.Env
@@ -2130,7 +2583,9 @@ let analyzeLines
                          | SLetPat(_, v)
                          | SExpr v
                          | SCmd v -> [ v ]
-                         | SType _ -> []
+                         | SType _
+                         | SModule _
+                         | SImport _ -> []
 
                      for prog, span in exprs |> List.collect eheads do
                          warnMissingHead prog span.Start.Col
@@ -2160,8 +2615,11 @@ let analyzeLines
                                  Values = Map.add n holeScheme tenv.Values }
                  | Error _ -> ())
 
+                // multi-file [D:modules-v1]: a module error carries File +
+                // PhysLine/Col into that OTHER file; its Note is the "imported
+                // here" pointer at the import line in THIS file
                 diags.Add
-                    { File = path
+                    { File = d.File |> Option.defaultValue path
                       Line = d.PhysLine
                       Col = d.PhysCol
                       EndLine = d.PhysEnd |> Option.map fst
@@ -2169,6 +2627,19 @@ let analyzeLines
                       Severity = "error"
                       Code = codeOf d.Parse d.Message
                       Message = d.Message }
+
+                match d.Note with
+                | Some(nl, nc, nmsg) ->
+                    diags.Add
+                        { File = path
+                          Line = nl
+                          Col = nc
+                          EndLine = None
+                          EndCol = None
+                          Severity = "note"
+                          Code = "imported-here"
+                          Message = nmsg }
+                | None -> ()
 
         List.ofSeq assemblyDiags @ List.ofSeq diags @ docMisalignments path rawLines,
         List.ofSeq stmts,
@@ -2197,6 +2668,8 @@ let checkOnly (json: bool) (path: string) : int =
                 let sev =
                     if d.Severity = "warning" then
                         Color.yellow c $"warning [{d.Code}]"
+                    elif d.Severity = "note" then
+                        Color.bold c $"note [{d.Code}]"
                     else
                         Color.red c $"error [{d.Code}]"
 
@@ -2275,6 +2748,21 @@ let run (path: string) (scriptArgs: string list) : int =
                 1
             | Ok logicalLines ->
 
+                // a module file is not runnable [D:modules-v1] — the marker
+                // is what makes this message possible (an empty SCRIPT is a
+                // different, "nothing to run", situation)
+                let moduleMarker =
+                    logicalLines
+                    |> List.tryFind (fun ll ->
+                        let t = ll.Text.TrimStart()
+                        t = "module" || t.StartsWith "module ")
+
+                // the entry's import loader, bound to its directory; one cache
+                // per run dedups a diamond, one chain catches a cycle
+                let entryImport: ImportLoader =
+                    let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
+                    fun p _ alias -> loadModuleCached cache [ absScriptPath ] absScriptPath p alias
+
                 let checkedProgram =
                     logicalLines
                     |> List.fold
@@ -2282,7 +2770,7 @@ let run (path: string) (scriptArgs: string list) : int =
                             match state with
                             | Error e -> Error e
                             | Ok(tenv, acc) ->
-                                match checkStatement true resolver tenv ll with
+                                match checkStatement true resolver entryImport tenv ll with
                                 | Error d ->
                                     let c = Color.onStderr.Value
 
@@ -2291,7 +2779,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                             $"{path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
                                         )
 
-                                    let locatedMsg =
+                                    let sameFileMsg =
                                         if d.Parse then
                                             if d.HasCol then
                                                 // the ORIGINAL source line + caret — never
@@ -2324,6 +2812,25 @@ let run (path: string) (scriptArgs: string list) : int =
                                             + Color.red c "type error"
                                             + $":\n{src}\n{underline}\n{d.Message}"
 
+                                    // multi-file [D:modules-v1]: a module error
+                                    // renders at its OWN file + an "imported here"
+                                    // note at the import line
+                                    let locatedMsg =
+                                        match d.File with
+                                        | Some mf ->
+                                            let note =
+                                                match d.Note with
+                                                | Some(nl, nc, nmsg) ->
+                                                    "\n" + Color.bold c $"{path}:{nl}:{nc}" + ": note: " + nmsg
+                                                | None -> ""
+
+                                            Color.bold c $"{mf}:{d.PhysLine}:{d.PhysCol}"
+                                            + ": "
+                                            + Color.red c "error"
+                                            + $": {d.Message}"
+                                            + note
+                                        | None -> sameFileMsg
+
                                     Error locatedMsg
                                 | Ok chk ->
                                     let c = Color.onStderr.Value
@@ -2340,6 +2847,9 @@ let run (path: string) (scriptArgs: string list) : int =
                                         | KLetPat(pat, _, te) -> CLetPat(pat, te)
                                         | KCmd te -> CCmd te
                                         | KExpr te -> CExpr te
+                                        | KImport lm -> CImport lm
+                                        // unreachable: the marker is caught before the fold
+                                        | KModule _ -> CNoop
 
                                     // enrich a record's Docs from the `///`
                                     // field docs, so --help reads them
@@ -2366,7 +2876,17 @@ let run (path: string) (scriptArgs: string list) : int =
                                     Ok(env', (ll.Head, stmt) :: acc))
                         (Ok(typeEnv0, []))
 
-                match checkedProgram with
+                match
+                    (match moduleMarker with
+                     | Some ll ->
+                         Error(
+                             located
+                                 path
+                                 ll.Head
+                                 "a module declares; it does not run. To run a script from a script, invoke it as a command"
+                         )
+                     | None -> checkedProgram)
+                with
                 | Error msg ->
                     Console.Error.WriteLine msg
                     1
@@ -2379,6 +2899,37 @@ let run (path: string) (scriptArgs: string list) : int =
                         | (lineNo, stmt) :: tail ->
                             match stmt with
                             | CNoop -> exec venv tail
+                            | CImport lm ->
+                                try
+                                    // replay the module (its Body, including any
+                                    // nested imports) and expose ITS members as
+                                    // `alias.member` [D:modules-v1]
+                                    // process facts (incl. entryPath) ride from
+                                    // the entry; the module keeps its OWN scriptPath
+                                    let procFacts =
+                                        [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
+                                        |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
+
+                                    let moduleVenv = replayModule procFacts lm
+
+                                    let venv' =
+                                        lm.Members
+                                        |> List.fold
+                                            (fun acc (n, _) ->
+                                                match Map.tryFind n moduleVenv with
+                                                | Some v -> Map.add $"{lm.Alias}.{n}" v acc
+                                                | None -> acc)
+                                            venv
+
+                                    exec venv' tail
+                                with
+                                | Eval.ExitRequest code -> code
+                                | ex ->
+                                    Console.Error.WriteLine(
+                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                    )
+
+                                    1
                             | CType decl ->
                                 let venv' =
                                     match decl.Body with

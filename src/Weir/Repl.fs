@@ -276,7 +276,7 @@ let rec private loop (state: State) =
             // checkStatement; the REPL only renders
             let ll = Script.singleLine line
 
-            match Script.checkStatement false (fun _ -> resolver state) state.TypeEnv ll with
+            match Script.checkStatement false (fun _ -> resolver state) Script.scriptOnlyImport state.TypeEnv ll with
             | Error d when d.Parse ->
                 // the input sits on the prompt line above — caret under it
                 Console.WriteLine(
@@ -379,6 +379,14 @@ let rec private loop (state: State) =
                      | ex ->
                          Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
                          state)
+                | Script.KModule _ ->
+                    Console.WriteLine
+                        "the REPL has no file to be a module of; 'module' belongs at the top of a script file"
+
+                    state
+                | Script.KImport _ ->
+                    // unreachable: scriptOnlyImport rejects imports at check
+                    state
 
         loop next
 
