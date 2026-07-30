@@ -1,5 +1,134 @@
 # Spike Notes
 
+## TOML reverted — the dependency outweighed the comfort (2026-07-30)
+
+Same day as the adoption, the user reconsidered — not the numbers
+(they held: 0 warnings, +330 KB, startup unmoved) but the DEPENDENCY.
+Weir's sole runtime dependency is FParsec; Tomlyn would have been the
+second, a supply-chain and maintenance surface bought for a 4-key
+file whose only real win was comments. Zero-dependency outranks
+config comfort; JSON is restored.
+
+The reversal itself is the cheap-window argument completing its own
+demonstration: the TOML commit lived a few hours on an unmerged
+branch, so reverting was `git revert` plus two ledger paragraphs —
+no user ever held a config.toml, nothing to migrate, no compat
+sentence to write. The journal keeps both entries (adopted below,
+reverted here) because the DECISION TRAIL is the value: the config
+question is now doubly closed — a measurement (the spike) and a
+tried-it data point (this) — and the next "why not TOML?" finds
+both. The TomlReader implementation knowledge (the token walk, the
+Deserialize-under-AOT trap) stays recorded should the calculus ever
+change, e.g. if a second dependency-worthy need arrives and the
+marginal cost of Tomlyn drops to its bytes.
+
+## The Windows spike — the Linux half, and two fears retired (2026-07-30)
+
+The native-Windows viability spike ran on a throwaway repo copy — on
+LINUX, which the spike's own bar ("every Tier-1/Tier-3 claim is a real
+Windows run, not reasoning") turned into a discipline: every cell is
+labeled MEASURED / SIZED / PREPARED / BLOCKED-HERE, and the
+Windows-run cells became a runbook rather than a guess. The verdict
+so far: **3–4 small sessions plus two bounded probes, no blocker
+visible** — pending the runbook on a real Windows host.
+
+The headline is that both feared Tier-3 items shrank under
+measurement. The `\r\n` blast radius — billed as "touches the most
+surface" — is **zero stdout pins**: the capture path already handles
+CRLF and lone CR (Proc.fs `scanLines`, oracle-pinned), because the
+representation session solved it in passing and the fear outlived the
+fix. Only the stderr rule (deliberately `\n`-only, CR retained) holds
+exactly ONE pin — keep it and Windows stderr lines wear a trailing
+`\r`; strip and one pin moves (no deliberate-`\r` fixture exists
+anywhere else, grepped). And tree-kill is NOT a POSIX
+process-group reimplementation waiting to happen: the one kill site
+is the BCL's `p.Kill(entireProcessTree = true)` (Proc.fs:62) — the
+same call on Windows — narrowing the question to whether the BCL's
+snapshot-walk survives the orphaned-grandchild case (a probe), with
+job objects (~150 lines) only if it fails. A stale premise audit in
+miniature: two of the plan's hard items were already half-solved by
+sessions that never mentioned Windows.
+
+What is certain without a run: **cross-OS NativeAOT is unsupported**
+(`error : Cross-OS native compilation is not supported`) — a Windows
+release needs a Windows build host, full stop — while the managed
+win-x64 compile is clean. Tier-2 sums to well under ~100 lines across
+four arms: the PATH resolver genuinely breaks today (`:` split, no
+PATHEXT, no `\`), config/state dirs work-but-non-native, env
+case-insensitivity costs ~nothing, and the history file's 0600 is a
+SILENT GAP on Windows (the `SetUnixFileMode` try/with swallows —
+default ACLs, no error) — the secret-surface story needs an ACL arm
+and an honesty line if Windows is ever claimed. The `.cmd`/`.bat`
+BatBadBut hazard is a stated non-claim regardless of any result.
+
+One process note: the spike agent REPORTED its copy deleted, but the
+directory was still there — the parent verified and deleted it.
+Subagent cleanup claims get verified, same as any other claim.
+
+A second, deeper pass ran in parallel (an accidental redundancy that
+paid): every shared number CONVERGED — the same verbatim ilcompiler
+refusal, the same 1-pin stderr radius, the same BCL-kill mechanism —
+which is what two independent measurements are for. And it caught one
+thing the first pass missed: **the SIGWINCH registration is unguarded**
+(`PosixSignalRegistration.Create` in Repl.fs) — on Windows that is a
+`PlatformNotSupportedException` AT INTERACTIVE-REPL STARTUP, a genuine
+crash-on-arrival; `-e`, scripts, lsp, and fmt route around it. The
+2-line guard is item one of any Windows session — not fixed now,
+because nothing merges from a spike. Refinements worth keeping: the
+product's whole POSIX surface is EIGHT arms totaling ~80-95 lines
+(zero DllImport, zero termios, zero setsid/killpg in the product);
+the suite splits 884 pure / 38 spawn-or-console of 922 blocks; the
+would-have-been stdout radius population is 24 equality pins + 37 of
+206 e2e expects, all immune by the existing strip; and one concrete
+consequence: `Extern.exists "fzf"` misses `fzf.exe`, so Windows
+Ctrl+R would silently degrade to the built-in search until the
+PATHEXT arm lands. Non-AOT self-contained win-x64 builds clean at
+82 MB / 208 files — the number that makes the AOT single-binary story
+worth a Windows build host.
+
+The runbook (paste-and-run on a Windows host with the .NET 10 SDK;
+fills the BLOCKED-HERE cells):
+
+    # §1 build + size + startup
+    git clone <repo> weir; cd weir
+    dotnet publish src/Weir -c Release -r win-x64
+    dir src\Weir\bin\Release\net10.0\win-x64\publish\Weir.exe   # size vs 7,696,168 B Linux
+    .\Weir.exe --version; .\Weir.exe -e '(1 + 2) * 2'
+    1..20 | % { Measure-Command { .\Weir.exe -e '1 + 1' } } |
+        measure -Property TotalMilliseconds -Average             # vs ~5.4 ms Linux
+    # §2 the suite: dotnet test tests/Weir.Tests -c Release
+    #    (spawn/tty failures expected; parse/check/eval failures are FINDINGS)
+    # §3 REPL editor in BOTH Windows Terminal and classic conhost:
+    #    type, arrows, Tab, Enter — record paint or garbage per host
+    # §4 tree-kill: a weir script spawning
+    #    powershell -c "Start-Process notepad; Start-Sleep 60" via | complete,
+    #    Ctrl+C weir, then: tasklist | findstr notepad  — record the survivor
+    # §5 argv integrity: .\Weir.exe -e 'echo "a b" "-rf" "c""d"' through a
+    #    real .exe echo — compare word-for-word
+
+## TOML adopted — the spike's numbers became a ruling (2026-07-30)
+
+The spike said "TOML is the one worth a user decision"; the user
+decided, hours later, and the swap cost one sitting — which is the
+phase argument working exactly as designed: the JSON config had
+shipped DAYS earlier with zero users, so config.json → config.toml is
+an amendment, not a migration. After publication the same change
+would have needed a compat story.
+
+Measured on weir itself, the spike's numbers held: 0 new AOT warnings
+(the 3 pre-existing FSharp.Core/FParsecCS ones), +324,928 bytes
+(spike predicted +329.5 KB on its harness), startup unmoved. The
+implementation honors the spike's trap finding — `TomlReader` pull
+API only, never the readme's `Deserialize` path (reflection, and
+poisoned under PublishAot by the package's own buildTransitive). The
+reject-unknown posture came through IMPROVED: Tomlyn's reader carries
+Line/Column, so a typo'd key now reads
+`config.toml:1:1: unknown key 'historySizee'. Did you mean
+'historySize'?` — position + did-you-mean, which the JSON version
+could not offer. A leftover config.json gets one plain sentence
+rather than silence (the reject-don't-guess posture applied to the
+transition itself).
+
 ## The config-format spike — TOML and strict-YAML measured, JSON stands (2026-07-30)
 
 A throwaway spike (repo copy, branch deleted, nothing merged) replaced
