@@ -98,7 +98,37 @@ let private historyFile = config.HistoryPath
 // The owned line editor [D:owned-line-editor]: bash key semantics —
 // Ctrl+C cancels the LINE, Ctrl+D on an empty line is EOF.
 
+// history holds LOGICAL entries [D:repl-multiline] — a multi-line match is
+// ONE entry, recalled whole. In-memory entries carry real newlines.
 let private history = ResizeArray<string>()
+
+// on disk: one entry per FILE LINE (the cap counts lines = entries, the
+// file stays greppable), newlines backslash-ESCAPED per entry — `\` -> `\\`,
+// newline -> `\n`. Decode reverses. A legacy plain-line file reads fine;
+// a legacy entry containing a literal `\n` (a weir string like
+// Str.split "\n") decodes with a real newline — accepted NOW, pre-adoption,
+// while the fix is an amendment and not a migration [D:repl-multiline].
+let private encodeEntry (entry: string) =
+    entry.Replace("\\", "\\\\").Replace("\n", "\\n")
+
+let private decodeEntry (line: string) =
+    let sb = Text.StringBuilder()
+    let mutable i = 0
+
+    while i < line.Length do
+        if line[i] = '\\' && i + 1 < line.Length then
+            sb.Append(if line[i + 1] = 'n' then '\n' else line[i + 1]) |> ignore
+            i <- i + 2
+        else
+            sb.Append line[i] |> ignore
+            i <- i + 1
+
+    sb.ToString()
+
+// the one-line DISPLAY form for search UIs [D:repl-multiline] — fzf matches
+// per line, so a multi-line entry feeds as its lines joined with ⏎ (every
+// line stays searchable, unlike first-line-plus-ellipsis)
+let private displayEntry (entry: string) = entry.Replace("\n", " ⏎ ")
 
 // the history file is created 0600 [D:repl-quality] — a REPL line can carry a
 // secret (`runEnv [Env.pair "TOKEN" "…"]`), so it is a place secrets land
@@ -131,19 +161,20 @@ let private loadHistory () =
             ensureHistoryFile ()
             File.WriteAllLines(historyFile, capped)
 
-        history.AddRange capped
+        history.AddRange(capped |> Array.map decodeEntry)
 
-// per-line append with consecutive-dup dedup (readline's ignoredups)
-let private appendHistory (line: string) =
+// per-ENTRY append with consecutive-dup dedup (readline's ignoredups);
+// the dedup compares WHOLE entries [D:repl-multiline]
+let private appendHistory (entry: string) =
     let dup =
-        config.HistoryDedup && history.Count > 0 && history[history.Count - 1] = line
+        config.HistoryDedup && history.Count > 0 && history[history.Count - 1] = entry
 
     if not dup then
-        history.Add line
+        history.Add entry
 
         try
             ensureHistoryFile ()
-            File.AppendAllText(historyFile, line + Environment.NewLine)
+            File.AppendAllText(historyFile, encodeEntry entry + Environment.NewLine)
         with _ ->
             ()
 
@@ -189,15 +220,29 @@ let private fzfSearch (query: string) : string option =
         psi.RedirectStandardOutput <- true
         psi.UseShellExecute <- false // fzf draws its UI on /dev/tty directly
         use p = Diagnostics.Process.Start psi
-        // feed history most-recent-first (its stdin is the pipe; the tty is fzf's)
+        // feed history most-recent-first as one-line DISPLAY forms (fzf
+        // matches per line); the selection maps back to the full entry —
+        // identical displays imply identical text, so the map is lossless
+        let byDisplay = Collections.Generic.Dictionary<string, string>()
+
         for i in history.Count - 1 .. -1 .. 0 do
-            p.StandardInput.WriteLine history[i]
+            let d = displayEntry history[i]
+
+            if not (byDisplay.ContainsKey d) then
+                byDisplay[d] <- history[i]
+
+            p.StandardInput.WriteLine d
 
         p.StandardInput.Close()
         let sel = p.StandardOutput.ReadToEnd().TrimEnd('\n', '\r')
         p.WaitForExit()
         // exit 130 (Esc) -> cancel; only a clean selection replaces the line
-        if p.ExitCode = 0 && sel <> "" then Some sel else None
+        if p.ExitCode = 0 && sel <> "" then
+            match byDisplay.TryGetValue sel with
+            | true, entry -> Some entry
+            | _ -> Some sel
+        else
+            None
     with _ ->
         None
 
@@ -214,7 +259,7 @@ let private minimalSearch (query0: string) : string option =
         |> Seq.tryFind (fun h -> h.Contains q)
 
     let render () =
-        let m = firstMatch () |> Option.defaultValue ""
+        let m = firstMatch () |> Option.map displayEntry |> Option.defaultValue ""
         Console.Write $"\r(reverse-i-search)`{q}': {m}\x1b[K"
 
     render ()
@@ -247,40 +292,176 @@ let private historySearch (query: string) : string option =
     else
         minimalSearch query
 
-/// returns None on EOF (Ctrl+D at an empty line)
+// is the buffer a COMPLETE statement? [D:repl-multiline] — the assembler
+// answers STRUCTURE (open brackets, pending bindings, dangling openers);
+// a parse failure AT THE VERY END of the assembled text means "more input
+// wanted". A mid-text failure is a real error and SUBMITS (the message
+// shows) — the user is never trapped adding newlines.
+let private bufferComplete (bufLines: string list) : bool =
+    let numbered =
+        bufLines
+        |> List.mapi (fun i l -> i + 1, l)
+        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+
+    if List.isEmpty numbered then
+        true
+    // weir strings are SINGLE-LINE: a line ending inside one can never be
+    // completed by more input — submit (the parse error shows) rather
+    // than trap the user growing an unfixable buffer
+    elif bufLines |> List.exists Script.endsInsideString then
+        true
+    else
+        match Script.assemble numbered with
+        | Error _ -> false
+        | Ok lls ->
+            let r = Script.resolver currentEnv.Value
+
+            lls
+            |> List.forall (fun ll ->
+                match Parser.parseLineFull r ll.Text with
+                | Ok _ -> true
+                | Error f ->
+                    match f.Col with
+                    | Some c -> c <= ll.Text.TrimEnd().Length
+                    | None -> true)
+
+// the continuation prompt — SAME WIDTH as "weir> " so column math is
+// uniform across rows [D:repl-multiline]
+let private contPrompt = "  ... "
+
+// the live editor's repaint hook for SIGWINCH (full repaint on resize;
+// best-effort — the climb to the region top uses pre-resize wrap math)
+let private activeRedraw: (unit -> unit) option ref = ref None
+
+/// returns None on EOF (Ctrl+D at an empty buffer); Some entry (lines
+/// joined with \n) otherwise. The buffer is TWO-DIMENSIONAL
+/// [D:repl-multiline]: a list of lines plus a (row, col) cursor; the
+/// horizontal machinery applies per line unchanged.
 let private readLineTty () : string option =
-    Console.Write prompt
-    let buf = Text.StringBuilder()
-    let mutable pos = 0
-    let mutable histIdx = history.Count // one past the end = the new line
+    let lines = ResizeArray<Text.StringBuilder>()
+    lines.Add(Text.StringBuilder())
+    let mutable row = 0
+    let mutable col = 0
+    let mutable histIdx = history.Count // one past the end = the new entry
     let mutable draft = ""
+    // display rows between the region TOP and the cursor at the last
+    // paint — the way back up through wraps
+    let mutable lastCursorDisplay = 0
+
+    let termWidth () =
+        try
+            max 20 Console.WindowWidth
+        with _ ->
+            80
+
+    // display rows a buffer line occupies at width w (prompt included);
+    // a line filling its final row exactly leaves the terminal
+    // wrap-PENDING, which the ceil and the \r\n emission agree about
+    let dispRows (w: int) (len: int) = max 1 ((6 + len + w - 1) / w)
+
+    // (display-row offset from region top, display column) of the cursor
+    let cursorDisplay (w: int) =
+        let mutable above = 0
+
+        for i in 0 .. row - 1 do
+            above <- above + dispRows w lines[i].Length
+
+        let dc = (6 + col) % w
+        let dr = (6 + col) / w
+
+        if dc = 0 && col > 0 then
+            above + dr - 1, w
+        else
+            above + dr, dc
+
+    let cur () = lines[row]
 
     let redraw () =
-        // paint-only coloring [D:repl-color]: buf/pos never hold
-        // escapes, so cursor math below stays plain-text; ANSI spans
-        // are zero display columns
-        let painted =
-            if Script.Color.onStdout.Value then
-                let env = currentEnv.Value
+        // region repaint [D:repl-multiline]: climb to the region top (the
+        // tracked cursor offset), clear to screen end, repaint every line
+        // with its prompt, reposition by display-row math. The colorizer
+        // applies per line [D:repl-color] — buffers never hold escapes,
+        // so the math stays plain-text.
+        let w = termWidth ()
+        let out = Text.StringBuilder()
+        out.Append '\r' |> ignore
 
-                let isKnown n =
-                    Map.containsKey n env.Values
-                    || Map.containsKey n env.Modules
-                    || Builtins.commandCallable.Contains n
+        if lastCursorDisplay > 0 then
+            out.Append $"\x1b[{lastCursorDisplay}A" |> ignore
 
-                Script.colorizeRepl isKnown (buf.ToString())
-            else
-                buf.ToString()
+        out.Append "\x1b[J" |> ignore
 
-        Console.Write("\r" + prompt + painted + "\x1b[K")
-        let back = buf.Length - pos
+        let env = currentEnv.Value
 
-        if back > 0 then
-            Console.Write $"\x1b[{back}D"
+        let isKnown n =
+            Map.containsKey n env.Values
+            || Map.containsKey n env.Modules
+            || Builtins.commandCallable.Contains n
 
-    let setLine (s: string) =
-        buf.Clear().Append(s) |> ignore
-        pos <- buf.Length
+        let mutable totalRows = 0
+
+        for i in 0 .. lines.Count - 1 do
+            let text = lines[i].ToString()
+
+            let painted =
+                if Script.Color.onStdout.Value then
+                    Script.colorizeRepl isKnown text
+                else
+                    text
+
+            out.Append(if i = 0 then prompt else contPrompt).Append painted |> ignore
+            totalRows <- totalRows + dispRows w text.Length
+
+            if i < lines.Count - 1 then
+                out.Append "\r\n" |> ignore
+
+        // the paint leaves the cursor at the END of the last line; walk
+        // back up to the (row, col) target
+        let curDisplay, curCol = cursorDisplay w
+        let up = totalRows - 1 - curDisplay
+
+        if up > 0 then
+            out.Append $"\x1b[{up}A" |> ignore
+
+        out.Append '\r' |> ignore
+
+        if curCol > 0 then
+            out.Append $"\x1b[{curCol}C" |> ignore
+
+        Console.Write(out.ToString())
+        lastCursorDisplay <- curDisplay
+
+    activeRedraw.Value <- Some redraw
+    redraw ()
+
+    let bufText () =
+        String.Join("\n", lines |> Seq.map (fun sb -> sb.ToString()))
+
+    let setBuffer (entry: string) =
+        lines.Clear()
+
+        for l in entry.Split '\n' do
+            lines.Add(Text.StringBuilder(l: string))
+
+        row <- lines.Count - 1
+        col <- lines[row].Length
+        redraw ()
+
+    // split the current line at the cursor — Enter-on-incomplete and the
+    // Alt+Enter / Ctrl+J force share it
+    let insertNewline () =
+        let tail = cur().ToString().Substring col
+        cur().Remove(col, cur().Length - col) |> ignore
+        lines.Insert(row + 1, Text.StringBuilder(tail: string))
+        row <- row + 1
+        col <- 0
+        redraw ()
+
+    // park the cursor at the region end (echoes print BELOW the buffer)
+    let toEnd () =
+        row <- lines.Count - 1
+        col <- lines[row].Length
         redraw ()
 
     let mutable result: string option option = None
@@ -288,54 +469,87 @@ let private readLineTty () : string option =
     while result.IsNone do
         let k = Console.ReadKey(intercept = true)
         let ctrl = k.Modifiers.HasFlag ConsoleModifiers.Control
+        let alt = k.Modifiers.HasFlag ConsoleModifiers.Alt
 
         match k.Key with
+        // Alt+Enter (and Ctrl+J below): FORCE a newline even when the
+        // statement is complete — formatting, not a second statement
+        // (an entry stays ONE statement) [D:repl-multiline]
+        | ConsoleKey.Enter when alt -> insertNewline ()
+        | _ when k.KeyChar = '\n' -> insertNewline ()
         | ConsoleKey.Enter ->
-            Console.WriteLine()
-            result <- Some(Some(buf.ToString()))
+            // submit when the statement is COMPLETE; grow the buffer when
+            // it is not — the parser's own answer, not an approximation
+            let text = bufText ()
+
+            if bufferComplete (lines |> Seq.map (fun sb -> sb.ToString()) |> List.ofSeq) then
+                toEnd ()
+                Console.WriteLine()
+                result <- Some(Some text)
+            else
+                insertNewline ()
         // some terminals deliver control chords as bare KeyChars —
         // match the codes as well as the (Key, Modifier) pairs
-        | _ when k.KeyChar = '\u0004' ->
-            if buf.Length = 0 then
+        | _ when k.KeyChar = '' ->
+            if lines.Count = 1 && lines[0].Length = 0 then
                 Console.WriteLine()
                 result <- Some None
-            elif pos < buf.Length then
-                buf.Remove(pos, 1) |> ignore
+            elif col < cur().Length then
+                cur().Remove(col, 1) |> ignore
                 redraw ()
-        | _ when k.KeyChar = '\u0003' ->
+            elif row < lines.Count - 1 then
+                cur().Append(lines[row + 1].ToString()) |> ignore
+                lines.RemoveAt(row + 1)
+                redraw ()
+        | _ when k.KeyChar = '' ->
             Console.WriteLine "^C"
             result <- Some(Some "")
         | ConsoleKey.D when ctrl ->
-            if buf.Length = 0 then
+            if lines.Count = 1 && lines[0].Length = 0 then
                 Console.WriteLine()
                 result <- Some None // EOF
-            elif pos < buf.Length then
-                buf.Remove(pos, 1) |> ignore // readline delete-char
+            elif col < cur().Length then
+                cur().Remove(col, 1) |> ignore // readline delete-char
+                redraw ()
+            elif row < lines.Count - 1 then
+                // delete at line end joins the next line
+                cur().Append(lines[row + 1].ToString()) |> ignore
+                lines.RemoveAt(row + 1)
                 redraw ()
         | ConsoleKey.C when ctrl ->
-            // cancel the line, keep the session
+            // abandon the WHOLE buffer, keep the session
+            toEnd ()
             Console.WriteLine "^C"
+            result <- Some(Some "")
+        | ConsoleKey.Escape ->
+            // Esc mid-buffer: abandon the whole buffer [D:repl-multiline]
+            toEnd ()
+            Console.WriteLine()
             result <- Some(Some "")
         | ConsoleKey.R when ctrl ->
             // history search [D:repl-quality]: the selection REPLACES the
-            // whole line (a history entry is a line, not an insertion); a
-            // cancel leaves buf/pos untouched
-            (match historySearch (buf.ToString()) with
-             | Some line ->
-                 buf.Clear().Append line |> ignore
-                 pos <- buf.Length
-             | None -> ())
-
-            redraw ()
+            // whole buffer (an entry is a statement, not an insertion); a
+            // cancel leaves the buffer untouched
+            (match historySearch (displayEntry (bufText ())) with
+             | Some entry -> setBuffer entry
+             | None -> redraw ())
         | ConsoleKey.Backspace ->
-            if pos > 0 then
-                buf.Remove(pos - 1, 1) |> ignore
-                pos <- pos - 1
+            if col > 0 then
+                cur().Remove(col - 1, 1) |> ignore
+                col <- col - 1
+                redraw ()
+            elif row > 0 then
+                // backspace at line start joins the previous line
+                let prevLen = lines[row - 1].Length
+                lines[row - 1].Append(cur().ToString()) |> ignore
+                lines.RemoveAt row
+                row <- row - 1
+                col <- prevLen
                 redraw ()
         | ConsoleKey.LeftArrow when ctrl ->
             // readline word-wise: skip separators, then the word
-            let t = buf.ToString()
-            let mutable p = pos
+            let t = cur().ToString()
+            let mutable p = col
 
             while p > 0 && not (isWordChar t[p - 1]) do
                 p <- p - 1
@@ -343,11 +557,11 @@ let private readLineTty () : string option =
             while p > 0 && isWordChar t[p - 1] do
                 p <- p - 1
 
-            pos <- p
+            col <- p
             redraw ()
         | ConsoleKey.RightArrow when ctrl ->
-            let t = buf.ToString()
-            let mutable p = pos
+            let t = cur().ToString()
+            let mutable p = col
 
             while p < t.Length && not (isWordChar t[p]) do
                 p <- p + 1
@@ -355,59 +569,84 @@ let private readLineTty () : string option =
             while p < t.Length && isWordChar t[p] do
                 p <- p + 1
 
-            pos <- p
+            col <- p
             redraw ()
-        | ConsoleKey.LeftArrow when pos > 0 ->
-            pos <- pos - 1
-            Console.Write "\x1b[1D"
-        | ConsoleKey.RightArrow when pos < buf.Length ->
-            pos <- pos + 1
-            Console.Write "\x1b[1C"
+        | ConsoleKey.LeftArrow ->
+            if col > 0 then
+                col <- col - 1
+                redraw ()
+            elif row > 0 then
+                row <- row - 1
+                col <- lines[row].Length
+                redraw ()
+        | ConsoleKey.RightArrow ->
+            if col < cur().Length then
+                col <- col + 1
+                redraw ()
+            elif row < lines.Count - 1 then
+                row <- row + 1
+                col <- 0
+                redraw ()
         | ConsoleKey.Home ->
-            pos <- 0
+            col <- 0
             redraw ()
         | ConsoleKey.End ->
-            pos <- buf.Length
+            col <- cur().Length
             redraw ()
         | ConsoleKey.A when ctrl ->
-            pos <- 0
+            col <- 0
             redraw ()
         | ConsoleKey.E when ctrl ->
-            pos <- buf.Length
+            col <- cur().Length
             redraw ()
         | ConsoleKey.U when ctrl ->
-            buf.Remove(0, pos) |> ignore
-            pos <- 0
+            cur().Remove(0, col) |> ignore
+            col <- 0
             redraw ()
         | ConsoleKey.K when ctrl ->
-            buf.Remove(pos, buf.Length - pos) |> ignore
+            cur().Remove(col, cur().Length - col) |> ignore
             redraw ()
         | ConsoleKey.UpArrow ->
-            if histIdx > 0 then
+            // Up WITHIN the buffer; history only from the FIRST line
+            // (the fish/ipython convention; Ctrl+R is the explicit path)
+            if row > 0 then
+                row <- row - 1
+                col <- min col lines[row].Length
+                redraw ()
+            elif histIdx > 0 then
                 if histIdx = history.Count then
-                    draft <- buf.ToString()
+                    draft <- bufText ()
 
                 histIdx <- histIdx - 1
-                setLine history[histIdx]
+                setBuffer history[histIdx]
         | ConsoleKey.DownArrow ->
-            if histIdx < history.Count then
+            // Down within the buffer; at the last line, forward through
+            // history ONLY while already browsing it — a fresh buffer's
+            // last line is a no-op (Up's asymmetry) [D:repl-multiline]
+            if row < lines.Count - 1 then
+                row <- row + 1
+                col <- min col lines[row].Length
+                redraw ()
+            elif histIdx < history.Count then
                 histIdx <- histIdx + 1
-                setLine (if histIdx = history.Count then draft else history[histIdx])
+
+                setBuffer (if histIdx = history.Count then draft else history[histIdx])
         | ConsoleKey.Tab ->
-            let text = buf.ToString()
-            let ws = wordStartAt text pos
+            // completion operates on the CURRENT line (per-line machinery)
+            let text = cur().ToString()
+            let ws = wordStartAt text col
             // suggest's contract: text ends at the CURSOR — the tail past
             // it must not leak into the word (the mid-line receipt: the
             // typed closer ` })` became part of the prefix and killed
             // every match); insertion below re-attaches the tail
-            let suggestions = Complete.suggest currentEnv.Value (text.Substring(0, pos)) ws
+            let suggestions = Complete.suggest currentEnv.Value (text.Substring(0, col)) ws
 
             (match suggestions with
              | [] -> ()
              | [ one ] ->
-                 let replaced = text.Substring(0, ws) + one + text.Substring pos
-                 buf.Clear().Append(replaced) |> ignore
-                 pos <- ws + one.Length
+                 let replaced = text.Substring(0, ws) + one + text.Substring col
+                 cur().Clear().Append(replaced) |> ignore
+                 col <- ws + one.Length
                  redraw ()
              | many ->
                  // extend to the common prefix; list on a second Tab-worth
@@ -417,25 +656,36 @@ let private readLineTty () : string option =
                          let n = Seq.zip a b |> Seq.takeWhile (fun (x, y) -> x = y) |> Seq.length
                          a.Substring(0, n))
 
-                 if prefix.Length > pos - ws then
-                     let replaced = text.Substring(0, ws) + prefix + text.Substring pos
-                     buf.Clear().Append(replaced) |> ignore
-                     pos <- ws + prefix.Length
+                 if prefix.Length > col - ws then
+                     let replaced = text.Substring(0, ws) + prefix + text.Substring col
+                     cur().Clear().Append(replaced) |> ignore
+                     col <- ws + prefix.Length
                      redraw ()
                  else
+                     toEnd ()
                      Console.WriteLine()
                      Console.WriteLine(String.concat "  " (many |> List.truncate 24))
+                     lastCursorDisplay <- 0
                      redraw ())
         | _ when k.KeyChar >= ' ' ->
-            buf.Insert(pos, k.KeyChar) |> ignore
-            pos <- pos + 1
+            cur().Insert(col, k.KeyChar) |> ignore
+            col <- col + 1
             redraw ()
         | _ -> ()
 
+    activeRedraw.Value <- None
     result |> Option.defaultValue None
 
 let private setupLineEditor () =
     Console.TreatControlCAsInput <- true // Ctrl+C is a KEY (cancel line), not SIGINT
+    // full repaint on SIGWINCH [D:repl-multiline] — best-effort (the climb
+    // to the region top uses pre-resize wrap math)
+    Runtime.InteropServices.PosixSignalRegistration.Create(
+        Runtime.InteropServices.PosixSignal.SIGWINCH,
+        fun _ -> activeRedraw.Value |> Option.iter (fun f -> f ())
+    )
+    |> ignore
+
     loadHistory ()
 
 let private readInput () =
@@ -473,6 +723,87 @@ let private printHint (state: State) (line: string) =
         line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
+// the Ok-side rendering, shared by the single-line and multiline
+// submission paths [D:repl-multiline]
+let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
+    match chk.Kind with
+    | Script.KType decl ->
+        let ctors =
+            match decl.Body with
+            | DUnion cases -> Eval.constructorValues cases
+            | DRecord _ -> []
+
+        Console.WriteLine $"type {decl.Name} declared"
+
+        { TypeEnv = chk.Env
+          Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+    | Script.KLetPat(pat, schemes, te) ->
+        printWarnings state te
+
+        (try
+            let v = Eval.eval state.Values te
+            let bindings = Eval.bindPattern pat v
+
+            // one destructuring line reports each binding on its
+            // own line — matching what two lets would have shown
+            for n, sch in schemes do
+                Console.WriteLine $"{n} : {formatTy sch.Ty}"
+
+            { TypeEnv = chk.Env
+              Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+         with
+         | Eval.ExitRequest _ -> reraise ()
+         | ex ->
+             Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
+             state)
+    | Script.KLet(name, _, te) ->
+        printWarnings state te
+
+        (try
+            let v = Eval.eval state.Values te
+
+            if v <> Eval.VUnit then
+                let rendered, hint = Eval.echoValue v
+
+                let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+
+                Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
+
+            { TypeEnv = chk.Env
+              Values = Map.add name v state.Values }
+         with
+         | Eval.ExitRequest _ -> reraise ()
+         | ex ->
+             Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
+             state)
+    | Script.KExpr te
+    | Script.KCmd te ->
+        printWarnings state te
+
+        (try
+            let v = Eval.eval state.Values te
+
+            if v <> Eval.VUnit then
+                let rendered, hint = Eval.echoValue v
+
+                let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+
+                Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
+
+            state
+         with
+         | Eval.ExitRequest _ -> reraise ()
+         | ex ->
+             Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
+             state)
+    | Script.KModule _ ->
+        Console.WriteLine "the REPL has no file to be a module of; 'module' belongs at the top of a script file"
+
+        state
+    | Script.KImport _ ->
+        // unreachable: scriptOnlyImport rejects imports at check
+        state
+
 let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
 
@@ -480,6 +811,54 @@ let rec private loop (state: State) =
     | null
     | ":q" -> ()
     | line when String.IsNullOrWhiteSpace line -> loop state
+    | entry when entry.Contains '\n' ->
+        // a MULTILINE entry [D:repl-multiline]: the same assembler the
+        // script runner uses turns the buffer into logical lines — the
+        // submitted text means exactly what the same lines mean in a file
+        Extern.refresh ()
+        let srcLines = entry.Split '\n'
+
+        let numbered =
+            srcLines
+            |> Array.toList
+            |> List.mapi (fun i l -> i + 1, l)
+            |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
+            |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+
+        let next =
+            match Script.assemble numbered with
+            | Error msg ->
+                Console.WriteLine msg
+                state
+            | Ok lls ->
+                lls
+                |> List.fold
+                    (fun st ll ->
+                        match
+                            Script.checkStatement false (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll
+                        with
+                        | Error d ->
+                            // script-style rendering: the offending source
+                            // line + caret + message (the buffer's echo is
+                            // rows above; reprinting is deterministic)
+                            let src =
+                                if d.PhysLine >= 1 && d.PhysLine <= srcLines.Length then
+                                    srcLines[d.PhysLine - 1]
+                                else
+                                    ""
+
+                            Console.WriteLine src
+
+                            Console.WriteLine(
+                                Script.Color.red Script.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
+                            )
+
+                            Console.WriteLine(if d.Parse then d.Message else $"type error: {d.Message}")
+                            st
+                        | Ok chk -> evalChecked st chk)
+                    state
+
+        loop next
     | line ->
         Extern.refresh ()
 
@@ -520,85 +899,7 @@ let rec private loop (state: State) =
                  | _ -> ())
 
                 state
-            | Ok chk ->
-                match chk.Kind with
-                | Script.KType decl ->
-                    let ctors =
-                        match decl.Body with
-                        | DUnion cases -> Eval.constructorValues cases
-                        | DRecord _ -> []
-
-                    Console.WriteLine $"type {decl.Name} declared"
-
-                    { TypeEnv = chk.Env
-                      Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
-                | Script.KLetPat(pat, schemes, te) ->
-                    printWarnings state te
-
-                    (try
-                        let v = Eval.eval state.Values te
-                        let bindings = Eval.bindPattern pat v
-
-                        // one destructuring line reports each binding on its
-                        // own line — matching what two lets would have shown
-                        for n, sch in schemes do
-                            Console.WriteLine $"{n} : {formatTy sch.Ty}"
-
-                        { TypeEnv = chk.Env
-                          Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
-                     with
-                     | Eval.ExitRequest _ -> reraise ()
-                     | ex ->
-                         Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
-                         state)
-                | Script.KLet(name, _, te) ->
-                    printWarnings state te
-
-                    (try
-                        let v = Eval.eval state.Values te
-
-                        if v <> Eval.VUnit then
-                            let rendered, hint = Eval.echoValue v
-
-                            let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
-
-                            Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
-
-                        { TypeEnv = chk.Env
-                          Values = Map.add name v state.Values }
-                     with
-                     | Eval.ExitRequest _ -> reraise ()
-                     | ex ->
-                         Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
-                         state)
-                | Script.KExpr te
-                | Script.KCmd te ->
-                    printWarnings state te
-
-                    (try
-                        let v = Eval.eval state.Values te
-
-                        if v <> Eval.VUnit then
-                            let rendered, hint = Eval.echoValue v
-
-                            let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
-
-                            Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
-
-                        state
-                     with
-                     | Eval.ExitRequest _ -> reraise ()
-                     | ex ->
-                         Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
-                         state)
-                | Script.KModule _ ->
-                    Console.WriteLine
-                        "the REPL has no file to be a module of; 'module' belongs at the top of a script file"
-
-                    state
-                | Script.KImport _ ->
-                    // unreachable: scriptOnlyImport rejects imports at check
-                    state
+            | Ok chk -> evalChecked state chk
 
         loop next
 

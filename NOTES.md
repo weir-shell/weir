@@ -1,5 +1,76 @@
 # Spike Notes
 
+## REPL multiline — the buffer becomes two-dimensional (2026-07-30)
+
+Up-arrow moves within the buffer; on line 3 of a match with a wrong
+scrutinee on line 1 you go up and fix it. The load-bearing discovery
+was that the REPL had NO continuation machinery to extend — the plan's
+"continuation machinery" is the SCRIPT assembler, and the session's
+real shape was: put a 2D editor in front of `Script.assemble`, and let
+the assembler answer the one question other shells approximate. Enter
+submits exactly when the statement is complete: assemble answers
+STRUCTURE (open brackets, pending bindings, dangling openers), and a
+parse failure AT THE VERY END of the assembled text means "more input
+wanted" — `match x with` fails at its end and grows; `let = 5` fails
+mid-text and SUBMITS, showing the error, so the user is never trapped
+adding newlines to a broken line. Because submission runs through the
+same assembler a script uses, the both-ways pin is almost free:
+identical lines, identical statements.
+
+In-session decisions, with reasons. STORAGE: one entry per file line,
+backslash-escaped newlines (`\`→`\\`, LF→`\n`) — keeps the file
+line-oriented and greppable, the cap counts lines = entries, and a
+legacy entry containing a weir `"\n"` literal decodes with a real
+newline: accepted now, pre-adoption, exactly the amendment-not-
+migration window the plan named. DISPLAY: fzf matches per line, so an
+entry feeds as its lines joined with ` ⏎ ` — every line stays
+searchable (first-line-plus-ellipsis would hide the match arms, which
+is where the searching happens) — mapped back through a
+display→entry dictionary (identical displays imply identical text, so
+the map is lossless). DOWN: the plan leaned no-op at the last line,
+but a pure no-op would strand history browsing (Up walks back, nothing
+walks forward on a one-line buffer); refined to forward-only-while-
+browsing (histIdx < count), no-op on a fresh buffer — the asymmetry
+kept where it matters. RESIZE: full repaint on SIGWINCH
+(PosixSignalRegistration), best-effort — the climb to the region top
+uses pre-resize wrap math. AUTO-INDENT: deferred; the continuation
+line starts at column 0 (match-previous-indent is on the still-lacking
+list).
+
+The redraw is a region repaint — climb to the region top by the
+tracked cursor display-offset, `ESC[J`, repaint each line with its
+prompt, reposition by display-row math — and the wrap arithmetic is
+where the colorizer's cursor-math scars applied directly: display rows
+are ceil((prompt+len)/width), and the line-fills-its-row-exactly case
+leaves the terminal wrap-PENDING, which the ceil and the `\r\n`
+emission happen to agree about. The continuation prompt is `"  ... "`
+— the same width as `weir> ` — bought uniform column math across rows
+for one design choice. Pins assert on EVALUATED VALUES at two widths
+(30 and 80), never on cursor positions: the driver lesson, applied
+before it could bite. Ctrl+J doubles as Alt+Enter's deterministic pty
+spelling, which is why the harness can force newlines byte-exactly.
+
+The existing color probe found the completeness rule's one real hole,
+by hanging. It types `let s = @"raw` + Enter — an UNCLOSED VERBATIM
+string — and under the first completeness rule that grew the buffer
+(the parse fails at the end of the text), so Ctrl+D never saw an empty
+buffer and the probe waited forever. The rule was wrong, not the
+probe: weir strings are SINGLE-LINE (all four kinds), so a line ending
+inside one can never be completed by more input — growing is a trap.
+The fix reuses the ONE string-state machine [D:one-scanner]:
+`foldOutsideStrings` refactored over a `stringScan` core that also
+returns the end-state, and a new `Script.endsInsideString` makes
+`bufferComplete` submit such buffers (the parse error shows). A
+second quote machine in Repl.fs was the tempting wrong move.
+
+Still lacking, for the next interactive decision: sticky column on
+Up/Down (clamp only today); auto-indent to the previous line's indent;
+buffers taller than the terminal repaint only the visible portion
+(`ESC[A` clamps at the screen top — fish shares the limit); perfect
+resize reflow; syntax-aware submit heuristics (a one-armed match
+parses complete, so adding arms takes Ctrl+J — the parser's answer is
+precise but eager).
+
 ## REPL quality — good enough to evaluate weir in (2026-07-30)
 
 Four affordances, none touching semantics: completion, Ctrl+R search,

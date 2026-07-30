@@ -32,6 +32,21 @@ Three properties, in the order they matter:
   for string seqs and `|> Seq.map show |> print` for the rest
   (everything, line per element), and a bare command statement is
   the STREAM (live, as the child produces it).
+  **Multi-line editing**: Enter submits when the statement is
+  complete and opens a continuation line when it is not (weir asks
+  its own parser, so `match x with` grows and `1 + 1` submits);
+  Up/Down move within the buffer; a recalled history entry returns
+  whole — a three-line match comes back as three lines and re-edits.
+  The fixed bindings (this is not a keybinding-config feature):
+
+  | key | in the buffer |
+  |---|---|
+  | `Enter` | submit if complete, else newline |
+  | `Alt+Enter` / `Ctrl+J` | force a newline (formatting; an entry stays one statement) |
+  | `Up` / `Down` | move between lines; `Up` on the first line recalls history |
+  | `Ctrl+R` | history search (fzf when installed; entries display one-line, ⏎-joined) |
+  | `Esc` / `Ctrl+C` | abandon the whole buffer |
+  | `Ctrl+D` | EOF on an empty buffer; delete/join otherwise |
 - `weir -e '1 + 2'` — one expression.
 - `weir script.weir args...` — run a script; `#!/usr/bin/env weir`
   works. Scripts are STRICT: library calls are module-qualified

@@ -828,6 +828,9 @@ PYEOF
 
     python3 "$(dirname "$0")/../tests/repl/repl-quality.py" "$BIN" || fail "repl quality (history/Ctrl+R)"
     echo "e2e ok: repl history (XDG/dedup/0600), Ctrl+R fzf-stub + fallback"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
+    echo "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
 else
     # no silent caps: name what was skipped
     echo "e2e SKIP: python3 absent — lsp + repl pty probes NOT run" >&2
