@@ -392,7 +392,13 @@ let dangleEnders = [| "="; "then"; "else"; "with"; "->" |]
 
 let dangleOpensBlock (piece: string) : bool =
     let t = piece.TrimEnd()
+
     dangleEnders |> Array.exists t.EndsWith
+    // `do` needs a WORD boundary — `sudo` at EOL must not dangle a
+    // block open [D:for-do] (the existing enders keep their exact
+    // suffix behavior, zero movement)
+    || t = "do"
+    || t.EndsWith " do"
 
 /// The marker's district wrap: opener text and how many trailing
 /// characters of the armed line the first district line strips.

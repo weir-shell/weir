@@ -970,6 +970,26 @@ quantity semantics now.
   `sh -c "..."` lines: exempt, streaming, `| complete`-able.
   `let`/`type` statements print nothing, as before. `#loose` does not
   loosen this — resolution mode and output semantics are different axes.
+- **`for`/`do` — the general effect loop** [D:for-do]: F#'s own forms,
+  desugared AT PARSE (the reifier precedent — the typed tree never sees
+  `for`, so checking, hover, and eval ride existing machinery).
+  `for <binderPat> in <expr> do <body>` ⇢ `xs |> Seq.iter (fun p ->
+  body)`, a `unit` expression, eager; the body must be `unit` (the
+  statement rule's discipline, via `Seq.iter`'s type). A BARE COMMAND
+  body is implicit `!(…)` — `for f in files do git add $f` streams and
+  raises per iteration, the natural shell shape (a `for`-specific rule:
+  `do` is a statement position; `then` bodies stay expression-only).
+  `do` at line end opens an indented body block (the `then` layout rule,
+  word-boundary guarded — `sudo` at EOL does not dangle); `do !` arms a
+  command district. `[for p in xs -> e]` ⇢ `xs |> Seq.map (fun p -> e)
+  |> Seq.force` — the comprehension BYPASSES the list literal entirely
+  (no interaction with empty-list inference; `Seq.force` keeps the
+  literal's eagerness contract). No guard syntax — filtering is
+  `Seq.where` upstream or `if` in the body (a `when` clause would be a
+  third filtering spelling). THE LAW, stated once: **pipelines
+  transform; `for` effects** — `map`/`where`/`fold` chains produce
+  values, `for … do` does things N times; the desugar makes "same
+  machine" true by construction.
   The rule is script-only: the REPL and `-e` keep `it`-style auto-print
   (ephemeral lines are not the PS output-pollution bug class; durable
   scripts are).
