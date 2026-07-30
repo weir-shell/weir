@@ -1,5 +1,133 @@
 # Spike Notes
 
+## REPL quality — good enough to evaluate weir in (2026-07-30)
+
+Four affordances, none touching semantics: completion, Ctrl+R search,
+persistent history, an inert config. The bound was chosen and stated —
+NOT a login shell (no job control, aliases, prompt commands,
+keybindings). The recorded reason is the sharp one: most interactive
+affordances push toward dynamism (ambient state, unqualified names),
+each a hole in check-before-effects; completion, history, and inert
+settings are the low-hanging fruit precisely because they do not.
+
+The completion win was a compile-order finding, exactly the shape the
+plan predicted ("a shape `Complete.fs` cannot serve is a FINDING,
+extend it"). `Complete.fs` sat BEFORE `Extern`/`Builtins` in the
+fsproj, so it could not see the PATH cache or the command-callable set
+— which is why it had never offered command heads. Moving it after
+both (nothing between used it) let the ONE brain grow two contexts
+without a second implementation: PATH executables + command-callable
+at a statement head, filesystem entries for an explicit `/`-or-`~`
+word. Members/fields/keywords were already there.
+
+The config's best property is structural, not enforced. "Scripts
+never read this file" is the whole point — it is what keeps `weir
+script.weir` meaning the same thing on two machines. Rather than
+guard it, the `ReplConfig` type LIVES IN the Repl module: a script
+never touches Repl, so it *cannot* reach the config. The pin proves
+it the honest way — a malformed config plus `weir script.weir` runs
+clean, because the broken JSON is never parsed. An in-session cut:
+`echoElems`/`echoChars` were dropped from the key set. A config key
+that is accepted but does nothing is the config-file's vacuous pin —
+the same disease as an unknown key silently ignored — so keys ship
+only when they are wired.
+
+fzf was absent in the harness, which forced a better test than a real
+fzf would have: a STUB `fzf` on PATH (`head -1`) makes the
+spawn-feed-select-restore mechanics deterministic and
+environment-independent, and a second run with fzf off PATH exercises
+the minimal fallback. Both under the pty driver, asserting on the
+re-evaluated line, never on redraw escapes.
+
+## The pipe rule — the right-hand side decides (2026-07-29)
+
+`|` for a program or a reifier, `|>` for a function. The one removal
+(`cmd | Seq.head` stops parsing) is what makes the rule total, and it
+fixes an asymmetry that had no user-statable justification: you could
+pipe a command into a function with `|` but not a value. Reifiers
+staying `|` is a THIRD case, not an exception — a reifier is command
+grammar, it terminates a chain and produces a value, it is not a
+function applied to output.
+
+The surprise was that there are TWO pipe paths, and the rule needed
+enforcing in both. The command-CHAIN (`foldChain`) sees each stage's
+kind directly, so `pipeSepSpanned` captures the glyph and `foldChain`
+checks it against the RIGHT-hand seg — that catches `cmd | fn`,
+`cmd |> cmd`, `cmd |> reifier`, anchored on the glyph. But
+`expr |> cmd` goes through the `|>` OPERATOR, where `grep foo` parses
+as an ordinary application `EApp(grep, foo)` and would only ever say
+"unbound grep". That needed a separate, resolver-aware post-parse walk
+(`pipeToCommand`): an `EPipe` whose RHS is headed by an external
+command, anchored on the offending program. Two mechanisms for one
+rule, because the grammar reaches the same shape by two roads.
+
+Testing bit twice with `ls`. `ls` is a builtin VALUE (a lazy FileRow
+seq), not an external command, so `ls | succeeds` and `ls |> grep`
+route through the value/operator paths, not the command chain — the
+early "failures" were bad fixtures, not bugs. Real externals (`git`)
+exercised the chain. And the adapters answered themselves: `from
+json`/`from porcelain`/`to json` already parse as expression stages,
+so the new rule required `|>` for them with no special-casing — the
+migration just had to respell every `| from porcelain` in the corpus.
+The migration was the real work (12 unit + 13 e2e pins + docs +
+examples + an lsp fixture); byte-identical because `|` and `|>` build
+the same `EPipe` — only the spelling contract moved.
+
+## User modules and imports — the five-session arc (2026-07-29)
+
+A file marked `module` becomes importable, declaration-only, not
+runnable; `import "path" [as Name]`; access always qualified. The arc
+ran design → single-hop → multi-file diagnostics → the graph → the
+LSP → `Self.entryPath`, each its own session. Check-before-effects
+survived the file boundary by construction: a module resolves and
+checks at check time, nothing loads at runtime.
+
+Three findings worth keeping. FIRST, the load-bearing representation
+choice: imported types go into the flat `env.Types` under their PLAIN
+name, not qualified `Git.Ctx` keys. That makes the common case — a
+module's own helper signatures mentioning its own `Ctx` — resolve with
+ZERO scheme-rewriting, because the schemes already say `TNamed "Ctx"`.
+The cost is a session-1 collision guard (two modules exporting the
+same type name is a check error). Qualified keys would have been
+"cleaner" and cost a rewrite pass over every imported scheme; plain
+keys were the right trade.
+
+SECOND, the named record literal (`Git.Ctx { .. }`, decision 7) needed
+NO new AST node and NO grammar change. `Ctx { .. }` already parses as
+`EApp(EVar Ctx, ERecord)`, and a record type name is never a VALUE, so
+intercepting that shape in the checker fires ONLY where a bare
+application would already error — `Some { .. }` (a ctor applied to a
+record) is byte-identical. The parser route was tried first and
+abandoned: `Ctor { record }` is legal weir, so `Upper {` cannot be
+grammatically claimed for named records without knowing types, which
+the parser does not.
+
+THIRD, `assumeResolver` bit hard. `weir check` treats unknown letter-
+initial words as commands so uninstalled tools still parse — but that
+read the UPPERCASE type name in `Local { .. }` as a command, so a
+named literal type-checked at RUN (the plain resolver) yet errored
+under CHECK. Commands are never a declared type or module; excluding
+`tenv.Types`/`tenv.Modules` from the assume-command rule fixed it. The
+lesson repeats: a parse-shape that works one way and not the other is
+usually a resolver disagreement, not a grammar bug.
+
+The diagnostics arc (sessions 2–3) taught its own lesson about notes.
+A module error reports at its OWN file with an "imported here" note at
+the import line; through a transitive graph the note kept landing in
+the wrong file, because each level re-created it. The fix is that the
+OUTERMOST importDiag wins — every level overwrites the note with its
+own import position, so the entry's (the last to run) survives, and
+its file matches where analyzeLines publishes it. For the graph, the
+cache is keyed by normalized absolute path (a diamond checks its
+shared module once, re-aliased per site via `NaturalName`) and the
+chain is the DFS path (a repeat is a cycle, rendered as the loop). No
+re-export means a module's exported types come from its Body's own
+decls, NOT the env-diff — the diff would leak whatever it imported.
+And the LSP shipped re-check-all-open-docs rather than reverse edges:
+the plan named reverse edges, but eager re-check achieves the same
+observable guarantee with no stale-graph bug, so the optimization is
+deferred, stated.
+
 ## /// feeds --help — the Doc attribute retires (2026-07-28)
 
 `--help` used to read its text from a `[<Doc "…">]` attribute while
