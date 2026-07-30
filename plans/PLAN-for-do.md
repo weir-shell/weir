@@ -1,6 +1,15 @@
 # weir — mini-plan: `for`/`do` — the general iteration form
 
-Status: PROPOSED (drafted 2026-07-30, awaiting bless). One small
+Status: EXECUTED (landed 2026-07-30, same day) — as blessed: BLESSED
+(user 2026-07-30) with four notes, each landed: (1) the comprehension's
+conditional inclusion — its FINDING mattered most (it IS the same
+desugar path: bypasses EList, Seq.force preserves eagerness; included);
+(2) layout pinned against the then-body rules explicitly, not by
+analogy (the assembler DID bite: bare-EndsWith dangle needed a word
+boundary for `do` — `sudo` must not dangle); (3) the `do` keyword
+sweep reported (38 prose / 0 identifier positions); (4) the bare
+command body pinned explicitly (`for f in files do git add $f` =
+implicit `!(…)`, a for-specific rule). See [D:for-do]. One small
 session. Origin: the YAML-templates design put `for x in xs` inside
 yaml districts only; the user challenged the restriction — why not
 F#'s own general form? On the merits the restriction was SCOPE

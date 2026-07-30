@@ -486,6 +486,21 @@ echo tagged $marker (40 + 2)
 sh -c "echo one && echo two"
 ```
 
+The effect loop is `for … do` — the shell shape, typed. A bare
+command body streams and raises per iteration (it is implicit
+`!(…)`); `do !` opens a command block; the loop variable splices like
+any binding. Pipelines stay the spelling for TRANSFORMING values
+(`|> Seq.map …`); `for` is for doing things N times — same machine
+underneath (`for` desugars to `Seq.iter`).
+
+```weir
+for greeting in ["hello"; "again"] do
+    sh -c $"echo {greeting}"
+
+let squares = [for x in [1..5] -> x * x]
+squares |> Seq.map show |> print
+```
+
 Nonzero exit raises when the stream is forced. To inspect instead of
 raise, reify the run:
 

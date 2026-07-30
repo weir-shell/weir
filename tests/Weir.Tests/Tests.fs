@@ -952,6 +952,45 @@ let boundaryTests =
               Expect.isError (Weir.Parser.parseLine cmdResolver "let import = 1") "import reserved"
               Expect.isError (Weir.Parser.parseLine cmdResolver "let module = 1") "module reserved"
           }
+          test "for/do desugars to Seq.iter — the typed tree never sees `for` [D:for-do]" {
+              expectParse "for x in [1; 2] do print (show x)" "((Seq.iter (funpat x (print (show x)))) [1; 2])"
+              // tuple binder rides binderPat
+              expectParse "for (k, v) in pairs do print k" "((Seq.iter (funpat (k, v) (print k))) pairs)"
+          }
+          test "for/do equivalence: both spellings evaluate identically [D:for-do]" {
+              Expect.equal
+                  (runReal "for x in [\"a\"; \"b\"] do print x" |> ignore
+                   runReal "[\"a\"; \"b\"] |> Seq.iter (fun x -> print x)")
+                  (runReal "for x in [\"a\"; \"b\"] do print x")
+                  "byte-identical desugar"
+          }
+          test "a bare command body is implicit !(…) — pipes into print [D:for-do]" {
+              match Weir.Parser.parseLine cmdResolver "for f in xs do git add $f" with
+              | Ok(SExpr e | SCmd e) ->
+                  Expect.stringContains (show e) "(cmd git \"add\" f) |> print" "the command body wraps as effect"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "the comprehension desugars to Seq.map |> Seq.force, bypassing EList [D:for-do]" {
+              // the session finding: same desugar path as the statement form —
+              // list-literal inference (empty-list var, unification) untouched
+              expectParse "[for x in xs -> x * 2]" "(Seq.force ((Seq.map (funpat x (* x 2))) xs))"
+              Expect.equal (run "[for x in [1; 2; 3] -> x * 10]" |> forceSeq) [ VInt 10L; VInt 20L; VInt 30L ] ""
+          }
+          test "for and do are reserved words; sudo at EOL does not dangle [D:for-do]" {
+              Expect.isError (Weir.Parser.parseLine cmdResolver "let for = 1") "for reserved"
+              Expect.isError (Weir.Parser.parseLine cmdResolver "let do = 1") "do reserved"
+              // the word-boundary guard: a line ENDING in 'do' opens a block,
+              // a line ending in 'sudo' does not
+              Expect.isTrue (Weir.Script.dangleOpensBlock "for x in xs do") "do dangles"
+              Expect.isFalse (Weir.Script.dangleOpensBlock "run sudo") "sudo must not dangle"
+          }
+          test "for/do multiline body: the layout is the then-body rule, pinned not analogized [D:for-do]" {
+              match Weir.Script.assemble [ 1, "for x in [1; 2] do"; 2, "    print \"a\""; 3, "    print (show x)" ] with
+              | Ok [ ll ] ->
+                  Expect.stringContains ll.Text "for x in [1; 2] do" "the head survives"
+                  Expect.stringContains ll.Text "print \"a\"" "body line 1 joins"
+              | other -> failtest $"expected one logical line, got {other}"
+          }
           test "the named record literal constructs a specific type, no field-set inference [D:modules-v1]" {
               // Point { .. } resolves to Point directly (EApp(EVar Point, ERecord)
               // is intercepted since a record type name is never a value)
@@ -1077,7 +1116,8 @@ let completionTests =
           test "path completion never runs anything: only a directory read [D:repl-quality]" {
               // completing a path yields entries without executing a program —
               // the marker file a run would leave is absent
-              let marker = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-complete-marker")
+              let marker =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-complete-marker")
 
               if System.IO.File.Exists marker then
                   System.IO.File.Delete marker
@@ -1112,7 +1152,11 @@ let completionTests =
                         "elif"
                         // statement starters like let/type [D:modules-v1]
                         "module"
-                        "import" ]
+                        "import"
+                        // the effect loop's pair [D:for-do] — offered like
+                        // if/then (for starts, do continues)
+                        "for"
+                        "do" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)

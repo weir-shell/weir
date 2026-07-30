@@ -3169,4 +3169,32 @@ out=$(XDG_CONFIG_HOME="$cfgdir" $BIN "$cfgdir/s.weir" 2>&1)
 expect "a script ignores the REPL config entirely (even a broken one)" "scripts-ignore-config" "$out"
 rm -rf "$cfgdir"
 
+# ---- for/do: the general effect loop [D:for-do] ---------------------------
+fdir=$(mktemp -d)
+# the natural shell shape: a bare command body over a real external
+cat > "$fdir/loop.weir" <<'WEOF'
+for w in ["one"; "two"] do sh -c $"echo got-{w}"
+WEOF
+out=$($BIN "$fdir/loop.weir")
+expect "for/do runs a bare command body per element (implicit effect)" "got-one
+got-two" "$out"
+
+# the do ! district: multiple command lines per iteration
+cat > "$fdir/district.weir" <<'WEOF'
+for f in ["a"; "b"] do !
+    sh -c $"echo made-{f}"
+WEOF
+out=$($BIN "$fdir/district.weir")
+expect "for/do arms a command district with do !" "made-a
+made-b" "$out"
+
+# the comprehension is eager and evaluates
+out=$($BIN -e '[for x in [1; 2; 3] -> x * 10]')
+expect "the comprehension evaluates eagerly" "[10; 20; 30] : seq<int>" "$out"
+
+# a non-unit body keeps the statement rule's teaching
+out=$($BIN -e 'for x in [1] do x + 1' 2>&1 || true)
+expect "a non-unit for body errors in the statement-rule family" "expected unit, got int" "$out"
+rm -rf "$fdir"
+
 echo "e2e battery: all green"

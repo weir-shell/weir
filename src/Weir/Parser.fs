@@ -32,6 +32,9 @@ let keywords =
           // command head (keyword-domination)
           "module"
           "import"
+          // the general effect loop [D:for-do]
+          "for"
+          "do"
           // reserved for the parked match-lambda sugar [D:block-let-cmd
           // rider]: the future form breaks nothing
           "function" ]
@@ -576,6 +579,11 @@ let private deepen (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             parseDepth.Value <- parseDepth.Value - 1
 
+// [for p in xs -> e] — forward-declared: the comprehension needs the
+// pattern grammar, which is defined after atom [D:for-do]
+let private comprehensionLit, private comprehensionLitRef =
+    createParserForwardedToRef<Expr, unit> ()
+
 let private atom =
     deepen (
         choice
@@ -591,6 +599,7 @@ let private atom =
               unitLit
               parens
               recordLit
+              attempt comprehensionLit
               listLit
               wordAtom ]
     )
@@ -1070,7 +1079,65 @@ let private ifExpr =
             { Kind = EIf(cond, thn, chained)
               Span = { Start = pos p; End = endPos } })
 
-opp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
+// for/do [D:for-do]: the general effect loop -- F#'s own statement form,
+// desugared AT PARSE to `xs |> Seq.iter (fun p -> body)` (the reifier
+// precedent: the typed tree never sees `for`, so checking, warnings,
+// hover, and eval all ride the existing machinery). A BARE COMMAND body
+// is implicit `!(...)` -- `for f in files do git add $f` streams and
+// raises per iteration, the natural shell shape; known heads fall
+// through to the expression body exactly as the statement classifier
+// decides.
+let private forExpr =
+    let cmdBody =
+        attempt (
+            spanned (sigilChain None)
+            >>= fun (chain, span) ->
+                if exitCodeSpine chain then
+                    failFatally
+                        "this discards the exit code -- bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+                else
+                    preturn
+                        { Kind = EPipe(chain, { Kind = EVar "print"; Span = span })
+                          Span = span }
+        )
+
+    pipe4
+        (getPosition .>> keyword "for")
+        (binderPat .>> keyword "in")
+        (expr .>> keyword "do")
+        (cmdBody <|> seqExpr)
+        (fun p binder source body ->
+            let span = { Start = pos p; End = body.Span.End }
+            let mk k = { Kind = k; Span = span }
+            let iter = mk (EField(mk (EVar "Seq"), "iter", span))
+            mk (EApp(mk (EApp(iter, mk (ELambdaPat(binder, body)))), source)))
+
+// [for p in xs -> e] [D:for-do]: F#'s list comprehension, desugared to
+// `xs |> Seq.map (fun p -> e) |> Seq.force` -- Seq.force keeps the list
+// literal's EAGERNESS contract. The desugar bypasses EList entirely, so
+// list-literal inference (the empty-list fresh var, element unification)
+// is untouched -- the session finding: same path as the statement form.
+comprehensionLitRef.Value <-
+    spanned (
+        attempt (pchar '[' >>. ws >>. keyword "for") >>. binderPat .>> keyword "in"
+        .>>. expr
+        .>> str_ws "->"
+        .>>. expr
+        .>> (pchar ']' <?> "']' to close the comprehension")
+    )
+    |>> (fun (((binder, source), elem), span) ->
+        let mk k = { Kind = k; Span = span }
+
+        let field name =
+            mk (EField(mk (EVar "Seq"), name, span))
+
+        let mapped =
+            mk (EApp(mk (EApp(field "map", mk (ELambdaPat(binder, elem)))), source))
+
+        mk (EApp(field "force", mapped)))
+    .>> ws
+
+opp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; forExpr; fromExpr; toExpr; appChain ]
 
 updateSourceRef.Value <-
     (let u = mkOpp true

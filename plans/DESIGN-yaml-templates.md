@@ -1,11 +1,20 @@
 # weir — YAML templates: the district, the data path, the adapters
 
-Status: PROPOSED (drafted 2026-07-30, awaiting bless) — the design for
-"stringless YAML templates" (the Yzl want, re-thought for weir) plus
-`from yaml T` / `to yaml`. Direction chosen by the user: A + B +
-adapters, with in-district iteration (`for x in xs`). Implementation
-is an arc of its own sessions once blessed; this file is the decision
-record in the making.
+Status: BLESSED (user 2026-07-30) — the design for "stringless YAML
+templates" (the Yzl want, re-thought for weir) plus `from yaml T` /
+`to yaml`. Direction: A + B + adapters, with in-district iteration.
+Session 0 (PLAN-for-do) EXECUTED same day. Bless notes to honor in
+the arc: (1) the injection line goes in the README VERBATIM when it
+comes ("you cannot write a YAML injection in weir, for the same
+reason you cannot write an argv injection" — the argv law
+generalizing to a second domain); (2) the `Yaml` node union's
+VALUE-DOMAIN questions are session 1's FIRST work — show, equality,
+the field law, Eq/Show admissibility (a recursive union with a Map
+case is exactly the shape Eq's no-seq rule and Show's recursion must
+answer) — answered BEFORE the parser, since they shape the union;
+(3) the reverse-Norway quoting pins gain two adversaries: a string
+that LOOKS like a number ("007", "1e5") and a string containing `#`
+mid-line. Each session of the arc is its own bless.
 
 Origin: the config-format spike proved the strict-YAML subset
 (scalars, block maps, block sequences, `#` comments) is SMALL — small

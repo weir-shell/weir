@@ -1,5 +1,47 @@
 # Spike Notes
 
+## for/do lands — the divergence bar worked in reverse (2026-07-30)
+
+The general effect loop shipped in one sitting, and the interesting
+part is WHY it exists: the district-only `for` in the yaml design was
+scope discipline misread as a verdict, and the user's challenge
+reframed it as a DIVERGENCE question — F# has `for x in xs do` and
+`[for x in xs -> e]`; declining a sibling's form needs its own
+justification, and "we have Seq.iter" does not meet the bar the
+project holds its other divergences to. The divergence discipline
+usually stops weir from drifting AWAY from F#; here it pulled weir
+TOWARD F#. Same law, opposite direction.
+
+The desugar-at-parse choice (the reifier precedent) made the session
+small: the typed tree never sees `for`, so checking, hover, warnings,
+and eval all rode existing machinery — the whole feature is a parser
+construction plus one assembler predicate. The bless notes each paid:
+the COMPREHENSION finding came out the good way (`[for p in xs -> e]`
+bypasses EList entirely — no interaction with empty-list inference —
+and `Seq.force` in the desugar preserves the literal's eagerness, so
+it shipped rather than parked); the LAYOUT was pinned against the
+then-body rule rather than analogized (and the assembler DID bite:
+`dangleEnders` uses bare `EndsWith`, so adding `"do"` naively would
+have made `sudo` at EOL dangle a block open — the new ender is
+word-boundary guarded while the existing enders keep their exact
+suffix behavior); the KEYWORD sweep found `do` in 38 prose spots and
+ZERO identifier positions, so reserving both words moved only the
+completion-inventory pin; and the BARE COMMAND BODY (the bless
+addition) is the feature's best moment — `for f in files do git add
+$f` parses the body as a command chain and wraps it as implicit
+`!(…)`, streaming and raising per iteration. That rule is
+for-specific and stated: `do` is a statement position, `then` stays
+expression-only (probed — `if c then git status` still rejects).
+
+One fixture bit back during probing, instructively: `for w in xs do
+sh -c "echo got-$w"` printed empty suffixes — because `$w` inside a
+plain quoted string is SH'S variable, not weir's splice (bash muscle
+memory in the test author, not a bug). The correct spellings are
+interpolation (`sh -c $"echo got-{w}"`) or a bare argv splice
+(`git add $f`) — and the fact that the loop variable reaches command
+splices at all is the desugar paying again: it is just a lambda
+param, and command splices already resolve those.
+
 ## TOML reverted — the dependency outweighed the comfort (2026-07-30)
 
 Same day as the adoption, the user reconsidered — not the numbers

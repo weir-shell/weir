@@ -181,7 +181,13 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
   function); `$()` covers sub-expression positions. `function` is
   reserved (write `fun x -> match x with`).
-- No `let rec`, no loops, no mutation. Iteration is pipelines over seqs;
+- No `let rec`, no mutation. Iteration: pipelines TRANSFORM
+  (`|> Seq.map/where/fold`); `for x in xs do body` EFFECTS (it IS
+  `Seq.iter` — desugared, eager, body must be unit). A bare command
+  body works and is implicit `!(…)`: `for f in files do git add $f`
+  streams and raises per iteration; `do !` opens a command block.
+  Comprehension: `[for x in xs -> e]` (eager). No guard clause —
+  filter with `Seq.where` upstream.
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
   Ranges are lazy; `[a; b; c]` lists are eager. Running totals are
   `Seq.fold`: `xs |> Seq.fold (fun state x -> ...) init` — STATE FIRST
