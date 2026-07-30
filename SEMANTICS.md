@@ -751,6 +751,27 @@ quantity semantics now.
   tokenization provably keeps `;` separate). String interiors (all
   four kinds), leading indent, and pre-comment alignment gaps are
   untouched by construction. Re-FLOWING (line breaking) stays parked.
+- **The REPL is for EVALUATING weir** [D:repl-quality], not a login
+  shell. In scope, deliberately: Tab completion (command heads from
+  PATH + bindings, filesystem paths, module members/fields, keywords —
+  all from `Complete.fs`, the one brain; single-Tab completes a unique
+  match else lists; it NEVER executes a command to compute a
+  suggestion), Ctrl+R history search (fzf when present, a minimal
+  built-in reverse-search otherwise), persistent per-line history
+  (`$XDG_STATE_HOME/weir/history`, `0600`, consecutive-dup dedup, a
+  size cap front-truncated at load), and an inert JSON config
+  (`$XDG_CONFIG_HOME/weir/config.json`: history size/dedup/path and the
+  finder's flags; unknown keys rejected with did-you-mean). OUT of
+  scope, deliberately (the login-shell competition, not a matter of
+  effort — each pushes toward the dynamism that check-before-effects
+  forbids): job control (`&`/`fg`/`bg`/Ctrl+Z), prompt customization
+  beyond a static string, aliases, `cd -`/dirstack, keybinding config.
+  The config FORBIDS code, aliases, prompt *commands* (a static string
+  is fine; one that runs `git branch` is not), imports, and env
+  manipulation. **Scripts never read the config** — that is what keeps
+  `weir script.weir` meaning the same thing on two machines, and the
+  reason weir has no bashrc; the config lives in the REPL module, so a
+  script provably cannot reach it.
 - **Multi-line statements via logical-line reconstruction** (scripts
   only): a statement head starts at column 0; indented lines continue it
   and join with a single space; a blank line ends the statement; tabs in

@@ -1065,6 +1065,27 @@ let completionTests =
               Expect.equal (suggest "ls |> whe" 6) [ "when"; "where" ] ""
           }
           test "keyword completion" { Expect.contains (suggest "ma" 0) "match" "" }
+          test "command heads: a command-callable builtin completes at a statement head [D:repl-quality]" {
+              // at a head (before empty) the command-callable set joins the pool
+              Expect.contains (suggest "c" 0) "cd" "cd is command-callable at a head"
+          }
+          test "path completion: an explicit path lists the directory [D:repl-quality]" {
+              // /etc/hos* exists on every Linux box; a `/`-word is a path
+              let hits = suggest "/etc/hos" 0
+              Expect.isTrue (hits |> List.exists (fun p -> p.StartsWith "/etc/host")) $"path completion: {hits}"
+          }
+          test "path completion never runs anything: only a directory read [D:repl-quality]" {
+              // completing a path yields entries without executing a program —
+              // the marker file a run would leave is absent
+              let marker = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-complete-marker")
+
+              if System.IO.File.Exists marker then
+                  System.IO.File.Delete marker
+
+              suggest "/etc/hos" 0 |> ignore
+              suggest "cd" 0 |> ignore
+              Expect.isFalse (System.IO.File.Exists marker) "completion must not execute"
+          }
           test "keyword completion inventory: every grammar keyword offered or excluded, decided [D:keyword-completion]" {
               // the PINNED split — a new grammar keyword fails here until
               // its completion decision is recorded (added below as

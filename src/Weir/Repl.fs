@@ -15,8 +15,84 @@ let private initial =
 
 let private currentEnv = ref initial.TypeEnv
 
-let private historyFile =
-    Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".weir_history")
+// ---- the REPL config [D:repl-quality]: INERT data (values that tune an
+// affordance, never anything that runs), read ONLY by the REPL. It lives in
+// THIS module by design — scripts never touch Repl.fs, so `weir script.weir`
+// provably ignores it; that is the property the whole language exists to keep.
+type private ReplConfig =
+    { HistorySize: int
+      HistoryDedup: bool
+      HistoryPath: string
+      FinderFlags: string list }
+
+let private xdgHome (var: string) (fallback: string) =
+    match Environment.GetEnvironmentVariable var with
+    | null
+    | "" -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, fallback)
+    | v -> v
+
+let private defaultConfig =
+    { HistorySize = 5000
+      HistoryDedup = true
+      // STATE, not config — history is data the REPL produced, not settings
+      HistoryPath = Path.Combine(xdgHome "XDG_STATE_HOME" ".local/state", "weir", "history")
+      FinderFlags = [ "--height"; "40%"; "--reverse" ] }
+
+let private configKeys =
+    set [ "historySize"; "historyDedup"; "historyPath"; "finderFlags" ]
+
+// read $XDG_CONFIG_HOME/weir/config.json (fallback ~/.config/weir/config.json);
+// unknown keys are REJECTED with did-you-mean (a typo silently doing nothing is
+// the config-file's vacuous pin). Absent file / parse error -> defaults.
+let private loadConfig () : ReplConfig =
+    let path = Path.Combine(xdgHome "XDG_CONFIG_HOME" ".config", "weir", "config.json")
+
+    if not (File.Exists path) then
+        defaultConfig
+    else
+        try
+            use doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText path)
+            let root = doc.RootElement
+
+            for prop in root.EnumerateObject() do
+                if not (configKeys.Contains prop.Name) then
+                    Console.Error.WriteLine $"weir: config: unknown key '{prop.Name}'{didYouMean prop.Name configKeys}"
+
+            let getInt (k: string) d =
+                match root.TryGetProperty k with
+                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.Number -> v.GetInt32()
+                | _ -> d
+
+            let getBool (k: string) d =
+                match root.TryGetProperty k with
+                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.True -> true
+                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.False -> false
+                | _ -> d
+
+            let getStr (k: string) d =
+                match root.TryGetProperty k with
+                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.String -> v.GetString()
+                | _ -> d
+
+            let getStrList (k: string) d =
+                match root.TryGetProperty k with
+                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.Array ->
+                    [ for e in v.EnumerateArray() do
+                          if e.ValueKind = System.Text.Json.JsonValueKind.String then
+                              e.GetString() ]
+                | _ -> d
+
+            { HistorySize = getInt "historySize" defaultConfig.HistorySize
+              HistoryDedup = getBool "historyDedup" defaultConfig.HistoryDedup
+              HistoryPath = getStr "historyPath" defaultConfig.HistoryPath
+              FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags }
+        with ex ->
+            Console.Error.WriteLine $"weir: config: {ex.Message} (using defaults)"
+            defaultConfig
+
+let private config = loadConfig ()
+
+let private historyFile = config.HistoryPath
 
 // ---------------------------------------------------------------------------
 // The owned line editor [D:owned-line-editor]: bash key semantics —
@@ -24,9 +100,52 @@ let private historyFile =
 
 let private history = ResizeArray<string>()
 
+// the history file is created 0600 [D:repl-quality] — a REPL line can carry a
+// secret (`runEnv [Env.pair "TOKEN" "…"]`), so it is a place secrets land
+let private ensureHistoryFile () =
+    let dir = Path.GetDirectoryName historyFile
+
+    if dir <> "" then
+        Directory.CreateDirectory dir |> ignore
+
+    if not (File.Exists historyFile) then
+        (File.Create historyFile).Dispose()
+
+    try
+        File.SetUnixFileMode(historyFile, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+    with _ ->
+        ()
+
 let private loadHistory () =
     if File.Exists historyFile then
-        history.AddRange(File.ReadAllLines historyFile)
+        let lines = File.ReadAllLines historyFile
+        // front-truncate to the cap ONCE at load (per-line append never
+        // rewrites during a session — durability)
+        let capped =
+            if lines.Length > config.HistorySize then
+                lines[lines.Length - config.HistorySize ..]
+            else
+                lines
+
+        if capped.Length <> lines.Length then
+            ensureHistoryFile ()
+            File.WriteAllLines(historyFile, capped)
+
+        history.AddRange capped
+
+// per-line append with consecutive-dup dedup (readline's ignoredups)
+let private appendHistory (line: string) =
+    let dup =
+        config.HistoryDedup && history.Count > 0 && history[history.Count - 1] = line
+
+    if not dup then
+        history.Add line
+
+        try
+            ensureHistoryFile ()
+            File.AppendAllText(historyFile, line + Environment.NewLine)
+        with _ ->
+            ()
 
 // Ctrl+Left/Right navigation; '.' stays a separator here (unlike
 // completion's wordStartAt) so field chains hop segment by segment
@@ -40,6 +159,84 @@ let private wordStartAt (text: string) (pos: int) =
         i <- i - 1
 
     i
+
+// ---- history search [D:repl-quality]: fzf when present (the good path,
+// its spawn-and-restore proven), a minimal built-in otherwise. NEVER a
+// "install fzf" message — behavior is defined either way. Returns the chosen
+// line (whole line replaces the buffer), or None on cancel (buffer unchanged).
+
+let private fzfSearch (query: string) : string option =
+    try
+        let psi = Diagnostics.ProcessStartInfo "fzf"
+
+        for f in config.FinderFlags do
+            psi.ArgumentList.Add f
+
+        if query <> "" then
+            psi.ArgumentList.Add "--query"
+            psi.ArgumentList.Add query
+
+        psi.RedirectStandardInput <- true
+        psi.RedirectStandardOutput <- true
+        psi.UseShellExecute <- false // fzf draws its UI on /dev/tty directly
+        use p = Diagnostics.Process.Start psi
+        // feed history most-recent-first (its stdin is the pipe; the tty is fzf's)
+        for i in history.Count - 1 .. -1 .. 0 do
+            p.StandardInput.WriteLine history[i]
+
+        p.StandardInput.Close()
+        let sel = p.StandardOutput.ReadToEnd().TrimEnd('\n', '\r')
+        p.WaitForExit()
+        // exit 130 (Esc) -> cancel; only a clean selection replaces the line
+        if p.ExitCode = 0 && sel <> "" then Some sel else None
+    with _ ->
+        None
+
+// the fallback: incremental reverse substring search, most-recent-first,
+// Esc cancels — sufficient because fzf is the good path
+let private minimalSearch (query0: string) : string option =
+    let mutable q = query0
+    let mutable result = None
+    let mutable searching = true
+
+    let firstMatch () =
+        seq { history.Count - 1 .. -1 .. 0 }
+        |> Seq.map (fun i -> history[i])
+        |> Seq.tryFind (fun h -> h.Contains q)
+
+    let render () =
+        let m = firstMatch () |> Option.defaultValue ""
+        Console.Write $"\r(reverse-i-search)`{q}': {m}\x1b[K"
+
+    render ()
+
+    while searching do
+        let k = Console.ReadKey true
+
+        match k.Key with
+        | ConsoleKey.Enter ->
+            result <- firstMatch ()
+            searching <- false
+        | ConsoleKey.Escape ->
+            result <- None
+            searching <- false
+        | ConsoleKey.Backspace ->
+            if q.Length > 0 then
+                q <- q.Substring(0, q.Length - 1)
+                render ()
+        | _ when k.KeyChar >= ' ' ->
+            q <- q + string k.KeyChar
+            render ()
+        | _ -> ()
+
+    Console.Write "\r\x1b[K"
+    result
+
+let private historySearch (query: string) : string option =
+    if Extern.exists "fzf" then
+        fzfSearch query
+    else
+        minimalSearch query
 
 /// returns None on EOF (Ctrl+D at an empty line)
 let private readLineTty () : string option =
@@ -110,6 +307,17 @@ let private readLineTty () : string option =
             // cancel the line, keep the session
             Console.WriteLine "^C"
             result <- Some(Some "")
+        | ConsoleKey.R when ctrl ->
+            // history search [D:repl-quality]: the selection REPLACES the
+            // whole line (a history entry is a line, not an insertion); a
+            // cancel leaves buf/pos untouched
+            (match historySearch (buf.ToString()) with
+             | Some line ->
+                 buf.Clear().Append line |> ignore
+                 pos <- buf.Length
+             | None -> ())
+
+            redraw ()
         | ConsoleKey.Backspace ->
             if pos > 0 then
                 buf.Remove(pos - 1, 1) |> ignore
@@ -230,12 +438,7 @@ let private readInput () =
         | None -> null // EOF: the loop's exit condition
         | Some line ->
             if line.Trim() <> "" then
-                history.Add line
-
-                try
-                    File.AppendAllText(historyFile, line + Environment.NewLine)
-                with _ ->
-                    ()
+                appendHistory line
 
             line
 

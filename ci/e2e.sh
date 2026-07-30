@@ -825,6 +825,9 @@ PYEOF
 
     python3 "$(dirname "$0")/../tests/repl/repl-color.py" "$BIN" || fail "repl coloring"
     echo "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-quality.py" "$BIN" || fail "repl quality (history/Ctrl+R)"
+    echo "e2e ok: repl history (XDG/dedup/0600), Ctrl+R fzf-stub + fallback"
 else
     # no silent caps: name what was skipped
     echo "e2e SKIP: python3 absent — lsp + repl pty probes NOT run" >&2
@@ -3146,5 +3149,21 @@ expect "a module's Self.scriptPath is its OWN file" "$mdir/sp.weir" "$out"
 expect "a module's Self.entryPath is the invoked script" "$mdir/spmain.weir" "$out"
 
 rm -rf "$mdir"
+
+# ---- REPL config [D:repl-quality]: inert keys, reject unknown, and the
+# load-bearing property that SCRIPTS never read it -----------------------
+cfgdir=$(mktemp -d)
+mkdir -p "$cfgdir/weir"
+printf '{"historySizee": 10}\n' > "$cfgdir/weir/config.json"
+out=$(printf ':q\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
+expect "the REPL config rejects an unknown key with did-you-mean" "unknown key 'historySizee'. Did you mean 'historySize'?" "$out"
+
+# a MALFORMED config must not affect a SCRIPT — scripts never read it, so the
+# script runs clean rather than erroring on the broken JSON
+printf 'not valid json {{{\n' > "$cfgdir/weir/config.json"
+printf 'print "scripts-ignore-config"\n' > "$cfgdir/s.weir"
+out=$(XDG_CONFIG_HOME="$cfgdir" $BIN "$cfgdir/s.weir" 2>&1)
+expect "a script ignores the REPL config entirely (even a broken one)" "scripts-ignore-config" "$out"
+rm -rf "$cfgdir"
 
 echo "e2e battery: all green"

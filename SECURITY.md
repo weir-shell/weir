@@ -38,6 +38,11 @@ it, by design):
   decision 14). It never reads a file the open documents do not
   import; resolution is the same check-time path the CLI uses, so the
   server evaluates nothing.
+- **The REPL records typed lines to a history file** [D:repl-quality]
+  at `$XDG_STATE_HOME/weir/history`. A REPL line can carry a secret
+  (`runEnv [Env.pair "TOKEN" "…"]`), so treat it as you would a
+  shell's history — the file is created `0600`. Scripts never write it
+  (only the REPL does).
 - **Capture is unbounded by design.** `| complete` and `Seq.force`
   materialize their whole input in memory (`complete` holds one byte
   buffer + line offsets — ~2x the raw text in RSS, measured; a
