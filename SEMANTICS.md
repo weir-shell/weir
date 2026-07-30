@@ -771,7 +771,25 @@ quantity semantics now.
   manipulation. **Scripts never read the config** — that is what keeps
   `weir script.weir` meaning the same thing on two machines, and the
   reason weir has no bashrc; the config lives in the REPL module, so a
-  script provably cannot reach it.
+  script provably cannot reach it. **The buffer is two-dimensional**
+  [D:repl-multiline]: lines + a (row, col) cursor, the horizontal
+  machinery per line unchanged. **Enter submits exactly when the
+  statement is COMPLETE** (the assembler answers structure — open
+  brackets, pending bindings; a parse failure at the very end means
+  more input wanted — where other shells approximate, weir asks its
+  own parser) and inserts a newline when it is not; Alt+Enter/Ctrl+J
+  force a newline (formatting — an entry stays ONE statement). Up at
+  the first line reaches history, Up elsewhere moves the cursor (the
+  fish convention; Ctrl+R is the explicit path from anywhere); Down at
+  the last line goes forward only while already browsing history —
+  a fresh buffer's last line is a no-op. Esc/Ctrl+C abandon the whole
+  buffer. History entries are LOGICAL statements: a multi-line match
+  recalls whole and re-edits; on disk one entry per line
+  (newline-escaped, the cap counts entries); search UIs show a
+  one-line ⏎-joined display form mapped back to the full entry.
+  A submitted multiline entry runs through the same assembler a
+  script uses — identical lines mean identical statements. Piped
+  (non-tty) input never enters the editor.
 - **Multi-line statements via logical-line reconstruction** (scripts
   only): a statement head starts at column 0; indented lines continue it
   and join with a single space; a blank line ends the statement; tabs in

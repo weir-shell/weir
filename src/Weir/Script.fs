@@ -8,7 +8,11 @@ open Weir.Types
 // [D:one-scanner]. Folds f over the characters that sit OUTSIDE string
 // literals: double quotes honor backslash escapes, single quotes close
 // at the next single quote.
-let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a =
+// the ONE string-state machine [D:one-scanner] — the outside-string fold
+// and the end-state question share it (a second inline quote machine is a
+// review flag). stringScan returns the fold result AND whether the line
+// ENDS inside a string.
+let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
     let mutable st = init
     let mutable i = 0
     let mutable inDouble = false
@@ -55,7 +59,15 @@ let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: strin
 
         i <- i + 1
 
-    st
+    st, (inDouble || inSingle || inVerbatim || inTriple)
+
+let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a = fst (stringScan f init s)
+
+// weir strings are SINGLE-LINE (all four kinds), so a line ending inside
+// one can never be completed by more input — the multiline REPL submits
+// such a buffer instead of growing it [D:repl-multiline]
+let endsInsideString (s: string) : bool =
+    snd (stringScan (fun () _ _ -> ()) () s)
 
 let stripComment (line: string) : string =
     // comment only at line start or after whitespace: bareword URLs
