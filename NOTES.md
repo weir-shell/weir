@@ -39,6 +39,29 @@ environment-independent, and a second run with fzf off PATH exercises
 the minimal fallback. Both under the pty driver, asserting on the
 re-evaluated line, never on redraw escapes.
 
+Dogfooding found the collision the stub could never see (2026-07-30):
+weir's glyphs ARE fzf's query operators. In fzf's extended-search mode
+(the default) `^` is a prefix-anchor, so searching `^ls` EXCLUDES
+every history entry that literally starts with the force-PATH sigil —
+the user got `ls -la` and never `^ls -la | grep X`. And it is not just
+the caret: `|` is fzf's OR, `$` its suffix-anchor, `!` its negation —
+history lines are weir CODE, dense in exactly fzf's metacharacters.
+The fix is a correctness default, not a style flag: `fzfSearch`
+hard-wires `--no-extended` BEFORE the config's finderFlags, and
+because fzf is last-flag-wins, a user who wants the operators back
+adds `--extended` to finderFlags — correctness in code, preference in
+config, one knob. Verified against a real fzf (0.55.0, fetched for
+the session): the repro (`--filter '^ls'` returns only `ls -la`), the
+fix (returns both caret variants, excludes the plain one — literal
+semantics), the override path, and a live pty run (Ctrl+R with buffer
+`^ls` recalls the caret entry). The committed pin is the stub's argv
+contract (`--no-extended` present, before the config flags); the live
+fzf run is session evidence, and real-fzf env pins stay on the
+still-lacking list. The probe also re-taught the driver lesson: fzf
+PANICS on a zero-size pty (`--height 40%` of 0 rows), which reads as
+a weir bug until you size the pty — and weir's cancel path held even
+through the panic (the line came back unchanged).
+
 ## The pipe rule — the right-hand side decides (2026-07-29)
 
 `|` for a program or a reifier, `|>` for a function. The one removal

@@ -52,11 +52,14 @@ else:
     if mode != 0o600:
         failures.append(f"history file not 0600: {oct(mode)}")
 
-# --- 2. Ctrl+R via a STUB fzf: the selection REPLACES the line ---
+# --- 2. Ctrl+R via a STUB fzf: the selection REPLACES the line, and the
+# invocation carries --no-extended BEFORE the config flags (weir glyphs
+# ^ | $ ! are fzf query operators; literal matching is the default, and
+# last-flag-wins lets finderFlags restore --extended) ---
 d2 = tempfile.mkdtemp()
 os.makedirs(d2 + "/bin")
 with open(d2 + "/bin/fzf", "w") as f:
-    f.write("#!/bin/sh\nhead -1\n")  # echo the most-recent history line
+    f.write('#!/bin/sh\necho "$@" > "$(dirname "$0")/argv.txt"\nhead -1\n')
 os.chmod(d2 + "/bin/fzf", 0o755)
 out2 = run_repl({"XDG_STATE_HOME": d2 + "/state", "XDG_CONFIG_HOME": d2 + "/cfg",
                  "PATH": d2 + "/bin:" + os.environ["PATH"]},
@@ -64,6 +67,15 @@ out2 = run_repl({"XDG_STATE_HOME": d2 + "/state", "XDG_CONFIG_HOME": d2 + "/cfg"
 # 42 once from the eval, again after Ctrl+R recalls "7 * 6" and Enter submits
 if out2.count("42") < 2:
     failures.append(f"Ctrl+R (fzf stub) did not recall and re-evaluate 7*6: {out2!r}")
+argv_path = d2 + "/bin/argv.txt"
+if not os.path.exists(argv_path):
+    failures.append("stub fzf never recorded its argv")
+else:
+    argv = open(argv_path).read().split()
+    if "--no-extended" not in argv:
+        failures.append(f"fzf invocation must carry --no-extended (weir glyphs are fzf operators): {argv}")
+    elif "--height" in argv and argv.index("--no-extended") > argv.index("--height"):
+        failures.append(f"--no-extended must precede config flags (last-flag-wins override): {argv}")
 
 # --- 3. Ctrl+R fallback (fzf absent): minimal reverse substring search ---
 d3 = tempfile.mkdtemp()

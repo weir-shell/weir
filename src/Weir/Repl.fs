@@ -169,6 +169,15 @@ let private fzfSearch (query: string) : string option =
     try
         let psi = Diagnostics.ProcessStartInfo "fzf"
 
+        // history lines are weir CODE, and weir's glyphs are fzf QUERY
+        // OPERATORS in its extended-search mode (`^` prefix-anchor vs the
+        // force-PATH sigil, `|` OR vs the pipe, `$` suffix, `!` negation) —
+        // typing `^ls` would EXCLUDE every `^ls …` entry. Literal fuzzy
+        // matching is the correct default for searching code, so extended
+        // mode is off HERE (correctness, not style); fzf is last-flag-wins,
+        // so finderFlags can restore it with `--extended`.
+        psi.ArgumentList.Add "--no-extended"
+
         for f in config.FinderFlags do
             psi.ArgumentList.Add f
 
