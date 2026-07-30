@@ -597,7 +597,7 @@ let rec private typeBinOp
             err
                 l.Span
                 ($"'>>' composes functions, and this expression has type {formatTy ty}; "
-                 + "to append command output to a file, pipe it: cmd | File.append \"out.txt\"")
+                 + "to append command output to a file, pipe it: cmd |> File.append \"out.txt\"")
         | _, ty -> err l.Span $"'<<' composes functions, and this expression has type {formatTy ty}"
     | ("*" | "/" | "-" | ">" | "<" | ">=" | "<="), TVar _, TVar _ ->
         retryAfter (
@@ -1822,7 +1822,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         err
                             left.Span
                             ($"'>>' composes functions, and this expression has type {formatTy ty}; "
-                             + "to append command output to a file, pipe it: cmd | File.append \"out.txt\"")
+                             + "to append command output to a file, pipe it: cmd |> File.append \"out.txt\"")
                     | _ -> err left.Span $"'<<' composes functions, and this expression has type {formatTy ty}"
                 | _ -> Ok()
 
@@ -2784,14 +2784,14 @@ let warnings (te: TypedExpr) : Warning list =
                          { Span = a.Span
                            Message =
                              "'>' does not redirect in weir — pipe to File.write: "
-                             + "cmd | File.write \"out.txt\" "
+                             + "cmd |> File.write \"out.txt\" "
                              + "(if you meant a literal '>' argument, ignore this)" }
                  | TEStr ">>" ->
                      acc.Add
                          { Span = a.Span
                            Message =
                              "'>>' does not redirect in weir — pipe to File.append: "
-                             + "cmd | File.append \"out.txt\" "
+                             + "cmd |> File.append \"out.txt\" "
                              + "(if you meant a literal '>>' argument, ignore this)" }
                  | _ -> ()
          | _ -> ())

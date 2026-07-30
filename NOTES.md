@@ -73,6 +73,22 @@ The migration was the real work (12 unit + 13 e2e pins + docs +
 examples + an lsp fixture); byte-identical because `|` and `|>` build
 the same `EPipe` — only the spelling contract moved.
 
+The sweep missed a surface, and the doc-tests caught it a day later —
+the completeness proof working exactly as designed. Two blind spots
+compounded: GUIDE lives at `docs/GUIDE.md` and the existence check
+looked only at the repo root ("no GUIDE.md" — wrong), and the
+migration grep's `| Seq.` patterns missed pipes with a QUOTED ARG
+between head and glyph (`git log -1 "--format=%h" | Seq.head`).
+`ci/skill-doc.sh` failed on block 59 and the fix swept five GUIDE
+sites — plus a finding the grep could never see: four TEACHING
+MESSAGES (the `>`/`>>` redirect and composition hints) named the
+retired spelling `cmd | File.append` as the fix, an error message
+prescribing an error. The message pins held because they were
+contains-checks on the stable fragments, not the spelling. Lessons:
+a "does X exist" check must search, not stat one path; and a
+migration sweep owes a pass over MESSAGE STRINGS, not just code —
+the errors are part of the corpus.
+
 ## User modules and imports — the five-session arc (2026-07-29)
 
 A file marked `module` becomes importable, declaration-only, not

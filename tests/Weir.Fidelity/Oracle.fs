@@ -133,6 +133,7 @@ let weirVerdict (src: string) : Verdict =
                         (fun te ->
                             { resolver with
                                 IsKnown = fun n -> Map.containsKey n te.Values || Map.containsKey n te.Modules })
+                        Weir.Script.scriptOnlyImport
                         tenv
                         ll
                 with

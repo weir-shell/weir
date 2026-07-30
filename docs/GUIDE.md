@@ -441,21 +441,28 @@ containing quotes; an ordinary escaped string there is a check error,
 so the double-escape footgun cannot be written. Computed patterns
 live on the expression side (`Str.isMatch`, `Str.rmatch` — any
 string expression). And before reaching for regex on command output,
-check the typed adapters: `| from porcelain` beats a hand-rolled
+check the typed adapters: `|> from porcelain` beats a hand-rolled
 porcelain regex every time.
 
 ## Commands and processes
 
 Bareword heads run externals; builtins shadow PATH (`^ls` forces the
-real one). A `let` takes a bare command RHS everywhere lets go —
-top level and inside bodies alike (`let tree = git rev-parse $c | Seq.head`
-works in a function body now); `$()` remains the spelling for
-sub-expression positions (inside records, arguments, parens). Splice values with `$name` or `(expr)` — always single argv
-entries, never re-split, so there is no injection class. No glob
-expansion (`Path.glob` is the function spelling), no
+real one). **The pipe glyph: the right-hand side decides.** `|` feeds
+a program or a reifier (`git log | grep x`, `git diff --quiet |
+succeeds`); `|>` applies a function (`git log |> Seq.head`,
+`["a"] |> Seq.length`). The operator tells you which direction to
+read — `|` means something is fed to a program, `|>` means a value is
+transformed; a mismatch errors naming the other spelling (the full
+table lives in SEMANTICS). A `let` takes a bare command RHS
+everywhere lets go — top level and inside bodies alike
+(`let tree = git rev-parse $c |> Seq.head` works in a function body
+now); `$()` remains the spelling for sub-expression positions (inside
+records, arguments, parens). Splice values with `$name` or `(expr)` —
+always single argv entries, never re-split, so there is no injection
+class. No glob expansion (`Path.glob` is the function spelling), no
 `&&`, no `$VAR` expansion, no redirects — `>` and `>>` pass through as
 literal argv with a warning naming the weir spelling
-(`cmd | File.write "out.txt"` / `File.append`). For bash semantics,
+(`cmd |> File.write "out.txt"` / `File.append`). For bash semantics,
 run bash: `sh -c "the bash line"`.
 
 ```weir
@@ -656,15 +663,15 @@ if ready then
     !(sh -c "echo inline-form")
     print "mixed with expressions"
 
-let latest = git log -1 "--format=%h" | Seq.head
+let latest = git log -1 "--format=%h" |> Seq.head
 print $"at {latest}"
 
 let tagged = $"at {$(git log -1 "--format=%h") |> Seq.head}"
 ```
 
 A top-level `let` RHS takes a bare command chain directly — with or
-without params (`let branch = git rev-parse HEAD | Seq.head`,
-`let revParse r = git rev-parse $r | Seq.head`; params shadow PATH in
+without params (`let branch = git rev-parse HEAD |> Seq.head`,
+`let revParse r = git rev-parse $r |> Seq.head`; params shadow PATH in
 their own RHS, so `let f x = x` stays the identity whatever is
 installed) — prefer bare when the whole RHS is the chain; `$()` is
 for everywhere the command is a SUB-expression (inside bodies, holes,
