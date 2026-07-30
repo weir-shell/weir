@@ -1158,6 +1158,64 @@ quantity semantics now.
   accepted. Member-access-on-primitives (`s.Length`) stays a logged
   candidate. Strict/loose script modes and trial resolution:
   plans/PLAN-modules-and-scripts.md (trial resolution deferred, design on file).
+- **The yaml boundary** [D:yaml-v1] — `from yaml T` / `to yaml`, the
+  typed-boundary family's TREE member (json is a row stream; yaml is a
+  document format, so its law is recursive): fields are scalars,
+  nested monomorphic records, `seq<elem>`, `seq<string * elem>` (an
+  open mapping — labels), and `Option` anywhere (missing/null reads
+  `None`; a `None` FIELD omits its key on write, a `None` ELEMENT
+  renders `null` — the json-option split). `from yaml` takes
+  `seq<string>` lines and yields `seq<T>`, one element per `---`
+  document; a null where a collection sits is the EMPTY collection.
+  Reading is STRICT: bool is exactly `true`/`false` (the Env.load law
+  — the Norway problem cannot fire), a quoted scalar is a STRING even
+  where int/bool is expected, extra keys are ignored (the from-json
+  precedent), duplicates error. THE OWNED SUBSET (no YamlDotNet — the
+  config-format spike's receipt: +677 KB for a subset weir hand-rolls
+  on ~300 lines with its own error POSITIONS): scalars, block maps,
+  block sequences, `#` comments, `---` multi-doc; anchors/aliases,
+  tags, flow style, directives, complex keys, and block scalars are
+  teaching errors naming the subset. `to yaml` accepts a single
+  yamlable value (ONE document) or a seq (`---`-separated documents;
+  a top-level pair-seq is ONE mapping document); record fields render
+  alphabetically (the VRecord law, as json), and the prelude `Yaml`
+  union (`YStr/YInt/YBool/YNull/YSeq/YMap`) renders directly — `YMap`
+  preserves ITS entry order, the user-controlled escape. THE QUOTING
+  LAW (reverse-Norway): a string renders plain only when no YAML
+  reader could mis-TYPE it — `"no"`, `"007"`, `"1e5"`, `"true"`,
+  mid-line ` #`, `: `, and multiline all double-quote (with
+  `\n`-escapes; block scalars are the district session's polish).
+  Value-domain answers, probed then pinned: Show renders the recursive
+  union; Eq REFUSES it via the existing no-seq rule's own teaching.
+- **The `yaml` district** [D:yaml-district] — a CHECKED block literal:
+  a line ending in the word `yaml` (except `to yaml`/`from yaml`) opens
+  an indented block of the strict-YAML subset, parsed AT CHECK TIME
+  into a typed `Yaml` node expression. Structure errors (bad indent,
+  mixed map/sequence, duplicate literal keys, anchors/flow/tags) are
+  CHECK errors with positions. SPLICES: `$name` / `$(expr)` in value
+  position take string/int/bool, a `Yaml` node (subtrees compose
+  through functions), `Option` of one (a `None` splice OMITS its
+  entry/item — the json-option omit in template form), or a seq of
+  those (spliced as sequence items); a `$name` KEY splice is
+  string-typed; an unresolved template parameter defers to the
+  value-driven lift at eval (the sortBy posture — no type-class
+  constraint exists, concrete violations still check-error). The `for`
+  directive is the general form's district SPECIALIZATION (no `do`, the
+  body is the indented sub-template): under a SEQUENCE it yields items
+  per element, under a MAPPING it yields entries — dynamic keys
+  (`for (k, v) in pairs` → `$k: $v`), the open-map answer. Runtime
+  duplicate keys (for-generated) are eval errors — invalid YAML never
+  renders silently. THE INJECTION LINE: you cannot write a YAML
+  injection in weir, for the same reason you cannot write an argv
+  injection — spliced values are NODES, never text; quoting and
+  indentation belong to the renderer. Mechanism: the assembler carries
+  block lines VERBATIM with relative indentation behind the sentinel
+  (a command head GLUED to the sentinel is impossible from user text —
+  the machine-boundary guard), and fragment parses run PADDED so every
+  splice span lands at its true column. Mid-text `$` in a scalar is
+  LITERAL (compute with `$(...)`); full-line `#` comments inside
+  districts are session-bound out (the directive scan owns line-leading
+  `#`; trailing ` #` comments work).
 - **`sortBy : ('a -> 'b) -> seq<'a> -> seq<'a>`** — the key must evaluate to
   an int, string, or bool; anything else is a runtime error (the type system
   has no comparability constraint — same check-at-the-boundary posture as

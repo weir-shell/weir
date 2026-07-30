@@ -66,6 +66,30 @@ and ExprKind =
     // (I.X); the checker walks them, eval overlays — source ONCE
     | EUpdate of source: Expr * updates: ((string * Span) list * Expr) list
     | EInterp of parts: InterpPart<Expr> list
+    // the yaml district [D:yaml-district]: a checked block literal — the
+    // template tree parsed at CHECK time; splices and `for` sources are
+    // ordinary Exprs, so typing/hover/eval ride existing machinery
+    | EYaml of tpl: YamlTpl
+
+and YamlTpl =
+    | YtScalar of raw: string * quoted: bool * span: Span
+    | YtSplice of Expr
+    | YtSeq of items: YamlTplItem list * span: Span
+    | YtMap of entries: YamlTplEntry list * span: Span
+
+and YamlTplEntry =
+    | YtPair of key: YamlTplKey * value: YamlTpl
+    // `for p in xs` under a MAPPING: the body yields entries per element
+    | YtForEntries of binder: Pattern * source: Expr * body: YamlTplEntry list
+
+and YamlTplItem =
+    | YtItem of YamlTpl
+    // `for p in xs` under a SEQUENCE: the body yields items per element
+    | YtForItems of binder: Pattern * source: Expr * body: YamlTplItem list
+
+and YamlTplKey =
+    | YtKeyLit of string
+    | YtKeySplice of Expr
 
 // [<Name arg>] attachment [D:attributes] — check-time, fully erased
 type AttrSpec =
@@ -82,6 +106,30 @@ type Decl =
       Params: string list
       Body: DeclBody
       Span: Span }
+
+// every Expr embedded in a yaml template — splices, key splices, and
+// `for` sources; tooling walks reach inside districts through this
+let rec yamlTplExprs (tpl: YamlTpl) : Expr list =
+    match tpl with
+    | YtScalar _ -> []
+    | YtSplice e -> [ e ]
+    | YtSeq(items, _) ->
+        items
+        |> List.collect (function
+            | YtItem t -> yamlTplExprs t
+            | YtForItems(_, src, body) ->
+                src
+                :: (body
+                    |> List.collect (fun i -> yamlTplExprs (YtSeq([ i ], Unchecked.defaultof<Span>)))))
+    | YtMap(entries, _) ->
+        entries
+        |> List.collect (function
+            | YtPair(YtKeyLit _, v) -> yamlTplExprs v
+            | YtPair(YtKeySplice k, v) -> k :: yamlTplExprs v
+            | YtForEntries(_, src, body) ->
+                src
+                :: (body
+                    |> List.collect (fun e -> yamlTplExprs (YtMap([ e ], Unchecked.defaultof<Span>)))))
 
 // the expression tree's child list — tooling walks share this (the
 // TypedExpr twin lives in Check.childExprs)
@@ -116,6 +164,7 @@ let exprChildren (e: Expr) : Expr list =
         |> List.choose (function
             | IExpr e -> Some e
             | IStr _ -> None)
+    | EYaml tpl -> yamlTplExprs tpl
 
 type Stmt =
     | SLet of name: string * value: Expr
@@ -211,6 +260,55 @@ let rec sexpr (e: Expr) : string =
     | ECmd(prog, args, Some envE) ->
         let body = args |> List.map sexpr |> String.concat " "
         $"(cmdenv {sexpr envE} {prog} {body})"
+    | EYaml tpl -> $"(yaml {sexprYamlTpl tpl})"
+
+and sexprYamlTpl (tpl: YamlTpl) : string =
+    let space = " "
+
+    match tpl with
+    | YtScalar(raw, quoted, _) ->
+        let q = "\""
+        if quoted then q + raw + q else raw
+    | YtSplice e ->
+        let inner = sexpr e
+        "$(" + inner + ")"
+    | YtSeq(items, _) ->
+        let body =
+            items
+            |> List.map (function
+                | YtItem t -> sexprYamlTpl t
+                | YtForItems(p, src, body) ->
+                    let b =
+                        body
+                        |> List.map (fun i -> sexprYamlTpl (YtSeq([ i ], Unchecked.defaultof<Span>)))
+                        |> String.concat space
+
+                    let hd = sexprPat p
+                    let srcS = sexpr src
+                    "(for " + hd + " in " + srcS + " " + b + ")")
+            |> String.concat "; "
+
+        "[" + body + "]"
+    | YtMap(entries, _) ->
+        let body =
+            entries
+            |> List.map (function
+                | YtPair(YtKeyLit k, v) -> k + ": " + sexprYamlTpl v
+                | YtPair(YtKeySplice e, v) ->
+                    let ks = sexpr e
+                    "$(" + ks + "): " + sexprYamlTpl v
+                | YtForEntries(p, src, body) ->
+                    let b =
+                        body
+                        |> List.map (fun e -> sexprYamlTpl (YtMap([ e ], Unchecked.defaultof<Span>)))
+                        |> String.concat space
+
+                    let hd = sexprPat p
+                    let srcS = sexpr src
+                    "(for " + hd + " in " + srcS + " " + b + ")")
+            |> String.concat "; "
+
+        "{" + body + "}"
 
 let sexprStmt (s: Stmt) : string =
     match s with

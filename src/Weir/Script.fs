@@ -291,6 +291,9 @@ type MarkerKind =
     | NoMarker
     | Bare
     | Env of name: string
+    // line-end `yaml` opens a yaml district [D:yaml-district] — except
+    // `to yaml` / `from yaml`, which are the boundary adapters
+    | Yaml
 
 type PieceClass =
     { Kind: PieceKind
@@ -334,6 +337,12 @@ let classifyPiece (piece: string) : PieceClass =
             MarkerKind.Bare
         elif lastToken.StartsWith "!" && isIdentToken (lastToken.Substring 1) then
             MarkerKind.Env(lastToken.Substring 1)
+        elif
+            (piece = "yaml" || piece.EndsWith " yaml")
+            && not (piece.EndsWith "to yaml")
+            && not (piece.EndsWith "from yaml")
+        then
+            MarkerKind.Yaml
         else
             MarkerKind.NoMarker
       OpensCompound = piece.StartsWith "if " || piece.StartsWith "match "
@@ -402,11 +411,14 @@ let dangleOpensBlock (piece: string) : bool =
 
 /// The marker's district wrap: opener text and how many trailing
 /// characters of the armed line the first district line strips.
-let private markerOpener (m: MarkerKind) : (string * int) option =
+let private markerOpener (m: MarkerKind) : (string * int * bool) option =
     match m with
     | MarkerKind.NoMarker -> None
-    | MarkerKind.Bare -> Some("!(", 1)
-    | MarkerKind.Env name -> Some("!" + name + "(", 1 + name.Length)
+    | MarkerKind.Bare -> Some("!(", 1, false)
+    | MarkerKind.Env name -> Some("!" + name + "(", 1 + name.Length, false)
+    // the yaml district keeps its marker word; lines join VERBATIM with
+    // relative indentation behind the sentinel [D:yaml-district]
+    | MarkerKind.Yaml -> Some("", 0, true)
 
 type LogicalLine =
     { Text: string
@@ -599,6 +611,7 @@ type private District =
       MarkerLine: int
       Opener: string
       Strip: int
+      Yaml: bool
       Active: int option }
 
 type private Pend =
@@ -644,6 +657,7 @@ type private Join =
     | JDistrictOpen of strip: int * opener: string // strip the armed marker, wrap
     | JDistrictSibling of opener: string // text + " ; " + opener + piece + ")"
     | JDistrictPipe // reopen the wrap: stem + " " + piece + ")"
+    | JYamlLine of rel: int // sentinel + rel spaces + VERBATIM line [D:yaml-district]
 
 let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) (indent: int) : LogicalLine =
     let text, joinedStart =
@@ -671,6 +685,12 @@ let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) 
             let stem = ll.Text.Substring(0, ll.Text.Length - 1)
             let sep = " "
             stem + sep + piece + ")", stem.Length + sep.Length
+        | JYamlLine rel ->
+            // the block line rides VERBATIM: sentinel, then its indentation
+            // RELATIVE to the block's first line, then the text — the
+            // parser reconstructs the 2D structure from exactly this
+            let sep = Parser.sibSepStr + String(' ', rel)
+            ll.Text + sep + piece, ll.Text.Length + sep.Length
 
     { ll with
         Text = text
@@ -866,6 +886,39 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 blankSinceHead)
                                     | [] ->
                                         match p.District with
+                                        | Some({ Active = None; Yaml = true } as dst) when indent > dst.MarkerIndent ->
+                                            // the first yaml line fixes the block BASE; it rides
+                                            // at relative indent 0 [D:yaml-district]
+                                            Ok(
+                                                Some
+                                                    { p with
+                                                        LL = applyJoin (JYamlLine 0) p.LL piece lineNo indent
+                                                        LastIndent = indent
+                                                        District = Some { dst with Active = Some indent } },
+                                                acc,
+                                                blankSinceHead
+                                            )
+                                        | Some({ Active = Some bse; Yaml = true } as dst) when
+                                            indent > dst.MarkerIndent
+                                            ->
+                                            if indent < bse then
+                                                Error
+                                                    $"line {lineNo}: this yaml line outdents below the block's first line"
+                                            else
+                                                Ok(
+                                                    Some
+                                                        { p with
+                                                            LL =
+                                                                applyJoin
+                                                                    (JYamlLine(indent - bse))
+                                                                    p.LL
+                                                                    piece
+                                                                    lineNo
+                                                                    indent
+                                                            LastIndent = indent },
+                                                    acc,
+                                                    blankSinceHead
+                                                )
                                         | Some({ Active = None } as dst) when indent > dst.MarkerIndent ->
                                             districtLineCheck lineNo cls
                                             |> Result.map (fun () ->
@@ -882,9 +935,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         District = Some { dst with Active = Some indent } },
                                                 acc,
                                                 blankSinceHead)
-                                        | Some { Active = None; MarkerLine = mLine } ->
-                                            Error
-                                                $"line {mLine}: line-end '!' needs an indented block of command lines below it"
+                                        | Some { Active = None
+                                                 MarkerLine = mLine
+                                                 Yaml = isY } ->
+                                            let what = if isY then "'yaml'" else "'!'"
+
+                                            Error $"line {mLine}: line-end {what} needs an indented block below it"
                                         | Some({ Active = Some d } as dst) when indent > dst.MarkerIndent ->
                                             if cls.Kind = PieceKind.PipeHead then
                                                 Ok(
@@ -1118,11 +1174,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                                     let district =
                                                         markerOpener cls.Marker
-                                                        |> Option.map (fun (opener, strip) ->
+                                                        |> Option.map (fun (opener, strip, isYaml) ->
                                                             { MarkerIndent = indent
                                                               MarkerLine = lineNo
                                                               Opener = opener
                                                               Strip = strip
+                                                              Yaml = isYaml
                                                               Active = None })
 
                                                     let joined = applyJoin join ll piece lineNo indent
@@ -1211,11 +1268,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                       LastIndent = 0
                                       District =
                                         markerOpener cls.Marker
-                                        |> Option.map (fun (opener, strip) ->
+                                        |> Option.map (fun (opener, strip, isYaml) ->
                                             { MarkerIndent = 0
                                               MarkerLine = lineNo
                                               Opener = opener
                                               Strip = strip
+                                              Yaml = isYaml
                                               Active = None })
                                       Compounds = []
                                       ParenDepth = parenDelta (raw.TrimEnd())

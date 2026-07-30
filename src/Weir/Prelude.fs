@@ -8,7 +8,16 @@ open Weir.Types
 // interaction — never a Result value. `Option` earns its place (the
 // `try*` family returns one); a Result nothing produced or consumed was
 // removed [D:no-result].
-let source = [ "type Option<'a> = Some of 'a | None" ]
+let source =
+    [ "type Option<'a> = Some of 'a | None"
+      // the YAML node union [D:yaml-v1] — declared in weir's OWN source
+      // (the Option precedent), so constructors, Show, and the class laws
+      // all fall out of existing machinery. Value-domain answers, probed:
+      // Show renders the recursion; Eq REJECTS it by the existing no-seq
+      // rule with its own teaching text (no new rule). YMap preserves KEY
+      // ORDER (the user-controlled escape from record-field alphabetical
+      // rendering); no float case — weir has no float scalar.
+      "type Yaml = YStr of string | YInt of int | YBool of bool | YNull | YSeq of seq<Yaml> | YMap of seq<string * Yaml>" ]
 
 let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
     source

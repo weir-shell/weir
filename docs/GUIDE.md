@@ -501,6 +501,22 @@ let squares = [for x in [1..5] -> x * x]
 squares |> Seq.map show |> print
 ```
 
+YAML templates are a checked block literal — paste a manifest,
+replace values with splices; the structure is parsed at check time
+and spliced values are nodes, never text:
+
+```weir
+let pod name pairs = yaml
+    kind: Pod
+    metadata:
+        name: $name
+        labels:
+            for (k, v) in pairs
+                $k: $v
+
+pod "web" [("app", "web")] |> to yaml |> print
+```
+
 Nonzero exit raises when the stream is forced. To inspect instead of
 raise, reify the run:
 

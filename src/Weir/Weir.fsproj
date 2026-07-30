@@ -17,6 +17,9 @@
     <Compile Include="Types.fs" />
     <Compile Include="Ast.fs" />
     <Compile Include="Argv.fs" />
+    <!-- before Check: the checker builds from-yaml Shapes; before Eval:
+         the adapters parse/render through it [D:yaml-v1] -->
+    <Compile Include="Yaml.fs" />
     <Compile Include="Check.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Session.fs" />

@@ -3197,4 +3197,91 @@ out=$($BIN -e 'for x in [1] do x + 1' 2>&1 || true)
 expect "a non-unit for body errors in the statement-rule family" "expected unit, got int" "$out"
 rm -rf "$fdir"
 
+# ---- the yaml boundary [D:yaml-v1] ----------------------------------------
+ydir=$(mktemp -d)
+cat > "$ydir/k8s.weir" <<'WEOF'
+type Port = { containerPort: int }
+type Container = { name: string; image: string; ports: seq<Port> }
+type Meta = { name: string; labels: seq<string * string> }
+type Spec = { replicas: int; containers: seq<Container> }
+type Deploy = { apiVersion: string; kind: string; metadata: Meta; spec: Spec }
+let d = Deploy {
+    apiVersion = "apps/v1"
+    kind = "Deployment"
+    metadata = Meta { name = "app"; labels = [("app", "web"); ("env", "no")] }
+    spec = Spec {
+        replicas = 3
+        containers = [Container { name = "web"; image = "nginx:1.25"; ports = [Port { containerPort = 80 }] }]
+    }
+}
+d |> to yaml |> print
+let back = d |> to yaml |> from yaml Deploy |> Seq.head
+print $"back: {back.metadata.name} {show back.spec.replicas}"
+WEOF
+out=$($BIN "$ydir/k8s.weir")
+expect "to yaml renders the k8s tree with reverse-Norway quoting" 'env: "no"' "$out"
+expect "to yaml renders nested sequences of records" "- containerPort: 80" "$out"
+expect "the yaml roundtrip holds on the AOT binary" "back: app 3" "$out"
+
+# anchors reject with a position and the subset's teaching
+printf 'type D = { a: string; b: string }\nlet d = ["a: &x one"; "b: *x"] |> from yaml D |> Seq.head\nprint d.a\n' > "$ydir/anchor.weir"
+out=$($BIN "$ydir/anchor.weir" 2>&1 || true)
+expect "anchors are rejected with a line and the subset teaching" "line 1: anchors/aliases are outside the yaml subset" "$out"
+
+# the Norway problem cannot fire on read: bool is exactly true/false
+printf 'type D = { flag: bool }\nlet d = ["flag: no"] |> from yaml D |> Seq.head\nprint (show d.flag)\n' > "$ydir/no.weir"
+out=$($BIN "$ydir/no.weir" 2>&1 || true)
+expect "the Norway problem never fires on read (bool is exactly true/false)" "expected bool (exactly true/false), got 'no'" "$out"
+
+# multi-doc in and out
+printf 'type D = { kind: string }\n["kind: A"; "---"; "kind: B"] |> from yaml D |> Seq.map _.kind |> print\n' > "$ydir/md.weir"
+out=$($BIN "$ydir/md.weir")
+expect "multi-doc --- reads one element per document" "A
+B" "$out"
+rm -rf "$ydir"
+
+# ---- the yaml district [D:yaml-district] ----------------------------------
+yddir=$(mktemp -d)
+cat > "$yddir/deploy.weir" <<'WEOF'
+let deployment name replicas pairs = yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+        name: $name
+        labels:
+            for (k, v) in pairs
+                $k: $v
+    spec:
+        replicas: $replicas
+        paused: $(None)
+
+deployment "app" 3 [("app", "web"); ("env", "no")] |> to yaml |> print
+WEOF
+out=$($BIN "$yddir/deploy.weir")
+expect "the district renders with typed splices and for-generated keys" "name: app" "$out"
+expect "the district's quoting law holds for spliced pairs" 'env: "no"' "$out"
+expect "a None splice omits its entry in a district" "replicas: 3" "$out"
+if echo "$out" | grep -q "paused"; then fail "None splice must omit the paused entry: $out"; fi
+echo "e2e ok: district None-splice omission"
+
+# a district roundtrips through from yaml on the AOT binary
+cat > "$yddir/rt.weir" <<'WEOF'
+type Meta = { name: string }
+type D = { kind: string; metadata: Meta }
+let d = yaml
+    kind: Pod
+    metadata:
+        name: app
+let back = d |> to yaml |> from yaml D |> Seq.head
+print back.metadata.name
+WEOF
+out=$($BIN "$yddir/rt.weir")
+expect "a district roundtrips through from yaml" "app" "$out"
+
+# the splice law rejects a record, at the splice, under check
+printf 'type R = { a: int }\nlet d = yaml\n    x: $(R { a = 1 })\nd |> to yaml |> print\n' > "$yddir/law.weir"
+out=$($BIN check "$yddir/law.weir" 2>&1 || true)
+expect "the splice law rejects a record at the splice" "a yaml splice takes string/int/bool" "$out"
+rm -rf "$yddir"
+
 echo "e2e battery: all green"

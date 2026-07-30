@@ -1137,7 +1137,321 @@ comprehensionLitRef.Value <-
         mk (EApp(field "force", mapped)))
     .>> ws
 
-opp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; forExpr; fromExpr; toExpr; appChain ]
+// ---- the yaml district [D:yaml-district] ---------------------------------
+// `yaml` followed by the machine sentinel can ONLY come from the
+// assembler's wrap (the sentinel is unproduceable), so `yaml` needs no
+// reservation — a binding named yaml never collides. The tail is
+// sentinel-separated VERBATIM block lines with indentation RELATIVE to
+// the block's first line; the template parser reconstructs the 2D
+// structure, and fragment parses run PADDED so every span lands at its
+// true logical column (translate then maps it physically).
+
+// run a weir sub-parser on a fragment at logical column `col` — the
+// padding aligns FParsec's columns with the logical line, so no span
+// shifting is ever needed
+let private runFragment (col: int) (frag: string) (p: Parser<'a, unit>) : Result<'a, string> =
+    match run (ws >>. p .>> eof) (System.String(' ', col - 1) + frag) with
+    | Success(v, _, _) -> Result.Ok v
+    | Failure(msg, _, _) ->
+        let firstLine =
+            (msg.Split('\n') |> Array.filter (fun l -> l.Trim() <> "") |> Array.tryLast)
+            |> Option.defaultValue msg
+
+        Result.Error(firstLine.Trim())
+
+let private isIdentWord (w: string) =
+    w.Length > 0
+    && (System.Char.IsLetter w[0] || w[0] = '_')
+    && w |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+
+// a template VALUE slot: a whole-slot splice ($name / $(expr)), or a
+// subset scalar. Mid-text `$` is LITERAL (compute with $(...) instead).
+let private tplValueSlot (col: int) (text: string) : Result<YamlTpl, string * int> =
+    let lead = text.Length - text.TrimStart().Length
+    let t = text.Trim()
+    let tCol = col + lead
+
+    let mkSpan len =
+        { Start = { Line = 1; Col = tCol }
+          End = { Line = 1; Col = tCol + len } }
+
+    if t.StartsWith "$" then
+        let inner = t.Substring 1
+
+        if inner.StartsWith "(" then
+            match runFragment (tCol + 1) inner expr with
+            | Result.Ok e -> Result.Ok(YtSplice e)
+            | Result.Error m -> Result.Error($"in this splice: {m}", tCol)
+        elif isIdentWord inner then
+            Result.Ok(
+                YtSplice
+                    { Kind = EVar inner
+                      Span = mkSpan t.Length }
+            )
+        else
+            Result.Error("a $ splice is $name or $(expr)", tCol)
+    else
+        match Yaml.scalarCore t with
+        | Result.Error m -> Result.Error(m, tCol)
+        // the empty slot is null — carried as an empty PLAIN scalar,
+        // constructed as YNull at eval
+        | Result.Ok None -> Result.Ok(YtScalar("", false, mkSpan 0))
+        | Result.Ok(Some(txt, q)) -> Result.Ok(YtScalar(txt, q, mkSpan t.Length))
+
+let private tplForHeader (col: int) (text: string) : Result<Pattern * Expr, string * int> =
+    match runFragment col text (keyword "for" >>. binderPat .>> keyword "in" .>>. expr) with
+    | Result.Ok(b, src) -> Result.Ok(b, src)
+    | Result.Error m -> Result.Error($"in this for: {m}", col)
+
+// one block-level unit of a template
+type private TplUnit =
+    | UPair of YamlTplKey * YamlTpl
+    | UItem of YamlTplItem
+    | UFor of Pattern * Expr * YamlTpl // body block, context-checked later
+
+let rec private parseTplBlock
+    (lines: (int * int * string)[]) // (logical col of text start, rel indent, text)
+    (start: int)
+    (fin: int)
+    (indent: int)
+    : Result<YamlTpl, string * int> =
+    if start >= fin then
+        Result.Ok(
+            YtScalar(
+                "",
+                false,
+                { Start = { Line = 1; Col = 1 }
+                  End = { Line = 1; Col = 1 } }
+            )
+        )
+    else
+        let firstCol, _, _ = lines[start]
+
+        let spanAt col =
+            { Start = { Line = 1; Col = col }
+
+              End = { Line = 1; Col = col + 1 } }
+
+        // collect the units at exactly this indent
+        let rec units i acc =
+            if i >= fin then
+                Result.Ok(List.rev acc)
+            else
+                let col, rel, text = lines[i]
+
+                if rel < indent then
+                    Result.Ok(List.rev acc)
+                elif rel > indent then
+                    Result.Error("unexpected indentation in this yaml block", col)
+                else
+                    // the extent of this unit's nested block
+                    let mutable j = i + 1
+
+                    while j < fin && (let (_, r, _) = lines[j] in r > indent) do
+                        j <- j + 1
+
+                    if text.StartsWith "for " then
+                        match tplForHeader col text with
+                        | Result.Error e -> Result.Error e
+                        | Result.Ok(binder, src) ->
+                            match
+                                parseTplBlock
+                                    lines
+                                    (i + 1)
+                                    j
+                                    (indent
+                                     + (if j > i + 1 then
+                                            (let (_, r, _) = lines[i + 1] in r) - indent
+                                        else
+                                            4))
+                            with
+                            | Result.Error e -> Result.Error e
+                            | Result.Ok body -> units j (UFor(binder, src, body) :: acc)
+                    elif text.StartsWith "- " || text.TrimEnd() = "-" then
+                        let inlinePart = if text.TrimEnd() = "-" then "" else text.Substring 2
+                        let inlineCol = col + 2
+
+                        let itemR =
+                            if inlinePart.Trim() = "" then
+                                if j > i + 1 then
+                                    let (_, r1, _) = lines[i + 1]
+                                    parseTplBlock lines (i + 1) j r1 |> Result.map YtItem
+                                else
+                                    Result.Ok(YtItem(YtScalar("", false, spanAt col)))
+                            else
+                                match Yaml.splitKey 0 inlinePart with
+                                | Some _ ->
+                                    // compact map item: the first entry lives on
+                                    // this line at a VIRTUAL rel of item+2
+                                    let shifted =
+                                        Array.append [| (inlineCol, indent + 2, inlinePart) |] lines[i + 1 .. j - 1]
+
+                                    parseTplBlock shifted 0 shifted.Length (indent + 2) |> Result.map YtItem
+                                | None ->
+                                    if j > i + 1 then
+                                        Result.Error("a scalar sequence item cannot have a nested block", col)
+                                    else
+                                        tplValueSlot inlineCol inlinePart |> Result.map YtItem
+
+                        match itemR with
+                        | Result.Error e -> Result.Error e
+                        | Result.Ok item -> units j (UItem item :: acc)
+                    else
+                        match Yaml.splitKey 0 text with
+                        | None -> Result.Error("expected 'key:', '- ', or 'for … in …' in this yaml block", col)
+                        | Some(rawKey, rest) ->
+                            let keyR =
+                                if rawKey.StartsWith "$" then
+                                    let kIdent = rawKey.Substring 1
+
+                                    if isIdentWord kIdent then
+                                        Result.Ok(
+                                            YtKeySplice
+                                                { Kind = EVar kIdent
+                                                  Span = spanAt col }
+                                        )
+                                    else
+                                        Result.Error("a key splice is $name (string-typed)", col)
+                                else
+                                    Result.Ok(YtKeyLit rawKey)
+
+                            match keyR with
+                            | Result.Error e -> Result.Error e
+                            | Result.Ok key ->
+                                let valueR =
+                                    if rest.Trim() = "" then
+                                        if j > i + 1 then
+                                            let (_, r1, _) = lines[i + 1]
+                                            parseTplBlock lines (i + 1) j r1
+                                        else
+                                            Result.Ok(YtScalar("", false, spanAt col))
+                                    elif j > i + 1 then
+                                        Result.Error("this key has both an inline value and a nested block", col)
+                                    else
+                                        tplValueSlot (col + text.Length - rest.Length) rest
+
+                                match valueR with
+                                | Result.Error e -> Result.Error e
+                                | Result.Ok v -> units j (UPair(key, v) :: acc)
+
+        match units start [] with
+        | Result.Error e -> Result.Error e
+        | Result.Ok us ->
+            let hasPair =
+                us
+                |> List.exists (function
+                    | UPair _ -> true
+                    | _ -> false)
+
+            let hasItem =
+                us
+                |> List.exists (function
+                    | UItem _ -> true
+                    | _ -> false)
+
+            if hasPair && hasItem then
+                Result.Error("this yaml block mixes 'key:' entries and '- ' items", firstCol)
+            elif hasPair then
+                us
+                |> List.fold
+                    (fun acc u ->
+                        acc
+                        |> Result.bind (fun es ->
+                            match u with
+                            | UPair(k, v) -> Result.Ok(YtPair(k, v) :: es)
+                            | UFor(b, src, body) ->
+                                match body with
+                                | YtMap(entries, _) -> Result.Ok(YtForEntries(b, src, entries) :: es)
+                                | _ -> Result.Error("a for under a mapping must yield 'key: value' entries", firstCol)
+                            | UItem _ -> Result.Error("unreachable: mixed block", firstCol)))
+                    (Result.Ok [])
+                |> Result.map (fun es -> YtMap(List.rev es, spanAt firstCol))
+            elif hasItem then
+                us
+                |> List.fold
+                    (fun acc u ->
+                        acc
+                        |> Result.bind (fun its ->
+                            match u with
+                            | UItem it -> Result.Ok(it :: its)
+                            | UFor(b, src, body) ->
+                                let bodyItems =
+                                    match body with
+                                    | YtSeq(items, _) -> items
+                                    | other -> [ YtItem other ]
+
+                                Result.Ok(YtForItems(b, src, bodyItems) :: its)
+                            | UPair _ -> Result.Error("unreachable: mixed block", firstCol)))
+                    (Result.Ok [])
+                |> Result.map (fun its -> YtSeq(List.rev its, spanAt firstCol))
+            else
+                // only for-units (or a single scalar/splice line)
+                match us with
+                | [ UFor(b, src, body) ] ->
+                    match body with
+                    | YtMap(entries, _) -> Result.Ok(YtMap([ YtForEntries(b, src, entries) ], spanAt firstCol))
+                    | YtSeq(items, _) -> Result.Ok(YtSeq([ YtForItems(b, src, items) ], spanAt firstCol))
+                    | other -> Result.Ok(YtSeq([ YtForItems(b, src, [ YtItem other ]) ], spanAt firstCol))
+                | [] ->
+                    // a single non-key non-item line: a scalar/splice document
+                    let col, _, text = lines[start]
+
+                    if fin > start + 1 then
+                        Result.Error("expected 'key:', '- ', or 'for … in …' in this yaml block", col)
+                    else
+                        tplValueSlot col text
+                | _ -> Result.Error("multiple for blocks need a surrounding mapping or sequence context", firstCol)
+
+let private yamlDistrict: Parser<Expr, unit> =
+    attempt (getPosition .>> pstring "yaml" .>> followedBy (pstring sibSepStr))
+    >>= fun startP ->
+        getPosition .>>. manyChars anyChar
+        >>= fun (tailP, tail) ->
+            let parts = tail.Split sibSep
+            // parts[0] is the empty prefix before the first sentinel
+            let lineList = System.Collections.Generic.List<int * int * string>()
+            let mutable colCursor = int tailP.Column
+
+            for i in 1 .. parts.Length - 1 do
+                let part = parts[i]
+                let partStart = colCursor + 1 // past the sentinel char
+                let rel = Yaml.indentOf part
+                let content = part.Substring rel
+
+                if content.TrimEnd() <> "" then
+                    lineList.Add((partStart + rel, rel, content.TrimEnd()))
+
+                colCursor <- partStart + part.Length
+
+            let lines = lineList.ToArray()
+
+            if lines.Length = 0 then
+                failFatallyAtCol (int startP.Column) "this yaml block is empty"
+            else
+                let baseRel = let (_, r, _) = lines[0] in r
+
+                match parseTplBlock lines 0 lines.Length baseRel with
+                | Result.Error(msg, col) -> failFatallyAtCol col msg
+                | Result.Ok tpl ->
+                    let endCol = colCursor
+
+                    preturn
+                        { Kind = EYaml tpl
+                          Span =
+                            { Start = pos startP
+                              End = { Line = int startP.Line; Col = endCol } } }
+
+opp.TermParser <-
+    choice
+        [ lambda
+          letIn
+          ifExpr
+          matchExpr
+          forExpr
+          yamlDistrict
+          fromExpr
+          toExpr
+          appChain ]
 
 updateSourceRef.Value <-
     (let u = mkOpp true
@@ -1298,7 +1612,12 @@ let private commandSegment
     (r: Resolver)
     : Parser<Expr, unit> =
     let head =
-        spanned (opt (pchar '^') .>>. cmdWord) .>> ws
+        spanned (opt (pchar '^') .>>. cmdWord)
+        // the machine boundary [D:yaml-district]: a head GLUED to the
+        // sentinel can only be the assembler's yaml-district wrap
+        // (statement joins always space the sentinel) — never a command
+        .>> notFollowedBy (pchar sibSep)
+        .>> ws
         >>= fun ((forced, w), span) ->
             if w[0] = '[' then
                 // '[' never heads a command [D:bracket-heads-expression]: a line-head
