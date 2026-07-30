@@ -14,7 +14,7 @@ type Cli =
         clean: bool }
 let cli = Args.load Cli
 
-let branch = git rev-parse --abbrev-ref HEAD | Seq.head
+let branch = git rev-parse --abbrev-ref HEAD |> Seq.head
 
 if cli.clean then !
     git checkout main
@@ -26,7 +26,7 @@ let query = "(status = 'Requires Spec' OR status = 'To Do') AND (assignee = curr
 let picked =
     jira issue list --jql $query --plain --columns key,summary --no-headers --order-by key --reverse
     | fzf --no-sort
-    | Seq.head
+    |> Seq.head
 
 let fields = picked |> Str.split "\t"
 

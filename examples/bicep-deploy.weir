@@ -78,7 +78,7 @@ let azureLogin t =
     header "azure login"
     let tok = Env.load TokenEnv
     let oidc =
-        $(curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | from json Oidc)
+        $(curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" |> from json Oidc)
         |> Seq.head
     let e = targetEnv t
     !e

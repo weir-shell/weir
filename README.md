@@ -7,8 +7,8 @@ in line 40 executes none of lines 1-39.
 ```
 let changes =
     git status --porcelain
-    | from porcelain
-    | Seq.force
+    |> from porcelain
+    |> Seq.force
 
 match changes with
 | [] -> print "clean"

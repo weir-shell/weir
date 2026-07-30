@@ -130,11 +130,11 @@ let step msg = if verbose then printerr $"* {msg}"
 
 let revExists r = git rev-list $r -1 | succeeds
 
-let revParse r = git rev-parse $r | Seq.head
+let revParse r = git rev-parse $r |> Seq.head
 
 let branchExists b = revExists $"refs/heads/{b}"
 
-let commitInRevList commit listHead = git rev-list $listHead | Seq.contains commit
+let commitInRevList commit listHead = git rev-list $listHead |> Seq.contains commit
 
 let rawConfig file key = git config --file $file $key | complete
 

@@ -20,7 +20,7 @@ type Cli = {
 
 let cli = Args.load Cli
 
-let root = git rev-parse --show-toplevel | Seq.head
+let root = git rev-parse --show-toplevel |> Seq.head
 cd $root
 
 // hold the deep-run lock [D:masking-mechanized] so publish.sh refuses

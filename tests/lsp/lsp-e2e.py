@@ -252,7 +252,7 @@ if 1 > 0 then !
     echo m one
 let echo x = x
 let y = echo 5
-git status --porcelain | Seq.map Str.trim
+git status --porcelain |> Seq.map Str.trim
 """
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": FIXTURE}]}})
