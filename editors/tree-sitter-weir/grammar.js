@@ -12,8 +12,10 @@ module.exports = grammar({
 
   extras: $ => [/[ \t\r\n]/, $.comment],
 
-  // external scanner: `'a` (type param) vs `'echo x'` (command raw string)
-  externals: $ => [$.type_param],
+  // external scanner: `'a` (type param) vs `'echo x'` (command raw string),
+  // plus the yaml district [D:yaml-district] — marker/key/text tokens and
+  // the zero-width `_yaml_end` that carries the district-exit state flip
+  externals: $ => [$.type_param, $.yaml_marker, $.yaml_key, $.yaml_text, $.yaml_for, $.yaml_hole, $._yaml_end],
 
   word: $ => $.identifier,
 
@@ -38,6 +40,13 @@ module.exports = grammar({
         $.splice,
         $.bang_sigil,
         $.district_marker,
+        $.adapter,
+        $.yaml_marker,
+        $.yaml_key,
+        $.yaml_text,
+        $.yaml_for,
+        $.yaml_hole,
+        $._yaml_end,
         $.number,
         $.constructor,
         $.identifier,
@@ -78,6 +87,11 @@ module.exports = grammar({
         'else',
         'when',
         'from',
+        'to',
+        'for',
+        'do',
+        'module',
+        'import',
       ),
 
     boolean: _ => choice('true', 'false'),
@@ -123,6 +137,12 @@ module.exports = grammar({
 
     // line-end district markers `!` / `!name` (loosely: a lone bang)
     district_marker: _ => token(prec(-1, /![A-Za-z_0-9]*/)),
+
+    // `to yaml` / `from yaml` as ONE internal token: longest-match at the
+    // `to`/`from` boundary means the external scanner is never consulted
+    // at the `yaml` position, so the adapters can never open a district
+    // [D:yaml-district] — the marker exclusion, done lexically
+    adapter: _ => token(prec(3, seq(choice('to', 'from'), /[ \t]+/, 'yaml'))),
 
     number: _ => token(/\d+/),
 

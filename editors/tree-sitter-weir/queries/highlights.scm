@@ -45,6 +45,16 @@
 (bang_sigil) @punctuation.special
 (district_marker) @punctuation.special
 
+; the yaml district [D:yaml-district]: the marker word reads as a
+; keyword; keys are members, scalar text is data (string); the
+; `to yaml`/`from yaml` adapter is one token, keyword-coloured whole
+(yaml_marker) @keyword
+(yaml_key) @property
+(yaml_text) @string
+(yaml_for) @keyword
+(yaml_hole) @punctuation.special
+(adapter) @keyword
+
 (operator) @operator
 (punctuation) @punctuation.bracket
 

@@ -72,6 +72,10 @@
       "required": false,
       "types": [
         {
+          "type": "adapter",
+          "named": true
+        },
+        {
           "type": "attribute",
           "named": true
         },
@@ -157,6 +161,26 @@
         },
         {
           "type": "type_param",
+          "named": true
+        },
+        {
+          "type": "yaml_for",
+          "named": true
+        },
+        {
+          "type": "yaml_hole",
+          "named": true
+        },
+        {
+          "type": "yaml_key",
+          "named": true
+        },
+        {
+          "type": "yaml_marker",
+          "named": true
+        },
+        {
+          "type": "yaml_text",
           "named": true
         }
       ]
@@ -295,6 +319,10 @@
     "named": false
   },
   {
+    "type": "adapter",
+    "named": true
+  },
+  {
     "type": "attribute",
     "named": true
   },
@@ -316,6 +344,10 @@
     "named": true
   },
   {
+    "type": "do",
+    "named": false
+  },
+  {
     "type": "elif",
     "named": false
   },
@@ -325,6 +357,10 @@
   },
   {
     "type": "false",
+    "named": false
+  },
+  {
+    "type": "for",
     "named": false
   },
   {
@@ -345,6 +381,10 @@
   },
   {
     "type": "if",
+    "named": false
+  },
+  {
+    "type": "import",
     "named": false
   },
   {
@@ -369,6 +409,10 @@
   },
   {
     "type": "match",
+    "named": false
+  },
+  {
+    "type": "module",
     "named": false
   },
   {
@@ -412,6 +456,10 @@
     "named": false
   },
   {
+    "type": "to",
+    "named": false
+  },
+  {
     "type": "true",
     "named": false
   },
@@ -430,6 +478,26 @@
   {
     "type": "with",
     "named": false
+  },
+  {
+    "type": "yaml_for",
+    "named": true
+  },
+  {
+    "type": "yaml_hole",
+    "named": true
+  },
+  {
+    "type": "yaml_key",
+    "named": true
+  },
+  {
+    "type": "yaml_marker",
+    "named": true
+  },
+  {
+    "type": "yaml_text",
+    "named": true
   },
   {
     "type": "{",

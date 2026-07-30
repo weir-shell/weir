@@ -79,6 +79,34 @@
         },
         {
           "type": "SYMBOL",
+          "name": "adapter"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "yaml_marker"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "yaml_key"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "yaml_text"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "yaml_for"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "yaml_hole"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_yaml_end"
+        },
+        {
+          "type": "SYMBOL",
           "name": "number"
         },
         {
@@ -260,6 +288,26 @@
         {
           "type": "STRING",
           "value": "from"
+        },
+        {
+          "type": "STRING",
+          "value": "to"
+        },
+        {
+          "type": "STRING",
+          "value": "for"
+        },
+        {
+          "type": "STRING",
+          "value": "do"
+        },
+        {
+          "type": "STRING",
+          "value": "module"
+        },
+        {
+          "type": "STRING",
+          "value": "import"
         }
       ]
     },
@@ -538,6 +586,39 @@
         }
       }
     },
+    "adapter": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 3,
+        "content": {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "to"
+                },
+                {
+                  "type": "STRING",
+                  "value": "from"
+                }
+              ]
+            },
+            {
+              "type": "PATTERN",
+              "value": "[ \\t]+"
+            },
+            {
+              "type": "STRING",
+              "value": "yaml"
+            }
+          ]
+        }
+      }
+    },
     "number": {
       "type": "TOKEN",
       "content": {
@@ -725,6 +806,30 @@
     {
       "type": "SYMBOL",
       "name": "type_param"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "yaml_marker"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "yaml_key"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "yaml_text"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "yaml_for"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "yaml_hole"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_yaml_end"
     }
   ],
   "inline": [],

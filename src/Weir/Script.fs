@@ -311,6 +311,14 @@ let private isIdentToken (t: string) =
     && (System.Char.IsLetter t[0] || t[0] = '_')
     && t |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
 
+/// Line-end `yaml` arms a district; `to yaml` / `from yaml` are the
+/// boundary adapters [D:yaml-district]. One predicate, shared with the
+/// REPL colorizer's marker tint — never a second classifier.
+let isYamlMarkerPiece (piece: string) =
+    (piece = "yaml" || piece.EndsWith " yaml")
+    && not (piece.EndsWith "to yaml")
+    && not (piece.EndsWith "from yaml")
+
 let classifyPiece (piece: string) : PieceClass =
     let lastToken =
         match piece.LastIndexOf ' ' with
@@ -337,11 +345,7 @@ let classifyPiece (piece: string) : PieceClass =
             MarkerKind.Bare
         elif lastToken.StartsWith "!" && isIdentToken (lastToken.Substring 1) then
             MarkerKind.Env(lastToken.Substring 1)
-        elif
-            (piece = "yaml" || piece.EndsWith " yaml")
-            && not (piece.EndsWith "to yaml")
-            && not (piece.EndsWith "from yaml")
-        then
+        elif isYamlMarkerPiece piece then
             MarkerKind.Yaml
         else
             MarkerKind.NoMarker
@@ -1428,6 +1432,16 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                 i <- i + 1
             else
                 i <- i + 1
+
+        // the yaml district marker [D:yaml-district]: the line-end word
+        // tints like the `!` markers do; district BODY lines stay
+        // per-line lexical — the block treatment is the static grammars'
+        // and semantic tokens' job, not a line colorizer's
+        let codeTrimmed = (line.Substring(0, commentCut)).TrimEnd()
+
+        if codeTrimmed.Length >= 4 && isYamlMarkerPiece codeTrimmed then
+            for j in codeTrimmed.Length - 4 .. codeTrimmed.Length - 1 do
+                codes[j] <- Some "36"
 
         // ^ls: the forced head resolves against PATH only
         if line.Length > 1 && line[0] = '^' && isIdentStart line[1] then

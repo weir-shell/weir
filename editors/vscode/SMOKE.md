@@ -25,7 +25,9 @@ machine and this checklist is the record of what to do.
 Also confirm colorization sanity on the same file: comments one
 color (including after code), raw strings `@"..."`/`"""..."""` as
 string regions, district `!e` markers highlighted, `https://` URLs
-NOT comment-colored.
+NOT comment-colored. For the `yaml` district: the marker
+keyword-colored, keys as properties, splices/`$( )` holes distinct,
+and `x |> to yaml` NOT marker-colored.
 
 Protocol disagreements found here are FINDINGS against the server —
 frame-level pin in tests/lsp/lsp-e2e.py, fixed server-side; the
