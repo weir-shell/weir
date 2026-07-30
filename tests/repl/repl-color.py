@@ -51,6 +51,17 @@ if "\x1b[32m" not in t:
 if not re.search(r"\x1b\[31mzzznope\x1b\[0m", t):
     failures.append("unresolved head must paint red")
 
+# the yaml district marker tints like the `!` markers [D:yaml-district];
+# the `to yaml` adapter must NOT (the classifier is shared, not a second one)
+# the marker line opens the multiline buffer (Enter-completeness), so
+# cancel with Ctrl+C — Ctrl+D is EOF only at an EMPTY buffer
+t3 = run({}, ["let d = yaml\r", "\x03"])
+if not re.search(r"\x1b\[36myaml\x1b\[0m", t3):
+    failures.append("line-end yaml marker must tint cyan")
+t4 = run({}, ["x |> to yaml\r"])
+if re.search(r"\x1b\[36myaml\x1b\[0m", t4):
+    failures.append("`to yaml` adapter must NOT tint as a marker")
+
 t2 = run({"NO_COLOR": "1"}, ["let s = 1\r"])
 # the editor's own control sequences (\r, [K, cursor moves) are fine;
 # COLOR codes must be absent entirely

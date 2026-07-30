@@ -1,17 +1,43 @@
+#include "tree_sitter/alloc.h"
 #include "tree_sitter/parser.h"
 
-// External scanner for `type_param` (`'a`) vs a command-mode raw string
-// (`'echo $PPID'`). Both open with `'`; a precedence token cannot tell them
-// apart (prec beats length in the lexer, so it would steal short command
-// strings). The Rust lifetime-vs-char precedent: peek for a real closing
-// quote before the line ends.
+// External scanner, two duties:
 //
-// The discriminator: a real string CLOSER is a `'` NOT followed by a word
-// char; a type-param quote is always followed by a word char (`'a`, `'key`).
-// So `type B<'a> = S of 'a | Te` has two quotes both followed by `a` — no
-// real closer — and both are type params, not one fake string spanning them.
+// 1. `type_param` (`'a`) vs a command-mode raw string (`'echo $PPID'`).
+//    Both open with `'`; a precedence token cannot tell them apart (prec
+//    beats length in the lexer, so it would steal short command strings).
+//    The Rust lifetime-vs-char precedent: peek for a real closing quote
+//    before the line ends.
+//
+// 2. The `yaml` district [D:yaml-district] — a line-end `yaml` marker
+//    followed by an indented block of YAML template lines. The block is
+//    NOT weir token soup (the base rules would mis-paint `apps/v1` as
+//    identifier-slash-identifier), so the scanner tracks district state
+//    and lexes block lines itself: `yaml_key` (text before a real `: `),
+//    `yaml_text` (everything else), handing `$name` splices, `$( ... )`
+//    holes, `"..."` scalars, `:` and `for` headers back to the internal
+//    lexer. Exit is the zero-width hidden `_yaml_end` (the tree-sitter
+//    indent-scanner convention): tying the state flip to a SUCCESSFUL
+//    scan keeps it consistent under backtracking — mutating state on a
+//    false return is not.
+//
+//    `to yaml` / `from yaml` never reach the marker path at all: the
+//    grammar's `adapter` token is an internal single-token match, and
+//    longest-match at the `to`/`from` boundary means the scanner is not
+//    consulted at the `yaml` position inside it. Remaining over-accepts
+//    (a value named `yaml` at line end with an indented next line) are
+//    the renderer charter.
 
-enum TokenType { TYPE_PARAM };
+enum TokenType { TYPE_PARAM, YAML_MARKER, YAML_KEY, YAML_TEXT, YAML_FOR, YAML_HOLE, YAML_END };
+
+// line modes inside a district
+enum { MODE_KEY, MODE_VALUE, MODE_WEIR };
+
+typedef struct {
+  char in_district;
+  char base;   // indent of the first block line; a shallower line exits
+  char mode;   // MODE_*: what the rest of the current line lexes as
+} State;
 
 static inline bool is_ident_start(int32_t c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
@@ -21,20 +47,40 @@ static inline bool is_word(int32_t c) {
   return is_ident_start(c) || (c >= '0' && c <= '9');
 }
 
-void *tree_sitter_weir_external_scanner_create(void) { return NULL; }
-void tree_sitter_weir_external_scanner_destroy(void *payload) {}
-unsigned tree_sitter_weir_external_scanner_serialize(void *payload, char *buffer) { return 0; }
-void tree_sitter_weir_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
+static inline bool is_line_ws(int32_t c) { return c == ' ' || c == '\t'; }
+static inline bool is_nl(int32_t c) { return c == '\n' || c == '\r'; }
 
-bool tree_sitter_weir_external_scanner_scan(void *payload, TSLexer *lexer,
-                                            const bool *valid_symbols) {
-  if (!valid_symbols[TYPE_PARAM]) return false;
-
-  while (lexer->lookahead == ' ' || lexer->lookahead == '\t' ||
-         lexer->lookahead == '\r' || lexer->lookahead == '\n') {
-    lexer->advance(lexer, true);
+void *tree_sitter_weir_external_scanner_create(void) {
+  State *s = (State *)ts_malloc(sizeof(State));
+  s->in_district = 0;
+  s->base = 0;
+  s->mode = MODE_KEY;
+  return s;
+}
+void tree_sitter_weir_external_scanner_destroy(void *payload) { ts_free(payload); }
+unsigned tree_sitter_weir_external_scanner_serialize(void *payload, char *buffer) {
+  State *s = payload;
+  buffer[0] = s->in_district;
+  buffer[1] = s->base;
+  buffer[2] = s->mode;
+  return 3;
+}
+void tree_sitter_weir_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+  State *s = payload;
+  if (length == 3) {
+    s->in_district = buffer[0];
+    s->base = buffer[1];
+    s->mode = buffer[2];
+  } else {
+    s->in_district = 0;
+    s->base = 0;
+    s->mode = MODE_KEY;
   }
+}
 
+// ---- type_param (unchanged) -------------------------------------------
+
+static bool scan_type_param(TSLexer *lexer) {
   if (lexer->lookahead != '\'') return false;
   lexer->advance(lexer, false);                 // consume the opening '
   if (!is_ident_start(lexer->lookahead)) return false;  // '' or '5 -> not a type param
@@ -57,4 +103,176 @@ bool tree_sitter_weir_external_scanner_scan(void *payload, TSLexer *lexer,
 
   lexer->result_symbol = TYPE_PARAM;
   return true;
+}
+
+// ---- yaml district ----------------------------------------------------
+
+// at the word `yaml`: a marker iff it ends its line and the next
+// non-blank line is indented (the block). Peeking past mark_end is pure
+// lookahead — the token stays exactly `yaml`.
+static bool scan_yaml_marker(State *s, TSLexer *lexer) {
+  static const char word[] = "yaml";
+  for (int i = 0; word[i]; i++) {
+    if (lexer->lookahead != word[i]) return false;
+    lexer->advance(lexer, false);
+  }
+  if (is_word(lexer->lookahead)) return false; // yamlish
+  lexer->mark_end(lexer);
+
+  while (is_line_ws(lexer->lookahead)) lexer->advance(lexer, false);
+  if (!is_nl(lexer->lookahead)) return false;  // not at line end
+
+  // skip blank lines; the first non-blank line's indent is the base
+  for (;;) {
+    int32_t c = lexer->lookahead;
+    if (c == 0 && lexer->eof(lexer)) return false; // no block
+    if (is_nl(c) || is_line_ws(c)) { lexer->advance(lexer, false); continue; }
+    break;
+  }
+  unsigned col = lexer->get_column(lexer);
+  if (col == 0) return false;                   // dedented: no block
+
+  s->in_district = 1;
+  s->base = (char)(col > 127 ? 127 : col);
+  s->mode = MODE_KEY;
+  lexer->result_symbol = YAML_MARKER;
+  return true;
+}
+
+static bool scan_district(State *s, TSLexer *lexer) {
+  // consume leading whitespace as skip, watching for a line boundary
+  bool saw_nl = false;
+  for (;;) {
+    int32_t c = lexer->lookahead;
+    if (is_line_ws(c)) lexer->advance(lexer, true);
+    else if (is_nl(c)) { saw_nl = true; lexer->advance(lexer, true); }
+    else break;
+  }
+
+  if (lexer->eof(lexer) || (saw_nl && lexer->get_column(lexer) < (unsigned)s->base)) {
+    // the district is over: a zero-width exit token carries the state flip
+    s->in_district = 0;
+    lexer->mark_end(lexer);
+    lexer->result_symbol = YAML_END;
+    return true;
+  }
+  if (saw_nl) s->mode = MODE_KEY;               // a fresh district line
+
+  if (s->mode == MODE_WEIR) return false;       // for-header tail: internal lexes
+
+  int32_t c = lexer->lookahead;
+  if (c == '$') {
+    // `$( ...` — the hole opener is OUR token so the WEIR flip rides a
+    // successful scan (a false return's state mutation is dropped on
+    // deserialize — observed, not theorized); the interior then lexes
+    // as weir to the line end (holes are single-line: district lines
+    // join verbatim, one each)
+    lexer->advance(lexer, false);
+    if (lexer->lookahead != '(') return false;   // $name splice: internal token
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer);
+    s->mode = MODE_WEIR;
+    lexer->result_symbol = YAML_HOLE;
+    return true;
+  }
+  if (c == '"') {
+    if (s->mode == MODE_KEY) s->mode = MODE_VALUE; // quoted key/scalar: string token
+    return false;
+  }
+  if (c == ':') {
+    s->mode = MODE_VALUE;                        // post-key colon: punctuation
+    return false;
+  }
+
+  if (s->mode == MODE_KEY) {
+    // `for` header: emit the keyword as OUR token (the WEIR flip must
+    // ride a successful scan); the header tail — binder, `in`, source
+    // expression — then lexes as weir to the line end
+    if (c == 'f') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead == 'o') {
+        lexer->advance(lexer, false);
+        if (lexer->lookahead == 'r') {
+          lexer->advance(lexer, false);
+          if (is_line_ws(lexer->lookahead)) {
+            lexer->mark_end(lexer);
+            s->mode = MODE_WEIR;
+            lexer->result_symbol = YAML_FOR;
+            return true;
+          }
+        }
+      }
+      // not `for `: what we consumed joins the key probe below
+    }
+    // item dashes: `- ` runs emit as text so a following `key:` still keys
+    bool consumed = c == 'f'; // partial `for` prefix already consumed
+    while (lexer->lookahead == '-') {
+      lexer->advance(lexer, false);
+      consumed = true;
+      if (!is_line_ws(lexer->lookahead)) break;
+      while (is_line_ws(lexer->lookahead)) lexer->advance(lexer, false);
+      if (lexer->lookahead == '$' || lexer->lookahead == '"' || lexer->lookahead == ':') {
+        // splice/quoted follows the dash: emit the dash run alone
+        lexer->mark_end(lexer);
+        lexer->result_symbol = YAML_TEXT;
+        return true;
+      }
+    }
+    // key probe: text up to a real `: ` is a key; no such colon -> scalar
+    for (;;) {
+      int32_t k = lexer->lookahead;
+      if (k == ':' ) {
+        lexer->mark_end(lexer);                  // key excludes the colon
+        lexer->advance(lexer, false);
+        int32_t after = lexer->lookahead;
+        if (is_line_ws(after) || is_nl(after) || (after == 0 && lexer->eof(lexer))) {
+          if (!consumed) return false;           // bare `:` line: internal
+          s->mode = MODE_VALUE;
+          lexer->result_symbol = YAML_KEY;
+          return true;
+        }
+        consumed = true;                          // `a:b` — colon is scalar text
+        continue;
+      }
+      if (k == '$' || k == '"' || is_nl(k) || (k == 0 && lexer->eof(lexer))) {
+        if (!consumed) return false;
+        lexer->mark_end(lexer);
+        s->mode = MODE_VALUE;
+        lexer->result_symbol = YAML_TEXT;
+        return true;
+      }
+      lexer->advance(lexer, false);
+      consumed = true;
+    }
+  }
+
+  // MODE_VALUE: scalar text up to a splice, quote, or line end
+  bool consumed = false;
+  for (;;) {
+    int32_t k = lexer->lookahead;
+    if (k == '$' || k == '"' || is_nl(k) || (k == 0 && lexer->eof(lexer))) break;
+    lexer->advance(lexer, false);
+    consumed = true;
+  }
+  if (!consumed) return false;
+  lexer->mark_end(lexer);
+  lexer->result_symbol = YAML_TEXT;
+  return true;
+}
+
+bool tree_sitter_weir_external_scanner_scan(void *payload, TSLexer *lexer,
+                                            const bool *valid_symbols) {
+  State *s = payload;
+
+  if (s->in_district && valid_symbols[YAML_TEXT]) return scan_district(s, lexer);
+
+  // outside a district: skip whitespace, then dispatch on the first char
+  while (is_line_ws(lexer->lookahead) || is_nl(lexer->lookahead)) {
+    lexer->advance(lexer, true);
+  }
+  if (lexer->lookahead == '\'' && valid_symbols[TYPE_PARAM])
+    return scan_type_param(lexer);
+  if (lexer->lookahead == 'y' && valid_symbols[YAML_MARKER])
+    return scan_yaml_marker(s, lexer);
+  return false;
 }

@@ -43,6 +43,9 @@
       "include": "#command-single-quote"
     },
     {
+      "include": "#yaml-district"
+    },
+    {
       "include": "#binder"
     },
     {
@@ -115,11 +118,11 @@
       "name": "meta.preprocessor.weir"
     },
     "keywords": {
-      "match": "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of|from|to)\\b",
+      "match": "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of|from|to|for|do|module|import)\\b",
       "name": "keyword.control.weir"
     },
     "reserved": {
-      "match": "\\b(rec|mutable)\\b",
+      "match": "\\b(rec|mutable|function)\\b",
       "name": "keyword.other.reserved.weir"
     },
     "bool": {
@@ -285,6 +288,109 @@
           "name": "variable.other.property.weir"
         }
       }
+    },
+    "yaml-district": {
+      "comment": "the yaml district [D:yaml-district]: a line-end `yaml` marker opens a checked template block. Lookbehinds exclude the `to yaml`/`from yaml` adapters (tree-sitter does this lexically via its adapter token; RE2 cannot at all — micro-exempt). The while continues on ANY indented or blank line, not indent>=base — a renderer bound, same charter as tree-sitter's over-accepts.",
+      "begin": "(?:^|(?<=[ \\t]))(?<!\\bto[ \\t])(?<!\\bfrom[ \\t])(yaml)[ \\t]*$",
+      "while": "^(?=[ \\t])|^[ \\t]*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.district.weir"
+        }
+      },
+      "patterns": [
+        {
+          "begin": "^[ \\t]*(for)\\b",
+          "end": "$",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.weir"
+            }
+          },
+          "patterns": [
+            {
+              "match": "\\bin\\b",
+              "name": "keyword.control.weir"
+            },
+            {
+              "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.weir"
+            },
+            {
+              "match": "[(),]",
+              "name": "punctuation.weir"
+            }
+          ]
+        },
+        {
+          "begin": "\\$\\(",
+          "end": "\\)",
+          "name": "meta.interpolation.weir",
+          "captures": {
+            "0": {
+              "name": "keyword.other.sigil.weir"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#bool"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#builtin-types"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#field-sugar"
+            },
+            {
+              "match": "\\|>|==|<>|<=|>=|->|\\.\\.|::|[+\\-*/<>=]",
+              "name": "keyword.operator.weir"
+            },
+            {
+              "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.weir"
+            }
+          ]
+        },
+        {
+          "include": "#splice"
+        },
+        {
+          "include": "#plain-string"
+        },
+        {
+          "match": "(?:^|(?<=[ \\t]))#.*$",
+          "name": "comment.line.number-sign.weir"
+        },
+        {
+          "match": "^[ \\t]*(-)(?=[ \\t]|$)",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.list.weir"
+            }
+          }
+        },
+        {
+          "match": "(?:^[ \\t]*|(?<=-[ \\t]))([^:\\s#$\"][^:#$\"]*?)(:)(?=[ \\t]|$)",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.weir"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.weir"
+            }
+          }
+        },
+        {
+          "match": "[^#$\"\\n]+",
+          "name": "string.unquoted.yaml.weir"
+        }
+      ]
     }
   }
 }

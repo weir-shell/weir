@@ -1,5 +1,57 @@
 # Spike Notes
 
+## yaml district editor grammars — the arc's rider (2026-07-30)
+
+The district got its coloring treatment across all three grammars,
+closing DESIGN-yaml-templates. tree-sitter took the real work: the
+external scanner (until now only the `'a`-vs-`'echo x'` discriminator)
+grew a district state machine — `yaml_marker` (line-end word with an
+indented block behind it), `yaml_key` (text before a real `: `),
+`yaml_text` (scalar runs), with `$name` splices, `$( )` holes, quoted
+scalars, `:` and for-headers handed back to the internal lexer. The
+finding that shaped it, observed not theorized: state mutations on a
+FALSE-returning scan are dropped on deserialize — the first cut set
+"rest of line is weir" mode while returning false for the `for`
+keyword and the `$(` opener, and both came back as one text blob. So
+every mode flip rides a SUCCESSFUL scan: `yaml_for` and `yaml_hole`
+are the scanner's own tokens, and district exit is the zero-width
+hidden `_yaml_end` (the indent-scanner convention). The adapter
+exclusion is LEXICAL, no lookbehind: `to yaml`/`from yaml` are one
+internal `adapter` token, and longest-match at the `to`/`from`
+boundary means the scanner is never consulted at the `yaml` position
+inside one.
+
+TextMate uses the begin/while indentation region with lookbehind
+guards for the adapters and inner mini-rules (keys, splices, holes
+with a weir subset, for/in, quoted scalars, ` #` comments, unquoted
+values as data); the `while` continues on ANY indented line, not
+indent>=base — a stated renderer bound. micro is exempt
+([D:micro-exempt]): RE2 cannot lookbehind, so a marker rule would
+actively mis-color `x |> to yaml`, and its regions cannot close on a
+dedent — the body renders with the base rules. Inventory: 25 rules,
+4 stated exemptions.
+
+The keyword sweep caught real drift: `for`/`do` had reached NO grammar
+at the for/do session, and `module`/`import` (the modules arc) plus
+reserved `function` were missing too — all three grammars closed the
+gap in one pass. The REPL colorizer needed nothing there — it reads
+`Parser.keywords`, invariant by architecture. It did gain the marker
+tint: line-end `yaml` colors like the `!` markers via
+`isYamlMarkerPiece`, EXTRACTED from classifyPiece so the tint and the
+assembler share one classifier; body lines stay per-line lexical (the
+block treatment is the static grammars' and semantic tokens' job).
+The new repl-color pin's first cut hung the pty: a marker line OPENS
+the multiline buffer, and Ctrl+D is EOF only at an empty buffer — the
+fixture now cancels with Ctrl+C (fixture error, not product).
+
+Verified on engines, not by eye: tree-sitter CLI parse over the weir
+corpus (8 files, 0 ERROR) plus adversaries (blank lines mid-district,
+nested dedent exit, quoted keys, `url: http://host:8080/x` colons in
+values, `for: 3` as key not header), captures asserted via
+`tree-sitter query`; vscode-textmate engine assertions including the
+adapter negatives; the vsix rebuilt (the stale-vsix lesson); the Zed
+copy synced (the drift guard diffs it).
+
 ## yaml session 2 — the district, and the machine boundary (2026-07-30)
 
 The `yaml` district landed: a checked block literal on the assembler's
