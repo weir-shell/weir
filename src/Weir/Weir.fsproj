@@ -19,13 +19,15 @@
     <Compile Include="Argv.fs" />
     <Compile Include="Check.fs" />
     <Compile Include="Parser.fs" />
-    <Compile Include="Complete.fs" />
     <Compile Include="Session.fs" />
     <Compile Include="Extern.fs" />
     <Compile Include="Diagnose.fs" />
     <Compile Include="Proc.fs" />
     <Compile Include="Eval.fs" />
     <Compile Include="Builtins.fs" />
+    <!-- after Extern + Builtins: completion reuses the PATH cache and
+         command-callable set for command-head suggestions [D:repl-quality] -->
+    <Compile Include="Complete.fs" />
     <Compile Include="Prelude.fs" />
     <Compile Include="Script.fs" />
     <Compile Include="Fmt.fs" />

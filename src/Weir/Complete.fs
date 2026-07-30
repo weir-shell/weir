@@ -72,6 +72,36 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
 
 /// text ENDS AT THE CURSOR (both callers truncate — the LSP's `upto`,
 /// the REPL's Substring): the word runs from wordStart to the end
+// filesystem completion [D:repl-quality] for an explicit path word (has a
+// `/` or leads with `~`): list the directory, keep prefix matches, expand
+// `~`, trailing `/` on directories. NEVER runs anything — a directory read
+// only. Callers pass words that already look like paths.
+let private filesystemComplete (word: string) : string list =
+    let expanded =
+        if word.StartsWith "~" then
+            System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+            + word.Substring 1
+        else
+            word
+
+    let slash = expanded.LastIndexOf '/'
+
+    let dir =
+        if slash < 0 then "."
+        elif slash = 0 then "/"
+        else expanded.Substring(0, slash)
+
+    let prefix = expanded.Substring(slash + 1)
+
+    try
+        System.IO.Directory.GetFileSystemEntries dir
+        |> Array.filter (fun e -> (System.IO.Path.GetFileName e).StartsWith prefix)
+        |> Array.map (fun e -> if System.IO.Directory.Exists e then e + "/" else e)
+        |> Array.sort
+        |> Array.toList
+    with _ ->
+        []
+
 let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
     let word =
         if wordStart >= text.Length then
@@ -81,7 +111,10 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
 
     let before = text.Substring(0, min wordStart text.Length).TrimEnd()
 
-    if word.Contains '.' then
+    if word.StartsWith "~" || word.Contains '/' then
+        // an explicit path word — filesystem entries [D:repl-quality]
+        filesystemComplete word
+    elif word.Contains '.' then
         let segments = word.Split '.'
         let head = segments[0]
         let path = segments[1 .. segments.Length - 2] |> Array.toList
@@ -163,9 +196,33 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
             | _ -> None)
         |> List.sort
     else
+        // command HEADS at a statement head (before is empty): PATH
+        // executables + command-callable builtins join the name pool; in
+        // argv position (before non-empty) cwd files join instead — the
+        // two interactive contexts completion could not serve before
+        // [D:repl-quality]
+        let cwdEntries () =
+            try
+                System.IO.Directory.GetFileSystemEntries "."
+                |> Array.map (fun e ->
+                    let n = System.IO.Path.GetFileName e
+                    if System.IO.Directory.Exists e then n + "/" else n)
+                |> Array.toList
+            with _ ->
+                []
+
+        let extra =
+            if before = "" then
+                (Extern.names () |> Set.toList) @ (Builtins.commandCallable |> Set.toList)
+            elif word <> "" then
+                cwdEntries ()
+            else
+                []
+
         (List.ofSeq (Map.keys env.Values |> Seq.filter Types.isUserName)
          @ List.ofSeq (Map.keys env.Modules)
-         @ keywords)
+         @ keywords
+         @ extra)
         |> List.filter (fun n -> n.StartsWith word && n <> word)
         |> List.distinct
         |> List.sort
