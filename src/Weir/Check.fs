@@ -88,6 +88,9 @@ and TypedKind =
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
     | TEFrom of format: string * rowDef: RecordDef
+    // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
+    // the RESOLVED target tree (the [D:env-enums] precedent)
+    | TEFromYaml of tyName: string * shape: Yaml.Shape
     | TETo of format: string
     | TEList of items: TypedExpr list
     | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
@@ -97,6 +100,26 @@ and TypedKind =
     | TELetPat of binder: Pattern * value: TypedExpr * body: TypedExpr
     | TELambdaPat of binder: Pattern * body: TypedExpr
     | TEInterp of parts: InterpPart<TypedExpr> list
+    // the yaml district's TYPED template [D:yaml-district]
+    | TEYaml of TypedYamlTpl
+
+and TypedYamlTpl =
+    | TYtScalar of raw: string * quoted: bool
+    | TYtSplice of TypedExpr
+    | TYtSeq of TypedYamlTplItem list
+    | TYtMap of TypedYamlTplEntry list
+
+and TypedYamlTplEntry =
+    | TYtPair of TypedYamlKey * TypedYamlTpl
+    | TYtForEntries of binder: Pattern * source: TypedExpr * body: TypedYamlTplEntry list
+
+and TypedYamlTplItem =
+    | TYtItem of TypedYamlTpl
+    | TYtForItems of binder: Pattern * source: TypedExpr * body: TypedYamlTplItem list
+
+and TypedYamlKey =
+    | TYtKeyLit of string
+    | TYtKeySplice of TypedExpr
 
 type private ResultBuilder() =
     member _.Bind(r, f) = Result.bind f r
@@ -699,6 +722,72 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
             | Some(Record def) -> jsonableRecord span def
             | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
         | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
+
+// ---- the yaml TREE law [D:yaml-v1] — richer than json's flat-row law
+// because YAML is a DOCUMENT format, not a row stream: scalars, nested
+// monomorphic records, seq<elem>, seq<string * elem> (an open mapping),
+// Option anywhere (None omits / null reads None). `seen` guards
+// declaration cycles.
+
+// the from-side: build the shape eval will convert through
+let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<Yaml.Shape, TypeError> =
+    match ty with
+    | TInt -> Ok Yaml.SInt
+    | TStr -> Ok Yaml.SStr
+    | TBool -> Ok Yaml.SBool
+    | TNamed("Option", [ TNamed("Option", _) ]) -> err span "Option<Option<…>> has no yaml reading; flatten the type"
+    | TNamed("Option", [ inner ]) -> yamlShape span env seen inner |> Result.map Yaml.SOpt
+    | TSeq(TTuple [ TStr; v ]) -> yamlShape span env seen v |> Result.map Yaml.SPairs
+    | TSeq elem -> yamlShape span env seen elem |> Result.map Yaml.SSeq
+    | TNamed(n, []) ->
+        if seen.Contains n then
+            err span $"'{n}' is recursive; the yaml boundary needs finite trees"
+        else
+            match Map.tryFind n env.Types with
+            | Some(Record def) when def.Params.IsEmpty ->
+                def.Fields
+                |> List.fold
+                    (fun acc (fname, fty) ->
+                        acc
+                        |> Result.bind (fun fs ->
+                            yamlShape span env (seen.Add n) fty |> Result.map (fun s -> (fname, s) :: fs)))
+                    (Ok [])
+                |> Result.map (fun fs -> Yaml.SRec(n, List.rev fs))
+            | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
+            | Some(Union _) -> err span $"'{n}' is a union; the yaml tree law takes records, seqs, scalars, and Option"
+            | None -> err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+    | ty ->
+        err span $"type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option)"
+
+// the to-side: the same law, plus `Yaml` NODES render directly
+let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<unit, TypeError> =
+    match ty with
+    | TInt
+    | TStr
+    | TBool
+    | TNamed("Yaml", []) -> Ok()
+    | TNamed("Option", [ TNamed("Option", _) ]) -> err span "Option<Option<…>> has no yaml rendering; flatten the type"
+    | TNamed("Option", [ inner ]) -> yamlableOut span env seen inner
+    | TSeq(TTuple [ TStr; v ]) -> yamlableOut span env seen v
+    | TSeq elem -> yamlableOut span env seen elem
+    | TNamed(n, []) ->
+        if seen.Contains n then
+            err span $"'{n}' is recursive; the yaml boundary needs finite trees"
+        else
+            match Map.tryFind n env.Types with
+            | Some(Record def) when def.Params.IsEmpty ->
+                def.Fields
+                |> List.fold
+                    (fun acc (_, fty) -> acc |> Result.bind (fun () -> yamlableOut span env (seen.Add n) fty))
+                    (Ok())
+            | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
+            | Some(Union _) ->
+                err span $"'{n}' is a union; the yaml tree law takes records, seqs, scalars, Option, and Yaml nodes"
+            | None -> err span $"unknown type '{n}'"
+    | ty ->
+        err
+            span
+            $"type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option, Yaml)"
 
 // One Regex instance per distinct literal, shared by check and eval
 // (the snippet-hash-cache precedent). INTERPRETED mode only —
@@ -1650,7 +1739,28 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Ty = TSeq TStr
                       Span = expr.Span }
             | "json", ty -> return! err arg.Span $"'to json' needs a seq, got {formatTy ty}"
-            | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json"
+            | "yaml", ty ->
+                // to yaml [D:yaml-v1]: a SEQ renders `---`-separated
+                // documents; a single yamlable value renders ONE document
+                // (yaml is a document format — the seq-only rule is json's,
+                // a row format's). A top-level seq<string * _> is ONE
+                // mapping document, not documents-of-pairs.
+                do!
+                    match ty with
+                    | TSeq(TTuple [ TStr; _ ]) -> yamlableOut toExpr.Span env Set.empty ty
+                    | TSeq elem -> yamlableOut toExpr.Span env Set.empty (resolve ctx elem)
+                    | ty -> yamlableOut toExpr.Span env Set.empty ty
+
+                let tto =
+                    { Kind = TETo "yaml"
+                      Ty = TFun(targ.Ty, TSeq TStr)
+                      Span = toExpr.Span }
+
+                return
+                    { Kind = TEPipe(targ, tto)
+                      Ty = TSeq TStr
+                      Span = expr.Span }
+            | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json, yaml"
         }
     | EPipe(arg, ({ Kind = ECmd _ } as cmdExpr)) ->
         result {
@@ -1981,9 +2091,33 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from json' needs a record"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
             | "json", None -> return! err expr.Span "'from json' needs a record name, e.g. from json FileRow"
-            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain"
+            | "yaml", Some name ->
+                // from yaml T [D:yaml-v1]: seq<string> lines in, seq<T>
+                // DOCUMENTS out (`---` separated; one doc = one element)
+                match Map.tryFind name env.Types with
+                | Some(Record def) when def.Params.IsEmpty ->
+                    let! shape = yamlShape expr.Span env Set.empty (TNamed(name, []))
+
+                    return
+                        { Kind = TEFromYaml(name, shape)
+                          Ty = TFun(TSeq TStr, TSeq(TNamed(name, [])))
+                          Span = expr.Span }
+                | Some(Record _) -> return! err expr.Span $"'from yaml' needs a monomorphic record; '{name}' is generic"
+                | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from yaml' needs a record"
+                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+            | "yaml", None -> return! err expr.Span "'from yaml' needs a record name, e.g. from yaml Deployment"
+            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain, yaml"
         }
-    | ETo _ -> err expr.Span "'to json' can only be used as a pipe stage, e.g. xs |> to json"
+    | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
+    | EYaml tpl ->
+        result {
+            let! ttpl = checkYamlTpl ctx env tpl
+
+            return
+                { Kind = TEYaml ttpl
+                  Ty = TNamed("Yaml", [])
+                  Span = expr.Span }
+        }
     | ECmd(prog, args, envO) ->
         result {
             // $@ demands seq<string> EXACTLY [D:argv-splat]; the twin
@@ -2382,6 +2516,120 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (what: string) (arg: Exp
         | ty -> return! err arg.Span $"{what} must be strings, ints or bools; this one is {formatTy ty}"
     }
 
+// the yaml district's template typing [D:yaml-district]: splices carry
+// the LIFTABLE law (string/int/bool, Yaml, Option of one, seq of those),
+// key splices are strings, `for` binders bind like lambda params over
+// the source's element type, literal duplicate keys are check errors.
+and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool =
+    match resolve ctx ty with
+    | TInt
+    | TStr
+    | TBool
+    | TNamed("Yaml", []) -> true
+    // an unresolved var (a template parameter) defers to the VALUE-driven
+    // lift at eval — the sortBy posture: no type-class constraint exists,
+    // so concrete violations check-error and polymorphic ones become a
+    // located runtime failure naming the law
+    | TVar _ -> true
+    | TNamed("Option", [ TNamed("Option", _) ]) -> false
+    | TNamed("Option", [ inner ]) -> yamlSpliceable ctx inner
+    | TSeq elem -> yamlSpliceable ctx elem
+    | _ -> false
+
+and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<TypedYamlTpl, TypeError> =
+    match tpl with
+    | YtScalar(raw, q, _) -> Ok(TYtScalar(raw, q))
+    | YtSplice e ->
+        result {
+            let! te = infer ctx env e
+            let rty = resolve ctx te.Ty
+
+            if yamlSpliceable ctx rty then
+                return TYtSplice te
+            else
+                return!
+                    err
+                        e.Span
+                        $"a yaml splice takes string/int/bool, a Yaml node, Option of one, or a seq of those; got {formatTy rty}"
+        }
+    | YtSeq(items, _) ->
+        items
+        |> List.fold
+            (fun acc it ->
+                acc
+                |> Result.bind (fun ts -> checkYamlItem ctx env it |> Result.map (fun t -> t :: ts)))
+            (Ok [])
+        |> Result.map (fun ts -> TYtSeq(List.rev ts))
+    | YtMap(entries, sp) ->
+        let litKeys =
+            entries
+            |> List.choose (function
+                | YtPair(YtKeyLit k, _) -> Some k
+                | _ -> None)
+
+        match firstDup litKeys with
+        | Some dup -> err sp $"duplicate key '{dup}' in this yaml mapping"
+        | None ->
+            entries
+            |> List.fold
+                (fun acc en ->
+                    acc
+                    |> Result.bind (fun es -> checkYamlEntry ctx env en |> Result.map (fun e -> e :: es)))
+                (Ok [])
+            |> Result.map (fun es -> TYtMap(List.rev es))
+
+and private checkYamlEntry (ctx: Ctx) (env: TypeEnv) (entry: YamlTplEntry) : Result<TypedYamlTplEntry, TypeError> =
+    match entry with
+    | YtPair(YtKeyLit k, v) -> checkYamlTpl ctx env v |> Result.map (fun tv -> TYtPair(TYtKeyLit k, tv))
+    | YtPair(YtKeySplice e, v) ->
+        result {
+            let! tk = check ctx env e TStr
+            let! tv = checkYamlTpl ctx env v
+            return TYtPair(TYtKeySplice tk, tv)
+        }
+    | YtForEntries(binder, source, body) ->
+        result {
+            let! tsrc = infer ctx env source
+            let elem = TVar(freshName ctx "a")
+            do! bind ctx env source.Span (TSeq elem) tsrc.Ty
+            let! shape, binds = binderShape ctx env binder
+            do! bind ctx env binder.PSpan shape elem
+            let env' = bindParams env binds
+
+            let! tbody =
+                body
+                |> List.fold
+                    (fun acc en ->
+                        acc
+                        |> Result.bind (fun es -> checkYamlEntry ctx env' en |> Result.map (fun e -> e :: es)))
+                    (Ok [])
+
+            return TYtForEntries(binder, tsrc, List.rev tbody)
+        }
+
+and private checkYamlItem (ctx: Ctx) (env: TypeEnv) (item: YamlTplItem) : Result<TypedYamlTplItem, TypeError> =
+    match item with
+    | YtItem t -> checkYamlTpl ctx env t |> Result.map TYtItem
+    | YtForItems(binder, source, body) ->
+        result {
+            let! tsrc = infer ctx env source
+            let elem = TVar(freshName ctx "a")
+            do! bind ctx env source.Span (TSeq elem) tsrc.Ty
+            let! shape, binds = binderShape ctx env binder
+            do! bind ctx env binder.PSpan shape elem
+            let env' = bindParams env binds
+
+            let! tbody =
+                body
+                |> List.fold
+                    (fun acc it ->
+                        acc
+                        |> Result.bind (fun ts -> checkYamlItem ctx env' it |> Result.map (fun t -> t :: ts)))
+                    (Ok [])
+
+            return TYtForItems(binder, tsrc, List.rev tbody)
+        }
+
 // the deferred splice resolution — runs at every statement boundary
 // (typecheckWith / typecheckBinder), BEFORE finalization walks:
 // still-unresolved holes default to string (the original rule, moved),
@@ -2415,6 +2663,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
         | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
         | TETuple items -> TETuple(items |> List.map (finalizeExpr ctx))
+        | TEYaml tpl -> TEYaml(finalizeYamlTpl ctx tpl)
         | TELetPat(p, v, b) -> TELetPat(p, finalizeExpr ctx v, finalizeExpr ctx b)
         | TELambdaPat(p, b) -> TELambdaPat(p, finalizeExpr ctx b)
         | TECmd(prog, args, envO) ->
@@ -2453,6 +2702,25 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
 // The statement-level destructuring binder: check the RHS, bind the
 // binder shape against it, generalize per name. Residual/ambiguous
 // constraints follow typecheckWith's boundary rule.
+
+and private finalizeYamlTpl (ctx: Ctx) (tpl: TypedYamlTpl) : TypedYamlTpl =
+    match tpl with
+    | TYtScalar _ -> tpl
+    | TYtSplice e -> TYtSplice(finalizeExpr ctx e)
+    | TYtSeq items -> TYtSeq(items |> List.map (finalizeYamlItem ctx))
+    | TYtMap entries -> TYtMap(entries |> List.map (finalizeYamlEntry ctx))
+
+and private finalizeYamlEntry (ctx: Ctx) (entry: TypedYamlTplEntry) : TypedYamlTplEntry =
+    match entry with
+    | TYtPair(TYtKeyLit k, v) -> TYtPair(TYtKeyLit k, finalizeYamlTpl ctx v)
+    | TYtPair(TYtKeySplice e, v) -> TYtPair(TYtKeySplice(finalizeExpr ctx e), finalizeYamlTpl ctx v)
+    | TYtForEntries(b, src, body) -> TYtForEntries(b, finalizeExpr ctx src, body |> List.map (finalizeYamlEntry ctx))
+
+and private finalizeYamlItem (ctx: Ctx) (item: TypedYamlTplItem) : TypedYamlTplItem =
+    match item with
+    | TYtItem t -> TYtItem(finalizeYamlTpl ctx t)
+    | TYtForItems(b, src, body) -> TYtForItems(b, finalizeExpr ctx src, body |> List.map (finalizeYamlItem ctx))
+
 let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExpr * (string * Scheme) list, TypeError> =
     let ctx = newCtx ()
 
@@ -2532,6 +2800,24 @@ let typecheckWith
                 // the SLet scheme is built OUTSIDE this ctx
                 Ok(te, residue, rowOriginsFor ctx resultVars)
 
+// every TypedExpr embedded in a typed yaml template — splices, key
+// splices, and for sources
+let rec yamlTplTypedExprs (tpl: TypedYamlTpl) : TypedExpr list =
+    match tpl with
+    | TYtScalar _ -> []
+    | TYtSplice e -> [ e ]
+    | TYtSeq items ->
+        items
+        |> List.collect (function
+            | TYtItem t -> yamlTplTypedExprs t
+            | TYtForItems(_, src, body) -> src :: (body |> List.collect (fun i -> yamlTplTypedExprs (TYtSeq [ i ]))))
+    | TYtMap entries ->
+        entries
+        |> List.collect (function
+            | TYtPair(TYtKeyLit _, v) -> yamlTplTypedExprs v
+            | TYtPair(TYtKeySplice k, v) -> k :: yamlTplTypedExprs v
+            | TYtForEntries(_, src, body) -> src :: (body |> List.collect (fun e -> yamlTplTypedExprs (TYtMap [ e ]))))
+
 // the typed tree's child list — tooling walks (LSP hover, command-head
 // collection) share this instead of re-deriving the case list
 let childExprs (te: TypedExpr) : TypedExpr list =
@@ -2544,6 +2830,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEEnvLoad _
     | TEArgsLoad _
     | TEFrom _
+    | TEFromYaml _
     | TETo _ -> []
     | TELet(_, _, v, b) -> [ v; b ]
     | TELetPat(_, v, b) -> [ v; b ]
@@ -2567,6 +2854,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
         |> List.choose (function
             | IExpr e -> Some e
             | IStr _ -> None)
+    | TEYaml tpl -> yamlTplTypedExprs tpl
 
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _) -> te)

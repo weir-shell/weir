@@ -705,6 +705,9 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
                 | Check.TEFrom(_, rowDef) ->
                     wordAt useLl.Text jcol
                     |> Option.bind (fun w -> if w = rowDef.Name then typeSite rowDef.Name None else None)
+                | Check.TEFromYaml(tyName, _) ->
+                    wordAt useLl.Text jcol
+                    |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
                 // `Env.load T` / `Args.load T`: the target TYPE name jumps to
                 // its declaration — the bespoke arm absorbs the argument, so
                 // it is no TEVar; resolve it off the load node's own def
@@ -839,6 +842,7 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
                 | Check.TEEnvLoad _ when word = Some "load" -> Some "Env.load"
                 | Check.TEArgsLoad _ when word = Some "load" -> Some "Args.load"
                 | Check.TEFrom(fmt, _) when word = Some "from" || word = Some fmt -> Some $"from {fmt}"
+                | Check.TEFromYaml _ when word = Some "from" || word = Some "yaml" -> Some "from yaml"
                 | Check.TETo fmt when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
                 | _ -> None)
             |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)

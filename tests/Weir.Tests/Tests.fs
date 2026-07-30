@@ -1014,6 +1014,149 @@ let boundaryTests =
               | Ok te -> Expect.equal te.Ty (TNamed("Option", [ TNamed("Point", []) ])) "Some applied to a Point"
               | Error terr -> failtest (formatError terr)
           }
+          test "yaml value-domain answers, pinned: Show renders, Eq refuses by the no-seq rule [D:yaml-v1]" {
+              // the bless-note questions, answered by the EXISTING machinery
+              Expect.equal (run "show (YMap [(\"a\", YInt 1)])") (VStr "YMap ([(\"a\", YInt 1)])") "Show recurses"
+
+              Expect.stringContains
+                  (checkErr "YStr \"a\" == YStr \"a\"").Message
+                  "cannot be compared"
+                  "Eq refuses via no-seq"
+          }
+          test "to yaml: reverse-Norway quoting — no/007/1e5/mid-#/colon/multiline all quote [D:yaml-v1]" {
+              Expect.equal
+                  (run
+                      "[(\"a\", \"no\"); (\"b\", \"007\"); (\"c\", \"1e5\"); (\"d\", \"x # y\"); (\"e\", \"k: v\"); (\"f\", \"l1\\nl2\"); (\"g\", \"plain\")] |> to yaml"
+                   |> forceSeq)
+                  [ VStr "a: \"no\""
+                    VStr "b: \"007\""
+                    VStr "c: \"1e5\""
+                    VStr "d: \"x # y\""
+                    VStr "e: \"k: v\""
+                    VStr "f: \"l1\\nl2\""
+                    VStr "g: plain" ]
+                  "a YAML reader cannot mis-type any of these"
+          }
+          test "to yaml: YMap preserves order; record fields render alphabetically [D:yaml-v1]" {
+              Expect.equal
+                  (run "YMap [(\"zeta\", YStr \"z\"); (\"alpha\", YInt 1)] |> to yaml" |> forceSeq)
+                  [ VStr "zeta: z"; VStr "alpha: 1" ]
+                  "YMap is the user-controlled order escape"
+          }
+          test "yaml roundtrip: a nested tree with Option and pair-seq labels survives [D:yaml-v1]" {
+              let env2 =
+                  env
+                  |> declare "type YMeta = { name: string; labels: seq<string * string> }"
+                  |> declare "type YSpec = { replicas: int; paused: Option<bool> }"
+                  |> declare "type YDep = { kind: string; metadata: YMeta; spec: YSpec }"
+
+              let prog =
+                  "let d = YDep { kind = \"D\"; metadata = YMeta { name = \"app\"; labels = [(\"app\", \"web\")] }; spec = YSpec { replicas = 3; paused = None } } in "
+                  + "(d |> to yaml |> from yaml YDep |> Seq.head) == d"
+
+              // Eq on records of scalars+pair-seqs? pair-seq is a seq — Eq
+              // refuses; compare FIELDS instead
+              let prog2 =
+                  "let d = YDep { kind = \"D\"; metadata = YMeta { name = \"app\"; labels = [(\"app\", \"web\")] }; spec = YSpec { replicas = 3; paused = None } } in "
+                  + "let back = d |> to yaml |> from yaml YDep |> Seq.head in "
+                  + "show (back.metadata.name, back.spec.replicas, back.spec.paused)"
+
+              match Weir.Parser.parseStmt prog2 with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck env2 e with
+                  | Ok te -> Expect.equal (Weir.Eval.eval valueEnv te) (VStr "(\"app\", 3, None)") "roundtrip holds"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "from yaml: multi-doc --- yields one element per document [D:yaml-v1]" {
+              let env2 = env |> declare "type YD = { kind: string }"
+              let src = "[\"kind: A\"; \"---\"; \"kind: B\"] |> from yaml YD |> Seq.map _.kind"
+
+              match Weir.Parser.parseStmt src with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck env2 e with
+                  | Ok te -> Expect.equal (Weir.Eval.eval valueEnv te |> forceSeq) [ VStr "A"; VStr "B" ] ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "the yaml district assembles: sentinel-glued verbatim lines [D:yaml-district]" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let d = yaml"
+                        2, "    kind: Pod"
+                        3, "    metadata:"
+                        4, "        name: app" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.stringContains ll.Text "let d = yaml" "the marker word survives"
+                  Expect.stringContains ll.Text "kind: Pod" "block lines ride verbatim"
+
+                  Expect.stringContains
+                      ll.Text
+                      (Weir.Parser.sibSepStr + "    name: app")
+                      "relative indent is preserved behind the sentinel"
+              | other -> failtest $"expected one logical line, got {other}"
+          }
+          test "a command head glued to the sentinel never parses as a command [D:yaml-district]" {
+              // the machine boundary: only the assembler's yaml wrap glues them
+              match Weir.Script.assemble [ 1, "let d = yaml"; 2, "    x: 1" ] with
+              | Ok [ ll ] ->
+                  match Weir.Parser.parseLine cmdResolver ll.Text with
+                  | Ok(SLet("d", { Kind = EYaml _ })) -> ()
+                  | other -> failtest $"expected EYaml under the let, got {other}"
+              | other -> failtest $"unexpected assembly: {other}"
+          }
+          test "district templates check: splice law, key-splice string, for binder [D:yaml-district]" {
+              // a record splice violates the liftable law
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let bad = asm [ "let d = yaml"; "    x: $(nats)" ] // seq<int> IS liftable
+
+              match Weir.Parser.parseLine realResolver bad with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te -> Expect.equal te.Ty (TNamed("Yaml", [])) "a district types as Yaml"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "district eval: splices lift, for instantiates, Option omits [D:yaml-district]" {
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let src =
+                  asm
+                      [ "let d = yaml"
+                        "    kind: Pod"
+                        "    count: $(1 + 2)"
+                        "    gone: $(None)"
+                        "    labels:"
+                        "        for (k, v) in [(\"a\", \"x\")]"
+                        "            $k: $v" ]
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      match Weir.Eval.eval valueEnv te with
+                      | Weir.Eval.VUnion("YMap", Some(Weir.Eval.VSeq pairs)) ->
+                          let keys =
+                              pairs
+                              |> Seq.map (fun p ->
+                                  match p with
+                                  | Weir.Eval.VTuple [ Weir.Eval.VStr k; _ ] -> k
+                                  | _ -> failtest "bad pair")
+                              |> List.ofSeq
+
+                          Expect.equal keys [ "kind"; "count"; "labels" ] "None omitted; for nested under labels"
+                      | v -> failtest $"expected YMap, got {v}"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
           test "into feeds stdin and yields stdout" {
               // tr strips BSD wc's left-padding — the subject is the stdin
               // plumbing, not wc's platform formatting
@@ -1038,7 +1181,10 @@ let boundaryCheckTests =
               Expect.stringContains (checkErr "[\"x\"] |> from json Proc").Message "needs a record" ""
           }
           test "unknown format is rejected" {
-              Expect.stringContains (checkErr "[\"x\"] |> from yaml").Message "unknown format 'yaml'" ""
+              Expect.stringContains (checkErr "[\"x\"] |> from toml").Message "unknown format 'toml'" ""
+          }
+          test "from yaml needs a record name [D:yaml-v1]" {
+              Expect.stringContains (checkErr "[\"x\"] |> from yaml").Message "'from yaml' needs a record name" ""
           }
           test "from porcelain takes no type name" {
               Expect.stringContains (checkErr "[\"x\"] |> from porcelain Proc").Message "fixed row type" ""

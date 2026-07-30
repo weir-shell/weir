@@ -17,8 +17,12 @@ match changes with
 
 - **Check-everything-first**: parse and typecheck the whole file --
   PATH lookups included -- before any side effect.
-- **Typed command output**: porcelain and JSON adapters turn program
-  output into records with fields, not string soup.
+- **Typed command output**: porcelain, JSON, and YAML adapters turn
+  program output into records with fields, not string soup.
+- **YAML templates without the string horror**: a `yaml` block is a
+  checked literal — structure errors at check time, typed splices,
+  `for`-generated entries — and you cannot write a YAML injection in
+  weir, for the same reason you cannot write an argv injection.
 - **~7ms cold start**: one AOT binary, shebang-friendly.
 - **Parallel fan-out**: `Seq.pmap`/`Seq.piter` with per-worker session
   forks; no async machinery, ever -- that want is the graduation

@@ -432,7 +432,18 @@ print x
   field reads a missing key OR an explicit `null` as `None`; a
   required field that is `null` errors, naming the fix. `to json`
   OMITS a `None` field's key (matching `gh`/`kubectl`), so the
-  roundtrip holds.
+  roundtrip holds. YAML is the TREE boundary: `lines |> from yaml T`
+  (nested records, seqs, `seq<string * string>` for labels, `Option`;
+  one element per `---` doc; bool is EXACTLY true/false; anchors/flow
+  rejected) and `value |> to yaml` (a seq = multi-doc; `None` fields
+  omit; ambiguous strings like `"no"`/`"007"` auto-quote). `Yaml`
+  nodes (`YMap [("k", YStr "v")]`, `YSeq`, `YInt`…) render directly —
+  `YMap` keeps YOUR key order; record fields render alphabetically.
+  A `yaml` BLOCK is a checked template: `let d = yaml` + an indented
+  YAML block; `$name`/`$(expr)` splice VALUES (never text — no
+  injection is possible), a `None` splice omits its entry, and
+  `for (k, v) in pairs` under a mapping yields dynamic keys (under a
+  sequence, items). Paste a manifest, replace values with `$`.
 - `!` runs commands: parens for one inline (`!(git pull)`), LINE-END
   `!` for a block below — indented bare command lines, one per line
   (no expressions, no `let`, no nested `!()` inside; leading `|`

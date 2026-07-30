@@ -1,5 +1,87 @@
 # Spike Notes
 
+## yaml session 2 — the district, and the machine boundary (2026-07-30)
+
+The `yaml` district landed: a checked block literal on the assembler's
+district machinery, third species after `!` and `!name`. The design
+that made it small: block lines ride into the logical line VERBATIM
+with RELATIVE indentation behind the sentinel, and every fragment
+parse (splices, for-headers) runs PADDED to its logical column — so
+spans land true by construction and `translate` maps them physically,
+with no span-shift walk anywhere. The `for` specialization arrived
+exactly as PLAN-for-do promised: same head, no `do`, the body is the
+sub-template, and context decides the yield — the labels case
+(`for (k, v) in pairs` → `$k: $v`) is the open-map answer working on
+the first try.
+
+Two findings earned their keep. FIRST, the machine boundary bit
+before it protected: under `weir check` (never under run) the
+assume-resolver made `yaml` a COMMAND head, and the let-RHS command
+path swallowed the district — the sentinel then read as a statement
+separator and the block text parsed as junk. The fix is the boundary
+stated as grammar: statement joins always SPACE the sentinel, only
+the yaml wrap GLUES it to the marker word, so a command head glued to
+the sentinel is impossible from user text and `commandSegment` now
+refuses it. That guard is also why `yaml` needs no reservation — the
+district arm triggers on a shape users cannot type, and `to yaml` /
+`from yaml` stay plain words. SECOND, the splice law met polymorphism:
+a template parameter (`$name` where name is a lambda param) is an
+unresolved TVar at check, and the liftable law cannot constrain it
+(no type classes). The sortBy posture answered it — concrete
+violations check-error at the splice, unresolved vars defer to the
+VALUE-driven lift, and a bad polymorphic splice is a located runtime
+failure naming the law. Same trade, same words, now in a second
+place.
+
+One eval-side decision worth its sentence: runtime duplicate keys
+(for-generated or key-spliced) are ERRORS, not last-wins — invalid
+YAML must never render silently, and the check-time literal-dup error
+cannot see what a `for` will generate. And the README got its line
+verbatim, per the bless note: you cannot write a YAML injection in
+weir, for the same reason you cannot write an argv injection.
+
+## yaml session 1 — the tree boundary, on an owned parser (2026-07-30)
+
+`from yaml T` and `to yaml` landed with the `Yaml` node union, and the
+bless note's ordering — value-domain questions BEFORE the parser —
+paid immediately: probes showed recursive unions and seq-of-tuple
+payloads simply DECLARE in weir source, so the union went into the
+prelude next to Option and inherited constructors, Show, and the
+class laws for free. The Eq question answered itself: the existing
+no-seq rule refuses the union with its own teaching text — the right
+answer produced by machinery that never heard of YAML. And a second
+probe surprise: `from`/`to` parse their format word generically, so
+the whole feature needed ZERO parser changes — checker arms and eval
+arms only.
+
+The owned-parser bet (the config spike's receipt) came in at ~300
+lines including the k8s compact form (`- name: web` items), and its
+dividend is POSITIONS: every rejection — anchors, flow style, tags,
+duplicate keys, null-in-required — carries its line, which is
+exactly what the spike faulted YamlDotNet's messages for. The
+subtlety worth keeping: QUOTEDNESS is load-bearing on the read side.
+The internal node tree records whether a scalar was quoted (the
+public union deliberately does not — construction never needs it),
+because `flag: "true"` at a bool field must error as a string while
+`flag: true` converts — and bool is EXACTLY true/false (the Env.load
+law), so the Norway problem cannot fire by construction: `flag: no`
+errors, naming the rule. The reverse direction is the quoting law:
+`"no"`, `"007"`, `"1e5"`, mid-line ` #`, `: ` all auto-quote, so no
+YAML reader can mis-type weir's output either. Both directions of
+the same promise.
+
+The shape bridge repeated [D:env-enums]: eval has no env.Types, so
+the checker resolves the whole target tree into a `Yaml.Shape` packed
+in a new `TEFromYaml` node. Renders: record fields alphabetical (the
+VRecord representation's law, same as json) with `YMap` as the
+user-ordered escape; a `None` field omits, a `None` element renders
+`null` (the json-option split, transplanted). Multi-doc `---` in and
+out; null-where-a-collection-sits reads as the empty collection (the
+k8s `ports:` idiom). Block scalars stayed out (a teaching error
+pointing at the `\\n`-escaped quoted spelling) — the district session
+can add them as polish. One pre-existing pin moved for an honest
+reason: the unknown-format test's example WAS `yaml`.
+
 ## for/do lands — the divergence bar worked in reverse (2026-07-30)
 
 The general effect loop shipped in one sitting, and the interesting

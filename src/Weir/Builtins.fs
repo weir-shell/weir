@@ -1600,6 +1600,16 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Render a sequence of records or primitives to JSON lines. A None field omits its key (so from json reads it back as None)."
               None
               (Some "a pipe stage: xs |> to json.")
+          "from yaml",
+          bd
+              "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record TREE — nested records, seqs, seq<string * _> mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected."
+              None
+              (Some "a pipe stage: lines |> from yaml Deployment — yields seq<Deployment>, one per document.")
+          "to yaml",
+          bd
+              "Render a value tree (records, seqs, scalars, Option, Yaml nodes) to YAML lines. A seq renders ---separated documents; a None field omits its key; strings that could be mis-typed (no, 007, 1e5) are quoted."
+              None
+              (Some "a pipe stage: deployment |> to yaml.")
 
           // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
           // Surface names; the typed tree carries the un-typeable |completed

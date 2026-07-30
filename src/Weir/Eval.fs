@@ -372,6 +372,209 @@ let private fromAdapter (fmt: string) (def: RecordDef) : Value =
             )
         | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
 
+// ---- the yaml boundary [D:yaml-v1] ----------------------------------------
+
+// shape-directed conversion: the checker packed the resolved target tree;
+// every error carries the node's LINE (the owned parser's positions —
+// the bar YamlDotNet's messages missed)
+let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
+    match shape, node with
+    | Yaml.SOpt _, Yaml.NNull _ -> VUnion("None", None)
+    | Yaml.SOpt inner, n -> VUnion("Some", Some(yamlConvert inner n))
+    | Yaml.SInt, Yaml.NScalar(raw, quoted, line) ->
+        if quoted then
+            failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects int"
+        else
+            match System.Int64.TryParse raw with
+            | true, n -> VInt n
+            | _ -> failwith $"from yaml: line {line}: expected int, got '{raw}'"
+    | Yaml.SBool, Yaml.NScalar(raw, quoted, line) ->
+        // EXACTLY true/false (the Env.load law: `yes`/`on`/`1` are data,
+        // not booleans — the Norway problem never fires by construction)
+        if quoted then
+            failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects bool"
+        elif raw = "true" then
+            VBool true
+        elif raw = "false" then
+            VBool false
+        else
+            failwith $"from yaml: line {line}: expected bool (exactly true/false), got '{raw}'"
+    | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
+    | Yaml.SRec(name, fields), Yaml.NMap(entries, line) ->
+        // extra keys are IGNORED (the from-json precedent); a missing or
+        // null REQUIRED field teaches Option (the json-option precedent)
+        let get fname =
+            entries |> List.tryFind (fun (k, _) -> k = fname)
+
+        let fieldValues =
+            fields
+            |> List.map (fun (fname, fshape) ->
+                match get fname, fshape with
+                | None, Yaml.SOpt _ -> fname, VUnion("None", None)
+                | None, Yaml.SSeq _ -> fname, VSeq Seq.empty
+                | None, Yaml.SPairs _ -> fname, VSeq Seq.empty
+                | None, _ -> failwith $"from yaml: line {line}: missing field '{fname}' in '{name}'"
+                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SStr | Yaml.SBool | Yaml.SRec _) ->
+                    failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
+                | Some(_, v), _ -> fname, yamlConvert fshape v)
+
+        VRecord(name, Map.ofList fieldValues)
+    | Yaml.SSeq inner, Yaml.NSeq(items, _) -> VSeq(items |> List.map (yamlConvert inner) |> List.toSeq)
+    // a null where a seq/mapping sits is the EMPTY collection (the yaml
+    // idiom: `ports:` with nothing below)
+    | Yaml.SSeq _, Yaml.NNull _ -> VSeq Seq.empty
+    | Yaml.SPairs inner, Yaml.NMap(entries, _) ->
+        VSeq(
+            entries
+            |> List.map (fun (k, v) -> VTuple [ VStr k; yamlConvert inner v ])
+            |> List.toSeq
+        )
+    | Yaml.SPairs _, Yaml.NNull _ -> VSeq Seq.empty
+    | shape, node ->
+        let want =
+            match shape with
+            | Yaml.SInt -> "an int scalar"
+            | Yaml.SStr -> "a string scalar"
+            | Yaml.SBool -> "a bool scalar"
+            | Yaml.SRec(n, _) -> $"a mapping ({n})"
+            | Yaml.SSeq _ -> "a sequence"
+            | Yaml.SPairs _ -> "a mapping"
+            | Yaml.SOpt _ -> "an optional value"
+
+        let got =
+            match node with
+            | Yaml.NScalar _ -> "a scalar"
+            | Yaml.NNull _ -> "null"
+            | Yaml.NSeq _ -> "a sequence"
+            | Yaml.NMap _ -> "a mapping"
+
+        failwith $"from yaml: line {Yaml.nodeLine node}: expected {want}, got {got}"
+
+let private yamlFromImpl (shape: Yaml.Shape) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq lines ->
+            let numbered =
+                lines
+                |> Seq.mapi (fun i l ->
+                    match l with
+                    | VStr s -> i + 1, s
+                    | v -> unreachable $"the checker rejects 'from yaml' on non-string elements: {formatValue v}")
+                |> List.ofSeq
+
+            match Yaml.parseDocs numbered with
+            | Error msg -> failwith $"from yaml: {msg}"
+            | Ok docs -> VSeq(docs |> List.map (yamlConvert shape) |> List.toSeq)
+        | v -> unreachable $"the checker rejects 'from yaml' on {formatValue v}")
+
+// the renderer: VALUE-driven (records/seqs/scalars/Option/Yaml nodes).
+// Record fields render ALPHABETICALLY (the VRecord representation's
+// existing law — same as to json); YMap preserves ITS order (the
+// user-controlled escape). A None FIELD omits its key; a None ELEMENT
+// renders `null` (both the json-option split).
+type private Rendered =
+    | Inline of string
+    | Block of string list
+
+let rec private yamlRender (v: Value) : Rendered =
+    let indent2 (lines: string list) = lines |> List.map (fun l -> "  " + l)
+
+    let renderMap (entries: (string * Value) list) : string list =
+        entries
+        |> List.collect (fun (k, v) ->
+            match v with
+            | VUnion("None", None) -> [] // omit the key [D:json-option]'s yaml face
+            | _ ->
+                let key = Yaml.renderScalar k
+
+                match yamlRender v with
+                | Inline "" -> [ $"{key}:" ]
+                | Inline s -> [ $"{key}: {s}" ]
+                | Block lines -> $"{key}:" :: indent2 lines)
+
+    let renderSeq (items: Value list) : string list =
+        items
+        |> List.collect (fun item ->
+            match yamlRender item with
+            | Inline "" -> [ "- null" ]
+            | Inline s -> [ $"- {s}" ]
+            | Block lines ->
+                match lines with
+                | [] -> [ "-" ]
+                | first :: rest -> ($"- {first}") :: (rest |> List.map (fun l -> "  " + l)))
+
+    match v with
+    | VInt n -> Inline(string n)
+    | VBool b -> Inline(if b then "true" else "false")
+    | VStr s -> Inline(Yaml.renderScalar s)
+    | VUnion("YStr", Some(VStr s)) -> Inline(Yaml.renderScalar s)
+    | VUnion("YInt", Some(VInt n)) -> Inline(string n)
+    | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
+    | VUnion("YNull", None) -> Inline ""
+    | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq (List.ofSeq items))
+    | VUnion("YMap", Some(VSeq pairs)) ->
+        Block(
+            renderMap (
+                pairs
+                |> Seq.map (fun p ->
+                    match p with
+                    | VTuple [ VStr k; v ] -> k, v
+                    | v -> unreachable $"the checker rejects YMap over {formatValue v}")
+                |> List.ofSeq
+            )
+        )
+    | VUnion("Some", Some inner) -> yamlRender inner
+    | VUnion("None", None) -> Inline "null" // element position; fields omit above
+    | VRecord(_, fields) -> Block(renderMap (Map.toList fields))
+    | VSeq items ->
+        let items = List.ofSeq items
+
+        // a pair-seq is ONE mapping (the seq<string * _> law)
+        let asPairs =
+            items
+            |> List.map (fun i ->
+                match i with
+                | VTuple [ VStr k; v ] -> Some(k, v)
+                | _ -> None)
+
+        if not items.IsEmpty && asPairs |> List.forall Option.isSome then
+            Block(renderMap (asPairs |> List.map Option.get))
+        else
+            Block(renderSeq items)
+    | v -> unreachable $"the checker rejects 'to yaml' on {formatValue v}"
+
+let private yamlToLines (v: Value) : string list =
+    match yamlRender v with
+    | Inline s -> [ s ]
+    | Block lines -> lines
+
+let private yamlToImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        // a top-level SEQ is `---`-separated DOCUMENTS — except a
+        // pair-seq, which is ONE mapping document (the check-side rule)
+        | VSeq items when
+            (let l = List.ofSeq items
+
+             not l.IsEmpty
+             && l
+                |> List.forall (fun i ->
+                    match i with
+                    | VTuple [ VStr _; _ ] -> true
+                    | _ -> false))
+            ->
+            VSeq(yamlToLines v |> List.map VStr |> List.toSeq)
+        | VSeq items ->
+            let docs = items |> Seq.map yamlToLines |> List.ofSeq
+
+            let lines =
+                match docs with
+                | [] -> []
+                | first :: rest -> first @ (rest |> List.collect (fun d -> "---" :: d))
+
+            VSeq(lines |> List.map VStr |> List.toSeq)
+        | v -> VSeq(yamlToLines v |> List.map VStr |> List.toSeq))
+
 let scalarString (what: string) (v: Value) : string =
     match v with
     | VStr s -> s
@@ -1073,6 +1276,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         VStr(sb.ToString())
     | TEFrom(fmt, def) -> fromAdapter fmt def
+    | TEFromYaml(_, shape) -> yamlFromImpl shape
+    | TEYaml tpl -> evalYamlTpl env tpl
+    | TETo "yaml" -> yamlToImpl
     | TETo _ ->
         VBuiltin(fun v ->
             match v with
@@ -1207,6 +1413,119 @@ and eval (env: Env) (te: TypedExpr) : Value =
     // argvOf; it never reaches value evaluation. Closes the match so a
     // stray splat is a clear internal error, not a MatchFailureException.
     | TESplat _ -> unreachable "$@ splat outside command arguments (checker confines it to argv)"
+
+// the yaml district's evaluator [D:yaml-district]: build Yaml NODES —
+// the lift is VALUE-driven (the checker already enforced the liftable
+// law), a None SPLICE omits its entry/item, `for` instantiates its body
+// per element (binder = bindPattern, a lambda param's machinery), and
+// runtime duplicate keys (for-generated or key-spliced) are errors —
+// invalid YAML must not render silently.
+and private liftYaml (v: Value) : Value option =
+    match v with
+    | VStr s -> Some(VUnion("YStr", Some(VStr s)))
+    | VInt n -> Some(VUnion("YInt", Some(VInt n)))
+    | VBool b -> Some(VUnion("YBool", Some(VBool b)))
+    | VUnion(("YStr" | "YInt" | "YBool" | "YNull" | "YSeq" | "YMap"), _) -> Some v
+    | VUnion("Some", Some inner) -> liftYaml inner
+    | VUnion("None", None) -> None
+    | VSeq items ->
+        Some(
+            VUnion(
+                "YSeq",
+                Some(
+                    VSeq(
+                        items
+                        |> Seq.map (fun i -> liftYaml i |> Option.defaultValue (VUnion("YNull", None)))
+                        |> List.ofSeq
+                        |> List.toSeq
+                    )
+                )
+            )
+        )
+    | v ->
+        // the sortBy posture: a polymorphic splice's law is enforced HERE
+        failwith
+            $"yaml splice: got {formatValue v}; splices take string/int/bool, a Yaml node, Option of one, or a seq of those"
+
+and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
+    match tpl with
+    | Check.TYtScalar(raw, quoted) ->
+        if not quoted && raw = "" then
+            VUnion("YNull", None)
+        elif not quoted && (raw = "true" || raw = "false") then
+            VUnion("YBool", Some(VBool(raw = "true")))
+        else
+            match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
+            | true, n -> VUnion("YInt", Some(VInt n))
+            | _ -> VUnion("YStr", Some(VStr raw))
+    | Check.TYtSplice te -> liftYaml (eval env te) |> Option.defaultValue (VUnion("YNull", None))
+    | Check.TYtSeq items -> VUnion("YSeq", Some(VSeq(evalYamlItems env items |> List.toSeq)))
+    | Check.TYtMap entries ->
+        let pairs = evalYamlEntries env entries
+        let seen = System.Collections.Generic.HashSet<string>()
+
+        for (k, _) in pairs do
+            if not (seen.Add k) then
+                failwith $"yaml: duplicate key '{k}' (generated at runtime)"
+
+        VUnion("YMap", Some(VSeq(pairs |> List.map (fun (k, v) -> VTuple [ VStr k; v ]) |> List.toSeq)))
+
+and private evalYamlEntries (env: Env) (entries: Check.TypedYamlTplEntry list) : (string * Value) list =
+    entries
+    |> List.collect (fun entry ->
+        match entry with
+        | Check.TYtPair(key, value) ->
+            let k =
+                match key with
+                | Check.TYtKeyLit s -> s
+                | Check.TYtKeySplice te ->
+                    match eval env te with
+                    | VStr s -> s
+                    | v -> unreachable $"the checker rejects a non-string key splice: {formatValue v}"
+
+            // a splice VALUE evaluating to None omits the whole entry
+            // (the json-option omit, in template form)
+            match value with
+            | Check.TYtSplice te ->
+                match liftYaml (eval env te) with
+                | None -> []
+                | Some node -> [ k, node ]
+            | _ -> [ k, evalYamlTpl env value ]
+        | Check.TYtForEntries(binder, source, body) ->
+            match eval env source with
+            | VSeq items ->
+                items
+                |> Seq.collect (fun item ->
+                    let bs = bindPattern binder item
+                    let env' = bs |> List.fold (fun m (n, v) -> Map.add n v m) env
+                    evalYamlEntries env' body)
+                |> List.ofSeq
+            | v -> unreachable $"the checker rejects a non-seq for source: {formatValue v}")
+
+and private evalYamlItems (env: Env) (items: Check.TypedYamlTplItem list) : Value list =
+    items
+    |> List.collect (fun item ->
+        match item with
+        | Check.TYtItem(Check.TYtSplice te) ->
+            // a None splice omits its item; a seq splice flattens as items
+            match eval env te with
+            | VUnion("None", None) -> []
+            | VSeq inner ->
+                inner
+                |> Seq.map (fun i -> liftYaml i |> Option.defaultValue (VUnion("YNull", None)))
+                |> List.ofSeq
+            | v -> liftYaml v |> Option.map List.singleton |> Option.defaultValue []
+        | Check.TYtItem t -> [ evalYamlTpl env t ]
+        | Check.TYtForItems(binder, source, body) ->
+            match eval env source with
+            | VSeq elems ->
+                elems
+                |> Seq.collect (fun item ->
+                    let bs = bindPattern binder item
+                    let env' = bs |> List.fold (fun m (n, v) -> Map.add n v m) env
+                    evalYamlItems env' body)
+                |> List.ofSeq
+            | v -> unreachable $"the checker rejects a non-seq for source: {formatValue v}")
 
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
