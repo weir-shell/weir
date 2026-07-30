@@ -1,5 +1,35 @@
 # Spike Notes
 
+## The config-format spike — TOML and strict-YAML measured, JSON stands (2026-07-30)
+
+A throwaway spike (repo copy, branch deleted, nothing merged) replaced
+estimates with numbers for the "why not TOML?" question the JSON
+config decision left open. Both candidates turned out AOT-clean —
+which the estimates did NOT predict — and JSON still stands: TOML
+(Tomlyn 2.10.1, `TomlReader` pull API) costs +329.5 KB with zero new
+trim warnings and the best error text of the three; strict-YAML
+(YamlDotNet 18.1.0, node API only) costs +677.3 KB, also zero
+warnings, with the measured subset (scalars, block maps, block
+sequences, `#` comments) provably enforceable — aliases resolve
+silently but DETECTABLY (the substituted node keeps its `Anchor`),
+and the Norway problem never fires because node scalars stay raw
+strings until you convert. Startup was unmoved everywhere (5.0–5.4 ms
+medians) — the shebang story is safe from a config parser.
+
+The findings that outlive the verdict. Tomlyn's readme path is a
+trap under AOT: `Deserialize<TomlTable>` is reflection
+(IL3050/IL2026), and the package's own buildTransitive targets flip
+reflection OFF under `PublishAot` — so the documented path would
+fail at runtime while the `TomlReader` pull API sails through; the
+FileSystemGlobbing lesson again, probe-don't-trust, now with a case
+where the SAME package contains both a clean path and a poisoned
+one. And a weir-relevant caution caught by the spike harness itself:
+F# `printfn "%d"` CRASHES under AOT (MakeGenericMethod) — the
+repo's Console.WriteLine-plus-interpolation convention is
+load-bearing, not stylistic. Verdict recorded in the repl-quality
+DECISIONS row with all the numbers, so the next reopener finds a
+measurement, not an opinion.
+
 ## REPL multiline — the buffer becomes two-dimensional (2026-07-30)
 
 Up-arrow moves within the buffer; on line 3 of a match with a wrong
