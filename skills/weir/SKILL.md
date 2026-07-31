@@ -400,7 +400,10 @@ print x
   "a && b"); `>`/`>>` additionally WARN with the File spelling
   (redirection is `cmd | File.write "out.txt"` / `File.append`).
   For bash semantics: `sh -c "the bash line"` (a command
-  line; streams, completes, pipes like any command).
+  line; streams, completes, pipes like any command). Inside that
+  quoted line `$w` is SH's variable, not weir's binding — silently
+  empty, not an error; splice weir values by interpolating first
+  (`sh -c $"echo got-{w}"`).
 - Nonzero exit RAISES when the stream is forced. The exit-code
   reifiers (complete's family, single external segment, one law:
   output goes where the meaning goes): `cmd | succeeds` reifies to
