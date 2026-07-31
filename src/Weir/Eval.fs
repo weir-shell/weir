@@ -400,6 +400,13 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
         else
             failwith $"from yaml: line {line}: expected bool (exactly true/false), got '{raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
+    // blockness is quotedness's sibling [D:block-scalars]: a block
+    // scalar is unambiguously a string
+    | Yaml.SStr, Yaml.NBlock(text, _) -> VStr text
+    | Yaml.SInt, Yaml.NBlock(_, line) ->
+        failwith $"from yaml: line {line}: a block scalar is a string; this field expects int"
+    | Yaml.SBool, Yaml.NBlock(_, line) ->
+        failwith $"from yaml: line {line}: a block scalar is a string; this field expects bool"
     | Yaml.SRec(name, fields), Yaml.NMap(entries, line) ->
         // extra keys are IGNORED (the from-json precedent); a missing or
         // null REQUIRED field teaches Option (the json-option precedent)
@@ -444,6 +451,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
         let got =
             match node with
             | Yaml.NScalar _ -> "a scalar"
+            | Yaml.NBlock _ -> "a block scalar"
             | Yaml.NNull _ -> "null"
             | Yaml.NSeq _ -> "a sequence"
             | Yaml.NMap _ -> "a mapping"
@@ -475,9 +483,33 @@ let private yamlFromImpl (shape: Yaml.Shape) : Value =
 type private Rendered =
     | Inline of string
     | Block of string list
+    // a literal block scalar [D:block-scalars]: the header rides the
+    // key/item line, content lines indent one level under it
+    | BlockScalar of header: string * content: string list
+
+// a string renders as a block scalar when it holds newlines (and no
+// wilder control characters) [D:block-scalars]; the form is
+// DETERMINISTIC — one trailing newline is `|`, none is `|-`, more have
+// no form in the subset (`|+` is rejected) and dropping bytes is the
+// one thing a renderer must never do, so that errors
+let private renderString (s: string) : Rendered =
+    let tame =
+        s |> Seq.forall (fun c -> not (System.Char.IsControl c) || c = '\n' || c = '\t')
+
+    if s.Contains '\n' && tame && s.TrimEnd '\n' <> "" then
+        if s.EndsWith "\n\n" then
+            failwith
+                "to yaml: a string ending in multiple newlines has no block scalar form in the subset ('|+' is outside it) — trim to one trailing newline or none"
+        else
+            let keep = s.EndsWith "\n"
+            let body = if keep then s.Substring(0, s.Length - 1) else s
+            BlockScalar((if keep then "|" else "|-"), body.Split '\n' |> List.ofArray)
+    else
+        Inline(Yaml.renderScalar s)
 
 let rec private yamlRender (v: Value) : Rendered =
-    let indent2 (lines: string list) = lines |> List.map (fun l -> "  " + l)
+    let indent2 (lines: string list) =
+        lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
     let renderMap (entries: (string * Value) list) : string list =
         entries
@@ -490,7 +522,8 @@ let rec private yamlRender (v: Value) : Rendered =
                 match yamlRender v with
                 | Inline "" -> [ $"{key}:" ]
                 | Inline s -> [ $"{key}: {s}" ]
-                | Block lines -> $"{key}:" :: indent2 lines)
+                | Block lines -> $"{key}:" :: indent2 lines
+                | BlockScalar(h, content) -> $"{key}: {h}" :: indent2 content)
 
     let renderSeq (items: Value list) : string list =
         items
@@ -501,13 +534,14 @@ let rec private yamlRender (v: Value) : Rendered =
             | Block lines ->
                 match lines with
                 | [] -> [ "-" ]
-                | first :: rest -> ($"- {first}") :: (rest |> List.map (fun l -> "  " + l)))
+                | first :: rest -> ($"- {first}") :: (rest |> List.map (fun l -> "  " + l))
+            | BlockScalar(h, content) -> ($"- {h}") :: indent2 content)
 
     match v with
     | VInt n -> Inline(string n)
     | VBool b -> Inline(if b then "true" else "false")
-    | VStr s -> Inline(Yaml.renderScalar s)
-    | VUnion("YStr", Some(VStr s)) -> Inline(Yaml.renderScalar s)
+    | VStr s -> renderString s
+    | VUnion("YStr", Some(VStr s)) -> renderString s
     | VUnion("YInt", Some(VInt n)) -> Inline(string n)
     | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
     | VUnion("YNull", None) -> Inline ""
@@ -547,6 +581,7 @@ let private yamlToLines (v: Value) : string list =
     match yamlRender v with
     | Inline s -> [ s ]
     | Block lines -> lines
+    | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
 
 let private yamlToImpl: Value =
     VBuiltin(fun v ->
@@ -1449,6 +1484,9 @@ and private liftYaml (v: Value) : Value option =
 
 and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
     match tpl with
+    // block scalar content never self-types: it is a STRING, always
+    // [D:block-scalars]
+    | Check.TYtBlock text -> VUnion("YStr", Some(VStr text))
     | Check.TYtScalar(raw, quoted) ->
         if not quoted && raw = "" then
             VUnion("YNull", None)

@@ -105,6 +105,8 @@ and TypedKind =
 
 and TypedYamlTpl =
     | TYtScalar of raw: string * quoted: bool
+    // literal block scalar content [D:block-scalars] — bytes, no checking
+    | TYtBlock of text: string
     | TYtSplice of TypedExpr
     | TYtSeq of TypedYamlTplItem list
     | TYtMap of TypedYamlTplEntry list
@@ -2539,6 +2541,7 @@ and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool =
 and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<TypedYamlTpl, TypeError> =
     match tpl with
     | YtScalar(raw, q, _) -> Ok(TYtScalar(raw, q))
+    | YtBlock(text, _) -> Ok(TYtBlock text)
     | YtSplice e ->
         result {
             let! te = infer ctx env e
@@ -2706,6 +2709,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
 and private finalizeYamlTpl (ctx: Ctx) (tpl: TypedYamlTpl) : TypedYamlTpl =
     match tpl with
     | TYtScalar _ -> tpl
+    | TYtBlock _ -> tpl
     | TYtSplice e -> TYtSplice(finalizeExpr ctx e)
     | TYtSeq items -> TYtSeq(items |> List.map (finalizeYamlItem ctx))
     | TYtMap entries -> TYtMap(entries |> List.map (finalizeYamlEntry ctx))
@@ -2805,6 +2809,7 @@ let typecheckWith
 let rec yamlTplTypedExprs (tpl: TypedYamlTpl) : TypedExpr list =
     match tpl with
     | TYtScalar _ -> []
+    | TYtBlock _ -> []
     | TYtSplice e -> [ e ]
     | TYtSeq items ->
         items

@@ -1023,7 +1023,10 @@ let boundaryTests =
                   "cannot be compared"
                   "Eq refuses via no-seq"
           }
-          test "to yaml: reverse-Norway quoting — no/007/1e5/mid-#/colon/multiline all quote [D:yaml-v1]" {
+          test "to yaml: reverse-Norway quoting — no/007/1e5/mid-#/colon quote; multiline is a BLOCK [D:yaml-v1]" {
+              // the f case moved deliberately with [D:block-scalars]: a
+              // multiline string is a block scalar, NOT quoted — the
+              // quoting law governs single-line strings only
               Expect.equal
                   (run
                       "[(\"a\", \"no\"); (\"b\", \"007\"); (\"c\", \"1e5\"); (\"d\", \"x # y\"); (\"e\", \"k: v\"); (\"f\", \"l1\\nl2\"); (\"g\", \"plain\")] |> to yaml"
@@ -1033,7 +1036,9 @@ let boundaryTests =
                     VStr "c: \"1e5\""
                     VStr "d: \"x # y\""
                     VStr "e: \"k: v\""
-                    VStr "f: \"l1\\nl2\""
+                    VStr "f: |-"
+                    VStr "  l1"
+                    VStr "  l2"
                     VStr "g: plain" ]
                   "a YAML reader cannot mis-type any of these"
           }
@@ -1156,6 +1161,158 @@ let boundaryTests =
                       | v -> failtest $"expected YMap, got {v}"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
+          }
+          test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {
+              let docOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ d ] -> d
+                  | other -> failtest $"parse: {other}"
+
+              let blockText d =
+                  match d with
+                  | Weir.Yaml.NMap([ (_, Weir.Yaml.NBlock(t, _)) ], _) -> t
+                  | other -> failtest $"expected one block entry, got {other}"
+
+              // the form follows the value: | ends with exactly one newline,
+              // |- with none — chomping is YAML's spelling for a distinction
+              // weir strings already have
+              Expect.equal (blockText (docOf [ "k: |"; "    a"; "    b" ])) "a\nb\n" "| keeps one trailing newline"
+              Expect.equal (blockText (docOf [ "k: |-"; "    a"; "    b" ])) "a\nb" "|- strips it"
+
+              // content is BYTES: blank lines are newlines, ` #` is not a
+              // comment, more-indented lines keep their extra indentation,
+              // trailing blanks clip (|+ is the rejected keep-them form)
+              Expect.equal
+                  (blockText (docOf [ "k: |"; "    a # kept"; ""; "        deep"; "    z"; "" ]))
+                  "a # kept\n\n    deep\nz\n"
+                  "blanks, comments, extra indent all survive; trailing blank clips"
+
+              // a `- |` item and a whole-document block scalar
+              let itemText =
+                  match docOf [ "- |-"; "    item text" ] with
+                  | Weir.Yaml.NSeq([ Weir.Yaml.NBlock(t, _) ], _) -> t
+                  | other -> failtest $"expected seq of block, got {other}"
+
+              Expect.equal itemText "item text" "item-position block"
+
+              let docText =
+                  match docOf [ "|"; "  whole doc" ] with
+                  | Weir.Yaml.NBlock(t, _) -> t
+                  | other -> failtest $"expected doc block, got {other}"
+
+              Expect.equal docText "whole doc\n" "document-position block"
+
+              // the named errors, each with its line
+              let errOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Error e -> e
+                  | Ok d -> failtest $"expected an error, got {d}"
+
+              Expect.stringContains (errOf [ "k: |" ]) "needs an indented block" "header without a block"
+              Expect.stringContains (errOf [ "k: >"; "    a" ]) "folded block scalars (>)" "folded rejected"
+              Expect.stringContains (errOf [ "k: |+"; "    a" ]) "'|+'" "|+ rejected"
+              Expect.stringContains (errOf [ "k: |2"; "    a" ]) "explicit indentation" "indicator rejected"
+              Expect.stringContains (errOf [ "k: | x" ]) "no inline content" "inline content rejected"
+
+              Expect.stringContains
+                  (errOf [ "k: |"; "        a"; "    b" ])
+                  "left of the block scalar's content indentation"
+                  "left-of-content line named"
+          }
+          test "block scalars render: the form follows the value, both directions [D:block-scalars]" {
+              // no policy exists: | MEANS ends-with-one-newline, |- means
+              // ends-with-none — read and write agree by construction
+              Expect.equal
+                  (run "[(\"k\", \"a\\nb\\n\")] |> to yaml" |> forceSeq)
+                  [ VStr "k: |"; VStr "  a"; VStr "  b" ]
+                  "trailing newline renders |"
+
+              Expect.equal
+                  (run "[(\"k\", \"a\\nb\")] |> to yaml" |> forceSeq)
+                  [ VStr "k: |-"; VStr "  a"; VStr "  b" ]
+                  "no trailing newline renders |-"
+
+              // multiple trailing newlines have no form in the subset
+              // (that is |+'s job, rejected) — never silently drop bytes
+              Expect.throwsC (fun () -> run "[(\"k\", \"a\\n\\n\")] |> to yaml" |> forceSeq |> ignore) (fun ex ->
+                  Expect.stringContains ex.Message "multiple newlines" "the |+ teaching")
+
+              // the quoting-law boundary: one-line \"007\" quotes; a
+              // multiline string starting 007 is a block scalar, unquoted
+              Expect.equal
+                  (run "[(\"k\", \"007\\nx\")] |> to yaml" |> forceSeq)
+                  [ VStr "k: |-"; VStr "  007"; VStr "  x" ]
+                  "the block side of the boundary"
+          }
+          test "district block scalars: content is LITERAL — consumed before the splice/for scanners [D:block-scalars]" {
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let src =
+                  asm
+                      [ "let d = yaml"
+                        "    data:"
+                        "        s.sh: |"
+                        "            #!/bin/sh"
+                        "            echo $name and $(1 + 2)"
+                        ""
+                        "            for x in xs"
+                        "            key: value shaped"
+                        "                deeper" ]
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      match Weir.Eval.eval valueEnv te with
+                      | Weir.Eval.VUnion("YMap", Some(Weir.Eval.VSeq pairs)) ->
+                          let text =
+                              match Seq.head pairs with
+                              | Weir.Eval.VTuple [ Weir.Eval.VStr "data"
+                                                   Weir.Eval.VUnion("YMap", Some(Weir.Eval.VSeq inner)) ] ->
+                                  match Seq.head inner with
+                                  | Weir.Eval.VTuple [ Weir.Eval.VStr "s.sh"
+                                                       Weir.Eval.VUnion("YStr", Some(Weir.Eval.VStr t)) ] -> t
+                                  | other -> failtest $"expected s.sh block, got {other}"
+                              | other -> failtest $"expected data mapping, got {other}"
+
+                          Expect.equal
+                              text
+                              "#!/bin/sh\necho $name and $(1 + 2)\n\nfor x in xs\nkey: value shaped\n    deeper\n"
+                              "splice-lookalikes, for-lines, blanks, key-shapes — all bytes"
+                      | v -> failtest $"expected YMap, got {v}"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "fmt: a district block scalar re-anchors but its content is never re-indented [D:block-scalars]" {
+              let src =
+                  [ "let d = yaml"
+                    "        data:"
+                    "                s: |"
+                    "                        #!/bin/sh"
+                    ""
+                    "                        echo hi"
+                    ""
+                    "d |> to yaml |> print" ]
+
+              match Weir.Fmt.formatLines src with
+              | Error e -> failtestf "fmt failed: %s" e
+              | Ok out ->
+                  let indent (s: string) = s.Length - s.TrimStart().Length
+                  Expect.equal (indent (out |> List.find (fun l -> l.Contains "data:"))) 4 "base re-anchors"
+
+                  Expect.equal
+                      (indent (out |> List.find (fun l -> l.Contains "#!/bin/sh")))
+                      20
+                      "content keeps its offset from the base — never re-indented"
+
+                  Expect.isTrue (out |> List.exists (fun l -> l = "")) "blank content lines survive fmt"
+
+                  match Weir.Fmt.formatLines out with
+                  | Ok out2 -> Expect.equal out2 out "idempotent with a block scalar inside"
+                  | Error e -> failtestf "second fmt failed: %s" e
           }
           test "into feeds stdin and yields stdout" {
               // tr strips BSD wc's left-padding — the subject is the stdin

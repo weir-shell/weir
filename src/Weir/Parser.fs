@@ -1203,6 +1203,60 @@ let private tplForHeader (col: int) (text: string) : Result<Pattern * Expr, stri
     | Result.Ok(b, src) -> Result.Ok(b, src)
     | Result.Error m -> Result.Error($"in this for: {m}", col)
 
+// block scalar content in a district [D:block-scalars]: the lines are
+// BYTES — consumed here, before the splice/for scanners ever see them,
+// so `$name`, `$(expr)`, and `for x in xs` survive verbatim. Blank
+// district lines ride the sentinel as empty verbatim lines (the
+// assembler's yaml-blank join) and become newlines here.
+let private tplBlockScalar
+    (lines: (int * int * string)[])
+    (start: int)
+    (fin: int)
+    (keep: bool)
+    (headerCol: int)
+    : Result<YamlTpl, string * int> =
+    let content = ResizeArray<int * string>() // (col, reconstructed line)
+
+    for k in start .. fin - 1 do
+        let c, r, t = lines[k]
+
+        content.Add(
+            c,
+            (if t.Trim() = "" then
+                 ""
+             else
+                 String.replicate r " " + t.TrimEnd())
+        )
+
+    while content.Count > 0 && snd content[content.Count - 1] = "" do
+        content.RemoveAt(content.Count - 1)
+
+    if content.Count = 0 then
+        Result.Error("a block scalar header needs an indented block below it", headerCol)
+    else
+        let cIndent =
+            content
+            |> Seq.filter (fun (_, l) -> l <> "")
+            |> Seq.head
+            |> snd
+            |> Yaml.indentOf
+
+        match content |> Seq.tryFind (fun (_, l) -> l <> "" && Yaml.indentOf l < cIndent) with
+        | Some(c, _) -> Result.Error("this line sits left of the block scalar's content indentation", c)
+        | None ->
+            let body =
+                content
+                |> Seq.map (fun (_, l) -> if l = "" then "" else l.Substring cIndent)
+                |> String.concat "\n"
+
+            Result.Ok(
+                YtBlock(
+                    (if keep then body + "\n" else body),
+                    { Start = { Line = 1; Col = headerCol }
+                      End = { Line = 1; Col = headerCol + 1 } }
+                )
+            )
+
 // one block-level unit of a template
 type private TplUnit =
     | UPair of YamlTplKey * YamlTpl
@@ -1232,23 +1286,54 @@ let rec private parseTplBlock
 
               End = { Line = 1; Col = col + 1 } }
 
-        // collect the units at exactly this indent
+        // the first non-blank line's rel in a range (nested-block indent)
+        let firstContentRel a b fallback =
+            let mutable k = a
+            let mutable found = fallback
+
+            while k < b do
+                let (_, r, t) = lines[k]
+
+                if found = fallback && t.Trim() <> "" then
+                    found <- r
+                    k <- b
+                else
+                    k <- k + 1
+
+            found
+
+        // collect the units at exactly this indent; blank lines are
+        // structure-transparent (they are BYTES only inside a block
+        // scalar's content [D:block-scalars])
         let rec units i acc =
             if i >= fin then
                 Result.Ok(List.rev acc)
             else
                 let col, rel, text = lines[i]
 
-                if rel < indent then
+                if text.Trim() = "" || text.TrimStart().StartsWith "#" then
+                    // blanks and full-line `#` comments are structure-
+                    // transparent; both are BYTES inside a block scalar's
+                    // content, which consumed its lines before this loop
+                    units (i + 1) acc
+                elif rel < indent then
                     Result.Ok(List.rev acc)
                 elif rel > indent then
                     Result.Error("unexpected indentation in this yaml block", col)
                 else
-                    // the extent of this unit's nested block
+                    // the extent of this unit's nested block (blanks ride along)
                     let mutable j = i + 1
 
-                    while j < fin && (let (_, r, _) = lines[j] in r > indent) do
+                    while j < fin && (let (_, r, t) = lines[j] in t.Trim() = "" || r > indent) do
                         j <- j + 1
+
+                    // blanks and `#` lines ride the extent but are not
+                    // structure — nested-block decisions count CONTENT
+                    let hasNested =
+                        seq { i + 1 .. j - 1 }
+                        |> Seq.exists (fun k ->
+                            let (_, _, t) = lines[k]
+                            t.Trim() <> "" && not (t.TrimStart().StartsWith "#"))
 
                     if text.StartsWith "for " then
                         match tplForHeader col text with
@@ -1260,8 +1345,8 @@ let rec private parseTplBlock
                                     (i + 1)
                                     j
                                     (indent
-                                     + (if j > i + 1 then
-                                            (let (_, r, _) = lines[i + 1] in r) - indent
+                                     + (if hasNested then
+                                            (firstContentRel (i + 1) j (indent + 4)) - indent
                                         else
                                             4))
                             with
@@ -1272,26 +1357,31 @@ let rec private parseTplBlock
                         let inlineCol = col + 2
 
                         let itemR =
-                            if inlinePart.Trim() = "" then
-                                if j > i + 1 then
-                                    let (_, r1, _) = lines[i + 1]
-                                    parseTplBlock lines (i + 1) j r1 |> Result.map YtItem
-                                else
-                                    Result.Ok(YtItem(YtScalar("", false, spanAt col)))
-                            else
-                                match Yaml.splitKey 0 inlinePart with
-                                | Some _ ->
-                                    // compact map item: the first entry lives on
-                                    // this line at a VIRTUAL rel of item+2
-                                    let shifted =
-                                        Array.append [| (inlineCol, indent + 2, inlinePart) |] lines[i + 1 .. j - 1]
+                            match Yaml.blockHeader inlinePart with
+                            | Some(Result.Error msg) -> Result.Error(msg, inlineCol)
+                            | Some(Result.Ok keep) -> tplBlockScalar lines (i + 1) j keep inlineCol |> Result.map YtItem
+                            | None ->
 
-                                    parseTplBlock shifted 0 shifted.Length (indent + 2) |> Result.map YtItem
-                                | None ->
-                                    if j > i + 1 then
-                                        Result.Error("a scalar sequence item cannot have a nested block", col)
+                                if inlinePart.Trim() = "" then
+                                    if hasNested then
+                                        let r1 = firstContentRel (i + 1) j (indent + 2)
+                                        parseTplBlock lines (i + 1) j r1 |> Result.map YtItem
                                     else
-                                        tplValueSlot inlineCol inlinePart |> Result.map YtItem
+                                        Result.Ok(YtItem(YtScalar("", false, spanAt col)))
+                                else
+                                    match Yaml.splitKey 0 inlinePart with
+                                    | Some _ ->
+                                        // compact map item: the first entry lives on
+                                        // this line at a VIRTUAL rel of item+2
+                                        let shifted =
+                                            Array.append [| (inlineCol, indent + 2, inlinePart) |] lines[i + 1 .. j - 1]
+
+                                        parseTplBlock shifted 0 shifted.Length (indent + 2) |> Result.map YtItem
+                                    | None ->
+                                        if hasNested then
+                                            Result.Error("a scalar sequence item cannot have a nested block", col)
+                                        else
+                                            tplValueSlot inlineCol inlinePart |> Result.map YtItem
 
                         match itemR with
                         | Result.Error e -> Result.Error e
@@ -1319,16 +1409,22 @@ let rec private parseTplBlock
                             | Result.Error e -> Result.Error e
                             | Result.Ok key ->
                                 let valueR =
-                                    if rest.Trim() = "" then
-                                        if j > i + 1 then
-                                            let (_, r1, _) = lines[i + 1]
-                                            parseTplBlock lines (i + 1) j r1
+                                    match Yaml.blockHeader rest with
+                                    | Some(Result.Error msg) -> Result.Error(msg, col + text.Length - rest.Length)
+                                    | Some(Result.Ok keep) ->
+                                        tplBlockScalar lines (i + 1) j keep (col + text.Length - rest.Length)
+                                    | None ->
+
+                                        if rest.Trim() = "" then
+                                            if hasNested then
+                                                let r1 = firstContentRel (i + 1) j (indent + 4)
+                                                parseTplBlock lines (i + 1) j r1
+                                            else
+                                                Result.Ok(YtScalar("", false, spanAt col))
+                                        elif hasNested then
+                                            Result.Error("this key has both an inline value and a nested block", col)
                                         else
-                                            Result.Ok(YtScalar("", false, spanAt col))
-                                    elif j > i + 1 then
-                                        Result.Error("this key has both an inline value and a nested block", col)
-                                    else
-                                        tplValueSlot (col + text.Length - rest.Length) rest
+                                            tplValueSlot (col + text.Length - rest.Length) rest
 
                                 match valueR with
                                 | Result.Error e -> Result.Error e
@@ -1420,12 +1516,16 @@ let private yamlDistrict: Parser<Expr, unit> =
 
                 if content.TrimEnd() <> "" then
                     lineList.Add((partStart + rel, rel, content.TrimEnd()))
+                else
+                    // a blank district line is BYTES inside a block
+                    // scalar [D:block-scalars]; the structure loops skip it
+                    lineList.Add((partStart, 0, ""))
 
                 colCursor <- partStart + part.Length
 
             let lines = lineList.ToArray()
 
-            if lines.Length = 0 then
+            if lines |> Array.forall (fun (_, _, t) -> t = "") then
                 failFatallyAtCol (int startP.Column) "this yaml block is empty"
             else
                 let baseRel = let (_, r, _) = lines[0] in r

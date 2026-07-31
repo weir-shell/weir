@@ -1173,9 +1173,16 @@ quantity semantics now.
   precedent), duplicates error. THE OWNED SUBSET (no YamlDotNet — the
   config-format spike's receipt: +677 KB for a subset weir hand-rolls
   on ~300 lines with its own error POSITIONS): scalars, block maps,
-  block sequences, `#` comments, `---` multi-doc; anchors/aliases,
-  tags, flow style, directives, complex keys, and block scalars are
-  teaching errors naming the subset. `to yaml` accepts a single
+  block sequences, `#` comments, `---` multi-doc, and literal block
+  scalars `|`/`|-` [D:block-scalars]; anchors/aliases, tags, flow
+  style, directives, complex keys, folded scalars (`>`), `|+`, and
+  explicit indentation indicators are teaching errors naming the
+  subset. BLOCK SCALARS have no chomping policy — chomping is YAML's
+  spelling for a distinction weir strings already have: `|` MEANS the
+  string ends with exactly one newline, `|-` means it ends with none,
+  read and write agree by construction (the form follows the value,
+  both directions). Content is bytes: blank lines are newlines, ` #`
+  is not a comment, more-indented lines keep their extra indentation. `to yaml` accepts a single
   yamlable value (ONE document) or a seq (`---`-separated documents;
   a top-level pair-seq is ONE mapping document); record fields render
   alphabetically (the VRecord law, as json), and the prelude `Yaml`
@@ -1183,8 +1190,11 @@ quantity semantics now.
   preserves ITS entry order, the user-controlled escape. THE QUOTING
   LAW (reverse-Norway): a string renders plain only when no YAML
   reader could mis-TYPE it — `"no"`, `"007"`, `"1e5"`, `"true"`,
-  mid-line ` #`, `: `, and multiline all double-quote (with
-  `\n`-escapes; block scalars are the district session's polish).
+  mid-line ` #`, and `: ` all double-quote. A MULTILINE string is a
+  block scalar, not a quoted one [D:block-scalars]: one trailing
+  newline renders `|`, none renders `|-`, and two or more error (that
+  is `|+`'s job, rejected — a renderer never silently drops bytes);
+  the quoting law governs single-line strings only.
   Value-domain answers, probed then pinned: Show renders the recursive
   union; Eq REFUSES it via the existing no-seq rule's own teaching.
 - **The `yaml` district** [D:yaml-district] — a CHECKED block literal:
@@ -1213,9 +1223,21 @@ quantity semantics now.
   (a command head GLUED to the sentinel is impossible from user text —
   the machine-boundary guard), and fragment parses run PADDED so every
   splice span lands at its true column. Mid-text `$` in a scalar is
-  LITERAL (compute with `$(...)`); full-line `#` comments inside
-  districts are session-bound out (the directive scan owns line-leading
-  `#`; trailing ` #` comments work).
+  LITERAL (compute with `$(...)`). BLOCK SCALARS IN DISTRICTS
+  [D:block-scalars]: a `key: |`/`|-` header opens literal content —
+  NO splices, no `for`, no interpretation of any kind inside it. The
+  rule is one sentence: a block scalar's content is bytes; templated
+  content comes from splicing a whole value (interpolate upstream,
+  then `setup.sh: $script`). The reason is the footgun: embedded
+  scripts are full of `$VAR`, and silently substituting weir values
+  into them would be the `sh -c` fixture bite writ large. The content
+  lines are consumed as TEXT before the splice and `for` scanners
+  run — order is load-bearing, pinned. Blank lines inside an active
+  district ride the sentinel as empty verbatim lines (bytes in block
+  content, structure-transparent elsewhere), and full-line `#` lines
+  inside districts are yaml comments at structure level, bytes inside
+  a block (the directive scan is COLUMN-0 only — `#!/bin/sh` in a
+  block scalar is content, not a misplaced directive).
 - **`sortBy : ('a -> 'b) -> seq<'a> -> seq<'a>`** — the key must evaluate to
   an int, string, or bool; anything else is a runtime error (the type system
   has no comparability constraint — same check-at-the-boundary posture as

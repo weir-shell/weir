@@ -444,11 +444,18 @@ print x
   omit; ambiguous strings like `"no"`/`"007"` auto-quote). `Yaml`
   nodes (`YMap [("k", YStr "v")]`, `YSeq`, `YInt`…) render directly —
   `YMap` keeps YOUR key order; record fields render alphabetically.
-  A `yaml` BLOCK is a checked template: `let d = yaml` + an indented
+  Literal block scalars `|`/`|-` are in the subset (folded `>` and
+  `|+` reject): `|` MEANS ends-with-one-newline, `|-` ends-with-none —
+  the form follows the value both directions, and a multiline string
+  renders as a block scalar automatically. A `yaml` BLOCK is a
+  checked template: `let d = yaml` + an indented
   YAML block; `$name`/`$(expr)` splice VALUES (never text — no
   injection is possible), a `None` splice omits its entry, and
   `for (k, v) in pairs` under a mapping yields dynamic keys (under a
-  sequence, items). Paste a manifest, replace values with `$`.
+  sequence, items). A `key: |` block scalar's content is LITERAL —
+  `$VAR` and `for` lines inside it are bytes (embedded scripts stay
+  verbatim); templated content interpolates upstream and splices as a
+  whole value. Paste a manifest, replace values with `$`.
 - `!` runs commands: parens for one inline (`!(git pull)`), LINE-END
   `!` for a block below — indented bare command lines, one per line
   (no expressions, no `let`, no nested `!()` inside; leading `|`

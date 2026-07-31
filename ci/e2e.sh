@@ -3282,6 +3282,48 @@ expect "a district roundtrips through from yaml" "app" "$out"
 printf 'type R = { a: int }\nlet d = yaml\n    x: $(R { a = 1 })\nd |> to yaml |> print\n' > "$yddir/law.weir"
 out=$($BIN check "$yddir/law.weir" 2>&1 || true)
 expect "the splice law rejects a record at the splice" "a yaml splice takes string/int/bool" "$out"
+
+# ---- block scalars [D:block-scalars] --------------------------------------
+# the ConfigMap workload: literal content (splice-lookalikes are bytes),
+# blanks preserved, #! at content head; the form follows the value both
+# directions through a typed round trip
+cat > "$yddir/cm.weir" <<'WEOF'
+type Cm = { data: seq<string * string> }
+let cm = yaml
+    data:
+        run.sh: |
+            #!/bin/sh
+            echo $HOME stays literal
+
+            for x in xs
+        note: |-
+            no trailing newline
+
+let back = cm |> to yaml |> from yaml Cm |> Seq.head
+let get k = back.data |> Seq.choose (fun p -> match p with | (k2, v) when k2 == k -> Some v | _ -> None) |> Seq.head
+print (show (get "run.sh"))
+print (show (get "note"))
+cm |> to yaml |> print
+WEOF
+out=$($BIN "$yddir/cm.weir")
+expect "block scalar content is literal bytes" '"#!/bin/sh\necho $HOME stays literal\n\nfor x in xs\n"' "$out"
+expect "|- strips the trailing newline through the round trip" '"no trailing newline"' "$out"
+expect "the multiline value renders back as a block" "run.sh: |" "$out"
+expect "the no-trailing-newline value renders inline (form follows value)" "note: no trailing newline" "$out"
+echo "e2e ok: district block scalars — ConfigMap workload on the AOT binary"
+
+# a rejected header inside a district errors AT THE HEADER under check
+cat > "$yddir/fold.weir" <<'WEOF'
+let d = yaml
+    a: 1
+    s: >
+        folded
+d |> to yaml |> print
+WEOF
+out=$($BIN check --json "$yddir/fold.weir" 2>&1 || true)
+echo "$out" | grep -qF "folded block scalars" || fail "the folded teaching under check: $out"
+echo "$out" | grep -qF '"line":3' || fail "the header error must point at the header line: $out"
+echo "e2e ok: a rejected block header errors at the header, with the teaching"
 rm -rf "$yddir"
 
 echo "e2e battery: all green"

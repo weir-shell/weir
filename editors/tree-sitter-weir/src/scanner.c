@@ -35,8 +35,10 @@ enum { MODE_KEY, MODE_VALUE, MODE_WEIR };
 
 typedef struct {
   char in_district;
-  char base;   // indent of the first block line; a shallower line exits
-  char mode;   // MODE_*: what the rest of the current line lexes as
+  char base;       // indent of the first block line; a shallower line exits
+  char mode;       // MODE_*: what the rest of the current line lexes as
+  char in_block;   // inside a block scalar's content [D:block-scalars]
+  char block_base; // its content indent (0 = not yet seen)
 } State;
 
 static inline bool is_ident_start(int32_t c) {
@@ -55,6 +57,8 @@ void *tree_sitter_weir_external_scanner_create(void) {
   s->in_district = 0;
   s->base = 0;
   s->mode = MODE_KEY;
+  s->in_block = 0;
+  s->block_base = 0;
   return s;
 }
 void tree_sitter_weir_external_scanner_destroy(void *payload) { ts_free(payload); }
@@ -63,18 +67,24 @@ unsigned tree_sitter_weir_external_scanner_serialize(void *payload, char *buffer
   buffer[0] = s->in_district;
   buffer[1] = s->base;
   buffer[2] = s->mode;
-  return 3;
+  buffer[3] = s->in_block;
+  buffer[4] = s->block_base;
+  return 5;
 }
 void tree_sitter_weir_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
   State *s = payload;
-  if (length == 3) {
+  if (length == 5) {
     s->in_district = buffer[0];
     s->base = buffer[1];
     s->mode = buffer[2];
+    s->in_block = buffer[3];
+    s->block_base = buffer[4];
   } else {
     s->in_district = 0;
     s->base = 0;
     s->mode = MODE_KEY;
+    s->in_block = 0;
+    s->block_base = 0;
   }
 }
 
@@ -156,6 +166,28 @@ static bool scan_district(State *s, TSLexer *lexer) {
     lexer->result_symbol = YAML_END;
     return true;
   }
+  // block scalar content [D:block-scalars]: every line is BYTES — one
+  // text token, no splice/for/key scanning; a dedent ends the block
+  if (s->in_block) {
+    if (saw_nl) {
+      unsigned col = lexer->get_column(lexer);
+      if (s->block_base == 0) s->block_base = (char)(col > 127 ? 127 : col);
+      if (col >= (unsigned)s->block_base) {
+        bool any = false;
+        while (!(is_nl(lexer->lookahead) || (lexer->lookahead == 0 && lexer->eof(lexer)))) {
+          lexer->advance(lexer, false);
+          any = true;
+        }
+        if (!any) return false;
+        lexer->mark_end(lexer);
+        lexer->result_symbol = YAML_TEXT;
+        return true;
+      }
+    }
+    s->in_block = 0;
+    s->block_base = 0;
+  }
+
   if (saw_nl) s->mode = MODE_KEY;               // a fresh district line
 
   if (s->mode == MODE_WEIR) return false;       // for-header tail: internal lexes
@@ -218,7 +250,10 @@ static bool scan_district(State *s, TSLexer *lexer) {
         return true;
       }
     }
-    // key probe: text up to a real `: ` is a key; no such colon -> scalar
+    // key probe: text up to a real `: ` is a key; no such colon -> scalar.
+    // bp tracks the `|`/`|-` header shape (dashes/spaces, pipe, optional
+    // minus, trailing spaces) so `- |` arms block mode [D:block-scalars]
+    int bp = (c == 'f') ? -1 : 0;
     for (;;) {
       int32_t k = lexer->lookahead;
       if (k == ':' ) {
@@ -232,25 +267,44 @@ static bool scan_district(State *s, TSLexer *lexer) {
           return true;
         }
         consumed = true;                          // `a:b` — colon is scalar text
+        bp = -1;
         continue;
       }
       if (k == '$' || k == '"' || is_nl(k) || (k == 0 && lexer->eof(lexer))) {
         if (!consumed) return false;
         lexer->mark_end(lexer);
         s->mode = MODE_VALUE;
+        if (is_nl(k) && (bp == 1 || bp == 2 || bp == 3)) {
+          s->in_block = 1;
+          s->block_base = 0;
+        }
         lexer->result_symbol = YAML_TEXT;
         return true;
       }
+      if (bp == 0) bp = (k == '|') ? 1 : ((k == '-' || k == ' ') ? 0 : -1);
+      else if (bp == 1) bp = (k == '-') ? 2 : ((k == ' ') ? 3 : -1);
+      else if (bp == 2 || bp == 3) bp = (k == ' ') ? 3 : -1;
       lexer->advance(lexer, false);
       consumed = true;
     }
   }
 
-  // MODE_VALUE: scalar text up to a splice, quote, or line end
+  // MODE_VALUE: scalar text up to a splice, quote, or line end; bp
+  // tracks the `|`/`|-` header shape so `key: |` arms block mode
   bool consumed = false;
+  int bp = 0;
   for (;;) {
     int32_t k = lexer->lookahead;
-    if (k == '$' || k == '"' || is_nl(k) || (k == 0 && lexer->eof(lexer))) break;
+    if (k == '$' || k == '"' || is_nl(k) || (k == 0 && lexer->eof(lexer))) {
+      if (is_nl(k) && (bp == 1 || bp == 2 || bp == 3)) {
+        s->in_block = 1;
+        s->block_base = 0;
+      }
+      break;
+    }
+    if (bp == 0) bp = (k == '|') ? 1 : ((k == ' ') ? 0 : -1);
+    else if (bp == 1) bp = (k == '-') ? 2 : ((k == ' ') ? 3 : -1);
+    else if (bp == 2 || bp == 3) bp = (k == ' ') ? 3 : -1;
     lexer->advance(lexer, false);
     consumed = true;
   }

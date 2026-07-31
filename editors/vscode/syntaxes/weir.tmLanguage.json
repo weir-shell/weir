@@ -300,6 +300,27 @@
       },
       "patterns": [
         {
+          "comment": "block scalar content is LITERAL [D:block-scalars] — no splice/for coloring inside; the while backreferences the header's indent, so the region ends at the first line not deeper than it",
+          "begin": "^([ \\t]*)(?:(-)[ \\t]+|((?:- )*[^:#$\"\\s][^:#$\"]*?)(:)[ \\t]*)(\\|-?)[ \\t]*$",
+          "while": "^(?:\\1[ \\t]|[ \\t]*$)",
+          "contentName": "string.unquoted.block.yaml.weir",
+          "beginCaptures": {
+            "2": {
+              "name": "punctuation.definition.list.weir"
+            },
+            "3": {
+              "name": "variable.other.property.weir"
+            },
+            "4": {
+              "name": "punctuation.separator.key-value.weir"
+            },
+            "5": {
+              "name": "keyword.other.district.weir"
+            }
+          },
+          "patterns": []
+        },
+        {
           "begin": "^[ \\t]*(for)\\b",
           "end": "$",
           "beginCaptures": {

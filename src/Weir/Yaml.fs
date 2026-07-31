@@ -1,11 +1,12 @@
 module Weir.Yaml
 
 // The OWNED strict-YAML subset [D:yaml-v1] — scalars, block maps, block
-// sequences, `#` comments; multi-doc `---`. NOT parsed, each a teaching
-// error: anchors/aliases, tags, flow style, directives, complex keys,
-// block scalars (session-1 bound). The config-format spike's receipt:
-// the subset is small enough to OWN — weir's own error positions, zero
-// dependency bytes.
+// sequences, `#` comments; multi-doc `---`; literal block scalars `|`
+// and `|-` [D:block-scalars]. NOT parsed, each a teaching error:
+// anchors/aliases, tags, flow style, directives, complex keys, folded
+// scalars (`>`), `|+`, explicit indentation indicators. The
+// config-format spike's receipt: the subset is small enough to OWN —
+// weir's own error positions, zero dependency bytes.
 
 // the check-time-resolved TARGET SHAPE for `from yaml T` — eval has no
 // env.Types (the [D:env-enums] precedent: pack what eval needs into the
@@ -25,6 +26,10 @@ type Shape =
 // never needs them and typed conversion does
 type Node =
     | NScalar of raw: string * quoted: bool * line: int
+    // blockness is quotedness's sibling [D:block-scalars]: a block scalar
+    // is unambiguously a STRING (an int/bool field errors on one), and
+    // the case IS the internal record of the form
+    | NBlock of text: string * line: int
     | NNull of line: int
     | NSeq of items: Node list * line: int
     | NMap of entries: (string * Node) list * line: int
@@ -32,6 +37,7 @@ type Node =
 let nodeLine (n: Node) =
     match n with
     | NScalar(_, _, l)
+    | NBlock(_, l)
     | NNull l
     | NSeq(_, l)
     | NMap(_, l) -> l
@@ -123,15 +129,12 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
         Error "flow style is outside the yaml subset (use block maps and sequences)"
     elif t.StartsWith "!" then
         Error "tags are outside the yaml subset"
-    elif
-        t = "|"
-        || t = ">"
-        || t.StartsWith "| "
-        || t.StartsWith "> "
-        || t = "|-"
-        || t = ">-"
-    then
-        Error "block scalars are outside the yaml subset (use a quoted scalar with \\n)"
+    elif t.StartsWith "|" || t.StartsWith ">" then
+        // block scalars live in VALUE positions (mapping value, sequence
+        // item, whole document) and are intercepted there; a header
+        // reaching the scalar path is misplaced [D:block-scalars]
+        Error
+            "a block scalar cannot appear in this position (| and |- work as a mapping value, a sequence item, or a whole document)"
     else
         Ok(Some(t, false))
 
@@ -184,11 +187,135 @@ let splitKey (lineNo: int) (s: string) : (string * string) option =
 
         if key = "" then None else Some(key, s.Substring(found + 1))
 
+// ---- block scalars [D:block-scalars] --------------------------------------
+
+/// classify a value slot as a block scalar header: Ok keep? for `|`/`|-`,
+/// a teaching error for the rejected forms, None for a non-header
+let blockHeader (rest: string) : Result<bool, string> option =
+    let t = rest.Trim()
+
+    if t = "|" then
+        Some(Ok true) // clip: exactly one trailing newline
+    elif t = "|-" then
+        Some(Ok false) // strip: none
+    elif t = "|+" then
+        Some(
+            Error
+                "'|+' (keep all trailing newlines) is outside the yaml subset — use | (one trailing newline) or |- (none)"
+        )
+    elif t.StartsWith ">" then
+        Some(Error "folded block scalars (>) are outside the yaml subset — use | (literal)")
+    elif t.Length > 1 && t[0] = '|' && System.Char.IsDigit t[1] then
+        Some(
+            Error
+                "explicit indentation indicators are outside the yaml subset — content indentation is detected from the first line"
+        )
+    elif t.StartsWith "|" then
+        Some(Error "a block scalar header takes no inline content — the content is the indented lines below")
+    else
+        None
+
+/// content comes from the RAW lines (blank lines and `#`-shaped lines
+/// are BYTES inside a block scalar — the filtered view already dropped
+/// them), bounded by the first non-blank line at or left of the parent
+/// indent. Chomping is SEMANTIC: `|` yields one trailing newline, `|-`
+/// none; interior blanks become newlines; more-indented lines keep
+/// their extra indentation.
+let private blockScalar
+    (raw: (int * string)[])
+    (headerNo: int)
+    (parentIndent: int)
+    (keep: bool)
+    : Result<Node, string> =
+    let content = ResizeArray<int * string>()
+    let mutable i = 0
+
+    while i < raw.Length && fst raw[i] <= headerNo do
+        i <- i + 1
+
+    let mutable stop = false
+
+    while not stop && i < raw.Length do
+        let no, line = raw[i]
+
+        if line.Trim() = "" then
+            content.Add(no, "")
+            i <- i + 1
+        elif indentOf line > parentIndent then
+            content.Add(no, line.TrimEnd '\r')
+            i <- i + 1
+        else
+            stop <- true
+
+    // trailing blanks drop for both forms (keeping them is |+'s job, rejected)
+    while content.Count > 0 && snd content[content.Count - 1] = "" do
+        content.RemoveAt(content.Count - 1)
+
+    if content.Count = 0 then
+        Error $"line {headerNo}: a block scalar header needs an indented block below it"
+    else
+        let cIndent =
+            content |> Seq.filter (fun (_, l) -> l <> "") |> Seq.head |> snd |> indentOf
+
+        match content |> Seq.tryFind (fun (_, l) -> l <> "" && indentOf l < cIndent) with
+        | Some(no, _) -> Error $"line {no}: this line sits left of the block scalar's content indentation"
+        | None ->
+            let body =
+                content
+                |> Seq.map (fun (_, l) -> if l = "" then "" else l.Substring cIndent)
+                |> String.concat "\n"
+
+            Ok(NBlock((if keep then body + "\n" else body), headerNo))
+
+/// the last content line's number, for the extent-consistency guard
+let private blockLastNo (raw: (int * string)[]) (headerNo: int) (parentIndent: int) : int =
+    let mutable last = headerNo
+    let mutable i = 0
+
+    while i < raw.Length && fst raw[i] <= headerNo do
+        i <- i + 1
+
+    let mutable stop = false
+
+    while not stop && i < raw.Length do
+        let no, line = raw[i]
+
+        if line.Trim() = "" then
+            i <- i + 1
+        elif indentOf line > parentIndent then
+            last <- no
+            i <- i + 1
+        else
+            stop <- true
+
+    last
+
 // ---- the block parser -----------------------------------------------------
 
 // numbered CONTENT lines (blank and full-line-comment lines already
-// dropped, trailing comments stripped) → one document node
-let rec private parseBlock (lines: (int * string)[]) (start: int) (fin: int) (indent: int) : Result<Node, string> =
+// dropped, trailing comments stripped) → one document node. `raw` is
+// the UNFILTERED source — block scalar content reads from it
+// [D:block-scalars], because inside a block those dropped lines are bytes.
+let rec private parseBlock
+    (rawSrc: (int * string)[])
+    (lines: (int * string)[])
+    (start: int)
+    (fin: int)
+    (indent: int)
+    : Result<Node, string> =
+
+    // a block value, with the extent guard: a dedented `#` line inside
+    // the extent would strand the deeper lines after it outside the
+    // content — refuse rather than silently drop them
+    let blockValue (no: int) (parentIndent: int) (keep: bool) (i: int) (j: int) : Result<Node, string> =
+        let lastNo = blockLastNo rawSrc no parentIndent
+
+        match lines[i + 1 .. j - 1] |> Array.tryFind (fun (n2, _) -> n2 > lastNo) with
+        | Some(n2, _) ->
+            Error
+                $"line {n2}: this line is inside the block scalar's extent but outside its content (a dedented line above it ended the block)"
+        | None -> blockScalar rawSrc no parentIndent keep
+
     if start >= fin then
         Ok(
             NNull(
@@ -229,25 +356,30 @@ let rec private parseBlock (lines: (int * string)[]) (start: int) (fin: int) (in
                             raw.Substring(indent + (if raw.Substring(indent).TrimEnd() = "-" then 1 else 2))
 
                         let itemR =
-                            if inline'.Trim() = "" then
-                                // the item is the nested block below (or null)
-                                parseBlock lines (i + 1) j (indent + 2)
-                            else
-                                match splitKey no inline' with
-                                | Some _ ->
-                                    // compact map item: `- key: v` — the first
-                                    // entry lives on this line at indent+2
-                                    let shifted =
-                                        Array.append
-                                            [| no, String.replicate (indent + 2) " " + inline' |]
-                                            lines[i + 1 .. j - 1]
+                            match blockHeader inline' with
+                            | Some(Error msg) -> Error $"line {no}: {msg}"
+                            | Some(Ok keep) -> blockValue no indent keep i j
+                            | None ->
 
-                                    parseBlock shifted 0 shifted.Length (indent + 2)
-                                | None ->
-                                    if j > i + 1 then
-                                        Error $"line {no}: a scalar sequence item cannot have a nested block"
-                                    else
-                                        parseScalar no inline'
+                                if inline'.Trim() = "" then
+                                    // the item is the nested block below (or null)
+                                    parseBlock rawSrc lines (i + 1) j (indent + 2)
+                                else
+                                    match splitKey no inline' with
+                                    | Some _ ->
+                                        // compact map item: `- key: v` — the first
+                                        // entry lives on this line at indent+2
+                                        let shifted =
+                                            Array.append
+                                                [| no, String.replicate (indent + 2) " " + inline' |]
+                                                lines[i + 1 .. j - 1]
+
+                                        parseBlock rawSrc shifted 0 shifted.Length (indent + 2)
+                                    | None ->
+                                        if j > i + 1 then
+                                            Error $"line {no}: a scalar sequence item cannot have a nested block"
+                                        else
+                                            parseScalar no inline'
 
                         match itemR with
                         | Error e -> Error e
@@ -282,15 +414,20 @@ let rec private parseBlock (lines: (int * string)[]) (start: int) (fin: int) (in
                                         j <- j + 1
 
                                     let valueR =
-                                        if rest.Trim() = "" then
-                                            if j > i + 1 then
-                                                parseBlock lines (i + 1) j (indentOf (snd lines[i + 1]))
+                                        match blockHeader rest with
+                                        | Some(Error msg) -> Error $"line {no}: {msg}"
+                                        | Some(Ok keep) -> blockValue no indent keep i j
+                                        | None ->
+
+                                            if rest.Trim() = "" then
+                                                if j > i + 1 then
+                                                    parseBlock rawSrc lines (i + 1) j (indentOf (snd lines[i + 1]))
+                                                else
+                                                    Ok(NNull no)
+                                            elif j > i + 1 then
+                                                Error $"line {no}: '{key}' has both an inline value and a nested block"
                                             else
-                                                Ok(NNull no)
-                                        elif j > i + 1 then
-                                            Error $"line {no}: '{key}' has both an inline value and a nested block"
-                                        else
-                                            parseScalar no rest
+                                                parseScalar no rest
 
                                     match valueR with
                                     | Error e -> Error e
@@ -298,10 +435,16 @@ let rec private parseBlock (lines: (int * string)[]) (start: int) (fin: int) (in
 
                 entries start [] Set.empty |> Result.map (fun es -> NMap(es, firstNo))
             | None ->
-                if fin > start + 1 then
-                    Error $"line {firstNo}: expected 'key:' or '- ' at this indentation"
-                else
-                    parseScalar firstNo firstBody
+                match blockHeader firstBody with
+                | Some(Error msg) -> Error $"line {firstNo}: {msg}"
+                | Some(Ok keep) ->
+                    // a whole-document block scalar: `|` at the doc root
+                    blockValue firstNo indent keep start fin
+                | None ->
+                    if fin > start + 1 then
+                        Error $"line {firstNo}: expected 'key:' or '- ' at this indentation"
+                    else
+                        parseScalar firstNo firstBody
 
 /// parse numbered raw lines into DOCUMENTS (`---` separated, indent-0
 /// separators only; a leading `---` is allowed)
@@ -340,6 +483,8 @@ let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
                 else
                     docs[docs.Count - 1].Add((no, raw))
 
+            let rawArr = Array.ofList numbered
+
             let rec build (acc: Node list) (ds: (int * string)[] list) =
                 match ds with
                 | [] -> Ok(List.rev acc)
@@ -349,7 +494,7 @@ let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
                     else
                         let baseIndent = indentOf (snd d[0])
 
-                        match parseBlock d 0 d.Length baseIndent with
+                        match parseBlock rawArr d 0 d.Length baseIndent with
                         | Error e -> Error e
                         | Ok node -> build (node :: acc) rest
 
