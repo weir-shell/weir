@@ -1225,7 +1225,17 @@ quantity semantics now.
   (a command head GLUED to the sentinel is impossible from user text —
   the machine-boundary guard), and fragment parses run PADDED so every
   splice span lands at its true column. Mid-text `$` in a scalar is
-  LITERAL (compute with `$(...)`). BLOCK SCALARS IN DISTRICTS
+  LITERAL (compute with `$(...)`). THE `#` TABLE [D:district-hash],
+  stated once — `#` in a district means: full line at structure level
+  = comment; mid-line after whitespace at structure level = comment
+  (YAML's own rule — `from yaml` and the district AGREE, so a pasted
+  `image: nginx:latest # pinned` yields `nginx:latest` on both
+  paths); not preceded by whitespace (`a#b`) = part of the scalar;
+  inside a quoted scalar (`"a # b"`) = data; inside a splice hole
+  (`$(Str.join "#" xs)`) = expression text; anywhere in block-scalar
+  content = bytes. The scan is ONE machine with two faces (the yaml
+  comment scanner, hole-aware on the district face — never a second
+  quote machine). BLOCK SCALARS IN DISTRICTS
   [D:block-scalars]: a `key: |`/`|-` header opens literal content —
   NO splices, no `for`, no interpretation of any kind inside it. The
   rule is one sentence: a block scalar's content is bytes; templated

@@ -254,8 +254,17 @@ static bool scan_district(State *s, TSLexer *lexer) {
     // bp tracks the `|`/`|-` header shape (dashes/spaces, pipe, optional
     // minus, trailing spaces) so `- |` arms block mode [D:block-scalars]
     int bp = (c == 'f') ? -1 : 0;
+    bool kPrevSpace = true; // token start follows skipped whitespace
     for (;;) {
       int32_t k = lexer->lookahead;
+      if (k == '#' && kPrevSpace) {
+        // whitespace-preceded #: a comment [D:district-hash]
+        if (!consumed) return false;
+        lexer->mark_end(lexer);
+        s->mode = MODE_VALUE;
+        lexer->result_symbol = YAML_TEXT;
+        return true;
+      }
       if (k == ':' ) {
         lexer->mark_end(lexer);                  // key excludes the colon
         lexer->advance(lexer, false);
@@ -284,17 +293,22 @@ static bool scan_district(State *s, TSLexer *lexer) {
       if (bp == 0) bp = (k == '|') ? 1 : ((k == '-' || k == ' ') ? 0 : -1);
       else if (bp == 1) bp = (k == '-') ? 2 : ((k == ' ') ? 3 : -1);
       else if (bp == 2 || bp == 3) bp = (k == ' ') ? 3 : -1;
+      kPrevSpace = (k == ' ' || k == '\t');
       lexer->advance(lexer, false);
       consumed = true;
     }
   }
 
-  // MODE_VALUE: scalar text up to a splice, quote, or line end; bp
-  // tracks the `|`/`|-` header shape so `key: |` arms block mode
+  // MODE_VALUE: scalar text up to a splice, quote, comment, or line
+  // end; bp tracks the `|`/`|-` header shape so `key: |` arms block
+  // mode; a whitespace-preceded `#` is a comment [D:district-hash] —
+  // stop before it and the internal hash_line paints it
   bool consumed = false;
   int bp = 0;
+  bool prevSpace = true; // token start follows skipped whitespace
   for (;;) {
     int32_t k = lexer->lookahead;
+    if (k == '#' && prevSpace) break;
     if (k == '$' || k == '"' || is_nl(k) || (k == 0 && lexer->eof(lexer))) {
       if (is_nl(k) && (bp == 1 || bp == 2 || bp == 3)) {
         s->in_block = 1;
@@ -305,6 +319,7 @@ static bool scan_district(State *s, TSLexer *lexer) {
     if (bp == 0) bp = (k == '|') ? 1 : ((k == ' ') ? 0 : -1);
     else if (bp == 1) bp = (k == '-') ? 2 : ((k == ' ') ? 3 : -1);
     else if (bp == 2 || bp == 3) bp = (k == ' ') ? 3 : -1;
+    prevSpace = (k == ' ' || k == '\t');
     lexer->advance(lexer, false);
     consumed = true;
   }
