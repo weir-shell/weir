@@ -31,3 +31,12 @@ Add `grammar = "weir"` (implied by the language name) to the
 `tree-sitter generate` (needs the tree-sitter CLI and Node). The
 corpus acceptance: `tree-sitter parse` over every `.weir` in
 `examples/` and `tools/` must produce zero ERROR nodes.
+
+## Known nits
+
+- `$"... {{literal braces}} ..."` — the interp rules mis-lex a
+  `{{`-escape adjacent to a closing quote (2 ERROR nodes on
+  examples/showcase.weir line 44; present since before the
+  block-scalars session). The corpus-acceptance rule tolerates it
+  until a coloring session takes it; the fix likely lives in the
+  `interp_text`/`interp_escape` token ordering.

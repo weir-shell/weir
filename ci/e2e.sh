@@ -3326,4 +3326,62 @@ echo "$out" | grep -qF '"line":3' || fail "the header error must point at the he
 echo "e2e ok: a rejected block header errors at the header, with the teaching"
 rm -rf "$yddir"
 
+# ---- the hostile-byte fixture [D:content-bytes] ----------------------------
+# content is BYTES: every hostile class through one block scalar, asserted
+# byte-exact through check AND run. The fixture is GENERATED (printf) because
+# a checked-in literal with trailing spaces / tabs / CRLF invites editor and
+# git mangling — the generator IS the fixture.
+hbdir=$(mktemp -d)
+{
+    printf 'let d = yaml\n'
+    printf '    data:\n'
+    printf '        hostile.txt: |\n'
+    printf '            #!/bin/sh\n'
+    printf '            # comment-shaped\n'
+    printf '            // weir comment as data\n'
+    printf '            /// weir doc as data\n'
+    printf '\n'
+    printf '            \n'
+    printf '            \techo tab-first content\n'
+    printf '            ---\n'
+    printf '            trailing spaces   \n'
+    printf '            $name and $(1 + 2)\n'
+    printf '            for x in xs\n'
+    printf '                more indented\n'
+    printf '            { [ unbalanced ( brackets\n'
+    printf '            back to base\n'
+    printf '\n'
+    printf 'print (show d)\n'
+} > "$hbdir/hostile.weir"
+
+$BIN check "$hbdir/hostile.weir" || fail "hostile-byte fixture must check clean"
+
+cat > "$hbdir/expected.txt" <<'HEOF'
+YMap ([("data", YMap ([("hostile.txt", YStr "#!/bin/sh\n# comment-shaped\n// weir comment as data\n/// weir doc as data\n\n\n\techo tab-first content\n---\ntrailing spaces   \n$name and $(1 + 2)\nfor x in xs\n    more indented\n{ [ unbalanced ( brackets\nback to base\n")]))])
+HEOF
+$BIN "$hbdir/hostile.weir" > "$hbdir/got.txt"
+cmp -s "$hbdir/expected.txt" "$hbdir/got.txt" || {
+    diff "$hbdir/expected.txt" "$hbdir/got.txt" >&2
+    fail "hostile-byte fixture must survive byte-exact through run"
+}
+echo "e2e ok: the hostile-byte fixture is byte-exact through check and run"
+
+# CRLF [D:content-bytes]: a source file's line ending is not data —
+# normalized at read, so a CRLF-saved file behaves identically
+sed 's/$/\r/' "$hbdir/hostile.weir" > "$hbdir/crlf.weir"
+$BIN "$hbdir/crlf.weir" > "$hbdir/crlf.txt"
+cmp -s "$hbdir/got.txt" "$hbdir/crlf.txt" || fail "CRLF source must behave byte-identically to LF"
+echo "e2e ok: CRLF source normalizes at read — output byte-identical"
+
+# fmt: value-preserving on the fixture; its ONLY byte change is
+# normalizing the whitespace-only line to empty (a stated house rule —
+# both spellings are a blank content line); idempotent after
+cp "$hbdir/hostile.weir" "$hbdir/fmted.weir"
+$BIN fmt "$hbdir/fmted.weir" >/dev/null 2>&1 || true
+$BIN "$hbdir/fmted.weir" > "$hbdir/fmted.txt"
+cmp -s "$hbdir/got.txt" "$hbdir/fmted.txt" || fail "fmt must preserve the fixture's VALUE byte-exactly"
+$BIN fmt --check "$hbdir/fmted.weir" || fail "fmt must be idempotent on the fixture"
+echo "e2e ok: fmt preserves hostile-byte content (spaces-only line normalizes, value identical)"
+rm -rf "$hbdir"
+
 echo "e2e battery: all green"

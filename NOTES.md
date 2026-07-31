@@ -1,5 +1,65 @@
 # Spike Notes
 
+## the content-bytes audit — three collisions become seven, deliberately (2026-07-31)
+
+The block-scalars session found three normalizing layers the hard
+way; the audit walked the rest and found four more. The fixture came
+first, as the plan ordered: one block scalar carrying every hostile
+byte class, run against HEAD before any fix. HEAD's failure list —
+the audit's first result: the tab rejection reached inside content
+(assembler error); `//` and `///` lines VANISHED (stripComment plus
+the comment-only filter, both running before assembly ever saw a
+district); trailing whitespace was trimmed (the sentinel split and
+fmt, independently). Blanks, `#`/`#!`, `---`, splice-lookalikes,
+`for`-lines, and indentation games already survived — the
+block-scalars session's own work.
+
+The central fix moved the stripping INTO the assembler: assemble now
+takes raw lines and classifies/strips internally, so an active yaml
+district joins its lines' raw bytes while structure still parses the
+stripped text — `//` comments keep working everywhere outside
+districts, and full-line `#`/`//` shapes are structure-transparent
+inside them (bytes in block content, as the # precedent). The three
+callers dropped their filter+strip pipelines; the tests' direct
+assemble calls needed nothing (stripping is idempotent). The tab
+rejection narrowed the same way the directive scan did last session:
+a tab after the space indentation inside an active district is
+content. Trailing whitespace: the sentinel split stopped trimming,
+and fmt now strips only the space indentation (so a content-leading
+tab survives too).
+
+The subtler trio shared one missing piece: doc-attachment, the
+doc-align lint, and fmt's canonicalizeDocs all treated `///`-shaped
+content as doc syntax — the lint ERRORED on district bytes, and fmt
+re-anchored them (the safety net caught the latter, honestly). One
+shared mask (`districtContentMask`, defined once in Script off the
+real marker classifier) taught all three to skip content. Verified
+by adversary: a `/// doc-shaped` line above a deeper content line
+survives fmt untouched, silently passes check, and reads back as
+bytes.
+
+CRLF resolved without code: ReadAllLines normalizes line endings at
+read, so a CRLF-saved source behaves byte-identically — decided as
+the rule (a source file's line ending is not data), pinned in the
+fixture's CRLF twin. R1 resolved for the fallback: 2+ trailing
+newlines render quoted-with-escapes (valid, exact, round-trips); the
+ERROR spelling retired and the ledger's never-drop-bytes reasoning
+now argues FOR the fallback, as it always should have. R2 amended the
+maintenance plan (quoted-message verification — two ledger-claimed
+messages have now failed to exist). R3 filed the `{{ }}` interp nit
+in the grammar's own README under Known nits.
+
+The denominator: 16 sites examined, 10 touching potential content, 7
+mangling — all seven fixed. Stated normalizations, not mangles: fmt
+renders a whitespace-only content line as empty (value-identical);
+mid-line ` #` on district structure lines is data while the read side
+strips it (pre-existing asymmetry). Findings sized, not fixed: the
+fuzzer grammar generates no yaml districts (coverage gap — its
+reindent is uniform, so safe by construction when it does);
+attachments inside bang districts are unmasked but benign. The class
+is named in PROCESS with its archaeology, so the next byte-exact
+region inherits the audit.
+
 ## block scalars — the ConfigMap gap closes, and two walls moved (2026-07-31)
 
 PLAN-block-scalars executed, with the bless amendment folded in:

@@ -1192,8 +1192,10 @@ quantity semantics now.
   reader could mis-TYPE it — `"no"`, `"007"`, `"1e5"`, `"true"`,
   mid-line ` #`, and `: ` all double-quote. A MULTILINE string is a
   block scalar, not a quoted one [D:block-scalars]: one trailing
-  newline renders `|`, none renders `|-`, and two or more error (that
-  is `|+`'s job, rejected — a renderer never silently drops bytes);
+  newline renders `|`, none renders `|-`, and two or more fall back
+  to the quoted-with-escapes spelling (that is `|+`'s territory,
+  rejected — the fallback is valid, exact, and round-trips, so every
+  legal string stays renderable);
   the quoting law governs single-line strings only.
   Value-domain answers, probed then pinned: Show renders the recursive
   union; Eq REFUSES it via the existing no-seq rule's own teaching.

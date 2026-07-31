@@ -1220,13 +1220,7 @@ let private tplBlockScalar
     for k in start .. fin - 1 do
         let c, r, t = lines[k]
 
-        content.Add(
-            c,
-            (if t.Trim() = "" then
-                 ""
-             else
-                 String.replicate r " " + t.TrimEnd())
-        )
+        content.Add(c, (if t.Trim() = "" then "" else String.replicate r " " + t))
 
     while content.Count > 0 && snd content[content.Count - 1] = "" do
         content.RemoveAt(content.Count - 1)
@@ -1311,7 +1305,11 @@ let rec private parseTplBlock
             else
                 let col, rel, text = lines[i]
 
-                if text.Trim() = "" || text.TrimStart().StartsWith "#" then
+                if
+                    text.Trim() = ""
+                    || text.TrimStart().StartsWith "#"
+                    || text.TrimStart().StartsWith "//"
+                then
                     // blanks and full-line `#` comments are structure-
                     // transparent; both are BYTES inside a block scalar's
                     // content, which consumed its lines before this loop
@@ -1333,7 +1331,10 @@ let rec private parseTplBlock
                         seq { i + 1 .. j - 1 }
                         |> Seq.exists (fun k ->
                             let (_, _, t) = lines[k]
-                            t.Trim() <> "" && not (t.TrimStart().StartsWith "#"))
+
+                            t.Trim() <> ""
+                            && not (t.TrimStart().StartsWith "#")
+                            && not (t.TrimStart().StartsWith "//"))
 
                     if text.StartsWith "for " then
                         match tplForHeader col text with
@@ -1515,7 +1516,9 @@ let private yamlDistrict: Parser<Expr, unit> =
                 let content = part.Substring rel
 
                 if content.TrimEnd() <> "" then
-                    lineList.Add((partStart + rel, rel, content.TrimEnd()))
+                    // UNTRIMMED: trailing whitespace is bytes inside a
+                    // block scalar; structure decisions Trim on their own
+                    lineList.Add((partStart + rel, rel, content))
                 else
                     // a blank district line is BYTES inside a block
                     // scalar [D:block-scalars]; the structure loops skip it

@@ -68,3 +68,16 @@ NOTES.md (line 1901, "Proposed …") and their plans executed
 (4791/4846) but **never ratified into DECISIONS.md**. The features
 landed; the index rows are missing. Author the two rows from the
 decision content — not an extraction, a ledger repair.
+
+## Quoted-message verification (added by the content-bytes audit, 2026-07-31)
+
+Grep the ledgers (DECISIONS, NOTES, SEMANTICS, plans) for QUOTED ERROR
+MESSAGES and verify each exists in src and says what is claimed. Two
+instances found the hard way: yaml session 1's claimed teaching error
+for `|` was actually a misleading structural message ("has both an
+inline value and a nested block" — the block-scalars session found it
+when the promised teaching failed to appear), and the head-splat
+rejection named retired names. The failure mode is a plan built on a
+message that does not exist. Mechanically checkable: extract quoted
+strings from ledger prose, fuzzy-match against `src/Weir/*.fs` string
+literals, report unmatched claims.

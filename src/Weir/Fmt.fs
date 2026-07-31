@@ -111,9 +111,12 @@ let private canonicalizeDocs (out: string list) : string list =
     let isDoc (s: string) = s.TrimStart().StartsWith "///"
     let isCode (s: string) = (Script.stripComment s).Trim() <> ""
     let arr = List.toArray out
+    // district content is bytes [D:content-bytes] — a ///-shaped line
+    // inside one is data, never re-anchored
+    let masked = Script.districtContentMask out
 
     for i in 0 .. arr.Length - 1 do
-        if isDoc arr[i] then
+        if not masked[i] && isDoc arr[i] then
             let mutable j = i + 1
 
             while j < arr.Length && isDoc arr[j] do
@@ -180,8 +183,23 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                     ""
                 elif code.Trim() = "" then
                     // comment-only: transparent to assembly [D:comment-transparency];
-                    // keep it verbatim and leave formatter state alone
-                    raw.TrimEnd()
+                    // keep it verbatim and leave formatter state alone —
+                    // EXCEPT inside a yaml district, where the line is
+                    // CONTENT [D:content-bytes] and rides the re-anchor
+                    let cIndent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+                    match district with
+                    | Some(m, mDepth) when yamlDistrict && cIndent > m ->
+                        let b =
+                            match yamlBase with
+                            | Some b -> b
+                            | None ->
+                                yamlBase <- Some cIndent
+                                cIndent
+
+                        String.replicate ((mDepth + 1) * 4 + (cIndent - b)) " "
+                        + raw.Substring(min cIndent raw.Length)
+                    | _ -> raw.TrimEnd()
                 else
                     let indent = code |> Seq.takeWhile ((=) ' ') |> Seq.length
                     let piece = code.TrimStart()
@@ -196,7 +214,11 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                     yamlBase <- Some indent
                                     indent
 
-                            String.replicate ((mDepth + 1) * 4 + (indent - b)) " " + content
+                            // bytes: trailing whitespace AND a content-
+                            // leading tab survive [D:content-bytes] — strip
+                            // only the space indentation
+                            String.replicate ((mDepth + 1) * 4 + (indent - b)) " "
+                            + raw.Substring(min indent raw.Length)
                         else
                             // district lines: verbatim text at marker+1 depth
                             String.replicate ((mDepth + 1) * 4) " " + content

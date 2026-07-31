@@ -1232,10 +1232,13 @@ let boundaryTests =
                   [ VStr "k: |-"; VStr "  a"; VStr "  b" ]
                   "no trailing newline renders |-"
 
-              // multiple trailing newlines have no form in the subset
-              // (that is |+'s job, rejected) — never silently drop bytes
-              Expect.throwsC (fun () -> run "[(\"k\", \"a\\n\\n\")] |> to yaml" |> forceSeq |> ignore) (fun ex ->
-                  Expect.stringContains ex.Message "multiple newlines" "the |+ teaching")
+              // multiple trailing newlines have no block form (|+ is
+              // rejected) — the quoted-with-escapes FALLBACK keeps every
+              // legal string renderable, exactly [D:content-bytes]
+              Expect.equal
+                  (run "[(\"k\", \"a\\n\\n\")] |> to yaml" |> forceSeq)
+                  [ VStr "k: \"a\\n\\n\"" ]
+                  "the quoted fallback: valid, exact, round-trips"
 
               // the quoting-law boundary: one-line \"007\" quotes; a
               // multiline string starting 007 is a block scalar, unquoted

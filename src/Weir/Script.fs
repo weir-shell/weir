@@ -144,47 +144,6 @@ let private declName (raw: string) : (int * int) option =
     elif trimmed = "" then None
     else identAt indent
 
-/// Pure pass: a contiguous run of `///` lines attaches to the
-/// declaration on the next CODE line; a blank OR a plain `//` line
-/// breaks the run (the contiguity law). An attribute-only line
-/// (`[<...>]`) is TRANSPARENT: the doc rides through to the
-/// declaration below, so F#'s canonical doc-then-attribute order and
-/// the attribute-then-doc order both attach.
-let isAttributeOnlyLine (raw: string) =
-    let t = (stripComment raw).Trim()
-    t.StartsWith "[<" && t.EndsWith ">]"
-
-let docAttachments (lines: string list) : DocAttach list =
-    let mutable pending: string list = []
-    let acc = System.Collections.Generic.List<DocAttach>()
-
-    lines
-    |> List.iteri (fun idx raw ->
-        let ln = idx + 1
-
-        if isDocLine raw then
-            pending <- pending @ [ docText raw ]
-        elif isAttributeOnlyLine raw then
-            ()
-        elif raw.Trim() = "" then
-            pending <- []
-        elif (stripComment raw).Trim() = "" then
-            pending <- [] // a plain // comment-only line breaks contiguity
-        else
-            if not (List.isEmpty pending) then
-                match declName raw with
-                | Some(col, len) ->
-                    acc.Add
-                        { Line = ln
-                          Col = col
-                          Len = len
-                          Doc = pending }
-                | None -> ()
-
-            pending <- [])
-
-    List.ofSeq acc
-
 // In-string mask over a line — TRUE where a char sits inside any
 // string kind (plain/single/verbatim/triple). The scanner family's
 // third consumer face [D:fmt-respace]: respacing must never touch
@@ -421,6 +380,87 @@ let dangleOpensBlock (piece: string) : bool =
     // suffix behavior, zero movement)
     || t = "do"
     || t.EndsWith " do"
+
+/// A line-end district marker of ANY kind — the mask below and the
+/// REPL share classifyPiece's marker rules through these predicates.
+let isMarkerPiece (piece: string) =
+    (classifyPiece piece).Marker <> MarkerKind.NoMarker
+
+/// TRUE for physical lines that are DISTRICT content (deeper than an
+/// arming marker line) [D:content-bytes]: the byte-preserving passes —
+/// doc attachment, the doc-align lint, fmt's doc canonicalization —
+/// must neither read nor move them; content is bytes.
+let districtContentMask (lines: string list) : bool[] =
+    let arr = List.toArray lines
+    let mask = Array.create arr.Length false
+    let mutable armed: int option = None // the marker line's indent
+
+    for i in 0 .. arr.Length - 1 do
+        let raw = arr[i]
+        let code = stripComment raw
+        let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+        if raw.Trim() = "" then
+            () // blank: transparent, stays armed, unmasked
+        elif code.Trim() = "" then
+            match armed with
+            | Some m when indent > m -> mask[i] <- true
+            | _ -> ()
+        else
+            match armed with
+            | Some m when indent > m -> mask[i] <- true
+            | _ ->
+                armed <- None
+
+                if isMarkerPiece (code.TrimStart()) then
+                    armed <- Some indent
+
+    mask
+
+/// Pure pass: a contiguous run of `///` lines attaches to the
+/// declaration on the next CODE line; a blank OR a plain `//` line
+/// breaks the run (the contiguity law). An attribute-only line
+/// (`[<...>]`) is TRANSPARENT: the doc rides through to the
+/// declaration below, so F#'s canonical doc-then-attribute order and
+/// the attribute-then-doc order both attach.
+let isAttributeOnlyLine (raw: string) =
+    let t = (stripComment raw).Trim()
+    t.StartsWith "[<" && t.EndsWith ">]"
+
+let docAttachments (lines: string list) : DocAttach list =
+    let mutable pending: string list = []
+    let acc = System.Collections.Generic.List<DocAttach>()
+
+    let masked = districtContentMask lines
+
+    lines
+    |> List.iteri (fun idx raw ->
+        let ln = idx + 1
+
+        if masked[idx] then
+            () // district content is bytes — never doc syntax [D:content-bytes]
+        elif isDocLine raw then
+            pending <- pending @ [ docText raw ]
+        elif isAttributeOnlyLine raw then
+            ()
+        elif raw.Trim() = "" then
+            pending <- []
+        elif (stripComment raw).Trim() = "" then
+            pending <- [] // a plain // comment-only line breaks contiguity
+        else
+            if not (List.isEmpty pending) then
+                match declName raw with
+                | Some(col, len) ->
+                    acc.Add
+                        { Line = ln
+                          Col = col
+                          Len = len
+                          Doc = pending }
+                | None -> ()
+
+            pending <- [])
+
+    List.ofSeq acc
 
 /// The marker's district wrap: opener text and how many trailing
 /// characters of the armed line the first district line strips.
@@ -805,10 +845,42 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                         // boundary produced still fires at close
                         | Some p -> Ok(Some p, acc, blankSinceHead)
                         | None -> Ok(None, acc, true)
-                    elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' || inOpenBrace || inOpenLambda then
-                        let indent = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
+                    elif (stripComment raw).Trim() = "" then
+                        // comment-only: transparent [D:comment-transparency] —
+                        // EXCEPT inside an active yaml district, where the
+                        // line is BYTES (`// x` in a block scalar is data)
+                        match current with
+                        | Some({ District = Some { Active = Some bse
+                                                   Yaml = true
+                                                   MarkerIndent = m } } as p) when
+                            (let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length in ind > m && ind >= bse)
+                            ->
+                            let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
-                        if raw.Substring(0, indent).Contains '\t' then
+                            Ok(
+                                Some
+                                    { p with
+                                        LL = applyJoin (JYamlLine(ind - bse)) p.LL (raw.Substring ind) lineNo ind },
+                                acc,
+                                blankSinceHead
+                            )
+                        | Some p -> Ok(Some p, acc, blankSinceHead)
+                        | None -> Ok(None, acc, blankSinceHead)
+                    elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' || inOpenBrace || inOpenLambda then
+                        let wsRun = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
+                        let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+                        // content is bytes: inside an active yaml district a
+                        // tab AFTER the (space) indentation is CONTENT — the
+                        // structure-level rejection must not reach it
+                        let inYamlContent =
+                            match current with
+                            | Some { District = Some { Active = Some _
+                                                       Yaml = true
+                                                       MarkerIndent = m } } -> indent > m
+                            | _ -> false
+
+                        if indent < wsRun && not inYamlContent then
                             Error $"line {lineNo}: tabs are not allowed in indentation"
                         else
                             match current with
@@ -819,7 +891,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 else
                                     Error $"line {lineNo}: continuation without a statement"
                             | Some p ->
-                                let piece = raw.Substring indent
+                                // structure decisions read the STRIPPED text;
+                                // yaml-district joins carry the raw BYTES
+                                let rawPiece = raw.Substring indent
+                                let piece = (stripComment raw).Substring indent
                                 let cls = classifyPiece piece
 
                                 let rec go (p: Pend) =
@@ -918,7 +993,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             Ok(
                                                 Some
                                                     { p with
-                                                        LL = applyJoin (JYamlLine 0) p.LL piece lineNo indent
+                                                        LL = applyJoin (JYamlLine 0) p.LL rawPiece lineNo indent
                                                         LastIndent = indent
                                                         District = Some { dst with Active = Some indent } },
                                                 acc,
@@ -938,7 +1013,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 applyJoin
                                                                     (JYamlLine(indent - bse))
                                                                     p.LL
-                                                                    piece
+                                                                    rawPiece
                                                                     lineNo
                                                                     indent
                                                             LastIndent = indent },
@@ -2203,12 +2278,7 @@ let rec loadModuleCached
         let rawLines = readImportSource absPath |> Option.get
         let _, body, bodyOffset = scriptBody rawLines
 
-        let assembled =
-            body
-            |> List.mapi (fun i l -> bodyOffset + i + 1, l)
-            |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
-            |> List.map (fun (n, raw) -> n, stripComment raw)
-            |> assemble
+        let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
 
         match assembled with
         | Error msg -> stmt $"{absPath}: {msg}"
@@ -2454,9 +2524,13 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
     let diags = ResizeArray<Diagnostic>()
     let mutable runStart = -1 // index of the first `///` in the pending run
 
+    let masked = districtContentMask lines
+
     lines
     |> List.iteri (fun idx raw ->
-        if isDocLine raw then
+        if masked[idx] then
+            () // district content is bytes — the lint has no claim [D:content-bytes]
+        elif isDocLine raw then
             (if runStart < 0 then
                  runStart <- idx)
         elif isAttributeOnlyLine raw then
@@ -2556,11 +2630,7 @@ let analyzeLines
                 []
         | Error _ -> []
 
-    let logicalLines =
-        numbered
-        |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, stripComment raw)
-        |> assembleRecovering 10
+    let logicalLines = numbered |> assembleRecovering 10 // raw lines: assemble classifies/strips internally
 
     (let diags0 = List.ofSeq assemblyDiags
      diags0 |> ignore)
@@ -2854,12 +2924,7 @@ let run (path: string) (scriptArgs: string list) : int =
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
 
             // comment-only lines are TRANSPARENT [D:comment-transparency]
-            let assembled =
-                body
-                |> List.mapi (fun i l -> bodyOffset + i + 1, l)
-                |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
-                |> List.map (fun (n, raw) -> n, stripComment raw)
-                |> assemble
+            let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally
 
             match assembled with
             | Error msg ->
