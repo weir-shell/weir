@@ -496,14 +496,14 @@ let private renderString (s: string) : Rendered =
     let tame =
         s |> Seq.forall (fun c -> not (System.Char.IsControl c) || c = '\n' || c = '\t')
 
-    if s.Contains '\n' && tame && s.TrimEnd '\n' <> "" then
-        if s.EndsWith "\n\n" then
-            failwith
-                "to yaml: a string ending in multiple newlines has no block scalar form in the subset ('|+' is outside it) — trim to one trailing newline or none"
-        else
-            let keep = s.EndsWith "\n"
-            let body = if keep then s.Substring(0, s.Length - 1) else s
-            BlockScalar((if keep then "|" else "|-"), body.Split '\n' |> List.ofArray)
+    // multiple trailing newlines have no block form in the subset (`|+`
+    // is rejected) — they FALL BACK to the quoted-with-escapes spelling:
+    // valid, exact, round-trips; every legal string stays renderable
+    // [D:content-bytes]
+    if s.Contains '\n' && tame && s.TrimEnd '\n' <> "" && not (s.EndsWith "\n\n") then
+        let keep = s.EndsWith "\n"
+        let body = if keep then s.Substring(0, s.Length - 1) else s
+        BlockScalar((if keep then "|" else "|-"), body.Split '\n' |> List.ofArray)
     else
         Inline(Yaml.renderScalar s)
 
