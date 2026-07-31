@@ -785,6 +785,19 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                     if raw.Trim() = "" then
                         match current with
+                        // inside an ACTIVE yaml district a blank line is
+                        // BYTES [D:block-scalars] — a block scalar's
+                        // content keeps it, so it rides as an empty
+                        // verbatim line; the template parser skips blanks
+                        // everywhere outside a block scalar's content
+                        | Some({ District = Some { Active = Some _; Yaml = true } } as p) ->
+                            Ok(
+                                Some
+                                    { p with
+                                        LL = applyJoin (JYamlLine 0) p.LL "" lineNo 0 },
+                                acc,
+                                blankSinceHead
+                            )
                         // transparency is total while a statement pends
                         // [D:body-blanks] — the comment-line class, second
                         // member; the col-0 law (plus EOF) is the sole
@@ -2812,9 +2825,14 @@ let run (path: string) (scriptArgs: string list) : int =
 
         let mode, body, bodyOffset = scriptBody rawLines
 
+        // COLUMN-0 only: a directive is a statement-position thing.
+        // Indented `#` lines are continuations — inside a yaml district
+        // they are content (`#!/bin/sh` in a block scalar, `#` comments)
+        // [D:block-scalars]; anywhere else they fail the parse as the
+        // junk they are
         let directiveError =
             body
-            |> List.mapi (fun i l -> i, l.Trim())
+            |> List.mapi (fun i l -> i, l.TrimEnd())
             |> List.tryFind (fun (_, l) -> l.StartsWith "#")
 
         match directiveError with

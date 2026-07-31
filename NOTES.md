@@ -1,5 +1,63 @@
 # Spike Notes
 
+## block scalars — the ConfigMap gap closes, and two walls moved (2026-07-31)
+
+PLAN-block-scalars executed, with the bless amendment folded in:
+chomping is NOT a policy — `|` MEANS ends-with-one-newline, `|-`
+means ends-with-none, and the form follows the value in both
+directions. The probe answered the plan's first question: a
+multiline splice rendered as the `\n`-escaped quoted spelling
+(valid, unreadable — a bug against session 1's stated intent), and
+the read side's `|` produced a MISLEADING error ("has both an inline
+value and a nested block"), not even the promised teaching.
+
+The read side's real requirement surfaced immediately: block content
+must come from the RAW lines, because parseDocs drops blank lines
+and `#` lines and strips trailing ` #` comments BEFORE the block
+parser runs — and inside a block scalar all of those are bytes. So
+parseBlock threads the unfiltered source, and an extent-consistency
+guard refuses the one shape that could silently strand content (a
+dedented `#` line inside the extent). The write side is one law:
+multiline (and control-tame) strings render as blocks, one trailing
+newline → `|`, none → `|-`, two or more ERROR (that is `|+`'s job,
+rejected — a renderer never drops bytes silently). The reverse-Norway
+pin's multiline case moved WITH the feature, deliberately.
+
+The district half moved two walls the plan didn't fully see. FIRST,
+blank lines: the assembler's total transparency [D:body-blanks]
+would have silently dropped blank lines from block content — the
+never-drop class — so inside an ACTIVE yaml district a blank now
+rides the sentinel as an empty verbatim line, and the template
+parser skips blanks (and full-line `#`) at structure level while
+block content keeps them. The sentinel-split had to stop dropping
+empty fragments, and every nested-block decision switched from
+extent-length to CONTENT-counting (trailing district blanks were
+tripping "both inline and nested"). SECOND, the directive scan: the
+ConfigMap workload's first line is `#!/bin/sh`, and the run path
+called it a misplaced directive. A directive is a statement-position
+thing — the scan narrowed to COLUMN-0, which also closed the parked
+full-line-`#`-in-districts bound as a side effect (yaml comments at
+structure level, bytes inside blocks).
+
+The centrepiece held with no drama: content lines are consumed as
+TEXT before the splice/for scanners run, so `$name`, `$(1 + 2)`,
+`for x in xs`, and `key: value` shapes survive verbatim — pinned at
+unit and e2e, plus the sharp span pin (a rejected `>` header inside
+a district errors AT THE HEADER under check --json). fmt needed
+nothing: block content is offsets-within-offsets and the district
+relative-indent law already refuses to re-indent it — pinned anyway,
+with idempotence. Grammars: the tree-sitter scanner gained a block
+mode (5-byte state; whole content lines as single text tokens — no
+splice/for/key scanning inside), and TextMate bounds content with a
+while-BACKREFERENCE to the header's captured indent (the markdown-
+blockquote trick) — engine-verified both. micro stays exempt.
+
+Found while verifying, not fixed here: the tree-sitter grammar has a
+pre-existing 2-ERROR nit on showcase.weir's `{{literal braces}}`
+interp line (present at HEAD before this session — a future
+coloring-nit candidate). 952 unit (+4), e2e green with the ConfigMap
+battery, full ritual green.
+
 ## the showcase, and the two findings it earned (2026-07-30)
 
 examples/showcase.weir landed: one runnable tour of the language —

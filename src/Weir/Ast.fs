@@ -73,6 +73,9 @@ and ExprKind =
 
 and YamlTpl =
     | YtScalar of raw: string * quoted: bool * span: Span
+    // a literal block scalar [D:block-scalars]: content is BYTES,
+    // consumed before the splice/for scanners run, already chomped
+    | YtBlock of text: string * span: Span
     | YtSplice of Expr
     | YtSeq of items: YamlTplItem list * span: Span
     | YtMap of entries: YamlTplEntry list * span: Span
@@ -112,6 +115,7 @@ type Decl =
 let rec yamlTplExprs (tpl: YamlTpl) : Expr list =
     match tpl with
     | YtScalar _ -> []
+    | YtBlock _ -> []
     | YtSplice e -> [ e ]
     | YtSeq(items, _) ->
         items
@@ -269,6 +273,9 @@ and sexprYamlTpl (tpl: YamlTpl) : string =
     | YtScalar(raw, quoted, _) ->
         let q = "\""
         if quoted then q + raw + q else raw
+    | YtBlock(text, _) ->
+        let escaped = text.Replace("\n", "\\n")
+        "(block " + escaped + ")"
     | YtSplice e ->
         let inner = sexpr e
         "$(" + inner + ")"

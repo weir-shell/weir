@@ -527,6 +527,30 @@ let pod name pairs = yaml
 pod "web" [("app", "web")] |> to yaml |> print
 ```
 
+Block scalars are the ConfigMap workload: a `key: |` (or `|-`)
+header opens LITERAL content — `$VAR` and `for` lines inside it are
+bytes, because embedded scripts are full of `$` and silently
+substituting into them is the one thing a template must never do.
+Templated content interpolates upstream and splices as a whole
+value. `|` means the string ends with one newline, `|-` with none —
+the form follows the value in both directions, and a multiline
+splice renders as a block scalar automatically:
+
+```weir
+let hook = $"#!/bin/sh\necho deploying web\n"
+let cm = yaml
+    kind: ConfigMap
+    data:
+        static.sh: |
+            #!/bin/sh
+            echo $HOME stays literal
+
+            for f in *; do echo $f; done
+        hook.sh: $hook
+
+cm |> to yaml |> print
+```
+
 Nonzero exit raises when the stream is forced. To inspect instead of
 raise, reify the run:
 
