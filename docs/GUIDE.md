@@ -480,10 +480,20 @@ literal argv with a warning naming the weir spelling
 (`cmd |> File.write "out.txt"` / `File.append`). For bash semantics,
 run bash: `sh -c "the bash line"`.
 
+One footgun rides along with that escape hatch: inside the quoted
+line, `$w` is SH'S variable, not weir's binding. Weir passes the
+string verbatim (a string means the same thing everywhere), sh
+expands its own — usually empty — `w`, and the answer is silently
+wrong rather than an error. To splice a weir value into a bash line,
+interpolate it in before sh ever sees it (`sh -c $"echo got-{w}"`);
+when you don't need bash at all, the bare argv splice (`echo $w`)
+was the spelling all along.
+
 ```weir
 let marker = "guide"
 echo tagged $marker (40 + 2)
 sh -c "echo one && echo two"
+sh -c $"echo interpolated-{marker}"
 ```
 
 The effect loop is `for … do` — the shell shape, typed. A bare

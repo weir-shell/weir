@@ -95,7 +95,6 @@ values, `for: 3` as key not header), captures asserted via
 adapter negatives; the vsix rebuilt (the stale-vsix lesson); the Zed
 copy synced (the drift guard diffs it).
 
-||||||| parent of 4afc13b (fmt keeps yaml district relative indentation; /// docs attach through attribute lines)
 ## yaml session 2 — the district, and the machine boundary (2026-07-30)
 
 The `yaml` district landed: a checked block literal on the assembler's
