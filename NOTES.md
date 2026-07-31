@@ -1,5 +1,48 @@
 # Spike Notes
 
+## the showcase, and the two findings it earned (2026-07-30)
+
+examples/showcase.weir landed: one runnable tour of the language —
+typed argv/env, all four string kinds, records/unions/tuples, Regex
+patterns and seq patterns, the reifier family, adapters, files/glob,
+env sigils, all three districts, for/do, pmap, and the YAML arc as
+the finale (a `--tag` Option splicing into a district, omitting when
+None). Three iterations to green, both errors mine (a match on an
+untyped param; a group-less `rmatchAll` pattern — the groups seq is
+CAPTURES only, group 0 excluded).
+
+Writing it earned two findings, both fixed the same day:
+
+FIRST, `weir fmt` refused any file with a NESTED yaml district — the
+formatter flattened every district line to marker+1 depth (right for
+`!` blocks, whose command lines are flat), which destroyed the yaml
+block's RELATIVE indentation, and the safety re-parse correctly
+refused. The fix keeps the `!` behavior and adds the yaml species:
+the block's first line is the base, every line keeps its offset from
+it, and only the base re-anchors to marker+1. fmt now canonicalizes
+weir's indentation while never rewriting the yaml's own nesting —
+that is the user's data. Pinned: re-anchor + offset preservation +
+idempotence on nested districts.
+
+SECOND, a `///` doc ABOVE an attribute line silently detached — the
+attribute line broke the contiguity run, so F#'s canonical
+doc-then-attribute order dropped the doc from --help and hover with
+no warning (the showcase's `--limit` lost its help line this way).
+Attribute-only lines (`[<...>]`) are now TRANSPARENT to doc
+attachment — the doc rides through to the declaration below, both
+orders attach, and the doc-align lint rides through too (it anchors
+on the FIELD, so a misaligned doc above an attribute still errors).
+One helper (`isAttributeOnlyLine`), used by both walkers; fmt's
+canonicalizeDocs needed nothing (the attribute line already sits at
+the field's anchor). SKILL + GUIDE prose updated.
+
+Ritual note: one fuzz failure appeared on the first post-publish run
+and never again (10 consecutive green). The smoke seed is PINNED, so
+a code-caused failure would repeat deterministically; the harness
+spawns the binary under a wall-clock hang bound, and the failing run
+rode the machine's post-AOT-publish load — the environmental-timeout
+signature. Not chased further; noted so a recurrence has a trail.
+
 ## yaml district editor grammars — the arc's rider (2026-07-30)
 
 The district got its coloring treatment across all three grammars,
@@ -52,6 +95,7 @@ values, `for: 3` as key not header), captures asserted via
 adapter negatives; the vsix rebuilt (the stale-vsix lesson); the Zed
 copy synced (the drift guard diffs it).
 
+||||||| parent of 4afc13b (fmt keeps yaml district relative indentation; /// docs attach through attribute lines)
 ## yaml session 2 — the district, and the machine boundary (2026-07-30)
 
 The `yaml` district landed: a checked block literal on the assembler's
@@ -4433,7 +4477,6 @@ their standing echo. The exit-zero sentence ships in SKILL with the
 grep counter-example doc-tested: succeeds is ExitCode == 0 exactly,
 and no-match-is-data tools spell | complete.
 
-
 ## Param-ful command RHS — the first feature enabled by a bug fix (2026-07-23)
 
 `let revParse r = git rev-parse $r | Seq.head` runs, and the flagship
@@ -4459,7 +4502,6 @@ says it. Advisor pins (sigil equivalence, splice-typo did-you-mean)
 green first try. Friction retired for the param-ful half; block
 lets inside bodies stay the parked half's receipt collector.
 
-
 ## Seq.fold + fun-sugar — the port unblocked (2026-07-22)
 
 The strongest receipt on file cashes: both git-subrepo blocker folds
@@ -4484,7 +4526,6 @@ pipe had anchored. One-clause push-through (nested lambda vs TFun cod
 checks directly), zero pin movement. And the sugar needed NO checker
 adapter at all — pure parse desugar through curryParams, less than
 the budgeted flag-7 adapter.
-
 
 ## The small-items sweep — two sessions, four retirements (2026-07-22)
 
@@ -4514,7 +4555,6 @@ The board after: no-elif retired, the wrong-rejection closed, the
 masking class closed (open since incident one), Flag 7 closed — with
 the re-mine follow-ups done, the emptiest board since the audit.
 
-
 ## fmt v2 — respace under the parse-shape guard (2026-07-22)
 
 The respace park opened on the user's update-example receipt (fmt
@@ -4539,7 +4579,6 @@ existing pin caught the collapse and the gap is now preserved).
 682 unit / e2e green incl. all prior fmt roundtrips (bicep, env
 district, raw strings).
 
-
 ## Record update lands — the re-mine's headline cashed (2026-07-22)
 
 `{ r with F = v }` in all four planned forms: flat, multi-field,
@@ -4563,7 +4602,6 @@ row generalizes, and the result type IS the source's row variable
 One assembler ride-along: the brace-continuation sibling rule gained
 a with-header case. no-record-update retires with corpus archaeology;
 680 unit / 93 oracle / e2e green; check median 10ms.
-
 
 ## VS Code extension — the second editor, zero server changes (2026-07-22)
 
@@ -4594,7 +4632,6 @@ offside/district grammar wrong is worse than neutral. autoClosingPairs
 carries `@"` (multi-char opens work); `"""` deliberately not paired —
 it fights the plain-quote pair mid-type.
 
-
 ## The corpus re-mine — the four-wave debt paid (2026-07-22)
 
 Owed since tuples (WEIR_CORPUS_DIR absent then; noted, not dropped),
@@ -4624,7 +4661,6 @@ record-field-comma-trap (weir REJECTS the famous tuple-in-field trap
 rows; no-elif upgraded from "no demand" to top reopen candidate
 (2 corpus hits + the loc.weir agent friction) alongside
 no-record-update.
-
 
 ## Raw strings: @"..." and """...""" (2026-07-22)
 
@@ -4662,7 +4698,6 @@ divergence rowed (raw-single-line); interpolated-raw parked with its
 row born accurate from the probe (no-interpolated-raw). Check median
 back at 10ms.
 
-
 ## The Regex pattern + Str match family (2026-07-22)
 
 The regex park opens per plan. `| Regex "lit" binder ->` — one bespoke
@@ -4692,7 +4727,6 @@ regex/regex-arity, GUIDE's Matching-text section teaching the
 isMatch pipe idiom (the =~ park's precondition, shipped with v1).
 Check median 11ms — within the guard.
 
-
 ## Parse errors show the unassembled source (2026-07-21)
 
 "Can't we just show the unassembled? that is not what the user
@@ -4708,7 +4742,6 @@ the new renderer showed `let x = /` for the bicep example — junk
 that turned out to REALLY be in the working tree (editor-testing
 stray lines, removed with notice), the renderer telling the truth on
 its first outing.
-
 
 ## Runner missing-command diagnosis; a masking confession (2026-07-21)
 
@@ -4729,7 +4762,6 @@ binary; two full fsi bisection rounds "proved" impossible facts
 before a forced rebuild surfaced the truth. The verify rule (exit
 code first, count second) exists for exactly this and was skipped.
 
-
 ## The deeper sweep — idioms rot, keywords don't (2026-07-21)
 
 The user caught the docs sweep's blind spot twice in one message: the
@@ -4748,7 +4780,6 @@ examples/ and tools/, so scripts cannot rot silently again
 a doc sweep must grep for the OLD IDIOM each new feature obsoletes,
 not just the old names.
 
-
 ## Open rows meet nominal records; cursor-local repair (2026-07-21)
 
 Fourth round of the completion thread, and the deepest: the user
@@ -4765,7 +4796,6 @@ string; a second candidate closes the dangling delimiters AT THE
 CURSOR (suffix preserved), tried first. The completion ladder's
 repair rung now handles first, middle, and last lines of a
 statement, with nominal enrichment on open rows.
-
 
 ## fmt field-drift + assembly recovery (2026-07-21, user bug report)
 
@@ -4789,7 +4819,6 @@ assembly-broken line too (pinned). The recovery ladder is now
 uniform: assembly-level drop -> statement-level continue ->
 repair-typing -> fallback.
 
-
 ## Error-recovery completion — the park opens on a user push (2026-07-21)
 
 "In let quality t we know what t is" — correct, and it opened the
@@ -4811,7 +4840,6 @@ EXACTLY. The completion ladder: resolved head → its fields;
 pipeline-with-holes → exact element; repairable statement → exact
 row; truly unknowable → declared-fields fallback.
 
-
 ## Completion for params — the declared-fields fallback (2026-07-21)
 
 Third live-testing receipt: `t.` inside a function body completed
@@ -4827,7 +4855,6 @@ which is the parked next step if the noise ever bites. Also this
 session: completion textEdit ranges (the doubling + micro's prefix
 filter) — the pattern across all three reports: every client
 disagreement became a frame-level pin.
-
 
 ## Three out-of-band asks: exit, Ctrl+D, usage (2026-07-21)
 
@@ -4847,7 +4874,6 @@ editor was correct for two rounds of debugging. Last non-FParsec
 dependency deleted. (3) Usage text rewritten to the real surface
 (REPL/script/-e/check/fmt/lsp — the obsolete [run] form dropped from
 the text; the arm still accepts it).
-
 
 ## Live-testing receipts: check assumes commands; the resolver goes per-statement (2026-07-21)
 
@@ -4883,7 +4909,6 @@ existed for builtins now holds everywhere.
 Also from the same session: UnsafeRelaxedJsonEscaping (the default
 encoder's \u0022 quote escaping mangled in micro's display) with a
 frame-level probe.
-
 
 ## weir check + weir lsp — the chain lands (2026-07-21, chain 2+3/3)
 
@@ -4930,7 +4955,6 @@ the same single pipeline function every other consumer uses, built
 three days after that function's absence caused the mirror incident.
 The answer is cashed.
 
-
 ## One pipeline — the mirror incident's fix (2026-07-21, LSP chain 1/3)
 
 The incident: the oracle's weirVerdict mirror kept a pre-class
@@ -4954,7 +4978,6 @@ REPL's casing error gained the same underline as every other type
 error. Dead code retired: the REPL's tryRun. Sessions 2 (weir check
 --json) and 3 (weir lsp) consume this function next.
 
-
 ## The casing law — lowercase binds, uppercase declares (2026-07-21)
 
 The mini-session that closed the casing triple: constructors
@@ -4972,7 +4995,6 @@ the single-case park will inherit). The row calls itself the
 strictness family's first STYLISTIC member rather than borrowing the
 others' safety story. Migration grep: zero hits — the convention was
 exactly as strong as assumed.
-
 
 ## Pattern binders + the bare-comma amendment (2026-07-21)
 
@@ -5001,7 +5023,6 @@ fourth). Observed, pre-existing, out of scope: interp holes on
 unresolved vars default to string BEFORE a later pipe could resolve
 them (`1 |> (fun k -> $"{k}")` errors) — logged as a defaulting-
 order edge for a future look.
-
 
 ## REVERSAL: tuples land; "records are the product" retires (2026-07-21)
 
@@ -5044,7 +5065,6 @@ corpus re-mine was SKIPPED: WEIR_CORPUS_DIR absent in this
 environment (time-box zero; noted, not silently dropped). Pairwise
 migrated to seq<'a * 'a> with the {Fst; Snd} Pair record deleted.
 
-
 ## Literal patterns + () thunks (2026-07-21, Session 1 of the plan)
 
 The strongest-receipts item shipped first, as sequenced. Literal
@@ -5063,7 +5083,6 @@ block flipped to must-pass and the doc-test extractor proved the
 edit, the mechanism working as designed. Tuples (Session 2+) remain
 gated-open: type classes landed, so the structural gate is
 satisfied whenever the user calls it.
-
 
 ## The sentinel ledger CLOSES — type classes Session C (2026-07-21)
 
@@ -5090,7 +5109,6 @@ print sentinel, splices, and pmap workers. TRANSCRIPTION's A/B
 addenda consolidated into one section. The qualified-types question
 that opened with the ledger is ANSWERED and closed.
 
-
 ## Type classes Session B — Show + Ord; the runtime check dies (2026-07-21)
 
 Machine-regime again (standing choice from A). The headline landed
@@ -5110,7 +5128,6 @@ orderable, record still rejected). Oracle: both flagship shapes
 Same — including the generic sort helper, which F# also
 constraint-infers. Session C (hardening: classes x rows x generics
 product battery, ledger closure) remains.
-
 
 ## Type classes Session A — Eq, machine-regime-only (2026-07-20)
 
@@ -5137,7 +5154,6 @@ discipline, not construction — logged as a formalization candidate
 Retired: sentinel customer three (Seq.contains). Sessions B (Show/
 Ord — the runtime check dies) and C (hardening) remain.
 
-
 ## Type classes: design filed ahead of trigger (2026-07-20)
 
 plans/PLAN-type-classes.md is ON FILE, not opened — the district precedent
@@ -5155,7 +5171,6 @@ blessing before Session A (scoped constraint-core read, the plan's
 lean, vs machine-regime-only as the deferral experiment's boldest
 test). Session A's trigger remains: a user-code receipt, or recorded
 fiat.
-
 
 ## Hardening sweep — the postmortem pays out (2026-07-20)
 
@@ -5186,7 +5201,6 @@ One live masking incident during the session, for the ledger: a
 ran against a stale binary — the verify rule (exit code first)
 exists for exactly this and was applied on the second look.
 
-
 ## Env sugar Layers 1+2 — the seam pays out (2026-07-20)
 
 (Addendum, same day: modernizing the bicep example to the new idiom
@@ -5214,7 +5228,6 @@ district header — quote a literal one. The adjacency rule (ident
 glued to glyph and paren) keeps `$e (...)` and `$name` splices
 meaning what they always did.
 
-
 ## Child-env injection — the shEnv receipt lands (2026-07-20)
 
 The premise did the design work: "injection, not session mutation"
@@ -5234,7 +5247,6 @@ at translation time) now flow as typed argv lookups. Layer ledger on
 record in SEMANTICS: 0 ships, 1-2 parked with split triggers (the
 prediction, repeated: Layer 2 — the district header — is where
 receipts will point), 3 tombstoned.
-
 
 ## Assembler formalization — the boundary question (2026-07-20)
 
@@ -5269,7 +5281,6 @@ isCompoundHead/isElse), and this session absorbed it same-day.
 RULE for future sessions: new line-shape logic goes in classify /
 the scanner / Join — a StartsWith or quote-state loop in the fold is
 a review flag.
-
 
 ## Greedy-`;` design review — the offside close (2026-07-20)
 
@@ -5309,7 +5320,6 @@ revisit would be cheaper post-sigils — true, but not for the predicted
 reason: sigils shrank nothing here; the reprocess-and-piece machinery
 the district built made the compound stack a natural extension.
 
-
 ## Function-body sequencing — seqExpr in let-RHS (2026-07-20)
 
 The bicep-script translation (the first F#-to-weir translation with
@@ -5323,7 +5333,6 @@ branches, letIn value); `in` still closes a let-in because elements
 stop at keywords. 3 pins (function RHS, let-in value, no-params
 fallthrough past cmdLineLetRhs). Full translation receipts in
 NOTES-agent.md — shEnv/child-env is the headline.
-
 
 ## Typed Env — Env.load Config (2026-07-20)
 
@@ -5344,7 +5353,6 @@ Collect-then-raise proven with a three-problem environment reporting
 all three in one message. The exact-bool decision (true/false only;
 TRUE and 1 rejected) pinned in the battery.
 
-
 ## Indexers — xs[i] (2026-07-20)
 
 User ask, F# 6 precedent applied verbatim: `xs[i]` = `Seq.item i xs`
@@ -5357,7 +5365,6 @@ a recursive suffix loop (fields and indexes interleave; chains,
 row[0].Name, $(...)[0] all compose). The `_.Field` shorthand
 generalized to `_[0]` for free. jira-branch: the Seq.item lines are
 now fields[0]/fields[1]. 471 tests; suites/batteries/timing hold.
-
 
 ## The command district — line-end ! blocks (2026-07-20)
 
@@ -5413,7 +5420,6 @@ District x else resolved by INHERITANCE: a dedented else at marker
 indent rejoins its if (pinned); col-0 if/else remains the standing
 multiline boundary, unchanged by districts.
 
-
 ## Command-mode sigils — !(...) and $(...) (2026-07-20)
 
 PLAN-command-sigils executed. 457 + 37 tests; battery +6 pins; timing
@@ -5445,7 +5451,6 @@ the plan's model; no stop-and-report needed.
   BARE expressions; sigil atoms self-delimit, so the divergence
   protects a shrinking idiom — if its confusion metric ever fires,
   the revisit is cheaper now. Recorded, no action.
-
 
 ## Sequencing-and-args Session 2 — block effect sequencing (2026-07-20)
 
@@ -5480,7 +5485,6 @@ separator friction stands as a candidate rider — NOT taken into this
 session either (scope discipline; it is a record-context rule, not a
 sibling rule).
 
-
 ## Sequencing-and-args Session 1 — the library bits (2026-07-20)
 
 PLAN-sequencing-and-args Session 1 executed. 443 tests; battery +2
@@ -5507,7 +5511,6 @@ each, verified end to end with jira/fzf stand-ins.
   a named candidate rider for Session 2's assembler work — same
   technique, distinct context — NOT improvised into scope.
 
-
 ## The user guide — doc-tested from birth (2026-07-20)
 
 User asked "guide or too early?" — answered not-too-early on two
@@ -5531,7 +5534,6 @@ the guide before the guide could teach the error. Also quietly
 satisfying: the parallelism example opens with a line-head string
 list, legal only since the [-head fix.
 
-
 ## Worker sessions fork — cd allowed in parallel (2026-07-20)
 
 User question ("shouldn't we have nested sessions for parallel so cd
@@ -5553,7 +5555,6 @@ and its pin retired; fork-isolation pinned in unit (parent cwd
 compared across the call) and e2e (workers print /, /etc; parent
 prints /tmp after). parallelTests now testSequenced (they mutate the
 root session via cd).
-
 
 ## Seq.pmap / Seq.piter — data parallelism (2026-07-20)
 
@@ -5577,7 +5578,6 @@ amusing scope self-collision: the first timing probe used `ignore` —
 which weir deliberately parked; the unit-shaped spelling
 (if ... then print) was the honest fix.
 
-
 ## The F# border classified — rejected vs pending (2026-07-20)
 
 User question exposed the gap: divergences.md named oracle-refereed
@@ -5595,7 +5595,6 @@ pointer; the skill file routes agents to the table. The id-coupling
 tripwire fired during the rework itself (a renamed id broke its pin —
 the artifact and battery cannot drift apart).
 
-
 ## show — the debugging renderer (2026-07-20)
 
 The collision parked in PLAN-unit-and-print ("first dogfood complaint
@@ -5612,7 +5611,6 @@ in the payload, not just the top type. Print-family sentinel
 discipline reused verbatim: bespoke arms in applied/piped positions,
 string -> string bare-value default, value-shadowing falls through.
 430+ tests; battery +1; skill updated.
-
 
 ## Fix round: transparent comments, parse-error attribution (2026-07-20)
 
@@ -5641,7 +5639,6 @@ bleed hit), Seq.collect-as-flatMap (name freed, no demand yet),
 show/record-print (predicted first debugging complaint), comprehensions
 (evidence-gated), REPL multi-line.
 
-
 ## let f x = ... parameter sugar (2026-07-20)
 
 The corpus session's top yield, shipped same day on user go. Pure
@@ -5668,7 +5665,6 @@ Two findings from the session's own tripwires:
   history (`let sub x y = x - y` failed to infer). Rule regularized:
   every UNIQUE-typing operator defaults; `+` alone rejects
   (int-or-string), named as divergence no-operator-defaulting.
-
 
 ## Corpus mining executed — the park reopened and paid (2026-07-20)
 
@@ -5744,7 +5740,6 @@ strings inside ComponentTests test CODE — extraction is a parser of
 its own, which is precisely the plan's park criterion. The oracle's
 snippet-hash cache is ready if a corpus ever lands.
 
-
 ## weir fmt — the canonical formatter, v1 (2026-07-18)
 
 User hit `weir fmt file` falling through to "no such script: fmt"
@@ -5767,7 +5762,6 @@ parse is the claim-vs-behavior discipline applied to itself.
 
 417 tests; battery +1 pin; skill line added; timing holds.
 
-
 ## Example modernization catches a let-RHS regression (2026-07-18)
 
 Modernizing examples/repo-report.weir to current idioms (let-RHS
@@ -5788,7 +5782,6 @@ regression pin added (cd applied to the binding, by AST shape).
 411 tests. Lesson recorded: every mode-decision change needs pins for
 ALL THREE head classes (external, known, command-callable), not just
 the two that seem relevant.
-
 
 ## Part 3: overflow policy + data-range battery; collect renamed (2026-07-18)
 
@@ -5815,7 +5808,6 @@ overflow is now complete except the human READ.md.
   billion-element laziness); e2e adds >2GB sparse file, 0-byte file,
   Max-literal, and overflow-raise pins against the AOT binary.
 
-
 ## Ledger round 2 — fail, printerr, precedence hint (2026-07-18)
 
 Second same-day fix round from the dogfood ledger. 401 tests;
@@ -5836,7 +5828,6 @@ skill-doc extended (fail/printerr blocks); timing holds.
 - `in` question resolved at review: the token cannot leave the grammar
   (it is the assembler's join token) and -e/REPL need the one-liner
   form; user-typed `in` stays legal, scripts steer to block lets.
-
 
 ## Fix the findings — let-RHS commands, Seq.pairwise, blank-line attribution (2026-07-18)
 
@@ -5865,7 +5856,6 @@ skill-doc blocks extended and green; timing holds.
   let-RHS command): green in 3 iterations — the two new stumbles were
   anonymous-record prior-bleed (exact error, instant fix) and bareword
   word-splitting (bash-identical, quoted). Both logged.
-
 
 ## Agent dogfooding protocol — setup session (2026-07-18)
 
