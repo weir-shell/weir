@@ -12,7 +12,9 @@ stops being true fails the build.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
 - Comments are `//`. A `///` line is a DOC comment: it attaches to the
-  declaration immediately below it (a blank line breaks the link) and
+  declaration immediately below it (a blank line breaks the link; an
+  attribute line is transparent — `///` above or below `[<...>]` both
+  attach to the field) and
   shows on hover and in completion — at let bindings, `type` decls,
   record fields, and union cases; a doc must align with what it
   describes. On an `Args.load` field the doc's FIRST line is also its

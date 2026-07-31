@@ -153,8 +153,14 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
         // entries at opener-indent+4, closers at opener-indent; an
         // inline opener keeps column alignment [D:fmt-stroustrup]
         let mutable braces: (char * int * bool * int * int option) list = []
-        // district: Some(markerOrigIndent, markerDepth) while inside a ! block
+        // district: Some(markerOrigIndent, markerDepth) while inside a
+        // district block. A `!` block's command lines flatten to
+        // marker+1 depth; a yaml district's RELATIVE indentation is
+        // semantic [D:yaml-district] — its lines keep their offset from
+        // the block's first line (the base), re-anchored at marker+1
         let mutable district: (int * int) option = None
+        let mutable yamlDistrict = false
+        let mutable yamlBase: int option = None
         // open match heads, innermost first: (originalIndent,
         // formattedCol, first arm's original indent once seen) — arms
         // align under the m [D:fmt-match-arms]
@@ -182,11 +188,23 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 
                     match district with
                     | Some(m, mDepth) when indent > m ->
-                        // district lines: verbatim text at marker+1 depth
-                        String.replicate ((mDepth + 1) * 4) " " + content
+                        if yamlDistrict then
+                            let b =
+                                match yamlBase with
+                                | Some b -> b
+                                | None ->
+                                    yamlBase <- Some indent
+                                    indent
+
+                            String.replicate ((mDepth + 1) * 4 + (indent - b)) " " + content
+                        else
+                            // district lines: verbatim text at marker+1 depth
+                            String.replicate ((mDepth + 1) * 4) " " + content
                     | _ ->
 
                         district <- None
+                        yamlDistrict <- false
+                        yamlBase <- None
 
                         let formatted =
                             match braces with
@@ -248,8 +266,12 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                             levels <- indent :: kept
                                             List.length kept + 1
 
-                                    if ((Script.classifyPiece piece).Marker <> Script.MarkerKind.NoMarker) then
+                                    match (Script.classifyPiece piece).Marker with
+                                    | Script.MarkerKind.NoMarker -> ()
+                                    | marker ->
                                         district <- Some(indent, depth)
+                                        yamlDistrict <- (marker = Script.MarkerKind.Yaml)
+                                        yamlBase <- None
 
                                     let line = String.replicate (depth * 4) " " + content
 

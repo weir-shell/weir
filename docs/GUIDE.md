@@ -532,7 +532,9 @@ indented `let` closes at the next line of the same indent — F# light
 syntax.
 
 Doc comments: a `///` line attaches to the declaration right below it
-(a blank line breaks the link) and renders on hover and in completion
+(a blank line breaks the link; an attribute line is transparent, so
+`///` above or below a field's `[<...>]` both attach) and renders on
+hover and in completion
 — on let bindings, `type` declarations, record fields, and union
 cases. The editor shows the type first, then the doc. A doc must sit at
 its declaration's indent; `weir fmt` keeps it there. On an `Args.load`

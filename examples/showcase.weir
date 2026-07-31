@@ -1,0 +1,287 @@
+#!/usr/bin/env weir
+// weir showcase — one runnable tour of the language.
+// `weir check examples/showcase.weir` finds every error before ANY
+// line runs; `weir examples/showcase.weir [--verbose] [--tag x]`
+// executes. The one feature not here: `module`/`import` — it needs a
+// second file (see docs/GUIDE.md).
+
+// ---- typed argv: flags derive from a record ---------------------------
+
+type Cli = {
+    [<Short "v">]
+    /// chatty progress on stderr
+    verbose: bool
+
+    [<Default 6>]
+    /// upper bound for the number demos
+    limit: int
+
+    /// optional label stamped into the YAML demo
+    tag: Option<string>
+}
+
+let cli = Args.load Cli
+
+// ---- typed environment ------------------------------------------------
+
+type Level = Debug | Info | Quiet
+
+type EnvCfg = {
+    HOME: string
+    /// enum env vars match case-insensitively: =debug, =DEBUG, =Debug
+    WEIR_SHOWCASE_LEVEL: Option<Level>
+}
+
+let env0 = Env.load EnvCfg
+let level = env0.WEIR_SHOWCASE_LEVEL |> Option.defaultValue Info
+
+printerr $"starting under {env0.HOME} (level {show level}, pid {Self.pid})"
+
+if cli.verbose then printerr (show cli)
+
+// ---- strings: four kinds, one meaning everywhere ----------------------
+
+let who = "world"
+print $"hello {who} with {{literal braces}}"
+print @"C:\verbatim\no-escapes"
+print """say "hi" with no escapes at all"""
+
+// ranges are lazy; comprehensions are eager
+let squares = [for n in [1..cli.limit] -> n * n]
+print $"sum of squares to {cli.limit}: {squares |> Seq.sum}"
+
+// ---- tuples, records, copy-and-update ---------------------------------
+
+let pair = (3, "three")
+let n0, name0 = pair
+print $"{n0} spells {name0} (fst = {fst pair})"
+
+type Endpoint = { Host: string; Port: int }
+
+let dev = { Host = "localhost"; Port = 8080 }
+let prod = { dev with Port = 443 }
+print $"{prod.Host}:{prod.Port}"
+print (show prod)
+
+// ---- unions, match, guards --------------------------------------------
+
+type Verdict =
+    | Pass of int
+    | Retry of string * int
+    | Reject
+
+let judge score =
+    if score > 90 then Pass score
+    elif score > 50 then Retry ("close", score)
+    else Reject
+
+// constructor patterns need a KNOWN scrutinee — the pipeline types v
+[95; 100; 60; 10]
+    |> Seq.map judge
+    |> Seq.map (fun v ->
+        match v with
+        | Pass n when n == 100 -> "perfect"
+        | Pass n -> $"pass ({n})"
+        | Retry (why, n) -> $"retry {n}: {why}"
+        | Reject -> "reject")
+    |> Seq.iter print
+
+// ---- inferred constraints: == is generic, zero runtime checks ---------
+
+let same x y = x == y
+print (if same 1 1 && same "a" "a" then "generic == works" else "?")
+
+// ---- seqs: Regex patterns, choose, seq patterns, fold -----------------
+
+let logs = ["ok 200 /index"; "noise"; "ok 404 /missing"; "ok 200 /api"]
+
+let hits =
+    logs
+    |> Seq.choose (fun l ->
+        match l with
+        | Regex @"ok (\d+) (\S+)" (code, path) -> Some (code, path)
+        | _ -> None)
+    |> Seq.force
+
+hits |> Seq.iter (fun (c, p) -> print $"{c} <- {p}")
+
+let headline =
+    match hits with
+    | [] -> "no hits"
+    | (code, _) :: rest -> $"first code {code}, {rest |> Seq.length} more"
+
+print headline
+
+type Tally = { Big: int; Small: int }
+
+let step t n =
+    if n > 4 then { t with Big = t.Big + 1 }
+    else { t with Small = t.Small + 1 }
+
+let tally = [1..9] |> Seq.fold step { Big = 0; Small = 0 }
+print (show tally)
+
+let normalize = Str.trim >> Str.toLower
+print (normalize "  MiXeD Case  ")
+
+let jumps =
+    [3; 7; 12; 20]
+    |> Seq.pairwise
+    |> Seq.map (fun (a, b) -> $"{b - a}")
+
+jumps |> print
+
+// the scrape idiom: every match's groups, lazily, deduped
+let text0 = "see https://weir.dev/a then https://weir.dev/b then https://weir.dev/a"
+
+Str.rmatchAll @"(https://\S+)" text0
+    |> Seq.map Seq.head
+    |> Seq.distinct
+    |> Seq.iter print
+
+// ---- commands: argv is data, never a string ---------------------------
+
+let banner = "showcase"
+echo tag $banner (40 + 2) $"--label={banner}"
+
+let extras = []
+echo empty splat drops $@extras zero words
+
+let words = ["alpha"; "beta"; "gamma"]
+echo three words: $@words
+
+let caught = $(printf 'one\ntwo') |> Seq.length
+print $"captured {caught} lines"
+
+!(sh -c "echo effect && echo streams")
+
+let etc = $(^ls /etc) |> Seq.length
+print $"^ls forces the external: {etc} entries in /etc"
+
+// exit codes are data: the reifier family
+let found = grep -c weir /etc/hostname | succeeds
+print found
+
+let r = sh -c "echo out; echo err >&2; exit 3" | complete
+print $"complete: code {r.exitCode}, {r.stdout |> Seq.length} out, {r.stderr |> Seq.length} err"
+
+let code = sh -c "exit 0" | exitCode
+print $"exitCode reified: {code}"
+
+printf 'assert-me\n' | orFail "printf broke"
+
+// a weir seq pipes into an external's stdin
+let digest = ["alpha"; "beta"] | sha256sum |> Seq.head
+print $"stdin-piped digest: {digest}"
+
+// typed command output: porcelain and json adapters
+let staged =
+    git status --porcelain
+    |> from porcelain
+    |> Seq.where _.staged
+    |> Seq.length
+
+print $"staged files here: {staged}"
+
+type Peer = { host: string; port: int; note: Option<string> }
+
+let peer =
+    echo '{"host": "a.example", "port": 9000}'
+    |> from json Peer
+    |> Seq.head
+
+print $"peer {peer.host}:{peer.port} (note {show peer.note})"
+
+// ---- files, paths, glob (redirects are functions here) ----------------
+
+let tmp = $(mktemp -d) |> Seq.head
+let store = Path.combine tmp "words.txt"
+
+words |> File.write store
+["delta"] |> File.append store
+
+let back = File.read store
+print $"file roundtrip: {back |> Seq.length} lines in {Path.fileName store}"
+print $"first back: {back[0]}; missing 99th: {show (back |> Seq.tryItem 99)}"
+
+let txts = Path.glob $"{tmp}/*.txt" |> Seq.force
+print $"glob sees {txts |> Seq.length} txt file(s); stem = {Path.stem store}"
+
+// ---- env overlays: sigils and the env district ------------------------
+
+["GREETING=bonjour"; "SECRET=hunter2"] |> File.write (Path.combine tmp "svc.env")
+let ev = Env.fromFile (Path.combine tmp "svc.env")
+
+let greetz = $ev(sh -c "echo env says $GREETING") |> Seq.head
+print greetz
+
+!ev(sh -c "echo effect sees $GREETING too")
+
+let ready = true
+
+// line-end !name distributes the overlay over the block
+if ready then !ev
+    sh -c "echo district one: $GREETING"
+    sh -c "echo district two: still $GREETING"
+
+// bare ! district: command lines, parsed and checked before anything ran
+if ready then !
+    echo bare district line one
+    sh -c "true" | orFail "sh broke"
+
+// ---- iteration: for/do effects, parallel fan-out ----------------------
+
+for w in words do print $"word: {w}"
+
+for f in $(printf 'one\ntwo') do echo iter $f
+
+for s in ["first"; "second"] do !
+    echo command block $s
+
+let counts =
+    ["/etc/hostname"; "/etc/os-release"]
+    |> Seq.pmap (fun p -> $(wc -l $p) |> Seq.head)
+
+counts |> Seq.iter print
+
+// ---- YAML: nodes, adapters, and the checked template district ---------
+
+let ordered = YMap [("zulu", YStr "keeps"); ("alpha", YStr "your order")]
+ordered |> to yaml |> print
+
+type PeerDoc = { host: string; port: int }
+
+let peers =
+    ["host: a.example"; "port: 9000"; "---"; "host: b.example"; "port: 9001"]
+    |> from yaml PeerDoc
+
+peers |> Seq.iter (fun p -> print $"peer {p.host}:{p.port}")
+
+// the yaml DISTRICT: a checked block literal. Structure errors are
+// check errors; splices are typed VALUES, so no YAML injection exists
+// for the same reason no argv injection does; a None splice omits its
+// entry; `for` yields dynamic keys; ambiguous scalars auto-quote.
+let manifest name replicas tag pairs = yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+        name: $name
+        annotation: $tag
+        labels:
+            for (k, v) in pairs
+                $k: $v
+    spec:
+        replicas: $replicas
+        rollout: "on"
+
+let doc0 = manifest "web" 3 cli.tag [("app", "web"); ("tier", "edge")]
+doc0 |> to yaml |> print
+
+// ---- exit is explicit; unit prints nothing ----------------------------
+
+match level with
+| Debug -> printerr "debug: every section ran"
+| Info -> printerr "done"
+| Quiet -> print ()
+
+print "showcase complete"

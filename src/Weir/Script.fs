@@ -146,7 +146,14 @@ let private declName (raw: string) : (int * int) option =
 
 /// Pure pass: a contiguous run of `///` lines attaches to the
 /// declaration on the next CODE line; a blank OR a plain `//` line
-/// breaks the run (the contiguity law).
+/// breaks the run (the contiguity law). An attribute-only line
+/// (`[<...>]`) is TRANSPARENT: the doc rides through to the
+/// declaration below, so F#'s canonical doc-then-attribute order and
+/// the attribute-then-doc order both attach.
+let isAttributeOnlyLine (raw: string) =
+    let t = (stripComment raw).Trim()
+    t.StartsWith "[<" && t.EndsWith ">]"
+
 let docAttachments (lines: string list) : DocAttach list =
     let mutable pending: string list = []
     let acc = System.Collections.Generic.List<DocAttach>()
@@ -157,6 +164,8 @@ let docAttachments (lines: string list) : DocAttach list =
 
         if isDocLine raw then
             pending <- pending @ [ docText raw ]
+        elif isAttributeOnlyLine raw then
+            ()
         elif raw.Trim() = "" then
             pending <- []
         elif (stripComment raw).Trim() = "" then
@@ -2437,6 +2446,8 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
         if isDocLine raw then
             (if runStart < 0 then
                  runStart <- idx)
+        elif isAttributeOnlyLine raw then
+            () // transparent: the doc rides through to the declaration below
         elif raw.Trim() = "" || (stripComment raw).Trim() = "" then
             runStart <- -1 // a blank / plain-// breaks the run — no attachment, no claim
         else

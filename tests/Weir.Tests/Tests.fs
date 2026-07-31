@@ -3632,6 +3632,23 @@ let semanticTokenTests =
                   [ (2, 5, [ "doc" ]) ]
                   "let binder name is the key"
           }
+          test "doc comments: an attribute line is transparent — both doc/attribute orders attach [D:doc-help]" {
+              // F#'s canonical order: /// doc, then [<...>], then the field
+              Expect.equal
+                  (Weir.Script.docAttachments
+                      [ "type C = {"; "    /// the beta"; "    [<Default 3>]"; "    beta: int"; "}" ]
+                   |> List.map (fun d -> d.Line, d.Doc))
+                  [ (4, [ "the beta" ]) ]
+                  "the doc rides THROUGH the attribute to the field line"
+
+              // the pre-existing attribute-then-doc order keeps working
+              Expect.equal
+                  (Weir.Script.docAttachments
+                      [ "type C = {"; "    [<Default 3>]"; "    /// the beta"; "    beta: int"; "}" ]
+                   |> List.map (fun d -> d.Line, d.Doc))
+                  [ (4, [ "the beta" ]) ]
+                  "attribute-then-doc still attaches at the field line"
+          }
           test "doc comments: hover shows type FIRST, then the /// doc [D:doc-comments]" {
               let lines = [ "/// Adds one."; "let inc x = x + 1"; "print (inc 1)" ]
               let s = Weir.Lsp.hoverType lines 2 5 |> Option.defaultValue "" // on `inc`
@@ -3711,6 +3728,38 @@ let semanticTokenTests =
 
                   match Weir.Fmt.formatLines out with
                   | Ok out2 -> Expect.equal out2 out "fmt is idempotent with docs present"
+                  | Error e -> failtestf "second fmt failed: %s" e
+          }
+          test "fmt: a yaml district keeps relative indentation, re-anchors the base [D:yaml-district]" {
+              // the block's RELATIVE indentation is semantic (JYamlLine rel),
+              // so fmt re-anchors the base to marker+1 depth and preserves
+              // every line's offset from it — never rewriting the yaml's own
+              // nesting, which is the user's data
+              let src =
+                  [ "let d = yaml"
+                    "        a: 1"
+                    "        b:"
+                    "                c: two"
+                    ""
+                    "d |> to yaml |> print" ]
+
+              match Weir.Fmt.formatLines src with
+              | Error e -> failtestf "fmt failed: %s" e
+              | Ok out ->
+                  let indent (s: string) = s.Length - s.TrimStart().Length
+
+                  Expect.equal
+                      (indent (out |> List.find (fun l -> l.Contains "a: 1")))
+                      4
+                      "the base re-anchors to marker+1"
+
+                  Expect.equal
+                      (indent (out |> List.find (fun l -> l.Contains "c: two")))
+                      12
+                      "a nested line keeps its +8 offset from the base"
+
+                  match Weir.Fmt.formatLines out with
+                  | Ok out2 -> Expect.equal out2 out "fmt is idempotent on nested districts"
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "builtin docs: every doc example runs clean [D:builtin-docs]" {
