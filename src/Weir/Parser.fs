@@ -114,6 +114,28 @@ let sibSep = '\u001F'
 
 let sibSepStr = System.String(sibSep, 1)
 
+/// Line-end `yaml` arms a district; `to yaml` / `from yaml` are the
+/// boundary adapters [D:yaml-district]. One predicate, shared with the
+/// REPL colorizer's marker tint — never a second classifier.
+let isYamlMarkerPiece (piece: string) =
+    // a `schema=<name>` suffix declares the district's contract
+    // [D:yaml-schemas]; strip it, then apply the marker law
+    let core =
+        let lastTok =
+            match piece.LastIndexOf ' ' with
+            | -1 -> piece
+            | i -> piece.Substring(i + 1)
+
+        if lastTok.StartsWith "schema=" && lastTok.Length > 7 then
+            piece.Substring(0, piece.Length - lastTok.Length).TrimEnd()
+        else
+            piece
+
+    (core = "yaml" || core.EndsWith " yaml")
+    && not (core.EndsWith "to yaml")
+    && not (core.EndsWith "from yaml")
+
+
 let private pos (p: Position) : Pos =
     { Line = int p.Line
       Col = int p.Column }

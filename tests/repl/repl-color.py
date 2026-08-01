@@ -58,6 +58,9 @@ if not re.search(r"\x1b\[31mzzznope\x1b\[0m", t):
 t3 = run({}, ["let d = yaml\r", "\x03"])
 if not re.search(r"\x1b\[36myaml\x1b\[0m", t3):
     failures.append("line-end yaml marker must tint cyan")
+t5 = run({}, ["let d = yaml schema=x\r", "\x03"])
+if not re.search(r"\x1b\[36myaml schema=x\x1b\[0m", t5):
+    failures.append("the schema-bearing marker must tint whole [D:yaml-schemas]")
 t4 = run({}, ["x |> to yaml\r"])
 if re.search(r"\x1b\[36myaml\x1b\[0m", t4):
     failures.append("`to yaml` adapter must NOT tint as a marker")
