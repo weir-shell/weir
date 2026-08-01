@@ -1247,6 +1247,47 @@ let boundaryTests =
                   [ VStr "k: |-"; VStr "  007"; VStr "  x" ]
                   "the block side of the boundary"
           }
+          test
+              "district mid-line #: the five cases — comment cut, quoted/hole/glued data, block bytes [D:district-hash]" {
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let src =
+                  asm
+                      [ "let d = yaml"
+                        "    image: nginx:latest # pinned by ops"
+                        "    quoted: \"a # b\""
+                        "    glued: a#b"
+                        "    joined: $(\"x # y\") # hole hash is data"
+                        "    script: |"
+                        "        echo hi # bytes" ]
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      match Weir.Eval.eval valueEnv te with
+                      | Weir.Eval.VUnion("YMap", Some(Weir.Eval.VSeq pairs)) ->
+                          let vals =
+                              pairs
+                              |> Seq.map (fun p ->
+                                  match p with
+                                  | Weir.Eval.VTuple [ Weir.Eval.VStr k
+                                                       Weir.Eval.VUnion("YStr", Some(Weir.Eval.VStr v)) ] -> k, v
+                                  | other -> failtest $"bad pair {other}")
+                              |> Map.ofSeq
+
+                          Expect.equal vals["image"] "nginx:latest" "the mid-line comment cut — YAML's rule"
+                          Expect.equal vals["quoted"] "a # b" "a quoted # is data"
+                          Expect.equal vals["glued"] "a#b" "no whitespace before # — part of the scalar"
+                          Expect.equal vals["joined"] "x # y" "a # inside a splice hole is expression text"
+                          Expect.equal vals["script"] "echo hi # bytes\n" "block content stays bytes"
+                      | v -> failtest $"expected YMap, got {v}"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
           test "district block scalars: content is LITERAL — consumed before the splice/for scanners [D:block-scalars]" {
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with

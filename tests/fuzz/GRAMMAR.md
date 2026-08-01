@@ -49,6 +49,13 @@ composition, not type complexity.
 
 ## CANNOT yet produce
 
+- **yaml districts and block scalars** (the content-bytes audit's
+  find, 2026-07-31): no `yaml` marker, no template splices, no `for`
+  entries, no block-scalar content reach any invariant. The reindent
+  transform is UNIFORM (whole-block extra indent), so relative
+  offsets inside a yaml district are safe by construction when the
+  production lands — but until it does, the fuzzer's claims do not
+  cover the district grammar.
 - multiline lambdas (not a weir feature yet — this harness is that
   feature's acceptance rig when it lands)
 - multiline strings (never — not a weir feature)

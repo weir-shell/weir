@@ -3326,6 +3326,22 @@ echo "$out" | grep -qF '"line":3' || fail "the header error must point at the he
 echo "e2e ok: a rejected block header errors at the header, with the teaching"
 rm -rf "$yddir"
 
+# mid-line # on district structure lines is a comment [D:district-hash] —
+# the two paths agree; the acceptance: the pasted line emits UNQUOTED
+mhdir=$(mktemp -d)
+cat > "$mhdir/mh.weir" <<'WEOF'
+let d = yaml
+    image: nginx:latest # pinned by ops
+    quoted: "a # b"
+
+d |> to yaml |> print
+WEOF
+out=$($BIN "$mhdir/mh.weir")
+echo "$out" | grep -qxF "image: nginx:latest" || fail "the pasted-manifest comment must cut, value unquoted: $out"
+echo "$out" | grep -qxF 'quoted: "a # b"' || fail "a quoted # stays data: $out"
+echo "e2e ok: district mid-line # agrees with from yaml — unquoted value out"
+rm -rf "$mhdir"
+
 # ---- the hostile-byte fixture [D:content-bytes] ----------------------------
 # content is BYTES: every hostile class through one block scalar, asserted
 # byte-exact through check AND run. The fixture is GENERATED (printf) because

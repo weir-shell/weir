@@ -1303,7 +1303,14 @@ let rec private parseTplBlock
             if i >= fin then
                 Result.Ok(List.rev acc)
             else
-                let col, rel, text = lines[i]
+                let col, rel, textRaw = lines[i]
+
+                // mid-line ` #` on a STRUCTURE line is a comment — YAML's
+                // own rule, the read side's rule, now the district's too
+                // [D:district-hash]; quoted regions and $() holes are
+                // data, and block content was consumed as bytes before
+                // this loop ever ran
+                let text = Yaml.stripDistrictComment textRaw
 
                 if
                     text.Trim() = ""

@@ -408,7 +408,7 @@
           }
         },
         {
-          "match": "[^#$\"\\n]+",
+          "match": "(?:[^#$\"\\n]|(?<![ \\t])#)+",
           "name": "string.unquoted.yaml.weir"
         }
       ]

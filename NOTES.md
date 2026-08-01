@@ -1,5 +1,38 @@
 # Spike Notes
 
+## mid-line `#` in districts — the two paths agree (2026-07-31)
+
+The audit's "stated asymmetry" did not survive review: YAML's own
+rule (a whitespace-preceded `#` begins a comment) says the read side
+was right and the district was wrong, and the bite was in generated
+OUTPUT — reverse-Norway faithfully quoted the polluted value, so
+`to yaml` emitted `image: "nginx:latest # pinned by ops"`, silently
+wrong, uncatchable from inside the self-consistent weir→weir round
+trip. Paste-a-manifest is the district's pitch; pasted text now means
+what `from yaml` says it means.
+
+The cut is ONE machine with two faces: the yaml comment scanner
+grew a `holes` parameter — the plain face (read side) is YAML's
+lexical rule unchanged; the district face also skips `$(...)` holes,
+whose interior follows weir string rules (double with escapes,
+single raw, paren depth). The template parser cuts STRUCTURE lines
+and `for` headers before dispatch; block content was already
+consumed as bytes before the loop, so the ordering law did the
+protecting. A bonus the rule bought: trailing comments after
+splices (`key: $name # note`) parse now — they errored before.
+
+All five table rows landed first try on the probe, acceptance
+included (`image: nginx:latest`, unquoted). The corpus sweep found
+ZERO mid-line `#` occurrences in committed district sources — no pin
+moved anywhere. Grammars: the tree-sitter scanner stops yaml_text at
+a whitespace-preceded `#` and the pre-existing `hash_line` token
+paints the comment (quotes, holes, and block mode excluded — engine
+verified); TextMate's district comment rule was ALREADY right (the
+district session's foresight), needing only a lookbehind widening of
+the value catch-all so glued `a#b` stays one token; micro exempt.
+The fuzzer's missing yaml-district production is now in GRAMMAR.md's
+stated denominator, closing the audit's last loose thread.
+
 ## the content-bytes audit — three collisions become seven, deliberately (2026-07-31)
 
 The block-scalars session found three normalizing layers the hard

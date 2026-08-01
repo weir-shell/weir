@@ -54,16 +54,42 @@ let indentOf (s: string) =
 
 // strip a trailing ` #comment` OUTSIDE quotes — YAML's own lexical rule
 // (a yaml-text scanner, not a second weir-text quote machine)
-let private stripTrailingComment (s: string) =
-    let mutable inD = false
-    let mutable inS = false
+// ONE machine, two faces [D:district-hash]: the plain face is YAML's
+// lexical rule alone; the district face ALSO skips $(...) splice
+// holes, whose interior is weir expression text (weir string rules:
+// double with backslash escapes, single raw) — a `#` inside a hole or
+// inside quotes is data, a whitespace-preceded `#` outside both is a
+// comment.
+let private commentCutAt (holes: bool) (s: string) : int =
+    let mutable inD = false // yaml double quote (backslash escapes)
+    let mutable inS = false // yaml single quote
+    let mutable holeDepth = 0 // $(...) nesting, district face only
+    let mutable wD = false // weir double-quoted string inside a hole
+    let mutable wS = false // weir single-quoted raw inside a hole
     let mutable cut = -1
     let mutable i = 0
 
-    while i < s.Length do
+    while cut < 0 && i < s.Length do
         let c = s[i]
 
-        if inD then
+        if holeDepth > 0 then
+            if wD then
+                if c = '\\' then
+                    i <- i + 1
+                elif c = '"' then
+                    wD <- false
+            elif wS then
+                if c = '\'' then
+                    wS <- false
+            elif c = '"' then
+                wD <- true
+            elif c = '\'' then
+                wS <- true
+            elif c = '(' then
+                holeDepth <- holeDepth + 1
+            elif c = ')' then
+                holeDepth <- holeDepth - 1
+        elif inD then
             if c = '\\' then
                 i <- i + 1
             elif c = '"' then
@@ -71,15 +97,30 @@ let private stripTrailingComment (s: string) =
         elif inS then
             if c = '\'' then
                 inS <- false
+        elif holes && c = '$' && i + 1 < s.Length && s[i + 1] = '(' then
+            holeDepth <- 1
+            i <- i + 1
         elif c = '"' then
             inD <- true
         elif c = '\'' then
             inS <- true
-        elif c = '#' && i > 0 && s[i - 1] = ' ' && cut < 0 then
+        elif c = '#' && i > 0 && s[i - 1] = ' ' then
             cut <- i
 
         i <- i + 1
 
+    cut
+
+let private stripTrailingComment (s: string) =
+    let cut = commentCutAt false s
+    (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd()
+
+/// the district face [D:district-hash]: a whitespace-preceded `#` on a
+/// district STRUCTURE line is a comment (YAML's own rule — the read
+/// side already said so); quoted regions and $(...) holes are data.
+/// Block-scalar content never reaches this (consumed as bytes first).
+let stripDistrictComment (s: string) =
+    let cut = commentCutAt true s
     (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd()
 
 // a scalar token: quoted (double: \" \\ \n \t unescaped; single: '' = ')
