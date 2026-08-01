@@ -280,8 +280,12 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                     match attr with
                     | Some d ->
                         // a `///` doc + its field form ONE entry, both at the
-                        // anchor column (the doc-alignment lint governs this)
-                        emit entryInd $"/// {d}"
+                        // anchor column (the doc-alignment lint governs this).
+                        // TAG FALSE: a doc line is COMMENT territory — junk
+                        // appended to it becomes legal doc TEXT, never an
+                        // error (the span invariant must not target it; the
+                        // fresh-seed find of the coverage audit)
+                        emitCmd entryInd $"/// {d}"
                         emit entryInd $"{f}: {tyText ty}"
                     | None -> emit entryInd $"{f}: {tyText ty}"
 

@@ -1,5 +1,60 @@
 # Spike Notes
 
+## the fuzz-coverage audit — claims vs measured reality (2026-08-01)
+
+GRAMMAR.md says "the fuzzer passed" is a claim with the file as its
+denominator, so the file itself got audited: 400 base programs
+dumped through the real generator (fsi against the built FsCheck) and
+every CAN/CANNOT row measured, every harness config claim checked
+against the code, and deep runs actually run.
+
+THE FIND, and it is the audit's justification: FRESH-SEED DEEP RUNS
+WERE RED while the pinned smoke stayed green — the masked-failure
+shape the denominator exists to prevent. Root cause was a HARNESS
+bug, not a product bug: the renderer tagged `///` field-doc lines as
+expression territory, so the span invariants injected junk onto doc
+lines and demanded a diagnostic THERE — but junk appended to a doc
+line is legal doc TEXT (docs are inert), the real first error sits on
+the field line below, and the arbitration property called that a
+stolen report. One-line fix (doc lines tag as comment territory,
+like argv); the failing seed 481895091 now passes and three fresh
+1200-case runs came back clean. The field-doc generation landed
+2026-07-30; every deep run since would have been red — nobody ran
+one until now, which is its own lesson: THE DEEP RUN IS PART OF A
+GENERATOR CHANGE'S RITUAL.
+
+Measured and TRUE (the reassuring bulk): every other CAN row appears
+in the sample (block lets 288/400, match heads 154, headed districts
+188, multiline lambdas 233, standalone districts 55, command-backed
+block lets 16, aligned record types 7...); all fifteen CANNOT rows
+measure zero; markers are program-unique (0 duplicates in 1743);
+placement laws hold (0 indented type decls); block-let nesting never
+exceeds 2 (0 at depth 3); seed/count/strict-spans defaults and the
+CI wiring order match the claims; tools/fuzz.weir's 10k default is
+the attribute literal.
+
+Corrected in GRAMMAR.md, measurement-anchored: the splat is a
+TRANSFORM-ONLY spelling (0/400 base programs — it sat under CAN
+unqualified); the comments/blanks exclusion now scopes to plain `//`
+and inside-statement blanks (the base render HAS between-statement
+separators and /// docs — the old line contradicted the CAN list);
+the union-value match is marked THIN (~1%, 4/400 — a 200-case smoke
+barely sees it); the smoke timing claim updated ~7s → ~15s measured;
+the graded positive control restated as verified-at-bring-up, not a
+standing test. One incidental confirmation: the first fuzz run of
+the session failed 12/20 on the STALE-BINARY stamp gate (the merge
+had moved HEAD past the installed binary) — the harness-truth guard
+working exactly as institutionalized.
+
+ADDENDUM (user review): the CANNOT list still said "multiline
+lambdas (not a weir feature yet)" — stale since the feature landed,
+directly contradicting the CAN list's [D:multiline-lambda] entry
+(and the measurement: 233/400). Removed. The audit's own miss: it
+measured each list's rows individually but never cross-checked
+CANNOT against CAN for contradictions — a denominator audit should
+diff the two lists first, since a row present in both is the
+cheapest lie to detect.
+
 ## mid-line `#` in districts — the two paths agree (2026-07-31)
 
 The audit's "stated asymmetry" did not survive review: YAML's own
