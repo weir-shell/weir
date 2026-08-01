@@ -1,5 +1,85 @@
 # Spike Notes
 
+## mutation-testing spike — the pins-sufficiency claim, measured (2026-08-01)
+
+Throwaway spike (branch deleted, mutator deleted, tool uninstalled —
+the TOML precedent). The question: "these pins are sufficient" is the
+regime's one unfalsifiable claim; mutate the source and every
+survivor is a behaviour nothing checks. The natural successor to the
+vacuous-probe audit (can this probe FAIL?) and the maintenance
+sweep's stated 20-pin sample — this one is exhaustive over its
+region, and the region is stated.
+
+TOOLING VERDICT: Stryker.NET 4.16.0 (dotnet-stryker, probed against
+Weir.fsproj) throws `System.NotSupportedException: Language not
+supported: Fsharp` at project analysis — a hard exception, no partial
+mode. Hand-rolled instead: a ~100-line python mutator, textual,
+line-scoped to target ranges, compile-as-filter. MUTATION SET (the
+denominator rule): spaced `<`↔`<=`, `>`↔`>=`, `=`→`<>`, `<>`→`=`,
+`&&`↔`||`, `not (` deletion, `true`↔`false`, `List/Option.
+forall`↔`exists`, `.IsNone`↔`.IsSome`, int literal n→n+1, plus a
+bespoke rotation of the QUOTED kind words in Contracts
+tyKind/kindOk/literalKind (those strings are logic, not messages).
+Stated exclusions: string contents and interpolation-hole
+expressions (quote-count guard), and the ASSEMBLER by design — its
+mutants crash rather than survive, which is uninformative.
+
+TARGETS: Check.fs class solver `demand`+`dischargeCons` (349–411),
+json field law (695–726), yaml tree law (735–792), Env loadable
+family (1458–1523); Contracts.fs tyKind→spliceCheck (496–666).
+
+RAW COUNTS: 61 generated / 0 invalid (every mutant compiled) /
+55 killed / 6 survived / 0 timed out. Unit suite only (957 tests).
+19.0s per mutant, 19.3 min total wall.
+
+THE CLUSTERING READ IS THE FINDING: Contracts.fs killed 35/35 —
+the schema-polish pins are demonstrably tight in the newest code.
+Five of six survivors sit in ONE function: the class solver's
+`demand`. Every survivor classified, verified EMPIRICALLY (mutant
+applied, rebuilt, probe re-checked — verdict flip or byte-identical
+error):
+
+REAL (3), all in `demand`, each with its missing pin's exact fixture:
+- Check.fs:371 decompose `List.forall`→`exists`: a MIXED record
+  passes Eq. Probe: `type R = { A: int; B: seq<int> }` + `r == r` —
+  real binary errors, mutant accepts. Root cause visible in the
+  suite: the Eq fixtures are uniform single-field records
+  (`Holder = { S: seq<int> }`), where forall and exists agree.
+- Check.fs:389 Show `TTuple` `forall`→`exists`: a tuple with a
+  function component passes show. Probe: `(1, (fun x -> x + 1)) |>
+  show` — real errors [show-fn], mutant accepts. The Eq tuple twin
+  (line 383) was KILLED — Eq tuples are pinned, Show tuples are not.
+- Check.fs:362 TRowVar pend-arm `true`→`false`: an Eq constraint
+  riding a ROW var. Probe: `let f = fun r -> r.A == 1 && r == r` —
+  real binary accepts (constraint pends on the row), mutant rejects.
+  Nothing pins that acceptance.
+
+EQUIVALENT (3) — reported separately, NOT gaps:
+- Check.fs:397 var/rowvar fallback arm flip: dead by construction —
+  resolve's outer arms consume vars first; the code's own comment
+  says the compiler cannot see it. Textbook equivalent mutant.
+- Check.fs:377 decompose unknown-type `false`→`true`: unreachable by
+  checker invariant — a TNamed reaching demand was already resolved
+  against env.Types; unknown names error at mention, upstream.
+- Check.fs:1460 isEnum `forall`→`exists`: masked by ordering — the
+  payloadCase check runs first and any mixed union has a payload
+  case; probe confirms byte-identical error text under the mutant.
+E2E-COVERED (c): none — no e2e pin touches the three real shapes.
+
+VERDICT (outcome one: survivors cluster somewhere real): the sized
+finding is THREE unit pins, ~20 lines, fixtures above verbatim —
+ride the next Check.fs session, or a 15-minute errand. The cluster
+says something usable: the solver's STRUCTURAL region (decompose,
+pend arms) is where pins thinned — concrete-type arms are pinned to
+the letter, the recursive/constraint-carrying paths aren't; any
+future predicate family (the signatures arc's solver work) should
+pin its mixed/structural cases from day one. Adoption: NOT periodic,
+NEVER CI (20s × mutant count and growing); re-run the hand-rolled
+mutator after the next session that grows a predicate family — the
+script is 100 lines and fully reconstructible from the operator list
+above. The pins-sufficiency claim now has a measurement: sufficient
+in Contracts, three named holes in the solver.
+
 ## the resolver invariant — check agrees with run, and the yaml production (2026-08-01)
 
 Item 1 of the refactor follow-ups, and the plan's thesis held
