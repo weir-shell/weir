@@ -1411,7 +1411,15 @@ let rec private parseTplBlock
                                     else
                                         Result.Error("a key splice is $name (string-typed)", col)
                                 else
-                                    Result.Ok(YtKeyLit rawKey)
+                                    // key span: text start through the key's
+                                    // width — schema validation anchors here
+                                    Result.Ok(
+                                        YtKeyLit(
+                                            rawKey,
+                                            { Start = { Line = 1; Col = col }
+                                              End = { Line = 1; Col = col + rawKey.Length } }
+                                        )
+                                    )
 
                             match keyR with
                             | Result.Error e -> Result.Error e
@@ -1507,8 +1515,15 @@ let rec private parseTplBlock
                 | _ -> Result.Error("multiple for blocks need a surrounding mapping or sequence context", firstCol)
 
 let private yamlDistrict: Parser<Expr, unit> =
-    attempt (getPosition .>> pstring "yaml" .>> followedBy (pstring sibSepStr))
-    >>= fun startP ->
+    attempt (
+        getPosition .>> pstring "yaml"
+        .>>. opt (
+            pstring " schema="
+            >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+        )
+        .>> followedBy (pstring sibSepStr)
+    )
+    >>= fun (startP, schemaName) ->
         getPosition .>>. manyChars anyChar
         >>= fun (tailP, tail) ->
             let parts = tail.Split sibSep
@@ -1546,7 +1561,7 @@ let private yamlDistrict: Parser<Expr, unit> =
                     let endCol = colCursor
 
                     preturn
-                        { Kind = EYaml tpl
+                        { Kind = EYaml(tpl, schemaName)
                           Span =
                             { Start = pos startP
                               End = { Line = int startP.Line; Col = endCol } } }
@@ -1689,15 +1704,20 @@ let private spliceSplat: Parser<Expr, unit> =
 
 let private cmdArgWith (stopAtIn: bool) =
     let bareword =
+        // the machine boundary, arg face [D:yaml-district]: a bareword
+        // GLUED to the sentinel can only be the assembler's yaml wrap
+        // (`yaml schema=x` + glued sentinel) — statement joins SPACE it.
+        // Refusing here makes the command path fall through to the
+        // district arm, exactly as the head guard does for bare `yaml`.
         if stopAtIn then
             // In a let RHS, a bareword `in` would silently become argv (the
             // let...in cliff). Stop instead: the parse falls through to the
             // expression grammar and surfaces a check error. Quote "in" to
             // pass it to a command from a let RHS.
             notFollowedBy (attempt (pstring "in" .>> notFollowedBy (satisfy cmdWordChar)))
-            >>. (spanned (cmdWord |>> EStr) |>> mkExpr .>> ws)
+            >>. (spanned (cmdWord |>> EStr) |>> mkExpr .>> notFollowedBy (pchar sibSep) .>> ws)
         else
-            spanned (cmdWord |>> EStr) |>> mkExpr .>> ws
+            spanned (cmdWord |>> EStr) |>> mkExpr .>> notFollowedBy (pchar sibSep) .>> ws
 
     choice
         [ strLit
@@ -1727,6 +1747,17 @@ let private commandSegment
         // sentinel can only be the assembler's yaml-district wrap
         // (statement joins always space the sentinel) — never a command
         .>> notFollowedBy (pchar sibSep)
+        // …and its marker+schema face [D:yaml-schemas]: a ` schema=<name>`
+        // suffix GLUED to the sentinel is the same wrap (`yaml schema=x`);
+        // no user argv is ever glued, so the whole segment refuses here
+        // and the parse falls through to the district arm
+        .>> notFollowedBy (
+            attempt (
+                pstring " schema="
+                >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                >>. pchar sibSep
+            )
+        )
         .>> ws
         >>= fun ((forced, w), span) ->
             if w[0] = '[' then

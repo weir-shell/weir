@@ -129,6 +129,74 @@ let main argv =
     | "fmt" :: _ ->
         Console.Error.WriteLine "usage: weir fmt [--check|--qualify] <script>"
         2
+    // external contracts [D:contracts-spine]: `add <kind>` is
+    // KIND-AWARE (acquiring differs per kind); `restore`/`verify`
+    // operate on the LOCKFILE and are kind-agnostic by construction.
+    // All resolve .weir/ from the CWD; check never does any of this.
+    | [ "add"; "schema"; url; "--as"; name ] ->
+        let weirDir =
+            match Contracts.findWeirDir "." with
+            | Ok d -> d
+            | Error _ ->
+                IO.Directory.CreateDirectory ".weir" |> ignore
+                IO.Path.GetFullPath ".weir"
+
+        (match Contracts.addFetched weirDir "schema" name url with
+         | Ok line ->
+             Console.WriteLine line
+             0
+         | Error e ->
+             Console.Error.WriteLine $"weir add: {e}"
+             1)
+    | "add" :: "sig" :: _ ->
+        Console.Error.WriteLine
+            "weir add sig: command signatures are the spine's next customer — not built yet (DESIGN-command-signatures.md); `add sig <tool>` will GENERATE from the installed binary"
+
+        2
+    | "add" :: "module" :: _ ->
+        Console.Error.WriteLine
+            "weir add module: remote modules are the spine's third customer — not built yet (DESIGN-external-contracts.md); `add module <repo> --ref <sha>` will clone at a ref"
+
+        2
+    | "add" :: _ ->
+        Console.Error.WriteLine
+            "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig <tool>                (next customer — generates from the installed binary)\n       weir add module <repo> --ref <sha> (third customer — clones at a ref)"
+
+        2
+    | [ "restore" ] ->
+        (match Contracts.findWeirDir "." with
+         | Error e ->
+             Console.Error.WriteLine $"weir restore: {e}"
+             1
+         | Ok weirDir ->
+             match Contracts.restore weirDir with
+             | Ok lines ->
+                 lines |> List.iter Console.WriteLine
+                 0
+             | Error e ->
+                 Console.Error.WriteLine $"weir restore: {e}"
+                 1)
+    | "restore" :: _ ->
+        Console.Error.WriteLine "usage: weir restore — re-materialize everything the lock records (hash-verified)"
+        2
+    | [ "verify" ] ->
+        (match Contracts.findWeirDir "." with
+         | Error e ->
+             Console.Error.WriteLine $"weir verify: {e}"
+             1
+         | Ok weirDir ->
+             match Contracts.verify weirDir with
+             | Error e ->
+                 Console.Error.WriteLine $"weir verify: {e}"
+                 1
+             | Ok(lines, findings) ->
+                 lines |> List.iter Console.WriteLine
+                 if List.isEmpty findings then 0 else 1)
+    | "verify" :: _ ->
+        Console.Error.WriteLine
+            "usage: weir verify — vendored contracts against the lock (absent/modified are findings; exit 1)"
+
+        2
     | "run" :: path :: rest -> Script.run path rest
     | path :: rest when not (path.StartsWith "-") -> Script.run path rest
     | _ ->
@@ -138,7 +206,10 @@ let main argv =
             + "       weir -e <expression>                    evaluate one expression\n"
             + "       weir check [--json] <script>            diagnostics only (no evaluation)\n"
             + "       weir fmt [--check|--qualify] <script>   canonical formatter\n"
-            + "       weir lsp                                language server (stdio)"
+            + "       weir lsp                                language server (stdio)\n"
+            + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
+            + "       weir restore                            re-materialize the lock's artifacts\n"
+            + "       weir verify                             vendored contracts vs the lock"
         )
 
         2

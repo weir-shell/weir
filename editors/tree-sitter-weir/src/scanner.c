@@ -127,7 +127,28 @@ static bool scan_yaml_marker(State *s, TSLexer *lexer) {
     lexer->advance(lexer, false);
   }
   if (is_word(lexer->lookahead)) return false; // yamlish
-  lexer->mark_end(lexer);
+
+  // optional ` schema=<name>` suffix [D:yaml-schemas] — part of the
+  // marker token, so the whole declaration colours as one keyword
+  if (lexer->lookahead == ' ') {
+    lexer->mark_end(lexer); // token = `yaml` unless the suffix matches
+    lexer->advance(lexer, false);
+    static const char kw[] = "schema=";
+    int ki = 0;
+    while (kw[ki] && lexer->lookahead == kw[ki]) { lexer->advance(lexer, false); ki++; }
+    if (kw[ki] == 0) {
+      bool any = false;
+      while ((lexer->lookahead >= 'a' && lexer->lookahead <= 'z') ||
+             (lexer->lookahead >= '0' && lexer->lookahead <= '9') ||
+             lexer->lookahead == '-') {
+        lexer->advance(lexer, false);
+        any = true;
+      }
+      if (any) lexer->mark_end(lexer); // token = `yaml schema=<name>`
+    }
+  } else {
+    lexer->mark_end(lexer);
+  }
 
   while (is_line_ws(lexer->lookahead)) lexer->advance(lexer, false);
   if (!is_nl(lexer->lookahead)) return false;  // not at line end

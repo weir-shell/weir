@@ -69,7 +69,7 @@ and ExprKind =
     // the yaml district [D:yaml-district]: a checked block literal — the
     // template tree parsed at CHECK time; splices and `for` sources are
     // ordinary Exprs, so typing/hover/eval ride existing machinery
-    | EYaml of tpl: YamlTpl
+    | EYaml of tpl: YamlTpl * schema: string option
 
 and YamlTpl =
     | YtScalar of raw: string * quoted: bool * span: Span
@@ -91,7 +91,8 @@ and YamlTplItem =
     | YtForItems of binder: Pattern * source: Expr * body: YamlTplItem list
 
 and YamlTplKey =
-    | YtKeyLit of string
+    // the key SPAN feeds schema validation's located errors [D:yaml-schemas]
+    | YtKeyLit of string * span: Span
     | YtKeySplice of Expr
 
 // [<Name arg>] attachment [D:attributes] — check-time, fully erased
@@ -168,7 +169,7 @@ let exprChildren (e: Expr) : Expr list =
         |> List.choose (function
             | IExpr e -> Some e
             | IStr _ -> None)
-    | EYaml tpl -> yamlTplExprs tpl
+    | EYaml(tpl, _) -> yamlTplExprs tpl
 
 type Stmt =
     | SLet of name: string * value: Expr
@@ -264,7 +265,13 @@ let rec sexpr (e: Expr) : string =
     | ECmd(prog, args, Some envE) ->
         let body = args |> List.map sexpr |> String.concat " "
         $"(cmdenv {sexpr envE} {prog} {body})"
-    | EYaml tpl -> $"(yaml {sexprYamlTpl tpl})"
+    | EYaml(tpl, schema) ->
+        let s =
+            match schema with
+            | Some n -> $" schema={n}"
+            | None -> ""
+
+        $"(yaml{s} {sexprYamlTpl tpl})"
 
 and sexprYamlTpl (tpl: YamlTpl) : string =
     let space = " "
@@ -300,7 +307,7 @@ and sexprYamlTpl (tpl: YamlTpl) : string =
         let body =
             entries
             |> List.map (function
-                | YtPair(YtKeyLit k, v) -> k + ": " + sexprYamlTpl v
+                | YtPair(YtKeyLit(k, _), v) -> k + ": " + sexprYamlTpl v
                 | YtPair(YtKeySplice e, v) ->
                     let ks = sexpr e
                     "$(" + ks + "): " + sexprYamlTpl v

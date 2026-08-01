@@ -3400,4 +3400,107 @@ $BIN fmt --check "$hbdir/fmted.weir" || fail "fmt must be idempotent on the fixt
 echo "e2e ok: fmt preserves hostile-byte content (spaces-only line normalizes, value identical)"
 rm -rf "$hbdir"
 
+# ---- external contracts: the spine + schemas [D:contracts-spine] -----------
+# vendored, pinned, check-time only; the fetch machinery is exercised
+# against a LOCAL server (CI is offline) serving the committed REAL
+# k8s configmap schema — the published-schema fetch ran in-session
+# and is recorded in the plan's report
+ctdir=$(mktemp -d)
+mkdir -p "$ctdir/serve"
+cp "$(dirname "$0")/../tests/fixtures/configmap-v1.json" "$ctdir/serve/"
+ctport=$((18930 + RANDOM % 2000))
+( cd "$ctdir/serve" && python3 -m http.server $ctport >/dev/null 2>&1 ) &
+ctsrv=$!
+sleep 1
+
+mkdir -p "$ctdir/proj/sub"
+( cd "$ctdir/proj" && git init -q . )
+( cd "$ctdir/proj" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.json --as k8s-configmap ) | grep -q "added schema k8s-configmap" || fail "add schema"
+test -f "$ctdir/proj/.weir/lock.json" || fail "the lockfile exists after the first fetch"
+echo "e2e ok: weir add schema fetches, writes, and locks"
+
+# verify: ok / modified / absent, distinct — then restore
+( cd "$ctdir/proj" && $BIN verify ) | grep -q ": ok" || fail "verify clean"
+echo junk >> "$ctdir/proj/.weir/schemas/k8s-configmap.json"
+out=$( cd "$ctdir/proj" && $BIN verify ) && fail "verify must exit 1 on modified" || true
+echo "$out" | grep -q "MODIFIED" || fail "modified named: $out"
+rm "$ctdir/proj/.weir/schemas/k8s-configmap.json"
+out=$( cd "$ctdir/proj" && $BIN verify ) && fail "verify must exit 1 on absent" || true
+echo "$out" | grep -q "ABSENT" || fail "absent named: $out"
+( cd "$ctdir/proj" && $BIN restore ) | grep -q "restored" || fail "restore re-materializes from the lock"
+echo "e2e ok: weir verify distinguishes modified from absent; restore re-materializes"
+kill $ctsrv 2>/dev/null || true
+
+# check-time catches on the REAL schema: the typo (did-you-mean) and a
+# misplaced nesting (a field at the wrong level)
+cat > "$ctdir/proj/sub/cm.weir" <<'WEOF'
+let cm = yaml schema=k8s-configmap
+    apiVerison: v1
+    kind: ConfigMap
+    data:
+        k: v
+
+cm |> to yaml |> print
+WEOF
+out=$($BIN check --json "$ctdir/proj/sub/cm.weir" || true)
+echo "$out" | grep -qF "unknown field 'apiVerison'" || fail "the typo catch: $out"
+echo "$out" | grep -qF "did you mean 'apiVersion'" || fail "the did-you-mean: $out"
+echo "$out" | grep -qF '"code":"schema"' || fail "coded schema diagnostic: $out"
+echo "e2e ok: apiVerison caught at CHECK time against a real published schema"
+
+cat > "$ctdir/proj/sub/nest.weir" <<'WEOF'
+let cm = yaml schema=k8s-configmap
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+        data:
+            k: v
+
+cm |> to yaml |> print
+WEOF
+out=$($BIN check "$ctdir/proj/sub/nest.weir" 2>&1 || true)
+echo "$out" | grep -qF "unknown field 'data'" || fail "misplaced nesting caught (data under metadata): $out"
+echo "e2e ok: misplaced nesting is a located check error"
+
+# property 3: with and without the contract, byte-identical output
+cat > "$ctdir/proj/sub/p3.weir" <<'WEOF'
+let cm = yaml schema=k8s-configmap
+    apiVersion: v1
+    kind: ConfigMap
+    data:
+        k: v
+
+cm |> to yaml |> print
+WEOF
+sed 's/ schema=k8s-configmap//' "$ctdir/proj/sub/p3.weir" > "$ctdir/proj/sub/p3plain.weir"
+diff <($BIN "$ctdir/proj/sub/p3.weir") <($BIN "$ctdir/proj/sub/p3plain.weir") || fail "property 3: contracts must not change runtime output"
+echo "e2e ok: PROPERTY 3 — byte-identical with and without the contract"
+
+# check NEVER fetches: an unreachable URL in the lock is irrelevant
+# while the vendored file exists; a MISSING schema teaches vendor,
+# without touching the network
+python3 - "$ctdir/proj/.weir/lock.json" <<'PYEOF2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["artifacts"][0]["url"] = "http://127.0.0.1:1/never"
+json.dump(d, open(sys.argv[1], "w"))
+PYEOF2
+$BIN check "$ctdir/proj/sub/p3.weir" || fail "check must succeed offline from the vendored file"
+rm "$ctdir/proj/.weir/schemas/k8s-configmap.json"
+out=$($BIN check "$ctdir/proj/sub/p3.weir" 2>&1 || true)
+echo "$out" | grep -qF "the lock records it; run \`weir restore\`" || fail "locked-but-missing teaches restore, never fetches: $out"
+
+# ...and a NEVER-declared schema teaches `add` — the checker tells the
+# two apart by the lock [D:contracts-spine]
+cat > "$ctdir/proj/sub/never.weir" <<'WEOF'
+let d = yaml schema=never-added
+    kind: X
+
+d |> to yaml |> print
+WEOF
+out=$($BIN check "$ctdir/proj/sub/never.weir" 2>&1 || true)
+echo "$out" | grep -qF "add it: weir add schema <url> --as never-added" || fail "undeclared schema teaches add: $out"
+echo "e2e ok: check never fetches — locked-but-missing teaches restore, undeclared teaches add"
+rm -rf "$ctdir"
+
 echo "e2e battery: all green"

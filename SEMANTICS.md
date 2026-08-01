@@ -1250,6 +1250,49 @@ quantity semantics now.
   inside districts are yaml comments at structure level, bytes inside
   a block (the directive scan is COLUMN-0 only — `#!/bin/sh` in a
   block scalar is content, not a misplaced directive).
+- **External contracts** [D:contracts-spine] — a vendored, pinned
+  artifact that constrains what the CHECKER accepts and contributes
+  NOTHING at run time. Four properties, each load-bearing: VENDORED
+  (checked in under `.weir/`, discovered by walking up from the
+  declaring file to the FIRST `.weir/`, bounded by `.git`; never
+  fetched during check), PINNED (exact identity + sha256 in
+  `.weir/lock.json` — no ranges, ever: pairwise comparisons, not a
+  dependency graph), CHECK-TIME ONLY (deleting every contract leaves
+  every script running identically — pinned byte-identical), DECLARED
+  not discovered (a `.weir/` directory's mere existence never changes
+  how a file checks). `weir add <kind> …` acquires ONE
+  contract, kind-aware (a schema fetches from a url; a signature will
+  GENERATE from the installed tool; a module will clone at a ref);
+  `weir restore` re-materializes everything the lock records and
+  `weir verify` reports ABSENT vs MODIFIED per artifact (exit 1 on
+  either) — both KIND-AGNOSTIC by construction (every entry is
+  source + hash + path). THE LOCKFILE IS THE MANIFEST (deliberate:
+  no ranges means nothing for a separate manifest to hold). `weir
+  check` never fetches, never spawns, never touches the network — a
+  locked-but-missing schema teaches `weir restore`, an undeclared one
+  teaches `weir add schema`. For the F#
+  audience: contracts are type providers minus the execution and plus
+  the pinning. The first customer:
+- **YAML schemas** [D:yaml-schemas] — `yaml schema=<name>` on the
+  district marker line attaches `.weir/schemas/<name>.json` to THAT
+  district (per district, author-named, never inferred — `kind` is a
+  Kubernetes convention, not weir's). THE SUBSET, corpus-measured
+  against six real k8s standalone-strict schemas: `type` (string or
+  array-of-strings), `properties`, `required`, `items`,
+  `additionalProperties` (bool or schema), `enum`, and `oneOf` over
+  scalar type alternatives only (the IntOrString idiom — its every
+  corpus occurrence); `description`/`format`/`title`/`$schema`/`x-*`
+  are accepted annotations; everything else — `$ref` (add the
+  STANDALONE variant), composition, `patternProperties`, `const`, the
+  constraint family — rejects with a teaching error naming the
+  keyword and its JSON path. WHAT IS CHECKED, honestly: STRUCTURAL
+  validation always (unknown fields with did-you-mean, missing
+  required fields, misplaced nesting — at the KEY's own span); VALUE
+  validation where types permit (a `$n : int` splice checks against
+  `integer`; enum/pattern constraints on splices do not check);
+  `for`-generated entries and key splices relax the unknown/required
+  checks for the map they touch. A district with no declaration is
+  unvalidated, exactly as before — schemas are additive.
 - **`sortBy : ('a -> 'b) -> seq<'a> -> seq<'a>`** — the key must evaluate to
   an int, string, or bool; anything else is a runtime error (the type system
   has no comparability constraint — same check-at-the-boundary posture as

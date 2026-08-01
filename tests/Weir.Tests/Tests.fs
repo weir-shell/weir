@@ -1247,6 +1247,78 @@ let boundaryTests =
                   [ VStr "k: |-"; VStr "  007"; VStr "  x" ]
                   "the block side of the boundary"
           }
+          test "contracts: .weir discovery walks up, stops at the first, bounded by .git [D:contracts-spine]" {
+              let root =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weirdisc-{System.Guid.NewGuid():N}")
+
+              let deep = System.IO.Path.Combine(root, "repo", "a", "b")
+              System.IO.Directory.CreateDirectory deep |> ignore
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "repo", ".git"))
+              |> ignore
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".weir"))
+              |> ignore
+
+              // no .weir inside the repo: the walk must STOP at .git, never
+              // reaching the grandparent's .weir outside the boundary
+              let bounded =
+                  match Weir.Contracts.findWeirDir deep with
+                  | Error e -> e
+                  | Ok d -> failtest $"crossed the .git boundary to {d}"
+
+              Expect.stringContains bounded "repo root" "bounded by .git"
+
+              // a .weir INSIDE the repo wins from anywhere under it
+              let inner = System.IO.Path.Combine(root, "repo", ".weir")
+              System.IO.Directory.CreateDirectory inner |> ignore
+
+              let found =
+                  match Weir.Contracts.findWeirDir deep with
+                  | Ok d -> System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName d)
+                  | Error e -> failtest e
+
+              Expect.equal found "repo" "first .weir wins"
+
+              System.IO.Directory.Delete(root, true)
+          }
+          test
+              "contracts: the schema subset parses the corpus shapes and rejects the rest with teaching [D:yaml-schemas]" {
+              let ok =
+                  Weir.Contracts.parseSchema
+                      "t"
+                      """{ "type": "object", "properties": { "n": { "type": "integer" }, "e": { "enum": ["a", "b"] }, "u": { "oneOf": [{ "type": ["integer", "null"] }, { "type": ["string", "null"] }] } }, "required": ["n"], "additionalProperties": false, "description": "ignored", "x-kubernetes-map-type": "ignored" }"""
+
+              let propsReq =
+                  match ok with
+                  | Ok(Weir.Contracts.SObject(props, req, Weir.Contracts.Closed)) -> List.map fst props, req
+                  | other -> failtest $"expected SObject, got {other}"
+
+              Expect.equal (fst propsReq) [ "n"; "e"; "u" ] "props in order"
+              Expect.equal (snd propsReq) [ "n" ] "required"
+
+              let errOf src =
+                  match Weir.Contracts.parseSchema "t" src with
+                  | Error e -> e
+                  | Ok s -> failtest $"expected rejection, got {s}"
+
+              Expect.stringContains
+                  (errOf """{ "$ref": "#/definitions/x" }""")
+                  "add the STANDALONE variant"
+                  "$ref teaching names the way out"
+
+              Expect.stringContains (errOf """{ "allOf": [] }""") "composition" "allOf rejected"
+
+              Expect.stringContains
+                  (errOf """{ "type": "object", "properties": { "p": { "pattern": "^x" } } }""")
+                  "at properties.p.: 'pattern'"
+                  "unknown keyword named WITH its JSON path"
+
+              Expect.stringContains
+                  (errOf """{ "oneOf": [{ "type": "object" }] }""")
+                  "IntOrString"
+                  "oneOf restricted to scalar alternatives"
+          }
           test
               "district mid-line #: the five cases — comment cut, quoted/hole/glued data, block bytes [D:district-hash]" {
               let asm lines' =
@@ -7322,7 +7394,10 @@ let siblingSentinelTests =
               match
                   Weir.Parser.parseLine
                       realResolver
-                      ("let f t = git status" + Weir.Parser.sibSepStr + "let e = \"x\" in print e")
+                      // the REAL sibling join is SPACED (" <US> ") — a glued
+                      // sentinel is machine-impossible and the command
+                      // grammar now refuses it (the yaml-district boundary)
+                      ("let f t = git status " + Weir.Parser.sibSepStr + " let e = \"x\" in print e")
               with
               | Ok(SLet("f", { Kind = ELambda("t", _, { Kind = ESeq({ Kind = ECmd("git", _, _) }, _) }) })) -> ()
               | other -> failtest $"expected ESeq(cmd, ...), got: {other}"

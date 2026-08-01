@@ -283,9 +283,22 @@ let private isIdentToken (t: string) =
 /// boundary adapters [D:yaml-district]. One predicate, shared with the
 /// REPL colorizer's marker tint — never a second classifier.
 let isYamlMarkerPiece (piece: string) =
-    (piece = "yaml" || piece.EndsWith " yaml")
-    && not (piece.EndsWith "to yaml")
-    && not (piece.EndsWith "from yaml")
+    // a `schema=<name>` suffix declares the district's contract
+    // [D:yaml-schemas]; strip it, then apply the marker law
+    let core =
+        let lastTok =
+            match piece.LastIndexOf ' ' with
+            | -1 -> piece
+            | i -> piece.Substring(i + 1)
+
+        if lastTok.StartsWith "schema=" && lastTok.Length > 7 then
+            piece.Substring(0, piece.Length - lastTok.Length).TrimEnd()
+        else
+            piece
+
+    (core = "yaml" || core.EndsWith " yaml")
+    && not (core.EndsWith "to yaml")
+    && not (core.EndsWith "from yaml")
 
 let classifyPiece (piece: string) : PieceClass =
     let lastToken =
@@ -1537,7 +1550,18 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
         let codeTrimmed = (line.Substring(0, commentCut)).TrimEnd()
 
         if codeTrimmed.Length >= 4 && isYamlMarkerPiece codeTrimmed then
-            for j in codeTrimmed.Length - 4 .. codeTrimmed.Length - 1 do
+            let markerLen =
+                let lastTok =
+                    match codeTrimmed.LastIndexOf ' ' with
+                    | -1 -> codeTrimmed
+                    | i -> codeTrimmed.Substring(i + 1)
+
+                if lastTok.StartsWith "schema=" then
+                    min codeTrimmed.Length (lastTok.Length + 5)
+                else
+                    4
+
+            for j in codeTrimmed.Length - markerLen .. codeTrimmed.Length - 1 do
                 codes[j] <- Some "36"
 
         // ^ls: the forced head resolves against PATH only
@@ -2566,6 +2590,92 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
 // full analysis for tooling (the LSP re-frames this): diagnostics AND
 // the successfully-checked statements with their logical lines — plus
 // the initial env, so consumers can pick the in-scope env per position
+// external contracts: schema validation [D:yaml-schemas]. Walks every
+// typed district carrying a `schema=` declaration; STRUCTURAL checks
+// always, VALUE checks where the splice's type permits. Check-time
+// only, and it reads VENDORED files exclusively — never the network
+// (the never-fetch-during-check pin).
+let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) list) : Diagnostic list =
+    let cache =
+        System.Collections.Generic.Dictionary<string, Result<Contracts.Schema, string>>()
+
+    let loadSchema (name: string) : Result<Contracts.Schema, string> =
+        match cache.TryGetValue name with
+        | true, r -> r
+        | _ ->
+            let r =
+                let fromDir =
+                    try
+                        let full = IO.Path.GetFullPath path
+                        let d = IO.Path.GetDirectoryName full
+                        if String.IsNullOrEmpty d then "." else d
+                    with _ ->
+                        "."
+
+                match Contracts.findWeirDir fromDir with
+                | Error e -> Error $"schema '{name}': {e}"
+                | Ok weirDir ->
+                    let file = IO.Path.Combine(weirDir, "schemas", name + ".json")
+
+                    if not (IO.File.Exists file) then
+                        // the checker can tell restore from add: a lock
+                        // entry means the artifact was declared (a fresh
+                        // clone restores); no entry means it never was
+                        let locked =
+                            match Contracts.readLock weirDir with
+                            | Ok entries -> entries |> List.exists (fun e -> e.Kind = "schema" && e.Name = name)
+                            | Error _ -> false
+
+                        if locked then
+                            Error
+                                $"schema '{name}': no {file} (searched from {weirDir}) — the lock records it; run `weir restore`"
+                        else
+                            Error
+                                $"schema '{name}': no {file} (searched from {weirDir}) — add it: weir add schema <url> --as {name}"
+                    else
+                        Contracts.parseSchema name (IO.File.ReadAllText file)
+
+            cache[name] <- r
+            r
+
+    pairs
+    |> List.collect (fun (ll, chk) ->
+        let roots =
+            match chk.Kind with
+            | KLet(_, _, te)
+            | KLetPat(_, _, te)
+            | KCmd te
+            | KExpr te -> [ te ]
+            | KType _
+            | KModule _
+            | KImport _ -> []
+
+        let rec districts (te: Check.TypedExpr) =
+            (match te.Kind with
+             | Check.TEYaml(tpl, Some name) -> [ te.Span, name, tpl ]
+             | _ -> [])
+            @ (Check.childExprs te |> List.collect districts)
+
+        roots
+        |> List.collect districts
+        |> List.collect (fun (dspan, name, tpl) ->
+            let mk (sp: Span) (msg: string) =
+                let l1, c1 = translate ll sp.Start.Col
+                let l2, c2 = translate ll (max sp.Start.Col (sp.End.Col - 1))
+
+                { File = path
+                  Line = l1
+                  Col = c1
+                  EndLine = Some l2
+                  EndCol = Some(c2 + 1)
+                  Severity = "error"
+                  Code = "schema"
+                  Message = msg }
+
+            match loadSchema name with
+            | Error e -> [ mk dspan e ]
+            | Ok schema -> Contracts.validateTpl name schema tpl |> List.map (fun (sp, m) -> mk sp m)))
+
 let analyzeLines
     (path: string)
     (rawLines: string list)
@@ -2825,7 +2935,10 @@ let analyzeLines
                           Message = nmsg }
                 | None -> ()
 
-        List.ofSeq assemblyDiags @ List.ofSeq diags @ docMisalignments path rawLines,
+        List.ofSeq assemblyDiags
+        @ List.ofSeq diags
+        @ docMisalignments path rawLines
+        @ schemaDiagnostics path (List.ofSeq stmts),
         List.ofSeq stmts,
         typeEnv0,
         logicalLines
@@ -3024,40 +3137,62 @@ let run (path: string) (scriptArgs: string list) : int =
                                             $"{path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
                                         )
 
-                                    let stmt =
-                                        match chk.Kind with
-                                        | KType decl -> CType decl
-                                        | KLet(name, _, te) -> CLet(name, te)
-                                        | KLetPat(pat, _, te) -> CLetPat(pat, te)
-                                        | KCmd te -> CCmd te
-                                        | KExpr te -> CExpr te
-                                        | KImport lm -> CImport lm
-                                        // unreachable: the marker is caught before the fold
-                                        | KModule _ -> CNoop
+                                    // schema contracts gate the RUN too — check
+                                    // before effects [D:yaml-schemas]
+                                    match schemaDiagnostics path [ (ll, chk) ] with
+                                    | d :: _ ->
+                                        let src = rawByLine |> Map.tryFind d.Line |> Option.defaultValue ""
 
-                                    // enrich a record's Docs from the `///`
-                                    // field docs, so --help reads them
-                                    // [D:doc-help]; the Args.load arm (checked
-                                    // later, the type comes first) captures it
-                                    let env' =
-                                        match chk.Kind with
-                                        | KType decl ->
-                                            let docs = fieldDocsFor rawLines ll
+                                        let width =
+                                            match d.EndLine, d.EndCol with
+                                            | Some el, Some ec when el = d.Line -> max 1 (ec - d.Col)
+                                            | _ -> 1
 
-                                            if Map.isEmpty docs then
-                                                chk.Env
-                                            else
-                                                { chk.Env with
-                                                    Types =
-                                                        chk.Env.Types
-                                                        |> Map.change
-                                                            decl.Name
-                                                            (Option.map (function
-                                                                | Record rd -> Record { rd with Docs = docs }
-                                                                | u -> u)) }
-                                        | _ -> chk.Env
+                                        let underline =
+                                            Color.red c (String(' ', max 0 (d.Col - 1)) + String('^', width))
 
-                                    Ok(env', (ll.Head, stmt) :: acc))
+                                        Error(
+                                            Color.bold c $"{path}:{d.Line}:{d.Col}"
+                                            + ": "
+                                            + Color.red c "schema error"
+                                            + $":\n{src}\n{underline}\n{d.Message}"
+                                        )
+                                    | [] ->
+
+                                        let stmt =
+                                            match chk.Kind with
+                                            | KType decl -> CType decl
+                                            | KLet(name, _, te) -> CLet(name, te)
+                                            | KLetPat(pat, _, te) -> CLetPat(pat, te)
+                                            | KCmd te -> CCmd te
+                                            | KExpr te -> CExpr te
+                                            | KImport lm -> CImport lm
+                                            // unreachable: the marker is caught before the fold
+                                            | KModule _ -> CNoop
+
+                                        // enrich a record's Docs from the `///`
+                                        // field docs, so --help reads them
+                                        // [D:doc-help]; the Args.load arm (checked
+                                        // later, the type comes first) captures it
+                                        let env' =
+                                            match chk.Kind with
+                                            | KType decl ->
+                                                let docs = fieldDocsFor rawLines ll
+
+                                                if Map.isEmpty docs then
+                                                    chk.Env
+                                                else
+                                                    { chk.Env with
+                                                        Types =
+                                                            chk.Env.Types
+                                                            |> Map.change
+                                                                decl.Name
+                                                                (Option.map (function
+                                                                    | Record rd -> Record { rd with Docs = docs }
+                                                                    | u -> u)) }
+                                            | _ -> chk.Env
+
+                                        Ok(env', (ll.Head, stmt) :: acc))
                         (Ok(typeEnv0, []))
 
                 match

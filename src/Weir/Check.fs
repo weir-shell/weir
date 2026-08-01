@@ -101,15 +101,15 @@ and TypedKind =
     | TELambdaPat of binder: Pattern * body: TypedExpr
     | TEInterp of parts: InterpPart<TypedExpr> list
     // the yaml district's TYPED template [D:yaml-district]
-    | TEYaml of TypedYamlTpl
+    | TEYaml of TypedYamlTpl * schema: string option
 
 and TypedYamlTpl =
-    | TYtScalar of raw: string * quoted: bool
+    | TYtScalar of raw: string * quoted: bool * span: Ast.Span
     // literal block scalar content [D:block-scalars] — bytes, no checking
-    | TYtBlock of text: string
+    | TYtBlock of text: string * span: Ast.Span
     | TYtSplice of TypedExpr
-    | TYtSeq of TypedYamlTplItem list
-    | TYtMap of TypedYamlTplEntry list
+    | TYtSeq of TypedYamlTplItem list * span: Ast.Span
+    | TYtMap of TypedYamlTplEntry list * span: Ast.Span
 
 and TypedYamlTplEntry =
     | TYtPair of TypedYamlKey * TypedYamlTpl
@@ -120,7 +120,7 @@ and TypedYamlTplItem =
     | TYtForItems of binder: Pattern * source: TypedExpr * body: TypedYamlTplItem list
 
 and TypedYamlKey =
-    | TYtKeyLit of string
+    | TYtKeyLit of string * span: Ast.Span
     | TYtKeySplice of TypedExpr
 
 type private ResultBuilder() =
@@ -2111,12 +2111,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain, yaml"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
-    | EYaml tpl ->
+    | EYaml(tpl, schema) ->
         result {
             let! ttpl = checkYamlTpl ctx env tpl
 
             return
-                { Kind = TEYaml ttpl
+                { Kind = TEYaml(ttpl, schema)
                   Ty = TNamed("Yaml", [])
                   Span = expr.Span }
         }
@@ -2540,8 +2540,8 @@ and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool =
 
 and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<TypedYamlTpl, TypeError> =
     match tpl with
-    | YtScalar(raw, q, _) -> Ok(TYtScalar(raw, q))
-    | YtBlock(text, _) -> Ok(TYtBlock text)
+    | YtScalar(raw, q, sp) -> Ok(TYtScalar(raw, q, sp))
+    | YtBlock(text, sp) -> Ok(TYtBlock(text, sp))
     | YtSplice e ->
         result {
             let! te = infer ctx env e
@@ -2555,19 +2555,19 @@ and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<Typed
                         e.Span
                         $"a yaml splice takes string/int/bool, a Yaml node, Option of one, or a seq of those; got {formatTy rty}"
         }
-    | YtSeq(items, _) ->
+    | YtSeq(items, sp) ->
         items
         |> List.fold
             (fun acc it ->
                 acc
                 |> Result.bind (fun ts -> checkYamlItem ctx env it |> Result.map (fun t -> t :: ts)))
             (Ok [])
-        |> Result.map (fun ts -> TYtSeq(List.rev ts))
+        |> Result.map (fun ts -> TYtSeq(List.rev ts, sp))
     | YtMap(entries, sp) ->
         let litKeys =
             entries
             |> List.choose (function
-                | YtPair(YtKeyLit k, _) -> Some k
+                | YtPair(YtKeyLit(k, _), _) -> Some k
                 | _ -> None)
 
         match firstDup litKeys with
@@ -2579,11 +2579,11 @@ and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<Typed
                     acc
                     |> Result.bind (fun es -> checkYamlEntry ctx env en |> Result.map (fun e -> e :: es)))
                 (Ok [])
-            |> Result.map (fun es -> TYtMap(List.rev es))
+            |> Result.map (fun es -> TYtMap(List.rev es, sp))
 
 and private checkYamlEntry (ctx: Ctx) (env: TypeEnv) (entry: YamlTplEntry) : Result<TypedYamlTplEntry, TypeError> =
     match entry with
-    | YtPair(YtKeyLit k, v) -> checkYamlTpl ctx env v |> Result.map (fun tv -> TYtPair(TYtKeyLit k, tv))
+    | YtPair(YtKeyLit(k, ksp), v) -> checkYamlTpl ctx env v |> Result.map (fun tv -> TYtPair(TYtKeyLit(k, ksp), tv))
     | YtPair(YtKeySplice e, v) ->
         result {
             let! tk = check ctx env e TStr
@@ -2666,7 +2666,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
         | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
         | TETuple items -> TETuple(items |> List.map (finalizeExpr ctx))
-        | TEYaml tpl -> TEYaml(finalizeYamlTpl ctx tpl)
+        | TEYaml(tpl, schema) -> TEYaml(finalizeYamlTpl ctx tpl, schema)
         | TELetPat(p, v, b) -> TELetPat(p, finalizeExpr ctx v, finalizeExpr ctx b)
         | TELambdaPat(p, b) -> TELambdaPat(p, finalizeExpr ctx b)
         | TECmd(prog, args, envO) ->
@@ -2711,12 +2711,12 @@ and private finalizeYamlTpl (ctx: Ctx) (tpl: TypedYamlTpl) : TypedYamlTpl =
     | TYtScalar _ -> tpl
     | TYtBlock _ -> tpl
     | TYtSplice e -> TYtSplice(finalizeExpr ctx e)
-    | TYtSeq items -> TYtSeq(items |> List.map (finalizeYamlItem ctx))
-    | TYtMap entries -> TYtMap(entries |> List.map (finalizeYamlEntry ctx))
+    | TYtSeq(items, sp) -> TYtSeq(items |> List.map (finalizeYamlItem ctx), sp)
+    | TYtMap(entries, sp) -> TYtMap(entries |> List.map (finalizeYamlEntry ctx), sp)
 
 and private finalizeYamlEntry (ctx: Ctx) (entry: TypedYamlTplEntry) : TypedYamlTplEntry =
     match entry with
-    | TYtPair(TYtKeyLit k, v) -> TYtPair(TYtKeyLit k, finalizeYamlTpl ctx v)
+    | TYtPair(TYtKeyLit(k, ksp), v) -> TYtPair(TYtKeyLit(k, ksp), finalizeYamlTpl ctx v)
     | TYtPair(TYtKeySplice e, v) -> TYtPair(TYtKeySplice(finalizeExpr ctx e), finalizeYamlTpl ctx v)
     | TYtForEntries(b, src, body) -> TYtForEntries(b, finalizeExpr ctx src, body |> List.map (finalizeYamlEntry ctx))
 
@@ -2811,17 +2811,23 @@ let rec yamlTplTypedExprs (tpl: TypedYamlTpl) : TypedExpr list =
     | TYtScalar _ -> []
     | TYtBlock _ -> []
     | TYtSplice e -> [ e ]
-    | TYtSeq items ->
+    | TYtSeq(items, _) ->
         items
         |> List.collect (function
             | TYtItem t -> yamlTplTypedExprs t
-            | TYtForItems(_, src, body) -> src :: (body |> List.collect (fun i -> yamlTplTypedExprs (TYtSeq [ i ]))))
-    | TYtMap entries ->
+            | TYtForItems(_, src, body) ->
+                src
+                :: (body
+                    |> List.collect (fun i -> yamlTplTypedExprs (TYtSeq([ i ], Unchecked.defaultof<Ast.Span>)))))
+    | TYtMap(entries, _) ->
         entries
         |> List.collect (function
             | TYtPair(TYtKeyLit _, v) -> yamlTplTypedExprs v
             | TYtPair(TYtKeySplice k, v) -> k :: yamlTplTypedExprs v
-            | TYtForEntries(_, src, body) -> src :: (body |> List.collect (fun e -> yamlTplTypedExprs (TYtMap [ e ]))))
+            | TYtForEntries(_, src, body) ->
+                src
+                :: (body
+                    |> List.collect (fun e -> yamlTplTypedExprs (TYtMap([ e ], Unchecked.defaultof<Ast.Span>)))))
 
 // the typed tree's child list — tooling walks (LSP hover, command-head
 // collection) share this instead of re-deriving the case list
@@ -2859,7 +2865,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
         |> List.choose (function
             | IExpr e -> Some e
             | IStr _ -> None)
-    | TEYaml tpl -> yamlTplTypedExprs tpl
+    | TEYaml(tpl, _) -> yamlTplTypedExprs tpl
 
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _) -> te)

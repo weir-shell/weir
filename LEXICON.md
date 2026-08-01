@@ -491,3 +491,11 @@ flagged for their home):**
 *Pointers are the contract: this file says what a word means; the
 `[D:key]` says what was decided; PROCESS says what the rule is; SEMANTICS
 says what the law is; NOTES says when and why it happened.*
+
+**external contract** — a vendored, pinned artifact (a schema today;
+signatures and remote modules to come) that constrains what the
+checker accepts and contributes nothing at run time. For F# hands:
+a type provider minus the execution and plus the pinning — providers
+generate types and run code at compile time; contracts only make bad
+uses errors, and deleting them changes nothing but strictness.
+[D:contracts-spine]

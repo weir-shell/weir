@@ -1,5 +1,62 @@
 # Spike Notes
 
+## external contracts — the spine lands, schemas prove it (2026-08-01)
+
+PLAN-contracts-spine executed in one session: the shared spine
+(discovery, `weir add`/`weir restore` (renamed from `vendor` by the
+pre-merge rider PLAN-restore-rename — the branch merges with one
+coherent naming), `weir verify`, the lockfile, sha256,
+never-fetch-during-check) built WITH its first customer exercising
+every part, exactly as the ordering argument demanded. The eight
+rulings were written before code (the ninth emerged: where name→URL
+lives — the LOCK is the standing record of intent AND the manifest;
+`add` writes it, `restore` re-materializes hash-verified, no
+separate manifest). The corpus measurement DECIDED the subset rather than
+informing it: six real k8s standalone-strict schemas showed zero
+`$ref` (standalone inlines everything — remote-$ref MOOT, the
+teaching names the variant), zero composition, zero constraint
+keywords, and exactly one `oneOf` idiom (IntOrString, 143/143) — so
+`oneOf` is in as scalar-alternatives-only and everything unmeasured
+stays out until a corpus needs it.
+
+The session's find was an old friend: the machine boundary needed a
+THIRD face. `yaml schema=x` glued to the sentinel parsed as a
+COMMAND under check — the head guard protects a glued HEAD, the
+block-scalars session added the arg-transparency, and now a
+` schema=<name>` suffix glued to the sentinel refuses at the head
+too (no user argv is ever glued; the parse falls through to the
+district arm). The arg-face guard added alongside surfaced a
+FIXTURE bug the audit's class predicted: the sibling-sentinel
+acceptance pin glued its sentinel where the assembler always SPACES
+it — corrected to the machine-real join, named here.
+
+Validation walks the TYPED template (it gained spans — key spans
+included, so `apiVerison` errors at the key's own columns with a
+did-you-mean from the schema's properties). Structural always;
+value-by-type on splices (Option unwraps, seq elements check against
+items); for-entries and key splices relax unknown/required for
+their map. Property 3 pinned twice (in-session probe + e2e): with
+and without contracts, byte-identical output. The run path gates
+too — check-before-effects extends to contracts.
+
+The e2e battery vendors the committed REAL configmap schema (17KB,
+tests/fixtures) from a LOCAL server — CI stays offline; the
+published-schema fetch (yannh/kubernetes-json-schema over the
+network, all six files) ran in-session and its measurements are in
+the plan. weir's first network code (HttpClient) arrived fenced
+exactly as designed: two explicit commands, never check, never
+completion, never run.
+
+Grammars rode along: the tree-sitter marker token extends through
+`schema=<name>` (one keyword), TextMate's district begin gained the
+optional suffix — both engine-verified; micro stays exempt. GUIDE
+and SKILL carry prose (a runnable doc block needs a `.weir/` the
+doc-test cwd cannot safely host — the e2e battery holds the
+executable truth; stated).
+
+955 unit (+2 contract pins, one fixture corrected), e2e battery all
+green incl the contracts section, full ritual green.
+
 ## the fuzz-coverage audit — claims vs measured reality (2026-08-01)
 
 GRAMMAR.md says "the fuzzer passed" is a claim with the file as its
