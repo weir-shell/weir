@@ -3559,4 +3559,71 @@ kill $ctsrv2 2>/dev/null || true
 echo "e2e ok: a no-strict schema warns at add time, naming the variant"
 rm -rf "$ctdir"
 
+# ---- the Log module [D:log-module] -----------------------------------------
+# stderr always; WEIR_LOG selects; stdout is BYTE-IDENTICAL at every
+# level (THE pin — stdout is data); invalid level = loud startup error
+lgdir=$(mktemp -d)
+cat > "$lgdir/lg.weir" <<'WEOF'
+Log.trace "t"
+Log.debug "d"
+Log.info "starting"
+Log.warn "careful"
+Log.traceWith (fun () -> "never built at info")
+print "DATA"
+WEOF
+out=$($BIN "$lgdir/lg.weir" 2>"$lgdir/err")
+[ "$out" = "DATA" ] || fail "stdout carries only data: $out"
+grep -qxF "INFO starting" "$lgdir/err" || fail "info at default: $(cat "$lgdir/err")"
+grep -qxF "WARN careful" "$lgdir/err" || fail "warn at default"
+grep -q "TRACE" "$lgdir/err" && fail "trace must filter at default"
+WEIR_LOG=trace $BIN "$lgdir/lg.weir" 2>"$lgdir/err2" >/dev/null
+grep -qxF "TRACE t" "$lgdir/err2" || fail "trace at trace"
+grep -qxF "TRACE never built at info" "$lgdir/err2" || fail "the With thunk runs when the level passes"
+WEIR_LOG=off $BIN "$lgdir/lg.weir" 2>"$lgdir/err3" >/dev/null
+[ -s "$lgdir/err3" ] && fail "off must be genuine silence: $(cat "$lgdir/err3")"
+out=$(WEIR_LOG=loud $BIN "$lgdir/lg.weir" 2>&1) && fail "invalid level must fail" || true
+echo "$out" | grep -qF "unknown log level (one of trace|debug|info|warn|off)" || fail "invalid teaches the levels: $out"
+diff <($BIN "$lgdir/lg.weir" 2>/dev/null) <(WEIR_LOG=trace $BIN "$lgdir/lg.weir" 2>/dev/null) || fail "stdout must be byte-identical across levels"
+diff <($BIN "$lgdir/lg.weir" 2>/dev/null) <(WEIR_LOG=off $BIN "$lgdir/lg.weir" 2>/dev/null) || fail "stdout byte-identical at off"
+echo "e2e ok: Log — stderr always, WEIR_LOG selects, stdout byte-identical (THE pin)"
+
+# NO_COLOR / non-tty: the harness reads PLAIN level labels (this pipe is
+# not a tty, so tint must be absent even without NO_COLOR)
+grep -qP "\x1b" "$lgdir/err" && fail "no escapes when stderr is not a tty"
+echo "e2e ok: Log plain form when stderr is piped"
+
+# the thunk is NOT evaluated below threshold (side-effect proof)
+cat > "$lgdir/lz.weir" <<'WEOF'
+Log.traceWith (fun () ->
+    ["proof"] |> File.write "thunk-ran.txt"
+    "built")
+print "done"
+WEOF
+( cd "$lgdir" && $BIN lz.weir >/dev/null 2>&1 )
+[ -f "$lgdir/thunk-ran.txt" ] && fail "the With thunk must not run below threshold"
+( cd "$lgdir" && WEIR_LOG=trace $BIN lz.weir >/dev/null 2>&1 )
+[ -f "$lgdir/thunk-ran.txt" ] || fail "the With thunk must run at its level"
+echo "e2e ok: Log With twins — lazy below threshold, side-effect-proven"
+
+# a child weir carries WEIR_LOG via the env sigil (composition, not machinery)
+cat > "$lgdir/child.weir" <<'WEOF'
+Log.debug "child sees debug"
+print "child-data"
+WEOF
+cat > "$lgdir/parent.weir" <<'WEOF'
+let e = Env.fromFile "log.env"
+let out = $e(weir child.weir)
+out |> print
+WEOF
+printf 'WEIR_LOG=debug\n' > "$lgdir/log.env"
+( cd "$lgdir" && $BIN parent.weir 2>"$lgdir/cerr" )
+grep -qF "DEBUG child sees debug" "$lgdir/cerr" || fail "the env sigil carries WEIR_LOG to a child weir: $(cat "$lgdir/cerr")"
+echo "e2e ok: Log level rides the env sigil to child weir processes"
+
+# -e mode logs too
+out=$(WEIR_LOG=debug $BIN -e 'Log.debug "from-e"' 2>&1 >/dev/null)
+echo "$out" | grep -qF "DEBUG from-e" || fail "-e mode logs: $out"
+echo "e2e ok: Log works in -e mode"
+rm -rf "$lgdir"
+
 echo "e2e battery: all green"

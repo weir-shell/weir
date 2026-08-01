@@ -1249,6 +1249,77 @@ let private exitImpl: Value =
         | VInt n -> raise (ExitRequest(int n))
         | v -> unreachable $"the checker rejects 'exit' on {formatValue v}")
 
+// ---- the Log module [D:log-module] -----------------------------------------
+// Levelled diagnostics that respect the pipeline: EVERY member writes
+// to STDERR, unconditionally — stdout is DATA (what pipes carry, what
+// $() captures), and that is a law, not a default. Level control is
+// WEIR_LOG (trace|debug|info|warn|off), read ONCE at startup; it
+// changes what is PRINTED, never what the script computes. There is
+// deliberately NO Log.error: an error silenced by WEIR_LOG=off is the
+// one message a user needs — unconditional messages are `printerr`,
+// stopping is `fail`; `warn` is the TOP of the filterable range.
+
+let logLevelNames = [ "trace"; "debug"; "info"; "warn"; "off" ]
+
+let parseLogLevel (s: string) : Result<int, string> =
+    match logLevelNames |> List.tryFindIndex ((=) s) with
+    | Some i -> Ok i
+    | None -> Error $"WEIR_LOG={s}: unknown log level (one of trace|debug|info|warn|off)"
+
+// default info (ruled): Log.info is useful without ceremony,
+// debug/trace are opt-in, WEIR_LOG=off is genuine silence
+let mutable private logThreshold = 2
+
+/// read WEIR_LOG once; Program calls this before dispatch so an
+/// invalid value is a loud startup error, never a silent fallback
+let initLogLevel () : Result<unit, string> =
+    match System.Environment.GetEnvironmentVariable "WEIR_LOG" with
+    | null
+    | "" -> Ok()
+    | v -> parseLogLevel v |> Result.map (fun i -> logThreshold <- i)
+
+let private logTint (code: string) (label: string) =
+    if Types.Color.onStderr.Value then
+        $"\x1b[{code}m{label}\x1b[0m"
+    else
+        label
+
+let private logAt (level: int) (code: string) (label: string) (msg: string) =
+    if level >= logThreshold then
+        System.Console.Error.WriteLine(logTint code label + " " + msg)
+
+let private logMember (level: int) (code: string) (label: string) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr msg ->
+            logAt level code label msg
+            VUnit
+        | v -> unreachable $"the checker rejects logging {formatValue v}")
+
+// the With twins: the thunk runs ONLY when the level passes — the
+// Option.defaultWith precedent for the expensive-argument case (weir
+// has no lazy argument position, stated in the docs)
+let private logWithMember (level: int) (code: string) (label: string) : Value =
+    VBuiltin(fun f ->
+        (if level >= logThreshold then
+             match apply f VUnit with
+             | VStr msg -> logAt level code label msg
+             | v -> unreachable $"the checker rejects a non-string log thunk: {formatValue v}")
+
+        VUnit)
+
+let private logMembers: (string * Ty * Value) list =
+    let thunk = TFun(TUnit, TStr)
+
+    [ "trace", TFun(TStr, TUnit), logMember 0 "90" "TRACE"
+      "debug", TFun(TStr, TUnit), logMember 1 "36" "DEBUG"
+      "info", TFun(TStr, TUnit), logMember 2 "32" "INFO"
+      "warn", TFun(TStr, TUnit), logMember 3 "33" "WARN"
+      "traceWith", TFun(thunk, TUnit), logWithMember 0 "90" "TRACE"
+      "debugWith", TFun(thunk, TUnit), logWithMember 1 "36" "DEBUG"
+      "infoWith", TFun(thunk, TUnit), logWithMember 2 "32" "INFO"
+      "warnWith", TFun(thunk, TUnit), logWithMember 3 "33" "WARN" ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -1256,7 +1327,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Option", optionMembers
       "File", fileMembers
       "Args", argsMembers
-      "Env", envMembers ]
+      "Env", envMembers
+      "Log", logMembers ]
 
 // ---- builtin docs [D:builtin-docs] (PLAN-doc-comments half 2) --------
 // OUT-OF-BAND, exactly as half 1: Value/Eval/Check never see a doc. The

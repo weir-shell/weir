@@ -65,6 +65,13 @@ t4 = run({}, ["x |> to yaml\r"])
 if re.search(r"\x1b\[36myaml\x1b\[0m", t4):
     failures.append("`to yaml` adapter must NOT tint as a marker")
 
+# Log.* at the prompt: stderr interleaves after evaluation, the next
+# prompt still renders (the harness completing IS the no-corruption
+# check) [D:log-module]
+t6 = run({}, ['Log.info "ping"\r', "let z = 1\r"])
+if "INFO" not in t6 or "ping" not in t6:
+    failures.append("Log.info must reach the REPL stream")
+
 t2 = run({"NO_COLOR": "1"}, ["let s = 1\r"])
 # the editor's own control sequences (\r, [K, cursor moves) are fine;
 # COLOR codes must be absent entirely

@@ -709,6 +709,15 @@ git status --porcelain |> from porcelain |> Seq.map _.path
   idiom.
 - `printerr` is `print` to stderr (same argument rule) — diagnostics
   there, data on stdout, so `weir script | next` stays clean.
+- `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
+  stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
+  selects (`trace|debug|info|warn|off`; default `info`; invalid
+  values error at startup). There is NO `Log.error` — an error
+  silenced by `WEIR_LOG=off` is the message you needed; unconditional
+  messages are `printerr`, stopping is `fail` (never filtered).
+  Arguments are EAGER (weir has no lazy positions): in hot loops use
+  the thunk twins — `Log.debugWith (fun () -> expensive)` — which
+  run only when the level passes (the `Option.defaultWith` shape).
 - Operators bind tighter than `|>`: `xs |> Seq.length == 2` is a
   targeted check error; write `(xs |> Seq.length) == 2`.
 

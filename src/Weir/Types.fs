@@ -208,3 +208,21 @@ let didYouMean (name: string) (candidates: seq<string>) : string =
     |> Seq.tryHead
     |> Option.map (fun (c, _) -> $". Did you mean '{c}'?")
     |> Option.defaultValue ""
+
+module Color =
+    open System
+
+    let private enabled (redirected: bool) =
+        not redirected
+        && isNull (Environment.GetEnvironmentVariable "NO_COLOR")
+        && Environment.GetEnvironmentVariable "TERM" <> "dumb"
+
+    let onStdout = lazy enabled Console.IsOutputRedirected
+    let onStderr = lazy enabled Console.IsErrorRedirected
+
+    let private wrap (on: bool) (code: string) (s: string) =
+        if on then $"\x1b[{code}m{s}\x1b[0m" else s
+
+    let red on s = wrap on "31" s
+    let yellow on s = wrap on "33" s
+    let bold on s = wrap on "1" s

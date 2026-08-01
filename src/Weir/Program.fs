@@ -28,7 +28,7 @@ let private evalOnce (input: string) : int =
              Console.Error.WriteLine input
 
              Console.Error.WriteLine(
-                 Script.Color.red Script.Color.onStderr.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
+                 Types.Color.red Types.Color.onStderr.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
              )
 
              Console.Error.WriteLine d.Message
@@ -43,8 +43,8 @@ let private evalOnce (input: string) : int =
                      | _ -> 1
 
                  Console.Error.WriteLine(
-                     Script.Color.red
-                         Script.Color.onStderr.Value
+                     Types.Color.red
+                         Types.Color.onStderr.Value
                          (String(' ', max 0 (d.PhysCol - 1)) + String('^', width))
                  )
 
@@ -90,11 +90,20 @@ let private evalOnce (input: string) : int =
             with
             | Eval.ExitRequest code -> code
             | ex ->
-                Console.Error.WriteLine(Script.Color.red Script.Color.onStderr.Value "error" + $": {ex.Message}")
+                Console.Error.WriteLine(Types.Color.red Types.Color.onStderr.Value "error" + $": {ex.Message}")
                 1
 
 [<EntryPoint>]
 let main argv =
+
+    // WEIR_LOG validates ONCE, before anything runs — an invalid level
+    // is a loud startup error, never a silent fallback [D:log-module]
+    match Builtins.initLogLevel () with
+    | Error msg ->
+        Console.Error.WriteLine $"weir: {msg}"
+        exit 2
+    | Ok() -> ()
+
     match Array.toList argv with
     | [ "-e"; input ] -> evalOnce input
     | [] -> Weir.Repl.run ()

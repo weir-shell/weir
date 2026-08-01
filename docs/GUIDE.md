@@ -737,7 +737,14 @@ sh -c "true" | orFail "sanity failed"
 print (if onBranch then "on a branch" else "detached")
 ```
 
-`printerr` is `print` to stderr — diagnostics there, data on stdout.
+`Log.info $"starting {n}"` (and `trace`/`debug`/`warn`) writes
+levelled diagnostics to stderr — `WEIR_LOG=debug weir script.weir`
+turns the detail on for one run without editing anything, and
+`WEIR_LOG=off` silences the log while `printerr` and `fail` still
+reach you (deliberately: there is no `Log.error`, because an error an
+env var can silence is the one message you needed). Stdout stays
+byte-identical at every level — logging never touches the data
+channel. `printerr` is `print` to stderr — diagnostics there, data on stdout.
 Effect steps sequence inside blocks — same-indent lines, each but the
 last unit-typed. The glyph law: weir has no `!`-negation — negation
 is the word `not`; `!` means DO IT. Command sigils bring full

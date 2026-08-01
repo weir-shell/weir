@@ -405,7 +405,7 @@ let private readLineTty () : string option =
             let text = lines[i].ToString()
 
             let painted =
-                if Script.Color.onStdout.Value then
+                if Types.Color.onStdout.Value then
                     Script.colorizeRepl isKnown text
                 else
                     text
@@ -708,7 +708,7 @@ let private underline (span: Span) : string =
 let private printWarnings (state: State) (te: Check.TypedExpr) =
     Check.warnings te
     |> List.iter (fun w ->
-        Console.WriteLine(Script.Color.yellow Script.Color.onStdout.Value (underline w.Span))
+        Console.WriteLine(Types.Color.yellow Types.Color.onStdout.Value (underline w.Span))
         Console.WriteLine(Check.formatWarning w))
 
 let private resolver (state: State) : Parser.Resolver = Script.resolver state.TypeEnv
@@ -754,7 +754,7 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
-             Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
+             Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
              state)
     | Script.KLet(name, _, te) ->
         printWarnings state te
@@ -774,7 +774,7 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
-             Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
+             Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
              state)
     | Script.KExpr te
     | Script.KCmd te ->
@@ -794,7 +794,7 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
-             Console.WriteLine(Script.Color.red Script.Color.onStdout.Value "error" + $": {ex.Message}")
+             Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
              state)
     | Script.KModule _ ->
         Console.WriteLine "the REPL has no file to be a module of; 'module' belongs at the top of a script file"
@@ -850,7 +850,7 @@ let rec private loop (state: State) =
                             Console.WriteLine src
 
                             Console.WriteLine(
-                                Script.Color.red Script.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
+                                Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
                             )
 
                             Console.WriteLine(if d.Parse then d.Message else $"type error: {d.Message}")
@@ -871,7 +871,7 @@ let rec private loop (state: State) =
             | Error d when d.Parse ->
                 // the input sits on the prompt line above — caret under it
                 Console.WriteLine(
-                    Script.Color.red Script.Color.onStdout.Value (String(' ', prompt.Length + d.PhysCol - 1) + "^")
+                    Types.Color.red Types.Color.onStdout.Value (String(' ', prompt.Length + d.PhysCol - 1) + "^")
                 )
 
                 Console.WriteLine d.Message
@@ -879,7 +879,7 @@ let rec private loop (state: State) =
                 state
             | Error d ->
                 d.Span
-                |> Option.iter (underline >> Script.Color.red Script.Color.onStdout.Value >> Console.WriteLine)
+                |> Option.iter (underline >> Types.Color.red Types.Color.onStdout.Value >> Console.WriteLine)
 
                 (match d.Span with
                  | Some sp ->
