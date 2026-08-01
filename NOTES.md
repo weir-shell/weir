@@ -1,5 +1,35 @@
 # Spike Notes
 
+## the Log module — four levels, no error, stderr as law (2026-08-01)
+
+Small session, landed as blessed with the four rulings folded in.
+The load-bearing decision is the stderr LAW: weir's stdout is a
+value, so `Log.*` has no stream knob at all, and the e2e headline
+pin is byte-identical stdout at every level including `off`. The
+dropped `Log.error` is the module's best boundary — a filterable
+error is the one message `WEIR_LOG=off` should never eat, and weir
+already has the channels (filterable → Log, unconditional →
+printerr, stop → fail; `warn` tops the filterable range). The docs
+pre-empt the missing member.
+
+The eager-argument question ruled 1+2 as recommended: plain members
+evaluate their strings (weir has no lazy positions and does not
+pretend otherwise), and the `With` twins run the thunk only when the
+level passes — proven by a side-effect pin (a thunk that writes a
+file: absent at info, present at trace). Everything else fell out of
+existing machinery: WEIR_LOG rides the env sigil to child weir
+processes (a pin, not a feature), `-e` and the REPL both log
+(prompt probe added), and the tint reuses the shared palette — which
+required moving `module Color` from Script to Types so Builtins
+could reach it (Script keeps a file-local alias; Repl and Program
+repointed — the one discovery: F# module abbreviations are
+file-local, so the alias could not serve external consumers).
+
+Invalid `WEIR_LOG` errors before dispatch (exit 2, naming the
+levels) — validated once in Program.main, so even `weir verify`
+under a typo'd level refuses loudly rather than running with a
+silent fallback.
+
 ## schema polish — the ellipsis was a bug, the paths were free (2026-08-01)
 
 The rider's suspicion list went two for two. The enum `…` WAS "a bug

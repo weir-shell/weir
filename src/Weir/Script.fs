@@ -1403,21 +1403,9 @@ let translate (ll: LogicalLine) (col: int) : int * int =
 // ANSI color for interactive diagnostics: gated per stream on TTY,
 // NO_COLOR, and TERM=dumb — pipes and CI capture always get plain
 // text, so pinned messages never see escape codes.
-module Color =
-    let private enabled (redirected: bool) =
-        not redirected
-        && isNull (Environment.GetEnvironmentVariable "NO_COLOR")
-        && Environment.GetEnvironmentVariable "TERM" <> "dumb"
-
-    let onStdout = lazy enabled Console.IsOutputRedirected
-    let onStderr = lazy enabled Console.IsErrorRedirected
-
-    let private wrap (on: bool) (code: string) (s: string) =
-        if on then $"\x1b[{code}m{s}\x1b[0m" else s
-
-    let red on s = wrap on "31" s
-    let yellow on s = wrap on "33" s
-    let bold on s = wrap on "1" s
+// Color moved to Types.fs (shared with the Log builtins); the alias
+// keeps Script.Color consumers (Repl) and bare Color.* sites stable
+module Color = Weir.Types.Color
 
 // ---- the REPL input-line colorizer [D:repl-color] -----------------
 // Rides the ONE scanner (inStringMask), stripComment, and the parser's
