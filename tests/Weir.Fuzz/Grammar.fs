@@ -93,6 +93,16 @@ type Stmt =
         tv: string *
         addend: int *
         closerAlone: bool
+    // a yaml district [D:yaml-district]: literal keys, scalar/splice
+    // values, one optional nested map; rendered with a trailing
+    // `binder |> to yaml |> print` so output identity SEES it
+    | SYaml of bid: int * binder: string * entries: (string * YVal) list
+
+and YVal =
+    | YLitInt of int
+    | YLitWord of string
+    | YSplice of string
+    | YNest of (string * YVal) list
 
 and Block =
     { Bid: int
@@ -466,6 +476,28 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
             else
                 emitCmd ind ("let " + g + " = " + rhs)
         | SSeqPrint x -> emit ind $"{x} |> print"
+        | SYaml(bid, d, entries) ->
+            // marker line: NON-error territory — under the assume
+            // resolver, junk after `yaml` re-reads as a command's argv
+            // (the verdict-split shape the agreement property hunts),
+            // so the span invariant must not target it
+            emitCmd ind $"let {d} = yaml"
+
+            let rec emitVal (vind: int) (k: string) (v: YVal) =
+                match v with
+                | YLitInt n -> emitCmd vind $"{k}: {n}"
+                | YLitWord w -> emitCmd vind $"{k}: {w}"
+                | YSplice x -> emitCmd vind $"{k}: ${x}"
+                | YNest es ->
+                    emitCmd vind $"{k}:"
+
+                    for (nk, nv) in es do
+                        emitVal (vind + 4) nk nv
+
+            for (k, v) in entries do
+                emitVal (ind + 4 + extra bid) k v
+
+            emit ind $"{d} |> to yaml |> print"
 
     for s in p.Stmts do
         emitStmt 0 s
@@ -504,6 +536,7 @@ let blockIds (p: Program) : int list =
             ids.Add b.Bid
             List.iter ofStmt b.Body
         | SLetMatch(_, m) -> ofMatch m
+        | SYaml(bid, _, _) -> ids.Add bid
         | SIf(bid, _, body) ->
             ids.Add bid
             List.iter ofStmt body
@@ -568,6 +601,7 @@ let rec stmtDefs (s: Stmt) : string list =
     | SListLet(x, _, _, _) -> [ x ]
     | SPipeLet(_, n, _, _) -> [ n ]
     | SCmdLet(g, _) -> [ g ]
+    | SYaml(_, d, _) -> [ d ]
     | SMapLambda(_, n, _, _, _, _, _) -> [ n ]
     | SIterLambda _
     | SPrint _
@@ -602,6 +636,15 @@ let rec stmtUses (s: Stmt) : string list =
     | SPipeLet(_, _, src, _) -> [ src ]
     | SDistrict(_, headed, _) -> headed |> Option.map condUses |> Option.defaultValue []
     | SSeqPrint x -> [ x ]
+    | SYaml(_, _, entries) ->
+        let rec vUses v =
+            match v with
+            | YLitInt _
+            | YLitWord _ -> []
+            | YSplice x -> [ x ]
+            | YNest es -> es |> List.collect (snd >> vUses)
+
+        entries |> List.collect (snd >> vUses)
     | SIterLambda _
     | SMapLambda _ -> []
 
@@ -856,7 +899,66 @@ let rec genMatch (sc: Scope) (resTy: VTy) (depth: int) : Gen<MatchE * Scope> =
 // declarations excluded there)
 let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
     let candidates =
-        [ // simple let
+        [ // yaml district [D:yaml-district] — top-level only for now
+          if not inBlock && depth >= 1 then
+              yield
+                  3,
+                  gen {
+                      let d, sc = freshVal sc
+                      let bid = sc.Bid
+                      let sc = { sc with Bid = sc.Bid + 1 }
+                      let! nEntries = Gen.choose (1, 3)
+
+                      let genLeaf =
+                          gen {
+                              let! pick = Gen.choose (0, 2)
+
+                              match pick with
+                              | 0 ->
+                                  let! n = Gen.choose (0, 99)
+                                  return YLitInt n
+                              | 1 ->
+                                  let! w = genSafeWord
+                                  return YLitWord w
+                              | _ ->
+                                  match sc.Ints @ sc.Strs with
+                                  | [] ->
+                                      let! n = Gen.choose (0, 99)
+                                      return YLitInt n
+                                  | vars ->
+                                      let! v = Gen.elements vars
+                                      return YSplice v
+                          }
+
+                      let! entries =
+                          gen {
+                              let mutable acc = []
+
+                              for i in 0 .. nEntries - 1 do
+                                  let! v =
+                                      gen {
+                                          let! nest = Gen.choose (0, 4)
+
+                                          if nest = 0 then
+                                              let! nk = Gen.choose (1, 2)
+
+                                              let! inner =
+                                                  Gen.listOfLength nk genLeaf
+                                                  |> Gen.map (List.mapi (fun j l -> $"n{j}", l))
+
+                                              return YNest inner
+                                          else
+                                              return! genLeaf
+                                      }
+
+                                  acc <- acc @ [ $"k{i}", v ]
+
+                              return acc
+                          }
+
+                      return SYaml(bid, d, entries), { sc with StrSeqs = sc.StrSeqs }
+                  }
+          // simple let
           yield
               5,
               gen {

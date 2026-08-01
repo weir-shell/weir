@@ -1247,6 +1247,36 @@ let boundaryTests =
                   [ VStr "k: |-"; VStr "  007"; VStr "  x" ]
                   "the block side of the boundary"
           }
+          test "district comments: a SHALLOW comment between a key and its block stays transparent [D:district-hash]" {
+              // the yaml fuzz production's first catch: `// noise` at an
+              // indent between the key's and its content's made
+              // firstContentRel derive the nested indent from the COMMENT
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let src =
+                  asm
+                      [ "let d = yaml"
+                        "    k0:"
+                        "     // fuzz-shaped noise"
+                        "        n0: 65"
+                        "    k1: 56" ]
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, { Kind = EYaml _ })) -> ()
+              | other -> failtest $"the shallow comment must stay transparent: {other}"
+
+              // the second face (same session): a comment at the UNIT's own
+              // indent must not close a key's nested extent
+              let src2 =
+                  asm [ "let d = yaml"; "    k2:"; "    // noise at unit indent"; "        n0: w1" ]
+
+              match Weir.Parser.parseLine realResolver src2 with
+              | Ok(SLet(_, { Kind = EYaml _ })) -> ()
+              | other -> failtest $"the unit-indent comment must ride the extent: {other}"
+          }
           test
               "schema completion: marker-local `schema=`, vendored names after it, adapters offer nothing [D:yaml-schemas]" {
               // `schema` is deliberately NOT a Parser.keywords member — a

@@ -1,5 +1,61 @@
 # Spike Notes
 
+## the resolver invariant — check agrees with run, and the yaml production (2026-08-01)
+
+Item 1 of the refactor follow-ups, and the plan's thesis held
+precisely: EXPECT RED, TREAT IT AS THE DELIVERABLE. The reds came —
+two of them — but from the yaml PRODUCTION, not the property. The
+production's transform battery (comment insertion, the uniform
+reindent) caught a real product bug in `parseTplBlock`'s comment
+transparency, in two faces: `firstContentRel` derived a nested
+block's indent from a shallow `// comment` sitting between a key and
+its content (smoke, first run — red inside the hour), and the extent
+scan STOPPED at a comment at the unit's own indent, orphaning the
+nested block (deep run, seeds 994247893 and 589527467). Root cause:
+transparency was taught at the midline-# session as INLINE COPIES in
+two of four structure loops — the classic sibling-loop drift. The
+fix is ONE predicate (`tplTransparent`) consumed by all four loops,
+both faces unit-pinned, both seeds green, five fresh 1200-case deep
+seeds clean. These were parser bugs, not resolver divergences — the
+plan's size-don't-fix rule targets the RESOLVER class; a one-predicate
+mechanical fix with pins met the mechanical bar, stated here so the
+report is honest about which rule applied.
+
+The property itself (invariant 6): every generated program's logical
+lines parse to the same sexpr and check to the same verdict under
+`assumeResolver` and the hard resolver, envs folded per side, an
+agreed rejection stops the walk. It found NO live divergence — the
+five historical incidents are fixed in today's tree; the property is
+the guard against the sixth, which is exactly what the analysis
+asked it to be. Generated command heads are real on PATH, so the
+hard side resolves as the runner would — the production keeps the
+marker line non-error territory deliberately: junk after `yaml`
+re-reads as command argv under assume, which is THIS property's
+quarry, not the span property's.
+
+Production shape: top-level districts only, 1–3 literal keys,
+int/word/splice leaves, one optional nested map, a trailing
+`|> to yaml |> print` so output identity SEES the district. 44/120
+sampled programs carry one. Deep runs lengthen to ~65s/1200 — about
+the plan's predicted 20%. GRAMMAR.md updated: production to CAN, the
+coverage-gap denominator narrowed to the shapes still outside
+(for-entries, key splices, block scalars, schema=), invariant 6
+listed, CAN/CANNOT diffed (the fuzz audit's meta-lesson) — no
+contradictions.
+
+Riders and the not-scheduled list are recorded in
+PLAN-refactor-followups.md so none is re-proposed from shape:
+Modules.fs rides the modules arc; F-A (didYouMean separator
+parameter, schema pins unmoved) and F-B (scalar self-typing to
+Yaml.fs) ride the next schema session; Program.fs plumbing waits for
+the third contracts command; assembler split / Hover.fs / walker
+merge / BCL swaps stay closed by the analysis' own arguments.
+
+One process lesson re-learned the hard way: a replace without an
+assert was a SILENT NO-OP (the stmtUses arm), surfacing later as an
+incomplete-match crash INSIDE the shrinker — assert replace counts,
+always.
+
 ## the Log module — four levels, no error, stderr as law (2026-08-01)
 
 Small session, landed as blessed with the four rulings folded in.

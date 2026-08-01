@@ -43,6 +43,13 @@ composition, not type complexity.
   `(xs |> Seq.length)` forcing command output in expressions
 - districts: standalone `!` (top level), headed `if ... then !` (top
   level, if bodies, block bodies)
+- yaml districts (top-level only): 1–3 literal keys, int/word/splice
+  values (splices draw existing int/string binders), one optional
+  nested map, each rendered with a trailing `d |> to yaml |> print`
+  so output identity SEES the district; the marker line and content
+  lines are NON-error territory for the span invariants (junk on the
+  marker re-reads as command argv under the assume resolver — the
+  agreement property's quarry, not the span property's)
 - multiline lambdas [D:multiline-lambda]: dangling `(fun p ->` opening
   a body block (block-let + prints inside), closer attached AND alone,
   as a bare iter statement and as a map on a let-RHS pipeline
@@ -53,13 +60,10 @@ composition, not type complexity.
 
 ## CANNOT yet produce
 
-- **yaml districts and block scalars** (the content-bytes audit's
-  find, 2026-07-31): no `yaml` marker, no template splices, no `for`
-  entries, no block-scalar content reach any invariant. The reindent
-  transform is UNIFORM (whole-block extra indent), so relative
-  offsets inside a yaml district are safe by construction when the
-  production lands — but until it does, the fuzzer's claims do not
-  cover the district grammar.
+- yaml `for` entries, key splices, block scalars, and `schema=`
+  declarations — the district PRODUCTION (above) covers plain
+  maps/scalars/value-splices only; these shapes remain outside it,
+  on record (they are pinned at unit/e2e).
 - multiline string LITERALS (never — weir strings are single-line
   [D:raw-strings]; multiline string VALUES exist via yaml block
   scalars, covered by the yaml-district entry above)
@@ -152,7 +156,16 @@ fails.
    dropped (the command-value tier retired — every head is a literal),
    so there is no second spelling. The value-headed pipe is pinned by
    e2e + unit.
-6. Splat-in-reifier equivalence [D:splat-reifier-chains]:
+6. Check agrees with run [PLAN-refactor-followups 1]: for every
+   generated program, each logical line parses to the SAME sexpr and
+   checks to the SAME verdict under the assume-resolver (tooling)
+   and the hard resolver (the runner) — the five-incident resolver
+   seam, finally asserted. Generated heads are real on PATH, so the
+   hard side resolves exactly as the runner would; an agreed
+   rejection stops the walk (valid-by-construction programs should
+   never reach it). Divergences found by this property are FINDINGS
+   with sizes, never same-session fixes.
+7. Splat-in-reifier equivalence [D:splat-reifier-chains]:
    `echo m $@([ws]) | reifier` ≡ the inline-words spelling,
    byte-identical (rc, stdout, stderr) across the four reifiers — the
    splat's elements ride the builtin's argv with word integrity
@@ -170,7 +183,7 @@ generated as a base style but not flipped by a transform),
 claims — the grammar has no for production), and the yaml district's
 marker ↔ node-construction spellings (no yaml production).
 
-Smoke: pinned seed 1789001, 200 cases/invariant (~15s measured 2026-08-01), wired into CI
+Smoke: pinned seed 1789001, 200 cases/invariant (~15s measured 2026-08-01; deep 1200-case runs ~65s/seed with the yaml production + agreement property — the noted ~20% lengthening), wired into CI
 after publish + e2e. Deep: `tools/fuzz.weir [--seed N] [--count N]` (fresh
 seed, 10k default). The equality detector's graded positive
 control (a deliberately non-neutral edit fails the property) was
