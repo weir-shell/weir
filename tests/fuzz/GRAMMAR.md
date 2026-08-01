@@ -22,6 +22,8 @@ composition, not type complexity.
   optional `when`-guard arm, catch-all last; nested match as an arm
   RHS (the offside-close shape)
 - full-coverage match over a union value (payload binders int/string)
+  — THIN: ~1% of base programs (4/400 measured); a 200-case smoke
+  sees a handful, the shape leans on deep runs for real sweep
 - `print` statements (interp markers); `if ... then` unit bodies
   (nested ifs, prints, headed districts)
 - record type decls: inline, Stroustrup, aligned styles; `///` field
@@ -32,8 +34,10 @@ composition, not type complexity.
 - record literals: inline, Stroustrup, aligned (measured anchors)
 - list literals: inline, Stroustrup, aligned; int and string elements
 - multi-line pipelines (`|>` stages under a dangling let)
-- argv splat: `echo $@([...])` on echo statements (the
-  splat-of-literal transform target [D:argv-splat])
+- argv splat: `echo $@([...])` on echo statements — TRANSFORM-ONLY
+  spelling [D:argv-splat]: the base render always emits inline words
+  (measured 0/400 base programs), the splat form appears when the
+  splat-of-literal transform flips the config
 - command lines: top-level bare `echo`; command-backed `let` (top
   level AND block bodies — the spine flag); `seq |> print`;
   `(xs |> Seq.length)` forcing command output in expressions
@@ -56,18 +60,28 @@ composition, not type complexity.
   offsets inside a yaml district are safe by construction when the
   production lands — but until it does, the fuzzer's claims do not
   cover the district grammar.
-- multiline lambdas (not a weir feature yet — this harness is that
-  feature's acceptance rig when it lands)
-- multiline strings (never — not a weir feature)
+- multiline string LITERALS (never — weir strings are single-line
+  [D:raw-strings]; multiline string VALUES exist via yaml block
+  scalars, covered by the yaml-district entry above)
 - env-parameterized districts (`!name`) and env sigils (`$e`/`!e`);
   `sh -c` lines; `| from porcelain/json` adapters; exit reifiers
-  (`succeeds`/`complete`/`orFail`/`exitCode` — the family is outside
-  the generator's shape list)
+  (`succeeds`/`complete`/`orFail`/`exitCode` — outside the MAIN
+  grammar; reifier CHAINS are swept by invariant 6's dedicated
+  splat-reifier generator, safe words only)
 - `let ... in` inline form; param-ful lets / function defs;
   seq patterns; Regex patterns; tuples; copy-and-update literals;
   `Args.load` / `Env.load`; raw strings; `#loose` mode
-- comments/blanks INSIDE the generated program (they arrive only via
-  the transform layer)
+- `for … do` effect loops, `do !` command blocks, and
+  `[for … -> …]` comprehensions [D:for-do] — statement line-shapes
+  landed 2026-07-30, never added here (the coverage audit's
+  staleness pass put them on record); their desugar equivalences are
+  named exclusions below
+- `module` files and `import` statements [D:modules-v1] — multi-file
+  shapes; the generator emits single programs only
+- plain `//` comments, and blanks INSIDE a statement (they arrive
+  only via the transform layer). The base render DOES contain
+  between-statement blank separators and `///` field docs (8/400
+  measured) — the CAN list's doc entry, not this exclusion
 
 ## Shrinking
 
@@ -116,8 +130,12 @@ fails.
    silent acceptance) within the hang bound. A process crash here
    takes the runner down, so survival IS the no-crash safety pin.
 3. Span soundness: a bad token (` ?!?`) appended to a random
-   expression-territory line (command lines are argv territory —
-   excluded by the renderer's tags) must be diagnosed. The HARD floor
+   expression-territory line (command lines are argv territory and
+   `///` doc lines are comment territory — both excluded by the
+   renderer's tags; the doc-line exclusion is the coverage audit's
+   fresh-seed find: junk on a doc line is legal doc TEXT, and
+   targeting it made deep runs red while the pinned smoke stayed
+   green) must be diagnosed. The HARD floor
    (some error diagnostic exists) holds unconditionally; the strict
    positional assertion (the injected line, col within extent, a
    translated backtrack note counts) runs under
@@ -146,10 +164,15 @@ Ledger equivalence claims NOT yet in the transform library (named
 exclusions): env-district/`$e`/`!e` spellings (env features are
 outside the grammar), `let ... in` ↔ block lets (grammar has no
 inline `in` form yet), aligned ↔ Stroustrup/inline (aligned is
-generated as a base style but not flipped by a transform).
+generated as a base style but not flipped by a transform),
+`for p in xs do body` ↔ `xs |> Seq.iter (fun p -> body)` and
+`[for x in xs -> e]` ↔ `Seq.map`+force ([D:for-do]'s desugar-at-parse
+claims — the grammar has no for production), and the yaml district's
+marker ↔ node-construction spellings (no yaml production).
 
-Smoke: pinned seed 1789001, 200 cases/invariant (~7s), wired into CI
+Smoke: pinned seed 1789001, 200 cases/invariant (~15s measured 2026-08-01), wired into CI
 after publish + e2e. Deep: `tools/fuzz.weir [--seed N] [--count N]` (fresh
-seed, 10k default). The equality detector has a graded positive
-control (a deliberately non-neutral edit fails the property —
-verified at bring-up).
+seed, 10k default). The equality detector's graded positive
+control (a deliberately non-neutral edit fails the property) was
+verified at BRING-UP — it is not a standing test; re-verify by hand
+if the detector is ever touched.
