@@ -368,6 +368,86 @@ let tests =
                               (errs |> List.map (fun d -> d.Line, d.Col, d.Message))
                               (showProgram injected)
 
+          // check agrees with run [PLAN-refactor-followups 1]: the tree's
+          // most-repeated failure shape is the assume-resolver (check)
+          // and the hard resolver (run) disagreeing about what a name
+          // is — five incidents, one predicate (Script.assumeResolver),
+          // and until now nothing asserting agreement. For every
+          // generated program: parse each logical line under BOTH
+          // resolvers (same sexpr), then check under both (same
+          // verdict). Generated heads are echo/real, so the hard
+          // resolver resolves them exactly as the runner would.
+          testPropertyWithConfig
+              cfg
+              "check agrees with run: same parse, same verdict (the resolver seam)"
+              (fun (p: Program) ->
+                  let lines = renderPlain p
+                  let numbered = lines |> List.mapi (fun i l -> i + 1, l)
+
+                  match Weir.Script.assemble numbered with
+                  | Error e -> failtestf "assemble: %s\n%s" e (showProgram lines)
+                  | Ok lls ->
+                      Weir.Extern.refresh ()
+
+                      let noImports: Weir.Script.ImportLoader =
+                          fun _ _ _ -> failwith "generated programs never import"
+
+                      let mutable ta = Weir.Builtins.typeEnv
+                      let mutable tb = Weir.Builtins.typeEnv
+                      let mutable stop = false
+
+                      for ll in lls do
+                          if not stop then
+                              let pa = Weir.Parser.parseLine (Weir.Script.assumeResolver ta) ll.Text
+                              let pb = Weir.Parser.parseLine (Weir.Script.resolver tb) ll.Text
+
+                              (match pa, pb with
+                               | Ok sa, Ok sb ->
+                                   let xa = Weir.Ast.sexprStmt sa
+                                   let xb = Weir.Ast.sexprStmt sb
+
+                                   if xa <> xb then
+                                       failtestf
+                                           "PARSE DIVERGENCE on:\n  %s\nassume: %s\nhard:   %s\n%s"
+                                           ll.Text
+                                           xa
+                                           xb
+                                           (showProgram lines)
+                               | Error _, Error _ -> stop <- true // agreed rejection
+                               | Ok _, Error eb ->
+                                   failtestf
+                                       "VERDICT DIVERGENCE (assume accepts, hard rejects) on:\n  %s\nhard: %s\n%s"
+                                       ll.Text
+                                       eb
+                                       (showProgram lines)
+                               | Error ea, Ok _ ->
+                                   failtestf
+                                       "VERDICT DIVERGENCE (hard accepts, assume rejects) on:\n  %s\nassume: %s\n%s"
+                                       ll.Text
+                                       ea
+                                       (showProgram lines))
+
+                              if not stop then
+                                  let ca = Weir.Script.checkStatement true Weir.Script.assumeResolver noImports ta ll
+                                  let cb = Weir.Script.checkStatement true Weir.Script.resolver noImports tb ll
+
+                                  match ca, cb with
+                                  | Ok a, Ok b ->
+                                      ta <- a.Env
+                                      tb <- b.Env
+                                  | Error _, Error _ -> stop <- true // agreed rejection
+                                  | Ok _, Error d ->
+                                      failtestf
+                                          "CHECK DIVERGENCE (assume accepts, hard rejects) on:\n  %s\n%s\n%s"
+                                          ll.Text
+                                          d.Message
+                                          (showProgram lines)
+                                  | Error d, Ok _ ->
+                                      failtestf
+                                          "CHECK DIVERGENCE (hard accepts, assume rejects) on:\n  %s\n%s\n%s"
+                                          ll.Text
+                                          d.Message
+                                          (showProgram lines))
           testPropertyWithConfig cfg "fmt roundtrip: succeeds, idempotent, shape-preserving, output-neutral"
           <| fun (p: Program) ->
               let lines = renderPlain p

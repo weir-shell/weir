@@ -1273,6 +1273,15 @@ let private tplBlockScalar
                 )
             )
 
+// structure-transparency for template lines [D:district-hash]: blanks
+// and full-line comment shapes are BYTES inside block-scalar content
+// (consumed before these loops) and invisible to STRUCTURE everywhere
+// else — one predicate, consumed by the units skip, the extent scan,
+// the nested-content counter, and the nested-indent probe (the fourth
+// site was found by the fuzz production's comment-insertion transform)
+let private tplTransparent (t: string) =
+    t.Trim() = "" || t.TrimStart().StartsWith "#" || t.TrimStart().StartsWith "//"
+
 // one block-level unit of a template
 type private TplUnit =
     | UPair of YamlTplKey * YamlTpl
@@ -1310,7 +1319,11 @@ let rec private parseTplBlock
             while k < b do
                 let (_, r, t) = lines[k]
 
-                if found = fallback && t.Trim() <> "" then
+                // comment-shaped lines are structure-transparent here
+                // exactly as in the units loop — a shallow `// noise`
+                // between a key and its block must not set the block's
+                // indent (the yaml fuzz production's first catch)
+                if found = fallback && not (tplTransparent t) then
                     found <- r
                     k <- b
                 else
@@ -1334,11 +1347,7 @@ let rec private parseTplBlock
                 // this loop ever ran
                 let text = Yaml.stripDistrictComment textRaw
 
-                if
-                    text.Trim() = ""
-                    || text.TrimStart().StartsWith "#"
-                    || text.TrimStart().StartsWith "//"
-                then
+                if tplTransparent text then
                     // blanks and full-line `#` comments are structure-
                     // transparent; both are BYTES inside a block scalar's
                     // content, which consumed its lines before this loop
@@ -1351,7 +1360,7 @@ let rec private parseTplBlock
                     // the extent of this unit's nested block (blanks ride along)
                     let mutable j = i + 1
 
-                    while j < fin && (let (_, r, t) = lines[j] in t.Trim() = "" || r > indent) do
+                    while j < fin && (let (_, r, t) = lines[j] in tplTransparent t || r > indent) do
                         j <- j + 1
 
                     // blanks and `#` lines ride the extent but are not
@@ -1361,9 +1370,7 @@ let rec private parseTplBlock
                         |> Seq.exists (fun k ->
                             let (_, _, t) = lines[k]
 
-                            t.Trim() <> ""
-                            && not (t.TrimStart().StartsWith "#")
-                            && not (t.TrimStart().StartsWith "//"))
+                            not (tplTransparent t))
 
                     if text.StartsWith "for " then
                         match tplForHeader col text with
