@@ -749,6 +749,16 @@ let streamingTests =
           test "equality on union values still works" {
               expectValue "Running 1 == Running 1" (VBool true)
               expectValue "Running 1 == Stopped" (VBool false)
+          }
+          test "one non-Eq field poisons a MIXED record (mutation-spike survivor)" {
+              // decompose must demand Eq of EVERY field; an Eq-able
+              // sibling must not carry the record [D:inferred-type-classes]
+              let mixedEnv = env |> declare "type Mixed = { A: int; B: seq<int> }"
+              let e = parse "let m = { A = 1; B = nats } in m == m"
+
+              match Weir.Check.typecheck mixedEnv e with
+              | Ok _ -> failtest "expected rejection"
+              | Error terr -> Expect.stringContains terr.Message "'==' is not defined for Mixed" ""
           } ]
 
 let polymorphismTests =
@@ -1714,6 +1724,11 @@ let rowTests =
               match (checkOk "fun f -> f.readOnly").Ty with
               | TFun(TRowVar(_, [ "readOnly", TVar _ ]), TVar _) -> ()
               | t -> failtest $"expected a row-typed projection, got {formatTy t}"
+          }
+          test "an Eq constraint rides a row var (mutation-spike survivor)" {
+              // demanding Eq on a still-open row must PEND, not refuse —
+              // discharge happens when the row resolves [D:inferred-type-classes]
+              (checkOk "fun r -> r.A == 1 && r == r").Ty |> ignore
           }
           test "field usage constrains the row" {
               match (checkOk "fun f -> f.bytes > 1048576").Ty with
@@ -6234,6 +6249,11 @@ let showTests =
 
               let nested = checkErr "let f = fun x -> x in show (Some f)"
               Expect.stringContains (formatError nested) "cannot render functions" "nested in a payload"
+
+              // a MIXED tuple: the int component must not carry it
+              // (mutation-spike survivor — the Eq twin was already pinned)
+              let tupled = checkErr "show (1, (fun x -> x + 1))"
+              Expect.stringContains (formatError tupled) "cannot render functions" "mixed tuple"
           }
           test "bare value stays generic with Show riding (was: defaulted to string)" {
               // sentinel-era show defaulted its bare-value type to string;
