@@ -36,6 +36,10 @@ ScaffoldingReadMe.txt
 *.nupkg
 # NuGet Symbol Packages
 *.snupkg
+# the CI NuGet cache — GitLab cache:paths must live inside
+# $CI_PROJECT_DIR, so it extracts into the tree; ignoring it keeps
+# publish.sh's porcelain-based stamp clean on a pristine CI checkout
+.nuget/
 
 # dotenv environment variables file
 .env
