@@ -1312,7 +1312,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         VStr(sb.ToString())
     | TEFrom(fmt, def) -> fromAdapter fmt def
     | TEFromYaml(_, shape) -> yamlFromImpl shape
-    | TEYaml tpl -> evalYamlTpl env tpl
+    | TEYaml(tpl, _) -> evalYamlTpl env tpl
     | TETo "yaml" -> yamlToImpl
     | TETo _ ->
         VBuiltin(fun v ->
@@ -1486,8 +1486,8 @@ and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
     match tpl with
     // block scalar content never self-types: it is a STRING, always
     // [D:block-scalars]
-    | Check.TYtBlock text -> VUnion("YStr", Some(VStr text))
-    | Check.TYtScalar(raw, quoted) ->
+    | Check.TYtBlock(text, _) -> VUnion("YStr", Some(VStr text))
+    | Check.TYtScalar(raw, quoted, _) ->
         if not quoted && raw = "" then
             VUnion("YNull", None)
         elif not quoted && (raw = "true" || raw = "false") then
@@ -1497,8 +1497,8 @@ and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
             | true, n -> VUnion("YInt", Some(VInt n))
             | _ -> VUnion("YStr", Some(VStr raw))
     | Check.TYtSplice te -> liftYaml (eval env te) |> Option.defaultValue (VUnion("YNull", None))
-    | Check.TYtSeq items -> VUnion("YSeq", Some(VSeq(evalYamlItems env items |> List.toSeq)))
-    | Check.TYtMap entries ->
+    | Check.TYtSeq(items, _) -> VUnion("YSeq", Some(VSeq(evalYamlItems env items |> List.toSeq)))
+    | Check.TYtMap(entries, _) ->
         let pairs = evalYamlEntries env entries
         let seen = System.Collections.Generic.HashSet<string>()
 
@@ -1515,7 +1515,7 @@ and private evalYamlEntries (env: Env) (entries: Check.TypedYamlTplEntry list) :
         | Check.TYtPair(key, value) ->
             let k =
                 match key with
-                | Check.TYtKeyLit s -> s
+                | Check.TYtKeyLit(s, _) -> s
                 | Check.TYtKeySplice te ->
                     match eval env te with
                     | VStr s -> s

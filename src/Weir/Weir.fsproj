@@ -21,6 +21,9 @@
          the adapters parse/render through it [D:yaml-v1] -->
     <Compile Include="Yaml.fs" />
     <Compile Include="Check.fs" />
+    <!-- after Check: the schema validator walks the TYPED template;
+         before Script: check-time schema resolution [D:contracts-spine] -->
+    <Compile Include="Contracts.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Session.fs" />
     <Compile Include="Extern.fs" />

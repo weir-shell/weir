@@ -452,7 +452,12 @@ print x
   YAML block; `$name`/`$(expr)` splice VALUES (never text — no
   injection is possible), a `None` splice omits its entry, and
   `for (k, v) in pairs` under a mapping yields dynamic keys (under a
-  sequence, items). A `key: |` block scalar's content is LITERAL —
+  sequence, items). `yaml schema=<name>` on the marker line validates
+  the district against `.weir/schemas/<name>.json` at CHECK time
+  (add one with `weir add schema <url> --as <name>`; structural errors
+  like a misspelled field are check errors with did-you-mean; splices
+  check by TYPE; a district with no declaration is unvalidated).
+  A `key: |` block scalar's content is LITERAL —
   `$VAR` and `for` lines inside it are bytes (embedded scripts stay
   verbatim); templated content interpolates upstream and splices as a
   whole value. Paste a manifest, replace values with `$`.

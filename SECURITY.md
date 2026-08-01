@@ -51,6 +51,17 @@ it, by design):
   a crash, but the ceiling is the box's memory. Stream (don't
   capture) for large or unbounded output.
 
+- **Contracts constrain what weir ACCEPTS, not what runs**
+  [D:contracts-spine]. A vendored schema (and, later, a command
+  signature) makes the checker stricter; it does nothing at run time.
+  A hostile `bicep` earlier on PATH still runs. A lying schema cannot
+  execute code — contracts are inert data read by weir's own parser —
+  but it can grant WRONG CONFIDENCE, which for a check-before-effects
+  language is the specific poison. Hence the posture: pinned by
+  sha256 in a checked-in lockfile, vendored as reviewable source,
+  fetched only by an explicit `weir add`/`weir restore`, and never during
+  `check`, completion, or run.
+
 ## What weir defends by design
 
 These are properties of the language, verified the way the rest of

@@ -291,7 +291,7 @@
     },
     "yaml-district": {
       "comment": "the yaml district [D:yaml-district]: a line-end `yaml` marker opens a checked template block. Lookbehinds exclude the `to yaml`/`from yaml` adapters (tree-sitter does this lexically via its adapter token; RE2 cannot at all — micro-exempt). The while continues on ANY indented or blank line, not indent>=base — a renderer bound, same charter as tree-sitter's over-accepts.",
-      "begin": "(?:^|(?<=[ \\t]))(?<!\\bto[ \\t])(?<!\\bfrom[ \\t])(yaml)[ \\t]*$",
+      "begin": "(?:^|(?<=[ \\t]))(?<!\\bto[ \\t])(?<!\\bfrom[ \\t])(yaml(?:[ \\t]+schema=[a-z0-9-]+)?)[ \\t]*$",
       "while": "^(?=[ \\t])|^[ \\t]*$",
       "beginCaptures": {
         "1": {
