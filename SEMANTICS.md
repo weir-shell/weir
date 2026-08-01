@@ -835,7 +835,7 @@ quantity semantics now.
   member ships. Line one `#!` is skipped by the runner; `#` at line head is
   reserved for directives.
 - **`Args.load T`** [D:typed-argv] — the sixth typed-boundary
-  instance (porcelain, from json, env, dotenv; http parked): the
+  instance (porcelain, from json, env, dotenv; http parked — the park's AOT leg resolved 2026-08-01 [HttpClient verified on the published binary, HTTPS included] and its trigger named: a typed REQUEST body cannot reach the wire through curl without silently-mangling flag arcana; draft at plans/PLAN-http-builtin.md): the
   script's own front door was the last unchecked boundary in a
   fail-before-effects language. Two declared shapes: a monomorphic
   RECORD of flags, or a UNION of record-payload cases as
