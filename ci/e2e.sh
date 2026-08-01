@@ -3616,7 +3616,8 @@ let out = $e(weir child.weir)
 out |> print
 WEOF
 printf 'WEIR_LOG=debug\n' > "$lgdir/log.env"
-( cd "$lgdir" && $BIN parent.weir 2>"$lgdir/cerr" )
+( cd "$lgdir" && PATH="$(dirname $BIN):$PATH" $BIN parent.weir 2>"$lgdir/cerr" ) \
+    || fail "parent.weir failed (child weir needs \$BIN's dir on PATH — CI has no ~/.local/bin): $(cat "$lgdir/cerr")"
 grep -qF "DEBUG child sees debug" "$lgdir/cerr" || fail "the env sigil carries WEIR_LOG to a child weir: $(cat "$lgdir/cerr")"
 echo "e2e ok: Log level rides the env sigil to child weir processes"
 
