@@ -551,6 +551,16 @@ let cm = yaml
 cm |> to yaml |> print
 ```
 
+A district can name a vendored JSON schema on its marker line
+(`yaml schema=k8s-service` — add one with `weir add schema <url>
+--as <name>`; for k8s use the `-standalone-strict` variants, whose
+`additionalProperties: false` is what makes unknown-field checking
+fire). The boundary, stated beside the success so it is not
+over-read: a spliced `int` checks against `integer`; a spliced
+`string` against a `pattern` or `enum` constraint does NOT; and
+`for`-generated content is structurally unchecked — the schema
+validates what the checker can see.
+
 Nonzero exit raises when the stream is forced. To inspect instead of
 raise, reify the run:
 

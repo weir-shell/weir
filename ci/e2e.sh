@@ -3501,6 +3501,62 @@ WEOF
 out=$($BIN check "$ctdir/proj/sub/never.weir" 2>&1 || true)
 echo "$out" | grep -qF "add it: weir add schema <url> --as never-added" || fail "undeclared schema teaches add: $out"
 echo "e2e ok: check never fetches — locked-but-missing teaches restore, undeclared teaches add"
+
+# the six message shapes, re-pinned VERBATIM after the consistency pass
+# [schema-polish]: every message names its field; paths always (root
+# renders without a suffix); a one-element enum states its value plainly
+mkdir -p "$ctdir/proj/.weir/schemas"
+cat > "$ctdir/proj/.weir/schemas/six.json" <<'JEOF'
+{ "type": "object", "additionalProperties": false, "required": ["kind"],
+  "properties": {
+    "kind": { "enum": ["Service"] },
+    "spec": { "type": "object", "additionalProperties": false,
+      "properties": {
+        "ports": { "type": "array", "items": { "type": "object", "additionalProperties": false,
+          "properties": { "port": { "type": "integer" } } } },
+        "ips": { "type": "array", "items": { "type": "string" } },
+        "affinity": { "type": "string" } } } } }
+JEOF
+cat > "$ctdir/proj/sub/six.weir" <<'WEOF'
+let n = "three"
+let d = yaml schema=six
+    kinnd: Deployment
+    spec:
+        ports:
+            - port: nope
+        ips: $n
+        affinity:
+            bad: map
+
+d |> to yaml |> print
+WEOF
+out=$($BIN check "$ctdir/proj/sub/six.weir" 2>&1 || true)
+echo "$out" | grep -qF "schema six: unknown field 'kinnd' — did you mean 'kind'?" || fail "1 unknown+didyoumean: $out"
+echo "$out" | grep -qF "schema six: missing required field 'kind'" || fail "2 missing required: $out"
+echo "$out" | grep -qF "schema six: field spec.ports.port expects integer, got string ('nope')" || fail "3 literal type with path: $out"
+echo "$out" | grep -qF "schema six: field spec.ips expects a sequence, but the splice is string" || fail "4 splice type with path: $out"
+echo "$out" | grep -qF "schema six: field spec.affinity expects a scalar, got a mapping" || fail "5 structure mismatch with path: $out"
+cat > "$ctdir/proj/sub/six2.weir" <<'WEOF'
+let d = yaml schema=six
+    kind: Deployment
+
+d |> to yaml |> print
+WEOF
+out=$($BIN check "$ctdir/proj/sub/six2.weir" 2>&1 || true)
+echo "$out" | grep -qF "schema six: field kind expects 'Service', got 'Deployment'" || fail "6 one-element enum, plainly: $out"
+echo "e2e ok: the six schema messages re-pinned verbatim — fields named, paths always"
+
+# a schema with NO additionalProperties:false warns at ADD time — the
+# silently-inert-contract guard [schema-polish item 3]
+printf '{ "type": "object", "properties": { "a": { "type": "string" } } }' > "$ctdir/serve/loose.json"
+( cd "$ctdir/serve" && python3 -m http.server $ctport >/dev/null 2>&1 ) &
+ctsrv2=$!
+sleep 1
+out=$( cd "$ctdir/proj" && $BIN add schema http://127.0.0.1:$ctport/loose.json --as loose 2>&1 )
+echo "$out" | grep -qF "unknown-field checking will NOT fire" || fail "the inert-schema warning: $out"
+echo "$out" | grep -qF "standalone-strict" || fail "the warning names the strict variant: $out"
+kill $ctsrv2 2>/dev/null || true
+echo "e2e ok: a no-strict schema warns at add time, naming the variant"
 rm -rf "$ctdir"
 
 echo "e2e battery: all green"

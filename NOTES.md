@@ -1,5 +1,48 @@
 # Spike Notes
 
+## schema polish — the ellipsis was a bug, the paths were free (2026-08-01)
+
+The rider's suspicion list went two for two. The enum `…` WAS "a bug
+wearing a formatting convention": `List.truncate 4` plus an
+unconditional ellipsis, so k8s `kind` — a one-element enum, the
+common case — rendered `(ConfigMap…)`. Now one value states plainly
+(`field kind expects 'Service', got 'Deployment'` — which is also
+1b's point demonstrated: IDENTITY mismatches are caught, so the
+rejected `kind`-inference costs nothing; the schema itself carries
+the convention). And threading the PATH (ruled: always) gave every
+message its field name in the same stroke — items 1 and 2 were one
+change. Root paths render without a suffix, so the four acceptance
+messages kept their exact text and the six shapes are e2e-pinned
+verbatim.
+
+The strict-variant finding is the load-bearing one: unknown-field
+checking IS `additionalProperties: false` (mechanism confirmed), so
+a plain `-standalone` schema validates structure while silently
+accepting `apiVerison` — the exact failure the feature exists to
+prevent, wearing the appearance of working. `weir add schema` now
+warns when a fetched schema closes nothing, naming
+`-standalone-strict`; pinned, and the docs carry the reason.
+
+Completion ruled `schema` MARKER-LOCAL — a Parser.keywords entry
+would have RESERVED the identifier. The marker context offers
+`schema=` after `yaml ` (adapters offer nothing — the predicate
+knows), and the genuinely useful half: vendored schema NAMES from
+`.weir/schemas/` complete after `schema=`. The shared marker
+predicate moved to Parser with Script aliasing it — one classifier,
+now three consumers (assembler, REPL tint, completion). The
+grammars needed nothing (the spine session had already extended the
+marker token through the suffix, engine-verified) — the rider's
+observation predated that fix; the REPL tint gained its pin.
+
+Filed, sized, not built: F1 path-aware did-you-mean (a schema-tree
+name index — `'containers' — did you mean
+spec.template.spec.containers?`; ~60–100 lines); F2 internal
+`#/$defs` support (never separately measured — the corpus had zero
+refs of ANY kind; ~80–120 lines, would widen the corpus to most of
+SchemaStore; measure SchemaStore first). The /null noise: kept,
+ruled, not to be re-litigated. 956 unit, e2e re-pins green, full
+ritual green.
+
 ## external contracts — the spine lands, schemas prove it (2026-08-01)
 
 PLAN-contracts-spine executed in one session: the shared spine

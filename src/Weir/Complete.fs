@@ -187,6 +187,29 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                     | Union _ -> [])
                 |> List.distinct
                 |> render
+    elif
+        before.EndsWith "schema="
+        && Weir.Parser.isYamlMarkerPiece (before.Substring(0, before.Length - 7).TrimEnd())
+    then
+        // the vendored schema NAMES [D:yaml-schemas] — `schema` itself is
+        // MARKER-LOCAL, deliberately not a Parser.keywords member (that
+        // would reserve the identifier); the district marker context
+        // offers it and its completions instead
+        match Weir.Contracts.findWeirDir "." with
+        | Ok weirDir ->
+            let dir = System.IO.Path.Combine(weirDir, "schemas")
+
+            if System.IO.Directory.Exists dir then
+                System.IO.Directory.GetFiles(dir, "*.json")
+                |> Array.map System.IO.Path.GetFileNameWithoutExtension
+                |> Array.filter (fun n -> n.StartsWith word && n <> word)
+                |> Array.sort
+                |> Array.toList
+            else
+                []
+        | Error _ -> []
+    elif word = "" && Weir.Parser.isYamlMarkerPiece (before.TrimEnd()) then
+        [ "schema=" ]
     elif before.EndsWith "from json" then
         env.Types
         |> Map.toList

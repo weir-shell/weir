@@ -192,7 +192,11 @@ Specialization: identity is the tool's whole `--version` output;
   docker-compose is whole-file, most CI formats are just "this file
   is that shape". Inferring would mean weir knowing about one
   ecosystem, which the subset discipline refuses, and it would break
-  declared-not-discovered besides.
+  declared-not-discovered besides. [Landed, and the dumb option costs
+  NOTHING: the schema itself constrains `kind` (k8s publishes it as a
+  one-element enum), so a pasted Service under `schema=configmap` is
+  caught as an identity mismatch — the convention stays in the
+  ecosystem's data where it belongs.]
 
   **Per district rather than per file** because that is what makes
   the multi-shape case work without cleverness: a file with a

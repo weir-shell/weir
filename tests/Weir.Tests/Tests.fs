@@ -1247,6 +1247,23 @@ let boundaryTests =
                   [ VStr "k: |-"; VStr "  007"; VStr "  x" ]
                   "the block side of the boundary"
           }
+          test
+              "schema completion: marker-local `schema=`, vendored names after it, adapters offer nothing [D:yaml-schemas]" {
+              // `schema` is deliberately NOT a Parser.keywords member — a
+              // keyword would reserve the identifier; the marker context
+              // offers it instead
+              Expect.isFalse (Weir.Parser.keywords.Contains "schema") "marker-local, not a keyword"
+
+              let env = Weir.Builtins.typeEnvStrict
+              let line1 = "let d = yaml "
+              Expect.equal (Weir.Complete.suggest env line1 line1.Length) [ "schema=" ] "the marker line offers schema="
+
+              let line3 = "x |> to yaml "
+
+              Expect.isFalse
+                  (Weir.Complete.suggest env line3 line3.Length |> List.contains "schema=")
+                  "the adapter is not a marker — no offer"
+          }
           test "contracts: .weir discovery walks up, stops at the first, bounded by .git [D:contracts-spine]" {
               let root =
                   System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weirdisc-{System.Guid.NewGuid():N}")

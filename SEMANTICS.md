@@ -1291,7 +1291,17 @@ quantity semantics now.
   validation where types permit (a `$n : int` splice checks against
   `integer`; enum/pattern constraints on splices do not check);
   `for`-generated entries and key splices relax the unknown/required
-  checks for the map they touch. A district with no declaration is
+  checks for the map they touch. THE STRICT-VARIANT
+  DEPENDENCY IS LOAD-BEARING: unknown-field checking fires only where
+  the schema says `additionalProperties: false` — plain `-standalone`
+  k8s variants omit it, making the check silently inert, so `weir add
+  schema` WARNS when a fetched schema contains none (the vacuous-pin
+  class) and the docs name `-standalone-strict`. Messages carry the
+  FIELD and its PATH always (root renders without a suffix; enums cap
+  at 6 shown values, a one-element enum states its value plainly);
+  the `/null` in `integer/null` is kept — k8s marks most fields
+  nullable, and hiding it would make a legitimate `replicas: null`
+  unexplainable. A district with no declaration is
   unvalidated, exactly as before — schemas are additive.
 - **`sortBy : ('a -> 'b) -> seq<'a> -> seq<'a>`** — the key must evaluate to
   an int, string, or bool; anything else is a runtime error (the type system

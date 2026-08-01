@@ -155,6 +155,35 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
         File.WriteAllBytes(dest, bytes)
         let hash = sha256Hex bytes
 
+        // a schema with no `additionalProperties: false` ANYWHERE cannot
+        // fire unknown-field checks — the feature's whole point — so a
+        // silently-inert contract warns at ADD time (the vacuous-pin
+        // class). Plain `-standalone` k8s variants have exactly this
+        // shape; `-standalone-strict` is the load-bearing variant.
+        if kind = "schema" then
+            let hasClosed =
+                try
+                    use doc = Text.Json.JsonDocument.Parse bytes
+
+                    let rec anyClosed (el: Text.Json.JsonElement) =
+                        match el.ValueKind with
+                        | Text.Json.JsonValueKind.Object ->
+                            el.EnumerateObject()
+                            |> Seq.exists (fun p ->
+                                (p.Name = "additionalProperties"
+                                 && p.Value.ValueKind = Text.Json.JsonValueKind.False)
+                                || anyClosed p.Value)
+                        | Text.Json.JsonValueKind.Array -> el.EnumerateArray() |> Seq.exists anyClosed
+                        | _ -> false
+
+                    anyClosed doc.RootElement
+                with _ ->
+                    true // unparseable here — the loader teaches later
+
+            if not hasClosed then
+                Console.Error.WriteLine
+                    $"weir add: warning: {name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
+
         match readLock weirDir with
         | Error e -> Error e
         | Ok entries ->
@@ -491,10 +520,31 @@ let private literalKind (raw: string) (quoted: bool) =
         | true, _ -> "integer"
         | _ -> "string"
 
-let rec validateTpl (name: string) (schema: Schema) (tpl: Check.TypedYamlTpl) : (Span * string) list =
+// paths are ALWAYS in the message (ruling: a few characters buys a
+// self-contained CI log — the span still carries editor identity).
+// The root renders without a suffix so shallow messages stay terse.
+let private atPath (p: string) = if p = "" then "" else $" at {p}"
+
+let private fieldName (p: string) =
+    if p = "" then "this value" else $"field {p}"
+
+// enum rendering: a SINGLE allowed value states it plainly (k8s `kind`
+// is a one-element enum — the common case); longer lists cap at 6 with
+// an honest remainder count, never a decorative ellipsis
+let private enumText (values: string list) =
+    match values with
+    | [ one ] -> $"'{one}'"
+    | vs when List.length vs <= 6 -> "one of " + String.Join(", ", vs)
+    | vs ->
+        let shown = vs |> List.truncate 6 |> String.concat ", "
+        $"one of {shown} (+{List.length vs - 6} more)"
+
+let rec validateTpl (name: string) (path: string) (schema: Schema) (tpl: Check.TypedYamlTpl) : (Span * string) list =
+    let child k = if path = "" then k else path + "." + k
+
     match schema, tpl with
     | SAny, _ -> []
-    | _, Check.TYtSplice te -> spliceCheck name schema te
+    | _, Check.TYtSplice te -> spliceCheck name path schema te
     | SObject(props, required, additional), Check.TYtMap(entries, mspan) ->
         let hasDynamic =
             entries
@@ -514,17 +564,17 @@ let rec validateTpl (name: string) (schema: Schema) (tpl: Check.TypedYamlTpl) : 
             |> List.collect (function
                 | Check.TYtPair(Check.TYtKeyLit(k, kspan), v) ->
                     match props |> List.tryFind (fun (p, _) -> p = k) with
-                    | Some(_, sub) -> validateTpl name sub v
+                    | Some(_, sub) -> validateTpl name (child k) sub v
                     | None ->
                         match additional with
-                        | Vals s -> validateTpl name s v
+                        | Vals s -> validateTpl name (child k) s v
                         | OpenProps -> []
-                        | Closed -> [ kspan, $"schema {name}: unknown field '{k}'{didYouMean k props}" ]
+                        | Closed -> [ kspan, $"schema {name}: unknown field '{k}'{atPath path}{didYouMean k props}" ]
                 | Check.TYtPair(Check.TYtKeySplice _, v) ->
                     // a dynamic key: unknowable at check; its VALUE still
                     // checks when the schema constrains all values
                     match additional with
-                    | Vals s -> validateTpl name s v
+                    | Vals s -> validateTpl name path s v
                     | _ -> []
                 | Check.TYtForEntries(_, _, body) -> entryErrors body)
 
@@ -534,52 +584,52 @@ let rec validateTpl (name: string) (schema: Schema) (tpl: Check.TypedYamlTpl) : 
             else
                 required
                 |> List.filter (fun r -> not (List.contains r literalKeys))
-                |> List.map (fun r -> mspan, $"schema {name}: missing required field '{r}'")
+                |> List.map (fun r -> mspan, $"schema {name}: missing required field '{r}'{atPath path}")
 
         entryErrors entries @ missing
     | SObject _, Check.TYtScalar(_, _, span)
-    | SObject _, Check.TYtBlock(_, span) -> [ span, $"schema {name}: this field expects a mapping, got a scalar" ]
-    | SObject _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: this field expects a mapping, got a sequence" ]
+    | SObject _, Check.TYtBlock(_, span) -> [ span, $"schema {name}: {fieldName path} expects a mapping, got a scalar" ]
+    | SObject _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: {fieldName path} expects a mapping, got a sequence" ]
     | SArray items, Check.TYtSeq(elems, _) ->
         let rec itemErrors (es: Check.TypedYamlTplItem list) =
             es
             |> List.collect (function
-                | Check.TYtItem t -> validateTpl name items t
+                | Check.TYtItem t -> validateTpl name path items t
                 | Check.TYtForItems(_, _, body) -> itemErrors body)
 
         itemErrors elems
     | SArray _, Check.TYtScalar(_, _, span)
-    | SArray _, Check.TYtBlock(_, span) -> [ span, $"schema {name}: this field expects a sequence, got a scalar" ]
-    | SArray _, Check.TYtMap(_, span) -> [ span, $"schema {name}: this field expects a sequence, got a mapping" ]
+    | SArray _, Check.TYtBlock(_, span) -> [ span, $"schema {name}: {fieldName path} expects a sequence, got a scalar" ]
+    | SArray _, Check.TYtMap(_, span) -> [ span, $"schema {name}: {fieldName path} expects a sequence, got a mapping" ]
     | SScalar kinds, Check.TYtScalar(raw, quoted, span) ->
         let got = literalKind raw quoted
 
         if kindOk kinds got then
             []
         else
-            [ span, $"schema {name}: this field expects {kindsText kinds}, got {got} ('{raw}')" ]
+            [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got {got} ('{raw}')" ]
     | SScalar kinds, Check.TYtBlock(_, span) ->
         if kindOk kinds "string" then
             []
         else
-            [ span, $"schema {name}: this field expects {kindsText kinds}, got a block scalar (string)" ]
-    | SScalar _, Check.TYtMap(_, span) -> [ span, $"schema {name}: this field expects a scalar, got a mapping" ]
-    | SScalar _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: this field expects a scalar, got a sequence" ]
+            [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a block scalar (string)" ]
+    | SScalar _, Check.TYtMap(_, span) -> [ span, $"schema {name}: {fieldName path} expects a scalar, got a mapping" ]
+    | SScalar _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: {fieldName path} expects a scalar, got a sequence" ]
     | SEnum values, Check.TYtScalar(raw, _, span) ->
         if List.contains raw values then
             []
         else
-            let shown = values |> List.truncate 4 |> String.concat ", "
-            [ span, $"schema {name}: '{raw}' is not one of the allowed values ({shown}…)" ]
+            [ span, $"schema {name}: {fieldName path} expects {enumText values}, got '{raw}'" ]
     | SEnum values, Check.TYtBlock(text, span) ->
         if List.contains text values then
             []
         else
-            [ span, $"schema {name}: this block scalar is not one of the allowed values" ]
+            [ span, $"schema {name}: {fieldName path} expects {enumText values}, got a block scalar" ]
     | SEnum _, Check.TYtMap(_, span)
-    | SEnum _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: this field expects a scalar (enum), got a collection" ]
+    | SEnum _, Check.TYtSeq(_, span) ->
+        [ span, $"schema {name}: {fieldName path} expects a scalar (enum), got a collection" ]
 
-and private spliceCheck (name: string) (schema: Schema) (te: Check.TypedExpr) : (Span * string) list =
+and private spliceCheck (name: string) (path: string) (schema: Schema) (te: Check.TypedExpr) : (Span * string) list =
     // value validation WHERE TYPES PERMIT: the splice's weir type is
     // all the checker can see. Yaml-typed and unresolved splices skip;
     // enum constraints on splices skip (stated).
@@ -588,7 +638,8 @@ and private spliceCheck (name: string) (schema: Schema) (te: Check.TypedExpr) : 
     | SEnum _ -> []
     | SScalar kinds ->
         match te.Ty with
-        | TSeq _ -> [ te.Span, $"schema {name}: a seq splices as sequence items; this field expects {kindsText kinds}" ]
+        | TSeq _ ->
+            [ te.Span, $"schema {name}: {fieldName path}: a seq splices as sequence items; it expects {kindsText kinds}" ]
         | t ->
             match tyKind t with
             | None -> []
@@ -596,10 +647,10 @@ and private spliceCheck (name: string) (schema: Schema) (te: Check.TypedExpr) : 
                 if kindOk kinds got then
                     []
                 else
-                    [ te.Span, $"schema {name}: this field expects {kindsText kinds}, but the splice is {got}" ]
+                    [ te.Span, $"schema {name}: {fieldName path} expects {kindsText kinds}, but the splice is {got}" ]
     | SObject _ ->
         match tyKind te.Ty with
-        | Some got -> [ te.Span, $"schema {name}: this field expects a mapping, but the splice is {got}" ]
+        | Some got -> [ te.Span, $"schema {name}: {fieldName path} expects a mapping, but the splice is {got}" ]
         | None -> []
     | SArray items ->
         match te.Ty with
@@ -607,9 +658,9 @@ and private spliceCheck (name: string) (schema: Schema) (te: Check.TypedExpr) : 
             (match items, tyKind elem with
              | SScalar kinds, Some got when not (kindOk kinds got) ->
                  [ te.Span,
-                   $"schema {name}: sequence items here expect {kindsText kinds}, but the spliced seq's elements are {got}" ]
+                   $"schema {name}: {fieldName path}: sequence items expect {kindsText kinds}, but the spliced seq's elements are {got}" ]
              | _ -> [])
         | t ->
             match tyKind t with
-            | Some got -> [ te.Span, $"schema {name}: this field expects a sequence, but the splice is {got}" ]
+            | Some got -> [ te.Span, $"schema {name}: {fieldName path} expects a sequence, but the splice is {got}" ]
             | None -> []
