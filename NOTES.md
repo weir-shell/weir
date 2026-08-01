@@ -80,6 +80,13 @@ script is 100 lines and fully reconstructible from the operator list
 above. The pins-sufficiency claim now has a measurement: sufficient
 in Contracts, three named holes in the solver.
 
+ADDENDUM (same day): the three pins LANDED (branch solver-pins) —
+mixed-record Eq, mixed-tuple Show, Eq-rides-a-row-var acceptance,
+each placed beside its family. Acceptance was pin-kills-mutant: all
+three mutants re-applied, each now killed by its pin, source
+restored. 959 unit; tests-only change (no src, no binary), so the
+publish/e2e legs of the ritual were skipped with this stated reason.
+
 ## the resolver invariant — check agrees with run, and the yaml production (2026-08-01)
 
 Item 1 of the refactor follow-ups, and the plan's thesis held
