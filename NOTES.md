@@ -1,5 +1,92 @@
 # Spike Notes
 
+## Windows v1 session 1 — make it work (2026-08-02)
+
+The runbook's implementation session, on branch windows-v1, developed
+on Linux with every Windows arm platform-guarded: POSIX behaviour is
+byte-identical (the bar), Windows arms are VERIFIED-BY-HAND on the
+user's machine until the CI matrix lands — stated here, per the plan.
+
+1a THE GATE: Extern splits PATH on `Path.PathSeparator` (one BCL
+constant, no #if) and, on Windows only, resolves bare names through
+PATHEXT (default .COM;.EXE;.BAT;.CMD when unset) — the name as-given
+always wins first; `names()` lets a PATHEXT file answer to its bare
+name too, so completion and the head-resolver agree. On POSIX the ext
+list is EMPTY, so every changed site reduces to the old code —
+byte-identical by construction, and the both-ways pin asserts each
+platform's own rule. ORDERING, stated as the plan required: PATHEXT
+was untestable until the separator landed — the spike could not
+separate them; the pin now can. ONE BOUND, stated: resolution accepts
+.BAT/.CMD per PATHEXT, but CreateProcess only auto-appends .exe — a
+.bat tool may resolve yet fail to SPAWN; the user's Windows run should
+probe one (`cmd /c` is the likely spelling if it fails; sized small).
+
+1b: the SIGWINCH registration guarded off on Windows (2 lines) — the
+REPL starts; what the 2D editor DOES there is the new information the
+user's hand-run reports (garbling = session 3, not a surprise).
+
+1c THE RULING (DECISIONS row): Path members are PLATFORM-NATIVE out,
+LIBERAL in — the System.IO.Path contract weir already inherits.
+Alternative (POSIX-normalized out) recorded not just rejected;
+`Path.toPosix` the escape hatch; a Path TYPE parked with the
+real-bug-not-test-expectation trigger. The suite's first
+platform-conditional expectation got its spelling: `platformPath`
+(identity on POSIX).
+
+1d THE STAMP MOVED INTO THE BUILD: WeirStamp MSBuild target in
+Weir.fsproj (short hash + porcelain-dirty + nogit) — every publish
+path stamps identically; publish.sh is publish-and-copy. VERIFIED
+HONEST ACROSS INCREMENTAL REBUILDS in a scratch tree: clean build
+stamps HEAD, a dirty-only change flips -dirty without a clean, a
+HEAD-only move restamps — the three transitions the freshness gate
+lives on. (Not Windows-specific; Windows made it visible.)
+
+1e: config -> %APPDATA%, state -> %LOCALAPPDATA% (helpers beside
+xdgHome; POSIX unchanged). THE 0600 GAP answered by INHERITANCE,
+stated: no chmod on Windows; the history file inherits profile ACLs
+that already deny other non-admin users — SECURITY.md now carries the
+platform split instead of an unconditional promise. No AccessControl
+package (zero-dep outranks).
+
+1f: confirmed ~nothing — every env read rides
+Environment.GetEnvironmentVariable, case-insensitive on Windows BY
+THE OS. Pinned both-ways (Windows Some / POSIX None for a
+case-mismatched read).
+
+THE SUITE: 39 POSIX fixtures marked `skipOnWindows` (marked, NOT
+shimmed — a shim built blind on Linux is the class of fix that lies).
+Shim candidates for when the CI matrix can verify (~14, the
+just-needs-a-command shapes): cmd yields stdout lines, cmd is lazy,
+failing command raises, unforced runs nothing, real exec x3, complete
+x3, force x2, short-circuit, splatted reifier argv. Inherently POSIX
+(~25): sh-as-escape-hatch glob, capture oracles (POSIX sh emits the
+fixture bytes), zombie/lifecycle counts (ps semantics), cd //tmp
+family, worker-fork cd. Bucket 2 closed by `weirPath` (temp paths
+ride as forward slashes into weir source — the \U escape trap, 8
+sites at construction). Bucket 3 closed by 1a. Bucket 4 closed by
+`platformPath` on the Path.dir pin. UN-TRIAGED THREE (splat echo,
+sibling-sentinel acceptance, env-sigil parses): need a Windows
+machine to diagnose — awaiting the user's run, NOT assumed bucket 1.
+
+RIDERS: CLI teaching arms — `--e` did-you-means `-e`, `-e` names its
+arity (the Windows shell-splitting trap: one intended expression
+arrives as many argv), and `--help`/`-h` now EXIST (stdout, exit 0) —
+added because the did-you-mean message references usage, and a hint
+naming a spelling that does not exist is the lying-comment class.
+E2e-pinned. BINARY BASELINE, first time all three exist: linux-x64
+11,630,568 / win-x64 11,478,016 (runbook) / osx-arm64 10,635,256
+(runbook) — Windows is NOT the outlier; macOS is smallest. THE GROWTH
+CONFIRMED, not assumed: 7.7MB -> 11.6MB since the spike decomposes as
+System.Net.Http ≈ 3,399,584 B (~29% of the binary — measured by
+stubbing Contracts.fetchBytes and republishing: 8,230,984 without)
+plus ~0.5MB of contracts/yaml/log/editor code. The HTTP builtin plan
+inherits this number: the stack is already paid for.
+
+NEXT: session 2 (job objects + Ctrl+C wiring + the AOT P/Invoke
+probe; acceptance = the grandchild fixture both ways). The user's
+Windows hand-run reports: REPL editor behaviour, a .bat spawn probe,
+the un-triaged three.
+
 ## mutation-testing spike — the pins-sufficiency claim, measured (2026-08-01)
 
 Throwaway spike (branch deleted, mutator deleted, tool uninstalled —

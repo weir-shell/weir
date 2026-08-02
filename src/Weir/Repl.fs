@@ -31,11 +31,25 @@ let private xdgHome (var: string) (fallback: string) =
     | "" -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, fallback)
     | v -> v
 
+// Windows has no XDG: config -> %APPDATA%, state -> %LOCALAPPDATA%
+// [D:windows-v1]. POSIX unchanged (XDG var, else ~/.config | ~/.local/state).
+let private configHome () =
+    if OperatingSystem.IsWindows() then
+        Environment.GetFolderPath Environment.SpecialFolder.ApplicationData
+    else
+        xdgHome "XDG_CONFIG_HOME" ".config"
+
+let private stateHome () =
+    if OperatingSystem.IsWindows() then
+        Environment.GetFolderPath Environment.SpecialFolder.LocalApplicationData
+    else
+        xdgHome "XDG_STATE_HOME" ".local/state"
+
 let private defaultConfig =
     { HistorySize = 5000
       HistoryDedup = true
       // STATE, not config — history is data the REPL produced, not settings
-      HistoryPath = Path.Combine(xdgHome "XDG_STATE_HOME" ".local/state", "weir", "history")
+      HistoryPath = Path.Combine(stateHome (), "weir", "history")
       FinderFlags = [ "--height"; "40%"; "--reverse" ] }
 
 let private configKeys =
@@ -45,7 +59,7 @@ let private configKeys =
 // unknown keys are REJECTED with did-you-mean (a typo silently doing nothing is
 // the config-file's vacuous pin). Absent file / parse error -> defaults.
 let private loadConfig () : ReplConfig =
-    let path = Path.Combine(xdgHome "XDG_CONFIG_HOME" ".config", "weir", "config.json")
+    let path = Path.Combine(configHome (), "weir", "config.json")
 
     if not (File.Exists path) then
         defaultConfig
@@ -141,10 +155,15 @@ let private ensureHistoryFile () =
     if not (File.Exists historyFile) then
         (File.Create historyFile).Dispose()
 
-    try
-        File.SetUnixFileMode(historyFile, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
-    with _ ->
-        ()
+    // 0600 on POSIX. On Windows there is no chmod: the file inherits
+    // %LOCALAPPDATA%'s ACLs, which already deny other non-admin users —
+    // equivalent protection by inheritance, stated in SECURITY.md, not
+    // silently skipped [D:windows-v1]
+    if not (OperatingSystem.IsWindows()) then
+        try
+            File.SetUnixFileMode(historyFile, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+        with _ ->
+            ()
 
 let private loadHistory () =
     if File.Exists historyFile then
@@ -679,12 +698,15 @@ let private readLineTty () : string option =
 let private setupLineEditor () =
     Console.TreatControlCAsInput <- true // Ctrl+C is a KEY (cancel line), not SIGINT
     // full repaint on SIGWINCH [D:repl-multiline] — best-effort (the climb
-    // to the region top uses pre-resize wrap math)
-    Runtime.InteropServices.PosixSignalRegistration.Create(
-        Runtime.InteropServices.PosixSignal.SIGWINCH,
-        fun _ -> activeRedraw.Value |> Option.iter (fun f -> f ())
-    )
-    |> ignore
+    // to the region top uses pre-resize wrap math). No SIGWINCH on
+    // Windows; Create throws there, so the guard is load-bearing
+    // [D:windows-v1] — resize repaint is simply absent.
+    if not (OperatingSystem.IsWindows()) then
+        Runtime.InteropServices.PosixSignalRegistration.Create(
+            Runtime.InteropServices.PosixSignal.SIGWINCH,
+            fun _ -> activeRedraw.Value |> Option.iter (fun f -> f ())
+        )
+        |> ignore
 
     loadHistory ()
 
