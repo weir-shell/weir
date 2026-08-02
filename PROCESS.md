@@ -211,6 +211,17 @@ a ~150-line job-objects session that a correct fixture
 Windows lifecycle fixture must use `&` or direct invocation, never
 `Start-Process`.
 
+**A normalisation's consumers are ENUMERATED, not remembered**
+[D:windows-s3]. When a normalisation is introduced (the REPL dedent,
+a mask, a decode), list every reader of the normalised thing and wire
+each through the ONE function — the two you were thinking about is
+how the third breaks. The dedent's pair (bufferComplete, submission)
+was recorded as "must agree" and the COLORIZER — the third consumer —
+shipped un-wired, losing head verdicts on leading-space lines. Same
+shape as content-is-bytes (three sites found by collision, four more
+by looking) and districtContentMask's one-mask-three-walkers. The pin
+for a normalisation is an N-TUPLE across all consumers, not a pair.
+
 **The vacuous-probe bar [D:vacuous-probe-audit]: any probe that
 shells out is portable, LOUD, and positive-controlled.** The worst
 genus found so far broke NOTHING — the zombie pin used GNU

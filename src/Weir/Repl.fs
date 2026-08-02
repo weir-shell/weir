@@ -436,12 +436,20 @@ let private readLineTty () : string option =
 
         let mutable totalRows = 0
 
+        // the dedent's THIRD consumer [D:windows-s3]: head verdicts run
+        // on the DEDENTED text (what will parse), painted back behind the
+        // typed prefix — bufferComplete, submission, and the colorizer
+        // must share ONE dedent or the verdict and the paint split
+        let bufTexts = [ for i in 0 .. lines.Count - 1 -> lines[i].ToString() ]
+        let dedented = dedentEntry bufTexts
+
         for i in 0 .. lines.Count - 1 do
-            let text = lines[i].ToString()
+            let text = bufTexts[i]
+            let ded = dedented[i]
 
             let painted =
                 if Types.Color.onStdout.Value then
-                    Script.colorizeRepl isKnown text
+                    text.Substring(0, text.Length - ded.Length) + Script.colorizeRepl isKnown ded
                 else
                     text
 

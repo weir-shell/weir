@@ -65,6 +65,20 @@ t4 = run({}, ["x |> to yaml\r"])
 if re.search(r"\x1b\[36myaml\x1b\[0m", t4):
     failures.append("`to yaml` adapter must NOT tint as a marker")
 
+# the TRIPLE pin [D:windows-s3]: a leading-space line (a) EXECUTES,
+# (b) COMPLETES on the first Enter (no continuation prompt), and
+# (c) still paints its head verdict — the session-2 pair pin let (c)
+# regress because the colorizer was the dedent's unenumerated third
+# consumer
+t6 = run({}, ["  echo tri-out\r"])
+plain6 = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", t6)
+if '["tri-out"]' not in plain6:  # the echoed VALUE — only execution produces it
+    failures.append(f"leading-space line must execute: {plain6[-200:]!r}")
+if "  ... " in plain6:
+    failures.append("leading-space line must complete, not open a buffer")
+if not re.search(r"\x1b\[1;34mecho\x1b\[0m", t6):  # the known-head paint (bold+blue)
+    failures.append("leading-space head must keep its verdict paint")
+
 # Log.* at the prompt: stderr interleaves after evaluation, the next
 # prompt still renders (the harness completing IS the no-corruption
 # check) [D:log-module]

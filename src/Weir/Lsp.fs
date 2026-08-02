@@ -268,18 +268,60 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
 
 // ---- analysis helpers ---------------------------------------------
 
-// URIs on the wire, filesystem paths for import resolution [D:modules-v1]
-let internal uriToPath (uri: string) : string =
-    if uri.StartsWith "file:" then
-        System.Uri(uri).LocalPath
-    else
+// URIs on the wire, filesystem paths for import resolution [D:modules-v1].
+// HAND-ROLLED both directions [D:windows-s3]: System.Uri refuses a bare
+// C:\ path (a one-letter "scheme"), which killed the server on its first
+// Windows refresh — and the pair must ROUND-TRIP (path -> uri -> path is
+// identity, both platforms) or the mirror bug survives a one-way fix.
+// Drive letters: lowercase on the wire (the VS Code convention), UPPER on
+// the way back (the platform's canonical spelling).
+let uriToPath (uri: string) : string =
+    if not (uri.StartsWith "file:") then
         uri
+    else
+        let rest = uri.Substring "file:".Length
 
-let internal pathToUri (path: string) : string =
+        let path =
+            if rest.StartsWith "//" then
+                // file://HOST/PATH — clients send an empty host (file:///)
+                let hostAndPath = rest.Substring 2
+
+                match hostAndPath.IndexOf '/' with
+                | -1 -> "/"
+                | i -> hostAndPath.Substring i
+            else
+                rest
+
+        let decoded = System.Uri.UnescapeDataString path
+
+        if
+            OperatingSystem.IsWindows()
+            && decoded.Length >= 3
+            && decoded[0] = '/'
+            && System.Char.IsLetter decoded[1]
+            && decoded[2] = ':'
+        then
+            (string (System.Char.ToUpperInvariant decoded[1]) + decoded.Substring 2).Replace('/', '\\')
+        else
+            decoded
+
+let pathToUri (path: string) : string =
     if path.StartsWith "file:" then
         path
     else
-        System.Uri(path).AbsoluteUri
+        let encoded =
+            path.Replace('\\', '/').Split '/'
+            |> Array.map (fun seg ->
+                if seg.Length = 2 && System.Char.IsLetter seg[0] && seg[1] = ':' then
+                    string (System.Char.ToLowerInvariant seg[0]) + ":" // the drive, unencoded
+                else
+                    System.Uri.EscapeDataString seg)
+            |> String.concat "/"
+
+        if encoded.StartsWith "/" then
+            "file://" + encoded
+        else
+            "file:///" + encoded
 
 let private analyze (uri: string) (text: string) =
     let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
@@ -995,17 +1037,24 @@ let run () : int =
         let byUri = Collections.Generic.Dictionary<string, ResizeArray<Script.Diagnostic>>()
 
         for kv in Seq.toList docs do
-            let diags, _, _, _ = analyze kv.Key kv.Value
+            // per-DOC resilience [D:windows-s3]: one bad document (a
+            // malformed client URI) logs and skips — the other open docs
+            // still analyze and publish; the request-level guard is only
+            // the backstop
+            try
+                let diags, _, _, _ = analyze kv.Key kv.Value
 
-            for d in diags do
-                let du = pathToUri d.File
+                for d in diags do
+                    let du = pathToUri d.File
 
-                match byUri.TryGetValue du with
-                | true, b -> b.Add d
-                | _ ->
-                    let b = ResizeArray()
-                    b.Add d
-                    byUri[du] <- b
+                    match byUri.TryGetValue du with
+                    | true, b -> b.Add d
+                    | _ ->
+                        let b = ResizeArray()
+                        b.Add d
+                        byUri[du] <- b
+            with ex ->
+                Console.Error.WriteLine $"weir lsp: skipping '{kv.Key}': {ex.Message}"
 
         // one publish per relevant URI: a file with diagnostics, every OPEN
         // doc (empty if clean), and any previously-diagnosed file now clean
@@ -1082,366 +1131,381 @@ let run () : int =
                         | Some l, Some c -> Some(l + 1, c + 1) // to 1-based
                         | _ -> None)
 
-                match method with
-                | "initialize" ->
-                    // resolve relative-path command heads against the
-                    // WORKSPACE ROOT, not the server's launch cwd — which
-                    // the editor chooses and Zed/VS Code choose differently,
-                    // so `ci/deep-lock.sh` was a command in one and an
-                    // unbound var in the other. rootUri (or the first
-                    // workspaceFolder) is a file:// URI; on absence keep cwd.
-                    (jStr "rootUri" ps
-                     |> Option.orElseWith (fun () -> jFirst "workspaceFolders" ps |> Option.bind (jStr "uri")))
-                    |> Option.iter (fun u ->
-                        try
-                            Session.setCwd (System.Uri(u).LocalPath)
-                        with _ ->
-                            ())
+                // a malformed REQUEST (bad URI, bad params) must not kill
+                // the server [D:windows-s3]: the Windows hand-run watched it
+                // die 5x on one bad path and give up — one bad document
+                // becomes a logged skip, the server keeps serving
+                try
+                    match method with
+                    | "initialize" ->
+                        // resolve relative-path command heads against the
+                        // WORKSPACE ROOT, not the server's launch cwd — which
+                        // the editor chooses and Zed/VS Code choose differently,
+                        // so `ci/deep-lock.sh` was a command in one and an
+                        // unbound var in the other. rootUri (or the first
+                        // workspaceFolder) is a file:// URI; on absence keep cwd.
+                        (jStr "rootUri" ps
+                         |> Option.orElseWith (fun () -> jFirst "workspaceFolders" ps |> Option.bind (jStr "uri")))
+                        |> Option.iter (fun u ->
+                            try
+                                Session.setCwd (System.Uri(u).LocalPath)
+                            with _ ->
+                                ())
 
-                    idStr
-                    |> Option.iter (fun id ->
-                        respond id (fun w ->
-                            w.WriteRawValue
-                                """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir"}}"""))
-                | "initialized" -> ()
-                | "shutdown" -> idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
-                | "exit" -> running <- false
-                | "textDocument/didOpen" ->
-                    (match jObj "textDocument" ps with
-                     | Some td ->
-                         match jStr "uri" td, jStr "text" td with
-                         | Some uri, Some text ->
-                             docs[uri] <- text
-                             // re-check all: this doc AND any open importer of it
-                             refreshAll ()
-                         | _ -> ()
-                     | None -> ())
-                | "textDocument/didChange" ->
-                    (match jObj "textDocument" ps, jFirst "contentChanges" ps with
-                     | Some td, Some change ->
-                         match jStr "uri" td, jStr "text" change with
-                         | Some uri, Some text ->
-                             docs[uri] <- text
-                             refreshAll ()
-                         | _ -> ()
-                     | _ -> ())
-                | "textDocument/didClose" ->
-                    jObj "textDocument" ps
-                    |> Option.bind (jStr "uri")
-                    |> Option.iter (fun uri ->
-                        docs.Remove uri |> ignore
-                        refreshAll ())
-                | "textDocument/semanticTokens/full" ->
-                    let writeResult (w: Text.Json.Utf8JsonWriter) =
-                        match docOf () with
-                        | Some(_, text) ->
-                            let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
-                            let toks = semanticTokensFor lines
-                            w.WriteStartObject()
-                            w.WritePropertyName "data"
-                            w.WriteStartArray()
-
-                            // the five-int delta scheme: deltaLine,
-                            // deltaStartChar (line-relative resets), length,
-                            // tokenType, modifiers
-                            let mutable pl = 0
-                            let mutable pc = 0
-
-                            for (l, c, len, ty) in toks do
-                                let dl = l - pl
-                                let dc = if dl = 0 then c - pc else c
-                                w.WriteNumberValue dl
-                                w.WriteNumberValue dc
-                                w.WriteNumberValue len
-                                w.WriteNumberValue ty
-                                w.WriteNumberValue 0
-                                pl <- l
-                                pc <- c
-
-                            w.WriteEndArray()
-                            w.WriteEndObject()
-                        | None -> w.WriteNullValue()
-
-                    idStr |> Option.iter (fun id -> respond id writeResult)
-                | "textDocument/hover" ->
-                    let writeResult (w: Text.Json.Utf8JsonWriter) =
-                        match docOf (), posOf () with
-                        | Some(_, text), Some(line, col) ->
-                            let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
-
-                            match hoverType lines line col with
-                            | Some t ->
+                        idStr
+                        |> Option.iter (fun id ->
+                            respond id (fun w ->
+                                w.WriteRawValue
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir"}}"""))
+                    | "initialized" -> ()
+                    | "shutdown" -> idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
+                    | "exit" -> running <- false
+                    | "textDocument/didOpen" ->
+                        (match jObj "textDocument" ps with
+                         | Some td ->
+                             match jStr "uri" td, jStr "text" td with
+                             | Some uri, Some text ->
+                                 docs[uri] <- text
+                                 // re-check all: this doc AND any open importer of it
+                                 refreshAll ()
+                             | _ -> ()
+                         | None -> ())
+                    | "textDocument/didChange" ->
+                        (match jObj "textDocument" ps, jFirst "contentChanges" ps with
+                         | Some td, Some change ->
+                             match jStr "uri" td, jStr "text" change with
+                             | Some uri, Some text ->
+                                 docs[uri] <- text
+                                 refreshAll ()
+                             | _ -> ()
+                         | _ -> ())
+                    | "textDocument/didClose" ->
+                        jObj "textDocument" ps
+                        |> Option.bind (jStr "uri")
+                        |> Option.iter (fun uri ->
+                            docs.Remove uri |> ignore
+                            refreshAll ())
+                    | "textDocument/semanticTokens/full" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf () with
+                            | Some(_, text) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let toks = semanticTokensFor lines
                                 w.WriteStartObject()
-                                w.WritePropertyName "contents"
-                                w.WriteStartObject()
-                                w.WriteString("kind", "plaintext")
-                                w.WriteString("value", t)
-                                w.WriteEndObject()
-                                w.WriteEndObject()
-                            | None -> w.WriteNullValue()
-                        | _ -> w.WriteNullValue()
-
-                    idStr |> Option.iter (fun id -> respond id writeResult)
-                | "textDocument/definition" ->
-                    let writeResult (w: Text.Json.Utf8JsonWriter) =
-                        match docOf (), posOf () with
-                        | Some(uri, text), Some(line, col) ->
-                            let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
-
-                            match definitionFor lines line col with
-                            | Some(pl, pc, len) ->
-                                w.WriteStartObject()
-                                w.WriteString("uri", uri)
-                                w.WritePropertyName "range"
-                                w.WriteStartObject()
-                                w.WritePropertyName "start"
-                                w.WriteStartObject()
-                                w.WriteNumber("line", pl - 1)
-                                w.WriteNumber("character", pc - 1)
-                                w.WriteEndObject()
-                                w.WritePropertyName "end"
-                                w.WriteStartObject()
-                                w.WriteNumber("line", pl - 1)
-                                w.WriteNumber("character", pc - 1 + len)
-                                w.WriteEndObject()
-                                w.WriteEndObject()
-                                w.WriteEndObject()
-                            | None -> w.WriteNullValue()
-                        | _ -> w.WriteNullValue()
-
-                    idStr |> Option.iter (fun id -> respond id writeResult)
-                | "textDocument/formatting" ->
-                    // client-sent text only (the SECURITY non-claim holds);
-                    // editor options are IGNORED — weir fmt is canonical.
-                    // formatLines keeps unparseable statements verbatim, so
-                    // format-on-save on a broken file still normalizes what
-                    // it can; an assemble failure returns no edits.
-                    let writeResult (w: Text.Json.Utf8JsonWriter) =
-                        match docOf () with
-                        | Some(_, text) ->
-                            let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
-
-                            match Fmt.formatLines lines with
-                            | Ok formatted when formatted <> lines ->
-                                let arr = List.toArray lines
-                                let lastIdx = arr.Length - 1
+                                w.WritePropertyName "data"
                                 w.WriteStartArray()
-                                w.WriteStartObject()
-                                w.WritePropertyName "range"
-                                w.WriteStartObject()
-                                w.WritePropertyName "start"
-                                w.WriteStartObject()
-                                w.WriteNumber("line", 0)
-                                w.WriteNumber("character", 0)
-                                w.WriteEndObject()
-                                w.WritePropertyName "end"
-                                w.WriteStartObject()
-                                w.WriteNumber("line", lastIdx)
-                                w.WriteNumber("character", arr[lastIdx].Length)
-                                w.WriteEndObject()
-                                w.WriteEndObject()
-                                w.WriteString("newText", String.concat "\n" formatted)
-                                w.WriteEndObject()
+
+                                // the five-int delta scheme: deltaLine,
+                                // deltaStartChar (line-relative resets), length,
+                                // tokenType, modifiers
+                                let mutable pl = 0
+                                let mutable pc = 0
+
+                                for (l, c, len, ty) in toks do
+                                    let dl = l - pl
+                                    let dc = if dl = 0 then c - pc else c
+                                    w.WriteNumberValue dl
+                                    w.WriteNumberValue dc
+                                    w.WriteNumberValue len
+                                    w.WriteNumberValue ty
+                                    w.WriteNumberValue 0
+                                    pl <- l
+                                    pc <- c
+
                                 w.WriteEndArray()
-                            | _ -> w.WriteNullValue() // refusal or already canonical
-                        | None -> w.WriteNullValue()
+                                w.WriteEndObject()
+                            | None -> w.WriteNullValue()
 
-                    idStr |> Option.iter (fun id -> respond id writeResult)
-                | "textDocument/completion" ->
-                    let writeResult (w: Text.Json.Utf8JsonWriter) =
-                        match docOf (), posOf () with
-                        | Some(uri, text), Some(line, col) ->
-                            let _, stmts, env0, allLls = analyze uri text
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/hover" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf (), posOf () with
+                            | Some(_, text), Some(line, col) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                            // env in scope: after the last statement ABOVE the line
-                            let env =
-                                stmts
-                                |> List.filter (fun (ll, _) -> ll.Head < line)
-                                |> List.tryLast
-                                |> Option.map (fun (_, c) -> c.Env)
-                                |> Option.defaultValue env0
+                                match hoverType lines line col with
+                                | Some t ->
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "contents"
+                                    w.WriteStartObject()
+                                    w.WriteString("kind", "plaintext")
+                                    w.WriteString("value", t)
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+                                | None -> w.WriteNullValue()
+                            | _ -> w.WriteNullValue()
 
-                            let lines = text.Replace("\r\n", "\n").Split('\n')
-                            let lineText = if line - 1 < lines.Length then lines[line - 1] else ""
-                            let upto = lineText.Substring(0, min (col - 1) lineText.Length)
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/definition" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf (), posOf () with
+                            | Some(uri, text), Some(line, col) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                            let wordStart =
-                                let mutable i = upto.Length
+                                match definitionFor lines line col with
+                                | Some(pl, pc, len) ->
+                                    w.WriteStartObject()
+                                    w.WriteString("uri", uri)
+                                    w.WritePropertyName "range"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "start"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", pl - 1)
+                                    w.WriteNumber("character", pc - 1)
+                                    w.WriteEndObject()
+                                    w.WritePropertyName "end"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", pl - 1)
+                                    w.WriteNumber("character", pc - 1 + len)
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+                                | None -> w.WriteNullValue()
+                            | _ -> w.WriteNullValue()
 
-                                while i > 0
-                                      && (Char.IsLetterOrDigit upto[i - 1] || upto[i - 1] = '_' || upto[i - 1] = '.') do
-                                    i <- i - 1
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/formatting" ->
+                        // client-sent text only (the SECURITY non-claim holds);
+                        // editor options are IGNORED — weir fmt is canonical.
+                        // formatLines keeps unparseable statements verbatim, so
+                        // format-on-save on a broken file still normalizes what
+                        // it can; an assemble failure returns no edits.
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf () with
+                            | Some(_, text) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                                i
+                                match Fmt.formatLines lines with
+                                | Ok formatted when formatted <> lines ->
+                                    let arr = List.toArray lines
+                                    let lastIdx = arr.Length - 1
+                                    w.WriteStartArray()
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "range"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "start"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", 0)
+                                    w.WriteNumber("character", 0)
+                                    w.WriteEndObject()
+                                    w.WritePropertyName "end"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", lastIdx)
+                                    w.WriteNumber("character", arr[lastIdx].Length)
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+                                    w.WriteString("newText", String.concat "\n" formatted)
+                                    w.WriteEndObject()
+                                    w.WriteEndArray()
+                                | _ -> w.WriteNullValue() // refusal or already canonical
+                            | None -> w.WriteNullValue()
 
-                            let word = upto.Substring wordStart
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/completion" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf (), posOf () with
+                            | Some(uri, text), Some(line, col) ->
+                                let _, stmts, env0, allLls = analyze uri text
 
-                            // error-recovery path: a single-dot word whose
-                            // head is unknown — repair the (possibly broken)
-                            // containing statement and read the head's
-                            // inferred type from the typed tree
-                            let repaired =
-                                if word.Contains '.' && word.Split('.').Length = 2 then
-                                    let head = word.Substring(0, word.IndexOf '.')
-                                    let prefix = word.Substring(word.IndexOf '.' + 1)
+                                // env in scope: after the last statement ABOVE the line
+                                let env =
+                                    stmts
+                                    |> List.filter (fun (ll, _) -> ll.Head < line)
+                                    |> List.tryLast
+                                    |> Option.map (fun (_, c) -> c.Env)
+                                    |> Option.defaultValue env0
 
-                                    if
-                                        head.Length > 0 && Char.IsLower head[0] && not (Map.containsKey head env.Values)
-                                    then
-                                        logicalAt allLls line col
-                                        |> Option.bind (fun (ll, jcol) ->
-                                            let dotIdx = jcol - 1 - prefix.Length - 1
+                                let lines = text.Replace("\r\n", "\n").Split('\n')
+                                let lineText = if line - 1 < lines.Length then lines[line - 1] else ""
+                                let upto = lineText.Substring(0, min (col - 1) lineText.Length)
 
-                                            if
-                                                dotIdx >= 0
-                                                && dotIdx < ll.Text.Length
-                                                && ll.Text[dotIdx] = '.'
-                                                && dotIdx >= head.Length
-                                                && ll.Text.Substring(dotIdx - head.Length, head.Length) = head
-                                            then
-                                                // blank the WHOLE head.prefix to a neutral
-                                                // "" — leaving a bare row-typed head behind
-                                                // broke positions with scalar rules (printerr)
-                                                let span = head.Length + 1 + prefix.Length
+                                let wordStart =
+                                    let mutable i = upto.Length
 
-                                                let before = ll.Text.Substring(0, dotIdx - head.Length)
-                                                let after = ll.Text.Substring(dotIdx + 1 + prefix.Length)
-                                                let filler = "\"\"" + String(' ', max 0 (span - 2))
+                                    while i > 0
+                                          && (Char.IsLetterOrDigit upto[i - 1] || upto[i - 1] = '_' || upto[i - 1] = '.') do
+                                        i <- i - 1
 
-                                                let parse t =
-                                                    Parser.parseLine (Script.assumeResolver env) t
+                                    i
 
-                                                // two repair candidates: close dangling
-                                                // delimiters AT THE CURSOR (mid-statement
-                                                // edits — the suffix stays outside the
-                                                // string), else at the END (last-line edits)
-                                                let candB =
-                                                    let prefixDone = before + filler
-                                                    prefixDone + Script.closers prefixDone + after
+                                let word = upto.Substring wordStart
 
-                                                let candA =
-                                                    let blanked = before + filler + after
-                                                    blanked + Script.closers blanked
+                                // error-recovery path: a single-dot word whose
+                                // head is unknown — repair the (possibly broken)
+                                // containing statement and read the head's
+                                // inferred type from the typed tree
+                                let repaired =
+                                    if word.Contains '.' && word.Split('.').Length = 2 then
+                                        let head = word.Substring(0, word.IndexOf '.')
+                                        let prefix = word.Substring(word.IndexOf '.' + 1)
 
-                                                [ candB; candA ]
-                                                |> List.tryPick (fun cand ->
-                                                    Complete.fieldsAtRepaired parse env cand head)
-                                                |> Option.map (fun fields ->
-                                                    fields
-                                                    |> List.filter (fun f -> f.StartsWith prefix)
-                                                    |> List.sort
-                                                    |> List.map (fun f -> head + "." + f))
-                                            else
-                                                None)
+                                        if
+                                            head.Length > 0
+                                            && Char.IsLower head[0]
+                                            && not (Map.containsKey head env.Values)
+                                        then
+                                            logicalAt allLls line col
+                                            |> Option.bind (fun (ll, jcol) ->
+                                                let dotIdx = jcol - 1 - prefix.Length - 1
+
+                                                if
+                                                    dotIdx >= 0
+                                                    && dotIdx < ll.Text.Length
+                                                    && ll.Text[dotIdx] = '.'
+                                                    && dotIdx >= head.Length
+                                                    && ll.Text.Substring(dotIdx - head.Length, head.Length) = head
+                                                then
+                                                    // blank the WHOLE head.prefix to a neutral
+                                                    // "" — leaving a bare row-typed head behind
+                                                    // broke positions with scalar rules (printerr)
+                                                    let span = head.Length + 1 + prefix.Length
+
+                                                    let before = ll.Text.Substring(0, dotIdx - head.Length)
+                                                    let after = ll.Text.Substring(dotIdx + 1 + prefix.Length)
+                                                    let filler = "\"\"" + String(' ', max 0 (span - 2))
+
+                                                    let parse t =
+                                                        Parser.parseLine (Script.assumeResolver env) t
+
+                                                    // two repair candidates: close dangling
+                                                    // delimiters AT THE CURSOR (mid-statement
+                                                    // edits — the suffix stays outside the
+                                                    // string), else at the END (last-line edits)
+                                                    let candB =
+                                                        let prefixDone = before + filler
+                                                        prefixDone + Script.closers prefixDone + after
+
+                                                    let candA =
+                                                        let blanked = before + filler + after
+                                                        blanked + Script.closers blanked
+
+                                                    [ candB; candA ]
+                                                    |> List.tryPick (fun cand ->
+                                                        Complete.fieldsAtRepaired parse env cand head)
+                                                    |> Option.map (fun fields ->
+                                                        fields
+                                                        |> List.filter (fun f -> f.StartsWith prefix)
+                                                        |> List.sort
+                                                        |> List.map (fun f -> head + "." + f))
+                                                else
+                                                    None)
+                                        else
+                                            None
                                     else
                                         None
-                                else
-                                    None
 
-                            let items =
-                                match repaired with
-                                | Some fields when not fields.IsEmpty -> fields
-                                | _ -> Complete.suggest env upto wordStart
+                                let items =
+                                    match repaired with
+                                    | Some fields when not fields.IsEmpty -> fields
+                                    | _ -> Complete.suggest env upto wordStart
 
-                            // line-head position: PATH commands join (the
-                            // command-mode classifier's territory)
-                            let items =
-                                if upto.Substring(0, wordStart).Trim() = "" then
-                                    let word = upto.Substring wordStart
+                                // line-head position: PATH commands join (the
+                                // command-mode classifier's territory)
+                                let items =
+                                    if upto.Substring(0, wordStart).Trim() = "" then
+                                        let word = upto.Substring wordStart
 
-                                    items
-                                    @ (Extern.names ()
-                                       |> Seq.filter (fun n -> n.StartsWith word)
-                                       |> Seq.truncate 50
-                                       |> List.ofSeq)
-                                else
-                                    items
-
-                            // completion detail [D:doc-comments]: the `///`
-                            // doc for a documented name. Name-keyed HERE (a
-                            // completion item IS a name; last-wins on a shared
-                            // name) — the position-keyed map stays for hover
-                            let docByName =
-                                Script.docAttachments (List.ofArray lines)
-                                |> List.choose (fun d ->
-                                    if d.Line - 1 < lines.Length && d.Col - 1 + d.Len <= lines[d.Line - 1].Length then
-                                        Some(lines[d.Line - 1].Substring(d.Col - 1, d.Len), String.concat "\n" d.Doc)
+                                        items
+                                        @ (Extern.names ()
+                                           |> Seq.filter (fun n -> n.StartsWith word)
+                                           |> Seq.truncate 50
+                                           |> List.ofSeq)
                                     else
-                                        None)
-                                |> Map.ofList
+                                        items
 
-                            w.WriteStartArray()
+                                // completion detail [D:doc-comments]: the `///`
+                                // doc for a documented name. Name-keyed HERE (a
+                                // completion item IS a name; last-wins on a shared
+                                // name) — the position-keyed map stays for hover
+                                let docByName =
+                                    Script.docAttachments (List.ofArray lines)
+                                    |> List.choose (fun d ->
+                                        if
+                                            d.Line - 1 < lines.Length && d.Col - 1 + d.Len <= lines[d.Line - 1].Length
+                                        then
+                                            Some(
+                                                lines[d.Line - 1].Substring(d.Col - 1, d.Len),
+                                                String.concat "\n" d.Doc
+                                            )
+                                        else
+                                            None)
+                                    |> Map.ofList
 
-                            // textEdit with an explicit range: clients replace
-                            // [wordStart, cursor) with the suggestion — bare
-                            // labels double-insert after dots and get
-                            // prefix-filtered inside parens [D:completion-textedit]
-                            for label in items |> List.distinct |> List.truncate 200 do
-                                w.WriteStartObject()
-                                w.WriteString("label", label)
+                                w.WriteStartArray()
 
-                                // the annotated signature as `detail` — the
-                                // other surface names are read on
-                                // [D:annotated-signature]
-                                let sigDetail =
-                                    Map.tryFind label Builtins.builtinDocs
-                                    |> Option.filter (fun d -> not (List.isEmpty d.Params))
-                                    |> Option.bind (fun d ->
-                                        let tyOf =
-                                            match Map.tryFind label env.Values with
-                                            | Some sch -> Some sch.Ty
-                                            | None ->
-                                                match label.Split '.' with
-                                                | [| m; mem |] ->
-                                                    Map.tryFind m env.Modules
-                                                    |> Option.bind (Map.tryFind mem)
-                                                    |> Option.map (fun s -> s.Ty)
-                                                | _ -> None
+                                // textEdit with an explicit range: clients replace
+                                // [wordStart, cursor) with the suggestion — bare
+                                // labels double-insert after dots and get
+                                // prefix-filtered inside parens [D:completion-textedit]
+                                for label in items |> List.distinct |> List.truncate 200 do
+                                    w.WriteStartObject()
+                                    w.WriteString("label", label)
 
-                                        tyOf |> Option.map (fun ty -> formatSignature label d.Params ty))
+                                    // the annotated signature as `detail` — the
+                                    // other surface names are read on
+                                    // [D:annotated-signature]
+                                    let sigDetail =
+                                        Map.tryFind label Builtins.builtinDocs
+                                        |> Option.filter (fun d -> not (List.isEmpty d.Params))
+                                        |> Option.bind (fun d ->
+                                            let tyOf =
+                                                match Map.tryFind label env.Values with
+                                                | Some sch -> Some sch.Ty
+                                                | None ->
+                                                    match label.Split '.' with
+                                                    | [| m; mem |] ->
+                                                        Map.tryFind m env.Modules
+                                                        |> Option.bind (Map.tryFind mem)
+                                                        |> Option.map (fun s -> s.Ty)
+                                                    | _ -> None
 
-                                match sigDetail with
-                                | Some s -> w.WriteString("detail", s)
-                                | None -> ()
+                                            tyOf |> Option.map (fun ty -> formatSignature label d.Params ty))
 
-                                // a user `///` doc wins; else the builtin's
-                                // doc (Seq.map, print, …) [D:builtin-docs]
-                                match
-                                    Map.tryFind label docByName
-                                    |> Option.orElse (
-                                        Map.tryFind label Builtins.builtinDocs |> Option.map Builtins.renderBuiltinDoc
-                                    )
-                                with
-                                | Some doc -> w.WriteString("documentation", doc)
-                                | None -> ()
+                                    match sigDetail with
+                                    | Some s -> w.WriteString("detail", s)
+                                    | None -> ()
 
-                                w.WritePropertyName "textEdit"
-                                w.WriteStartObject()
-                                w.WritePropertyName "range"
-                                w.WriteStartObject()
-                                w.WritePropertyName "start"
-                                w.WriteStartObject()
-                                w.WriteNumber("line", line - 1)
-                                w.WriteNumber("character", wordStart)
-                                w.WriteEndObject()
-                                w.WritePropertyName "end"
-                                w.WriteStartObject()
-                                w.WriteNumber("line", line - 1)
-                                w.WriteNumber("character", col - 1)
-                                w.WriteEndObject()
-                                w.WriteEndObject()
-                                w.WriteString("newText", label)
-                                w.WriteEndObject()
-                                w.WriteEndObject()
+                                    // a user `///` doc wins; else the builtin's
+                                    // doc (Seq.map, print, …) [D:builtin-docs]
+                                    match
+                                        Map.tryFind label docByName
+                                        |> Option.orElse (
+                                            Map.tryFind label Builtins.builtinDocs
+                                            |> Option.map Builtins.renderBuiltinDoc
+                                        )
+                                    with
+                                    | Some doc -> w.WriteString("documentation", doc)
+                                    | None -> ()
 
-                            w.WriteEndArray()
-                        | _ ->
-                            w.WriteStartArray()
-                            w.WriteEndArray()
+                                    w.WritePropertyName "textEdit"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "range"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "start"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", line - 1)
+                                    w.WriteNumber("character", wordStart)
+                                    w.WriteEndObject()
+                                    w.WritePropertyName "end"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", line - 1)
+                                    w.WriteNumber("character", col - 1)
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+                                    w.WriteString("newText", label)
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
 
-                    idStr |> Option.iter (fun id -> respond id writeResult)
-                | _ ->
-                    // unknown request: respond null; unknown notification: ignore
-                    idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
+                                w.WriteEndArray()
+                            | _ ->
+                                w.WriteStartArray()
+                                w.WriteEndArray()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | _ ->
+                        // unknown request: respond null; unknown notification: ignore
+                        idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
+                with ex ->
+                    Console.Error.WriteLine $"weir lsp: request '{method}' failed: {ex.Message}"
 
     exitCode

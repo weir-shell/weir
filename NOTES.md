@@ -1,5 +1,75 @@
 # Spike Notes
 
+## Windows v1 session 3 — the hand-run's findings (2026-08-02)
+
+Windows was effectively green coming in (918/963, 43 stated skips,
+2 fixture misses) — this session is repairs, and both substantive
+repairs carry a lesson that outlives the fix.
+
+THE LSP CRASH: `System.Uri` refuses `C:\Users\...` (a one-letter
+"scheme"), so `pathToUri` threw on the first refresh and the server
+died — five restarts, then gave up. The whole LSP surface sat
+untested behind that one line. Fixed HAND-ROLLED in BOTH directions
+(the plan's warning held: `uriToPath` was one `System.Uri` away from
+the mirror bug): per-segment percent-encoding, drive lowercase on
+the wire / UPPER back, `file:///` empty-host form, VS Code's
+`c%3A` spelling accepted. The acceptance is the ROUND-TRIP pin —
+path → uri → path identity on the running platform, spaces and
+non-ASCII included. THE ROBUSTNESS HALF is its own finding: the
+server DIED because a request path threw. Now one bad document is a
+logged skip (per-doc guard in refreshAll — the others still
+publish) with a request-level backstop, and lsp-e2e pins survival:
+a malformed didOpen, then the next request answers. The
+coverage-gap note for the safety review: its LSP pass probed
+malformed FRAMING; malformed PATHS were the untested face.
+
+THE COLORIZER REGRESSION is the dedent's story completing: session 2
+wrote "bufferComplete and submission must agree or the verdict and
+the meaning split" — and the colorizer was the THIRD consumer
+neither of us enumerated. Head verdicts ran on the raw indented
+text; completeness ran dedented; `  ^cmd` executed but lost its
+paint. One `dedentEntry`, three consumers now — verdicts computed on
+the dedented text, painted back behind the typed prefix. The pin is
+a TRIPLE (executes + completes-on-first-Enter + paints), because the
+pair pin is exactly what let this through. PROCESS gains the general
+rule: a normalisation's consumers are ENUMERATED, not remembered;
+the pin for a normalisation is an N-tuple across all of them. (The
+triple's paint leg caught its own authoring bug on the way in: known
+heads paint 1;34, not bare bold — the pin was wrong before the code
+was.)
+
+THE TWO SWEEP MISSES: `into` is now skipOnWindows with the product
+gap STATED, not shimmed — into IS the documented sh -c path; a
+Windows `into` would mean `cmd /c` as its shell there, a real small
+feature whose receipt has not arrived. The ninth `\U` site
+(fromFile single-quotes) got its `weirPath`; the mechanical
+GetTempFileName/GetTempPath grep now confirms NO TENTH — the one
+unwrapped survivor is the shim directory itself, which is a native
+PATH entry and correct as-is.
+
+ALSO PINNED from the banked list: the blank-line escape's
+keeps-the-input half — the escaped buffer SUBMITS (its parse error
+shows), where Ctrl+C discards. That property is why the escape
+outranked the leading-space fix.
+
+DOCS: Windows Terminal claims left-Alt+Enter for fullscreen —
+Ctrl+J (everywhere) or right-Alt+Enter is the spelling; GUIDE table
++ README Windows section carry it. THE SHIM RULE, stated while
+fresh: only shim names that resolve to NOTHING on the target
+platform (`sort` was the near-casualty — System32 ships a real one
+the feed test RUNS); the rule makes the list's next addition safe by
+construction.
+
+PENDING THE USER'S NEXT HAND-RUN (§4, probe-and-report, case by
+case): a wrapping line (typing/arrows/backspace across the
+boundary), Up/Down in the 2D buffer + history at the first line,
+RESIZE mid-edit in Windows Terminal and conhost (handling is absent
+by construction — SIGWINCH guarded off; report what actually
+happens), Ctrl+R with and without fzf on PATH, blank-line escape +
+right-Alt+Enter. Garbling is a sized finding for a follow-up, not a
+surprise. Mid-buffer Enter stays unreproduced; the ESC-prefix
+hypothesis stands recorded, not hunted.
+
 ## Windows v1 session 2 — the second pass, and the correction (2026-08-02)
 
 THE HEADLINE IS A RETRACTION: session 2 was planned as the
