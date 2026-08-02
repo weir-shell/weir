@@ -50,9 +50,12 @@ Build: `./publish.sh` installs `~/.local/bin/weir` (dotnet 10 SDK +
 clang required). Tests: `dotnet test`; the full battery is
 `ci/local.sh`.
 
-Windows (v1, in progress [D:windows-v1]): `dotnet publish src/Weir -c
-Release -r win-x64` produces a single `Weir.exe` — the stamp is in the
-build, so no script is needed. Bare commands resolve through PATHEXT
+Windows (v1, in progress [D:windows-v1]): `./publish.ps1` (or plain
+`dotnet publish src/Weir -c Release -r win-x64`) — the stamp is in the
+build, so both paths stamp identically; the .ps1 also copies to
+`%LOCALAPPDATA%\Programs\weir\weir.exe` (add that directory to PATH
+once). Prereqs: .NET 10 SDK + VS Build Tools C++ workload (NativeAOT
+links with MSVC). Bare commands resolve through PATHEXT
 (`git` finds `git.exe`); `Path` members produce Windows spellings and
 accept forward slashes; config lives in `%APPDATA%\weir`, history in
 `%LOCALAPPDATA%\weir`. Process-tree cleanup on interrupt is session
