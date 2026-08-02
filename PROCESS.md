@@ -200,6 +200,17 @@ pattern the measuring command also carries. The positive-control
 sibling of the stamp gate: make the instrument incapable of reading
 itself.
 
+The same class, Windows spelling [D:windows-s2]: **`Start-Process`
+launches DETACHED** — the child is not in the caller's process tree,
+so no tree-walk can ever reach it. Every lifecycle fixture built on
+it measures PowerShell's detachment, not the kill under test; the
+Windows spike drew THREE false findings from one such fixture
+(natural-exit orphans, Ctrl+C inert, BCL-kill short reach) and sized
+a ~150-line job-objects session that a correct fixture
+(`powershell -c "& tool"` — a genuine tree child) dissolved. A
+Windows lifecycle fixture must use `&` or direct invocation, never
+`Start-Process`.
+
 **The vacuous-probe bar [D:vacuous-probe-audit]: any probe that
 shells out is portable, LOUD, and positive-controlled.** The worst
 genus found so far broke NOTHING — the zombie pin used GNU
