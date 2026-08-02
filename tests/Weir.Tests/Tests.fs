@@ -154,6 +154,25 @@ let private runReal input =
 let private expectValue input expected =
     Expect.equal (run input) expected $"eval of '{input}'"
 
+// ---- Windows-v1 harness helpers [D:windows-v1] ----------------------------
+// weirPath: a NATIVE path made safe to interpolate into weir SOURCE —
+// weir strings treat `\` as an escape, so a Windows temp path must ride
+// as forward slashes (liberal input: Windows APIs accept them)
+let private weirPath (p: string) = p.Replace('\\', '/')
+
+// platformPath: a POSIX-spelled EXPECTED value converted to the
+// platform's separator — the suite's spelling for the Path members'
+// native-output ruling (identity on POSIX)
+let private platformPath (p: string) =
+    p.Replace('/', System.IO.Path.DirectorySeparatorChar)
+
+// a fixture that IS about POSIX tools or absolute POSIX paths (sh, yes,
+// /tmp, /bin) — marked, not shimmed; the session report carries the
+// shim-candidate list for when the CI matrix can verify conversions
+let private skipOnWindows () =
+    if System.OperatingSystem.IsWindows() then
+        skiptest "POSIX fixture (sh/coreutils/absolute POSIX path)"
+
 let acceptance = "ls |> where (fun f -> f.bytes > 1048576) |> first 5"
 
 let parserTests =
@@ -790,15 +809,21 @@ let boundaryTests =
     testList
         "External command boundary"
         [ test "cmd yields stdout lines" {
+              skipOnWindows ()
               Expect.equal (runReal "sh -c \"printf 'a\\nb\\n'\"" |> forceSeq) [ VStr "a"; VStr "b" ] ""
           }
           test "cmd is lazy across the process boundary" {
+              skipOnWindows ()
               Expect.equal (runReal "sh -c \"yes\" |> first 3" |> forceSeq) [ VStr "y"; VStr "y"; VStr "y" ] ""
           }
           test "failing command raises when forced" {
+              skipOnWindows ()
               Expect.throws (fun () -> runReal "sh -c \"exit 3\"" |> forceSeq |> ignore) ""
           }
-          test "unforced command runs nothing" { runReal "sh -c \"exit 3\"" |> ignore }
+          test "unforced command runs nothing" {
+              skipOnWindows ()
+              runReal "sh -c \"exit 3\"" |> ignore
+          }
           test "porcelain adapter parses status lines" {
               let src =
                   VSeq
@@ -828,7 +853,10 @@ let boundaryTests =
                   ""
           }
           test "acceptance: git status |> from porcelain |> where staged on a real repo" {
-              let dir = Path.Combine(Path.GetTempPath(), $"weir-{System.Guid.NewGuid():N}")
+              skipOnWindows ()
+
+              let dir =
+                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-{System.Guid.NewGuid():N}"))
 
               let setup =
                   $"mkdir -p {dir} && cd {dir} && git init -q && echo a > staged.txt && echo b > untracked.txt && git add staged.txt"
@@ -968,6 +996,8 @@ let boundaryTests =
               expectParse "for (k, v) in pairs do print k" "((Seq.iter (funpat (k, v) (print k))) pairs)"
           }
           test "for/do equivalence: both spellings evaluate identically [D:for-do]" {
+              skipOnWindows ()
+
               Expect.equal
                   (runReal "for x in [\"a\"; \"b\"] do print x" |> ignore
                    runReal "[\"a\"; \"b\"] |> Seq.iter (fun x -> print x)")
@@ -1306,7 +1336,7 @@ let boundaryTests =
           }
           test "contracts: .weir discovery walks up, stops at the first, bounded by .git [D:contracts-spine]" {
               let root =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weirdisc-{System.Guid.NewGuid():N}")
+                  weirPath (System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weirdisc-{System.Guid.NewGuid():N}"))
 
               let deep = System.IO.Path.Combine(root, "repo", "a", "b")
               System.IO.Directory.CreateDirectory deep |> ignore
@@ -1418,6 +1448,8 @@ let boundaryTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "district block scalars: content is LITERAL — consumed before the splice/for scanners [D:block-scalars]" {
+              skipOnWindows ()
+
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
                   | Ok [ ll ] -> ll.Text
@@ -1593,7 +1625,7 @@ let completionTests =
               // completing a path yields entries without executing a program —
               // the marker file a run would leave is absent
               let marker =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-complete-marker")
+                  weirPath (System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-complete-marker"))
 
               if System.IO.File.Exists marker then
                   System.IO.File.Delete marker
@@ -1899,11 +1931,14 @@ let lifecycleTests =
           // removed (PLAN-command-mode Session 2), this analysis changes:
           // re-derive which of these guards what.
           test "simple command: no survivors after partial consumption" {
+              skipOnWindows ()
               runReal "sh -c \"yes weir-s1-simple\" |> first 3" |> forceSeq |> ignore
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s1-simple") "yes leaked"
           }
           test "compound command: no survivors after partial consumption" {
+              skipOnWindows ()
+
               runReal "sh -c \"yes weir-s1-compound | grep --line-buffered weir-s1-compound\" |> first 3"
               |> forceSeq
               |> ignore
@@ -1911,6 +1946,8 @@ let lifecycleTests =
               Expect.isTrue (eventuallyNoSurvivors "weir-s1-compound") "pipeline children leaked"
           }
           test "50 completed commands leave no zombies" {
+              skipOnWindows ()
+
               for _ in 1..50 do
                   runReal "sh -c \"true\"" |> forceSeq |> ignore
 
@@ -1918,6 +1955,8 @@ let lifecycleTests =
               Expect.equal zombies 0 "defunct children accumulated"
           }
           test "50 abandoned streams leave no zombies" {
+              skipOnWindows ()
+
               for _ in 1..50 do
                   runReal "sh -c \"yes weir-s1-zombie\" |> first 1" |> forceSeq |> ignore
 
@@ -1945,10 +1984,15 @@ let session2Tests =
               Expect.stringContains (checkErr "[1; \"a\"]").Message "expected int, got string" ""
           }
           test "cmd passes argv verbatim: glob stays literal" {
+              skipOnWindows ()
               Expect.equal (runReal "echo \"*\"" |> forceSeq) [ VStr "*" ] ""
           }
           test "sh is the escape hatch: glob expands" {
-              let dir = Path.Combine(Path.GetTempPath(), $"weir-s2-{System.Guid.NewGuid():N}")
+              skipOnWindows ()
+
+              let dir =
+                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-s2-{System.Guid.NewGuid():N}"))
+
               Directory.CreateDirectory dir |> ignore
               File.WriteAllText(Path.Combine(dir, "g1.txt"), "")
               File.WriteAllText(Path.Combine(dir, "g2.txt"), "")
@@ -1962,11 +2006,13 @@ let session2Tests =
                   Directory.Delete(dir, true)
           }
           test "injection attempt is inert through cmd" {
+              skipOnWindows ()
               Expect.equal (runReal "echo \"; rm -rf x\"" |> forceSeq) [ VStr "; rm -rf x" ] ""
           }
           // [D:drop-command-builtins] the "for cmd" twin retired — cmd is
           // gone; the sh-spawn version below covers cwd-affects-spawns
           test "cd changes the spawn cwd for sh" {
+              skipOnWindows ()
               // /usr, not /tmp: macOS's /tmp is a symlink to /private/tmp
               // and the CHILD's getcwd reports the physical path
               try
@@ -1975,6 +2021,8 @@ let session2Tests =
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "pwd builtin tracks Session.Cwd lazily" {
+              skipOnWindows ()
+
               try
                   Expect.equal
                       (run "let p = pwd in let d = cd \"/tmp\" in p" |> forceSeq)
@@ -1987,6 +2035,8 @@ let session2Tests =
               Expect.throws (fun () -> run "cd \"/definitely/not/here\"" |> ignore) ""
           }
           test "cd resolves relative and dotdot" {
+              skipOnWindows ()
+
               try
                   Expect.equal
                       (run "let a = cd \"/tmp\" in cd \"..\"" |> ignore
@@ -2003,10 +2053,13 @@ let session2Tests =
           // exec-optimization analysis from the Session-1 tripwire does not
           // apply — tree-kill must hold on its own.
           test "direct cmd: no survivors after partial consumption" {
+              skipOnWindows ()
               runReal "yes \"weir-s2-direct\" |> first 3" |> forceSeq |> ignore
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-direct") "direct-exec child leaked"
           }
           test "direct cmd: 50 abandoned streams leave no zombies" {
+              skipOnWindows ()
+
               for _ in 1..50 do
                   runReal "yes \"weir-s2-dz\" |> first 1" |> forceSeq |> ignore
 
@@ -2104,9 +2157,12 @@ let commandModeTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "real exec: barewords, splices and scalars render" {
+              skipOnWindows ()
               Expect.equal (runReal "echo hi (1 + 2) true" |> forceSeq) [ VStr "hi 3 true" ] ""
           }
           test "real exec: command pipes into first" {
+              skipOnWindows ()
+
               Expect.equal
                   (runReal "yes weir-s3-pipe |> first 2" |> forceSeq)
                   [ VStr "weir-s3-pipe"; VStr "weir-s3-pipe" ]
@@ -2115,6 +2171,7 @@ let commandModeTests =
               Expect.isTrue (eventuallyNoSurvivors "weir-s3-pipe") "command-mode child leaked"
           }
           test "real exec: argv verbatim, no shell interpretation" {
+              skipOnWindows ()
               Expect.equal (runReal "echo ; rm -rf x") (runReal "echo ; rm -rf x") "deterministic"
               Expect.equal (runReal "echo ; rm -rf x" |> forceSeq) [ VStr "; rm -rf x" ] ""
           } ]
@@ -2145,6 +2202,8 @@ let cdTests =
               | Ok _ -> failtest "expected parse failure"
           }
           test "cd evaluates in command mode and mutates the session" {
+              skipOnWindows ()
+
               try
                   match Weir.Parser.parseLine realResolver "cd /tmp" with
                   | Ok(SExpr e | SCmd e) ->
@@ -2185,6 +2244,8 @@ let cdTests =
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "expression-mode cd is unchanged" {
+              skipOnWindows ()
+
               try
                   expectValue "let d = cd \"/tmp\" in d" (VStr "/tmp")
               finally
@@ -2233,6 +2294,8 @@ let session3Tests =
     <| testList
         "complete and force"
         [ test "force snapshots a live query" {
+              skipOnWindows ()
+
               try
                   expectValue
                       "let p = pwd |> force in let d = cd \"/tmp\" in p |> first 1"
@@ -2241,8 +2304,10 @@ let session3Tests =
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
           test "force runs effects exactly once" {
+              skipOnWindows ()
+
               let marker =
-                  Path.Combine(Path.GetTempPath(), $"weir-force-{System.Guid.NewGuid():N}")
+                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-force-{System.Guid.NewGuid():N}"))
 
               try
                   runReal
@@ -2274,9 +2339,11 @@ let session3Tests =
               Expect.throws (fun () -> run "ls |> where (fun f -> f.bytes > 999999999) |> head" |> ignore) ""
           }
           test "stderr passes through: stdout stream stays clean" {
+              skipOnWindows ()
               Expect.equal (runReal "sh -c \"echo out; echo err 1>&2\"" |> forceSeq) [ VStr "out" ] ""
           }
           test "external pipes into external via stdin" {
+              skipOnWindows ()
               // the marker rides the command so the survivor check checks
               // SOMETHING — it previously asserted a marker no process
               // ever carried [D:vacuous-probe-audit]
@@ -2298,6 +2365,8 @@ let session3Tests =
               | other -> failtest $"unexpected: {other}"
           }
           test "complete reifies grep no-match without raising" {
+              skipOnWindows ()
+
               match runReal "grep nomatch /etc/hosts | complete" with
               | VRecord("Completed", fields) ->
                   Expect.equal fields["exitCode"] (VInt 1) "exit code"
@@ -2306,6 +2375,8 @@ let session3Tests =
               | v -> failtest $"unexpected: {formatValue v}"
           }
           test "complete captures stderr and nonzero exit" {
+              skipOnWindows ()
+
               match runReal "^ls /weir-definitely-not | complete" with
               | VRecord("Completed", fields) ->
                   match fields["exitCode"], fields["stderr"] with
@@ -2335,6 +2406,7 @@ let session3Tests =
               Expect.isFalse (terr.Message.Contains "|completed") "internal keys never surface"
           }
           test "complete result pipes onward" {
+              skipOnWindows ()
               Expect.equal (runReal "grep nomatch /etc/hosts | complete |> _.exitCode") (VInt 1) ""
           }
           // capture oracle [D:capture-buffer]: the exact line-split and
@@ -2343,6 +2415,8 @@ let session3Tests =
           // oracle for "one buffer, not N strings". Octal via sh printf
           // (POSIX printf has no \x).
           test "capture oracle: stdout line rule — CRLF, lone CR, empties kept, unterminated tail" {
+              skipOnWindows ()
+
               Expect.equal
                   (runReal "sh -c 'printf \"a\\015\\012b\\015\\012\"' | complete |> _.stdout"
                    |> forceSeq)
@@ -2368,6 +2442,8 @@ let session3Tests =
               Expect.equal (runReal "sh -c 'true' | complete |> _.stdout" |> forceSeq) [] "empty output, empty seq"
           }
           test "capture oracle: stderr rule differs — newline-split, empties dropped, CR retained" {
+              skipOnWindows ()
+
               Expect.equal
                   (runReal "sh -c 'printf \"a\\012\\012b\\012\" 1>&2' | complete |> _.stderr"
                    |> forceSeq)
@@ -2380,6 +2456,8 @@ let session3Tests =
                   "stderr keeps the CR (newline-only split)"
           }
           test "capture oracle: decoding — UTF-8 BOM stripped, invalid byte replaced, UTF-16 BOM switches" {
+              skipOnWindows ()
+
               Expect.equal
                   (runReal "sh -c 'printf \"\\357\\273\\277x\\012\"' | complete |> _.stdout"
                    |> forceSeq)
@@ -2399,6 +2477,8 @@ let session3Tests =
                   "UTF-16LE BOM switches decoding"
           }
           test "capture: re-enumeration is stable (Completed is materialized by definition)" {
+              skipOnWindows ()
+
               Expect.equal
                   (runReal
                       "let r = $(sh -c 'printf \"x\\012y\\012\"' | complete) in (r.stdout |> Seq.length) + (r.stdout |> Seq.length)")
@@ -2406,6 +2486,7 @@ let session3Tests =
                   "two enumerations of the same view agree"
           }
           test "capture: a line crossing the segment boundary decodes whole" {
+              skipOnWindows ()
               // the segment store's riskiest branch [D:capture-buffer]: a
               // 5MB single line spans the 4MB segments and assembles
               Expect.equal
@@ -5343,7 +5424,10 @@ let readProbes =
               | Error terr -> failtest $"sibling discharge interfered: {formatError terr}"
           }
           test "short-circuit pinned by real process effect, not just div-by-zero" {
-              let marker = Path.Combine(Path.GetTempPath(), $"weir-sc-{System.Guid.NewGuid():N}")
+              skipOnWindows ()
+
+              let marker =
+                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-sc-{System.Guid.NewGuid():N}"))
 
               try
                   Expect.equal
@@ -6028,6 +6112,7 @@ let agentFindingsTests =
               | Error m -> failtest $"the value-headed route must parse: {m}"
           }
           test "splatted reifier argv: word integrity identical to the argv path [D:splat-reifier-chains]" {
+              skipOnWindows ()
               // N elements, N words — through the BUILTIN's argv
               Expect.equal
                   (runReal "echo one $@([\"a\"; \"b\"]) | complete |> _.stdout |> Seq.head")
@@ -6094,7 +6179,9 @@ let agentFindingsTests =
               expectValue "Path.extension \"ci/Dockerfile\"" (VStr "")
               expectValue "Path.fileName \"a/b/c.fs\"" (VStr "c.fs")
               expectValue "Path.stem \"a/b/c.fs\"" (VStr "c")
-              expectValue "Path.dir \"a/b/c.fs\"" (VStr "a/b")
+              // native-out ruling [D:windows-v1]: a\b on Windows, a/b on POSIX;
+              // the forward-slash INPUT is the liberal-in pin on both
+              expectValue "Path.dir \"a/b/c.fs\"" (VStr(platformPath "a/b"))
               expectValue "Path.dir \"c.fs\"" (VStr "")
               expectValue "Path.combine \"ci\" \"e2e.sh\"" (VStr "ci/e2e.sh")
           }
@@ -6282,6 +6369,7 @@ let parallelTests =
               expectValue "[1; 2; 3] |> Seq.piter (fun n -> if n > 99 then print \"never\")" VUnit
           }
           test "cd inside a worker is worker-local (forked session)" {
+              skipOnWindows ()
               let before = Weir.Session.Cwd()
 
               expectValue
@@ -7767,7 +7855,7 @@ let fileTests =
         "File module"
         [ test "write, read, append roundtrip" {
               let path =
-                  Path.Combine(Path.GetTempPath(), $"weir-file-{System.Guid.NewGuid():N}.txt")
+                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-file-{System.Guid.NewGuid():N}.txt"))
 
               try
                   expectValue $"File.write \"{path}\" [\"a\"; \"b\"]" VUnit
@@ -7781,7 +7869,9 @@ let fileTests =
           }
           test "exists is false for missing" { expectValue "File.exists \"/weir-definitely-not\"" (VBool false) }
           test "relative paths resolve against Session.Cwd" {
-              let dir = Path.Combine(Path.GetTempPath(), $"weir-fdir-{System.Guid.NewGuid():N}")
+              let dir =
+                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-fdir-{System.Guid.NewGuid():N}"))
+
               Directory.CreateDirectory dir |> ignore
 
               try
@@ -7951,11 +8041,78 @@ let adversarialTests =
                   ""
           } ]
 
+// ---- Windows v1, session 1 [D:windows-v1] — both-ways platform pins:
+// each asserts ITS OWN platform's semantics, so the suite is meaningful
+// on Linux today and on Windows when the CI matrix arrives
+let windowsV1Tests =
+    // PATH is process-global — the probes mutate and restore it, so the
+    // list is sequenced like every other env-mutating list in the suite
+    testSequenced
+    <| testList
+        "Windows v1 platform arms"
+        [ test "PATHEXT: a bare name resolves through its extension on Windows ONLY" {
+              let dir =
+                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-px-{System.Guid.NewGuid():N}"))
+
+              Directory.CreateDirectory dir |> ignore
+              File.WriteAllText(Path.Combine(dir, "weirpxprobe.exe"), "")
+              let oldPath = System.Environment.GetEnvironmentVariable "PATH"
+
+              try
+                  System.Environment.SetEnvironmentVariable("PATH", dir + string Path.PathSeparator + oldPath)
+                  Weir.Extern.refresh ()
+                  Expect.isTrue (Weir.Extern.exists "weirpxprobe.exe") "the name as-given always resolves"
+
+                  Expect.equal
+                      (Weir.Extern.exists "weirpxprobe")
+                      (System.OperatingSystem.IsWindows())
+                      "bare-name resolution is the PATHEXT arm: Windows yes, POSIX no"
+              finally
+                  System.Environment.SetEnvironmentVariable("PATH", oldPath)
+                  Weir.Extern.refresh ()
+          }
+          test "PATH separator is the platform's own (Extern splits on Path.PathSeparator)" {
+              let dir =
+                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-ps-{System.Guid.NewGuid():N}"))
+
+              Directory.CreateDirectory dir |> ignore
+              File.WriteAllText(Path.Combine(dir, "weirpsprobe"), "")
+              let oldPath = System.Environment.GetEnvironmentVariable "PATH"
+
+              try
+                  System.Environment.SetEnvironmentVariable("PATH", dir)
+                  Weir.Extern.refresh ()
+                  Expect.isTrue (Weir.Extern.exists "weirpsprobe") "single-dir PATH resolves"
+              finally
+                  System.Environment.SetEnvironmentVariable("PATH", oldPath)
+                  Weir.Extern.refresh ()
+          }
+          test "env lookup carries the platform's case rule through Env.get" {
+              System.Environment.SetEnvironmentVariable("WEIR_CASE_PROBE", "here")
+
+              try
+                  let got = run "Env.get \"weir_case_probe\""
+
+                  let expected =
+                      if System.OperatingSystem.IsWindows() then
+                          VUnion("Some", Some(VStr "here"))
+                      else
+                          VUnion("None", None)
+
+                  Expect.equal got expected "Windows env is case-insensitive; POSIX is not"
+              finally
+                  System.Environment.SetEnvironmentVariable("WEIR_CASE_PROBE", null)
+          }
+          test "a genuinely-missing command still misses (PATHEXT adds, never invents)" {
+              Expect.isFalse (Weir.Extern.exists "weir-definitely-absent-xyzzy") ""
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ parserTests
+          windowsV1Tests
           checkerTests
           evalTests
           rejectedAtCheckTests

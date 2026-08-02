@@ -208,8 +208,28 @@ let main argv =
         2
     | "run" :: path :: rest -> Script.run path rest
     | path :: rest when not (path.StartsWith "-") -> Script.run path rest
-    | _ ->
-        Console.Error.WriteLine(
+    // teaching arms, not dumps [D:windows-v1]: a mistyped option gets a
+    // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
+    // ONE-expression intent often arrives shell-split into many argv)
+    | [ "-e" ] ->
+        Console.Error.WriteLine "weir -e takes exactly one argument: the expression"
+        2
+    | "-e" :: rest ->
+        Console.Error.WriteLine
+            $"weir -e takes ONE expression argument, got {List.length rest} — quote the expression so the shell passes it whole"
+
+        2
+    | "--version" :: _ ->
+        Console.Error.WriteLine "weir --version takes no arguments"
+        2
+    | opt :: _ when opt.StartsWith "-" && opt <> "--help" && opt <> "-h" ->
+        let spellings =
+            [ "-e"; "--version"; "check"; "fmt"; "lsp"; "add"; "restore"; "verify"; "run" ]
+
+        Console.Error.WriteLine $"weir: unknown option '{opt}'{didYouMean opt spellings} (weir --help for usage)"
+        2
+    | args ->
+        let usage =
             "usage: weir                                    the REPL\n"
             + "       weir <script> [args...]                 run a script\n"
             + "       weir -e <expression>                    evaluate one expression\n"
@@ -219,6 +239,12 @@ let main argv =
             + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
             + "       weir restore                            re-materialize the lock's artifacts\n"
             + "       weir verify                             vendored contracts vs the lock"
-        )
 
-        2
+        match args with
+        | [ "--help" ] // asked for: stdout, exit 0
+        | [ "-h" ] ->
+            Console.WriteLine usage
+            0
+        | _ ->
+            Console.Error.WriteLine usage
+            2

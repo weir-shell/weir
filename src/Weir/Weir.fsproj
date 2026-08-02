@@ -7,7 +7,32 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <StripSymbols>true</StripSymbols>
     <OptimizationPreference>Speed</OptimizationPreference>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
+
+  <!-- the stamp lives in the BUILD, not publish.sh [D:windows-v1]: every
+       publish path (dotnet publish, a future .ps1, CI) must stamp
+       identically or the freshness gate cannot match. Same spelling as
+       the old script: short hash, -dirty via porcelain, nogit fallback. -->
+  <Target Name="WeirStamp" BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo">
+    <Exec Command="git rev-parse --short HEAD"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" ContinueOnError="true"
+          StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_WeirSha" />
+      <Output TaskParameter="ExitCode" PropertyName="_WeirShaExit" />
+    </Exec>
+    <Exec Command="git status --porcelain"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" ContinueOnError="true"
+          StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_WeirDirty" />
+    </Exec>
+    <PropertyGroup>
+      <_WeirStamp Condition="'$(_WeirShaExit)' == '0'">$(_WeirSha)</_WeirStamp>
+      <_WeirStamp Condition="'$(_WeirShaExit)' != '0'">nogit</_WeirStamp>
+      <_WeirStamp Condition="'$(_WeirDirty)' != '' and '$(_WeirShaExit)' == '0'">$(_WeirStamp)-dirty</_WeirStamp>
+      <InformationalVersion>$(_WeirStamp)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="FParsec" Version="1.1.1" />

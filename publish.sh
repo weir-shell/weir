@@ -25,19 +25,10 @@ elif [ $? -ne 1 ]; then
     exit 1
 fi
 
-# the build STAMP [D:masking-mechanized]: harnesses assert this
-# equals HEAD before running anything — stale results become
-# impossible rather than catchable. The `-dirty` suffix marks a build
-# from an uncommitted tree (the gate warns locally, hard-fails in CI)
-# so a dirty binary can't masquerade as its clean HEAD. Built from
-# rev-parse + a porcelain check, NOT `git describe` — describe becomes
-# tag-relative the moment a tag exists and would break the gate's
-# short-hash comparison.
-stamp="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-    stamp="${stamp}-dirty"
-fi
-dotnet publish src/Weir -c Release -r "$rid" -p:InformationalVersion="$stamp" -p:IncludeSourceRevisionInInformationalVersion=false
+# the build STAMP [D:masking-mechanized] lives in Weir.fsproj's
+# WeirStamp target [D:windows-v1] so EVERY publish path stamps
+# identically — this script is publish-and-copy only.
+dotnet publish src/Weir -c Release -r "$rid"
 
 # never swap the binary underfoot of a live deep run [D:masking-mechanized]
 # — that is the one window the start-of-run freshness gate can't close.

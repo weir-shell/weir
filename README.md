@@ -49,3 +49,12 @@ the terms the other docs use.
 Build: `./publish.sh` installs `~/.local/bin/weir` (dotnet 10 SDK +
 clang required). Tests: `dotnet test`; the full battery is
 `ci/local.sh`.
+
+Windows (v1, in progress [D:windows-v1]): `dotnet publish src/Weir -c
+Release -r win-x64` produces a single `Weir.exe` — the stamp is in the
+build, so no script is needed. Bare commands resolve through PATHEXT
+(`git` finds `git.exe`); `Path` members produce Windows spellings and
+accept forward slashes; config lives in `%APPDATA%\weir`, history in
+`%LOCALAPPDATA%\weir`. Process-tree cleanup on interrupt is session
+2 (job objects) — until then an interrupted script can orphan
+grandchildren. Verified by hand pending the CI matrix.

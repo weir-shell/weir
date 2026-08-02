@@ -3627,4 +3627,14 @@ echo "$out" | grep -qF "DEBUG from-e" || fail "-e mode logs: $out"
 echo "e2e ok: Log works in -e mode"
 rm -rf "$lgdir"
 
+# ---- CLI teaching arms [D:windows-v1] --------------------------------------
+# a mistyped option teaches, never dumps; -e names its arity (the
+# Windows shell-splitting trap: ONE intended expression arrives as many)
+out=$($BIN --e 'x' 2>&1) && fail "--e must exit nonzero" || true
+echo "$out" | grep -qF "unknown option '--e'. Did you mean '-e'?" || fail "--e did-you-means -e: $out"
+out=$($BIN -e one two three 2>&1) && fail "-e arity must exit nonzero" || true
+echo "$out" | grep -qF "got 3 — quote the expression" || fail "-e names its arity: $out"
+$BIN --help | grep -qF "usage: weir" || fail "--help prints usage on stdout, exit 0"
+echo "e2e ok: CLI teaching arms (--e did-you-mean, -e arity, --help)"
+
 echo "e2e battery: all green"
