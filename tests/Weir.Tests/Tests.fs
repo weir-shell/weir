@@ -125,6 +125,44 @@ let private cmdResolver: Weir.Parser.Resolver =
       IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
       ExternalNames = fun () -> fakeExternals }
 
+// Windows: parse-only fixtures resolve coreutils heads (echo, sh,
+// grep ...) through the REAL resolver, and those are cmd BUILTINS or
+// absent there — no executable to find. Resolution is File.Exists, not
+// execution, so empty <name>.exe shims on a prepended PATH dir make
+// every parse pin platform-independent [D:windows-v1]. Tests that RUN
+// these tools stay skipOnWindows (an empty exe cannot run). POSIX: no-op.
+let private _windowsParseShims =
+    if System.OperatingSystem.IsWindows() then
+        let dir = Path.Combine(Path.GetTempPath(), $"weir-shims-{System.Guid.NewGuid():N}")
+
+        Directory.CreateDirectory dir |> ignore
+
+        // sort deliberately ABSENT: System32 ships a real sort.exe
+        // that tests RUN — an empty shadow would break it
+        for tool in
+            [ "echo"
+              "printf"
+              "grep"
+              "sh"
+              "yes"
+              "ls"
+              "cat"
+              "head"
+              "tail"
+              "wc"
+              "tr"
+              "seq" ] do
+            File.WriteAllText(Path.Combine(dir, tool + ".exe"), "")
+
+        System.Environment.SetEnvironmentVariable(
+            "PATH",
+            dir
+            + string Path.PathSeparator
+            + System.Environment.GetEnvironmentVariable "PATH"
+        )
+
+        Weir.Extern.refresh ()
+
 let private realResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
       IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
@@ -698,6 +736,7 @@ let streamingTests =
                           yield string i
                   }
 
+              skipOnWindows () // runs real `head`
               let out = Weir.Proc.linesWith [] "head" [ "-1" ] (Some source) |> List.ofSeq
               Expect.equal out [ "1" ] "head takes the first line"
               Expect.isLessThan pulled.Value 500000 "the input was not drained"
@@ -1617,6 +1656,7 @@ let completionTests =
               Expect.contains (suggest "c" 0) "cd" "cd is command-callable at a head"
           }
           test "path completion: an explicit path lists the directory [D:repl-quality]" {
+              skipOnWindows ()
               // /etc/hos* exists on every Linux box; a `/`-word is a path
               let hits = suggest "/etc/hos" 0
               Expect.isTrue (hits |> List.exists (fun p -> p.StartsWith "/etc/host")) $"path completion: {hits}"
@@ -1888,6 +1928,7 @@ let lifecycleTests =
           // can break must be shown to COUNT before its zeros mean
           // anything (the macOS vacuous-pass lesson).
           test "positive control: the survivors probe counts a live marker" {
+              skipOnWindows ()
               let psi = ProcessStartInfo("/bin/sh")
               psi.ArgumentList.Add "-c"
               // the marker lives in the sh's OWN argv (no exec)
@@ -1902,6 +1943,7 @@ let lifecycleTests =
               Expect.isTrue (eventuallyNoSurvivors "weir-probe-ctl") "the killed control must clear"
           }
           test "positive control: the zombie counter counts a real zombie" {
+              skipOnWindows ()
               // the .NET runtime auto-reaps OUR children, so the control
               // targets the counting line at another parent: a python
               // that forks and deliberately never reaps (python3 is
@@ -2237,7 +2279,7 @@ let cdTests =
                       match typecheck env e with
                       | Ok te ->
                           let ex = Expect.throwsC (fun () -> eval valueEnv te |> ignore) id
-                          Expect.stringContains ex.Message "/definitely/not/weir" "absolute path shown"
+                          Expect.stringContains ex.Message (platformPath "/definitely/not/weir") "absolute path shown"
                       | Error terr -> failtest (formatError terr)
                   | other -> failtest $"unexpected: {other}"
               finally
@@ -3724,10 +3766,12 @@ let replColorTests =
               Expect.stringContains (colorize "ls -la") "\x1b[1mls\x1b[0m" "known head bold"
               Expect.stringContains (colorize "zzznope arg") "\x1b[31mzzznope\x1b[0m" "unknown head red"
 
-              // ^-forced resolves against PATH only: 'print' is known but
-              // not a binary, so ^print paints red even though bare print
-              // would be bold
-              Expect.stringContains (colorize "^print x") "\x1b[31mprint\x1b[0m" "force ignores bindings"
+              // ^-forced resolves against PATH only: 'show' is known but
+              // not a binary ANYWHERE (Windows System32 ships a legacy
+              // print.exe — the old ^print fixture correctly flipped
+              // there [D:windows-s2]), so ^show paints red even though
+              // bare show would be bold
+              Expect.stringContains (colorize "^show x") "\x1b[31mshow\x1b[0m" "force ignores bindings"
           }
           test "lexical spans: keyword, string, comment, number, uppercase" {
               let out = colorize "let n = Some 42 // done"
@@ -6183,7 +6227,7 @@ let agentFindingsTests =
               // the forward-slash INPUT is the liberal-in pin on both
               expectValue "Path.dir \"a/b/c.fs\"" (VStr(platformPath "a/b"))
               expectValue "Path.dir \"c.fs\"" (VStr "")
-              expectValue "Path.combine \"ci\" \"e2e.sh\"" (VStr "ci/e2e.sh")
+              expectValue "Path.combine \"ci\" \"e2e.sh\"" (VStr(platformPath "ci/e2e.sh"))
           }
           test "fail raises with the message" {
               Expect.equal (checkOk "fail \"boom\"").Ty TUnit "unit-typed statement"
@@ -6554,7 +6598,7 @@ let childEnvTests =
               Expect.equal (formatTy te.Ty) "seq<EnvVar>" ""
           }
           test "fromFile: the dotenv subset parses (quotes, comments, blanks, empty)" {
-              let f = System.IO.Path.GetTempFileName()
+              let f = weirPath (System.IO.Path.GetTempFileName())
 
               System.IO.File.WriteAllLines(f, [ "A=1"; "B='sq val'"; "C=\"dq\" # note"; "# comment"; ""; "D=" ])
 
@@ -6566,7 +6610,7 @@ let childEnvTests =
               System.IO.File.Delete f
           }
           test "fromFile: rejection raises at force, naming the sh escape" {
-              let f = System.IO.Path.GetTempFileName()
+              let f = weirPath (System.IO.Path.GetTempFileName())
               System.IO.File.WriteAllLines(f, [ "GOOD=1"; "BAD=$HOME" ])
 
               let ex =
@@ -8067,6 +8111,31 @@ let windowsV1Tests =
                       (Weir.Extern.exists "weirpxprobe")
                       (System.OperatingSystem.IsWindows())
                       "bare-name resolution is the PATHEXT arm: Windows yes, POSIX no"
+
+                  // .BAT rides the same arm (CreateProcess runs batch
+                  // files directly — no cmd /c synthesis) [D:windows-s2]
+                  File.WriteAllText(Path.Combine(dir, "weirbatprobe.bat"), "")
+
+                  Expect.equal
+                      (Weir.Extern.exists "weirbatprobe")
+                      (System.OperatingSystem.IsWindows())
+                      "bare .bat resolution: Windows yes, POSIX no"
+
+                  // the list is read from the ENVIRONMENT, not hardcoded
+                  // [D:windows-s2]: a custom extension resolves iff the
+                  // platform honours PATHEXT at all
+                  let oldExts = System.Environment.GetEnvironmentVariable "PATHEXT"
+
+                  try
+                      System.Environment.SetEnvironmentVariable("PATHEXT", ".XYZ")
+                      File.WriteAllText(Path.Combine(dir, "weircustomext.xyz"), "")
+
+                      Expect.equal
+                          (Weir.Extern.exists "weircustomext")
+                          (System.OperatingSystem.IsWindows())
+                          "a custom PATHEXT entry resolves on Windows only"
+                  finally
+                      System.Environment.SetEnvironmentVariable("PATHEXT", oldExts)
               finally
                   System.Environment.SetEnvironmentVariable("PATH", oldPath)
                   Weir.Extern.refresh ()

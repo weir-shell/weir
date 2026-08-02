@@ -316,9 +316,25 @@ let private historySearch (query: string) : string option =
 // a parse failure AT THE VERY END of the assembled text means "more input
 // wanted". A mid-text failure is a real error and SUBMITS (the message
 // shows) — the user is never trapped adding newlines.
+// at the REPL a leading-space FIRST line has no statement above to
+// continue, so its indentation carries no meaning [D:windows-s2]: the
+// whole buffer dedents by the first line's indent (relative structure
+// inside the entry is preserved — a pasted indented block keeps its
+// shape). Scripts are untouched; this is REPL input handling only.
+let private dedentEntry (bufLines: string list) : string list =
+    match bufLines |> List.tryFind (fun l -> l.Trim() <> "") with
+    | Some first when first.Length > first.TrimStart(' ').Length ->
+        let n = first.Length - (first.TrimStart ' ').Length
+
+        bufLines
+        |> List.map (fun (l: string) ->
+            let indent = l.Length - (l.TrimStart ' ').Length
+            l.Substring(min n indent))
+    | _ -> bufLines
+
 let private bufferComplete (bufLines: string list) : bool =
     let numbered =
-        bufLines
+        dedentEntry bufLines
         |> List.mapi (fun i l -> i + 1, l)
         |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
         |> List.map (fun (n, raw) -> n, Script.stripComment raw)
@@ -500,8 +516,20 @@ let private readLineTty () : string option =
             // submit when the statement is COMPLETE; grow the buffer when
             // it is not — the parser's own answer, not an approximation
             let text = bufText ()
+            let bufList = lines |> Seq.map (fun sb -> sb.ToString()) |> List.ofSeq
 
-            if bufferComplete (lines |> Seq.map (fun sb -> sb.ToString()) |> List.ofSeq) then
+            // blank-line ESCAPE [D:windows-s2]: Enter on an empty FINAL
+            // line closes a pending buffer even when incomplete — the
+            // parse error shows and the input is kept, instead of Ctrl+C
+            // being the only (input-losing) way out of an uncompletable
+            // state. Scripts unchanged: blanks are transparent there.
+            // Alt+Enter/Ctrl+J never trigger it (deliberate newlines).
+            let blankEscape =
+                row = lines.Count - 1
+                && cur().ToString().Trim() = ""
+                && bufList |> List.exists (fun l -> l.Trim() <> "")
+
+            if bufferComplete bufList || blankEscape then
                 toEnd ()
                 Console.WriteLine()
                 result <- Some(Some text)
@@ -838,7 +866,9 @@ let rec private loop (state: State) =
         // script runner uses turns the buffer into logical lines — the
         // submitted text means exactly what the same lines mean in a file
         Extern.refresh ()
-        let srcLines = entry.Split '\n'
+        // the same dedent bufferComplete judged by — the two must agree
+        // or Enter's verdict and the submission's meaning split
+        let srcLines = entry.Split '\n' |> Array.toList |> dedentEntry |> Array.ofList
 
         let numbered =
             srcLines
