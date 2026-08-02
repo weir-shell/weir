@@ -1559,6 +1559,12 @@ let boundaryTests =
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "into feeds stdin and yields stdout" {
+              // into IS the documented sh -c path, so the fixture is a
+              // POSIX shell by definition. into's WINDOWS semantics are
+              // UNDECIDED [D:windows-s3] — its default shell there would
+              // be cmd /c, a real (small) feature awaiting a receipt; a
+              // stated gap beats a blind shim.
+              skipOnWindows ()
               // tr strips BSD wc's left-padding — the subject is the stdin
               // plumbing, not wc's platform formatting
               Expect.equal (run "nats |> take 3 |> to json |> into \"wc -l | tr -d ' '\"" |> forceSeq) [ VStr "3" ] ""
@@ -6681,7 +6687,10 @@ let childEnvTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "fromFile: single quotes are shell-literal ($ allowed)" {
-              let f = System.IO.Path.GetTempFileName()
+              // the NINTH \U site, found by the Windows hand-run — the
+              // mechanical GetTempFileName/GetTempPath grep now confirms
+              // no tenth [D:windows-s3]
+              let f = weirPath (System.IO.Path.GetTempFileName())
               System.IO.File.WriteAllLines(f, [ "LIT='$HOME'" ])
 
               let got = run ("Env.fromFile \"" + f + "\" |> Seq.map _.value |> Seq.head")
@@ -8174,6 +8183,33 @@ let windowsV1Tests =
           }
           test "a genuinely-missing command still misses (PATHEXT adds, never invents)" {
               Expect.isFalse (Weir.Extern.exists "weir-definitely-absent-xyzzy") ""
+          }
+          test "LSP uri/path ROUND-TRIPS on this platform (spaces + non-ASCII)" {
+              // the acceptance is identity BOTH WAYS [D:windows-s3] — a
+              // one-way fix is how the mirror bug survives
+              let native =
+                  if System.OperatingSystem.IsWindows() then
+                      "C:\\a b\\wé.weir"
+                  else
+                      "/a b/wé.weir"
+
+              let uri = Weir.Lsp.pathToUri native
+              Expect.stringContains uri "%20" "spaces percent-encode"
+              Expect.isTrue (uri.StartsWith "file:///") "file scheme, empty host"
+              Expect.equal (Weir.Lsp.uriToPath uri) native "round-trip identity"
+
+              // the crash shape: a bare drive path must CONVERT, not throw
+              Expect.isTrue
+                  ((Weir.Lsp.pathToUri "C:\\x\\y.weir").StartsWith "file:///c:/")
+                  "drive lowercases on the wire"
+
+              // the VS Code spelling with an encoded drive colon decodes
+              let vp = Weir.Lsp.uriToPath "file:///c%3A/a/b.weir"
+
+              if System.OperatingSystem.IsWindows() then
+                  Expect.equal vp "C:\\a\\b.weir" "encoded drive colon accepted"
+              else
+                  Expect.equal vp "/c:/a/b.weir" "POSIX keeps the literal path"
           } ]
 
 [<Tests>]

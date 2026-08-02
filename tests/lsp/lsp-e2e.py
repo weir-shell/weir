@@ -201,6 +201,31 @@ expect(diag["params"]["diagnostics"] == [], f"unicode text must check clean: {di
 # default encoder's HTML-tuned escaping mangled in micro; user report)
 expect(all(b"\\u0022" not in f for f in RAW_FRAMES), "u0022 escapes present in frames")
 
+# a MALFORMED document URI must not kill the server [D:windows-s3] —
+# the Windows hand-run watched a bare C:\ path crash it 5x. The bad
+# open logs-and-skips (per-doc guard in refreshAll + the request-level
+# backstop); the NEXT request still answers. Runs LAST in this section:
+# the bad doc stays open and adds a publish per refresh, so the id-keyed
+# drain below is the read discipline for everything after it.
+send({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+      "params": {"textDocument": {"uri": "file://%%%bad%%%uri", "text": "1\n"}}})
+send({"jsonrpc": "2.0", "id": 60, "method": "textDocument/hover",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 5}}})
+badok = read_msg()
+while badok.get("id") != 60:
+    badok = read_msg()
+expect("result" in badok, f"the server must survive a malformed URI: {badok}")
+
+# close the bad doc and FENCE on one more id-keyed request so the
+# message queue is positional again for the sections below
+send({"jsonrpc": "2.0", "method": "textDocument/didClose",
+      "params": {"textDocument": {"uri": "file://%%%bad%%%uri"}}})
+send({"jsonrpc": "2.0", "id": 61, "method": "textDocument/hover",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 5}}})
+fence = read_msg()
+while fence.get("id") != 61:
+    fence = read_msg()
+
 # ---- semantic tokens [D:semantic-tokens] ----------------------------
 expect(init["result"]["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"]
        == ["weirCommandHead", "weirArgv", "weirSplice"], "token legend missing")

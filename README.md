@@ -58,6 +58,10 @@ once). Prereqs: .NET 10 SDK + VS Build Tools C++ workload (NativeAOT
 links with MSVC). Bare commands resolve through PATHEXT
 (`git` finds `git.exe`); `Path` members produce Windows spellings and
 accept forward slashes; config lives in `%APPDATA%\weir`, history in
-`%LOCALAPPDATA%\weir`. Process-tree cleanup on interrupt is session
-2 (job objects) — until then an interrupted script can orphan
-grandchildren. Verified by hand pending the CI matrix.
+`%LOCALAPPDATA%\weir`. In the REPL, use
+`Ctrl+J` (or right-Alt+Enter) to force a newline — Windows Terminal
+claims left-Alt+Enter for fullscreen; `Shift+Enter` is not bindable
+anywhere. Graceful interrupt (Ctrl+C) cleans the whole process tree;
+only a hard kill (TerminateProcess) can orphan grandchildren — the
+same hole POSIX has under SIGKILL [D:windows-s2]. Verified by hand
+pending the CI matrix.

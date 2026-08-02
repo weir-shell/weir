@@ -42,7 +42,7 @@ Three properties, in the order they matter:
   | key | in the buffer |
   |---|---|
   | `Enter` | submit if complete, else newline; on an empty final line, submit ANYWAY (the escape from a pending buffer — the error shows, the input is kept) |
-  | `Alt+Enter` / `Ctrl+J` | force a newline (formatting; an entry stays one statement). `Shift+Enter` is NOT bindable — terminals do not distinguish it from `Enter` |
+  | `Alt+Enter` / `Ctrl+J` | force a newline (formatting; an entry stays one statement). `Shift+Enter` is NOT bindable — terminals do not distinguish it from `Enter`. Windows Terminal claims LEFT-Alt+Enter for fullscreen: use `Ctrl+J` or right-Alt there |
   | `Up` / `Down` | move between lines; `Up` on the first line recalls history |
   | `Ctrl+R` | history search (fzf when installed; entries display one-line, ⏎-joined) |
   | `Esc` / `Ctrl+C` | abandon the whole buffer |

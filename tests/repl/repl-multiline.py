@@ -133,6 +133,10 @@ if "8 : int" not in t:
 t, _ = run([("match 1 with\r", 0.4), ("\r", 0.5), ("5 + 5\r", 0.5), (":q\r", 0.3)])
 if "10 : int" not in t:
     failures.append(f"a blank Enter must close a pending buffer: {t[-300:]!r}")
+# the KEEPS-THE-INPUT half [D:windows-s3]: the buffer was SUBMITTED (its
+# parse error shows), not discarded the way Ctrl+C discards
+if "match" not in t or "error" not in t:
+    failures.append(f"the escaped buffer must submit and show its error: {t[-300:]!r}")
 
 # --- 9d. ...but Ctrl+J's DELIBERATE blank line stays composing
 t, _ = run([("match 1 with", 0.3), ("\n", 0.2), ("\n", 0.2), ("| _ -> 6\r", 0.6), (":q\r", 0.3)])
