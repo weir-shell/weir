@@ -1,5 +1,87 @@
 # Spike Notes
 
+## Windows v1 session 2 — the second pass, and the correction (2026-08-02)
+
+THE HEADLINE IS A RETRACTION: session 2 was planned as the
+job-objects session and IS NOT, because the spike's tree-kill
+verdict was overturned by a better fixture. `Start-Process` launches
+DETACHED — the child was never in weir's process tree, so all three
+"findings" (natural-exit orphans, Ctrl+C inert, BCL kill short)
+measured PowerShell, not weir. Re-measured with a genuine grandchild:
+Ctrl+C kills it, natural exit is clean. The ONLY gap is a hard kill
+(TerminateProcess — no user-mode cleanup), which POSIX shares under
+SIGKILL modulo the process group — a parity question. JOB OBJECTS
+PARKED with that trigger (a receipt where hard-kill orphans cause
+real trouble); the fixture lesson is in PROCESS beside the pgrep one:
+both are instruments that lie, and this one manufactured a ~150-line
+session out of nothing.
+
+PATHEXT: the decision is FULL environment list, and session 1's code
+already read it — what session 2 adds is the PINS (a custom .XYZ
+extension via a PATHEXT override resolves on Windows; foo.bat
+resolves bare; both platform-conditional) and the SECURITY non-claim:
+batch interpreters re-parse their command line (BatBadBut), so word
+integrity holds UP TO THE HAND-OFF; native executables get weir's
+argv verbatim — the runbook's injection probe (spaces, semicolon,
+quotes, brackets arriving as ONE word) is the receipt. CreateProcess
+runs .bat directly — no cmd /c synthesis anywhere, which dissolves
+the safety objection that made batch support look expensive.
+
+THE LEADING-SPACE REPL BUG — the plan said check Linux first, and
+Linux HAS IT: a regression from repl-multiline's adoption of the
+script assembler, whose model makes a first line's indent a
+continuation of nothing (evidence it is a regression: `-e`'s
+single-line parse, the pre-multiline REPL path, tolerates leading
+whitespace fine). The rule landed as DEDENT-BY-FIRST-LINE: the
+entry's relative structure is preserved (a pasted indented block
+keeps its shape), and the SAME dedent runs in bufferComplete and the
+submission path — the two must agree or Enter's completeness verdict
+and the submitted meaning split. Pty-pinned both halves (9a: a
+leading-space first line executes; 9b: an indented buffer dedents
+whole and still assembles).
+
+THE 11 FAILURES, sorted: 7 fixture residue fixed mechanically (the
+two Env.fromFile GetTempFileName sites now ride weirPath — the same
+helper, applied where the first sweep missed; head + the two
+/bin/sh positive controls + path-completion marked skipOnWindows;
+the cd-missing message asserts platformPath). Path.combine's pin
+was indeed a missed conversion — platformPath applied. ^print
+DIAGNOSED, fixture wrong: Windows System32 ships a legacy print.exe,
+so the verdict flip was the colorizer being RIGHT; the fixture now
+forces ^show (a binding absent from every PATH). The env-sigil chain
+survivor: same resolution class as the un-triaged three — closed by
+the parse shims (empty grep.exe). AND ONE SELF-CAUGHT SHIM BUG:
+sort came OUT of the shim list — System32 ships a real sort.exe
+that the feed test RUNS; an empty shadow would have broken a
+passing test (the Start-Process lesson's shape, caught at the desk).
+
+THE REPL-PLAY FINDINGS (rode this branch): (2) the blank-line
+ESCAPE landed — Enter on an empty FINAL line closes a pending buffer
+even when incomplete: the parse error shows and the input is kept,
+where Ctrl+C (the previous only exit) lost it. Worth more than the
+leading-space fix, as the user called it: it covers EVERY
+uncompletable state, including ones we have not met. Ctrl+J/Alt+Enter
+deliberate blanks never trigger it (pty pins 9c/9d, both ways).
+(3) mid-buffer Enter NOT REPRODUCIBLE on Linux — the Down-then-Enter
+probe submits the complete |>-case buffer from line 1's end.
+Hypothesis: Alt detection is ESC-prefix on most terminals, so a
+just-consumed arrow-key escape can leave Enter reading as Alt+Enter
+(= force-newline) on the user's terminal; the blank-line escape
+un-traps that symptom regardless. Re-test on macOS with the escape
+in place; if it persists, the fix hunts the ESC-sequence parser, not
+bufferComplete. (docs) Alt+Enter/Ctrl+J documented as THE
+force-newline bindings; Shift+Enter stated NOT bindable (terminals
+do not distinguish it from Enter).
+
+BANKED (the runbook's confirmed list, do not re-walk): build/AOT/
+--version/-e/scripts; parse/check/eval; spawn/argv/stdout/stderr/
+exit codes; the injection guarantee under Windows' command-line
+join; graceful tree-kill INCLUDING grandchildren; splat argv; 913 of
+963 at the second pass (pre-shim, pre-session-2). Riders already
+landed in session 1 (stated, not redone): CLI teaching arms +
+--help, the three-platform size baseline, HTTP's measured 3.4MB
+share.
+
 ## Windows v1 session 1 — make it work (2026-08-02)
 
 The runbook's implementation session, on branch windows-v1, developed
@@ -86,6 +168,19 @@ NEXT: session 2 (job objects + Ctrl+C wiring + the AOT P/Invoke
 probe; acceptance = the grandchild fixture both ways). The user's
 Windows hand-run reports: REPL editor behaviour, a .bat spawn probe,
 the un-triaged three.
+
+ADDENDUM (hand-run receipt, same day): publish.ps1 works end to end,
+incl. the PATH teaching hint. THE UN-TRIAGED THREE DIAGNOSED — one
+cause, no fifth bucket: `echo` (and sh/grep/printf) are cmd BUILTINS
+or absent on Windows, so PARSE-ONLY fixtures under the realResolver
+failed at resolution, not grammar. Fix better than skipping: empty
+<tool>.exe shims on a prepended PATH dir at suite init (resolution is
+File.Exists, never execution) — ~20 realResolver parse pins
+(env-sigil, sibling-sentinel ACCEPTANCE, capture-sigil, fmt) keep
+their Windows coverage; tests that RUN the tools stay skipOnWindows
+(an empty exe cannot run). POSIX: guarded no-op, 963 green. Shim
+verified by reading only — the user's next Windows `dotnet test` is
+its first execution.
 
 ## mutation-testing spike — the pins-sufficiency claim, measured (2026-08-01)
 

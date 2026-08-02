@@ -30,6 +30,13 @@ it, by design):
   argv word. It does NOT guarantee the command won't interpret that
   word as a flag: a file named `-rf` globbed into `rm` is still
   `-rf` to `rm`. The `--` separator is the script author's tool.
+- **Word integrity holds up to the hand-off** [D:windows-s2] — the
+  same category, Windows face: a batch file's interpreter RE-PARSES
+  the command line it receives (the BatBadBut class), so on Windows
+  weir's one-word guarantee does not extend past `cmd`'s own parsing
+  of a `.bat`/`.cmd` target's arguments. Native executables are
+  unaffected (they receive weir's argv join verbatim — verified by
+  the runbook's injection probe).
 - **The LSP reads client text plus import-reachable files.** `weir
   lsp` analyzes the document text the editor sends over the protocol
   AND, since user modules landed [D:modules-v1], the files reachable

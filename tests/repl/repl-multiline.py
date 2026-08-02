@@ -112,6 +112,33 @@ t, _ = run([('let s = @"raw\r', 0.5), ("7 * 7\r", 0.5), (":q\r", 0.3)])
 if "49 : int" not in t:
     failures.append(f"an unclosed string must submit (error) and free the prompt: {t[-300:]!r}")
 
+# --- 9a. a leading-space FIRST line has no statement above to continue —
+# it dedents and EXECUTES (the Windows runbook's find; a Linux regression
+# from the multiline session's adoption of the script assembler)
+# [D:windows-s2]
+t, _ = run([("  1 + 1\r", 0.5), (":q\r", 0.3)])
+if "2 : int" not in t:
+    failures.append(f"a leading-space first line must execute: {t[-300:]!r}")
+
+# --- 9b. the OTHER half: an indented buffer dedents WHOLE (relative
+# structure preserved), and an indented line inside the open buffer
+# still continues it
+t, _ = run([("  match 1 with\r", 0.4), ("  | _ -> 8\r", 0.6), (":q\r", 0.3)])
+if "8 : int" not in t:
+    failures.append(f"an indented entry must dedent whole and still assemble: {t[-300:]!r}")
+
+# --- 9c. blank-line ESCAPE: Enter on an empty final line closes a
+# PENDING buffer (the error shows, the prompt frees) — the general
+# protection against every uncompletable state [D:windows-s2]
+t, _ = run([("match 1 with\r", 0.4), ("\r", 0.5), ("5 + 5\r", 0.5), (":q\r", 0.3)])
+if "10 : int" not in t:
+    failures.append(f"a blank Enter must close a pending buffer: {t[-300:]!r}")
+
+# --- 9d. ...but Ctrl+J's DELIBERATE blank line stays composing
+t, _ = run([("match 1 with", 0.3), ("\n", 0.2), ("\n", 0.2), ("| _ -> 6\r", 0.6), (":q\r", 0.3)])
+if "6 : int" not in t:
+    failures.append(f"a Ctrl+J blank inside composition must not submit: {t[-300:]!r}")
+
 # --- 9. piped input never enters the editor (untouched)
 p = subprocess.run([WEIR], input="1 + 1\n:q\n", capture_output=True, text=True)
 if "2 : int" not in p.stdout:
