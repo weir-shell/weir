@@ -125,6 +125,43 @@ let private cmdResolver: Weir.Parser.Resolver =
       IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
       ExternalNames = fun () -> fakeExternals }
 
+// Windows: parse-only fixtures resolve coreutils heads (echo, sh,
+// grep ...) through the REAL resolver, and those are cmd BUILTINS or
+// absent there — no executable to find. Resolution is File.Exists, not
+// execution, so empty <name>.exe shims on a prepended PATH dir make
+// every parse pin platform-independent [D:windows-v1]. Tests that RUN
+// these tools stay skipOnWindows (an empty exe cannot run). POSIX: no-op.
+let private _windowsParseShims =
+    if System.OperatingSystem.IsWindows() then
+        let dir = Path.Combine(Path.GetTempPath(), $"weir-shims-{System.Guid.NewGuid():N}")
+
+        Directory.CreateDirectory dir |> ignore
+
+        for tool in
+            [ "echo"
+              "printf"
+              "grep"
+              "sh"
+              "yes"
+              "ls"
+              "cat"
+              "head"
+              "tail"
+              "sort"
+              "wc"
+              "tr"
+              "seq" ] do
+            File.WriteAllText(Path.Combine(dir, tool + ".exe"), "")
+
+        System.Environment.SetEnvironmentVariable(
+            "PATH",
+            dir
+            + string Path.PathSeparator
+            + System.Environment.GetEnvironmentVariable "PATH"
+        )
+
+        Weir.Extern.refresh ()
+
 let private realResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
       IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n

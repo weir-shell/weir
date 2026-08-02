@@ -87,6 +87,19 @@ probe; acceptance = the grandchild fixture both ways). The user's
 Windows hand-run reports: REPL editor behaviour, a .bat spawn probe,
 the un-triaged three.
 
+ADDENDUM (hand-run receipt, same day): publish.ps1 works end to end,
+incl. the PATH teaching hint. THE UN-TRIAGED THREE DIAGNOSED — one
+cause, no fifth bucket: `echo` (and sh/grep/printf) are cmd BUILTINS
+or absent on Windows, so PARSE-ONLY fixtures under the realResolver
+failed at resolution, not grammar. Fix better than skipping: empty
+<tool>.exe shims on a prepended PATH dir at suite init (resolution is
+File.Exists, never execution) — ~20 realResolver parse pins
+(env-sigil, sibling-sentinel ACCEPTANCE, capture-sigil, fmt) keep
+their Windows coverage; tests that RUN the tools stay skipOnWindows
+(an empty exe cannot run). POSIX: guarded no-op, 963 green. Shim
+verified by reading only — the user's next Windows `dotnet test` is
+its first execution.
+
 ## mutation-testing spike — the pins-sufficiency claim, measured (2026-08-01)
 
 Throwaway spike (branch deleted, mutator deleted, tool uninstalled —
