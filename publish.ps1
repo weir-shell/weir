@@ -12,9 +12,29 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $dest = Join-Path $env:LOCALAPPDATA "Programs\weir"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item "src\Weir\bin\Release\net10.0\$Rid\publish\Weir.exe" (Join-Path $dest "weir.exe") -Force
+$exe = Join-Path $dest "weir.exe"
 
-Write-Host "installed: $dest\weir.exe"
+# a RUNNING weir.exe (the LSP inside an open editor) LOCKS the file
+# against overwrite, but Windows allows RENAMING a running image —
+# move it aside, copy fresh. POSIX needs none of this (install(1)
+# replaces via unlink; the running process keeps its inode).
+if (Test-Path $exe) {
+    $old = Join-Path $dest "weir.exe.old"
+    if (Test-Path $old) {
+        try { Remove-Item $old -ErrorAction Stop }
+        catch { $old = Join-Path $dest ("weir.exe.old-" + (Get-Random)) }
+    }
+    Move-Item $exe $old -Force
+}
+Copy-Item "src\Weir\bin\Release\net10.0\$Rid\publish\Weir.exe" $exe -Force
+
+# sweep leftovers best-effort — one may still be a live process's
+# image until its editor reloads; it goes on the next run
+Get-ChildItem $dest -Filter "weir.exe.old*" -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item $_.FullName -ErrorAction SilentlyContinue }
+
+Write-Host "installed: $exe"
+Write-Host "note: a running LSP keeps the OLD image until you reload the editor window"
 
 # PATH is the user's to mutate, not this script's — detect and TEACH
 # (the CLI teaching-arms posture): a fresh shell only sees weir once
