@@ -1,5 +1,37 @@
 # Spike Notes
 
+## bare commas, four positions — the match gap closes (2026-08-03)
+
+The rider the portable showcase earned: `match a, b with` and
+`| Some d, _ ->` did not parse, while `let a, b = …` has been pinned
+since the bare-comma amendment. A reader who learns "bare commas
+build tuples" was entitled to the third and fourth positions; F#
+grants both; the ledger would have needed a row to refuse. Closing
+was cheap — the plan's diagnose-first split found BOTH positions to
+be entry-point swaps onto productions that already existed: the
+scrutinee now parses `commaExpr` (the let-RHS's production — `with`
+is reserved, so it terminates the chain cleanly; the one risk the
+plan named, already absent), the arm parses `commaPats` (the
+binders' production — `when` and `->` are not commas, so the guard
+sits outside the tuple by construction). Both produce the SAME
+ETuple/PTuple nodes the parenthesized spellings always made: zero
+checker surface, zero precedence renegotiation, no stop-and-report.
+
+The risk surface, pinned: command-mode commas untouched (the
+existing e2e pin runs); `f a, b` remains `(f a), b` — the footgun
+[D:bare-comma] imported knowingly is now PINNED so this fix cannot
+have moved it; `[a, b]` stays one tuple element; the guard parses
+outside the tuple. One finding the diagnosis surfaced for free: the
+bare `for k, v in pairs` binder ALREADY WORKED — for's binder was
+commaPats all along; the corpus just never used the bare form.
+Confirmed and pinned.
+
+Ledger outcome: CLOSED, no row — both shapes joined the oracle as
+verdict-Same rows (158 now). SEMANTICS states the rule the rider
+existed for: bare commas build tuples in BINDER, RHS, SCRUTINEE,
+and PATTERN positions — one rule, four positions, no exceptions.
+The showcase's parenthesized spellings stay as they are.
+
 ## the portable showcase — weir is its own coreutils (2026-08-03)
 
 The user's find after the LSP landed: the showcase script cannot run

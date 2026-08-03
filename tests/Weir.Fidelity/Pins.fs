@@ -233,6 +233,16 @@ let pins =
 
       // --- tuples ---
       pin "tuple literal, type, pattern" "let p = (1, \"a\")\nlet v =\n    match p with\n    | (n, s) -> n\n" Same
+      // bare commas in the two match positions [D:bare-comma] — both
+      // idiomatic F#; the gap the portable showcase found, closed
+      pin
+          "bare-comma tuple scrutinee"
+          "let a = Some 1\nlet v =\n    match a, 2 with\n    | (Some d, _) -> d\n    | _ -> 0\n"
+          Same
+      pin
+          "bare-comma arm pattern, guard outside the tuple"
+          "let v =\n    match (1, 2) with\n    | a, b when a < b -> a\n    | _ -> 9\n"
+          Same
       pin "multi-payload constructor" "type Msg = | Move of int * int | Stop\nlet m = Move (1, 2)\n" Same
       pinT
           "tuple equality (componentwise, both compilers)"

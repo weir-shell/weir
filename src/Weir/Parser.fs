@@ -1051,13 +1051,19 @@ let private toExpr =
     |>> fun (fmt, span) -> { Kind = ETo fmt; Span = span }
 
 let private matchArm =
-    pat .>>. opt (keyword "when" >>. expr) .>> str_ws "->" .>>. seqExpr
+    // bare-comma tuple PATTERNS [D:bare-comma]: the arm rides the same
+    // one-or-tuple production as binder positions — `when`/`->` are not
+    // commas, so the guard sits OUTSIDE the tuple by construction
+    commaPats .>>. opt (keyword "when" >>. expr) .>> str_ws "->" .>>. seqExpr
     |>> fun ((p, guard), body) -> p, guard, body
 
 let private matchExpr =
     pipe3
         getPosition
-        (keyword "match" >>. expr .>> keyword "with")
+        // the scrutinee is an ordinary expression at the let-RHS's
+        // precedence [D:bare-comma]: `match a, b with` builds the tuple;
+        // `with` is reserved, so it terminates the comma chain cleanly
+        (keyword "match" >>. commaExpr .>> keyword "with")
         // a consumed '|' COMMITS to its arm [D:arm-commit] — the
         // consumed-separator law's second instance (seq-commit's twin):
         // a failing arm RHS reports at ITS OWN site instead of silently
