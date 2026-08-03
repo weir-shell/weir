@@ -1,5 +1,40 @@
 # Spike Notes
 
+## the squiggle blink — one document, two spellings (2026-08-03)
+
+The Windows report: the LSP now starts (session 3's fix) but
+diagnostics BLINK — squiggles appear once and clear. The cause needed
+no debugger once stated: a URI-SPELLING SPLIT. Clients own their URI
+spelling (VS Code sends file:///c%3A/…), and the server stored docs
+under the client's string but RE-DERIVED publish URIs via pathToUri —
+so one document became two strings. The diagnostic published under
+the server's spelling; the every-open-doc-publishes-empty pass then
+published 0 diags under the CLIENT's spelling; the client applied
+both to the same document in order. Blink.
+
+REPRODUCED ON LINUX before fixing — no Windows machine needed: open a
+doc as file:///tmp/%77eirspell.weir (an encoded 'w') and watch two
+publishes, 1 diag on the decoded spelling, 0 on the client's. The fix
+is the rule the code now states: a publish rides the CLIENT'S OWN URI
+string whenever the diagnosed file is an open doc (a path→client-uri
+map per refresh); pathToUri serves only files the client never named
+(module dependencies). The lsp-e2e pin holds the whole property:
+exactly ONE publish, under the exact client spelling, none under a
+re-derived one.
+
+`weir lsp --debug` landed with it (the user's ask): every dispatched
+method and every publish (uri + diag count) to stderr, which editors
+surface (VS Code: Output panel). The next blink-class mystery is a
+log read, not a rebuild-and-guess. Tolerated alongside --stdio/
+--clientProcessId; e2e-pinned.
+
+THE SESSION'S OWN LESSON, re-learned at the desk: my first "the fix
+does not work" was a STALE BINARY — an ad-hoc probe bypassed
+assert_fresh, and the publish step had been short-circuited by
+`grep -c` (exits 1 on zero matches) an `&&` earlier. The freshness
+gate exists for exactly this; ad-hoc probes assert freshness or they
+lie. Second publish, same probe: one publish, client spelling, fixed.
+
 ## Windows v1 session 3 — the hand-run's findings (2026-08-02)
 
 Windows was effectively green coming in (918/963, 43 stated skips,

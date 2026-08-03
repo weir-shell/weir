@@ -226,6 +226,35 @@ fence = read_msg()
 while fence.get("id") != 61:
     fence = read_msg()
 
+# publishes ride the CLIENT's OWN URI spelling [D:lsp-uri-spelling]: a
+# percent-encoded spelling must get its diagnostics under that exact
+# string, with NO second publish under a re-derived spelling — the
+# split is the Windows squiggle-blink (diag on ours, empty on theirs)
+SPELL = "file:///tmp/%77eirspell-pin.weir"
+send({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+      "params": {"textDocument": {"uri": SPELL, "text": "let Foo = 1\n"}}})
+send({"jsonrpc": "2.0", "id": 62, "method": "textDocument/hover",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 5}}})
+spell_pubs = {}
+m = read_msg()
+while m.get("id") != 62:
+    if m.get("method") == "textDocument/publishDiagnostics":
+        u = m["params"]["uri"]
+        if "eirspell-pin" in u:
+            spell_pubs[u] = len(m["params"]["diagnostics"])
+    m = read_msg()
+expect(spell_pubs.get(SPELL) == 1,
+       f"diagnostics must land under the client's spelling: {spell_pubs}")
+expect(list(spell_pubs) == [SPELL],
+       f"no second publish under a re-derived spelling: {spell_pubs}")
+send({"jsonrpc": "2.0", "method": "textDocument/didClose",
+      "params": {"textDocument": {"uri": SPELL}}})
+send({"jsonrpc": "2.0", "id": 63, "method": "textDocument/hover",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 5}}})
+fence = read_msg()
+while fence.get("id") != 63:
+    fence = read_msg()
+
 # ---- semantic tokens [D:semantic-tokens] ----------------------------
 expect(init["result"]["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"]
        == ["weirCommandHead", "weirArgv", "weirSplice"], "token legend missing")
