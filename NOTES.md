@@ -1,5 +1,61 @@
 # Spike Notes
 
+## probe: does a block yield its last expression? (2026-08-03)
+
+Zero code; the load-bearing unknown under the `within`-scopes
+design, answered with citations. The three questions separately, as
+the plan required — and they DO have different answers.
+
+Q1 — BLOCK-LET BODIES: YES, generically, and the statement rule
+composes correctly. The machinery is ESeq: the parser folds a
+block's statements right-nested (foldSeqExpr, Parser.fs:1637; wired
+via seqExprRef at 1658 — the SAME production serves block-let RHS,
+let-in bodies, and if bodies); the checker demands unit of every
+non-final statement and types the whole as the last expression
+(Check.fs:1236 — the non-unit first errors seq-unit); eval discards
+firsts and returns the last (Eval.fs:1438). Probes, verbatim:
+`let x = / let a = 1 / a + 1` → 2. `let y = / print "side" / 42` →
+side, then 42 — the LAST line is exempt from the statement rule,
+which is exactly the "yields" bar. `let y = / 41 / 42` →
+"error [seq-unit]: a sequenced expression must be unit; this one is
+int — bind it or print it" at the 41. A block that yields AND
+discard-errors correctly on non-final lines: usable as-is.
+
+Q2 — YAML DISTRICTS: the value is the DISTRICT'S OWN CONSTRUCTION,
+not block-yield — the crux the plan flagged, confirmed. A yaml
+district's body is VERBATIM template bytes behind the sentinel
+(JYamlLine, Script.fs:709: "sentinel + rel spaces + VERBATIM line"),
+parsed by parseTplBlock (Parser.fs:1297) into the EYaml AST node
+(Ast.fs:72) — the body is never statements at all, so it is NOT
+evidence for generic block-yield. (It is not evidence against it
+either; Q1's machinery simply never runs here.)
+
+Q3 — `!` DISTRICTS: unit BY CONSTRUCTION, not by discard — and the
+distinction has teeth. District lines ride the ordinary ESeq
+machinery (they are statements in the enclosing body), but every
+line is ARMED as a command effect (chain |> print = unit), and the
+grammar REFUSES anything else: a bare `42` as a district line is a
+parse error ("not an external command"), and districtLineCheck
+(Script.fs:779) rejects let-heads with "district lines are commands;
+bind values outside the block". So there is no value to discard —
+the last line is a constructed unit. Probes: `!(echo hi)` in value
+position binds unit; a district under a let RHS (via if-then) binds
+unit through the if-unit rule.
+
+THE VERDICT: **A, with one load-bearing caveat.** Generic block-yield
+exists and is battle-pinned — IF `within` bodies are ordinary
+expression blocks (the block-let shape), the expression-position
+cells work for free and the scopes design needs no new machinery.
+The caveat: A holds for the BLOCK shape only. If the scopes design
+wants the DISTRICT spelling (a marker-line species like `!ev`, lines
+armed as commands), then a value-yielding scope district is verdict
+B, and the size is NOT an entry-point swap: the assembler species
+arms lines as commands, so admitting a final expression line means a
+new line classification in the district grammar plus the ESeq tail
+wiring — a small session, bigger than the tuple-comma swaps because
+the assembler is involved. Recommendation embedded in the finding:
+design `within` bodies as expression blocks and inherit everything.
+
 ## hashing, base64, and the encoding law (2026-08-03)
 
 The gap audit's session A, extended with base64 because it is the
