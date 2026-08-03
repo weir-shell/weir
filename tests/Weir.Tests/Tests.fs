@@ -8198,6 +8198,19 @@ let windowsV1Tests =
           test "a genuinely-missing command still misses (PATHEXT adds, never invents)" {
               Expect.isFalse (Weir.Extern.exists "weir-definitely-absent-xyzzy") ""
           }
+          test "add's raw-URL hint rewrites blob pages; teaches generically otherwise [D:add-validates]" {
+              Expect.stringContains
+                  (Weir.Contracts.rawUrlHint "https://github.com/acme/schemas/blob/main/svc.json")
+                  "https://raw.githubusercontent.com/acme/schemas/main/svc.json"
+                  "github rewrite"
+
+              Expect.stringContains
+                  (Weir.Contracts.rawUrlHint "https://gitlab.com/grp/sub/proj/-/blob/main/svc.json")
+                  "https://gitlab.com/grp/sub/proj/-/raw/main/svc.json"
+                  "gitlab rewrite (subgroups ride the greedy group)"
+
+              Expect.stringContains (Weir.Contracts.rawUrlHint "https://example.com/x.json") "use the raw URL" "generic"
+          }
           test "LSP uri/path ROUND-TRIPS on this platform (spaces + non-ASCII)" {
               // the acceptance is identity BOTH WAYS [D:windows-s3] — a
               // one-way fix is how the mirror bug survives

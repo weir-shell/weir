@@ -109,7 +109,7 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
 
 // ---- fetch (ruling 4: each failure mode its own message) -------------------
 
-let fetchBytes (url: string) : Result<byte[], string> =
+let fetchBytes (url: string) : Result<byte[] * string option, string> =
     try
         use client = new Net.Http.HttpClient()
         client.Timeout <- TimeSpan.FromSeconds 60.0
@@ -118,7 +118,12 @@ let fetchBytes (url: string) : Result<byte[], string> =
         if not resp.IsSuccessStatusCode then
             Error $"{url} answered {int resp.StatusCode} ({resp.StatusCode})"
         else
-            Ok(resp.Content.ReadAsByteArrayAsync().Result)
+            let ct =
+                match resp.Content.Headers.ContentType with
+                | null -> None
+                | t -> Some t.MediaType
+
+            Ok(resp.Content.ReadAsByteArrayAsync().Result, ct)
     with ex ->
         let root =
             let rec inner (e: exn) =
@@ -136,146 +141,24 @@ let fetchBytes (url: string) : Result<byte[], string> =
 
         Error $"cannot reach {host} — {root.Message}"
 
-// ---- add / restore / verify ------------------------------------------------
-// `add <kind>` is KIND-AWARE (acquiring differs per kind: a schema is
-// a url fetch; a signature will GENERATE from the installed tool; a
-// module will clone at a ref); `restore` and `verify` are
-// kind-agnostic BY CONSTRUCTION — every lock entry is source + hash +
-// path, so they need to know nothing about the artifact.
+/// the single most likely user error for `add schema <url>` is a
+/// GitHub/GitLab FILE PAGE where the raw URL was meant — recognize the
+/// host and OFFER the rewritten raw URL, because the fix is a URL edit
+/// the user may not know how to construct [D:add-validates]
+let rawUrlHint (url: string) : string =
+    let m =
+        Text.RegularExpressions.Regex.Match(url, "^https://github\\.com/([^/]+)/([^/]+)/blob/(.+)$")
 
-/// `weir add schema <url> --as <name>`: fetch, write under the kind
-/// directory, upsert the lock entry.
-let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : Result<string, string> =
-    match fetchBytes url with
-    | Error e -> Error e
-    | Ok bytes ->
-        let rel = Path.Combine(kind + "s", name + ".json")
-        let dest = Path.Combine(weirDir, rel)
-        Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
-        File.WriteAllBytes(dest, bytes)
-        let hash = sha256Hex bytes
+    if m.Success then
+        $" — this is a GitHub file page; use the raw URL: https://raw.githubusercontent.com/{m.Groups[1].Value}/{m.Groups[2].Value}/{m.Groups[3].Value}"
+    else
+        let g =
+            Text.RegularExpressions.Regex.Match(url, "^https://gitlab\\.com/(.+)/-/blob/(.+)$")
 
-        // a schema with no `additionalProperties: false` ANYWHERE cannot
-        // fire unknown-field checks — the feature's whole point — so a
-        // silently-inert contract warns at ADD time (the vacuous-pin
-        // class). Plain `-standalone` k8s variants have exactly this
-        // shape; `-standalone-strict` is the load-bearing variant.
-        if kind = "schema" then
-            let hasClosed =
-                try
-                    use doc = Text.Json.JsonDocument.Parse bytes
-
-                    let rec anyClosed (el: Text.Json.JsonElement) =
-                        match el.ValueKind with
-                        | Text.Json.JsonValueKind.Object ->
-                            el.EnumerateObject()
-                            |> Seq.exists (fun p ->
-                                (p.Name = "additionalProperties"
-                                 && p.Value.ValueKind = Text.Json.JsonValueKind.False)
-                                || anyClosed p.Value)
-                        | Text.Json.JsonValueKind.Array -> el.EnumerateArray() |> Seq.exists anyClosed
-                        | _ -> false
-
-                    anyClosed doc.RootElement
-                with _ ->
-                    true // unparseable here — the loader teaches later
-
-            if not hasClosed then
-                Console.Error.WriteLine
-                    $"weir add: warning: {name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
-
-        match readLock weirDir with
-        | Error e -> Error e
-        | Ok entries ->
-            let entry =
-                { Kind = kind
-                  Name = name
-                  Url = url
-                  Sha256 = hash
-                  Path = rel }
-
-            let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
-
-            writeLock weirDir (others @ [ entry ])
-            Ok $"added {kind} {name} ({bytes.Length} bytes, sha256 {hash.Substring(0, 12)}…) from {url}"
-
-/// `weir restore`: re-materialize anything in the lock missing on
-/// disk, verifying each fetch against the recorded hash.
-let restore (weirDir: string) : Result<string list, string> =
-    match readLock weirDir with
-    | Error e -> Error e
-    | Ok [] -> Ok [ "the lock records nothing yet — add with: weir add schema <url> --as <name>" ]
-    | Ok entries ->
-        let results =
-            entries
-            |> List.map (fun e ->
-                let dest = Path.Combine(weirDir, e.Path)
-
-                if File.Exists dest then
-                    Ok $"{e.Kind} {e.Name}: present"
-                else
-                    match fetchBytes e.Url with
-                    | Error err -> Error $"{e.Kind} {e.Name}: {err}"
-                    | Ok bytes ->
-                        let hash = sha256Hex bytes
-
-                        if hash <> e.Sha256 then
-                            Error
-                                $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, `weir add schema` again"
-                        else
-                            Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
-                            File.WriteAllBytes(dest, bytes)
-                            Ok $"{e.Kind} {e.Name}: restored from {e.Url}")
-
-        match
-            results
-            |> List.tryPick (function
-                | Error e -> Some e
-                | Ok _ -> None)
-        with
-        | Some firstErr -> Error firstErr
-        | None ->
-            Ok(
-                results
-                |> List.map (function
-                    | Ok s -> s
-                    | Error _ -> "")
-            )
-
-/// `weir verify`, two-arm shaped (ruling: today the hash arm; a future
-/// signature arm — tool `--version` against the recorded identity —
-/// slots beside it, not into a rewrite).
-type VerifyFinding =
-    | Absent of LockEntry
-    | Modified of LockEntry * actual: string
-
-let verify (weirDir: string) : Result<string list * VerifyFinding list, string> =
-    match readLock weirDir with
-    | Error e -> Error e
-    | Ok entries ->
-        let lines = ResizeArray<string>()
-        let findings = ResizeArray<VerifyFinding>()
-
-        for e in entries do
-            let dest = Path.Combine(weirDir, e.Path)
-
-            match e.Kind with
-            // the hash arm: vendored artifacts verify by content
-            | _ when not (File.Exists dest) ->
-                findings.Add(Absent e)
-                lines.Add $"{e.Kind} {e.Name}: ABSENT — run `weir restore`"
-            | _ ->
-                let actual = sha256Hex (File.ReadAllBytes dest)
-
-                if actual <> e.Sha256 then
-                    findings.Add(Modified(e, actual))
-
-                    lines.Add
-                        $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}…"
-                else
-                    lines.Add $"{e.Kind} {e.Name}: ok"
-
-        Ok(List.ofSeq lines, List.ofSeq findings)
+        if g.Success then
+            $" — this is a GitLab file page; use the raw URL: https://gitlab.com/{g.Groups[1].Value}/-/raw/{g.Groups[2].Value}"
+        else
+            " — if this is a GitHub or GitLab file page, use the raw URL"
 
 // ---- the JSON Schema subset [D:yaml-schemas] -------------------------------
 
@@ -457,6 +340,192 @@ let parseSchema (name: string) (text: string) : Result<Schema, string> =
         parseNode "" doc.RootElement |> Result.mapError (fun e -> $"schema {name}: {e}")
     with ex ->
         Error $"schema {name}: not valid JSON — {ex.Message}"
+
+// ---- add / restore / verify ------------------------------------------------
+// `add <kind>` is KIND-AWARE (acquiring differs per kind: a schema is
+// a url fetch; a signature will GENERATE from the installed tool; a
+// module will clone at a ref); `restore` and `verify` are
+// kind-agnostic BY CONSTRUCTION — every lock entry is source + hash +
+// path, so they need to know nothing about the artifact.
+
+/// `weir add schema <url> --as <name>`: fetch, write under the kind
+/// directory, upsert the lock entry.
+let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : Result<string, string> =
+    match fetchBytes url with
+    | Error e -> Error e
+    | Ok(bytes, contentType) ->
+        // [D:add-validates]: add validates EVERYTHING the checker will
+        // later require and writes NOTHING if it cannot — an artifact
+        // that passes add and fails at check has already put a broken
+        // entry in the one file restore and verify trust. Gates in
+        // order; the first failure returns with .weir/ untouched.
+        let ct = contentType |> Option.defaultValue "unknown"
+
+        let parsed =
+            try
+                Ok(Text.Json.JsonDocument.Parse bytes)
+            with _ ->
+                Error $"the response is not JSON (Content-Type: {ct}){rawUrlHint url}; nothing was written"
+
+        match parsed with
+        | Error e -> Error e
+        | Ok doc ->
+            use doc = doc
+            let root = doc.RootElement
+
+            let schemaShaped =
+                root.ValueKind = Text.Json.JsonValueKind.Object
+                && [ "$schema"; "type"; "properties"; "$defs" ]
+                   |> List.exists (fun k ->
+                       match root.TryGetProperty k with
+                       | true, _ -> true
+                       | _ -> false)
+
+            if kind = "schema" && not schemaShaped then
+                Error
+                    "valid JSON, but not a schema — no $schema, type, properties, or $defs at the top level; nothing was written"
+            else
+
+                // the subset check runs AT ADD, not at first use: the failure
+                // lands where the user can act, and an out-of-subset schema
+                // never reaches the lockfile
+                let subset =
+                    if kind = "schema" then
+                        parseSchema name (Text.Encoding.UTF8.GetString bytes) |> Result.map ignore
+                    else
+                        Ok()
+
+                match subset with
+                | Error e -> Error $"{e}; nothing was written"
+                | Ok() ->
+
+                    match readLock weirDir with
+                    | Error e -> Error e
+                    | Ok entries ->
+                        // a schema with no `additionalProperties: false` ANYWHERE cannot
+                        // fire unknown-field checks — the feature's whole point — so a
+                        // silently-inert contract warns at ADD time (the vacuous-pin
+                        // class). Plain `-standalone` k8s variants have exactly this
+                        // shape; `-standalone-strict` is the load-bearing variant.
+                        if kind = "schema" then
+                            let rec anyClosed (el: Text.Json.JsonElement) =
+                                match el.ValueKind with
+                                | Text.Json.JsonValueKind.Object ->
+                                    el.EnumerateObject()
+                                    |> Seq.exists (fun p ->
+                                        (p.Name = "additionalProperties"
+                                         && p.Value.ValueKind = Text.Json.JsonValueKind.False)
+                                        || anyClosed p.Value)
+                                | Text.Json.JsonValueKind.Array -> el.EnumerateArray() |> Seq.exists anyClosed
+                                | _ -> false
+
+                            if not (anyClosed root) then
+                                Console.Error.WriteLine
+                                    $"weir add: warning: {name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
+
+                        // only now touch the disk — the file and the lock entry
+                        // land together or not at all
+                        let rel = Path.Combine(kind + "s", name + ".json")
+                        let dest = Path.Combine(weirDir, rel)
+                        let hash = sha256Hex bytes
+
+                        let entry =
+                            { Kind = kind
+                              Name = name
+                              Url = url
+                              Sha256 = hash
+                              Path = rel }
+
+                        let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
+
+                        try
+                            Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
+                            File.WriteAllBytes(dest, bytes)
+                            writeLock weirDir (others @ [ entry ])
+                            Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {url}"
+                        with ex ->
+                            (try
+                                File.Delete dest
+                             with _ ->
+                                 ())
+
+                            Error $"write failed: {ex.Message} — the partial file was removed"
+
+let restore (weirDir: string) : Result<string list, string> =
+    match readLock weirDir with
+    | Error e -> Error e
+    | Ok [] -> Ok [ "the lock records nothing yet — add with: weir add schema <url> --as <name>" ]
+    | Ok entries ->
+        let results =
+            entries
+            |> List.map (fun e ->
+                let dest = Path.Combine(weirDir, e.Path)
+
+                if File.Exists dest then
+                    Ok $"{e.Kind} {e.Name}: present"
+                else
+                    match fetchBytes e.Url with
+                    | Error err -> Error $"{e.Kind} {e.Name}: {err}"
+                    | Ok(bytes, _) ->
+                        let hash = sha256Hex bytes
+
+                        if hash <> e.Sha256 then
+                            Error
+                                $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, `weir add schema` again"
+                        else
+                            Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
+                            File.WriteAllBytes(dest, bytes)
+                            Ok $"{e.Kind} {e.Name}: restored from {e.Url}")
+
+        match
+            results
+            |> List.tryPick (function
+                | Error e -> Some e
+                | Ok _ -> None)
+        with
+        | Some firstErr -> Error firstErr
+        | None ->
+            Ok(
+                results
+                |> List.map (function
+                    | Ok s -> s
+                    | Error _ -> "")
+            )
+
+/// `weir verify`, two-arm shaped (ruling: today the hash arm; a future
+/// signature arm — tool `--version` against the recorded identity —
+/// slots beside it, not into a rewrite).
+type VerifyFinding =
+    | Absent of LockEntry
+    | Modified of LockEntry * actual: string
+
+let verify (weirDir: string) : Result<string list * VerifyFinding list, string> =
+    match readLock weirDir with
+    | Error e -> Error e
+    | Ok entries ->
+        let lines = ResizeArray<string>()
+        let findings = ResizeArray<VerifyFinding>()
+
+        for e in entries do
+            let dest = Path.Combine(weirDir, e.Path)
+
+            match e.Kind with
+            // the hash arm: vendored artifacts verify by content
+            | _ when not (File.Exists dest) ->
+                findings.Add(Absent e)
+                lines.Add $"{e.Kind} {e.Name}: ABSENT — run `weir restore`"
+            | _ ->
+                let actual = sha256Hex (File.ReadAllBytes dest)
+
+                if actual <> e.Sha256 then
+                    findings.Add(Modified(e, actual))
+
+                    lines.Add
+                        $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}…"
+                else
+                    lines.Add $"{e.Kind} {e.Name}: ok"
+
+        Ok(List.ofSeq lines, List.ofSeq findings)
 
 // ---- validation against a district template [D:yaml-schemas] ---------------
 //

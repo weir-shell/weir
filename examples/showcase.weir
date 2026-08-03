@@ -289,20 +289,29 @@ peers |> Seq.iter (fun p -> print $"peer {p.host}:{p.port}")
 // check errors; splices are typed VALUES, so no YAML injection exists
 // for the same reason no argv injection does; a None splice omits its
 // entry; `for` yields dynamic keys; ambiguous scalars auto-quote.
-let manifest name replicas tag pairs = yaml
+// a REAL Service shape (the live-check finding: `annotation` was a
+// typo the schema validator caught unprompted, and replicas/rollout
+// were Deployment concepts on a Service — the district now describes
+// the resource it names). The "on" annotation keeps the auto-quote
+// demo: unquoted it would read as YAML's boolean.
+let manifest name port tag pairs = yaml
     apiVersion: v1
     kind: Service
     metadata:
         name: $name
-        annotation: $tag
+        annotations:
+            weir.dev/tag: $tag
+            weir.dev/switch: "on"
         labels:
             for (k, v) in pairs
                 $k: $v
     spec:
-        replicas: $replicas
-        rollout: "on"
+        selector:
+            app: $name
+        ports:
+            - port: $port
 
-let doc0 = manifest "web" 3 cli.tag [("app", "web"); ("tier", "edge")]
+let doc0 = manifest "web" 8080 cli.tag [("app", "web"); ("tier", "edge")]
 doc0 |> to yaml |> print
 
 // ---- bindings shadow commands; ^ still reaches PATH -------------------
