@@ -395,6 +395,22 @@ quantity semantics now.
   command-in-expression has exactly these spellings: `$()`/`!()`
   atoms (anywhere an expression goes), bare-command let-RHS (capture,
   least ink where legal), and the `!` district (runs of effects).
+  **The interior-arming rule** [D:interior-arming], ONE rule with one
+  carve-out: a command line in INTERIOR-STATEMENT position (a
+  non-final statement of any block — if bodies, lambda bodies,
+  block-lets, for bodies) is an EFFECT (streams, raises on nonzero,
+  unit); a command in FINAL/value position stays CAPTURE-typed (the
+  block's value) — and when the context demands unit of that final
+  position (an if body, an iterated lambda), the check direction arms
+  it too. Top-level statements are an INSTANCE of the interior row,
+  not a separate rule. THE CARVE-OUT: a script's body is a statement
+  sequence, never a block with a value — every top-level command is
+  non-final by construction, so a script's last line still streams
+  and raises. Plain parens stay expression territory ($()/!() are the
+  command parens); the statement rule is unchanged for non-command
+  lines (a non-unit value still seq-unit-errors). Raise timings
+  differ observably and are pinned: armed raises immediately,
+  capture raises at force.
   Every command head is a LITERAL program name, resolved at check
   time — there is no computed-head tier [D:drop-command-builtins]. To
   swap tools by a runtime condition, branch the whole command line

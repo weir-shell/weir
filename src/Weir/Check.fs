@@ -2311,7 +2311,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Ty = tthn.Ty
                       Span = expr.Span }
             | None ->
-                let! tthn = infer ctx env thn
+                // a commandish then-TAIL arms before typing
+                // [D:interior-arming] — `if force then git clean -fd`
+                // is the effect form; the teaching text below is
+                // untouched for everything else
+                let! tthn = infer ctx env (armTail thn)
 
                 match resolve ctx tthn.Ty with
                 | TUnit ->
@@ -2437,8 +2441,68 @@ and private checkSpine
             return applied
     }
 
+// a command CHAIN by AST shape — the parser's isCommandish, check-side
+// [D:interior-arming]
+and private isCmdChain (e: Expr) =
+    match e.Kind with
+    | ECmd _
+    | EPipe(_, { Kind = ECmd _ }) -> true
+    | _ -> false
+
+// arm the TAIL of a statement body [D:interior-arming]: a commandish
+// final expression under a unit demand is the EFFECT form — rewrite it
+// to the same `|> print` the statement positions get, recursing through
+// sequences. Pure AST pre-pass so teaching errors keep their text.
+and private armTail (e: Expr) : Expr =
+    if isCmdChain e then
+        { Kind = EPipe(e, { Kind = EVar "print"; Span = e.Span })
+          Span = e.Span }
+    else
+        match e.Kind with
+        | ESeq(a, b) ->
+            { Kind = ESeq(a, armTail b)
+              Span = e.Span }
+        | _ -> e
+
 and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeError> =
     match expr.Kind, resolve ctx expected with
+    // interior arming's check half [D:interior-arming]: a command chain
+    // where UNIT is demanded (a checked lambda body, a sequence tail
+    // under unit) is the effect form — `files |> Seq.iter (fun f ->
+    // git add $f)` works without a district
+    | (ECmd _ | EPipe(_, { Kind = ECmd _ })), TUnit when isCmdChain expr ->
+        check
+            ctx
+            env
+            { Kind =
+                EPipe(
+                    expr,
+                    { Kind = EVar "print"
+                      Span = expr.Span }
+                )
+              Span = expr.Span }
+            TUnit
+    // the check direction rides THROUGH a sequence to its final
+    // expression [D:interior-arming] — F#'s rule, and what lets a
+    // final command in a unit-demanded block arm
+    | ESeq(first, rest), _ ->
+        result {
+            let! tfirst = infer ctx env first
+
+            match resolve ctx tfirst.Ty with
+            | TUnit ->
+                let! trest = check ctx env rest expected
+
+                return
+                    { Kind = TESeq(tfirst, trest)
+                      Ty = trest.Ty
+                      Span = expr.Span }
+            | ty ->
+                return!
+                    err
+                        first.Span
+                        $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it"
+        }
     | ELambdaPat(pat, body), TFun(dom, cod) ->
         // check-mode twin: the binder shape binds against the PUSHED
         // domain before the body runs, so piped element types reach

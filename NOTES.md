@@ -1,5 +1,75 @@
 # Spike Notes
 
+## commands as interior statements — the arming rule, unified (2026-08-03)
+
+The probe's fork resolved by making the rule simpler: a command line
+in interior-statement position is an EFFECT; final/value position
+stays capture; top-level becomes an instance instead of a special
+case. Everything the plan asked, plus two finds of its own.
+
+THE QUESTION-FIRST ORDER PAID TWICE. (1) The reifier gap diagnosed
+exactly as the tuple-comma class predicted: reifierEnd's follower
+set (pipe, ')', eof, in) lacked the STATEMENT SEPARATOR, so
+`| orFail "m"` as an interior statement demoted to a bareword stage
+— one lookahead alternative added, and `git push | orFail "no"`
+works in scope bodies. (2) The !-district enumeration probe found a
+for/do seam nobody knew: the single-chain command body ate line one
+and STRANDED the remaining siblings outside the binder's scope
+(`unbound variable 's'`) — the body now yields to the sequence when
+a sibling follows, and multi-line for bodies need no district.
+
+THE IMPLEMENTATION HAS TWO HALVES because the plan's own if-example
+demanded it: `if force then / git reset / git clean` arms its FINAL
+line, which fold-position cannot see — so parse-time arming covers
+non-final elements (the for/do desugar generalized through seqExpr's
+new command element) and the CHECK DIRECTION covers finals under a
+unit demand (an armTail pre-pass on if-then keeps the teaching text;
+a check-mode ESeq rule propagates the direction; commandish-under-
+TUnit arms lambda bodies). The first cut LEAKED — parens interiors
+ride seqExpr, so `(scriptPath |> Path.dir)` phantom-commanded under
+the assume resolver and ate the Self teaching (a unit pin caught it
+within minutes) — plain parens now gate the element off, lambda
+bodies re-enable through them, because `Seq.iter (fun f -> git add
+$f)` is the idiom and it lives inside parens.
+
+THE CARVE-OUT held without code: the top-level path never went
+through seqExpr, so a script's last command still streams and raises
+— pinned anyway, because the one place nobody wants a behaviour
+change deserves its pin. Raise timings pinned both ways. Sharp case
+4 decided: NO warning for a non-final command that would have been a
+capture — it was never bound, and the armed effect is what the line
+says on the new reading.
+
+THE ! DISTRICT'S FATE, reported not acted: if-then bodies and
+multi-line for bodies no longer need it; top-level runs keep only
+the command-ONLY-territory guarantee; the ENV variants (!ev) are the
+part nothing replaces until within-env lands. Plain ! is a
+deletable-candidate for its own bless once this rule settles. The
+corpus reads fine as-is (districts still work; no churn per the
+bar).
+
+FLIPPED PINS, each named in place: the sibling-sentinel ACCEPTANCE
+shape (the non-final command is now armed EPipe), and the
+command-first-body rejection twins (unit + e2e) — the body now
+CHECKS, and the at-the-head/no-EOF-dump quality property moved to a
+non-command fixture, where the statement rule still holds it.
+
+THE CORPUS SWEEP EARNED ITS PLACE IN THE RITUAL: repo-report.weir
+broke under the new rule — `| t :: _ -> t` read the arm BINDER t as
+a phantom command (warning + seq<string> mismatch), because arm
+bodies never got the bindings-beat-PATH resolver extension that
+lambda params and let-in names always had; the new command element
+made the gap observable. Fixed at the missing sites (match-arm
+bodies via the pattern's leaf names, for bodies via the binder) —
+a shared patLeafNames walker, the lambda treatment completed.
+Unit-pinned; the corpus checks clean again.
+
+RE-LEARNED, embarrassingly: `grep -c | && publish` short-circuited
+AGAIN (count 0 exits 1) and a probe ran against yesterday's binary
+mid-session — same trap as the squiggle session, caught faster this
+time. The spelling that survives review is `grep -c … ; ./publish.sh`
+on separate lines.
+
 ## probe: does a block yield its last expression? (2026-08-03)
 
 Zero code; the load-bearing unknown under the `within`-scopes
