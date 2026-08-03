@@ -1,5 +1,45 @@
 # Spike Notes
 
+## hashing, base64, and the encoding law (2026-08-03)
+
+The gap audit's session A, extended with base64 because it is the
+same species (pure data transformation, coreutils shell-out, no
+portable spelling — `base64` on Linux, `certutil -encode` on
+Windows). THE PREREQUISITE CAME FIRST as the plan ordered: SEMANTICS
+had NO encoding law (verified — the capture session pinned
+behaviour, nobody stated the rule), so it is stated now, phrased
+about BOUNDARIES not representation: UTF-8 at every boundary; BOM
+detection where a stream may declare otherwise; strict contexts
+reject invalid UTF-8 rather than manufacturing U+FFFD — corruption
+must not wear a success.
+
+Four members, every decision recorded: sha256 ONLY (md5 broken —
+offering it invites use; the reason recorded so the question closes);
+lowercase hex = sha256sum parity, pinned by exact digest INCLUDING a
+non-ASCII input (the law under test: café's UTF-8 digest); toBase64
+emits ONE unwrapped line — GNU's 76-column wrap and the -w0 tax do
+not exist here, the rare case where weir's version is simply better
+than the tool it replaces; fromBase64 raises on malformed AND on
+valid-base64-of-non-text (//79 decodes to FF FE FD — bytes, not
+text), tryFromBase64 None for both; unpadded input accepted.
+
+THE ACCEPTANCE LANDED: corpus-mine.weir dropped `| sha256sum` and
+THE CORPUS IS COREUTILS-FREE — the claim the audit said was worth
+having. Numbers reproduce exactly (base: extracted=5 unique=3
+kept=0, before and after); the filename hashes shift by feed's
+trailing newline, stated, partition unaffected. The GUIDE gains the
+Secret idiom (base64 into a yaml district — the k8s receipt's home,
+now a 64th runnable doc block).
+
+PARKED with triggers: URL-safe alphabet (JWT payload receipt;
+visible naming, never a silent flip); File.sha256/File.toBase64
+(the byte-type gap, stated once — and the park is NOT gated on a
+language addition: a byte-oriented File member that never becomes a
+weir value serves the receipt).
+
+Remaining session-A receipts (windowed, last/tryLast, Option.iter/
+orElse, Path.tempDir) stay for their own sitting.
+
 ## the library gap audit — six receipts, one dissolved fork (2026-08-03)
 
 Analysis only, zero code; the report is plans/PLAN-library-gaps.md.

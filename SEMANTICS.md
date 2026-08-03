@@ -589,6 +589,16 @@ quantity semantics now.
   least one field, like F#).
 - Constructor names must start uppercase; that is what distinguishes
   constructor patterns from variable patterns in `match`.
+- **The encoding law** [D:encoding-law]: weir encodes and decodes
+  UTF-8 at EVERY boundary — what gets read, written, hashed, and
+  base64'd is UTF-8 bytes. The law is about boundaries, not
+  representation (in-memory strings are the runtime's business). BOM
+  detection applies where a stream may declare otherwise: capture
+  decoding strips a UTF-8 BOM, switches on a UTF-16/32 BOM, and maps
+  an invalid byte to one U+FFFD (the capture rules, pinned). Strict
+  contexts (`Str.fromBase64`) reject invalid UTF-8 as an ERROR
+  rather than manufacturing replacement characters — corruption must
+  not wear a success.
 - **String interpolation**: `$"... {expr} ..."`, F#-style, usable anywhere an
   expression is (including as a command argument, where it stays one argv
   entry). Holes follow the **command-splice typing rule** — string, int (any
