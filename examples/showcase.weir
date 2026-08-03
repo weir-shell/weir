@@ -2,8 +2,14 @@
 // weir showcase — one runnable tour of the language.
 // `weir check examples/showcase.weir` finds every error before ANY
 // line runs; `weir examples/showcase.weir [--verbose] [--tag x]`
-// executes. The one feature not here: `module`/`import` — it needs a
-// second file (see docs/GUIDE.md).
+// executes. PORTABLE BY CONSTRUCTION: the only external heads are
+// `weir` itself and `git`, so the tour runs on Linux, macOS, and
+// Windows alike (coreutils are cmd builtins there — nothing for a
+// resolver to find). The POSIX escape hatch is still a feature:
+// !(sh -c "...") on POSIX, cmd /c on Windows — spelled here in prose
+// because a named head must resolve on YOUR platform.
+// The one feature not here: `module`/`import` — it needs a second
+// file (see docs/GUIDE.md).
 
 // ---- typed argv: flags derive from a record ---------------------------
 
@@ -27,17 +33,39 @@ let cli = Args.load Cli
 type Level = Debug | Info | Quiet
 
 type EnvCfg = {
-    HOME: string
+    /// absent on stock Windows — Option is the honest type
+    HOME: Option<string>
+
+    /// POSIX spelling of the temp root
+    TMPDIR: Option<string>
+
+    /// Windows spelling of the temp root
+    TEMP: Option<string>
+
     /// enum env vars match case-insensitively: =debug, =DEBUG, =Debug
     WEIR_SHOWCASE_LEVEL: Option<Level>
 }
 
 let env0 = Env.load EnvCfg
 let level = env0.WEIR_SHOWCASE_LEVEL |> Option.defaultValue Info
+let home = env0.HOME |> Option.defaultValue "(no HOME)"
 
-printerr $"starting under {env0.HOME} (level {show level}, pid {Self.pid})"
+printerr $"starting under {home} (level {show level}, pid {Self.pid})"
 
 if cli.verbose then printerr (show cli)
+
+// the platform's own temp root, one match expression
+let tmpBase =
+    match (env0.TMPDIR, env0.TEMP) with
+    | (Some d, _) -> d
+    | (_, Some d) -> d
+    | _ -> "/tmp"
+
+// the showcase's helper scripts live beside this file — Self.scriptPath
+// is absolute and cd-proof, so the tour runs from any cwd
+let helperDir = Path.dir Self.scriptPath
+let echoArgs = Path.combine helperDir "echo-args.weir"
+let probe = Path.combine helperDir "probe.weir"
 
 // ---- strings: four kinds, one meaning everywhere ----------------------
 
@@ -140,39 +168,38 @@ Str.rmatchAll @"(https://\S+)" text0
     |> Seq.iter print
 
 // ---- commands: argv is data, never a string ---------------------------
+// a child weir is the portable effectful command — same argv law on
+// every platform, no shell between us and it
 
 let banner = "showcase"
-echo tag $banner (40 + 2) $"--label={banner}"
+weir $echoArgs tag $banner (40 + 2) $"--label={banner}"
 
 let extras = []
-echo empty splat drops $@extras zero words
+weir $echoArgs empty splat drops $@extras zero words
 
 let words = ["alpha"; "beta"; "gamma"]
-echo three words: $@words
+weir $echoArgs three words: $@words
 
-let caught = $(printf 'one\ntwo') |> Seq.length
+let caught = $(weir -e "[\"one\"; \"two\"] |> Seq.iter print") |> Seq.length
 print $"captured {caught} lines"
 
-!(sh -c "echo effect && echo streams")
-
-let etc = $(^ls /etc) |> Seq.length
-print $"^ls forces the external: {etc} entries in /etc"
+!(weir $probe --out "effect streams")
 
 // exit codes are data: the reifier family
-let found = grep -c weir /etc/hostname | succeeds
+let found = weir $probe --out hit | succeeds
 print found
 
-let r = sh -c "echo out; echo err >&2; exit 3" | complete
+let r = weir $probe --out out --err err --code 3 | complete
 print $"complete: code {r.exitCode}, {r.stdout |> Seq.length} out, {r.stderr |> Seq.length} err"
 
-let code = sh -c "exit 0" | exitCode
+let code = weir $probe --code 0 | exitCode
 print $"exitCode reified: {code}"
 
-printf 'assert-me\n' | orFail "printf broke"
+weir $probe --out assert-me | orFail "the probe broke"
 
 // a weir seq pipes into an external's stdin
-let digest = ["alpha"; "beta"] | sha256sum |> Seq.head
-print $"stdin-piped digest: {digest}"
+let loud = ["alpha"; "beta"] | weir $probe --upper |> Seq.head
+print $"stdin-piped upcase: {loud}"
 
 // typed command output: porcelain and json adapters
 let staged =
@@ -186,16 +213,16 @@ print $"staged files here: {staged}"
 type Peer = { host: string; port: int; note: Option<string> }
 
 let peer =
-    echo '{"host": "a.example", "port": 9000}'
+    ["{\"host\": \"a.example\", \"port\": 9000}"]
     |> from json Peer
     |> Seq.head
 
 print $"peer {peer.host}:{peer.port} (note {show peer.note})"
 
 // ---- files, paths, glob (redirects are functions here) ----------------
+// unique FILES under the platform's own temp root — no mkdir needed
 
-let tmp = $(mktemp -d) |> Seq.head
-let store = Path.combine tmp "words.txt"
+let store = Path.combine tmpBase $"weir-showcase-{Self.pid}.txt"
 
 words |> File.write store
 ["delta"] |> File.append store
@@ -204,45 +231,46 @@ let back = File.read store
 print $"file roundtrip: {back |> Seq.length} lines in {Path.fileName store}"
 print $"first back: {back[0]}; missing 99th: {show (back |> Seq.tryItem 99)}"
 
-let txts = Path.glob $"{tmp}/*.txt" |> Seq.force
+let txts = Path.glob (Path.combine tmpBase $"weir-showcase-{Self.pid}*.txt") |> Seq.force
 print $"glob sees {txts |> Seq.length} txt file(s); stem = {Path.stem store}"
 
 // ---- env overlays: sigils and the env district ------------------------
 
-["GREETING=bonjour"; "SECRET=hunter2"] |> File.write (Path.combine tmp "svc.env")
-let ev = Env.fromFile (Path.combine tmp "svc.env")
+let envFile = Path.combine tmpBase $"weir-showcase-{Self.pid}.env"
+["GREETING=bonjour"; "SECRET=hunter2"] |> File.write envFile
+let ev = Env.fromFile envFile
 
-let greetz = $ev(sh -c "echo env says $GREETING") |> Seq.head
+let greetz = $ev(weir $probe --greet) |> Seq.head
 print greetz
 
-!ev(sh -c "echo effect sees $GREETING too")
+!ev(weir $probe --greet)
 
 let ready = true
 
 // line-end !name distributes the overlay over the block
 if ready then !ev
-    sh -c "echo district one: $GREETING"
-    sh -c "echo district two: still $GREETING"
+    weir $probe --greet --out "district one"
+    weir $probe --greet --out "district two"
 
 // bare ! district: command lines, parsed and checked before anything ran
 if ready then !
-    echo bare district line one
-    sh -c "true" | orFail "sh broke"
+    weir $echoArgs bare district line one
+    weir $probe --code 0 | orFail "the probe broke"
 
 // ---- iteration: for/do effects, parallel fan-out ----------------------
 
 for w in words do print $"word: {w}"
 
-for f in $(printf 'one\ntwo') do echo iter $f
+for f in $(weir -e "[\"one\"; \"two\"] |> Seq.iter print") do weir $echoArgs iter $f
 
 for s in ["first"; "second"] do !
-    echo command block $s
+    weir $echoArgs command block $s
 
-let counts =
-    ["/etc/hostname"; "/etc/os-release"]
-    |> Seq.pmap (fun p -> $(wc -l $p) |> Seq.head)
+let shouts =
+    ["fan"; "out"]
+    |> Seq.pmap (fun w -> $(weir $probe --out $w) |> Seq.head)
 
-counts |> Seq.iter print
+shouts |> Seq.iter print
 
 // ---- YAML: nodes, adapters, and the checked template district ---------
 
@@ -276,6 +304,14 @@ let manifest name replicas tag pairs = yaml
 
 let doc0 = manifest "web" 3 cli.tag [("app", "web"); ("tier", "edge")]
 doc0 |> to yaml |> print
+
+// ---- bindings shadow commands; ^ still reaches PATH -------------------
+
+let weir = "a local binding now shadows the command name"
+print $"shadow: {weir}"
+
+let v = $(^weir --version) |> Seq.head
+print $"^weir still reaches the binary: {v}"
 
 // ---- exit is explicit; unit prints nothing ----------------------------
 

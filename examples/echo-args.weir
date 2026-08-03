@@ -1,0 +1,6 @@
+#!/usr/bin/env weir
+// The showcase's portable echo: each argument on its own line. argv
+// is data on every platform, so a child weir is the cross-platform
+// stunt double for coreutils `echo` (which Windows only has as a
+// cmd.exe builtin — no executable for weir to resolve).
+Self.args |> Seq.iter print
