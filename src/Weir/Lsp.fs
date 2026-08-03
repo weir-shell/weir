@@ -931,7 +931,10 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
 
 // ---- the server ---------------------------------------------------
 
-let run () : int =
+// --debug [D:lsp-uri-spelling]: method dispatch and every publish to
+// stderr — editors surface server stderr (VS Code: the Output panel),
+// so the next blink-class mystery is a log read, not a rebuild
+let run (debug: bool) : int =
     let stdin' = Console.OpenStandardInput()
     let docs = Collections.Generic.Dictionary<string, string>()
 
@@ -989,6 +992,9 @@ let run () : int =
     let publishedUris = Collections.Generic.HashSet<string>()
 
     let publishFor (uri: string) (diags: Script.Diagnostic list) =
+        if debug then
+            Console.Error.WriteLine $"weir lsp: -> publish {uri} ({List.length diags} diags)"
+
         notify "textDocument/publishDiagnostics" (fun w ->
             w.WriteStartObject()
             w.WriteString("uri", uri)
@@ -1036,6 +1042,12 @@ let run () : int =
     let refreshAll () =
         let byUri = Collections.Generic.Dictionary<string, ResizeArray<Script.Diagnostic>>()
 
+        // the client's spelling per open path [D:lsp-uri-spelling]
+        let clientUris = Collections.Generic.Dictionary<string, string>()
+
+        for kv in docs do
+            clientUris[uriToPath kv.Key] <- kv.Key
+
         for kv in Seq.toList docs do
             // per-DOC resilience [D:windows-s3]: one bad document (a
             // malformed client URI) logs and skips — the other open docs
@@ -1045,7 +1057,17 @@ let run () : int =
                 let diags, _, _, _ = analyze kv.Key kv.Value
 
                 for d in diags do
-                    let du = pathToUri d.File
+                    // publish under the CLIENT's OWN URI string when the
+                    // file is an open doc [D:lsp-uri-spelling]: clients
+                    // spell URIs their way (VS Code's c%3A), and a
+                    // re-derived spelling splits one document into two —
+                    // the diagnostic lands on ours, the every-open-doc
+                    // empty publish lands on theirs, and the squiggle
+                    // BLINKS once and clears
+                    let du =
+                        match clientUris.TryGetValue d.File with
+                        | true, u -> u
+                        | _ -> pathToUri d.File
 
                     match byUri.TryGetValue du with
                     | true, b -> b.Add d
@@ -1112,6 +1134,9 @@ let run () : int =
                         | _ -> None)
 
                 let method = jStr "method" msg |> Option.defaultValue ""
+
+                if debug then
+                    Console.Error.WriteLine $"weir lsp: <- {method}"
 
                 let ps =
                     jObj "params" msg |> Option.defaultValue (JsonDocument.Parse("{}").RootElement)

@@ -23,6 +23,11 @@ weir file (server attach, a deliberate error surfacing as a
 diagnostic, hover, semantic tokens) — except where marked UNTESTED.
 The per-editor result is noted at the end of its section.
 
+Debugging the server: `weir lsp --debug` logs every dispatched method
+and every diagnostics publish (URI + count) to stderr — VS Code shows
+it in the Output panel for the client. Wire it by adding `--debug` to
+the client's server argv.
+
 ## Neovim (0.11+)
 
 ```lua

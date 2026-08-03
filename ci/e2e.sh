@@ -774,6 +774,12 @@ if command -v python3 >/dev/null 2>&1; then
     echo "$errout" | grep -qF "usage: weir lsp" || fail "lsp --help must still teach"
     echo "e2e ok: weir lsp tolerates --stdio/--clientProcessId, refuses the rest"
 
+    # --debug logs dispatch + publishes to stderr [D:lsp-uri-spelling] —
+    # editors surface server stderr, so blink-class mysteries become logs
+    dbgout=$(printf 'Content-Length: 46\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize"}' | $BIN lsp --debug 2>&1 >/dev/null)
+    echo "$dbgout" | grep -qF -- "<- initialize" || fail "lsp --debug must log dispatch to stderr: $dbgout"
+    echo "e2e ok: weir lsp --debug logs to stderr"
+
     # grammar drift guard: micro's '# rule:' annotations vs the
     # tmLanguage repository keys — add to BOTH or neither.
     # LIMITATION on record: this proves rule PRESENCE, not regex
