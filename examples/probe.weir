@@ -1,0 +1,43 @@
+#!/usr/bin/env weir
+// The showcase's process stunt double: speak on either stream, exit
+// with a chosen code, upcase stdin, or greet from the environment —
+// portable where `sh -c "echo out; exit 3"` is not.
+
+type ProbeCli = {
+    /// a line for stdout
+    out: Option<string>
+
+    /// a line for stderr
+    err: Option<string>
+
+    [<Default 0>]
+    /// the exit code to finish with
+    code: int
+
+    /// upcase stdin to stdout
+    upper: bool
+
+    /// print a greeting read from $GREETING
+    greet: bool
+}
+
+type ProbeEnv = { GREETING: Option<string> }
+
+let cli = Args.load ProbeCli
+let env0 = Env.load ProbeEnv
+
+match cli.out with
+| Some s -> print s
+| None -> ()
+
+match cli.err with
+| Some s -> printerr s
+| None -> ()
+
+if cli.greet then
+    print $"env says {env0.GREETING |> Option.defaultValue "unset"}"
+
+if cli.upper then
+    Self.stdin |> Seq.map Str.toUpper |> Seq.iter print
+
+if cli.code <> 0 then exit cli.code

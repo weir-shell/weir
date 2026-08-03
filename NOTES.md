@@ -1,5 +1,47 @@
 # Spike Notes
 
+## the portable showcase — weir is its own coreutils (2026-08-03)
+
+The user's find after the LSP landed: the showcase script cannot run
+on Windows — echo, sh, printf, grep, mktemp, sha256sum are POSIX
+tools, and weir's check-before-run posture means ONE unresolvable
+head refuses the whole file. Coreutils on Windows are cmd BUILTINS:
+there is nothing for a resolver to find, and no external-command set
+exists on both platforms... except the two already required to be
+there: `git`, and WEIR ITSELF.
+
+So the showcase's externals are now weir and git ONLY. Two tiny
+helpers ship beside it (each an extra example in its own right):
+echo-args.weir (Self.args, one per line — the raw-argv echo the
+splat demos need) and probe.weir (typed Args.load flags: --out/--err
+to either stream, --code to exit, --upper over Self.stdin, --greet
+from $GREETING — the process stunt double for every `sh -c "echo
+out; exit 3"` shape). The tour LOST nothing: capture, effect sigils,
+reifiers (succeeds/complete/exitCode/orFail), stdin piping, env
+overlays and districts, for/do command bodies, pmap fan-out — all
+demonstrated through child weirs, which also showcases composition
+the old version never showed (Self.scriptPath-relative helper paths,
+cd-proof). mktemp retired: unique FILES under the platform's own
+temp root (EnvCfg gained TMPDIR/TEMP as Options; HOME became Option
+— stock Windows has no HOME, so the old EnvCfg would have refused
+load there anyway, a second Windows break waiting behind the first).
+The ^-force demo improved in passing: shadow `weir` itself with a
+let, then ^weir still reaches the binary — and prints the build
+stamp. The sh -c escape hatch stays in the tour as PROSE (a named
+head must resolve on YOUR platform; cmd /c is the Windows spelling).
+
+Two weir-syntax findings while writing it (the oracle's territory):
+a bare-comma tuple SCRUTINEE (`match a, b with`) does not parse —
+parenthesize; bare-comma tuple PATTERNS in match arms need parens
+too (`| (Some d, _) ->`). Both spelled correctly in the file; worth
+remembering that let-destructure's bare-comma affordance does not
+extend to match.
+
+Verified: check clean, full run on Linux from a foreign cwd, fmt
+idempotent, e2e battery green (the repo-scripts sweep now checks the
+helpers too). The Windows run is the user's next hand-check; every
+head in the file resolves there by construction.
+
 ## the squiggle blink — one document, two spellings (2026-08-03)
 
 The Windows report: the LSP now starts (session 3's fix) but
