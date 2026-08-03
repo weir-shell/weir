@@ -161,6 +161,9 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   equal the capture count — `()` for 0, one name for 1, a tuple for n
   (non-capturing `(?:...)` does not count). Groups bind as STRINGS;
   convert in the arm. Regex arms never complete a match. Computed
+  hashing/encoding: `Str.sha256` (lowercase hex of UTF-8 bytes),
+  `Str.toBase64` (one unwrapped line), `Str.fromBase64` /
+  `Str.tryFromBase64` (raise/None on malformed AND on non-text bytes).
   patterns live on the expression side: `Str.isMatch pat s` (bool),
   `Str.rmatch pat s` (Option<seq<string>>) — any string, and raw
   literals read best: `Seq.where (Str.isMatch @"\.md$")`.

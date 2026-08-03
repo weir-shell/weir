@@ -3,9 +3,10 @@
 // tools/corpus-mine.py, the last python in the repo. Extracts every
 // triple-quoted snippet from a corpus of .fs files, dedupes by content,
 // and counts the weir-plausible set in two filter modes. The receipts
-// it exercises: Str.rmatchAll (every match, not the first), feed (a
-// value hashed through sha256sum's stdin), Seq.distinct (dedupe as a
-// pipeline stage). Reproduces the python's published numbers.
+// it exercises: Str.rmatchAll (every match, not the first), Str.sha256
+// (was: feed through sha256sum — the corpus's last coreutils shell-out,
+// retired [D:encoding-law]), Seq.distinct (dedupe as a pipeline stage).
+// Reproduces the python's published numbers.
 //
 // Usage: corpus-mine.weir --corpus <dir> --out <dir> [--wide]
 
@@ -80,10 +81,11 @@ let kept = distinctSnips |> Seq.where plausible |> Seq.force
 
 kept
 |> Seq.iter (fun src ->
-    let h =
-        Str.split "\n" src | sha256sum
-        |> Seq.head
-        |> Str.sub 0 12
+    // Str.sha256 retires the corpus's LAST coreutils shell-out
+    // [D:encoding-law]. The digest differs from the old feed|sha256sum
+    // spelling by the trailing newline feed wrote — filenames change,
+    // the kept-set partition does not (dedup is by content).
+    let h = Str.sha256 src |> Str.sub 0 12
     File.write (Path.combine outDir $"{h}.snippet") (Str.split "\n" src))
 
 let mode = if wide then "wide" else "base"

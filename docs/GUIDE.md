@@ -527,7 +527,29 @@ let pod name pairs = yaml
 pod "web" [("app", "web")] |> to yaml |> print
 ```
 
-Block scalars are the ConfigMap workload: a `key: |` (or `|-`)
+Secret data is the base64 workload [D:encoding-law]: `Str.toBase64`
+encodes UTF-8 bytes as ONE unwrapped line (no 76-column MIME wrap, no
+`-w0` tax), so a token splices straight into the district:
+
+```weir
+let tok = Str.toBase64 "s3cr3t-token"
+let secret = yaml
+    apiVersion: v1
+    kind: Secret
+    metadata:
+        name: api-token
+    data:
+        token: $tok
+secret |> to yaml |> print
+```
+
+Decoding is honest both ways: `Str.fromBase64` raises on malformed
+input AND on valid base64 of non-text (a PNG's bytes are not a
+string — corruption must not wear a success); `Str.tryFromBase64` is
+the Option twin for API- or attacker-supplied input. `Str.sha256`
+digests the UTF-8 bytes as lowercase hex, `sha256sum`-parity.
+
+Block scalars are the ConfigMap workload:Block scalars are the ConfigMap workload: a `key: |` (or `|-`)
 header opens LITERAL content — `$VAR` and `for` lines inside it are
 bytes, because embedded scripts are full of `$` and silently
 substituting into them is the one thing a template must never do.

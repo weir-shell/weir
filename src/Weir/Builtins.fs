@@ -978,6 +978,35 @@ let private seqMembers: (string * Ty * Value) list =
       "distinct", TFun(TSeq tA, TSeq tA), distinctImpl
       "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
 
+// the encoding law [D:encoding-law]: weir encodes and decodes UTF-8 at
+// every boundary — what gets read, written, hashed, and base64'd is
+// UTF-8 bytes (in-memory representation is not the law's business).
+// Strict decode: invalid bytes are an ERROR, never U+FFFD corruption
+// wearing a success.
+let private utf8Strict = System.Text.UTF8Encoding(false, true)
+
+// liberal-in: unpadded standard-alphabet base64 pads before decoding;
+// encoding emits padded (the one stated default). URL-safe (-_) is
+// PARKED with the JWT trigger [D:encoding-law].
+let private base64Bytes (s: string) : byte[] =
+    let t = s.Trim()
+    System.Convert.FromBase64String(t + System.String('=', (4 - t.Length % 4) % 4))
+
+let private fromBase64Text (name: string) (s: string) : Result<string, string> =
+    let bytes =
+        try
+            Ok(base64Bytes s)
+        with _ ->
+            Error $"{name}: invalid base64: \"{s}\""
+
+    match bytes with
+    | Error e -> Error e
+    | Ok(b: byte[]) ->
+        try
+            Ok(utf8Strict.GetString b)
+        with _ ->
+            Error $"{name}: the decoded content is not text (not valid UTF-8)"
+
 let private strMembers: (string * Ty * Value) list =
     [ "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)
       "startsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "startsWith" (fun p s -> s.StartsWith p)
@@ -994,6 +1023,39 @@ let private strMembers: (string * Ty * Value) list =
       "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
+      // sha256 ONLY [D:encoding-law]: md5 is broken (offering it invites
+      // its use), sha1 deprecated, sha512 has no receipt — one member,
+      // one algorithm, more on receipt. Lowercase hex = sha256sum parity
+      // (the tool it replaces).
+      "sha256",
+      TFun(TStr, TStr),
+      str1 "sha256" (fun s ->
+          System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes s)
+          |> Array.map (fun b -> b.ToString "x2")
+          |> String.concat "")
+      // unwrapped by construction — GNU base64 wraps at 76 cols (the -w0
+      // tax); Convert.ToBase64String simply does not have the problem
+      "toBase64",
+      TFun(TStr, TStr),
+      str1 "toBase64" (fun s -> System.Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes s))
+      "fromBase64",
+      TFun(TStr, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              match fromBase64Text "fromBase64" s with
+              | Ok t -> VStr t
+              | Error e -> failwith e
+          | v -> unreachable $"the checker rejects 'fromBase64' on {formatValue v}")
+      "tryFromBase64",
+      TFun(TStr, TNamed("Option", [ TStr ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              match fromBase64Text "tryFromBase64" s with
+              | Ok t -> VUnion("Some", Some(VStr t))
+              | Error _ -> VUnion("None", None)
+          | v -> unreachable $"the checker rejects 'tryFromBase64' on {formatValue v}")
       "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl
       "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
       "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
@@ -1563,6 +1625,30 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.tryToInt",
           (bd "Parse an int as an Option, None when it is not a number." (Some "Str.tryToInt \"42\"") None
+           |> named [ "s" ])
+          "Str.sha256",
+          (bd
+              "The SHA-256 digest of the string's UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only — more algorithms on receipt."
+              (Some "Str.sha256 \"hello\"")
+              None
+           |> named [ "s" ])
+          "Str.toBase64",
+          (bd
+              "Base64 of the string's UTF-8 bytes — ONE unwrapped line (no 76-column MIME wrap, no -w0 tax)."
+              (Some "Str.toBase64 \"caf\u00e9\"")
+              None
+           |> named [ "s" ])
+          "Str.fromBase64",
+          (bd
+              "Decode standard base64 (padded or unpadded) to text; raises on invalid input OR when the bytes are not valid UTF-8 (never U+FFFD corruption)."
+              (Some "Str.fromBase64 \"Y2Fmw6k=\"")
+              None
+           |> named [ "s" ])
+          "Str.tryFromBase64",
+          (bd
+              "fromBase64 as an Option: None for malformed base64 and for valid-base64-of-non-text alike."
+              (Some "Str.tryFromBase64 \"!!!\"")
+              None
            |> named [ "s" ])
           "Str.tryIndexOf",
           (bd "The index of a substring as an Option." (Some "Str.tryIndexOf \"b\" \"abc\"") None

@@ -2566,7 +2566,34 @@ let session3Tests =
 let stringTests =
     testList
         "Strings and seq library"
-        [ test "contains, startsWith, endsWith are data-last" {
+        [ test "sha256: exact digests, the encoding law under test [D:encoding-law]" {
+              // sha256sum parity for ASCII; the UTF-8 bytes rule for non-ASCII
+              expectValue
+                  "Str.sha256 \"hello\""
+                  (VStr "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+
+              expectValue
+                  "Str.sha256 \"café\""
+                  (VStr "850f7dc43910ff890f8879c0ed26fe697c93a067ad93a7d50f466a7028a9bf4e")
+          }
+          test "base64: exact form, round-trip, liberal unpadded input [D:encoding-law]" {
+              expectValue "Str.toBase64 \"café\"" (VStr "Y2Fmw6k=")
+              expectValue "Str.toBase64 \"café\" |> Str.fromBase64" (VStr "café")
+              expectValue "Str.fromBase64 \"Y2Fmw6k\"" (VStr "café") // unpadded accepted
+          }
+          test "fromBase64 rejects malformed AND non-text; the try twin is None for both [D:encoding-law]" {
+              let ex = Expect.throwsC (fun () -> run "Str.fromBase64 \"!!!\"" |> ignore) id
+              Expect.stringContains ex.Message "invalid base64" "malformed raises"
+
+              // //79 is valid base64 of FF FE FD — bytes, not text:
+              // corruption must not wear a success
+              let ex2 = Expect.throwsC (fun () -> run "Str.fromBase64 \"//79\"" |> ignore) id
+              Expect.stringContains ex2.Message "not text" "non-UTF-8 raises with the reason"
+
+              expectValue "Str.tryFromBase64 \"!!!\"" (VUnion("None", None))
+              expectValue "Str.tryFromBase64 \"//79\"" (VUnion("None", None))
+          }
+          test "contains, startsWith, endsWith are data-last" {
               expectValue "contains \"err\" \"stderr\"" (VBool true)
               expectValue "startsWith \"fix:\" \"fix: bug\"" (VBool true)
               expectValue "endsWith \".txt\" \"a.txt\"" (VBool true)
