@@ -1,5 +1,46 @@
 # Spike Notes
 
+## add validates before it writes — and the validator's first catch (2026-08-03)
+
+Live use produced the rider's origin: a schema URL pointed at a
+GitHub BLOB page, and `weir add schema` saved the HTML and LOCKED
+it. The lockfile is the one artifact restore and verify TRUST — a
+locked HTML page means a fresh clone faithfully re-materializes
+garbage, and the old inert-warning even swallowed the unparseable
+case (`with _ -> true`, "the loader teaches later") — the exact
+disease. The principle now stated once for every contract kind:
+add validates everything the checker will later require and writes
+NOTHING if it cannot.
+
+Six gates, in order, nothing on disk until all pass: content-type
+(reported); JSON parse — and the failure OFFERS THE FIX, because the
+blob-page mistake is the most likely user error and the raw-URL
+rewrite is one the user may not know how to construct
+(github.com/OWNER/REPO/blob/REF/P → raw.githubusercontent.com/…;
+gitlab's /-/blob/ → /-/raw/, subgroups riding the greedy group);
+schema-shaped (a package.json rejects here); THE SUBSET AT ADD TIME
+(the $ref teaching lands where the user can act, and an
+out-of-subset schema never reaches the lock); the inert warning
+(unchanged, warn-and-proceed); then file + lock together with
+delete-on-failure. Program.fs stopped pre-creating .weir/ — the
+strongest pin holds: after ANY failed add the tree is byte-identical,
+including no empty .weir directory. No incident residue in the repo
+(the user's local .weir carries theirs; verify flags it, re-add
+heals it).
+
+THE GOOD NEWS LINE THE PLAN ASKED FOR: the bonus finding is the
+schema validator's FIRST UNPROMPTED CATCH — three real errors in the
+showcase's own district, on a real file nobody was testing.
+`annotation` was a typo (the did-you-mean nailed it); `replicas` and
+`rollout` were Deployment concepts on a Service — the fixture was
+describing the wrong resource, and only a schema could have said so.
+The district now spells a REAL Service (annotations map with the
+"on" auto-quote demo riding a real field, selector + ports with the
+int splice), and the showcase RUNS in e2e as a build gate: the
+block-scalars session called it a composition test disguised as a
+document, and a document that can be invalid without failing a build
+is not that.
+
 ## bare commas, four positions — the match gap closes (2026-08-03)
 
 The rider the portable showcase earned: `match a, b with` and

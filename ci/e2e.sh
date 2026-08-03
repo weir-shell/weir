@@ -1022,6 +1022,15 @@ for scr in "$(dirname "$0")"/../examples/*.weir "$(dirname "$0")"/../tools/*.wei
 done
 echo "e2e ok: all repo scripts check clean"
 
+# the showcase is a COMPOSITION TEST disguised as a document — a tour
+# that can be invalid without failing a build is not that (the schema
+# live-check found three real errors in it, unprompted [D:add-validates]).
+# Child weirs resolve via PATH: the $BIN dir prefix, as everywhere.
+scout=$(PATH="$(dirname $BIN):$PATH" $BIN "$(dirname "$0")/../examples/showcase.weir" --tag ci 2>/dev/null) || fail "the showcase must RUN green"
+echo "$scout" | grep -qF "showcase complete" || fail "the showcase completes: ${scout: -200}"
+echo "$scout" | grep -qF 'weir.dev/switch: "on"' || fail "the district auto-quote demo holds"
+echo "e2e ok: the showcase runs end to end (the tour is a build gate now)"
+
 # --- the casing law (2026-07-21) ---------------------------------------
 
 errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)
@@ -3424,6 +3433,25 @@ mkdir -p "$ctdir/proj/sub"
 ( cd "$ctdir/proj" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.json --as k8s-configmap ) | grep -q "added schema k8s-configmap" || fail "add schema"
 test -f "$ctdir/proj/.weir/lock.json" || fail "the lockfile exists after the first fetch"
 echo "e2e ok: weir add schema fetches, writes, and locks"
+
+# [D:add-validates]: add validates BEFORE it writes — nothing on disk
+# on any failure, including no .weir/ creation at all (the strongest
+# pin: the tree is byte-identical after a failed add)
+printf '<!DOCTYPE html><html><body>a blob page, not the raw file</body></html>' > "$ctdir/serve/page.html"
+printf '{"name": "pkg", "version": "1.0.0"}' > "$ctdir/serve/notschema.json"
+printf '{"type": "object", "properties": {"a": {"$ref": "#/x"}}}' > "$ctdir/serve/refschema.json"
+mkdir -p "$ctdir/fresh"
+( cd "$ctdir/fresh" && git init -q . )
+out=$( cd "$ctdir/fresh" && $BIN add schema http://127.0.0.1:$ctport/page.html --as bad 2>&1 ) && fail "an HTML response must fail add" || true
+echo "$out" | grep -qF "the response is not JSON (Content-Type: text/html)" || fail "gate 2 names what came back: $out"
+echo "$out" | grep -qF "use the raw URL" || fail "gate 2 carries the raw-URL hint: $out"
+out=$( cd "$ctdir/fresh" && $BIN add schema http://127.0.0.1:$ctport/notschema.json --as pkg 2>&1 ) && fail "a non-schema JSON must fail add" || true
+echo "$out" | grep -qF "valid JSON, but not a schema" || fail "gate 3 rejects non-schema JSON: $out"
+out=$( cd "$ctdir/fresh" && $BIN add schema http://127.0.0.1:$ctport/refschema.json --as reffy 2>&1 ) && fail "an out-of-subset schema must fail add" || true
+echo "$out" | grep -q 'ref' || fail "gate 4 is the subset teaching at ADD time: $out"
+echo "$out" | grep -qF "nothing was written" || fail "gate 4 states nothing was written: $out"
+test ! -e "$ctdir/fresh/.weir" || fail "a failed add must leave NO .weir at all"
+echo "e2e ok: add validates before it writes — HTML/non-schema/out-of-subset fail with .weir untouched"
 
 # verify: ok / modified / absent, distinct — then restore
 ( cd "$ctdir/proj" && $BIN verify ) | grep -q ": ok" || fail "verify clean"

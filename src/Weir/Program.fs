@@ -150,9 +150,9 @@ let main argv =
         let weirDir =
             match Contracts.findWeirDir "." with
             | Ok d -> d
-            | Error _ ->
-                IO.Directory.CreateDirectory ".weir" |> ignore
-                IO.Path.GetFullPath ".weir"
+            // computed, NOT created [D:add-validates]: a failed add must
+            // leave the tree byte-identical, including no empty .weir/
+            | Error _ -> IO.Path.GetFullPath ".weir"
 
         (match Contracts.addFetched weirDir "schema" name url with
          | Ok line ->
