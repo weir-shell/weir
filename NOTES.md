@@ -56,6 +56,39 @@ wiring — a small session, bigger than the tuple-comma swaps because
 the assembler is involved. Recommendation embedded in the finding:
 design `within` bodies as expression blocks and inherit everything.
 
+ADDENDUM (user review — two confirmations before the scopes plan is
+written, and the first caught a REAL gap in the verdict's assumption,
+the same class the yaml crux caught):
+
+(1) BARE COMMANDS ARE NOT LEGAL INTERIOR STATEMENTS of an expression
+block. `let x = / echo hi / 42` PARSES — but `echo hi` in expression
+territory is the CAPTURE-typed chain (seq<string>), so seq-unit
+rejects it ("must be unit; this one is seq<string>"). The top-level
+statement arming (bare command = effect, prints, raises) does NOT
+extend into expression blocks; the in-block spelling is the sigil —
+`let x = / !(echo hi) / 42` → hi, 42 (probed). A reifier-ended chain
+as an interior statement degrades too: `echo ok | orFail "broke"`
+warned cmd-not-found on orFail and seq-unit-rejected — reifier
+recognition rides the statement/let-RHS paths, not interior
+expression statements (unsized observation, recorded not diagnosed).
+CONSEQUENCE FOR `within`: verdict A survives for VALUE semantics but
+an ergonomics fork opens — scope bodies (tmp/env/cd!) will be
+overwhelmingly command effects, and the block shape makes users
+write !(...) per line. The design must choose: (i) block-shaped body
+(yield free; !(...) tax on effects), (ii) district-shaped body (bare
+commands; the value case is the sized B session), or (iii) a new
+arming rule for within bodies (top-level-like commands inside a
+block — new rule, new surface). The plan should weigh (i) vs (ii)
+knowing cd/tmp scopes are effect-heavy and env scopes may want
+values out.
+
+(2) MODE-FROM-POSITION FALLS OUT WITH NO RULE, confirmed: a non-unit
+block result in statement position already hits the existing discard
+error ("computes a int and discards it — bind it, or pipe it to
+print"). `within` in statement position is just an expression block
+whose value must be unit — the statement rule enforces it today;
+nothing to design.
+
 ## hashing, base64, and the encoding law (2026-08-03)
 
 The gap audit's session A, extended with base64 because it is the
