@@ -580,8 +580,11 @@ quantity semantics now.
   rule is AMENDED with its two original reasons addressed: command
   argv is untouched by construction (barewords keep commas, pinned
   both sides), and the `f x, y` precedence footgun is imported
-  KNOWINGLY, F#-faithful. REPL: one destructuring line reports each
-  binding on its own line.
+  KNOWINGLY, F#-faithful. Bare commas build tuples in BINDER, RHS,
+  SCRUTINEE, and PATTERN positions — one rule, four positions, no
+  exceptions (`match a, b with | Some d, _ when g -> …` is the
+  four-in-one spelling; the guard sits outside the tuple). REPL: one
+  destructuring line reports each binding on its own line.
 - `_.Field` is sugar for `fun x -> x.Field` (parser-level desugar; requires at
   least one field, like F#).
 - Constructor names must start uppercase; that is what distinguishes

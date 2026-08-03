@@ -6822,6 +6822,20 @@ let tupleTests =
         [ test "literal, type, and pattern round-trip" {
               expectValue "let p = (1, \"two\") in match p with | (n, s) -> $\"{n}-{s}\"" (VStr "1-two")
           }
+          test "bare commas in match: scrutinee, arm pattern, guard outside [D:bare-comma]" {
+              // the showcase's finding, closed: one rule, four positions
+              expectValue "match Some 1, 2 with | Some d, _ -> d | _ -> 0" (VInt 1L)
+              expectValue "match 1, 2 with | a, b when a < b -> \"lt\" | _ -> \"ge\"" (VStr "lt")
+          }
+          test "the imported precedence footgun is UNCHANGED: f a, b is (f a), b" {
+              expectValue "let f = fun x -> x * 10 in f 1, 2" (VTuple [ VInt 10L; VInt 2L ])
+          }
+          test "a comma inside a list is a tuple element ([a, b] is one element)" {
+              expectValue "[1, 2] |> Seq.length" (VInt 1L)
+          }
+          test "the bare for-binder already rode commaPats (confirmed, pinned)" {
+              runReal "for k, v in [(\"a\", 1)] do print $\"{k}={v}\"" |> ignore
+          }
           test "arity 3 and nesting" {
               expectValue "match (1, (2, 3), \"x\") with | (a, (b, c), s) -> $\"{a + b + c}{s}\"" (VStr "6x")
           }
