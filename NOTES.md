@@ -1,5 +1,36 @@
 # Spike Notes
 
+## the library gap audit — six receipts, one dissolved fork (2026-08-03)
+
+Analysis only, zero code; the report is plans/PLAN-library-gaps.md.
+Three findings worth the journal:
+
+THE INVENTORY PASS EARNED ITS ORDERING: most of the plan's own
+judgment candidates already exist (take/skip/zip/sum/contains/
+sortBy; the whole Str list except padding), and the plan's guess
+that Str matters more inverted — Str is nearly COMPLETE at 19; the
+real gaps are Seq-side plus one hashing hole.
+
+THE CORPUS SWEEP IS THE HEADLINE: exactly ONE coreutils shell-out
+remains in the entire corpus — `| sha256sum` in corpus-mine.weir:84
+(and the portable showcase DELETED its digest demo for lack of any
+portable spelling — two citations for one member). Own-the-data-
+munging says that is a gap, not routing. The stranded ledger is
+EMPTY, and every historical friction want (fold, contains, pairwise,
+item, elif, …) landed — the receipt loop demonstrably works.
+
+THE ORD FORK DISSOLVED AGAINST THE SOURCE: sortBy's scheme already
+IS the key-projection option the plan called "the interesting one" —
+Ord demanded on the KEY only, int/string/bool, no widening ever
+needed for the receipt class; composite keys stay deliberately
+refused (no-tuple-ord) with chained stable sortBy as the spelling.
+min/max/minBy/maxBy/sort are ordinary unbuilt members, not a design
+session — the launch lane loses one slot.
+
+Sized: session A (all six receipts, self-justifying) and session B
+(the first-hour judgment list, bless separately). Parity with F#'s
+Seq is CLOSED by the not-needed list, reason per member.
+
 ## add validates before it writes — and the validator's first catch (2026-08-03)
 
 Live use produced the rider's origin: a schema URL pointed at a
