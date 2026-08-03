@@ -883,21 +883,84 @@ echo "$out" | grep -qF '"endCol":24' || fail "provenance covers the field word: 
 echo "$out" | grep -qF "(the value becomes a T at 5:1)" || fail "the meet note: $out"
 echo "e2e ok: row provenance points at the access, meet in the note"
 
-# sibling sentinel: a command-first body sequences instead of running
-# to EOF; the error reports AT THE COMMAND HEAD, no raw expecting-list
-# [PLAN-sibling-sentinel]
+# FLIPPED by [D:interior-arming]: a command-first body now CHECKS —
+# the interior command ARMS as an effect instead of seq-unit-erroring.
+# The at-the-head/no-EOF-dump quality property moves to a NON-command
+# fixture (the statement rule is unchanged for those); the old
+# rejection this pin asserted is the rule's named flip.
 cat > "$ckdir/sib.weir" <<'WEOF'
 let f t =
     git status
     let e = "x"
     print e
 WEOF
-out=$($BIN check --json "$ckdir/sib.weir" || true)
-echo "$out" | grep -qF '"line":2,"col":5' || fail "sibling sentinel points at the command head: $out"
+$BIN check "$ckdir/sib.weir" || fail "an armed command-first body must check clean"
+cat > "$ckdir/sib2.weir" <<'WEOF'
+let f t =
+    Str.trim "one"
+    let e = "x"
+    print e
+WEOF
+out=$($BIN check --json "$ckdir/sib2.weir" || true)
+echo "$out" | grep -qF '"line":2,"col":5' || fail "seq-unit points at the statement head: $out"
+echo "$out" | grep -qF "must be unit" || fail "the seq-unit teaching survives for non-commands: $out"
 echo "$out" | grep -qvF "end of the input stream" || fail "no EOF dump expected: $out"
-echo "$out" | grep -qvF "Expecting:" || fail "no raw expecting-list expected: $out"
 printf '%s' "$out" | grep -q "$(printf '\037')" && fail "sentinel leaked into a diagnostic: $out"
-echo "e2e ok: command-first body reports at the head, no EOF dump, no sentinel leak"
+echo "e2e ok: command-first body ARMS (flipped); non-command seq-unit still at the head, no dump"
+
+# the interior-arming battery [D:interior-arming]: the four-row rule on
+# the AOT binary — if bodies, lambda bodies, blocks, the reifier gap,
+# the two raise timings, and the script carve-out
+iadir=$(mktemp -d)
+cat > "$iadir/ia.weir" <<'WEOF'
+let force = true
+if force then
+    sh -c "echo reset-ran"
+    sh -c "echo clean-ran"
+["a"; "b"] |> Seq.iter (fun f -> sh -c "echo item-$0" $f)
+let digest =
+    sh -c "echo fetched" | orFail "fetch broke"
+    Str.sha256 "contents"
+print (Str.sub 0 8 digest)
+WEOF
+out=$(cd "$iadir" && $BIN ia.weir) || fail "the interior-arming battery must run"
+for want in reset-ran clean-ran item-a item-b fetched d1b2a59f; do
+    echo "$out" | grep -qF "$want" || fail "interior arming: missing '$want': $out"
+done
+echo "e2e ok: interior commands arm in if/lambda/block bodies; reifiers work as interior statements"
+
+# raise timings [D:interior-arming]: ARMED raises immediately (the tail
+# never runs); CAPTURE raises only at force (existing law, re-pinned)
+cat > "$iadir/armed.weir" <<'WEOF'
+let x =
+    sh -c "exit 3"
+    print "never"
+    1
+print $"{x}"
+WEOF
+out=$(cd "$iadir" && $BIN armed.weir 2>&1) && fail "an armed failure must raise" || true
+echo "$out" | grep -qF "never" && fail "the tail must not run after an armed failure"
+cat > "$iadir/cap.weir" <<'WEOF'
+let x = sh -c "exit 3"
+print "bound-fine"
+WEOF
+out=$(cd "$iadir" && $BIN cap.weir 2>&1) || fail "an unforced capture must not raise: $out"
+echo "$out" | grep -qF "bound-fine" || fail "capture binds without raising"
+echo "e2e ok: armed raises immediately; capture raises at force (both timings)"
+
+# a MULTI-LINE for body needs no district now [D:interior-arming] —
+# the single-chain body yields to the sequence, binders stay in scope
+cat > "$iadir/formulti.weir" <<'WEOF'
+for s in ["a"; "b"] do
+    sh -c "echo one-$0" $s
+    sh -c "echo two-$0" $s
+WEOF
+out=$(cd "$iadir" && $BIN formulti.weir) || fail "multi-line for body must run"
+for want in one-a two-a one-b two-b; do
+    echo "$out" | grep -qF "$want" || fail "for multi-line: missing '$want': $out"
+done
+echo "e2e ok: multi-line for bodies arm without a district"
+rm -rf "$iadir"
 
 # bare-pipe caret anchors ON the '|', not the space after [PLAN-anchor-before-read]
 cat > "$ckdir/bp.weir" <<'WEOF'

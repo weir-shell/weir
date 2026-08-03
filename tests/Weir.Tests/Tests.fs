@@ -6860,6 +6860,17 @@ let tupleTests =
           test "a comma inside a list is a tuple element ([a, b] is one element)" {
               expectValue "[1, 2] |> Seq.length" (VInt 1L)
           }
+          test "arm-body binders are KNOWN at parse — never phantom commands [D:interior-arming]" {
+              // `| t :: _ -> t` read t as an external under the assume
+              // resolver until arm bodies got the bindings-beat-PATH
+              // extension lambda params always had (found by the corpus
+              // sweep on repo-report.weir)
+              let e = parse "match [\"a\"] with | t :: _ -> t | _ -> \"d\""
+
+              match Weir.Check.typecheck env e with
+              | Ok te -> Expect.equal te.Ty TStr "the binder, not a phantom command"
+              | Error terr -> failtest (formatError terr)
+          }
           test "the bare for-binder already rode commaPats (confirmed, pinned)" {
               runReal "for k, v in [(\"a\", 1)] do print $\"{k}={v}\"" |> ignore
           }
@@ -7648,21 +7659,36 @@ let siblingSentinelTests =
                       // grammar now refuses it (the yaml-district boundary)
                       ("let f t = git status " + Weir.Parser.sibSepStr + " let e = \"x\" in print e")
               with
-              | Ok(SLet("f", { Kind = ELambda("t", _, { Kind = ESeq({ Kind = ECmd("git", _, _) }, _) }) })) -> ()
-              | other -> failtest $"expected ESeq(cmd, ...), got: {other}"
+              // FLIPPED by [D:interior-arming]: the non-final command now
+              // ARMS (EPipe into print) instead of sitting capture-typed
+              | Ok(SLet("f",
+                        { Kind = ELambda("t",
+                                         _,
+                                         { Kind = ESeq({ Kind = EPipe({ Kind = ECmd("git", _, _) },
+                                                                      { Kind = EVar "print" }) },
+                                                       _) }) })) -> ()
+              | other -> failtest $"expected ESeq(armed cmd, ...), got: {other}"
           }
-          test "ACCEPTANCE: the repro reports AT THE COMMAND HEAD, not at EOF" {
-              // a command as the first body sibling is a discarded
-              // non-unit — the seq-unit rule fires ON the command head,
-              // no 'end of input stream', no raw expecting-list
+          test "ACCEPTANCE: a command-first body now CHECKS (flipped by [D:interior-arming])" {
+              // the old pin asserted the seq-unit rejection at the head;
+              // the interior-arming rule makes the command an EFFECT and
+              // the body legal — the flip, named
               let ds = diags [ "let f t ="; "    git status"; "    let e = \"x\""; "    print e" ]
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the armed body checks clean"
+          }
+          test "ACCEPTANCE: a NON-command non-unit interior statement still seq-unit-errors at its head" {
+              // the statement rule is unchanged for non-command lines
+              // [D:interior-arming] — located at the statement, no EOF
+              // dump, no raw expecting-list
+              let ds =
+                  diags [ "let f t ="; "    Str.trim \"one\""; "    let e = \"x\""; "    print e" ]
 
               match ds |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
-                  Expect.equal (d.Line, d.Col) (2, 5) "at the command head"
-                  Expect.notEqual d.Code "parse" "not a parse dump"
+                  Expect.equal (d.Line, d.Col) (2, 5) "at the statement head"
+                  Expect.isTrue (d.Message.Contains "must be unit") "the seq-unit teaching"
                   Expect.isFalse (d.Message.Contains "end of the input stream") "no EOF note"
-                  Expect.isFalse (d.Message.Contains "Expecting:") "no raw expecting-list"
               | other -> failtest $"expected ONE error at the head, got {other}"
           }
           test "user ';' is byte-identical: one command, a bareword arg, the prior-bleed warning" {

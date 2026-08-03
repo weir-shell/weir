@@ -66,6 +66,22 @@ let private ambientResolver =
 // park's boundary by construction.
 let private letCmdOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
+// plain parens are EXPRESSION territory [D:interior-arming]: the
+// interior-command element does not apply there ($()/!() are the
+// command parens) — but a lambda BODY re-enables it even inside parens
+// (`xs |> Seq.iter (fun f -> git add $f)` is the idiom)
+let private exprParen = new System.Threading.ThreadLocal<bool>(fun () -> false)
+
+let private withExprParen (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = exprParen.Value
+        exprParen.Value <- v
+
+        try
+            p stream
+        finally
+            exprParen.Value <- saved
+
 // forwarded: the let-in value position sits above the command grammar
 let private letRhsCmd, private letRhsCmdRef =
     createParserForwardedToRef<Expr, unit> ()
@@ -295,7 +311,7 @@ let private unitLit =
 let private parens =
     // (e) groups; tuples come from the comma INSIDE seqExpr (the
     // bare-comma amendment moved the comma into the expression grammar)
-    spanned (pchar '(' >>. ws >>. seqExpr .>> pchar ')')
+    spanned (pchar '(' >>. ws >>. withExprParen true seqExpr .>> pchar ')')
     |>> fun (inner, span) -> { inner with Span = span }
     .>> ws
 
@@ -788,7 +804,7 @@ let private lambda =
                     finally
                         ambientResolver.Value <- saved
 
-            withParams seqExpr
+            withParams (withExprParen false seqExpr)
             |>> fun body ->
                 let inner = curryParams ps body
 
@@ -1050,12 +1066,43 @@ let private toExpr =
     spanned (keyword "to" >>. ident)
     |>> fun (fmt, span) -> { Kind = ETo fmt; Span = span }
 
+// every name a pattern BINDS [D:interior-arming]: arm bodies and for
+// bodies must know their binders at PARSE, or the assume resolver
+// claims a binder head as a phantom command (`| t :: _ -> t` read `t`
+// as an external) — the same bindings-beat-PATH extension lambda
+// params and let-in names already get
+let rec private patLeafNames (p: Pattern) : string list =
+    match p.PKind with
+    | PVar n -> [ n ]
+    | PTuple ps -> ps |> List.collect patLeafNames
+    | PCase(_, arg) -> arg |> Option.map patLeafNames |> Option.defaultValue []
+    | PCons(h, t) -> patLeafNames h @ patLeafNames t
+    | PRegex(_, _, _, binder) -> patLeafNames binder
+    | PSeqList ps -> ps |> List.collect patLeafNames
+    | _ -> []
+
+let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let names = patLeafNames p |> Set.ofList
+        let saved = ambientResolver.Value
+
+        ambientResolver.Value <-
+            { saved with
+                IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+
+        try
+            inner stream
+        finally
+            ambientResolver.Value <- saved
+
 let private matchArm =
     // bare-comma tuple PATTERNS [D:bare-comma]: the arm rides the same
     // one-or-tuple production as binder positions — `when`/`->` are not
     // commas, so the guard sits OUTSIDE the tuple by construction
-    commaPats .>>. opt (keyword "when" >>. expr) .>> str_ws "->" .>>. seqExpr
-    |>> fun ((p, guard), body) -> p, guard, body
+    commaPats
+    >>= fun p ->
+        withPatNames p (opt (keyword "when" >>. expr) .>> str_ws "->" .>>. seqExpr)
+        |>> fun (guard, body) -> p, guard, body
 
 let private matchExpr =
     pipe3
@@ -1115,10 +1162,17 @@ let private ifExpr =
 // raises per iteration, the natural shell shape; known heads fall
 // through to the expression body exactly as the statement classifier
 // decides.
+// lookahead twin of seqSep for forExpr (defined before seqSep itself)
+let private seqSepAhead: Parser<unit, unit> =
+    (attempt (pchar ';') |>> ignore) <|> (attempt (pstring sibSepStr) |>> ignore)
+
 let private forExpr =
     let cmdBody =
         attempt (
-            spanned (sigilChain None)
+            // a MULTI-LINE body yields to seqExpr [D:interior-arming]:
+            // eating only the first chain here stranded the siblings
+            // outside the binder's scope
+            spanned (sigilChain None) .>> notFollowedBy seqSepAhead
             >>= fun (chain, span) ->
                 if exitCodeSpine chain then
                     failFatally
@@ -1129,16 +1183,20 @@ let private forExpr =
                           Span = span }
         )
 
-    pipe4
-        (getPosition .>> keyword "for")
-        (binderPat .>> keyword "in")
-        (expr .>> keyword "do")
-        (cmdBody <|> seqExpr)
-        (fun p binder source body ->
-            let span = { Start = pos p; End = body.Span.End }
-            let mk k = { Kind = k; Span = span }
-            let iter = mk (EField(mk (EVar "Seq"), "iter", span))
-            mk (EApp(mk (EApp(iter, mk (ELambdaPat(binder, body)))), source)))
+    getPosition .>> keyword "for"
+    >>= fun p ->
+        binderPat .>> keyword "in"
+        >>= fun binder ->
+            expr .>> keyword "do"
+            >>= fun source ->
+                // the body knows its binder [D:interior-arming] — same
+                // bindings-beat-PATH extension as lambda params
+                withPatNames binder (cmdBody <|> seqExpr)
+                |>> fun body ->
+                    let span = { Start = pos p; End = body.Span.End }
+                    let mk k = { Kind = k; Span = span }
+                    let iter = mk (EField(mk (EVar "Seq"), "iter", span))
+                    mk (EApp(mk (EApp(iter, mk (ELambdaPat(binder, body)))), source))
 
 // [for p in xs -> e] [D:for-do]: F#'s list comprehension, desugared to
 // `xs |> Seq.map (fun p -> e) |> Seq.force` -- Seq.force keeps the list
@@ -1655,16 +1713,78 @@ let private foldSeqExpr (all: Expr list) : Expr =
 // only form a user can type
 let private seqSep = (str_ws ";" <|> str_ws sibSepStr) <?> "';'"
 
+// interior command statements [D:interior-arming]: a command line is a
+// legal statement wherever a block sequences (if bodies, lambda bodies,
+// block-lets) — parsed by the SAME chain grammar as a let-RHS. ARMING
+// is positional: a NON-FINAL command arms as an effect here (EPipe into
+// print — the for/do desugar, generalized); the FINAL element stays the
+// plain chain (capture-typed, the block's value) and the CHECKER arms
+// it when the context demands unit (the if-body case). Known heads and
+// keywords fall through to the expression grammar exactly as the
+// statement classifier decides.
+let private stmtElem: Parser<Choice<Expr, Expr>, unit> =
+    let cmdTry: Parser<Expr, unit> =
+        fun stream ->
+            if exprParen.Value then
+                fail "plain parens are expression territory" stream
+            else
+                letRhsCmd stream
+
+    choice [ attempt (cmdTry |>> Choice1Of2); commaExpr |>> Choice2Of2 ]
+
+let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
+    let n = List.length all
+
+    let armed =
+        all
+        |> List.mapi (fun i el ->
+            match el with
+            | Choice2Of2 e -> Result.Ok e
+            | Choice1Of2 chain when i = n - 1 -> Result.Ok chain
+            | Choice1Of2 chain when exitCodeSpine chain -> Result.Error chain.Span
+            | Choice1Of2 chain ->
+                Result.Ok
+                    { Kind =
+                        EPipe(
+                            chain,
+                            { Kind = EVar "print"
+                              Span = chain.Span }
+                        )
+                      Span = chain.Span })
+
+    match
+        armed
+        |> List.tryPick (function
+            | Result.Error sp -> Some sp
+            | _ -> None)
+    with
+    | Some sp ->
+        failFatallyAtCol
+            sp.Start.Col
+            "this discards the exit code -- bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+    | None ->
+        preturn (
+            foldSeqExpr (
+                armed
+                |> List.map (function
+                    | Result.Ok e -> e
+                    | _ -> failwith "unreachable")
+            )
+        )
+
 seqExprRef.Value <-
     // a consumed separator COMMITS to its element [D:seq-commit]: a
     // failing element must not un-consume it — the backtrack would
     // re-parse the tail OUTSIDE its let-in scope, where check's
     // assume-resolver claims the then-unknown binding as a phantom command
-    commaExpr .>>. many (seqSep >>. commaExpr)
-    |>> fun (first, rest) ->
+    stmtElem .>>. many (seqSep >>. stmtElem)
+    >>= fun (first, rest) ->
         match rest with
-        | [] -> first
-        | _ -> foldSeqExpr (first :: rest)
+        | [] ->
+            match first with
+            | Choice1Of2 e
+            | Choice2Of2 e -> preturn e
+        | _ -> armSeq (first :: rest)
 
 let private segExpr = segOpp.ExpressionParser
 
@@ -1725,7 +1845,8 @@ let private spliceSplat: Parser<Expr, unit> =
         pstring "$@"
         >>. (choice
                  [ rawWord |>> Choice1Of2
-                   (pchar '(' >>. ws >>. seqExpr .>> ws .>> pchar ')') |>> Choice2Of2 ]
+                   (pchar '(' >>. ws >>. withExprParen true seqExpr .>> ws .>> pchar ')')
+                   |>> Choice2Of2 ]
              <?> "a name or (expr) after '$@' — the argv splat")
     )
     |>> (fun (c, span) ->
@@ -1888,7 +2009,18 @@ let private reifierEnd =
             else
                 fail "no in-stop here" stream
 
-    lookAhead (choice [ pipeSep |>> ignore; pchar ')' |>> ignore; eof; inStop ])
+    // a reifier also ends at a STATEMENT boundary [D:interior-arming] —
+    // without this, `| orFail "m"` as an interior statement demoted the
+    // reifier to a bareword stage (the addendum's cmd-not-found mystery)
+    lookAhead (
+        choice
+            [ pipeSep |>> ignore
+              pchar ')' |>> ignore
+              eof
+              inStop
+              attempt (pchar ';') |>> ignore
+              attempt (pstring sibSepStr) |>> ignore ]
+    )
 
 let private completeMarker =
     attempt (
@@ -2274,8 +2406,8 @@ let private topLet (r: Resolver) =
                 // user ';' after the command is still a bareword arg
                 // (eaten by cmdArg), so only the machine sentinel splits.
                 let rhsCmd =
-                    cmdLineLetRhs r' .>>. many (str_ws sibSepStr >>. commaExpr)
-                    |>> fun (h, rest) -> foldSeqExpr (h :: rest)
+                    cmdLineLetRhs r' .>>. many (str_ws sibSepStr >>. stmtElem)
+                    >>= fun (h, rest) -> armSeq (Choice1Of2 h :: rest)
 
                 let rhsP = rhsCmd <|> ((seqExpr >>= pipeOrHint))
 

@@ -498,7 +498,11 @@ sh -c $"echo interpolated-{marker}"
 
 The effect loop is `for … do` — the shell shape, typed. A bare
 command body streams and raises per iteration (it is implicit
-`!(…)`); `do !` opens a command block; the loop variable splices like
+`!(…)`), and a MULTI-LINE body needs no district — commands are
+legal statements inside any block [D:interior-arming]: `if force
+then` over two git lines, `fun f -> git add $f` under `Seq.iter`, a
+fetch line above a value in a block-let. `do !` still opens a
+command-only block; the loop variable splices like
 any binding. Pipelines stay the spelling for TRANSFORMING values
 (`|> Seq.map …`); `for` is for doing things N times — same machine
 underneath (`for` desugars to `Seq.iter`).
