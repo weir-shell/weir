@@ -9,7 +9,8 @@ open Weir.Ast
 // keyword source, no drift
 let keywords =
     Set
-        [ "let"
+        [ "within"
+          "let"
           "in"
           "fun"
           "true"
@@ -1104,6 +1105,34 @@ let private matchArm =
         withPatNames p (opt (keyword "when" >>. expr) .>> str_ws "->" .>>. seqExpr)
         |>> fun (guard, body) -> p, guard, body
 
+// within <kind> <binder> + block [D:within-scopes]: a scoped resource
+// as an ordinary EXPRESSION — the body is a plain expression block
+// (statements sequence, commands arm, the last expression is the
+// value), so mode-from-position needs no rule. Session 1: kind `tmp`.
+let private withinExpr =
+    getPosition .>> keyword "within"
+    >>= fun p ->
+        identSpanned
+        >>= fun (kind, _) ->
+            match kind with
+            | "tmp" ->
+                identSpanned
+                >>= fun (binder, bspan) ->
+                    // the body follows the head as sibling statements;
+                    // the binder joins bindings-beat-PATH for the block
+                    // (the patLeafNames class, its fifth site)
+                    // the dangle SPACE-joins the first body statement
+                    // (the then-convention); siblings arrive sentineled
+                    (opt (str_ws ";" <|> str_ws sibSepStr))
+                    >>. (withPatNames { PKind = PVar binder; PSpan = bspan } seqExpr
+                         <?> "the scope's block")
+                    |>> fun body ->
+                        { Kind = EWithin("tmp", binder, bspan, body)
+                          Span = { Start = pos p; End = body.Span.End } }
+            | other ->
+                failFatally
+                    $"unknown scope kind '{other}' — `within tmp <name>` is the shipped kind (cd and env follow in their own sessions)"
+
 let private matchExpr =
     pipe3
         getPosition
@@ -1666,6 +1695,7 @@ opp.TermParser <-
           ifExpr
           matchExpr
           forExpr
+          withinExpr
           yamlDistrict
           fromExpr
           toExpr
@@ -1676,7 +1706,7 @@ updateSourceRef.Value <-
      u.TermParser <- appChain
      u.ExpressionParser)
 
-segOpp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; fromExpr; toExpr; appChain ]
+segOpp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; withinExpr; fromExpr; toExpr; appChain ]
 exprRef.Value <- opp.ExpressionParser
 
 commaExprRef.Value <-

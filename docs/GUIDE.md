@@ -531,6 +531,23 @@ let pod name pairs = yaml
 pod "web" [("app", "web")] |> to yaml |> print
 ```
 
+A scratch directory is a SCOPE, not a chore [D:within-scopes]:
+`within tmp <name>` binds a fresh directory for the block and removes
+it on every exit — including the raise path, which is the half that
+matters. The block is an ordinary expression block: commands arm,
+the last expression is the value.
+
+```weir
+let digest = within tmp dir
+    ["payload"] |> File.write $"{dir}/f.txt"
+    Str.sha256 (File.read $"{dir}/f.txt" |> Str.join "-")
+print (Str.sub 0 12 digest)
+```
+
+Statement position works too (`within tmp d` + effects, unit by the
+ordinary discard rule). `cd` and `env` kinds follow in their own
+sessions.
+
 Secret data is the base64 workload [D:encoding-law]: `Str.toBase64`
 encodes UTF-8 bytes as ONE unwrapped line (no 76-column MIME wrap, no
 `-w0` tax), so a token splices straight into the district:

@@ -962,6 +962,67 @@ done
 echo "e2e ok: multi-line for bodies arm without a district"
 rm -rf "$iadir"
 
+# ---- within tmp [D:within-scopes] ------------------------------------------
+widir=$(mktemp -d)
+cat > "$widir/receipt.weir" <<'WEOF'
+let digest = within tmp dir
+    ["payload"] |> File.write $"{dir}/f.txt"
+    Str.sha256 (File.read $"{dir}/f.txt" |> Str.join "-")
+print digest
+WEOF
+out=$($BIN "$widir/receipt.weir") || fail "the receipt must run"
+want=$(printf 'payload' | sha256sum | cut -d' ' -f1)
+[ "$out" = "$want" ] || fail "the value case yields the digest: $out vs $want"
+echo "e2e ok: within tmp value case — a command-heavy block yields (THE RECEIPT)"
+
+# raise-path cleanup: the dir goes even when the block raises, and the
+# raise propagates — the load-bearing pin
+cat > "$widir/raise.weir" <<'WEOF'
+within tmp d
+    [d] |> File.write "recorded.txt"
+    fail "boom"
+WEOF
+rout=$( cd "$widir" && $BIN raise.weir 2>&1 ) && fail "a raising block must exit nonzero" || true
+echo "$rout" | grep -qF "boom" || fail "the raise must propagate: $rout"
+rec=$(cat "$widir/recorded.txt")
+test ! -e "$rec" || fail "raise-path cleanup: $rec survives"
+echo "e2e ok: within tmp raise-path — dir removed, raise propagated"
+
+# nested: two scopes, two dirs, both removed
+cat > "$widir/nested.weir" <<'WEOF'
+within tmp outer
+    within tmp inner
+        [outer; inner] |> File.write "both.txt"
+        print "nested ran"
+WEOF
+( cd "$widir" && $BIN nested.weir | grep -qF "nested ran" ) || fail "nested scopes run"
+while read -r p; do
+    test ! -e "$p" || fail "nested cleanup: $p survives"
+done < "$widir/both.txt"
+echo "e2e ok: nested within tmp — two dirs, both removed"
+
+# statement position: a NON-command non-unit block still hits the
+# existing discard teaching (mode-from-position, no new rule)
+cat > "$widir/disc.weir" <<'WEOF'
+within tmp d
+    Str.length d
+WEOF
+out=$($BIN check "$widir/disc.weir" 2>&1 || true)
+echo "$out" | grep -qF "discards it" || fail "statement position keeps the discard teaching: $out"
+echo "e2e ok: within in statement position demands unit (existing discard error)"
+
+# a reifier in the body; effect position; fmt roundtrip
+cat > "$widir/reif.weir" <<'WEOF'
+within tmp d
+    sh -c "echo made" | orFail "sh broke"
+    print "scope done"
+WEOF
+$BIN "$widir/reif.weir" | grep -qF "scope done" || fail "reifier body runs"
+$BIN fmt --check "$widir/reif.weir" >/dev/null 2>&1 || $BIN fmt "$widir/reif.weir" >/dev/null 2>&1 || true
+$BIN "$widir/reif.weir" | grep -qF "scope done" || fail "fmt kept the scope runnable"
+echo "e2e ok: within tmp effect position, reifier body, fmt roundtrip"
+rm -rf "$widir"
+
 # bare-pipe caret anchors ON the '|', not the space after [PLAN-anchor-before-read]
 cat > "$ckdir/bp.weir" <<'WEOF'
 let names =

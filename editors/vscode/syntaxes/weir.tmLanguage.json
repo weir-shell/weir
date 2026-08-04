@@ -118,7 +118,7 @@
       "name": "meta.preprocessor.weir"
     },
     "keywords": {
-      "match": "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of|from|to|for|do|module|import)\\b",
+      "match": "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of|from|to|for|do|module|import|within)\\b",
       "name": "keyword.control.weir"
     },
     "reserved": {

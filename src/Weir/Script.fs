@@ -367,6 +367,24 @@ let lambdaOpens (piece: string) : bool =
 /// this) [D:multiline-lambda].
 let dangleEnders = [| "="; "then"; "else"; "with"; "->" |]
 
+// a within HEAD [D:within-scopes]: `within <kind> <args…>` (optionally
+// behind `let <name> =`) opens its block — the head ends with arbitrary
+// argument words, so the classifier keys on the KEYWORD, the yaml-marker
+// precedent (a lexical rule shared by assembler and REPL, never a parse)
+let isWithinHead (piece: string) : bool =
+    let t = piece.Trim()
+
+    let afterLet =
+        if t.StartsWith "let " then
+            match t.IndexOf '=' with
+            | -1 -> t
+            | i -> t.Substring(i + 1).TrimStart()
+        else
+            t
+
+    afterLet = "within"
+    || afterLet.StartsWith "within " && not (afterLet.Contains ";")
+
 let dangleOpensBlock (piece: string) : bool =
     let t = piece.TrimEnd()
 
@@ -376,6 +394,7 @@ let dangleOpensBlock (piece: string) : bool =
     // suffix behavior, zero movement)
     || t = "do"
     || t.EndsWith " do"
+    || isWithinHead t
 
 /// A line-end district marker of ANY kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.
@@ -2076,6 +2095,11 @@ let checkStatement
                           Env = tenv
                           Warnings = warningsOf te }
         | Ok(SExpr e) ->
+            // statement position demands unit, so a commandish TAIL arms
+            // [D:within-scopes] — reaching through scopes and let-ins;
+            // the REPL (gateExprs=false) keeps its echo instead
+            let e = if gateExprs then Check.armTail e else e
+
             match Check.typecheck tenv e with
             | Error terr -> Error(typed StmtTag.Expr terr)
             | Ok te ->

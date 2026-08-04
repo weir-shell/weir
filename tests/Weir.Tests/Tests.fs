@@ -1688,7 +1688,8 @@ let completionTests =
               // completion.
               let expectedOffered =
                   Set
-                      [ "let"
+                      [ "within" // [D:within-scopes] — offered, the for/do precedent
+                        "let"
                         "in"
                         "fun"
                         "true"
@@ -8164,6 +8165,43 @@ let adversarialTests =
 // ---- Windows v1, session 1 [D:windows-v1] — both-ways platform pins:
 // each asserts ITS OWN platform's semantics, so the suite is meaningful
 // on Linux today and on Windows when the CI matrix arrives
+let withinTests =
+    testList
+        "within scopes [D:within-scopes]"
+        [ test "parse shape: within tmp binder + block" {
+              let asmLine = "within tmp d" + Weir.Parser.sibSepStr + "print d"
+
+              match Weir.Parser.parseLine realResolver asmLine with
+              | Ok(SExpr { Kind = EWithin("tmp", "d", _, _) }) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "the binder is a string; the scope's type is the body's" {
+              let e = parse ("within tmp d" + Weir.Parser.sibSepStr + "Str.length d")
+
+              match Weir.Check.typecheck env e with
+              | Ok te -> Expect.equal te.Ty TInt "body type flows out"
+              | Error terr -> failtest (formatError terr)
+          }
+          test "unknown scope kinds teach the shipped one" {
+              match Weir.Parser.parseLine realResolver ("within lock f" + Weir.Parser.sibSepStr + "print f") with
+              | Error msg -> Expect.stringContains msg "unknown scope kind 'lock'" ""
+              | Ok _ -> failtest "expected the teaching"
+          }
+          test "within is reserved with the keyword teaching" {
+              match Weir.Parser.parseLine realResolver "let within = 1" with
+              | Error msg -> Expect.stringContains msg "keyword" ""
+              | Ok _ -> failtest "expected the reserved-word gate"
+          }
+          test "the scope binder beats PATH (the fifth patLeafNames site)" {
+              // `within tmp git` — a perverse but legal binder; the block's
+              // `git` is the BINDING, never a phantom command
+              let e = parse ("within tmp git" + Weir.Parser.sibSepStr + "Str.length git")
+
+              match Weir.Check.typecheck env e with
+              | Ok te -> Expect.equal te.Ty TInt "the binder, not the binary"
+              | Error terr -> failtest (formatError terr)
+          } ]
+
 let windowsV1Tests =
     // PATH is process-global — the probes mutate and restore it, so the
     // list is sequenced like every other env-mutating list in the suite
@@ -8297,6 +8335,7 @@ let allTests =
     testList
         "Weir"
         [ parserTests
+          withinTests
           windowsV1Tests
           checkerTests
           evalTests

@@ -395,6 +395,23 @@ quantity semantics now.
   command-in-expression has exactly these spellings: `$()`/`!()`
   atoms (anywhere an expression goes), bare-command let-RHS (capture,
   least ink where legal), and the `!` district (runs of effects).
+**`within` — scoped resources** [D:within-scopes]:
+  `within <kind> <binder>` + an indented block, an ordinary
+  EXPRESSION: the body is a plain expression block (statements
+  sequence, commands arm, the last expression is the value), so
+  MODE-FROM-POSITION needs no rule — expression position yields the
+  body's value; statement position demands unit through the existing
+  discard rule, and a commandish tail arms through it. Kind `tmp`
+  (session 1): a fresh unique directory bound as a string
+  (platform-native path) for the block, REMOVED on every managed
+  exit — normal and raise alike (pinned); a hard interrupt is the
+  stated gap (SIGINT terminates without running cleanup — the
+  `weir-tmp-` prefix keeps leftovers identifiable; the job-objects
+  park's reasoning). Nested scopes nest, inner removed first. The
+  binder joins bindings-beat-PATH for the block (the patLeafNames
+  family's fifth site). The keyword-over-sigil reasoning lives in
+  DECISIONS: $/! encode a TOTAL two-way distinction (value/effect),
+  so scope KINDS want names, not a third glyph.
   **The interior-arming rule** [D:interior-arming], ONE rule with one
   carve-out: a command line in INTERIOR-STATEMENT position (a
   non-final statement of any block — if bodies, lambda bodies,

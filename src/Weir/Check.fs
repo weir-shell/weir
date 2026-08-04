@@ -85,6 +85,7 @@ and TypedKind =
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
     | TESeq of first: TypedExpr * rest: TypedExpr
+    | TEWithin of kind: string * binder: string * body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
     | TEFrom of format: string * rowDef: RecordDef
@@ -1233,6 +1234,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEUnit
               Ty = TUnit
               Span = expr.Span }
+    | EWithin(kind, binder, _, body) ->
+        // the scope binder is a plain string (the tmp dir's path,
+        // platform-native), bound for the block like any binder
+        // [D:within-scopes]; the scope's type IS the body's type
+        result {
+            let! tbody = infer ctx (bindParams env [ binder, TStr ]) body
+
+            return
+                { Kind = TEWithin(kind, binder, tbody)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
     | ESeq(first, rest) ->
         result {
             let! tfirst = infer ctx env first
@@ -2453,7 +2466,7 @@ and private isCmdChain (e: Expr) =
 // final expression under a unit demand is the EFFECT form — rewrite it
 // to the same `|> print` the statement positions get, recursing through
 // sequences. Pure AST pre-pass so teaching errors keep their text.
-and private armTail (e: Expr) : Expr =
+and armTail (e: Expr) : Expr =
     if isCmdChain e then
         { Kind = EPipe(e, { Kind = EVar "print"; Span = e.Span })
           Span = e.Span }
@@ -2461,6 +2474,15 @@ and private armTail (e: Expr) : Expr =
         match e.Kind with
         | ESeq(a, b) ->
             { Kind = ESeq(a, armTail b)
+              Span = e.Span }
+        // the tail rides through a scope and a let-in to their bodies
+        // [D:within-scopes] — statement position arms a scope's final
+        // command exactly as an if body's
+        | EWithin(k, n, sp, b) ->
+            { Kind = EWithin(k, n, sp, armTail b)
+              Span = e.Span }
+        | ELet(n, ns, v, b) ->
+            { Kind = ELet(n, ns, v, armTail b)
               Span = e.Span }
         | _ -> e
 
@@ -2482,6 +2504,18 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                 )
               Span = expr.Span }
             TUnit
+    // the check direction rides INTO a scope's body [D:within-scopes] —
+    // a statement-position `within` demands unit of the block, arming a
+    // final command exactly as any block does
+    | EWithin(kind, binder, _, body), _ ->
+        result {
+            let! tbody = check ctx (bindParams env [ binder, TStr ]) body expected
+
+            return
+                { Kind = TEWithin(kind, binder, tbody)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
     // the check direction rides THROUGH a sequence to its final
     // expression [D:interior-arming] — F#'s rule, and what lets a
     // final command in a unit-demanded block arm
@@ -2751,6 +2785,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
             )
         | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
+        | TEWithin(k, n, b) -> TEWithin(k, n, finalizeExpr ctx b)
         | TEEnvLoad _
         | TEArgsLoad _ -> te.Kind
         | leaf -> leaf
@@ -2919,6 +2954,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
     | TEIf(cnd, t, e) -> cnd :: t :: Option.toList e
     | TESeq(a, b) -> [ a; b ]
+    | TEWithin(_, _, b) -> [ b ]
     | TEList items -> items
     | TETuple items -> items
     | TECmd(_, args, envO) -> args @ Option.toList envO
