@@ -1438,6 +1438,23 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TESeq(a, b) ->
         eval env a |> ignore
         eval env b
+    | TEWithin(_, binder, body) ->
+        // kind "tmp" [D:within-scopes]: a fresh unique directory, bound
+        // as the binder for the block; removed on EVERY exit — normal
+        // and raise alike (the raise-path is the load-bearing pin). The
+        // delete itself is best-effort (a vanished dir is not an error).
+        let dir =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
+
+        System.IO.Directory.CreateDirectory dir |> ignore
+
+        try
+            eval (Map.add binder (VStr dir) env) body
+        finally
+            try
+                System.IO.Directory.Delete(dir, true)
+            with _ ->
+                ()
     | TEIf(cond, thn, els) ->
         match eval env cond, els with
         | VBool true, _ -> eval env thn

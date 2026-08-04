@@ -35,7 +35,7 @@ rules:
     # ---- keywords (the parser's set, verified) ----
     # rule: keywords
     - statement: "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of)\\b"
-    - statement: "\\b(from|to|for|do|module|import)\\b"
+    - statement: "\\b(from|to|for|do|module|import|within)\\b"
     # reserved (rejected by the parser, but color them so muscle-memory
     # F# reads as "claimed", not "identifier")
     # rule: reserved

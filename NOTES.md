@@ -1,5 +1,55 @@
 # Spike Notes
 
+## within tmp — the first scope, on two sessions' shoulders (2026-08-03)
+
+The form the prerequisites were FOR: `within tmp dir` + an ordinary
+expression block. Because blocks yield (the probe) and commands arm
+(the arming rule), the whole mode table came free — expression
+position yields the body's value, statement position demands unit
+through the EXISTING discard rule. One addition proved necessary the
+moment the interrupt probe ran: statement-position scopes with a
+commandish TAIL hit the discard error, so armTail now reaches
+through EWithin and ELet bodies at the statement gate — the same
+pre-pass if-then already had, extended two constructors.
+
+THE ASSEMBLER was the real design surface, exactly as the probe
+sessions suggested: `within tmp dir` ends with arbitrary argument
+words, so no suffix rule can see it — isWithinHead is the
+yaml-marker precedent (a lexical classifier, optionally behind
+`let name =`) feeding dangleOpensBlock; the head SPACE-joins its
+first body statement (the then-convention) and siblings arrive
+sentineled, which the parser's optional-separator spelling absorbs.
+Also found the hard way: TWO OPPs carry TermParser lists (segment
+and main) — registering in one produced a keyword that parsed
+nowhere; the expecting-list's missing 'within' was the tell.
+
+THE PINS: the receipt (a command-heavy block yielding an exact
+sha256sum-verified digest), the raise-path headline (dir removed AND
+the raise propagates, exit nonzero), nested (both dirs removed,
+inner finally first by construction), statement-position discard for
+non-command non-unit bodies (the teaching text untouched), the
+perverse binder (`within tmp git` — the binding beats PATH; the
+patLeafNames family's fifth site, pinned on arrival rather than
+discovered), a reifier body, fmt roundtrip. Unit: parse shape,
+body-type flow, unknown-kind teaching (`within lock` names the
+shipped kind), the reserved-word gate, the completion inventory
+(within OFFERED, the for/do precedent).
+
+THE INTERRUPT VERDICT, verified not assumed: SIGINT kills the
+process without running managed finallys — the dir SURVIVES Ctrl+C.
+Stated as the gap per the plan (the OS sweeper's problem; weir-tmp-
+prefixed leftovers are identifiable), not engineered around. The
+tree-kill discipline cleans child PROCESSES; it never promised
+managed cleanup.
+
+ORDER NOTE for session A's remainder: within landed FIRST — the
+tempRoot/newTempDir members follow this spelling when they land.
+FOR cd/env TO INHERIT: the kind arm is one match case in the parser
++ one TEWithin eval arm; the assembler classifier and the binder
+extension are kind-agnostic already. Nothing the form made awkward
+surfaced; the one caution to carry: eval's cleanup is try/finally —
+cd's restore and env's un-overlay ride the same shape.
+
 ## commands as interior statements — the arming rule, unified (2026-08-03)
 
 The probe's fork resolved by making the rule simpler: a command line

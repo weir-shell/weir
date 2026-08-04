@@ -59,6 +59,9 @@ and ExprKind =
     | ETuple of items: Expr list
     | ELetPat of binder: Pattern * value: Expr * body: Expr
     | ELambdaPat of binder: Pattern * body: Expr
+    // within <kind> <binder> + block [D:within-scopes]: a scoped
+    // resource — session 1 ships kind "tmp" only
+    | EWithin of kind: string * binder: string * bspan: Span * body: Expr
     | ECmd of prog: string * args: Expr list * env: Expr option
     // $@xs / $@(expr) — N argv words [D:argv-splat]
     | ESplat of Expr
@@ -151,6 +154,7 @@ let exprChildren (e: Expr) : Expr list =
     | ELetPat(_, v, b) -> [ v; b ]
     | ELambda(_, _, b) -> [ b ]
     | ELambdaPat(_, b) -> [ b ]
+    | EWithin(_, _, _, b) -> [ b ]
     | EApp(f, x) -> [ f; x ]
     | EPipe(x, f) -> [ x; f ]
     | EField(t, _, _) -> [ t ]
@@ -214,6 +218,7 @@ let rec sexpr (e: Expr) : string =
     | ELetPat(p, v, b) -> $"(letpat {sexprPat p} {sexpr v} {sexpr b})"
     | ELambda(p, _, b) -> $"(fun {p} {sexpr b})"
     | ELambdaPat(p, b) -> $"(funpat {sexprPat p} {sexpr b})"
+    | EWithin(k, n, _, b) -> $"(within {k} {n} {sexpr b})"
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"
     | EField(t, f, _) -> $"{sexpr t}.{f}"
