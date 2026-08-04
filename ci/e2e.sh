@@ -3928,7 +3928,7 @@ out=$($BIN -e '$(echo 30s) |> Seq.head')
 out=$($BIN -e '$"took {90500ms}"')
 [ "$out" = '"took 1m30.5s" : string' ] || fail "a Duration hole renders: $out"
 out=$($BIN -e 'let d = 30s in $(echo (d))' 2>&1) && fail "spliced Duration must reject" || true
-echo "$out" | grep -qF "pass Duration.toMs d or show d deliberately" || fail "splice teaching names the spellings: $out"
+echo "$out" | grep -qF "pass Duration.toMillis d or show d deliberately" || fail "splice teaching names the spellings: $out"
 rm -rf "$ddir"
 echo "e2e ok: Duration (defaults rest, both boundaries parse, rejection locates, argv word, hole renders / splice teaches)"
 
@@ -3941,11 +3941,11 @@ out=$($BIN -e '0.1 == 0.2' 2>&1) && fail "float == must reject" || true
 echo "$out" | grep -qF "use Float.near a b eps" || fail "Eq teaching names near: $out"
 out=$($BIN -e '1.0 / 0.0' 2>&1) && fail "float div by zero must raise" || true
 echo "$out" | grep -qF "float division by zero" || fail "div-zero named: $out"
-out=$($BIN -e 'Duration.toS 2500ms')
-[ "$out" = "2.5 : float" ] || fail "toS lossless: $out"
+out=$($BIN -e 'Duration.toSeconds 2500ms')
+[ "$out" = "2.5 : float" ] || fail "toSeconds lossless: $out"
 out=$($BIN -e 'Float.near (Float.parse (show 1.5e-3)) 1.5e-3 0.0')
 [ "$out" = "true : bool" ] || fail "show/parse round-trip: $out"
-echo "e2e ok: floats (finite-only raises, teachings name spellings, toS lossless, round-trip)"
+echo "e2e ok: floats (finite-only raises, teachings name spellings, toSeconds lossless, round-trip)"
 
 # ---- trailing comments [D:trailing-comments] -------------------------------
 tcdir=$(mktemp -d)

@@ -13,6 +13,7 @@ module Weir.Yaml
 // typed node at check)
 type Shape =
     | SInt
+    | SFloat
     | SStr
     | SBool
     | SOpt of Shape

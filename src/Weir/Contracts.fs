@@ -566,6 +566,7 @@ let rec private tyKind (t: Ty) : string option =
     match t with
     | TStr -> Some "string"
     | TInt -> Some "integer"
+    | TFloat -> Some "number"
     | TBool -> Some "boolean"
     | TNamed("Option", [ inner ]) -> tyKind inner
     | _ -> None
@@ -587,7 +588,10 @@ let private literalKind (raw: string) (quoted: bool) =
     else
         match Int64.TryParse raw with
         | true, _ -> "integer"
-        | _ -> "string"
+        | _ ->
+            match parseFloat raw with
+            | Ok _ -> "number"
+            | Error _ -> "string"
 
 // paths are ALWAYS in the message (ruling: a few characters buys a
 // self-contained CI log — the span still carries editor identity).

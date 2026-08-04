@@ -460,7 +460,9 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
         | CmdArg ->
             match ty with
             | TDur ->
-                err span "a Duration's argv form depends on the program; pass Duration.toMs d or show d deliberately"
+                err
+                    span
+                    "a Duration's argv form depends on the program; pass Duration.toMillis d or show d deliberately"
             | ty -> err span $"command arguments must be strings, ints or bools; this one is {formatTy ty}"
 
 // vars discharge their pendings the moment they resolve — no trial
@@ -730,7 +732,9 @@ let rec private typeBinOp
     | "*", TInt, TDur -> Ok TDur
     | "/", TDur, TInt -> Ok TDur
     | "/", TDur, TDur ->
-        err opSpan "duration ÷ duration has no unit — Duration.toMs d1 / Duration.toMs d2 gives the integer ratio"
+        err
+            opSpan
+            "duration ÷ duration has no unit — Duration.toMillis d1 / Duration.toMillis d2 gives the integer ratio"
     | (">" | "<" | ">=" | "<="), TDur, TDur -> Ok TBool
     | ("+" | "-"), TInt, TInt -> Ok TInt
     | "+", TStr, TStr -> Ok TStr
@@ -777,6 +781,7 @@ let rec private spine (e: Expr) : Expr * Expr list =
 let private jsonScalar (ty: Ty) : bool =
     match ty with
     | TInt
+    | TFloat
     | TStr
     | TBool -> true
     | _ -> false
@@ -797,9 +802,11 @@ let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeErro
             // receipt) — an honest rejection beats a guess
             err
                 span
-                $"field '{name}': Duration has no JSON convention yet — convert explicitly (Duration.toMs into an int field)"
+                $"field '{name}': Duration has no JSON convention yet — convert explicitly (Duration.toMillis into an int field)"
         else
-            err span $"field '{name}' has type {formatTy ty}; json rows support int, string, bool, and Option of those")
+            err
+                span
+                $"field '{name}' has type {formatTy ty}; json rows support int, float, string, bool, and Option of those")
 
 let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
     if jsonFieldOk elem then
@@ -822,6 +829,7 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
 let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<Yaml.Shape, TypeError> =
     match ty with
     | TInt -> Ok Yaml.SInt
+    | TFloat -> Ok Yaml.SFloat
     | TStr -> Ok Yaml.SStr
     | TBool -> Ok Yaml.SBool
     | TNamed("Option", [ TNamed("Option", _) ]) -> err span "Option<Option<…>> has no yaml reading; flatten the type"
@@ -852,6 +860,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
 let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<unit, TypeError> =
     match ty with
     | TInt
+    | TFloat
     | TStr
     | TBool
     | TNamed("Yaml", []) -> Ok()
@@ -1619,9 +1628,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              match ty with
                              | TStr
                              | TInt
+                             | TFloat
                              | TBool
                              | TDur
-                             | TNamed("Option", [ TStr | TInt | TBool | TDur ]) -> true
+                             | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur ]) -> true
                              | ty -> isEnum ty
 
                          // a payload-carrying case is a SCHEMA error, named at
@@ -1672,7 +1682,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              | Some(bad, badTy) ->
                                  err
                                      arg.Span
-                                     $"Env.load fields must be string, int, bool, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
+                                     $"Env.load fields must be string, int, float, bool, Duration, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
                              | None ->
 
                                  match caseCollision with
@@ -2810,6 +2820,7 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg:
 and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool =
     match resolve ctx ty with
     | TInt
+    | TFloat
     | TStr
     | TBool
     | TNamed("Yaml", []) -> true
@@ -3219,8 +3230,8 @@ let private attrRegistry: Map<string, AttrArg option -> string option> =
           // error (the did-you-mean over the remaining names).
           "Default",
           (function
-          | Some(AStr _ | AInt _ | ABool _ | ADur _) -> None
-          | None -> Some "expects a literal (string, int, bool, or duration), e.g. [<Default 10>]") ]
+          | Some(AStr _ | AInt _ | ABool _ | ADur _ | AFloat _) -> None
+          | None -> Some "expects a literal (string, int, float, bool, or duration), e.g. [<Default 10>]") ]
 
 let private validateFieldAttrs (recName: string) (field: string, _: Ty, specs: AttrSpec list) =
     let conflicts a b (seen: Set<string>) (spec: AttrSpec) = spec.AName = a && Set.contains b seen

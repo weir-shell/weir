@@ -10,6 +10,7 @@ module Fuzz.Grammar
 
 open System
 open FsCheck
+open Weir.Types
 
 // ---------------------------------------------------------------------------
 // AST
@@ -64,6 +65,11 @@ type Stmt =
     | SLetMatch of string * MatchE
     | SLetUnionMatch of name: string * uVar: string * arms: (string * string option * Expr) list
     | SPrint of Expr
+    // floats [D:floats]: Eq is EXCLUDED, so float expressions never
+    // join the CCmp "==" arms — arithmetic, Ord comparisons and
+    // show/interp are the float surface (the first class decision to
+    // shape the generator; stated in GRAMMAR.md)
+    | SFloat of name: string * a: float * op: string * b: float * cmp: float option
     | SIf of bid: int * Cond * Stmt list // unit body
     | STypeRec of string * (string option * string * VTy) list * RecStyle // (/// doc, field, ty) [D:doc-help]
     | STypeUnion of string * (string * VTy option) list * multiline: bool * bid: int
@@ -225,6 +231,13 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
     let rec emitStmt (ind: int) (s: Stmt) =
         match s with
         | SLet(v, e) -> emit ind $"let {v} = {renderExpr e}"
+        | SFloat(v, a, op, b, cmp) ->
+            emit ind $"let {v} = {formatFloat a} {op} {formatFloat b}"
+            emit ind $"print $\"{{{v}}}\""
+
+            match cmp with
+            | Some c -> emit ind $"print $\"{{{v} < {formatFloat c}}}\""
+            | None -> ()
         | SLetBlock(v, b) when cfg.JoinBlock b.Bid && joinable b.Body ->
             let parts =
                 (b.Body
@@ -611,6 +624,7 @@ let rec stmtDefs (s: Stmt) : string list =
     | SPipeLet(_, n, _, _) -> [ n ]
     | SCmdLet(g, _) -> [ g ]
     | SYaml(_, d, _) -> [ d ]
+    | SFloat(v, _, _, _, _) -> [ v ]
     | SMapLambda(_, n, _, _, _, _, _) -> [ n ]
     | SIterLambda _
     | SPrint _
@@ -621,6 +635,7 @@ let rec stmtDefs (s: Stmt) : string list =
 
 let rec stmtUses (s: Stmt) : string list =
     match s with
+    | SFloat _ -> []
     | SLet(_, e) -> exprUses e
     | SLetBlock(_, b) ->
         let localDefs = b.Body |> List.collect stmtDefs |> Set.ofList
@@ -967,6 +982,30 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
 
                       return SYaml(bid, d, entries), { sc with StrSeqs = sc.StrSeqs }
                   }
+          if not inBlock then
+              yield
+                  3,
+                  gen {
+                      let v, sc = freshVal sc
+                      // quarters are exact in binary — renders stay
+                      // deterministic and short
+                      let! an = Gen.choose (0, 40)
+                      let! bn = Gen.choose (1, 40)
+                      let! op = Gen.elements [ "+"; "-"; "*" ]
+                      let! withCmp = Gen.frequency [ 2, Gen.constant true; 1, Gen.constant false ]
+                      let! cn = Gen.choose (0, 160)
+
+                      return
+                          SFloat(
+                              v,
+                              float an / 4.0,
+                              op,
+                              float bn / 4.0,
+                              (if withCmp then Some(float cn / 4.0) else None)
+                          ),
+                          sc
+                  }
+
           // simple let
           yield
               5,

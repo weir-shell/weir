@@ -136,6 +136,7 @@ let badEnvDefault (def: RecordDef) : string option =
             match ft, a with
             | TStr, AStr _
             | TInt, AInt _
+            | TFloat, AFloat _
             | TBool, ABool _
             | TDur, ADur _ -> None
             | TNamed("Option", _), _ ->
@@ -157,6 +158,7 @@ let private badArgsDefault (label: string) (def: RecordDef) : string option =
             match ft, a with
             | TStr, AStr _
             | TInt, AInt _
+            | TFloat, AFloat _
             | TDur, ADur _ -> None
             | TBool, ABool true -> None
             | TBool, ABool false ->
@@ -176,9 +178,10 @@ let private badArgsShape (label: string) (def: RecordDef) : string option =
             match ft with
             | TStr
             | TInt
+            | TFloat
             | TBool
             | TDur
-            | TNamed("Option", [ TStr | TInt | TDur ]) -> false
+            | TNamed("Option", [ TStr | TInt | TFloat | TDur ]) -> false
             | _ -> true)
 
     match badShape with
@@ -186,7 +189,7 @@ let private badArgsShape (label: string) (def: RecordDef) : string option =
         Some $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
     | Some(f, ft) ->
         Some
-            $"{label}Args.load fields must be string, int, bool, or Duration, or Option of string|int|Duration; '{f}' is {formatTy ft}"
+            $"{label}Args.load fields must be string, int, float, bool, or Duration, or Option of string|int|float|Duration; '{f}' is {formatTy ft}"
     | None -> None
 
 let private dupFlag (label: string) (def: RecordDef) : string option =

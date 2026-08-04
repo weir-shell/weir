@@ -17,7 +17,7 @@ let source =
       // rule with its own teaching text (no new rule). YMap preserves KEY
       // ORDER (the user-controlled escape from record-field alphabetical
       // rendering); no float case — weir has no float scalar.
-      "type Yaml = YStr of string | YInt of int | YBool of bool | YNull | YSeq of seq<Yaml> | YMap of seq<string * Yaml>" ]
+      "type Yaml = YStr of string | YInt of int | YFloat of float | YBool of bool | YNull | YSeq of seq<Yaml> | YMap of seq<string * Yaml>" ]
 
 let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
     source

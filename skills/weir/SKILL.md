@@ -191,12 +191,16 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   interpolate. `show 1.0` = `"1.0"` (integral floats keep the
   decimal); `Float.parse`/`tryParse` read what show writes.
   Module: `Float.ofInt/toInt/round/abs/near/parse/tryParse`
-  (qualified only). `Duration.toS` gives float seconds losslessly.
-  Float fields at json/yaml/Args/Env are NOT admitted yet.
+  (qualified only). `Duration.toSeconds` gives float seconds losslessly.
+  Float fields work at every boundary: json (integer-shaped numbers
+  widen — a wire format with one number type; decimals into int
+  fields error naming float), yaml (unquoted `1.5` is the number,
+  quoted `"1.5"` the string; `.nan`/`.inf` reject — finite-only),
+  Args/Env (`--rate 0.5`, `[<Default 0.5>]`).
 - Time is `Duration` (integer ms inside): literals `500ms`/`30s`/`2m`/`1h`
   (single-unit, expression position; in command position `30s` is an
   ordinary argv word). `+`/`-` between durations, `*`/`/` by int;
-  `Duration / Duration` is a check error naming `Duration.toMs`.
+  `Duration / Duration` is a check error naming `Duration.toMillis`.
   `show 90500ms` = `"1m30.5s"`; `Duration.parse`/`tryParse` read that
   shape (`"1h30m"`, `"2.5s"` — decimals exist only in TEXT; `2.5s` as
   a literal is a teaching error, so is `2d` and compound `1m30s`).
@@ -204,9 +208,9 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   `sleep` stays the coreutils command). `Args.load`/`Env.load` parse
   duration text into `Duration` fields and `[<Default 30s>]` works.
   No JSON: a Duration field at `to json`/`from json` is a check error
-  (convert via `Duration.toMs` into an int field). Interpolation holes
+  (convert via `Duration.toMillis` into an int field). Interpolation holes
   render Durations directly (`$"took {elapsed}"`); command arguments
-  do NOT — pass `Duration.toMs d` or `show d` deliberately.
+  do NOT — pass `Duration.toMillis d` or `show d` deliberately.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
   `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency

@@ -1689,21 +1689,21 @@ let private durationMembers: (string * Ty * Value) list =
       "s", TFun(TInt, TDur), durCtor "s" 1000L
       "m", TFun(TInt, TDur), durCtor "m" 60000L
       "h", TFun(TInt, TDur), durCtor "h" 3600000L
-      "toMs",
+      "toMillis",
       TFun(TDur, TInt),
       VBuiltin(fun v ->
           match v with
           | VDur n -> VInt n
-          | v -> unreachable $"the checker rejects 'Duration.toMs' on {formatValue v}")
+          | v -> unreachable $"the checker rejects 'Duration.toMillis' on {formatValue v}")
       // float-returning and LOSSLESS [D:floats] — the truncation that
       // kept it unshipped is gone; Duration's own parse/render path
       // stays integer
-      "toS",
+      "toSeconds",
       TFun(TDur, TFloat),
       VBuiltin(fun v ->
           match v with
           | VDur n -> VFloat(float n / 1000.0)
-          | v -> unreachable $"the checker rejects 'Duration.toS' on {formatValue v}")
+          | v -> unreachable $"the checker rejects 'Duration.toSeconds' on {formatValue v}")
       "parse",
       TFun(TStr, TDur),
       VBuiltin(fun v ->
@@ -2243,11 +2243,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Duration.s", (bd "A duration of n seconds." (Some "Duration.s 30") None |> named [ "n" ])
           "Duration.m", (bd "A duration of n minutes." (Some "Duration.m 5") None |> named [ "n" ])
           "Duration.h", (bd "A duration of n hours." (Some "Duration.h 2") None |> named [ "n" ])
-          "Duration.toMs",
-          (bd "The total milliseconds as an int (ratios, JSON fields)." (Some "Duration.toMs 2m") None
+          "Duration.toMillis",
+          (bd "The total milliseconds as an int (ratios, JSON fields)." (Some "Duration.toMillis 2m") None
            |> named [ "d" ])
-          "Duration.toS",
-          (bd "The total seconds as a float, lossless (2500ms is 2.5)." (Some "Duration.toS 2500ms") None
+          "Duration.toSeconds",
+          (bd "The total seconds as a float, lossless (2500ms is 2.5)." (Some "Duration.toSeconds 2500ms") None
            |> named [ "d" ])
           "Duration.parse",
           (bd
