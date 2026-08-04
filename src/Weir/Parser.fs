@@ -1114,24 +1114,35 @@ let private withinExpr =
     >>= fun p ->
         identSpanned
         >>= fun (kind, _) ->
+            // the dangle SPACE-joins the first body statement (the
+            // then-convention); siblings arrive sentineled
+            let block =
+                opt (str_ws ";" <|> str_ws sibSepStr) >>. (seqExpr <?> "the scope's block")
+
             match kind with
             | "tmp" ->
+                // tmp PRODUCES its path: a binder, joining
+                // bindings-beat-PATH (the patLeafNames class, 5th site)
                 identSpanned
                 >>= fun (binder, bspan) ->
-                    // the body follows the head as sibling statements;
-                    // the binder joins bindings-beat-PATH for the block
-                    // (the patLeafNames class, its fifth site)
-                    // the dangle SPACE-joins the first body statement
-                    // (the then-convention); siblings arrive sentineled
                     (opt (str_ws ";" <|> str_ws sibSepStr))
                     >>. (withPatNames { PKind = PVar binder; PSpan = bspan } seqExpr
                          <?> "the scope's block")
                     |>> fun body ->
-                        { Kind = EWithin("tmp", binder, bspan, body)
+                        { Kind = EWithin("tmp", Some(binder, bspan), None, body)
                           Span = { Start = pos p; End = body.Span.End } }
-            | other ->
-                failFatally
-                    $"unknown scope kind '{other}' — `within tmp <name>` is the shipped kind (cd and env follow in their own sessions)"
+            | "cd"
+            | "env" ->
+                // cd/env CONSUME a value: ONE ATOM (a literal, a name,
+                // a paren, an interpolation) — never a greedy expr,
+                // which would swallow the space-joined first statement
+                (postfixAtom <?> $"the {kind} scope's argument (parenthesize a compound)")
+                >>= fun argE ->
+                    block
+                    |>> fun body ->
+                        { Kind = EWithin(kind, None, Some argE, body)
+                          Span = { Start = pos p; End = body.Span.End } }
+            | other -> failFatally $"unknown scope kind '{other}' — within takes tmp, cd, or env"
 
 let private matchExpr =
     pipe3

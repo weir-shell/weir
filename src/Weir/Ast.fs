@@ -59,9 +59,11 @@ and ExprKind =
     | ETuple of items: Expr list
     | ELetPat of binder: Pattern * value: Expr * body: Expr
     | ELambdaPat of binder: Pattern * body: Expr
-    // within <kind> <binder> + block [D:within-scopes]: a scoped
-    // resource — session 1 ships kind "tmp" only
-    | EWithin of kind: string * binder: string * bspan: Span * body: Expr
+    // within <kind> … + block [D:within-scopes]: a scoped resource.
+    // The kinds are ASYMMETRIC by design: tmp PRODUCES a path (binder,
+    // no arg); cd and env CONSUME one (arg, no binder) — which is why
+    // the form is `within <kind> <args…>`, not one fixed shape
+    | EWithin of kind: string * binder: (string * Span) option * arg: Expr option * body: Expr
     | ECmd of prog: string * args: Expr list * env: Expr option
     // $@xs / $@(expr) — N argv words [D:argv-splat]
     | ESplat of Expr
@@ -154,7 +156,7 @@ let exprChildren (e: Expr) : Expr list =
     | ELetPat(_, v, b) -> [ v; b ]
     | ELambda(_, _, b) -> [ b ]
     | ELambdaPat(_, b) -> [ b ]
-    | EWithin(_, _, _, b) -> [ b ]
+    | EWithin(_, _, arg, b) -> Option.toList arg @ [ b ]
     | EApp(f, x) -> [ f; x ]
     | EPipe(x, f) -> [ x; f ]
     | EField(t, _, _) -> [ t ]
@@ -218,7 +220,10 @@ let rec sexpr (e: Expr) : string =
     | ELetPat(p, v, b) -> $"(letpat {sexprPat p} {sexpr v} {sexpr b})"
     | ELambda(p, _, b) -> $"(fun {p} {sexpr b})"
     | ELambdaPat(p, b) -> $"(funpat {sexprPat p} {sexpr b})"
-    | EWithin(k, n, _, b) -> $"(within {k} {n} {sexpr b})"
+    | EWithin(k, binder, arg, b) ->
+        let bn = binder |> Option.map fst |> Option.defaultValue ""
+        let av = arg |> Option.map sexpr |> Option.defaultValue ""
+        $"(within {k} {bn}{av} {sexpr b})"
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"
     | EField(t, f, _) -> $"{sexpr t}.{f}"

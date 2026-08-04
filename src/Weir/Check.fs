@@ -85,7 +85,7 @@ and TypedKind =
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
     | TESeq of first: TypedExpr * rest: TypedExpr
-    | TEWithin of kind: string * binder: string * body: TypedExpr
+    | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
     | TEFrom of format: string * rowDef: RecordDef
@@ -1234,15 +1234,27 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEUnit
               Ty = TUnit
               Span = expr.Span }
-    | EWithin(kind, binder, _, body) ->
-        // the scope binder is a plain string (the tmp dir's path,
-        // platform-native), bound for the block like any binder
-        // [D:within-scopes]; the scope's type IS the body's type
+    | EWithin(kind, binder, arg, body) ->
+        // tmp binds its path (a plain string, platform-native); cd
+        // consumes a string path; env consumes seq<EnvVar> — the arg
+        // types are the kinds' contracts [D:within-scopes]; the
+        // scope's type IS the body's type
         result {
-            let! tbody = infer ctx (bindParams env [ binder, TStr ]) body
+            let! targ =
+                match kind, arg with
+                | "cd", Some a -> check ctx env a TStr |> Result.map Some
+                | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
+                | _ -> Ok None
+
+            let benv =
+                match binder with
+                | Some(n, _) -> bindParams env [ n, TStr ]
+                | None -> env
+
+            let! tbody = infer ctx benv body
 
             return
-                { Kind = TEWithin(kind, binder, tbody)
+                { Kind = TEWithin(kind, binder |> Option.map fst, targ, tbody)
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -2478,8 +2490,8 @@ and armTail (e: Expr) : Expr =
         // the tail rides through a scope and a let-in to their bodies
         // [D:within-scopes] — statement position arms a scope's final
         // command exactly as an if body's
-        | EWithin(k, n, sp, b) ->
-            { Kind = EWithin(k, n, sp, armTail b)
+        | EWithin(k, n, a, b) ->
+            { Kind = EWithin(k, n, a, armTail b)
               Span = e.Span }
         | ELet(n, ns, v, b) ->
             { Kind = ELet(n, ns, v, armTail b)
@@ -2507,12 +2519,23 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
     // the check direction rides INTO a scope's body [D:within-scopes] —
     // a statement-position `within` demands unit of the block, arming a
     // final command exactly as any block does
-    | EWithin(kind, binder, _, body), _ ->
+    | EWithin(kind, binder, arg, body), _ ->
         result {
-            let! tbody = check ctx (bindParams env [ binder, TStr ]) body expected
+            let! targ =
+                match kind, arg with
+                | "cd", Some a -> check ctx env a TStr |> Result.map Some
+                | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
+                | _ -> Ok None
+
+            let benv =
+                match binder with
+                | Some(n, _) -> bindParams env [ n, TStr ]
+                | None -> env
+
+            let! tbody = check ctx benv body expected
 
             return
-                { Kind = TEWithin(kind, binder, tbody)
+                { Kind = TEWithin(kind, binder |> Option.map fst, targ, tbody)
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -2785,7 +2808,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
             )
         | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
-        | TEWithin(k, n, b) -> TEWithin(k, n, finalizeExpr ctx b)
+        | TEWithin(k, n, a, b) -> TEWithin(k, n, a |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
         | TEEnvLoad _
         | TEArgsLoad _ -> te.Kind
         | leaf -> leaf
@@ -2954,7 +2977,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
     | TEIf(cnd, t, e) -> cnd :: t :: Option.toList e
     | TESeq(a, b) -> [ a; b ]
-    | TEWithin(_, _, b) -> [ b ]
+    | TEWithin(_, _, a, b) -> Option.toList a @ [ b ]
     | TEList items -> items
     | TETuple items -> items
     | TECmd(_, args, envO) -> args @ Option.toList envO

@@ -1,5 +1,60 @@
 # Spike Notes
 
+## within cd, within env — the kinds slot in, the table lands (2026-08-04)
+
+The inheritance claim held to the letter: each kind cost one parser
+match case and one eval arm. The node generalized for the asymmetry
+that is the form's point — tmp PRODUCES a binder, cd/env CONSUME one
+ATOM argument (a greedy expression would swallow the space-joined
+first statement; compounds parenthesize).
+
+`cd` is the Cwd axis arriving where three predictions said it would.
+Nested relative scopes compose (build then sub lands in build/sub),
+restore is try/finally, a missing path errors AT ENTRY with the
+resolved absolute path and the block never runs (marker-pinned), and
+the piter interaction — the one place two cwd mechanisms meet —
+nests correctly: each worker's scope rides its own forked cwd,
+parent untouched. The interrupt gap inherits tmp's verdict and is
+HARMLESS here (the process is gone; nothing observes its cwd) —
+stated, because the distinction makes tmp's gap the real one.
+
+`env` grew the one genuinely new mechanism: an ambient overlay STACK
+in Session with cwd's exact locality discipline (root for the main
+thread, fork-on-first-push for workers, cleared at exitWorker).
+Spawns apply ambient layers outer-first UNDER any explicit sigil
+env, so inner and explicit win at Proc's last-wins application — the
+collision pin: inner wins the key, outer keys survive. Env.load is
+untouched; a scope around pure work is legal-and-pointless, allowed.
+
+`!env`'S FATE, reported not acted: the line-end !ev DISTRICT variant
+is fully covered (retire-candidate at its own bless, which also
+unblocks the !-district deletion the arming session reported). The
+$e()/!e() SIGIL forms RETAIN: single-command overlays and
+fragment-position uses have no block spelling while
+parens-spanning-lines stay parked. Census: bicep-deploy ×4,
+git-subrepo ×1, 13 e2e pin references.
+
+THE TABLE EARNED ITS PROBE-FIRST ORDER: the draft rule died twice on
+observation. The if-condition takes NEITHER a bare chain nor a
+$()-piped one (both error; bind the verdict first — `let ok = cmd |
+succeeds` then `if ok`), and record fields refuse bare commands
+despite being whole value-slots. The rule the observations support:
+bare commands live at STATEMENT positions and let-RHS/block-final
+values; in every expression FRAGMENT the wrapper is mandatory, and
+the observed error is the unbound-variable teaching on the head
+word (a wrap-it hint there is a candidate improvement, recorded not
+done). One asymmetry recorded without action: top-level $()
+statements ARM (armTail) while interior $() elements seq-unit-error.
+
+TWO FINDINGS FOR THE LEDGER: (1) pre-existing, sized — a COMMAND
+line as the first statement after DEDENTING from a nested block
+mis-joins (within: silently absorbed as argv of the previous
+command; block-lets: a parse error) — the assembler's dedent
+reprocessing wants its own session; until then, put post-scope
+statements before nested blocks or make them non-command. (2) The
+grammars needed NOTHING new (confirmed, not assumed — the keyword
+and block landed with tmp; kinds are ordinary idents).
+
 ## within tmp — the first scope, on two sessions' shoulders (2026-08-03)
 
 The form the prerequisites were FOR: `within tmp dir` + an ordinary
