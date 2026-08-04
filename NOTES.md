@@ -1,5 +1,20 @@
 # Spike Notes
 
+## CI fix: the dedent block's child weir missed the PATH prefix (2026-08-04)
+
+The dedent-join e2e block's script spawns a child weir
+(`!(weir -e "print 10")`) but its runner line lacked the
+`PATH="$(dirname $BIN):$PATH"` prefix every other child-spawning
+block carries — the exact lesson the first CI-fix session recorded,
+re-learned: locally the install dir happens to be on PATH, so only
+CI sees it. One line fixed. The verification is worth keeping as a
+recipe: running the WHOLE battery under `PATH=/usr/bin:/bin` (weir
+invoked by absolute $BIN, children resolving only through explicit
+prefixes) passes end to end — so every child-spawning block is
+prefix-honest, not just the fixed one. A new e2e block that spawns
+`weir` as a child must carry the prefix; the stripped-PATH run is
+the check when in doubt.
+
 ## retry/poll: the bounded loops (2026-08-04)
 
 The framing arrived settled and held; every seam the implementation
