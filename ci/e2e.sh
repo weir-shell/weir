@@ -3982,7 +3982,7 @@ let sub =
     post
 print (sub)
 WEOF
-out=$($BIN "$djdir/dj.weir")
+out=$(PATH="$(dirname $BIN):$PATH" $BIN "$djdir/dj.weir")
 [ "$out" = '10
 not-an-argv-word' ] || fail "the git-subrepo shape joins on AOT: $out"
 cat > "$djdir/floor.weir" <<'WEOF'
