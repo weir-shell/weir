@@ -1021,6 +1021,72 @@ $BIN "$widir/reif.weir" | grep -qF "scope done" || fail "reifier body runs"
 $BIN fmt --check "$widir/reif.weir" >/dev/null 2>&1 || $BIN fmt "$widir/reif.weir" >/dev/null 2>&1 || true
 $BIN "$widir/reif.weir" | grep -qF "scope done" || fail "fmt kept the scope runnable"
 echo "e2e ok: within tmp effect position, reifier body, fmt roundtrip"
+
+# ---- within cd [D:within-scopes] -------------------------------------------
+mkdir -p "$widir/build/sub"
+cat > "$widir/cd.weir" <<'WEOF'
+within cd "build"
+    within cd "sub"
+        print (pwd |> Seq.head)
+print (pwd |> Seq.head)
+WEOF
+out=$( cd "$widir" && $BIN cd.weir )
+echo "$out" | head -1 | grep -q "build/sub$" || fail "nested relative cd composes: $out"
+echo "$out" | tail -1 | grep -qv "build" || fail "cwd restored after the scope: $out"
+echo "e2e ok: within cd — nested relative paths compose, restore on exit"
+
+cat > "$widir/cdmiss.weir" <<'WEOF'
+within cd "definitely-absent"
+    ["ran"] |> File.write "marker.txt"
+WEOF
+mout=$( cd "$widir" && $BIN cdmiss.weir 2>&1 ) && fail "missing path must error" || true
+echo "$mout" | grep -qF "within cd: no such directory:" || fail "missing-path message: $mout"
+echo "$mout" | grep -q "/definitely-absent" || fail "resolved absolute path named: $mout"
+test ! -e "$widir/marker.txt" || fail "the block must NOT run on a missing path"
+echo "e2e ok: within cd missing path — resolved abs path named, block never ran"
+
+cat > "$widir/cdraise.weir" <<'WEOF'
+within cd "build"
+    fail "boom"
+WEOF
+( cd "$widir" && $BIN cdraise.weir 2>&1 | grep -qF "boom" ) && true
+cat > "$widir/cdworkers.weir" <<'WEOF'
+let outs = ["build"; "build/sub"] |> Seq.pmap (fun d ->
+    let p = within cd d
+        pwd |> Seq.head
+    p)
+outs |> Seq.iter print
+print (pwd |> Seq.head)
+WEOF
+wout=$( cd "$widir" && $BIN cdworkers.weir )
+echo "$wout" | sed -n '1p' | grep -q "build$" || fail "worker one scoped: $wout"
+echo "$wout" | sed -n '2p' | grep -q "sub$" || fail "worker two scoped: $wout"
+echo "$wout" | sed -n '3p' | grep -qv "build" || fail "parent cwd untouched: $wout"
+echo "e2e ok: within cd nests inside pmap workers (two cwd mechanisms, one answer)"
+
+# ---- within env [D:within-scopes] ------------------------------------------
+cat > "$widir/env.weir" <<'WEOF'
+let outer = [Env.pair "WA" "out"; Env.pair "WB" "keep"]
+let inner = [Env.pair "WA" "in"]
+within env outer
+    sh -c "echo pre=$WA-$WB"
+    within env inner
+        sh -c "echo nested=$WA-$WB"
+WEOF
+eout=$( cd "$widir" && $BIN env.weir )
+echo "$eout" | grep -qF "pre=out-keep" || fail "outer overlay applies: $eout"
+echo "$eout" | grep -qF "nested=in-keep" || fail "collision: inner wins, outer key survives: $eout"
+echo "e2e ok: within env — overlay on spawns, nested collision pinned (inner wins, outer survives)"
+
+cat > "$widir/envval.weir" <<'WEOF'
+let vars = [Env.pair "WQ" "carried"]
+let got = within env vars
+    $(sh -c "echo $WQ") |> Seq.head
+print got
+WEOF
+vout=$( cd "$widir" && $BIN envval.weir )
+[ "$vout" = "carried" ] || fail "env value case captures under the overlay: $vout"
+echo "e2e ok: within env expression position yields a captured value"
 rm -rf "$widir"
 
 # bare-pipe caret anchors ON the '|', not the space after [PLAN-anchor-before-read]

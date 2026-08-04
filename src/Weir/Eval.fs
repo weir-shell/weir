@@ -1183,22 +1183,29 @@ let private argvLoad (target: ArgsTarget) : Value =
 
 // the sigil env slot evaluated to overlay pairs — inside the stream's
 // delay, so Env.fromFile boundary errors keep raise-at-force semantics
+let private envPairsOf (v: Value) : (string * string) list =
+    match v with
+    | VSeq items ->
+        items
+        |> Seq.map (fun item ->
+            match item with
+            | VRecord(_, fields) ->
+                (match Map.tryFind "name" fields, Map.tryFind "value" fields with
+                 | Some(VStr n), Some(VStr value) -> n, value
+                 | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
+            | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
+        |> List.ofSeq
+    | _ -> unreachable "the checker rejects non-seq overlays"
+
+// ambient `within env` layers apply OUTER-FIRST under the explicit
+// sigil env, so inner and explicit keys win at Proc's last-wins
+// application [D:within-scopes]
 let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
+    let ambient = Session.envOverlay () |> List.rev |> List.collect id
+
     match cenvO with
-    | None -> []
-    | Some ce ->
-        match eval env ce with
-        | VSeq items ->
-            items
-            |> Seq.map (fun item ->
-                match item with
-                | VRecord(_, fields) ->
-                    (match Map.tryFind "name" fields, Map.tryFind "value" fields with
-                     | Some(VStr n), Some(VStr value) -> n, value
-                     | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
-                | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
-            |> List.ofSeq
-        | v -> unreachable $"the checker rejects a sigil env of {formatValue v}"
+    | None -> ambient
+    | Some ce -> ambient @ envPairsOf (eval env ce)
 
 // spawn-argv assembly [D:argv-splat]: a splat enumerates ONCE at
 // spawn (argv is finite — the splat forces by necessity), order
@@ -1438,23 +1445,56 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TESeq(a, b) ->
         eval env a |> ignore
         eval env b
-    | TEWithin(_, binder, body) ->
-        // kind "tmp" [D:within-scopes]: a fresh unique directory, bound
-        // as the binder for the block; removed on EVERY exit — normal
-        // and raise alike (the raise-path is the load-bearing pin). The
-        // delete itself is best-effort (a vanished dir is not an error).
-        let dir =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
+    | TEWithin(kind, binder, targ, body) ->
+        match kind, binder, targ with
+        | "cd", _, Some pathE ->
+            // cd CONSUMES a path [D:within-scopes]: resolved against the
+            // current cwd (so nested relative scopes compose), verified
+            // BEFORE the block runs, restored on every managed exit
+            let path =
+                match eval env pathE with
+                | VStr s -> s
+                | v -> unreachable $"the checker rejects a cd path of {formatValue v}"
 
-        System.IO.Directory.CreateDirectory dir |> ignore
+            let resolved = Session.resolve path
 
-        try
-            eval (Map.add binder (VStr dir) env) body
-        finally
+            if not (System.IO.Directory.Exists resolved) then
+                failwith $"within cd: no such directory: {resolved}"
+
+            let saved = Session.Cwd()
+            Session.setCwd resolved
+
             try
-                System.IO.Directory.Delete(dir, true)
-            with _ ->
-                ()
+                eval env body
+            finally
+                Session.setCwd saved
+        | "env", _, Some varsE ->
+            // env pushes an ambient overlay CHILD SPAWNS see; weir's own
+            // Env.load is untouched [D:within-scopes]
+            Session.pushEnvOverlay (envPairsOf (eval env varsE))
+
+            try
+                eval env body
+            finally
+                Session.popEnvOverlay ()
+        | _, Some binderName, _ ->
+            // kind "tmp" [D:within-scopes]: a fresh unique directory,
+            // bound as the binder for the block; removed on EVERY exit —
+            // normal and raise alike (the raise-path is the load-bearing
+            // pin). The delete is best-effort (a vanished dir is fine).
+            let dir =
+                System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
+
+            System.IO.Directory.CreateDirectory dir |> ignore
+
+            try
+                eval (Map.add binderName (VStr dir) env) body
+            finally
+                try
+                    System.IO.Directory.Delete(dir, true)
+                with _ ->
+                    ()
+        | _ -> unreachable "within kinds are closed at parse"
     | TEIf(cond, thn, els) ->
         match eval env cond, els with
         | VBool true, _ -> eval env thn

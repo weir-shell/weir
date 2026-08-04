@@ -8172,7 +8172,7 @@ let withinTests =
               let asmLine = "within tmp d" + Weir.Parser.sibSepStr + "print d"
 
               match Weir.Parser.parseLine realResolver asmLine with
-              | Ok(SExpr { Kind = EWithin("tmp", "d", _, _) }) -> ()
+              | Ok(SExpr { Kind = EWithin("tmp", Some("d", _), None, _) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "the binder is a string; the scope's type is the body's" {
@@ -8184,13 +8184,35 @@ let withinTests =
           }
           test "unknown scope kinds teach the shipped one" {
               match Weir.Parser.parseLine realResolver ("within lock f" + Weir.Parser.sibSepStr + "print f") with
-              | Error msg -> Expect.stringContains msg "unknown scope kind 'lock'" ""
+              | Error msg -> Expect.stringContains msg "within takes tmp, cd, or env" ""
               | Ok _ -> failtest "expected the teaching"
           }
           test "within is reserved with the keyword teaching" {
               match Weir.Parser.parseLine realResolver "let within = 1" with
               | Error msg -> Expect.stringContains msg "keyword" ""
               | Ok _ -> failtest "expected the reserved-word gate"
+          }
+          test "cd and env args are typed expressions; a binding serves (6th/7th sites, on arrival)" {
+              // cd consumes string, env consumes seq<EnvVar> — the kinds'
+              // contracts [D:within-scopes]; the arg is an ATOM, resolved
+              // as an ordinary expression (never a command head)
+              let e = parse ("let b = \"x\" in within cd b" + Weir.Parser.sibSepStr + "1")
+
+              match Weir.Check.typecheck env e with
+              | Ok te -> Expect.equal te.Ty TInt "arg rides the binding"
+              | Error terr -> failtest (formatError terr)
+
+              let bad = parse ("within cd 7" + Weir.Parser.sibSepStr + "1")
+
+              match Weir.Check.typecheck env bad with
+              | Error terr -> Expect.stringContains terr.Message "string" "cd demands a string path"
+              | Ok _ -> failtest "expected the type contract"
+
+              let bad2 = parse ("within env 7" + Weir.Parser.sibSepStr + "1")
+
+              match Weir.Check.typecheck env bad2 with
+              | Error terr -> Expect.stringContains terr.Message "EnvVar" "env demands seq<EnvVar>"
+              | Ok _ -> failtest "expected the type contract"
           }
           test "the scope binder beats PATH (the fifth patLeafNames site)" {
               // `within tmp git` — a perverse but legal binder; the block's

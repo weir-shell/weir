@@ -545,8 +545,18 @@ print (Str.sub 0 12 digest)
 ```
 
 Statement position works too (`within tmp d` + effects, unit by the
-ordinary discard rule). `cd` and `env` kinds follow in their own
-sessions.
+ordinary discard rule). The other kinds CONSUME an argument instead
+of producing one: `within cd "build"` runs its block there and
+restores on every exit (a missing path errors before the block runs,
+naming the absolute path); `within env vars` overlays child spawns
+for the block (weir's own env is untouched) — nested overlays
+compose, inner keys winning on collision.
+
+```weir
+let vars = [Env.pair "GIT_AUTHOR_NAME" "weir-bot"]
+within env vars
+    sh -c "echo committing as $GIT_AUTHOR_NAME"
+```
 
 Secret data is the base64 workload [D:encoding-law]: `Str.toBase64`
 encodes UTF-8 bytes as ONE unwrapped line (no 76-column MIME wrap, no

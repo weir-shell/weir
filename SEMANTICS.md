@@ -401,17 +401,58 @@ quantity semantics now.
   sequence, commands arm, the last expression is the value), so
   MODE-FROM-POSITION needs no rule — expression position yields the
   body's value; statement position demands unit through the existing
-  discard rule, and a commandish tail arms through it. Kind `tmp`
-  (session 1): a fresh unique directory bound as a string
-  (platform-native path) for the block, REMOVED on every managed
-  exit — normal and raise alike (pinned); a hard interrupt is the
-  stated gap (SIGINT terminates without running cleanup — the
-  `weir-tmp-` prefix keeps leftovers identifiable; the job-objects
-  park's reasoning). Nested scopes nest, inner removed first. The
+  discard rule, and a commandish tail arms through it. THE KINDS are
+  asymmetric by design — `tmp` PRODUCES (a binder, no arg); `cd` and
+  `env` CONSUME (one ATOM argument, no binder; parenthesize a
+  compound). `tmp` binds a fresh unique directory (platform-native
+  string), REMOVED on every managed exit — normal and raise alike
+  (pinned); a hard interrupt is the stated gap (SIGINT terminates
+  without running cleanup — the `weir-tmp-` prefix keeps leftovers
+  identifiable; the job-objects park's reasoning). `cd <path>`
+  resolves against the current cwd (nested relative scopes COMPOSE),
+  errors at entry naming the resolved absolute path when missing (the
+  block never runs), restores on every managed exit — the interrupt
+  gap is HARMLESS here (the process is gone; nothing observes its
+  cwd), stated because it makes tmp's gap the real one. Inside
+  pmap/piter workers a cd scope nests within the worker's own forked
+  cwd. `env <vars>` (seq<EnvVar>) pushes an ambient overlay CHILD
+  SPAWNS see — weir's own Env.load is untouched, so a scope around
+  pure expression work is legal and pointless (allowed, not an
+  error); layers apply outer-first under any explicit sigil env, so
+  on collision the inner key wins and outer keys survive (pinned).
+  Nested scopes of every kind restore inner-first. The
   binder joins bindings-beat-PATH for the block (the patLeafNames
   family's fifth site). The keyword-over-sigil reasoning lives in
   DECISIONS: $/! encode a TOTAL two-way distinction (value/effect),
   so scope KINDS want names, not a third glyph.
+**When are sigil wrappers mandatory?** — every row OBSERVED, not
+  predicted [D:within-scopes]:
+
+  | position | bare command | `$()` | `!()` |
+  |---|---|---|---|
+  | top-level statement | effect (streams, raises) | armed too (identical) | unit effect |
+  | interior statement | effect (armed) | seq-unit ERROR (observed asymmetry vs top level) | unit effect |
+  | final expression of a block | capture value | same (redundant) | unit (MEANING-CHANGING) |
+  | plain let RHS | capture | redundant | unit (meaning-changing) |
+  | record field value | "unbound variable" ERROR | works | works |
+  | function argument | "unbound variable" ERROR | works | works |
+  | interpolation hole | "unbound variable" ERROR | works | works |
+  | list/seq element | "unbound variable" ERROR | works | works |
+  | splat interior | "unbound variable" ERROR | works | — |
+  | `if` condition | parse ERROR at the bare pipe | ERROR too — BIND FIRST (`let ok = … \| succeeds`) | — |
+  | `within` body interior / final | effect / capture | as any block | as any block |
+
+  THE RULE the observations support (the draft's whole-value-slot rule
+  died on the record-field row): **bare commands are legal at
+  STATEMENT positions and at a let-RHS/block-final value; inside any
+  expression FRAGMENT — an argument, a hole, an element, a field, a
+  condition — the wrapper is mandatory**, and the error a bare
+  command produces there is the unbound-variable teaching on its head
+  word. REDUNDANT ($() on a let-RHS) is allowed with no lint;
+  MEANING-CHANGING (!() gives unit where bare gives seq<string>) is a
+  choice, not redundancy. The if-condition takes NEITHER spelling
+  inline — bind the verdict first.
+
   **The interior-arming rule** [D:interior-arming], ONE rule with one
   carve-out: a command line in INTERIOR-STATEMENT position (a
   non-final statement of any block — if bodies, lambda bodies,
