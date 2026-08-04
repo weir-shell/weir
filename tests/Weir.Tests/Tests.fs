@@ -659,7 +659,7 @@ let warningTests =
 
               Expect.equal
                   (Weir.Script.stripComment "let s = \"\"\"x // y\"\"\" // real")
-                  "let s = \"\"\"x // y\"\"\" "
+                  "let s = \"\"\"x // y\"\"\""
                   "triple + a real comment after"
           }
           test "the repair closers understand raw kinds" {
@@ -5239,9 +5239,9 @@ let scriptTests =
     testList
         "Script machinery"
         [ test "comment stripper respects strings" {
-              Expect.equal (Weir.Script.stripComment "1 + 1 // note") "1 + 1 " ""
+              Expect.equal (Weir.Script.stripComment "1 + 1 // note") "1 + 1" ""
 
-              Expect.equal (Weir.Script.stripComment "sh -c \"echo a//b\" // real") "sh -c \"echo a//b\" " ""
+              Expect.equal (Weir.Script.stripComment "sh -c \"echo a//b\" // real") "sh -c \"echo a//b\"" ""
 
               Expect.equal (Weir.Script.stripComment "grep 'a//b' f") "grep 'a//b' f" ""
               Expect.equal (Weir.Script.stripComment "\"esc \\\" // still string\"") "\"esc \\\" // still string\"" ""
@@ -6277,10 +6277,10 @@ let agentFindingsTests =
           test "mid-token // is not a comment (URLs in command lines)" {
               Expect.equal
                   (Weir.Script.stripComment "curl https://x.y/z // real comment")
-                  "curl https://x.y/z "
+                  "curl https://x.y/z"
                   "URL survives, trailing comment stripped"
 
-              Expect.equal (Weir.Script.stripComment "let x = 1 // c") "let x = 1 " "spaced comment works"
+              Expect.equal (Weir.Script.stripComment "let x = 1 // c") "let x = 1" "spaced comment works"
               Expect.equal (Weir.Script.stripComment "// full line") "" "line-start comment works"
           }
           test "comment-only lines are transparent to assembly (runner-level filter)" {
@@ -6564,7 +6564,7 @@ let scannerTests =
           }
           test "single quotes hide //" { Expect.equal (Weir.Script.stripComment "echo 'a // b'") "echo 'a // b'" "" }
           test "comment after a closed string cuts" {
-              Expect.equal (Weir.Script.stripComment "print \"x\" // cut") "print \"x\" " ""
+              Expect.equal (Weir.Script.stripComment "print \"x\" // cut") "print \"x\"" ""
           }
           test "bareword URL survives (boundary rule)" {
               Expect.equal (Weir.Script.stripComment "curl https://x//y") "curl https://x//y" ""
@@ -8320,6 +8320,74 @@ let durationTests =
               | Ok _ -> failtest "expected the literal-law rejection"
           } ]
 
+let trailingCommentTests =
+    // one logical line's text out of the assembler
+    let asm (lines: (int * string) list) : string =
+        match Weir.Script.assemble lines with
+        | Ok [ ll ] -> ll.Text
+        | Ok lls -> failtest $"expected one logical line, got {lls.Length}"
+        | Error e -> failtest $"assemble failed: {e}"
+
+    testList
+        "Trailing comments [D:trailing-comments]"
+        [ test "the three-region table: expression comments, argv data, argv comments" {
+              // expression/statement territory: whitespace-preceded // is a comment
+              Expect.equal (asm [ 1, "let x = 5 // note" ]) "let x = 5" "the origin case parses"
+              // command argv, GLUED: data (the URL receipt)
+              Expect.equal
+                  (asm [ 1, "git clone http://a --format=a//b" ])
+                  "git clone http://a --format=a//b"
+                  "glued // is argv data"
+              // command argv, whitespace-preceded: a comment (option B)
+              Expect.equal
+                  (asm [ 1, "git clone $url // the mirror" ])
+                  "git clone $url"
+                  "a command line's own trailing comment"
+          }
+          test "every string form keeps its // as data" {
+              Expect.equal (asm [ 1, "let a = \"x // y\"" ]) "let a = \"x // y\"" "plain"
+              Expect.equal (asm [ 1, "let b = @\"x // y\"" ]) "let b = @\"x // y\"" "verbatim"
+              Expect.equal (asm [ 1, "let c = \"\"\"x // y\"\"\"" ]) "let c = \"\"\"x // y\"\"\"" "triple"
+              Expect.equal (asm [ 1, "let d = $\"x {1} // y\"" ]) "let d = $\"x {1} // y\"" "interp, hole included"
+          }
+          test "holes do not host comments: a // inside a hole is neither comment nor legal" {
+              // a to-EOL construct cannot nest inside a delimited one —
+              // the scan leaves it, the parser rejects it, LOCATED
+              match Weir.Parser.parseExpr "$\"{1 // 2}\"" with
+              | Error _ -> ()
+              | Ok e -> failtest $"expected a parse rejection, got {show e}"
+          }
+          test "yaml district content is BYTES; a commented HEAD still opens its district" {
+              match Weir.Script.assemble [ 1, "let m = yaml // the head takes a comment"; 2, "    note: a // b" ] with
+              | Ok [ ll ] ->
+                  Expect.stringContains ll.Text "let m = yaml" "head stripped and armed"
+                  Expect.stringContains ll.Text "a // b" "content bytes survive"
+                  Expect.isFalse (ll.Text.Contains "the head takes") "the head's comment is gone"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a trailing /// is an ordinary comment: docs stay attachment-only" {
+              Expect.equal (asm [ 1, "let x = 1 /// not a doc" ]) "let x = 1" ""
+          }
+          test "comment-only and blank lines keep their classes (zero movement)" {
+              Expect.equal (Weir.Script.classifyLine "// whole line") Weir.Script.LineKind.CommentOnly ""
+              Expect.equal (Weir.Script.classifyLine "   ") Weir.Script.LineKind.Blank ""
+              // a comment-only line between statements stays transparent
+              match Weir.Script.assemble [ 1, "let f y ="; 2, "    // interior comment"; 3, "    y + 1" ] with
+              | Ok [ ll ] -> Expect.stringContains ll.Text "y + 1" "body joined through the comment"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "the REPL and scripts agree: one scanner, applied once, idempotent" {
+              // the REPL pre-strips with the same stripComment the
+              // assembler now applies — double-stripping is a no-op
+              let l = "let x = 5 // note"
+              Expect.equal (Weir.Script.stripComment (Weir.Script.stripComment l)) (Weir.Script.stripComment l) ""
+
+              Expect.equal
+                  (asm [ 1, Weir.Script.stripComment l ])
+                  (asm [ 1, l ])
+                  "pre-stripped and raw assemble the same"
+          } ]
+
 let floatTests =
     let perr input =
         match Weir.Parser.parseExpr input with
@@ -8742,6 +8810,7 @@ let allTests =
           fsMemberTests
           durationTests
           floatTests
+          trailingCommentTests
           interpShowTests
           gapATests
           withinTests

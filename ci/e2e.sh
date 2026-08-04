@@ -3947,4 +3947,29 @@ out=$($BIN -e 'Float.near (Float.parse (show 1.5e-3)) 1.5e-3 0.0')
 [ "$out" = "true : bool" ] || fail "show/parse round-trip: $out"
 echo "e2e ok: floats (finite-only raises, teachings name spellings, toS lossless, round-trip)"
 
+# ---- trailing comments [D:trailing-comments] -------------------------------
+tcdir=$(mktemp -d)
+cat > "$tcdir/tc.weir" <<'WEOF'
+let x = 5 // a trailing comment parses now
+let url = "http://a" // glued // inside strings is data
+print $"{x} {url}" // done
+WEOF
+out=$($BIN "$tcdir/tc.weir")
+[ "$out" = '5 http://a' ] || fail "trailing comments on AOT: $out"
+out=$($BIN -e '5 // -e agrees')
+[ "$out" = "5 : int" ] || fail "-e strips too: $out"
+# fmt preserves trailing comments and is idempotent
+cat > "$tcdir/fmt.weir" <<'WEOF'
+let a  =  1 // close
+let bb = 2      // aligned by hand
+WEOF
+$BIN fmt "$tcdir/fmt.weir" >/dev/null 2>&1
+grep -qF 'let a = 1 // close' "$tcdir/fmt.weir" || fail "fmt respaces code, keeps comment"
+grep -qF 'let bb = 2      // aligned by hand' "$tcdir/fmt.weir" || fail "fmt preserves comment alignment"
+cp "$tcdir/fmt.weir" "$tcdir/fmt2.weir"
+$BIN fmt "$tcdir/fmt.weir" >/dev/null 2>&1
+cmp -s "$tcdir/fmt.weir" "$tcdir/fmt2.weir" || fail "fmt idempotent with trailing comments"
+rm -rf "$tcdir"
+echo "e2e ok: trailing comments (script + -e strip, strings stay data, fmt preserves + idempotent)"
+
 echo "e2e battery: all green"

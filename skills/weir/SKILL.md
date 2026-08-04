@@ -11,7 +11,12 @@ stops being true fails the build.
   `--check` for CI; `--qualify` converts `#loose` scripts to strict.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
-- Comments are `//`. A `///` line is a DOC comment: it attaches to the
+- Comments are `//`, full-line or TRAILING (`let x = 5 // note`) —
+  a comment needs line start or preceding whitespace, so glued `//`
+  in command argv (`http://a`, `--format=a//b`) stays data; a bare
+  unquoted `//` argv word reads as a comment (quote it: `"//"`).
+  `//` inside any string form is data; `$"{1 // 2}"` (a comment
+  inside a hole) is a parse error — write it outside the string. A `///` line is a DOC comment: it attaches to the
   declaration immediately below it (a blank line breaks the link; an
   attribute line is transparent — `///` above or below `[<...>]` both
   attach to the field) and

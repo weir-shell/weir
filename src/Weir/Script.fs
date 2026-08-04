@@ -88,7 +88,10 @@ let stripComment (line: string) : string =
             -1
             line
 
-    if cut >= 0 then line.Substring(0, cut) else line
+    // TrimEnd ON CUT only [D:trailing-comments]: the code before a
+    // comment never needs its gap (district heads match EndsWith), and
+    // an untouched line stays byte-equal
+    if cut >= 0 then line.Substring(0, cut).TrimEnd() else line
 
 // ---- `///` doc comments [D:doc-comments] -------------------------
 // Docs are OUT-OF-BAND metadata about a source LOCATION, never part of
@@ -778,6 +781,25 @@ let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) 
         Segments = (joinedStart, lineNo, indent) :: ll.Segments }
 
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
+    // trailing comments strip HERE, per physical line [D:trailing-comments]:
+    // stripComment is the whitespace-preceded rule (glued // — http://a,
+    // --format=a//b — stays data). Skipped: yaml district content (BYTES)
+    // and comment-ONLY lines (their class carries transparency semantics
+    // a blanked line would lose — blankSinceHead is the difference)
+    let numbered =
+        // the mask must see STRIPPED heads (a commented district head
+        // still opens its district), so the cut runs twice: once to
+        // find the content regions, once — content excluded — for real.
+        // TrimEnd only on actual cuts: untouched lines stay byte-equal
+        let mask = districtContentMask (numbered |> List.map (snd >> stripComment))
+
+        numbered
+        |> List.mapi (fun i (n, raw) ->
+            if (i < mask.Length && mask[i]) || (stripComment raw).Trim() = "" then
+                n, raw
+            else
+                n, stripComment raw)
+
     // the retired ! districts TEACH [D:district-retirement] — checked
     // up front over every non-content line (yaml district bodies are
     // bytes, never read: districtContentMask)
@@ -1508,7 +1530,15 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
             if mask[i] then
                 codes[i] <- Some "32" // strings, all three kinds
 
-        let commentCut = (stripComment line).Length
+        let commentCut =
+            // paint from the '//' itself, not from the cut (the cut
+            // TrimEnds [D:trailing-comments] — the gap stays uncolored)
+            let code = stripComment line
+
+            if code.Length = line.Length then
+                line.Length
+            else
+                line.IndexOf("//", code.Length)
 
         for i in commentCut .. line.Length - 1 do
             codes[i] <- Some "90" // comments override to EOL

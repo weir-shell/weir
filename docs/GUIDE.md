@@ -80,6 +80,21 @@ let row = ls |> Seq.head
 print (show row)
 ```
 
+## Comments
+
+`//` runs to end of line, full-line or trailing — and a comment needs
+a preceding space (or line start), which is what keeps `http://a` in
+a command line intact. Command lines take trailing comments too:
+
+```weir
+let retries = 3 // why: registry flakes under load
+git status --porcelain // the porcelain form is the stable one
+```
+
+`///` lines are doc comments: they attach to the declaration below
+and surface in hover and `--help`. A trailing `///` is just a
+comment — docs attach from their own line only.
+
 ## Values and pipelines
 
 Sequences are lazy; pipelines pull only what they need. Ranges are

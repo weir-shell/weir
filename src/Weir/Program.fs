@@ -5,6 +5,8 @@ open Weir.Ast
 open Weir.Types
 
 let private evalOnce (input: string) : int =
+    // -e agrees with scripts and the REPL [D:trailing-comments]
+    let input = Script.stripComment input
     let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv
 
     let resolver = Script.resolver typeEnv

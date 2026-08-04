@@ -22,6 +22,10 @@ type Cli = {
     /// upper bound for the number demos
     limit: int
 
+    [<Default 30s>]
+    /// a Duration flag: --timeout 90s or 1m30s parses at the boundary
+    timeout: Duration
+
     /// optional label stamped into the YAML demo
     tag: Option<string>
 }
@@ -117,7 +121,15 @@ let judge score =
 // ---- inferred constraints: == is generic, zero runtime checks ---------
 
 let same x y = x == y
-print (if same 1 1 && same "a" "a" then "generic == works" else "?")
+let sameInts = same 1 1
+let sameStrs = same "a" "a"
+print $"generic == on ints: {sameInts}; on strings: {sameStrs}"
+
+// ---- Duration and floats: time as a type, decimals at the edges -------
+
+let half = cli.timeout / 2
+print $"budget {cli.timeout}, half {half}, {Duration.toS cli.timeout} seconds"
+Duration.sleep 1ms
 
 // ---- seqs: Regex patterns, choose, seq patterns, fold -----------------
 
@@ -157,6 +169,8 @@ let jumps =
     |> Seq.pairwise
     |> Seq.map (fun (a, b) -> $"{b - a}")
 
+// print streams a seq<string> one line per element (the pointwise
+// spelling, `Seq.iter print`, does exactly the same — one wins here)
 jumps |> print
 
 // the scrape idiom: every match's groups, lazily, deduped
@@ -174,6 +188,7 @@ Str.rmatchAll @"(https://\S+)" text0
 let banner = "showcase"
 weir $echoArgs tag $banner (40 + 2) $"--label={banner}"
 
+// extras is typed seq<string> by the splat's demand on the next line
 let extras = []
 weir $echoArgs empty splat drops $@extras zero words
 
@@ -219,20 +234,20 @@ let peer =
 
 print $"peer {peer.host}:{peer.port} (note {show peer.note})"
 
-// ---- files, paths, glob (redirects are functions here) ----------------
-// unique FILES under the platform's own temp root — no mkdir needed
+// ---- files, paths, glob — inside `within tmp` -------------------------
+// the scope CREATES the directory and DELETES it at block end: the
+// cleanup is the scope, not a trailing chore (redirects are functions)
 
-let store = Path.combine tmpBase $"weir-showcase-{Self.pid}.txt"
-
-words |> File.write store
-["delta"] |> File.append store
-
-let back = File.read store
-print $"file roundtrip: {back |> Seq.length} lines in {Path.fileName store}"
-print $"first back: {back[0]}; missing 99th: {show (back |> Seq.tryItem 99)}"
-
-let txts = Path.glob (Path.combine tmpBase $"weir-showcase-{Self.pid}*.txt") |> Seq.force
-print $"glob sees {txts |> Seq.length} txt file(s); stem = {Path.stem store}"
+within tmp scratch
+    let store = Path.combine scratch "roundtrip.txt"
+    words |> File.write store
+    ["delta"] |> File.append store
+    let back = File.read store
+    print $"file roundtrip: {back |> Seq.length} lines in {Path.fileName store}"
+    // xs[0] raises out of range (it IS Seq.item 0); tryItem asks instead
+    print $"first back: {back[0]}; missing 99th: {show (back |> Seq.tryItem 99)}"
+    let txts = Path.glob (Path.combine scratch "*.txt") |> Seq.force
+    print $"glob sees {txts |> Seq.length} txt file(s); stem = {Path.stem store}"
 
 // ---- env overlays: sigils and the env district ------------------------
 
@@ -240,9 +255,11 @@ let envFile = Path.combine tmpBase $"weir-showcase-{Self.pid}.env"
 ["GREETING=bonjour"; "SECRET=hunter2"] |> File.write envFile
 let ev = Env.fromFile envFile
 
+// the SAME command twice: first CAPTURED under the overlay…
 let greetz = $ev(weir $probe --greet) |> Seq.head
 print greetz
 
+// …then as an EFFECT — streams to the terminal, raises on failure
 !ev(weir $probe --greet)
 
 let ready = true
@@ -251,6 +268,12 @@ let ready = true
 within env ev
     weir $probe --greet --out "scoped one"
     weir $probe --greet --out "scoped two"
+
+// within cd is the third scope kind (tmp ran the files section above):
+// the working directory changes for the block and restores at its end
+within cd helperDir
+    let here = pwd |> Seq.head
+    print $"cd-scoped: running beside {Path.fileName here}"
 
 // commands are ordinary statements inside any block — parsed and
 // checked before anything ran, no mode gate needed
@@ -271,7 +294,7 @@ let shouts =
     ["fan"; "out"]
     |> Seq.pmap (fun w -> $(weir $probe --out $w) |> Seq.head)
 
-shouts |> Seq.iter print
+shouts |> print
 
 // ---- YAML: nodes, adapters, and the checked template district ---------
 
@@ -315,12 +338,14 @@ let manifest name port tag pairs = yaml
 let doc0 = manifest "web" 8080 cli.tag [("app", "web"); ("tier", "edge")]
 doc0 |> to yaml |> print
 
-// ---- cleanup: the scratch files go (File.delete is real now) ----------
+// ---- cleanup: File.delete asserts its target exists -------------------
+// (the tmp scope already deleted its own files at block end)
 
-File.delete store
 File.delete envFile
 
 // ---- bindings shadow commands; ^ still reaches PATH -------------------
+// ORDER IS LOAD-BEARING: this section stays LAST — the binding shadows
+// the `weir` COMMAND for every line after it
 
 let weir = "a local binding now shadows the command name"
 print $"shadow: {weir}"
@@ -330,9 +355,12 @@ print $"^weir still reaches the binary: {v}"
 
 // ---- exit is explicit; unit prints nothing ----------------------------
 
+// the default run shows only the Info arm — WEIR_SHOWCASE_LEVEL=debug
+// (or =quiet) steers the others
 match level with
 | Debug -> printerr "debug: every section ran"
 | Info -> printerr "done"
+// unit prints NOTHING — quiet really is silent
 | Quiet -> print ()
 
 print "showcase complete"

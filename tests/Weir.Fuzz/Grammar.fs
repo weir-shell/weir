@@ -1456,6 +1456,19 @@ module Transform =
 
         ls
 
+    // trailing comments are transparent on any CODE line
+    // [D:trailing-comments]; district content is BYTES (appending would
+    // change output) and blanks keep their line class
+    let appendTrailing (rnd: Random) (lines: string list) : string list =
+        let mask = Weir.Script.districtContentMask lines
+
+        lines
+        |> List.mapi (fun i l ->
+            if l.Trim() <> "" && not (i < mask.Length && mask[i]) && rnd.Next 3 = 0 then
+                l + $" // fuzz tail {i}"
+            else
+                l)
+
     // site collectors for the spelling transforms
     let private allStmts (p: Program) : Stmt list =
         let acc = ResizeArray<Stmt>()

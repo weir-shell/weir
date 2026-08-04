@@ -910,7 +910,27 @@ quantity semantics now.
   line start or after whitespace (2026-07-20, the nuget receipt: a
   bareword `https://...` in a command line must survive; F# divergence
   row comment-boundary — `1// c` is a comment in F#, a parse error in
-  weir). **`Env.get : string -> Option<string>`** reads the process
+  weir). **Trailing comments hold everywhere [D:trailing-comments]** —
+  `let x = 5 // note` — stripped per PHYSICAL line in the assembler
+  (scripts, the REPL, and `-e` share the one scanner). The
+  three-region table:
+
+  | region | `//` means |
+  |---|---|
+  | inside any string form (incl. interpolation, holes and all) | data |
+  | command argv, GLUED (`http://a`, `--format=a//b`) | data |
+  | anywhere else, whitespace-preceded | comment to end of line |
+
+  A command line's own trailing comment is therefore legal
+  (`git clone $url // the mirror` — yaml's whitespace-preceded `#`
+  rule, one convention twice); the cost is that a bare unquoted `//`
+  argv word reads as a comment — quote it (`"//"`) to pass it. Holes
+  do not host comments (a to-EOL construct cannot nest in a delimited
+  one — `$"{1 // 2}"` is a located parse error). A trailing `///` is
+  an ordinary comment; docs stay attachment-only. Yaml district
+  content is BYTES and never scanned — and a comment on the district
+  HEAD line still opens the district. fmt preserves trailing comments
+  and their alignment verbatim. **`Env.get : string -> Option<string>`** reads the process
   environment (same receipt — the long-predicted gap's arrival);
   there is deliberately no `$NAME` expansion in command text
   (splices and interpolation are the typed spellings).
