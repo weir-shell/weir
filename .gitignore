@@ -70,3 +70,4 @@ __pycache__/
 
 # macos
 **/.DS_Store
+node_modules/

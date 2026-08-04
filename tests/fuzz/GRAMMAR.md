@@ -67,6 +67,13 @@ composition, not type complexity.
   are `==`-free but NOT comparison-free (`<`/`>` are admitted — Ord
   holds). Trailing comments ride the append-trailing metamorphic over
   these lines like any other code line.
+- retry/poll statements (top-level only): `let v = retry attempts=1
+  delay=0ms` / `poll timeout=1s interval=0ms` heads, an int body
+  block, a col-0 `until r` segment with its predicate block, and a
+  trailing print — single-attempt DETERMINISTIC (the threshold sits
+  below the value; the loop never sleeps). Exercises the two-segment
+  compound join (the col-0 `until` routing) and the key=value head
+  desugar on every deep run.
 - placement laws the probes established (generator-enforced): bare
   command lines and type declarations are top-level only; if bodies
   are expression territory (bare commands are statements there now [D:interior-arming]);
@@ -91,6 +98,9 @@ composition, not type complexity.
   int/string expression grammar (the Eq-exclusion wiring stated in
   the CAN entry), and float literal PATTERNS (declined by design
   [D:floats])
+- multi-attempt retry/poll (a failing attempt would SLEEP — fuzz runs
+  stay fast by construction), the bool-bodied unit form, and computed
+  options records (the desugar equivalence is unit-pinned instead)
 - `let ... in` inline form; param-ful lets / function defs;
   seq patterns; Regex patterns; tuples; copy-and-update literals;
   `Args.load` / `Env.load`; raw strings; `#loose` mode

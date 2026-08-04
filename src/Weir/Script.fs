@@ -303,6 +303,9 @@ let classifyPiece (piece: string) : PieceClass =
             // elif extends a compound exactly as else does [D:elif]
             || piece = "elif"
             || piece.StartsWith "elif "
+            // `until` extends retry/poll the same way [D:retry-poll]
+            || piece = "until"
+            || piece.StartsWith "until "
         then
             PieceKind.ElseHead
         elif piece.StartsWith "let " then
@@ -323,6 +326,10 @@ let classifyPiece (piece: string) : PieceClass =
         || piece.StartsWith "match "
         || piece.StartsWith "within "
         || piece.StartsWith "for "
+        // the bounded-loop pair [D:retry-poll] — the machine's 5th and
+        // 6th members, still no stack
+        || piece.StartsWith "retry "
+        || piece.StartsWith "poll "
       IsBangSigil =
         piece.StartsWith "!("
         || (piece.StartsWith "!"
@@ -404,6 +411,13 @@ let dangleOpensBlock (piece: string) : bool =
     || t = "do"
     || t.EndsWith " do"
     || isWithinHead t
+    // retry/poll heads and the until binder line open their blocks
+    // [D:retry-poll]
+    || t = "retry"
+    || t.StartsWith "retry "
+    || t = "poll"
+    || t.StartsWith "poll "
+    || t.StartsWith "until "
 
 /// A line-end district marker of ANY kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.
@@ -944,7 +958,17 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 )
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, blankSinceHead)
-                        elif raw[0] = ' ' || raw[0] = '\t' || raw[0] = '|' || inOpenBrace || inOpenLambda then
+                        elif
+                            raw[0] = ' '
+                            || raw[0] = '\t'
+                            || raw[0] = '|'
+                            // a col-0 `until` continues its retry/poll —
+                            // the col-0 `|` arm precedent [D:retry-poll]
+                            || raw.StartsWith "until "
+                            || raw.TrimEnd() = "until"
+                            || inOpenBrace
+                            || inOpenLambda
+                        then
                             let wsRun = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
                             let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
@@ -1230,8 +1254,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     // current piece: no sibling `;` — but siblings
                                                     // must ALIGN, and a shallower arm offside-closes
                                                     // deeper compounds [D:pipe-alignment]
+                                                    let isUntil = piece = "until" || piece.StartsWith "until "
+
                                                     match p.Lets with
-                                                    | (k, letLine) :: _ when indent <= k -> noBody letLine
+                                                    | (k, letLine) :: _ when indent <= k && not isUntil ->
+                                                        noBody letLine
                                                     | _ ->
                                                         // deeper groups die at this line's column
                                                         let groups =
@@ -1303,7 +1330,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         ParenDepth = depth
                                                                         Lambdas = lambdas
                                                                         PipeGroups = groups
-                                                                        LastWasPipe = true
+                                                                        LastWasPipe = not isUntil
                                                                         Compounds =
                                                                             compounds
                                                                             |> List.filter (fun (_, _, d) ->

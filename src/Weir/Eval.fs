@@ -1320,6 +1320,104 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEInt n -> VInt(int64 n)
     | TEDur n -> VDur n
     | TEFloat f -> VFloat f
+    | TERetry(isPoll, optsE, body, until) ->
+        let head = if isPoll then "poll" else "retry"
+
+        let fields =
+            match eval env optsE with
+            | VRecord(_, fs) -> fs
+            | v -> unreachable $"the checker rejects '{head}' options of {formatValue v}"
+
+        let dur name =
+            match fields[name] with
+            | VDur ms -> ms
+            | v -> unreachable $"the checker rejects a {name} of {formatValue v}"
+
+        // the two bounds [D:retry-poll]: retry counts ATTEMPTS (with an
+        // optional total-time ceiling), poll counts TIME — an unbounded
+        // loop is unrepresentable, not refused
+        let attempts, delayMs, timeoutMs =
+            if isPoll then
+                System.Int32.MaxValue, dur "interval", Some(dur "timeout")
+            else
+                (match fields["attempts"] with
+                 | VInt n -> int n
+                 | v -> unreachable $"the checker rejects attempts of {formatValue v}"),
+                dur "delay",
+                (match fields["timeout"] with
+                 | VUnion("Some", Some(VDur t)) -> Some t
+                 | _ -> None)
+
+        if not isPoll && attempts < 1 then
+            failwith $"{head}: attempts must be at least 1, got {attempts}"
+
+        if delayMs < 0L then
+            let key = if isPoll then "interval" else "delay"
+            failwith $"{head}: a negative {key} ({formatDuration delayMs})"
+
+        match timeoutMs with
+        | Some t when t <= 0L -> failwith $"{head}: timeout must be positive, got {formatDuration t}"
+        | _ -> ()
+
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        // the wait is CANCELLABLE from the start [D:retry-poll]: the
+        // timeout ceiling cancels a pending delay instead of waiting it
+        // out; an external token can join the source later
+        use cts = new System.Threading.CancellationTokenSource()
+
+        match timeoutMs with
+        | Some t -> cts.CancelAfter(System.TimeSpan.FromTicks(t * System.TimeSpan.TicksPerMillisecond))
+        | None -> ()
+
+        let predicate (v: Value) =
+            match until with
+            | Some(b, pred) ->
+                match eval (Map.add b v env) pred with
+                | VBool ok -> ok
+                | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
+            | None ->
+                match v with
+                | VBool ok -> ok
+                | pv -> unreachable $"the checker rejects a {head} body of {formatValue pv}"
+
+        let exhausted (n: int) =
+            if isPoll then
+                failwith $"poll: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s))"
+            else
+                failwith $"retry: exhausted {attempts} attempt(s) over {formatDuration sw.ElapsedMilliseconds}"
+
+        let rec loop (n: int) =
+            // raises PROPAGATE [D:retry-poll]: retry retries on the
+            // predicate, never on exceptions — command failure becomes
+            // data through the reifier family
+            let v = eval env body
+
+            if predicate v then
+                match until with
+                | Some _ -> v
+                | None -> VUnit
+            elif n >= attempts || cts.IsCancellationRequested then
+                exhausted n
+            else
+                let timedOut =
+                    if delayMs > 0L then
+                        try
+                            System.Threading.Tasks.Task
+                                .Delay(
+                                    System.TimeSpan.FromTicks(delayMs * System.TimeSpan.TicksPerMillisecond),
+                                    cts.Token
+                                )
+                                .Wait()
+
+                            false
+                        with _ ->
+                            true
+                    else
+                        cts.IsCancellationRequested
+
+                if timedOut then exhausted n else loop (n + 1)
+
+        loop 1
     | TEStr s -> VStr s
     | TEBool b -> VBool b
     | TEUnit -> VUnit

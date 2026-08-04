@@ -228,6 +228,18 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
   function); `$()` covers sub-expression positions. `function` is
   reserved (write `fun x -> match x with`).
+- Bounded loops are `retry`/`poll` compound forms (no `while`):
+  `retry attempts=5 delay=30s` + an indented body block, then
+  optionally `until r` + an indented predicate block binding the
+  body's value. A `bool` body IS the predicate (no `until`, yields
+  unit); a value body REQUIRES `until` and yields the value.
+  `poll timeout=5m interval=10s` is the time-bounded twin. The head
+  desugars over a record — `retry { Retry.defaults with attempts = 5 }`
+  is the same form, so options can be computed and shared. Exhaustion
+  RAISES; raises inside the body propagate (retry on the predicate,
+  not on exceptions — use `| succeeds`/`| complete` to make failure
+  data). Key values are atoms: parenthesize compounds
+  (`delay=(d * 2)`).
 - No `let rec`, no mutation. Iteration: pipelines TRANSFORM
   (`|> Seq.map/where/fold`); `for x in xs do body` EFFECTS (it IS
   `Seq.iter` — desugared, eager, body must be unit). A bare command

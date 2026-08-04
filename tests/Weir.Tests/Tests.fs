@@ -1711,7 +1711,12 @@ let completionTests =
                         // the effect loop's pair [D:for-do] — offered like
                         // if/then (for starts, do continues)
                         "for"
-                        "do" ]
+                        "do"
+                        // the bounded-loop trio [D:retry-poll] — retry/poll
+                        // start statements, until continues (the for/do shape)
+                        "retry"
+                        "poll"
+                        "until" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
@@ -8328,6 +8333,92 @@ let durationTests =
               | Ok _ -> failtest "expected the literal-law rejection"
           } ]
 
+let retryPollTests =
+    let sx (input: string) = show (parse input)
+
+    testList
+        "retry / poll [D:retry-poll]"
+        [ test "the desugar is BYTE-IDENTICAL to the manual record spelling" {
+              Expect.equal
+                  (sx "retry attempts=5 delay=30s (1 == 1)")
+                  (sx "retry { Retry.defaults with attempts = 5; delay = 30s } (1 == 1)")
+                  "key=value builds the same nodes"
+
+              Expect.equal
+                  (sx "poll timeout=5m interval=10s (1 == 1)")
+                  (sx "poll { Poll.defaults with timeout = 5m; interval = 10s } (1 == 1)")
+                  ""
+          }
+          test "ruling 5's table, all four rows" {
+              // bool body, no until: yields UNIT — legal as a bare statement
+              Expect.equal (checkOk "retry attempts=2 delay=0ms (1 == 1)").Ty TUnit "row 1"
+
+              // bool body WITH until: rejected naming the fix and the alternative
+              let terr = checkErr "retry attempts=2 delay=0ms (1 == 1) until r r"
+              Expect.stringContains terr.Message "it IS the predicate — drop the until segment" "row 2 fix"
+              Expect.stringContains terr.Message "a different condition belongs in the body" "row 2 alternative"
+
+              // value body with until: yields 'a
+              Expect.equal (checkOk "retry attempts=2 delay=0ms (1 + 1) until r (r > 0)").Ty TInt "row 3"
+
+              // value body without until: rejected for having no predicate
+              let terr2 = checkErr "retry attempts=2 delay=0ms (1 + 1)"
+              Expect.stringContains terr2.Message "needs a bool body (the body IS the predicate)" "row 4"
+              Expect.stringContains terr2.Message "add `until r` to bind the value" "row 4 names the fix"
+          }
+          test "retry yields the successful attempt's value; poll the same (they differ by BOUND)" {
+              expectValue "retry attempts=3 delay=0ms (2 + 2) until r (r == 4)" (VInt 4L)
+              expectValue "poll timeout=2s interval=0ms (2 + 2) until r (r == 4)" (VInt 4L)
+          }
+          test "exhaustion raises with attempts AND elapsed; poll with its timeout" {
+              let ex =
+                  Expect.throwsC (fun () -> run "retry attempts=3 delay=0ms (1 == 2)" |> ignore) id
+
+              Expect.stringContains ex.Message "retry: exhausted 3 attempt(s) over" "attempts + elapsed"
+
+              let ex2 =
+                  Expect.throwsC (fun () -> run "poll timeout=40ms interval=10ms (1 == 2)" |> ignore) id
+
+              Expect.stringContains ex2.Message "poll: timed out after" ""
+          }
+          test "unbounded is UNREPRESENTABLE; the floor validates: attempts=0 raises naming it" {
+              let ex =
+                  Expect.throwsC (fun () -> run "retry attempts=0 delay=0ms (1 == 1)" |> ignore) id
+
+              Expect.stringContains ex.Message "attempts must be at least 1, got 0" ""
+
+              let ex2 =
+                  Expect.throwsC
+                      (fun () -> run "retry attempts=2 delay=(0s - 1s) (1 == 1) until r (r > 9)" |> ignore)
+                      id
+
+              Expect.stringContains ex2.Message "" "negative delay raises"
+          }
+          test "a duplicate key is a located parse error naming the key" {
+              match Weir.Parser.parseExpr "retry attempts=2 attempts=3 delay=0ms (1 == 1)" with
+              | Error m -> Expect.stringContains m "duplicate key 'attempts' — each option is given once" ""
+              | Ok e -> failtest $"expected rejection, got {show e}"
+          }
+          test "until's binder is scoped to the PREDICATE segment only" {
+              let terr = checkErr "retry attempts=2 delay=0ms (r + 1) until r (r > 0)"
+              Expect.stringContains terr.Message "unbound variable 'r'" "the body cannot see the binder"
+          }
+          test "computed options work: the underlying record form is writable" {
+              expectValue "let fast = { Retry.defaults with attempts = 2; delay = 0ms } in retry fast (1 == 1)" VUnit
+          }
+          test "poll's timeout CANCELS a pending interval instead of waiting it out" {
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+
+              Expect.throwsC (fun () -> run "poll timeout=80ms interval=10s (1 == 2)" |> ignore) id
+              |> ignore
+
+              sw.Stop()
+
+              Expect.isTrue
+                  (sw.ElapsedMilliseconds < 2000L)
+                  $"waited {sw.ElapsedMilliseconds}ms — the 10s interval was not cancelled"
+          } ]
+
 let tasksUnderneathTests =
     testList
         "Parallel fan-out for I/O-bound arms [D:tasks-underneath]"
@@ -9091,6 +9182,7 @@ let allTests =
           floatBoundaryTests
           dedentJoinTests
           tasksUnderneathTests
+          retryPollTests
           trailingCommentTests
           interpShowTests
           gapATests

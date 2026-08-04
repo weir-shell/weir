@@ -851,6 +851,37 @@ floor remains for hand-rolled shapes: `Args.flag "--clean" "-c"` and
 `Args.value "--out"` scan the raw `Self.args` seq, and multi-value options
 reshape as one flag per value (`--stack X --env Y`).
 
+## Retrying and polling
+
+The bounded loops are compound forms: a `key=value` head, a block
+body whose last statement is the value, and an `until` segment
+binding that value for the condition. A `bool` body is its own
+predicate and the form yields unit:
+
+```weir
+retry attempts=3 delay=100ms
+    weir -e "print 1" | succeeds
+```
+
+To keep the successful attempt's output, yield a value and bind it
+in `until`:
+
+```weir
+let out = retry attempts=3 delay=100ms
+    let r = weir -e "print 42" | complete
+    r
+until r
+    r.exitCode == 0
+print (out.stdout |> Seq.head)
+```
+
+`poll` is the same shape bounded by time instead of attempts
+(`poll timeout=5m interval=10s` — wait-for-ready loops). Exhaustion
+raises naming the attempts and elapsed time; an unbounded loop is
+unrepresentable. Options are a record underneath — compute and share
+them: `let fast = { Retry.defaults with attempts = 3 }` then
+`retry fast`.
+
 ## Parallelism
 
 `Seq.pmap` / `Seq.piter` fan out over a seq: parallel execution,

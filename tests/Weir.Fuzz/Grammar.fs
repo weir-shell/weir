@@ -70,6 +70,10 @@ type Stmt =
     // show/interp are the float surface (the first class decision to
     // shape the generator; stated in GRAMMAR.md)
     | SFloat of name: string * a: float * op: string * b: float * cmp: float option
+    // retry/poll [D:retry-poll]: single-attempt deterministic shapes —
+    // the until threshold sits below the value, so the first attempt
+    // succeeds and the loop never sleeps
+    | SRetryPoll of name: string * isPoll: bool * value: int
     | SIf of bid: int * Cond * Stmt list // unit body
     | STypeRec of string * (string option * string * VTy) list * RecStyle // (/// doc, field, ty) [D:doc-help]
     | STypeUnion of string * (string * VTy option) list * multiline: bool * bid: int
@@ -231,6 +235,18 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
     let rec emitStmt (ind: int) (s: Stmt) =
         match s with
         | SLet(v, e) -> emit ind $"let {v} = {renderExpr e}"
+        | SRetryPoll(v, isPoll, value) ->
+            emit
+                ind
+                (if isPoll then
+                     "let " + v + " = poll timeout=1s interval=0ms"
+                 else
+                     "let " + v + " = retry attempts=1 delay=0ms")
+
+            emit (ind + 4) $"{value}"
+            emit ind "until r"
+            emit (ind + 4) $"r > {value - 1}"
+            emit ind $"print $\"{{{v}}}\""
         | SFloat(v, a, op, b, cmp) ->
             emit ind $"let {v} = {formatFloat a} {op} {formatFloat b}"
             emit ind $"print $\"{{{v}}}\""
@@ -625,6 +641,7 @@ let rec stmtDefs (s: Stmt) : string list =
     | SCmdLet(g, _) -> [ g ]
     | SYaml(_, d, _) -> [ d ]
     | SFloat(v, _, _, _, _) -> [ v ]
+    | SRetryPoll(v, _, _) -> [ v ]
     | SMapLambda(_, n, _, _, _, _, _) -> [ n ]
     | SIterLambda _
     | SPrint _
@@ -636,6 +653,7 @@ let rec stmtDefs (s: Stmt) : string list =
 let rec stmtUses (s: Stmt) : string list =
     match s with
     | SFloat _ -> []
+    | SRetryPoll _ -> []
     | SLet(_, e) -> exprUses e
     | SLetBlock(_, b) ->
         let localDefs = b.Body |> List.collect stmtDefs |> Set.ofList
@@ -982,6 +1000,16 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
 
                       return SYaml(bid, d, entries), { sc with StrSeqs = sc.StrSeqs }
                   }
+          if not inBlock then
+              yield
+                  2,
+                  gen {
+                      let v, sc = freshVal sc
+                      let! isPoll = Gen.elements [ false; true ]
+                      let! value = Gen.choose (1, 99)
+                      return SRetryPoll(v, isPoll, value), sc
+                  }
+
           if not inBlock then
               yield
                   3,

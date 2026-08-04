@@ -42,6 +42,10 @@ and ExprKind =
     // a duration literal: 30s / 250ms, stored as ms [D:duration]
     | EDur of ms: int64
     | EFloat of value: float
+    // retry/poll [D:retry-poll]: a two-segment compound — options
+    // record, block body yielding 'a, optional `until` binder+predicate
+    // block (absent = the body IS the predicate, form yields unit)
+    | ERetry of poll: bool * opts: Expr * body: Expr * until: ((string * Span) * Expr) option
     | EStr of string
     | EBool of bool
     | EUnit
@@ -180,6 +184,9 @@ let exprChildren (e: Expr) : Expr list =
     | ECmd(_, args, envO) -> args @ Option.toList envO
     | ESplat e -> [ e ]
     | EUpdate(src, ups) -> src :: (ups |> List.map snd)
+    | ERetry(_, opts, body, until) ->
+        [ opts; body ]
+        @ (until |> Option.map (snd >> List.singleton) |> Option.defaultValue [])
     | EInterp parts ->
         parts
         |> List.choose (function
@@ -224,6 +231,12 @@ let rec sexpr (e: Expr) : string =
     | EInt n -> string n
     | EDur n -> formatDuration n
     | EFloat f -> formatFloat f
+    | ERetry(isPoll, opts, body, until) ->
+        let head = if isPoll then "poll" else "retry"
+
+        match until with
+        | Some((b, _), pred) -> $"({head} {sexpr opts} {sexpr body} (until {b} {sexpr pred}))"
+        | None -> $"({head} {sexpr opts} {sexpr body})"
     | EStr s -> $"\"{s}\""
     | EBool b -> if b then "true" else "false"
     | EVar x -> x

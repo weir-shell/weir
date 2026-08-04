@@ -1600,6 +1600,51 @@ IEEE semantics nowhere else.
     (`--help` renders it), and the parse/render pair agrees —
     `--rate 0.5` round-trips through `show`.
 
+## retry / poll — the bounded loops [D:retry-poll]
+
+Two-segment compound forms, the machine `if`/`match` (and, since the
+dedent session, `within`/`for`) already run on:
+
+    let out = retry attempts=5 delay=30s
+        az deploy --name $n | complete
+    until r
+        r.exitCode == 0
+
+- **The head is `key=value` pairs desugaring over a record**:
+  `retry attempts=5` IS `retry { Retry.defaults with attempts = 5 }`
+  (byte-identical AST, pinned) — so options compute and share
+  (`let fast = { Retry.defaults with attempts = 3 }` then
+  `retry fast`), a misspelled key gets the record's own field error,
+  a duplicate key is a located parse error, order is free, and
+  `Retry.defaults` / `Poll.defaults` are the documented resting
+  values. Key values are atoms (parenthesize a compound). The types
+  are the reference: `Retry = { attempts: int; delay: Duration;
+  timeout: Option<Duration> }`, `Poll = { timeout: Duration;
+  interval: Duration }`.
+- **The body is a block yielding `'a`** (bare commands are ordinary
+  interior statements); **`until` binds the value in a segment
+  header** — not a lambda (`for k, v in` is the precedent) — and its
+  block yields the condition. **A `bool` body IS its own predicate**:
+  no `until` segment, the form yields UNIT (the bool was consumed —
+  and a bool-yielding retry in statement position must not trip the
+  discard rule). The four cases: bool without `until` = unit; bool
+  WITH `until` = rejected (drop the segment; a different condition
+  belongs in the body); `'a` with `until` = `'a`; `'a` without
+  `until` = rejected (no predicate — the reifier family turns
+  command failure into the bool you need).
+- **`retry` bounds by ATTEMPTS** (plus an optional `timeout=` total
+  ceiling); **`poll` bounds by TIME**. Both return the successful
+  attempt's value — they differ by their bound, not their return.
+  **An unbounded loop is UNREPRESENTABLE**, not refused: there is no
+  key that spells forever, and `attempts=0` raises naming the floor.
+- **Raises PROPAGATE** — the loop retries on the predicate, never on
+  exceptions; command failure becomes data through the reifiers
+  (`| complete`, `| succeeds`).
+- **Exhaustion raises** naming attempts and elapsed (`retry:
+  exhausted 5 attempt(s) over 1.2s`; `poll: timed out after …`). The
+  wait is CANCELLABLE: a `timeout=` ceiling cancels a pending delay
+  rather than sleeping it out.
+
 ## Parallel fan-out — sized for I/O-bound arms [D:tasks-underneath]
 
 weir orchestrates processes, so a `pmap`/`piter` arm typically

@@ -92,6 +92,9 @@ module.exports = grammar({
         'module',
         'import',
         'within',
+        'retry',
+        'poll',
+        'until',
       ),
 
     boolean: _ => choice('true', 'false'),

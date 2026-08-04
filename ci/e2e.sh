@@ -4026,4 +4026,30 @@ took=$(( $(now_ms) - start_ms ))
 echo "e2e ok: tasks underneath (100 spawning arms at the ceiling in ${took}ms, order + scopes hold)"
 rm -rf "$tudir"
 
+# ---- retry / poll [D:retry-poll] -------------------------------------------
+rpdir=$(mktemp -d)
+cat > "$rpdir/rp.weir" <<'WEOF'
+let out = retry attempts=5 delay=10ms
+    let r = weir -e "print 42" | complete
+    r
+until r
+    r.exitCode == 0
+print (out.stdout |> Seq.head)
+let fast = { Retry.defaults with attempts = 2; delay = 0ms }
+retry fast (1 == 1)
+print "computed-options-ok"
+WEOF
+out=$(PATH="$(dirname $BIN):$PATH" $BIN "$rpdir/rp.weir")
+[ "$out" = '42
+computed-options-ok' ] || fail "retry on AOT: $out"
+out=$($BIN -e 'retry attempts=2 delay=0ms (1 == 2)' 2>&1) && fail "exhaustion must raise" || true
+echo "$out" | grep -qF "retry: exhausted 2 attempt(s) over" || fail "exhaustion names attempts+elapsed: $out"
+start_ms=$(now_ms)
+out=$($BIN -e 'poll timeout=80ms interval=10s (1 == 2)' 2>&1) && fail "poll timeout must raise" || true
+took=$(( $(now_ms) - start_ms ))
+echo "$out" | grep -qF "poll: timed out after" || fail "poll exhaustion: $out"
+[ "$took" -lt 5000 ] || fail "the pending 10s interval was not cancelled (took ${took}ms)"
+rm -rf "$rpdir"
+echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, cancellable wait)"
+
 echo "e2e battery: all green"

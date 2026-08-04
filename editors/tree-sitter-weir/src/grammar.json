@@ -308,6 +308,18 @@
         {
           "type": "STRING",
           "value": "within"
+        },
+        {
+          "type": "STRING",
+          "value": "retry"
+        },
+        {
+          "type": "STRING",
+          "value": "poll"
+        },
+        {
+          "type": "STRING",
+          "value": "until"
         }
       ]
     },

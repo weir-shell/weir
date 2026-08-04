@@ -35,8 +35,11 @@ corpus acceptance: `tree-sitter parse` over every `.weir` in
 ## Known nits
 
 - `$"... {{literal braces}} ..."` — the interp rules mis-lex a
-  `{{`-escape adjacent to a closing quote (2 ERROR nodes on
-  examples/showcase.weir line 44; present since before the
+  `{{`-escape adjacent to a closing quote (ONE ERROR node,
+  examples/showcase.weir line 81 as of 2026-08-04 — the line moved
+  with the file and the node count was re-verified against the
+  pre-retry-poll grammar; an earlier entry said two, which
+  double-counted the parse summary line. Present since before the
   block-scalars session). The corpus-acceptance rule tolerates it
   until a coloring session takes it; the fix likely lives in the
   `interp_text`/`interp_escape` token ordering.

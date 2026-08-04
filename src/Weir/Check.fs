@@ -86,6 +86,7 @@ and TypedKind =
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
     | TEDur of ms: int64
     | TEFloat of value: float
+    | TERetry of poll: bool * opts: TypedExpr * body: TypedExpr * until: (string * TypedExpr) option
     | TESeq of first: TypedExpr * rest: TypedExpr
     | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
@@ -1324,6 +1325,50 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEFloat f
               Ty = TFloat
               Span = expr.Span }
+    | ERetry(isPoll, opts, body, until) ->
+        result {
+            let famTy = TNamed((if isPoll then "Poll" else "Retry"), [])
+            let head = if isPoll then "poll" else "retry"
+            let! topts = check ctx env opts famTy
+            let! tbody = infer ctx env body
+
+            match until with
+            | Some((b, _), pred) ->
+                // a bool body IS its own predicate [D:retry-poll]: an
+                // until segment on top of one is a contradiction
+                match resolve ctx tbody.Ty with
+                | TBool ->
+                    return!
+                        err
+                            body.Span
+                            $"this {head} body yields bool, so it IS the predicate — drop the until segment (a different condition belongs in the body itself)"
+                | bodyTy ->
+                    let env' =
+                        { env with
+                            Values = Map.add b (generalize bodyTy) env.Values }
+
+                    let! tpred = check ctx env' pred TBool
+
+                    return
+                        { Kind = TERetry(isPoll, topts, tbody, Some(b, tpred))
+                          Ty = bodyTy
+                          Span = expr.Span }
+            | None ->
+                match resolve ctx tbody.Ty with
+                | TBool
+                | TVar _ ->
+                    do! bind ctx env body.Span TBool tbody.Ty
+
+                    return
+                        { Kind = TERetry(isPoll, topts, tbody, None)
+                          Ty = TUnit
+                          Span = expr.Span }
+                | bodyTy ->
+                    return!
+                        err
+                            body.Span
+                            $"{head} without an until segment needs a bool body (the body IS the predicate); this one yields {formatTy bodyTy} — add `until r` to bind the value, or end the body with a condition (cmd | succeeds)"
+        }
     | EStr s ->
         Ok
             { Kind = TEStr s
@@ -2981,6 +3026,8 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
         | TEDur _ -> te.Kind
         | TEFloat _ -> te.Kind
+        | TERetry(ip, o, b, u) ->
+            TERetry(ip, finalizeExpr ctx o, finalizeExpr ctx b, u |> Option.map (fun (n, p) -> n, finalizeExpr ctx p))
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
         | TEWithin(k, n, a, b) -> TEWithin(k, n, a |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
         | TEEnvLoad _
@@ -3152,6 +3199,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEIf(cnd, t, e) -> cnd :: t :: Option.toList e
     | TEDur _ -> []
     | TEFloat _ -> []
+    | TERetry(_, o, b, u) -> [ o; b ] @ (u |> Option.map (snd >> List.singleton) |> Option.defaultValue [])
     | TESeq(a, b) -> [ a; b ]
     | TEWithin(_, _, a, b) -> Option.toList a @ [ b ]
     | TEList items -> items

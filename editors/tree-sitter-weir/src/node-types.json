@@ -416,12 +416,20 @@
     "named": false
   },
   {
+    "type": "poll",
+    "named": false
+  },
+  {
     "type": "raw_string",
     "named": true
   },
   {
     "type": "raw_verbatim",
     "named": true
+  },
+  {
+    "type": "retry",
+    "named": false
   },
   {
     "type": "sigil",
@@ -462,6 +470,10 @@
   {
     "type": "type_param",
     "named": true
+  },
+  {
+    "type": "until",
+    "named": false
   },
   {
     "type": "when",

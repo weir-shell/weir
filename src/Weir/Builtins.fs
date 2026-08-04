@@ -1800,6 +1800,14 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Env", envMembers
       "Log", logMembers
       "Duration", durationMembers
+      // the bounded-loop option templates [D:retry-poll]: the resting
+      // values the key=value head desugars over
+      "Retry",
+      [ "defaults",
+        TNamed("Retry", []),
+        VRecord("Retry", Map [ "attempts", VInt 5L; "delay", VDur 1000L; "timeout", VUnion("None", None) ]) ]
+      "Poll",
+      [ "defaults", TNamed("Poll", []), VRecord("Poll", Map [ "timeout", VDur 60000L; "interval", VDur 1000L ]) ]
       "Float", floatMembers ]
 
 // ---- builtin docs [D:builtin-docs] (PLAN-doc-comments half 2) --------
@@ -2287,6 +2295,14 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Float.tryParse",
           (bd "Float.parse as an Option — None instead of the raise." (Some "Float.tryParse \"nope\"") None
            |> named [ "text" ])
+
+          // ---- retry/poll option templates [D:retry-poll] --------------
+          "Retry.defaults",
+          bd
+              "The retry template: attempts = 5, delay = 1s, timeout = None. `retry attempts=5` is `retry { Retry.defaults with attempts = 5 }`."
+              None
+              None
+          "Poll.defaults", bd "The poll template: timeout = 1m, interval = 1s." None None
 
           // ---- Duration: time as a type [D:duration] -------------------
           "Duration.ms",

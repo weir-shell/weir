@@ -10,6 +10,10 @@ open Weir.Ast
 let keywords =
     Set
         [ "within"
+          // the bounded-loop pair and their predicate segment [D:retry-poll]
+          "retry"
+          "poll"
+          "until"
           "let"
           "in"
           "fun"
@@ -1246,6 +1250,76 @@ let private withinExpr =
                           Span = { Start = pos p; End = body.Span.End } }
             | other -> failFatally $"unknown scope kind '{other}' — within takes tmp, cd, or env"
 
+// retry/poll [D:retry-poll]: `retry attempts=5 delay=30s` desugars AT
+// PARSE to `retry { Retry.defaults with attempts = 5; delay = 30s }` —
+// the SAME nodes the manual spelling builds, so the equivalence is by
+// construction. Keys are atoms (parenthesize compounds — the within-cd
+// argument rule); with no keys, ONE atom is the options value
+// (`retry fast`); the head never falls through to the body.
+let private retryExpr =
+    getPosition .>>. ((keyword "retry" >>% false) <|> (keyword "poll" >>% true))
+    >>= fun (p, isPoll) ->
+        let famName = if isPoll then "Poll" else "Retry"
+
+        let kv =
+            attempt (identSpanned .>> pchar '=')
+            .>>. (postfixAtom <?> "the key's value (an atom; parenthesize a compound)")
+
+        many kv
+        >>= fun pairs ->
+            (match
+                pairs
+                |> List.groupBy (fun ((k, _), _) -> k)
+                |> List.tryFind (fun (_, g) -> g.Length > 1)
+             with
+             | Some(k, g) ->
+                 // anchor ON the second spelling [D:anchor-before-read]
+                 let ((_, ks), _) = g[1]
+                 failFatallyAtCol ks.Start.Col $"duplicate key '{k}' — each option is given once"
+             | None -> preturn ())
+            >>= fun () ->
+                (match pairs with
+                 | [] ->
+                     // the record form: one atom, exactly as within cd
+                     let headWord = if isPoll then "poll" else "retry"
+                     postfixAtom <?> $"{headWord}'s options (key=value pairs or a {famName} record)"
+                 | _ ->
+                     let defaults =
+                         { Kind =
+                             EField(
+                                 { Kind = EVar famName
+                                   Span = { Start = pos p; End = pos p } },
+                                 "defaults",
+                                 { Start = pos p; End = pos p }
+                             )
+                           Span = { Start = pos p; End = pos p } }
+
+                     preturn
+                         { Kind = EUpdate(defaults, pairs |> List.map (fun ((k, ks), v) -> [ (k, ks) ], v))
+                           Span =
+                             { Start = pos p
+                               End = (List.last pairs |> snd).Span.End } })
+                >>= fun optsE ->
+                    opt (str_ws ";" <|> str_ws sibSepStr)
+                    >>. (withExprParen false seqExpr <?> "the retry body")
+                    >>= fun body ->
+                        opt (
+                            keyword "until" >>. identSpanned
+                            >>= fun (b, bspan) ->
+                                (opt (str_ws ";" <|> str_ws sibSepStr))
+                                >>. (withPatNames { PKind = PVar b; PSpan = bspan } (withExprParen false seqExpr)
+                                     <?> "the until predicate")
+                                |>> fun pred -> ((b, bspan), pred)
+                        )
+                        |>> fun until ->
+                            let endSpan =
+                                match until with
+                                | Some(_, pr) -> pr.Span.End
+                                | None -> body.Span.End
+
+                            { Kind = ERetry(isPoll, optsE, body, until)
+                              Span = { Start = pos p; End = endSpan } }
+
 let private matchExpr =
     pipe3
         getPosition
@@ -1811,6 +1885,7 @@ opp.TermParser <-
           matchExpr
           forExpr
           withinExpr
+          retryExpr
           yamlDistrict
           fromExpr
           toExpr
@@ -1821,7 +1896,18 @@ updateSourceRef.Value <-
      u.TermParser <- appChain
      u.ExpressionParser)
 
-segOpp.TermParser <- choice [ lambda; letIn; ifExpr; matchExpr; withinExpr; fromExpr; toExpr; appChain ]
+segOpp.TermParser <-
+    choice
+        [ lambda
+          letIn
+          ifExpr
+          matchExpr
+          withinExpr
+          retryExpr
+          fromExpr
+          toExpr
+          appChain ]
+
 exprRef.Value <- opp.ExpressionParser
 
 commaExprRef.Value <-

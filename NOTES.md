@@ -1,5 +1,57 @@
 # Spike Notes
 
+## retry/poll: the bounded loops (2026-08-04)
+
+The framing arrived settled and held; every seam the implementation
+met had a precedent to inherit. The heads are OpensCompound members
+five and six (still no stack). The head parser consumes key=value
+pairs and desugars AT PARSE into the exact nodes the manual record
+spelling builds, so the byte-identical pin is by construction. With
+no keys, one atom is the options value — the within-cd consumption
+rule, same teaching class for the empty head (which is therefore not
+a form: bounds are explicit at the site or in the record you pass).
+
+The one piece with no precedent to inherit whole: `until` at column
+0. The bless's own example puts it there, and the col-0 law closes
+statements — the fix is the col-0 `|` arm's routing (a third member
+of that exemption), plus two carve-outs where until rides the
+else/arm branch: it skips the let-needs-a-body guard (the let HAS
+its body — the retry block), and it never reads as a pipe for
+alignment purposes.
+
+The keyword-completion inventory tripwire fired exactly as designed
+— retry/poll/until arrived and the suite refused them until the
+completion decision was recorded (offered, the for/do shape). The
+POSITIONS sweep: retry/poll are expression forms — legal at
+statement (unit rule applies to the bool form's unit), let-RHS
+(top-level and block), and paren interior (pinned via the
+computed-options and worked examples); excluded from command-arg
+splices and interp holes by the scalar law (a Retry value is a
+record — nothing new to rule); sigil interiors are command grammar
+and take no expression pins.
+
+The rulings whose reasoning is worth one line beyond the row: raises
+PROPAGATE because catching would make retry a try/catch in disguise
+(the not-doing list has try/catch, and the reifiers already turn
+command failure into data); unbounded is UNREPRESENTABLE rather
+than refused because no key spells forever — a better property than
+a guard; and the cancellable wait landed with timeout= as its first
+customer (poll timeout=80ms with a 10s interval exhausts in
+milliseconds — wall-clock pinned, unit and e2e).
+
+Tree-sitter: keywords added to all three grammars; regeneration
+churned the generated boilerplate (cli version drift — ABI 14 held);
+the retry sample parses 0 ERROR and the showcase's ERROR is
+PRE-EXISTING (verified against the pre-change grammar): it is ONE
+node, the README's known {{literal braces}} nit — the "2" first
+reported was a grep artifact counting tree-sitter's summary line,
+and the README entry carried the same stale count plus a stale line
+number; both corrected, no new nit filed.
+The stash used for that verification collided with the working tree
+on pop — recovered cleanly, but the lesson stands: verify-by-stash
+in a tree full of session work is the wrong tool; a worktree would
+have been right.
+
 ## tasks underneath: the fan-out fits the domain (2026-08-04)
 
 Two sessions on one branch, split exactly where the bless drew the
