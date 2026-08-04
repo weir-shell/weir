@@ -174,6 +174,51 @@ let private headImpl: Value =
             | None -> failwith "head: empty sequence"
         | v -> unreachable $"the checker rejects 'head' on {formatValue v}")
 
+let private windowedImpl: Value =
+    VBuiltin(fun nV ->
+        VBuiltin(fun v ->
+            match nV, v with
+            | VInt n, VSeq items ->
+                if n <= 0L then
+                    failwith $"windowed: the window size must be positive; got {n}"
+                else
+                    // lazy per the family: windows are produced as the
+                    // source is pulled; a short source yields the EMPTY
+                    // seq (F#'s rule — no partial final window). Windows
+                    // are views over the same (memoized-once) elements.
+                    VSeq(items |> Seq.windowed (int n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
+            | _ -> unreachable "the checker rejects 'windowed' on these arguments"))
+
+let private lastImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            // ASSERTS non-empty (the X/tryX rule); forces the whole
+            // source by necessity
+            let mutable acc = ValueNone
+
+            for x in items do
+                acc <- ValueSome x
+
+            match acc with
+            | ValueSome x -> x
+            | ValueNone -> failwith "last: empty sequence"
+        | v -> unreachable $"the checker rejects 'last' on {formatValue v}")
+
+let private tryLastImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            let mutable acc = ValueNone
+
+            for x in items do
+                acc <- ValueSome x
+
+            match acc with
+            | ValueSome x -> VUnion("Some", Some x)
+            | ValueNone -> VUnion("None", None)
+        | v -> unreachable $"the checker rejects 'tryLast' on {formatValue v}")
+
 let private toListImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -967,6 +1012,9 @@ let private seqMembers: (string * Ty * Value) list =
       "pmap", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), pmapImpl
       "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
       "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
+      "windowed", TFun(TInt, TFun(TSeq tA, TSeq(TSeq tA))), windowedImpl
+      "last", TFun(TSeq tA, tA), lastImpl
+      "tryLast", TFun(TSeq tA, TNamed("Option", [ tA ])), tryLastImpl
       "pairwise", TFun(TSeq tA, TSeq(TTuple [ tA; tA ])), pairwiseImpl
       "zip", TFun(TSeq tA, TFun(TSeq tB, TSeq(TTuple [ tA; tB ]))), zipImpl
       "exists", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), existsImpl
@@ -1084,10 +1132,57 @@ let private pathMembers: (string * Ty * Value) list =
           | null -> ""
           | d -> d)
       "combine", TFun(TStr, TFun(TStr, TStr)), pathCombineImpl
-      "glob", TFun(TStr, TSeq TStr), globImpl ]
+      "glob", TFun(TStr, TSeq TStr), globImpl
+      // the QUERY (pure): the system temp root, no trailing separator
+      "tempRoot",
+      TFun(TUnit, TStr),
+      VBuiltin(fun _ ->
+          VStr(
+              System.IO.Path
+                  .GetTempPath()
+                  .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar)
+          ))
+      // the CREATOR (side effect visible in the name): a fresh unique
+      // dir, `within tmp`'s spelling exactly (weir-tmp- prefix, guid);
+      // cleanup is the CALLER's or the OS's — `within tmp` is the
+      // scoped-cleanup spelling
+      "newTempDir",
+      TFun(TUnit, TStr),
+      VBuiltin(fun _ ->
+          let dir =
+              System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
+
+          System.IO.Directory.CreateDirectory dir |> ignore
+          VStr dir) ]
+
+let private optionIterImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun opt ->
+            match opt with
+            | VUnion("Some", Some v) ->
+                apply f v |> ignore
+                VUnit
+            | VUnion("None", None) -> VUnit
+            | v -> unreachable $"the checker rejects 'Option.iter' on {formatValue v}"))
+
+// fallback FIRST so the pipe reads data-last (F#'s order):
+// `opt |> Option.orElse fallback`. Stays in Option, where
+// defaultValue unwraps. The fallback is an ordinary (eager) argument;
+// an orElseWith twin is PARKED on the defaultWith precedent.
+let private optionOrElseImpl: Value =
+    VBuiltin(fun fallback ->
+        VBuiltin(fun opt ->
+            match opt with
+            | VUnion("Some", _) -> opt
+            | VUnion("None", None) -> fallback
+            | v -> unreachable $"the checker rejects 'Option.orElse' on {formatValue v}"))
 
 let private optionMembers: (string * Ty * Value) list =
-    [ "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
+    [ "iter", TFun(TFun(tA, TUnit), TFun(TNamed("Option", [ tA ]), TUnit)), optionIterImpl
+      "orElse",
+      TFun(TNamed("Option", [ tA ]), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tA ]))),
+      optionOrElseImpl
+      "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
       "defaultValue", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl
       "defaultWith", TFun(TFun(TUnit, tA), TFun(TNamed("Option", [ tA ]), tA)), defaultWithImpl ]
 
@@ -1518,6 +1613,24 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.iter",
           (bd "Run a unit-returning effect over each element." (Some "[1; 2; 3] |> Seq.iter (fun x -> ())") None
            |> named [ "f"; "xs" ])
+          "Seq.windowed",
+          (bd
+              "Sliding windows of size n, LAZY (produced as the source is pulled; a short source yields the EMPTY seq — no partial window; windows view the same memoized elements). Raises when n <= 0."
+              (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.force |> Seq.force")
+              None
+           |> named [ "n"; "xs" ])
+          "Seq.last",
+          (bd
+              "The last element — ASSERTS the source is non-empty (the X/tryX rule; raises 'last: empty sequence'), and FORCES the whole source by necessity: an infinite source does not return."
+              (Some "[1; 2; 3] |> Seq.last")
+              None
+           |> named [ "xs" ])
+          "Seq.tryLast",
+          (bd
+              "The last element as an Option (None when empty) — the asking twin; forces the whole source."
+              (Some "[] |> Seq.tryLast")
+              None
+           |> named [ "xs" ])
           "Seq.pairwise",
           (bd "Adjacent pairs: (e0,e1), (e1,e2), and so on." (Some "[1; 2; 3] |> Seq.pairwise |> Seq.force") None
            |> named [ "xs" ])
@@ -1550,6 +1663,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "f"; "xs" ]
 
           // ---- Option ----
+          "Option.iter",
+          (bd
+              "Run a unit effect on the Some value; None runs NOTHING (a Some-only side effect with no match ceremony)."
+              (Some "Some \"x\" |> Option.iter print")
+              None
+           |> named [ "f"; "opt" ])
+          "Option.orElse",
+          (bd
+              "The option itself when Some, else the FALLBACK (fallback first, so it pipes data-last). Stays in Option — Option.defaultValue is the one that UNWRAPS. The fallback is an ordinary eager argument (an orElseWith twin is parked on the defaultWith precedent)."
+              (Some "None |> Option.orElse (Some 1)")
+              None
+           |> named [ "fallback"; "opt" ])
           "Option.map",
           (bd "Apply a function inside a Some, pass None through." (Some "Option.map (fun x -> x + 1) (Some 5)") None
            |> named [ "f"; "opt" ])
@@ -1682,6 +1807,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Path.combine",
           (bd "Join two path segments." (Some "Path.combine \"a\" \"b\"") None
            |> named [ "a"; "b" ])
+          "Path.tempRoot",
+          (bd
+              "The system temp directory (a pure query; no trailing separator, platform-native)."
+              (Some "Path.tempRoot ()")
+              None
+           |> named [ "()" ])
+          "Path.newTempDir",
+          (bd
+              "CREATE a fresh unique directory under the temp root and return its path (within tmp's naming). Cleanup is the caller's or the OS's — use `within tmp dir` for removal on scope exit; newTempDir when the directory must OUTLIVE the block. Neither cleans up on Ctrl+C (SIGINT runs no managed cleanup)."
+              (Some "Path.newTempDir () |> Str.startsWith (Path.tempRoot ())")
+              None
+           |> named [ "()" ])
           "Path.glob",
           bd
               "Match a glob against the filesystem (lazy; globstar skips symlinks)."

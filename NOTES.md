@@ -1,5 +1,34 @@
 # Spike Notes
 
+## gap audit session A, the remainder (2026-08-04)
+
+Six members, every one receipt-cited, every decision made in the
+plan and executed as written: windowed (lazy with its pull-count
+pin; empty-on-short; raising n<=0), last/tryLast (the X/tryX rule's
+newest instance, "last: empty sequence" on the head-message model,
+both forcing — the forcing family's fifth customer), Option.iter
+(None-runs-nothing proven by a counter's absence), Option.orElse
+(fallback-first as ruled — pipes data-last; the orElseWith twin
+parked on the defaultWith precedent), and the temp pair — tempRoot
+the pure query, newTempDir the visible creator matching `within
+tmp`'s weir-tmp- spelling exactly, with the cleanup SIGNPOST
+pointing at `within tmp` rather than the original plan's sweeper
+shrug.
+
+THE FILESYSTEM-MEMBERS GAP, reported as the plan asked: File is
+read/write/append/exists ONLY — no delete, no copy, no move — and
+there is NO Dir module at all, which makes newTempDir weir's only
+directory-creating operation. The gap audit's receipt pass DID
+inventory File/Path (the counts are in its report) but its
+recommendations were receipt-driven, so a family-shaped hole with no
+citation went unstated. A filesystem-members audit is its own item;
+the showcase's File.delete judgment row was the first symptom.
+
+One fixture lesson: the side-effect probe needed a TYPED name —
+runWith overrides values, not types, so the counter rode print's
+own scheme (whose bare-value position defaults to string; the
+payload followed).
+
 ## the district retires — five movements, one long day (2026-08-04)
 
 THE SUBTRACTION (M1): the `!` and `!name` districts are gone.
