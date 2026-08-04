@@ -9,9 +9,16 @@ let isUserName (n: string) =
 
 type Ty =
     | TInt
+    // FINITE-only floats [D:floats]: NaN/Infinity are unrepresentable —
+    // checked arithmetic raises, every boundary parse rejects them
+    | TFloat
     | TStr
     | TBool
     | TUnit
+    // time as a type [D:duration]: an INTEGER of milliseconds; decimals
+    // exist only in parsing and rendering — the no-floats law's answer
+    // to the time want
+    | TDur
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
     | TTuple of elements: Ty list // arity 2+ [D:tuples-reversal]
@@ -21,6 +28,7 @@ type Ty =
 
 let rec formatTy (ty: Ty) : string =
     match ty with
+    | TDur -> "Duration"
     | TVar v -> $"'{v}"
     | TRowVar(_, []) -> "{ .. }"
     | TRowVar(_, fields) ->
@@ -29,6 +37,7 @@ let rec formatTy (ty: Ty) : string =
 
         $"{{ {fs}; .. }}"
     | TInt -> "int"
+    | TFloat -> "float"
     | TStr -> "string"
     | TBool -> "bool"
     | TUnit -> "unit"
@@ -84,9 +93,11 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TTuple ts -> ts |> List.fold (fun acc t -> acc + tyVars t) Set.empty
     | TNamed(_, args) -> args |> List.fold (fun acc t -> acc + tyVars t) Set.empty
     | TInt
+    | TFloat
     | TStr
     | TBool
-    | TUnit -> Set.empty
+    | TUnit
+    | TDur -> Set.empty
 
 // The closed class family [D:inferred-type-classes] — fully erased
 // after checking: a constraint never reaches the value domain.
@@ -150,6 +161,8 @@ type AttrArg =
     | AStr of string
     | AInt of int64
     | ABool of bool
+    // a duration literal (30s, 250ms) — stored as ms [D:duration]
+    | ADur of int64
 
 type RecordDef =
     { Name: string
@@ -226,3 +239,124 @@ module Color =
     let red on s = wrap on "31" s
     let yellow on s = wrap on "33" s
     let bold on s = wrap on "1" s
+
+// ---- Duration text [D:duration] — the boundary where decimals live.
+// Storage is integer ms; these two are the ONLY places decimal text
+// exists, and no float appears in either direction.
+
+/// the Go shape: largest-unit-first compound, zero components dropped,
+/// sub-second seconds as a decimal (1.5s), pure ms as Nms. Round-trips
+/// through parseDurationMs (pinned).
+// floats render shortest-round-trippable [D:floats], and an integral
+// float keeps a visible decimal so a float never renders identically
+// to an int
+let formatFloat (f: float) : string =
+    let s = f.ToString(System.Globalization.CultureInfo.InvariantCulture)
+
+    if s.Contains '.' || s.Contains 'E' || s.Contains 'e' then
+        s.Replace("E", "e")
+    else
+        s + ".0"
+
+let parseFloat (text: string) : Result<float, string> =
+    match
+        System.Double.TryParse(
+            text,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture
+        )
+    with
+    | true, f when System.Double.IsFinite f -> Ok(if f = 0.0 then 0.0 else f)
+    | true, _ -> Error $"not a finite float: '{text}'"
+    | _ -> Error $"not a float: '{text}'"
+
+let formatDuration (totalMs: int64) : string =
+    if totalMs = 0L then
+        "0s"
+    else
+        let sign = if totalMs < 0L then "-" else ""
+        let ms = abs totalMs
+        let h = ms / 3600000L
+        let m = (ms % 3600000L) / 60000L
+        let s = (ms % 60000L) / 1000L
+        let frac = ms % 1000L
+
+        let sec =
+            if s = 0L && frac = 0L then
+                ""
+            elif frac = 0L then
+                $"{s}s"
+            else
+                let f = $"%03d{frac}".TrimEnd '0'
+                $"{s}.{f}s"
+
+        if h = 0L && m = 0L && s = 0L then
+            $"{sign}{frac}ms"
+        else
+            let hPart = if h > 0L then $"{h}h" else ""
+            let mPart = if m > 0L then $"{m}m" else ""
+            $"{sign}{hPart}{mPart}{sec}"
+
+/// parse "30s" / "2.5s" / "1h30m" / "-90s" to ms — compound components
+/// largest-first not required; decimals convert by INTEGER math and
+/// sub-millisecond precision is rejected rather than rounded.
+let parseDurationMs (text: string) : Result<int64, string> =
+    let t = text.Trim()
+    let neg, body = (if t.StartsWith "-" then true, t.Substring 1 else false, t)
+
+    let unitMs u =
+        match u with
+        | "ms" -> Some 1L
+        | "s" -> Some 1000L
+        | "m" -> Some 60000L
+        | "h" -> Some 3600000L
+        | _ -> None
+
+    let rec go (i: int) (acc: int64) =
+        if i >= body.Length then
+            if i = 0 then Error $"not a duration: '{text}'" else Ok acc
+        else
+            let j0 = i
+            let mutable j = i
+
+            while j < body.Length && System.Char.IsDigit body[j] do
+                j <- j + 1
+
+            if j = j0 then
+                Error $"not a duration: '{text}' — expected digits at position {i + 1}"
+            else
+                let whole = System.Int64.Parse(body.Substring(j0, j - j0))
+
+                let fracDigits, j =
+                    if j < body.Length && body[j] = '.' then
+                        let f0 = j + 1
+                        let mutable k = f0
+
+                        while k < body.Length && System.Char.IsDigit body[k] do
+                            k <- k + 1
+
+                        (if k = f0 then None else Some(body.Substring(f0, k - f0))), k
+                    else
+                        Some "", j
+
+                match fracDigits with
+                | None -> Error $"not a duration: '{text}' — a decimal point needs digits"
+                | Some frac ->
+                    let u0 = j
+                    let mutable k = j
+
+                    while k < body.Length && System.Char.IsLetter body[k] do
+                        k <- k + 1
+
+                    match unitMs (body.Substring(u0, k - u0)) with
+                    | None -> Error $"not a duration: '{text}' — units are ms, s, m, h"
+                    | Some unit ->
+                        let pow10 = pown 10L frac.Length
+                        let fracVal = if frac = "" then 0L else System.Int64.Parse frac
+
+                        if (fracVal * unit) % pow10 <> 0L then
+                            Error $"not a duration: '{text}' — sub-millisecond precision (ms is the base unit)"
+                        else
+                            go k (acc + whole * unit + (fracVal * unit) / pow10)
+
+    go 0 0L |> Result.map (fun v -> if neg then -v else v)

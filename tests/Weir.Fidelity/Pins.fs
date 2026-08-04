@@ -443,6 +443,15 @@ let pins =
       pin "let rec" "let rec f = 1\n" (Diverges "no-let-rec")
       pin "negative literal outside a range" "let n = -1\n" Same
 
+      // --- floats, finite-only [D:floats] ---
+      pin "float literal and arithmetic" "let f = 0.5 + 0.5\n" Same
+      pin "mixed int/float arithmetic: both reject (no tower on either side)" "let f = 3 / 2.0\n" Same
+      pinT
+          "float equality: weir excludes Eq, F# compares floats"
+          "let b = 0.1 == 0.2\n"
+          "let b = 0.1 = 0.2\n"
+          (Diverges "floats-finite-only")
+
       // --- corpus-born pins (dotnet/fsharp @ 5928e91, ComponentTests mining) ---
       pin "let parameter sugar (corpus-born feature, 2026-07-20)" "let f x = x + 1\n" Same
       pin "HOF param application" "let apply f x = f x\n" (Diverges "no-hof-inference")

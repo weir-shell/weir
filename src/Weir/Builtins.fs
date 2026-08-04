@@ -623,6 +623,8 @@ let private scalarCompare (name: string) (a: Value) (b: Value) : int =
     | VInt x, VInt y -> compare x y
     | VStr x, VStr y -> compare x y
     | VBool x, VBool y -> compare x y
+    | VFloat x, VFloat y -> compare x y
+    | VDur x, VDur y -> compare x y
     | v, _ -> unreachable $"the checker rejects '{name}' keys of {formatValue v}"
 
 let private foldImpl: Value =
@@ -1617,6 +1619,124 @@ let private dirMembers: (string * Ty * Value) list =
 
           System.IO.Directory.Move(src, dst)) ]
 
+// ---- Float [D:floats]: finite-only; no implicit widening -----------
+let private floatFn (name: string) (f: float -> Value) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VFloat x -> f x
+        | v -> unreachable $"the checker rejects 'Float.{name}' on {formatValue v}")
+
+let private floatMembers: (string * Ty * Value) list =
+    [ "ofInt",
+      TFun(TInt, TFloat),
+      VBuiltin(fun v ->
+          match v with
+          | VInt n -> VFloat(float n)
+          | v -> unreachable $"the checker rejects 'Float.ofInt' on {formatValue v}")
+      "toInt",
+      TFun(TFloat, TInt),
+      floatFn "toInt" (fun x ->
+          // truncates toward zero, the int-division rule; out of the
+          // 64-bit range RAISES (the checkedInt posture)
+          if x >= 9.2233720368547758e18 || x <= -9.2233720368547758e18 then
+              failwith $"Float.toInt: out of int range: {formatFloat x}"
+          else
+              VInt(int64 (truncate x)))
+      "round",
+      TFun(TFloat, TFloat),
+      // away-from-zero, the school rule — banker's rounding surprises
+      floatFn "round" (fun x -> VFloat(System.Math.Round(x, System.MidpointRounding.AwayFromZero)))
+      "abs", TFun(TFloat, TFloat), floatFn "abs" (fun x -> VFloat(abs x))
+      "near",
+      TFun(TFloat, TFun(TFloat, TFun(TFloat, TBool))),
+      floatFn "near" (fun a ->
+          VBuiltin(fun v ->
+              match v with
+              | VFloat b ->
+                  VBuiltin(fun v2 ->
+                      match v2 with
+                      | VFloat eps -> VBool(abs (a - b) <= eps)
+                      | v2 -> unreachable $"the checker rejects 'Float.near' on {formatValue v2}")
+              | v -> unreachable $"the checker rejects 'Float.near' on {formatValue v}"))
+      "parse",
+      TFun(TStr, TFloat),
+      VBuiltin(fun v ->
+          match v with
+          | VStr str ->
+              (match parseFloat str with
+               | Ok f -> VFloat f
+               | Error e -> failwith $"Float.parse: {e}")
+          | v -> unreachable $"the checker rejects 'Float.parse' on {formatValue v}")
+      "tryParse",
+      TFun(TStr, TNamed("Option", [ TFloat ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr str ->
+              (match parseFloat str with
+               | Ok f -> VUnion("Some", Some(VFloat f))
+               | Error _ -> VUnion("None", None))
+          | v -> unreachable $"the checker rejects 'Float.tryParse' on {formatValue v}") ]
+
+// ---- Duration [D:duration]: integer ms; decimals only in text ------
+let private durCtor (name: string) (mult: int64) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VInt n -> VDur(Checked.(*) n mult)
+        | v -> unreachable $"the checker rejects 'Duration.{name}' on {formatValue v}")
+
+let private durationMembers: (string * Ty * Value) list =
+    [ "ms", TFun(TInt, TDur), durCtor "ms" 1L
+      "s", TFun(TInt, TDur), durCtor "s" 1000L
+      "m", TFun(TInt, TDur), durCtor "m" 60000L
+      "h", TFun(TInt, TDur), durCtor "h" 3600000L
+      "toMs",
+      TFun(TDur, TInt),
+      VBuiltin(fun v ->
+          match v with
+          | VDur n -> VInt n
+          | v -> unreachable $"the checker rejects 'Duration.toMs' on {formatValue v}")
+      // float-returning and LOSSLESS [D:floats] — the truncation that
+      // kept it unshipped is gone; Duration's own parse/render path
+      // stays integer
+      "toS",
+      TFun(TDur, TFloat),
+      VBuiltin(fun v ->
+          match v with
+          | VDur n -> VFloat(float n / 1000.0)
+          | v -> unreachable $"the checker rejects 'Duration.toS' on {formatValue v}")
+      "parse",
+      TFun(TStr, TDur),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              (match parseDurationMs s with
+               | Ok n -> VDur n
+               | Error e -> failwith $"Duration.parse: {e}")
+          | v -> unreachable $"the checker rejects 'Duration.parse' on {formatValue v}")
+      "tryParse",
+      TFun(TStr, TNamed("Option", [ TDur ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              (match parseDurationMs s with
+               | Ok n -> VUnion("Some", Some(VDur n))
+               | Error _ -> VUnion("None", None))
+          | v -> unreachable $"the checker rejects 'Duration.tryParse' on {formatValue v}")
+      // the one consumer worth landing with the type — module-qualified
+      // so the coreutils sleep is NEVER shadowed (bindings-beat-PATH
+      // would flip `sleep 5`'s meaning)
+      "sleep",
+      TFun(TDur, TUnit),
+      VBuiltin(fun v ->
+          match v with
+          | VDur n ->
+              if n > 0L then
+                  // integer ticks — no float anywhere [D:duration]
+                  System.Threading.Thread.Sleep(System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond))
+
+              VUnit
+          | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -1626,7 +1746,9 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Dir", dirMembers
       "Args", argsMembers
       "Env", envMembers
-      "Log", logMembers ]
+      "Log", logMembers
+      "Duration", durationMembers
+      "Float", floatMembers ]
 
 // ---- builtin docs [D:builtin-docs] (PLAN-doc-comments half 2) --------
 // OUT-OF-BAND, exactly as half 1: Value/Eval/Check never see a doc. The
@@ -2081,6 +2203,71 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Self.entryPath",
           bd "The path of the INVOKED script (a process fact — the same in every module, unlike scriptPath)." None None
 
+          // ---- Float: finite-only [D:floats] ---------------------------
+          "Float.ofInt",
+          (bd
+              "An int as a float — the explicit widening (weir never widens implicitly)."
+              (Some "Float.ofInt 3 / 2.0")
+              None
+           |> named [ "n" ])
+          "Float.toInt",
+          (bd
+              "The integer part, truncating toward zero (raises outside the 64-bit range)."
+              (Some "Float.toInt 2.9")
+              None
+           |> named [ "f" ])
+          "Float.round",
+          (bd "Round to the nearest whole, halves away from zero (2.5 rounds to 3.0)." (Some "Float.round 2.5") None
+           |> named [ "f" ])
+          "Float.abs", (bd "The absolute value." (Some "Float.abs (0.0 - 1.5)") None |> named [ "f" ])
+          "Float.near",
+          (bd
+              "True when a and b differ by at most eps — the equality idiom (floats do not join '==')."
+              (Some "Float.near (0.1 + 0.2) 0.3 1e-9")
+              None
+           |> named [ "a"; "b"; "eps" ])
+          "Float.parse",
+          (bd
+              "Parse float text — the shape show renders (raises on anything else, including NaN/Infinity: weir floats are finite)."
+              (Some "Float.parse \"1.5e-3\"")
+              None
+           |> named [ "text" ])
+          "Float.tryParse",
+          (bd "Float.parse as an Option — None instead of the raise." (Some "Float.tryParse \"nope\"") None
+           |> named [ "text" ])
+
+          // ---- Duration: time as a type [D:duration] -------------------
+          "Duration.ms",
+          (bd "A duration of n milliseconds — the literal 500ms, as a function." (Some "Duration.ms 500") None
+           |> named [ "n" ])
+          "Duration.s", (bd "A duration of n seconds." (Some "Duration.s 30") None |> named [ "n" ])
+          "Duration.m", (bd "A duration of n minutes." (Some "Duration.m 5") None |> named [ "n" ])
+          "Duration.h", (bd "A duration of n hours." (Some "Duration.h 2") None |> named [ "n" ])
+          "Duration.toMs",
+          (bd "The total milliseconds as an int (ratios, JSON fields)." (Some "Duration.toMs 2m") None
+           |> named [ "d" ])
+          "Duration.toS",
+          (bd "The total seconds as a float, lossless (2500ms is 2.5)." (Some "Duration.toS 2500ms") None
+           |> named [ "d" ])
+          "Duration.parse",
+          (bd
+              "Parse duration text — the shape show renders: 1h30m, 2.5s, 500ms (raises on anything else, including sub-millisecond precision)."
+              (Some "Duration.parse \"1h30m\"")
+              None
+           |> named [ "text" ])
+          "Duration.tryParse",
+          (bd
+              "Duration.parse as an Option — None instead of the raise."
+              (Some "Duration.tryParse \"not-a-duration\"")
+              None
+           |> named [ "text" ])
+          "Duration.sleep",
+          (bd
+              "Block for the duration. Module-qualified on purpose: bare sleep stays the coreutils command."
+              (Some "Duration.sleep 10ms")
+              None
+           |> named [ "d" ])
+
           // ---- boundary forms: adapters between text and typed data ----
           "from json",
           bd
@@ -2175,7 +2362,9 @@ let private bareAliases: Set<string> =
 
 let private bareEntries: (string * Ty * Value) list =
     moduleTable
-    |> List.filter (fun (m, _) -> m <> "Option")
+    // Float never flattens [D:floats]: its toInt would shadow the bare
+    // toInt alias (Str's) — module-qualified only, like Option
+    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float")
     |> List.collect snd
     |> List.filter (fun (n, _, _) -> bareAliases.Contains n && n <> "length")
 
@@ -2191,7 +2380,7 @@ let private printerrImpl: Value =
         | VSeq items ->
             writeLinesTo System.Console.Error items
             VUnit
-        | (VStr _ | VInt _ | VBool _) as scalar ->
+        | (VStr _ | VInt _ | VFloat _ | VBool _) as scalar ->
             System.Console.Error.WriteLine(scalarString "printerr argument" scalar)
             VUnit
         | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
@@ -2295,7 +2484,7 @@ let private printImpl: Value =
         | VSeq items ->
             writeLines items
             VUnit
-        | (VStr _ | VInt _ | VBool _) as scalar ->
+        | (VStr _ | VInt _ | VFloat _ | VBool _) as scalar ->
             System.Console.WriteLine(scalarString "print argument" scalar)
             VUnit
         // unit prints NOTHING [D:exit-reifiers] — the !()/district
@@ -2320,7 +2509,7 @@ let commandCallable: Set<string> = Set [ "cd" ]
 
 let bareAliasHomes: Map<string, string> =
     moduleTable
-    |> List.filter (fun (m, _) -> m <> "Option")
+    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float")
     |> List.collect (fun (m, members) ->
         members
         |> List.choose (fun (n, _, _) ->

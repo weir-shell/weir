@@ -244,6 +244,66 @@ let cli = Args.load Cli
 print $"count={cli.count} seed={show cli.seed}"
 ```
 
+## Time: the timeout flag idiom
+
+Time is a type, not a bare int whose unit lives in a comment.
+A `Duration` stores integer milliseconds; the literals are
+single-unit (`500ms`, `30s`, `2m`, `1h`) and `show` renders the
+compound shape (`90500ms` shows `1m30.5s`) that `Duration.parse`
+reads back. The idiom — a timeout flag that reads naturally at the
+call site and in `--help`:
+
+```weir
+type Fetch = {
+    [<Default 30s>]
+    /// give up after this long
+    timeout: Duration
+}
+
+let cli = Args.load Fetch
+print $"budget {cli.timeout}, half {cli.timeout / 2}"
+```
+
+`weir fetch.weir --timeout 90s` parses the text; absent, the field
+rests at `30s`, and `--help` shows `default: 30s`. The algebra is
+closed — add and subtract durations, scale by ints — and
+`Duration / Duration` is rejected naming the ratio spelling
+(`Duration.toMs a / Duration.toMs b`). `Duration.sleep 500ms`
+blocks; it is module-qualified so `sleep 5` keeps meaning
+coreutils sleep. In command position `30s` stays an ordinary argv
+word — `timeout 30s cmd` passes the text through untouched — and a
+SPLICED duration is rejected with the deliberate spellings
+(`Duration.toMs d` or `show d`): the argv form is the program's
+business, not weir's guess.
+
+## Rates and percentages: floats, finite-only
+
+A weir float is always finite — a result that would be `NaN` or
+`Infinity` raises instead (`1.0 / 0.0` is an error, like `1 / 0`).
+Nothing widens implicitly: `3 / 2` stays integer division, and
+mixing sides (`3 / 2.0`) is a type error naming the fix,
+`Float.ofInt`. The percentage shape:
+
+```weir
+let passed = 7
+let total = 8
+let pct = 100.0 * Float.ofInt passed / Float.ofInt total
+print $"pass rate {pct}%"
+```
+
+Floats render shortest-form and round-trip through `Float.parse`;
+an integral float keeps its decimal (`show 1.0` is `"1.0"`).
+Equality is the one thing floats do not do: `==` is a check error
+(0.1 + 0.2 is not 0.3) and the error names the idiom —
+`Float.near a b 1e-9`, or compare after `Float.round`. Sorting
+works (`Seq.sortBy` takes float keys); timing ratios read naturally
+with `Duration.toS`:
+
+```weir
+let ratio = Duration.toS 90s / Duration.toS 1m
+print $"{ratio}x the budget"
+```
+
 ## Exit codes: the reifier family
 
 One law: **output goes where the meaning goes.**

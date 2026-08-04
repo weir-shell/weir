@@ -14,6 +14,8 @@ exception ExitRequest of code: int
 [<CustomEquality; NoComparison>]
 type Value =
     | VInt of int64
+    | VFloat of float
+    | VDur of ms: int64
     | VStr of string
     | VBool of bool
     | VUnit
@@ -30,6 +32,9 @@ type Value =
         | :? Value as v ->
             match this, v with
             | VInt a, VInt b -> a = b
+            // finite-only and -0.0-normalized [D:floats]: reflexive
+            | VFloat a, VFloat b -> a = b
+            | VDur a, VDur b -> a = b
             | VStr a, VStr b -> a = b
             | VBool a, VBool b -> a = b
             | VUnit, VUnit -> true
@@ -46,6 +51,8 @@ type Value =
     override this.GetHashCode() =
         match this with
         | VInt n -> hash n
+        | VFloat f -> hash f
+        | VDur n -> hash ("dur", n)
         | VStr s -> hash s
         | VBool b -> hash b
         | VUnit -> 17
@@ -89,6 +96,8 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
 
         match v with
         | VInt n -> string n
+        | VFloat f -> formatFloat f
+        | VDur n -> formatDuration n
         | VStr s ->
             let raw, clipped =
                 match lim.MaxStr with
@@ -195,9 +204,40 @@ let private checkedInt (f: unit -> int64) : Value =
     with :? System.OverflowException ->
         failwith "integer overflow"
 
+// non-finite results RAISE [D:floats] — the checkedInt law applied to
+// the new type; -0.0 normalizes so equality and rendering never split
+let private checkedFloat (op: string) (f: unit -> float) : Value =
+    let r = f ()
+
+    if System.Double.IsFinite r then
+        VFloat(if r = 0.0 then 0.0 else r)
+    else
+        failwith $"'{op}' produced a non-finite float (overflow)"
+
 let private binOp (op: string) (l: Value) (r: Value) : Value =
     match op, l, r with
     | "+", VInt a, VInt b -> checkedInt (fun () -> Checked.(+) a b)
+    | "+", VFloat a, VFloat b -> checkedFloat "+" (fun () -> a + b)
+    | "-", VFloat a, VFloat b -> checkedFloat "-" (fun () -> a - b)
+    | "*", VFloat a, VFloat b -> checkedFloat "*" (fun () -> a * b)
+    | "/", VFloat a, VFloat b ->
+        if b = 0.0 then
+            failwith "float division by zero"
+        else
+            checkedFloat "/" (fun () -> a / b)
+    | ">", VFloat a, VFloat b -> VBool(a > b)
+    | "<", VFloat a, VFloat b -> VBool(a < b)
+    | ">=", VFloat a, VFloat b -> VBool(a >= b)
+    | "<=", VFloat a, VFloat b -> VBool(a <= b)
+    | "+", VDur a, VDur b -> VDur(Checked.(+) a b)
+    | "-", VDur a, VDur b -> VDur(Checked.(-) a b)
+    | "*", VDur a, VInt b -> VDur(Checked.(*) a b)
+    | "*", VInt a, VDur b -> VDur(Checked.(*) a b)
+    | "/", VDur a, VInt b -> VDur(a / b)
+    | ">", VDur a, VDur b -> VBool(a > b)
+    | "<", VDur a, VDur b -> VBool(a < b)
+    | ">=", VDur a, VDur b -> VBool(a >= b)
+    | "<=", VDur a, VDur b -> VBool(a <= b)
     | "+", VStr a, VStr b -> VStr(a + b)
     | "-", VInt a, VInt b -> checkedInt (fun () -> Checked.(-) a b)
     | "*", VInt a, VInt b -> checkedInt (fun () -> Checked.(*) a b)
@@ -539,6 +579,8 @@ let rec private yamlRender (v: Value) : Rendered =
 
     match v with
     | VInt n -> Inline(string n)
+    | VFloat f -> Inline(formatFloat f)
+    | VDur n -> Inline(formatDuration n)
     | VBool b -> Inline(if b then "true" else "false")
     | VStr s -> renderString s
     | VUnion("YStr", Some(VStr s)) -> renderString s
@@ -616,6 +658,7 @@ let scalarString (what: string) (v: Value) : string =
     | VInt n -> string n
     | VBool true -> "true"
     | VBool false -> "false"
+    | VFloat f -> formatFloat f
     | v -> unreachable $"the checker rejects {what} {formatValue v}"
 
 let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
@@ -731,6 +774,7 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
             | TNamed("Option", _), _ -> "optional"
             | _, Some(AStr s) -> $"default: {s}"
             | _, Some(AInt n) -> $"default: {n}"
+            | _, Some(ADur n) -> $"default: {formatDuration n}"
             | _, _ -> "required"
 
         let right =
@@ -888,6 +932,7 @@ let private argvFill
             | Some(AStr s) -> f, VStr s
             | Some(AInt n) -> f, VInt n
             | Some(ABool b) -> f, VBool b
+            | Some(ADur n) -> f, VDur n
             | None ->
                 match ty with
                 | TBool -> f, VBool false
@@ -933,6 +978,11 @@ let private argvParseValue
         match System.Int64.TryParse raw with
         | true, n -> values[f] <- wrapOpt ty (VInt n)
         | _ -> problems.Add $"{flagTok} is not an int ('{raw}')"
+    | TDur
+    | TNamed("Option", [ TDur ]) ->
+        match parseDurationMs raw with
+        | Ok n -> values[f] <- wrapOpt ty (VDur n)
+        | Error e -> problems.Add $"{flagTok}: {e}"
     | _ -> values[f] <- wrapOpt ty (VStr raw)
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
@@ -1223,6 +1273,8 @@ and argvOf (env: Env) (args: Check.TypedExpr list) : string list =
 and eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
     | TEInt n -> VInt(int64 n)
+    | TEDur n -> VDur n
+    | TEFloat f -> VFloat f
     | TEStr s -> VStr s
     | TEBool b -> VBool b
     | TEUnit -> VUnit
@@ -1314,7 +1366,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
         for p in parts do
             match p with
             | IStr s -> sb.Append s |> ignore
-            | IExpr e -> sb.Append(scalarString "interpolation hole" (eval env e)) |> ignore
+            | IExpr e ->
+                // a hole renders what show renders [D:interp-show]; a
+                // bare string stays RAW (the value, not its quoted form)
+                sb.Append(
+                    match eval env e with
+                    | VStr str -> str
+                    | v -> formatValue v
+                )
+                |> ignore
 
         VStr(sb.ToString())
     | TEFrom(fmt, def) -> fromAdapter fmt def
@@ -1387,6 +1447,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | Some(AStr s) -> VStr s
                         | Some(AInt n) -> VInt n
                         | Some(ABool b) -> VBool b
+                        | Some(ADur n) -> VDur n
                         | None ->
                             problems.Add $"{name} is missing"
                             VUnit
@@ -1403,6 +1464,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | "false" -> wrapOpt ty (VBool false)
                         | _ ->
                             problems.Add $"{name} is not a bool ('{v}'; exactly true or false)"
+                            VUnit
+                    | (TDur | TNamed("Option", [ TDur ])), v ->
+                        match parseDurationMs v with
+                        | Ok n -> wrapOpt ty (VDur n)
+                        | Error e ->
+                            problems.Add $"{name}: {e}"
                             VUnit
                     | (TNamed(un, []) | TNamed("Option", [ TNamed(un, []) ])), v ->
                         // the enum conversion [D:env-enums]: matching is

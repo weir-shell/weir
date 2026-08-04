@@ -46,8 +46,11 @@ stops being true fails the build.
   word (you get a warning). One command per line.
 - `print` takes string, int, bool, or `seq<string>`. For records,
   unions, options and debugging: `show x` renders ANY value (except
-  functions) as a REPL-shaped string — `print (show row)`,
-  `$"got: {show r}"`. Lossy debug format (strings come quoted, long
+  functions) as a REPL-shaped string — `print (show row)`. An
+  interpolation hole renders the same way without the call
+  (`$"got: {r}"` — holes consult Show; only functions reject; a bare
+  string hole stays raw/unquoted). Command-argument splices stay
+  string/int/bool. Lossy debug format (strings come quoted, long
   seqs truncate); `print` remains the raw data channel. The REPL's
   echo is tighter still (10 elements, clipped strings, a hint naming
   the way out): echo = glance, `|> print` = read.
@@ -173,6 +176,32 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   is one pipeline: `Str.rmatchAll pat text |> Seq.map Seq.head |>
   Seq.distinct` (all matches → contents → dedup); pipe a match through
   a tool with `| sha256sum`.
+- Floats exist and are FINITE-only: `0.5`, `1e5`, `1.5e-3` (digits
+  required on both sides of a point — `1.` and `.5` are errors).
+  A non-finite result RAISES (`1.0 / 0.0`, overflow); NaN/Infinity
+  cannot exist. No implicit widening: `3 / 2` is int division `1`,
+  `3 / 2.0` is a type error — wrap with `Float.ofInt`. Floats do
+  NOT join `==`/`Seq.distinct`/`Seq.contains` (check error naming
+  `Float.near a b eps`); they DO sort (`Seq.sortBy`), print, and
+  interpolate. `show 1.0` = `"1.0"` (integral floats keep the
+  decimal); `Float.parse`/`tryParse` read what show writes.
+  Module: `Float.ofInt/toInt/round/abs/near/parse/tryParse`
+  (qualified only). `Duration.toS` gives float seconds losslessly.
+  Float fields at json/yaml/Args/Env are NOT admitted yet.
+- Time is `Duration` (integer ms inside): literals `500ms`/`30s`/`2m`/`1h`
+  (single-unit, expression position; in command position `30s` is an
+  ordinary argv word). `+`/`-` between durations, `*`/`/` by int;
+  `Duration / Duration` is a check error naming `Duration.toMs`.
+  `show 90500ms` = `"1m30.5s"`; `Duration.parse`/`tryParse` read that
+  shape (`"1h30m"`, `"2.5s"` — decimals exist only in TEXT; `2.5s` as
+  a literal is a teaching error, so is `2d` and compound `1m30s`).
+  `Duration.ms/s/m/h` construct; `Duration.sleep 500ms` blocks (bare
+  `sleep` stays the coreutils command). `Args.load`/`Env.load` parse
+  duration text into `Duration` fields and `[<Default 30s>]` works.
+  No JSON: a Duration field at `to json`/`from json` is a check error
+  (convert via `Duration.toMs` into an int field). Interpolation holes
+  render Durations directly (`$"took {elapsed}"`); command arguments
+  do NOT — pass `Duration.toMs d` or `show d` deliberately.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
   `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency

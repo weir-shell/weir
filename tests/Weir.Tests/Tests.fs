@@ -5536,9 +5536,10 @@ let interpTests =
               let te = checkOk "fun x -> $\"v={x}\""
               Expect.equal te.Ty (TFun(TStr, TStr)) "hole var binds to string"
           }
-          test "non-scalar hole rejected" {
-              let terr = checkErr "$\"{ls}\""
-              Expect.stringContains (formatError terr) "interpolation holes" "names the rule"
+          test "a function still rejects in a hole [D:interp-show]" {
+              let terr = checkErr "$\"{Str.trim}\""
+              Expect.stringContains (formatError terr) "interpolation holes render what show renders" "names the law"
+              Expect.stringContains (formatError terr) "functions never render" ""
           }
           test "command argument stays one argv entry" {
               expectCmd "grep $\"n={1 + 1}\" f" "(cmd grep (interp \"n=\"{(+ 1 1)}) \"f\")"
@@ -5585,9 +5586,8 @@ let unitPrintTests =
               Expect.stringContains (formatError terr) "Seq.iter" "points at the module home"
           }
           test "a let shadows the print builtin" { expectValue "let print = fun s -> s in print \"x\"" (VStr "x") }
-          test "unit is excluded from interpolation holes" {
-              let terr = checkErr "$\"a{()}b\""
-              Expect.stringContains (formatError terr) "interpolation holes" "the splice family is unchanged"
+          test "unit renders in a hole (the class is the law) [D:interp-show]" {
+              expectValue "$\"a{()}b\"" (VStr "a()b")
           }
           test "classifier: command lines parse as SCmd, expressions as SExpr" {
               match Weir.Parser.parseLine cmdResolver "git status" with
@@ -5965,10 +5965,8 @@ let agentFindingsTests =
 
               expectValue "let r = { X = 1; Y = 0 } in [{ r with X = 4 }] |> Seq.head |> _.X" (VInt 4L)
           }
-          test "update is not a scalar: interp holes and command args reject it" {
-              let terr = checkErr "let r = { X = 1; Y = 0 } in $\"x { { r with X = 2 } }\""
-
-              Expect.stringContains terr.Message "" ""
+          test "update in a HOLE renders now [D:interp-show]; command args still reject it" {
+              expectValue "let r = { X = 1; Y = 0 } in $\"x { { r with X = 2 } }\"" (VStr "x { X = 2; Y = 0 }")
 
               let terr2 = checkErr "let r = { X = 1; Y = 0 } in echo { r with X = 1 } |> Seq.head"
 
@@ -5993,9 +5991,9 @@ let agentFindingsTests =
           test "genuinely-unresolved holes still default to string" {
               Expect.equal (formatTy (checkOk "fun k -> $\"{k}\"").Ty) "string -> string" ""
           }
-          test "non-scalar holes still reject, at the hole" {
-              let terr = checkErr "ls |> Seq.head |> (fun r -> $\"{r}\")"
-              Expect.stringContains terr.Message "must be strings, ints or bools" ""
+          test "a function still rejects in a DEFERRED hole, at the hole [D:interp-show]" {
+              let terr = checkErr "Str.trim |> (fun f -> $\"{f}\")"
+              Expect.stringContains terr.Message "interpolation holes render what show renders" ""
           }
           // Seq.fold + fun-sugar [D:seq-fold][D:fun-sugar]
           test "fold: LEFT fold, order pinned on the non-commutative case" {
@@ -7122,7 +7120,11 @@ let typeClassBTests =
           }
           test "Ord: record key is a CHECK-time error with the contract message" {
               let terr = checkErr "ls |> Seq.sortBy (fun f -> f)"
-              Expect.stringContains (formatError terr) "cannot be ordered — keys are int, string, or bool" ""
+
+              Expect.stringContains
+                  (formatError terr)
+                  "cannot be ordered — keys are int, float, string, bool, or Duration"
+                  ""
           }
           test "Ord: function key rejects" {
               let terr = checkErr "ls |> Seq.sortBy (fun f -> fun x -> x)"
@@ -8208,6 +8210,260 @@ let fsMemberTests =
               run $"Dir.deleteAll \"{d}\"" |> ignore
           } ]
 
+let durationTests =
+    // parse-fatal teaching errors surface as Error from parseExpr
+    let perr input =
+        match Weir.Parser.parseExpr input with
+        | Error msg -> msg
+        | Ok e -> failtest $"expected a parse rejection, got {show e}"
+
+    testList
+        "Duration [D:duration]"
+        [ test "literal lexing: the four suffixes land in ms" {
+              Expect.equal (run "500ms") (VDur 500L) ""
+              Expect.equal (run "30s") (VDur 30000L) ""
+              Expect.equal (run "2m") (VDur 120000L) ""
+              Expect.equal (run "1h") (VDur 3600000L) ""
+          }
+          test "command-mode 30s stays an argv WORD (the sharpest pin)" {
+              // the literal exists only in expression position; a command
+              // argument is a word like any other
+              expectCmd "echo 30s" "(cmd echo \"30s\")"
+          }
+          test "show is the Go shape; parse round-trips it both directions" {
+              Expect.equal (run "show 0ms") (VStr "0s") "zero is 0s"
+              Expect.equal (run "show 90500ms") (VStr "1m30.5s") "decimals appear only in the rendering"
+              Expect.equal (run "show (0s - 90500ms)") (VStr "-1m30.5s") "one leading sign"
+              Expect.equal (run "show 3661000ms") (VStr "1h1m1s") ""
+              Expect.equal (run "show 5ms") (VStr "5ms") "sub-second is ms"
+              Expect.equal (run "Duration.parse (show 90500ms) == 90500ms") (VBool true) "value -> text -> value"
+              Expect.equal (run "show (Duration.parse \"1h1m1.5s\")") (VStr "1h1m1.5s") "text -> value -> text"
+          }
+          test "the closed algebra: + - over Dur, * / against int, ints never mix implicitly" {
+              Expect.equal (run "30s + 500ms") (VDur 30500L) ""
+              Expect.equal (run "10s - 30s") (VDur -20000L) "negatives are legal"
+              Expect.equal (run "30s * 2") (VDur 60000L) ""
+              Expect.equal (run "2 * 30s") (VDur 60000L) ""
+              Expect.equal (run "1h / 7") (VDur 514285L) "integer ms division"
+              Expect.stringContains (checkErr "30s + 5").Message "expected Duration, got int" "no implicit ms"
+          }
+          test "Dur / Dur is rejected naming the toMs ratio" {
+              Expect.stringContains
+                  (checkErr "30s / 15s").Message
+                  "duration ÷ duration has no unit — Duration.toMs d1 / Duration.toMs d2 gives the integer ratio"
+                  ""
+          }
+          test "Eq, Show, Ord all admit Duration (the class widening)" {
+              Expect.equal (run "30s == 30000ms") (VBool true) "Eq — same ms, same value"
+              Expect.equal (run "Duration.m 2 > 90s") (VBool true) "Ord"
+
+              Expect.equal
+                  (run "[3s; 1s; 2h] |> Seq.sortBy (fun d -> d) |> Seq.head")
+                  (VDur 1000L)
+                  "sortBy takes duration keys"
+          }
+          test "the constructors and toMs are total; parse raises, tryParse options" {
+              Expect.equal (run "Duration.ms 500") (VDur 500L) ""
+              Expect.equal (run "Duration.s 30") (VDur 30000L) ""
+              Expect.equal (run "Duration.toMs 1m") (VInt 60000L) ""
+              Expect.equal (run "Duration.parse \"2.5s\"") (VDur 2500L) "decimals live in TEXT"
+              Expect.equal (run "Duration.parse \"-1h30m\"") (VDur -5400000L) ""
+              Expect.equal (run "Duration.tryParse \"nope\"") (VUnion("None", None)) ""
+              Expect.equal (run "Duration.tryParse \"90s\"") (VUnion("Some", Some(VDur 90000L))) ""
+
+              let ex = Expect.throwsC (fun () -> run "Duration.parse \"1.0001s\"" |> ignore) id
+
+              Expect.stringContains ex.Message "sub-millisecond" "the precision floor"
+          }
+          test "the teaching rejections, each located" {
+              Expect.stringContains
+                  (perr "2.5s")
+                  "decimal duration literals do not exist"
+                  "decimal-with-suffix names the ms form"
+
+              Expect.stringContains
+                  (perr "2.")
+                  "float literals need digits on both sides of the point"
+                  "the 1. spelling teaches"
+
+              Expect.stringContains (perr "2d") "durations have no 'd' suffix" "days are not uniform"
+
+              Expect.stringContains (perr "1m30s") "compound durations are text" "compound spellings point at parse"
+          }
+          test "JSON is parked: the boundary rejects Duration naming the conversion" {
+              let e = env |> declare "type DurJ = { dj: Duration }"
+
+              match Weir.Check.typecheck e (parse "[{ dj = 5s }] |> to json") with
+              | Error terr ->
+                  Expect.stringContains terr.Message "Duration has no JSON convention yet" ""
+                  Expect.stringContains terr.Message "Duration.toMs into an int field" "the conversion named"
+              | Ok _ -> failtest "expected the park rejection"
+          }
+          test "[<Default 30s>] literal law: match admits, mismatch names the field type" {
+              // Args.load is script-only: the Self module marks script mode
+              let scriptEnv =
+                  { env with
+                      Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers }
+
+              let e =
+                  scriptEnv
+                  |> declare "type DurA = { [<Default 30s>] timeout: Duration; name: string }"
+
+              match Weir.Check.typecheck e (parse "Args.load DurA") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "DurA" ""
+              | Error terr -> failtest $"expected Ok, got {terr.Message}"
+
+              let e2 = scriptEnv |> declare "type DurB = { [<Default 30s>] port: int }"
+
+              match Weir.Check.typecheck e2 (parse "Args.load DurB") with
+              | Error terr -> Expect.stringContains terr.Message "the Default literal does not match the field" ""
+              | Ok _ -> failtest "expected the literal-law rejection"
+          } ]
+
+let floatTests =
+    let perr input =
+        match Weir.Parser.parseExpr input with
+        | Error msg -> msg
+        | Ok e -> failtest $"expected a parse rejection, got {show e}"
+
+    testList
+        "Floats, finite-only [D:floats]"
+        [ test "literals: decimals, exponents, prefix minus folds" {
+              Expect.equal (run "0.5 + 0.5") (VFloat 1.0) ""
+              Expect.equal (run "1e5") (VFloat 100000.0) ""
+              Expect.equal (run "1.5e-3") (VFloat 0.0015) ""
+              Expect.equal (run "-0.5") (VFloat -0.5) "prefix minus folds into the literal (0 - e would mix types)"
+              Expect.equal (run "-30s") (VDur -30000L) "the same fold fixes the Duration gap"
+              Expect.equal (run "3 / 2") (VInt 1L) "int division UNCHANGED"
+          }
+          test "non-finite results RAISE, each naming what happened" {
+              let ex = Expect.throwsC (fun () -> run "1e308 * 10.0" |> ignore) id
+              Expect.stringContains ex.Message "produced a non-finite float" "overflow named"
+
+              let ex2 = Expect.throwsC (fun () -> run "1.0 / 0.0" |> ignore) id
+              Expect.stringContains ex2.Message "float division by zero" ""
+
+              let ex3 = Expect.throwsC (fun () -> run "0.0 / 0.0" |> ignore) id
+              Expect.stringContains ex3.Message "float division by zero" "0/0 is the divisor's error, not NaN"
+          }
+          test "-0.0 is unrepresentable: results normalize" {
+              Expect.equal (run "-1.0 * 0.0") (VFloat 0.0) ""
+              Expect.equal (run "show (-1.0 * 0.0)") (VStr "0.0") "rendering never shows a signed zero"
+          }
+          test "mixed arithmetic errors naming Float.ofInt" {
+              Expect.stringContains
+                  (checkErr "3 / 2.0").Message
+                  "needs both sides the same type; wrap the int: Float.ofInt"
+                  ""
+
+              Expect.stringContains (checkErr "1 + 0.5").Message "Float.ofInt" ""
+              Expect.stringContains (checkErr "0.5 < 1").Message "Float.ofInt" ""
+              Expect.equal (run "Float.ofInt 3 / 2.0") (VFloat 1.5) "the named spelling works"
+          }
+          test "Eq excluded: == and its riders teach Float.near" {
+              Expect.stringContains
+                  (checkErr "0.1 == 0.2").Message
+                  "floats do not join '==' (0.1 + 0.2 is not 0.3); use Float.near a b eps"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "[0.5] |> Seq.distinct").Message
+                  "Float.near"
+                  "distinct rides the same teaching"
+
+              Expect.stringContains (checkErr "[0.5] |> Seq.contains 0.5").Message "Float.near" ""
+              Expect.equal (run "Float.near (0.1 + 0.2) 0.3 1e-9") (VBool true) "the idiom"
+          }
+          test "Ord admitted: total because finite" {
+              Expect.equal (run "[3.5; 1.5; 2.5] |> Seq.sortBy (fun x -> x) |> Seq.head") (VFloat 1.5) ""
+              Expect.equal (run "0.5 < 1.5") (VBool true) ""
+          }
+          test "show is shortest-round-trippable; 1.0 keeps its decimal; parse round-trips" {
+              Expect.equal (run "show 1.0") (VStr "1.0") "an integral float never renders as an int"
+              Expect.equal (run "show 0.1") (VStr "0.1") "shortest form"
+
+              Expect.equal
+                  (run "Float.near (Float.parse (show 1.5e-3)) 1.5e-3 0.0")
+                  (VBool true)
+                  "value -> text -> value, exact"
+
+              Expect.equal (run "show (Float.parse \"87.5\")") (VStr "87.5") "text -> value -> text"
+
+              let ex = Expect.throwsC (fun () -> run "Float.parse \"NaN\"" |> ignore) id
+              Expect.stringContains ex.Message "not a finite float" "boundaries reject non-finite too"
+          }
+          test "Duration.toS is lossless; Duration internals stay integer" {
+              Expect.equal (run "Duration.toS 2500ms") (VFloat 2.5) "the defect that prompted the session"
+              Expect.equal (run "Duration.toS 1ms") (VFloat 0.001) ""
+              Expect.equal (run "Duration.parse \"2.5s\"") (VDur 2500L) "duration text still parses on the integer path"
+          }
+          test "the hole renders with ZERO interpolation edits (the interp-show property, confirmed)" {
+              expectValue "$\"pct={100.0 * 7.0 / 8.0}\"" (VStr "pct=87.5")
+          }
+          test "the literal teachings, each located" {
+              Expect.stringContains (perr "1.") "float literals need digits on both sides of the point (write 1.0)" ""
+              Expect.stringContains (perr "(.5)") "float literals need a digit before the point (write 0.5)" ""
+              Expect.stringContains (perr "1e999") "float literal out of range" ""
+
+              Expect.stringContains
+                  (perr "2.5s")
+                  "decimal duration literals do not exist"
+                  "the duration teaching stands"
+          }
+          test "ranges and field shorthand keep their dots" {
+              Expect.equal (run "[1..10] |> Seq.length") (VInt 10L) "1.. stays a range"
+
+              Expect.equal
+                  (formatTy (checkOk "fun p -> p.name").Ty |> fun s -> s.Contains "name")
+                  true
+                  "accessor unaffected"
+          }
+          test "print takes floats; bare toInt is still Str's" {
+              Expect.equal (checkOk "print 0.5").Ty TUnit ""
+              Expect.equal (run "toInt \"42\"") (VInt 42L) "Float never flattens to bare aliases"
+          } ]
+
+let interpShowTests =
+    testList
+        "Interpolation holes consult Show [D:interp-show]"
+        [ test "a Duration hole renders (the rider's origin)" {
+              expectValue "$\"took {90500ms}\"" (VStr "took 1m30.5s")
+          }
+          test "a hole renders what show renders: seq and record forms" {
+              expectValue "$\"xs={[1; 2]}\"" (VStr "xs=[1; 2]")
+              // strings INSIDE a structure render quoted (show's form);
+              // only the bare top-level string hole stays raw
+              expectValue "$\"{[\"a\"]}\"" (VStr "[\"a\"]")
+              expectValue "$\"a{\"b\"}c\"" (VStr "abc")
+          }
+          test "a seq of functions still rejects in a hole" {
+              let terr = checkErr "$\"{[Str.trim]}\""
+              Expect.stringContains terr.Message "interpolation holes render what show renders" ""
+          }
+          test "command-argument splices do NOT inherit: Duration teaches the deliberate spellings" {
+              match Weir.Check.typecheck env (parseCmd "echo (30s)") with
+              | Error terr ->
+                  Expect.stringContains
+                      terr.Message
+                      "a Duration's argv form depends on the program; pass Duration.toMs d or show d deliberately"
+                      ""
+              | Ok _ -> failtest "expected the splice rejection"
+
+              // both named spellings check clean
+              match Weir.Check.typecheck env (parseCmd "echo (show 30s)") with
+              | Ok _ -> ()
+              | Error terr -> failtest $"show spelling: {terr.Message}"
+
+              match Weir.Check.typecheck env (parseCmd "echo (Duration.toMs 30s)") with
+              | Ok _ -> ()
+              | Error terr -> failtest $"toMs spelling: {terr.Message}"
+          }
+          test "command-argument splices keep the scalar list for other types" {
+              match Weir.Check.typecheck env (parseCmd "echo (ls)") with
+              | Error terr -> Expect.stringContains terr.Message "command arguments must be strings, ints or bools" ""
+              | Ok _ -> failtest "expected the splice rejection"
+          } ]
+
 let gapATests =
     testList
         "Gap audit session A remainder"
@@ -8484,6 +8740,9 @@ let allTests =
         "Weir"
         [ parserTests
           fsMemberTests
+          durationTests
+          floatTests
+          interpShowTests
           gapATests
           withinTests
           windowsV1Tests

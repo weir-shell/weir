@@ -56,7 +56,7 @@ argument that killed the subtractive fork.
 
 | no-format-specifiers | pending | format specifiers in holes ($"{x:N2}") | reject | accept | decided out of interp v1; no demand logged |
 | block-comments | pending | (* ... *) | reject | accept | // decided over #; (* *) never decided, no demand |
-| no-floats | pending | float literals and arithmetic | reject | accept | SEMANTICS: "no floats yet"; corpus: 5928e91 |
+| floats-finite-only | different | float semantics | finite-only: non-finite results raise (the checkedInt law); Eq excluded — `==` on floats is a teaching error naming Float.near | IEEE: NaN/Infinity values, `==` allowed | [D:floats]; plans/PLAN-floats-cost.md — "shells don't have floats" retired (capability peers zsh/pwsh/nushell all float); the decline's other argument died with Duration.toS |
 | no-chars | pending | char literals | reject | accept | no demand |
 | no-exceptions | pending | try/with/finally, raise | reject (fail exists; no catching) | accept | expected-findings cluster: error-handling-as-value |
 | no-type-ascription | pending | (e : ty) annotations | reject | accept | checklist 2.3: must re-verify, never relabel, when it lands |

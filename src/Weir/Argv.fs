@@ -136,7 +136,8 @@ let badEnvDefault (def: RecordDef) : string option =
             match ft, a with
             | TStr, AStr _
             | TInt, AInt _
-            | TBool, ABool _ -> None
+            | TBool, ABool _
+            | TDur, ADur _ -> None
             | TNamed("Option", _), _ ->
                 Some(
                     "'"
@@ -155,7 +156,8 @@ let private badArgsDefault (label: string) (def: RecordDef) : string option =
         | Some a ->
             match ft, a with
             | TStr, AStr _
-            | TInt, AInt _ -> None
+            | TInt, AInt _
+            | TDur, ADur _ -> None
             | TBool, ABool true -> None
             | TBool, ABool false ->
                 Some $"{label}'{f}': [<Default false>] is redundant — presence already rests at false"
@@ -175,14 +177,16 @@ let private badArgsShape (label: string) (def: RecordDef) : string option =
             | TStr
             | TInt
             | TBool
-            | TNamed("Option", [ TStr | TInt ]) -> false
+            | TDur
+            | TNamed("Option", [ TStr | TInt | TDur ]) -> false
             | _ -> true)
 
     match badShape with
     | Some(f, TNamed("Option", [ TBool ])) ->
         Some $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
     | Some(f, ft) ->
-        Some $"{label}Args.load fields must be string, int, bool, or Option of string|int; '{f}' is {formatTy ft}"
+        Some
+            $"{label}Args.load fields must be string, int, bool, or Duration, or Option of string|int|Duration; '{f}' is {formatTy ft}"
     | None -> None
 
 let private dupFlag (label: string) (def: RecordDef) : string option =
