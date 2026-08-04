@@ -8144,6 +8144,89 @@ let adversarialTests =
 // ---- Windows v1, session 1 [D:windows-v1] — both-ways platform pins:
 // each asserts ITS OWN platform's semantics, so the suite is meaningful
 // on Linux today and on Windows when the CI matrix arrives
+let gapATests =
+    testList
+        "Gap audit session A remainder"
+        [ test "windowed is LAZY: first 1 over infinite pulls exactly the window (pull-count pin)" {
+              let pulled = ref 0
+
+              let counting =
+                  Seq.initInfinite (fun i ->
+                      System.Threading.Interlocked.Increment pulled |> ignore
+                      VInt(int64 i))
+
+              runWith
+                  [ "nats", VSeq counting ]
+                  "nats |> Seq.windowed 2 |> Seq.first 1 |> Seq.iter (fun w -> w |> Seq.iter (fun _ -> print \"\"))"
+              |> ignore
+
+              Expect.isLessThan pulled.Value 4 "a window of 2 must not pull the world"
+          }
+          test "windowed: short source is EMPTY; bad n raises the exact text" {
+              expectValue "[1; 2] |> Seq.windowed 3 |> Seq.length" (VInt 0L)
+
+              let ex =
+                  Expect.throwsC (fun () -> run "[1] |> Seq.windowed 0 |> Seq.force" |> ignore) id
+
+              Expect.equal ex.Message "windowed: the window size must be positive; got 0" "exact"
+          }
+          test "last raises the family's exact text; tryLast asks; both force" {
+              let ex = Expect.throwsC (fun () -> run "[] |> Seq.last" |> ignore) id
+              Expect.equal ex.Message "last: empty sequence" "the head-message model"
+              expectValue "[] |> Seq.tryLast" (VUnion("None", None))
+
+              let pulled = ref 0
+
+              let five =
+                  Seq.init 5 (fun i ->
+                      System.Threading.Interlocked.Increment pulled |> ignore
+                      VInt(int64 i))
+
+              runWith [ "nats", VSeq five ] "nats |> Seq.last" |> ignore
+              Expect.equal pulled.Value 5 "reached the end"
+          }
+          test "Option.iter: None runs NOTHING (side-effect absence pin)" {
+              let ran = ref 0
+
+              let probe =
+                  VBuiltin(fun _ ->
+                      System.Threading.Interlocked.Increment ran |> ignore
+                      VUnit)
+
+              // override print's VALUE with the counter (probe needs a
+              // typed name; print's scheme fits iter's consumer)
+              runWith [ "print", probe ] "Some \"x\" |> Option.iter print" |> ignore
+              Expect.equal ran.Value 1 "Some runs once"
+              runWith [ "print", probe ] "None |> Option.iter print" |> ignore
+              Expect.equal ran.Value 1 "None ran nothing"
+          }
+          test "orElse: fallback-first pipes data-last (the F# order, ruled)" {
+              expectValue "None |> Option.orElse (Some 1)" (VUnion("Some", Some(VInt 1L)))
+              expectValue "Some 2 |> Option.orElse (Some 1)" (VUnion("Some", Some(VInt 2L)))
+          }
+          test "tempRoot is a pure trimmed query; newTempDir creates with within tmp's spelling" {
+              let root =
+                  match run "Path.tempRoot ()" with
+                  | VStr s -> s
+                  | v -> failtest $"unexpected: {v}"
+
+              Expect.isFalse (root.EndsWith(string System.IO.Path.DirectorySeparatorChar)) "no trailing separator"
+
+              Expect.equal
+                  root
+                  (System.IO.Path.GetTempPath().TrimEnd(System.IO.Path.DirectorySeparatorChar))
+                  "the platform's own"
+
+              let d =
+                  match run "Path.newTempDir ()" with
+                  | VStr s -> s
+                  | v -> failtest $"unexpected: {v}"
+
+              Expect.isTrue (System.IO.Directory.Exists d) "created"
+              Expect.stringContains d "weir-tmp-" "within tmp's naming"
+              System.IO.Directory.Delete d
+          } ]
+
 let withinTests =
     testList
         "within scopes [D:within-scopes]"
@@ -8336,6 +8419,7 @@ let allTests =
     testList
         "Weir"
         [ parserTests
+          gapATests
           withinTests
           windowsV1Tests
           checkerTests

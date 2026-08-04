@@ -217,6 +217,14 @@ let first =
 
 print first
 ```
+- `Seq.last`/`Seq.tryLast` FORCE the whole source by necessity (an
+  infinite source does not return) — the forcing family's fifth
+  member; `Seq.windowed n` is lazy (short source = empty seq, no
+  partial window; n <= 0 raises). `Option.iter` runs a Some-only
+  effect; `Option.orElse fallback opt` stays in Option
+  (`defaultValue` is the one that unwraps). `Path.tempRoot ()` is the
+  pure query; `Path.newTempDir ()` CREATES (cleanup is yours —
+  `within tmp` is the scoped-cleanup spelling).
 - `Seq.force` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, four customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
