@@ -165,6 +165,9 @@ let tests =
           metamorphic "comment insertion is output-neutral" (fun rnd p ->
               Some(Transform.insertComments rnd (renderPlain p)))
 
+          metamorphic "trailing comments are output-neutral" (fun rnd p ->
+              Some(Transform.appendTrailing rnd (renderPlain p)))
+
           metamorphic "whole-block re-indent is output-neutral" (fun rnd p -> Transform.reindent rnd p)
 
           metamorphic "district marker form and explicit !(...) lines agree" (fun rnd p ->

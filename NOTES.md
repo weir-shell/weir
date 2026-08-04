@@ -1,5 +1,89 @@
 # Spike Notes
 
+## trailing comments (2026-08-04)
+
+The session's shape surprised twice, both in the good direction.
+
+**The scanner already existed and already implemented the blessed
+rule.** stripComment IS option B — whitespace-preceded `//` outside
+strings, with the URL receipt cited in its own comment, riding the
+one string-state machine (all four string forms; holes sit inside
+the string extent, so holes-don't-host-comments is true BY
+CONSTRUCTION). The feature was one call site away the whole time:
+the assembler now strips per PHYSICAL line, before joining — masked
+yaml content excluded (bytes), comment-ONLY lines excluded (their
+class carries transparency semantics a blanked line would lose:
+blankSinceHead is the difference). `-e` gained the same one-line
+strip; the REPL already stripped, so the divergence closed from the
+script side. The grammars were AHEAD of the language: micro's region
+is `(^|[ \t])//` with the URL note, tree-sitter approximates the
+boundary — zero grammar changes owed.
+
+**The new fuzz metamorphic (append ` // fuzz tail N` to random code
+lines; output must not change) found a real bug on its first deep
+look**: a trailing comment on a yaml district HEAD line broke head
+detection — the mask ran on RAW lines and missed the commented head.
+The cut now runs twice: once over everything to FIND the content
+regions, once — content excluded — for real. The commented-head case
+is pinned (the head strips and still opens; the body keeps `a // b`
+as bytes).
+
+Decisions made in writing, per the bless: option B (a command line's
+own trailing comment is legal; the cost — a bare unquoted `//` argv
+word reads as a comment — is stated with its escape hatch, quote
+it); holes do not host comments (to-EOL cannot nest in delimited;
+located error pinned); trailing `///` is an ordinary comment, docs
+stay attachment-only; fmt PRESERVES trailing comments and alignment
+verbatim (all three passes probed: respace touches code and
+reattaches the tail — qualifyFile's Substring reattachment predates
+the feature and was already correct — and the match reflow moves the
+arm with its comment).
+
+One contract change rippled: stripComment now TrimEnds ON CUT (the
+agreement pin caught the REPL/script byte-difference; district heads
+need EndsWith to hold). Five pins retargeted to the new contract;
+the colorizer paints from the `//` itself so the alignment gap stays
+uncolored. 1015 unit / 22 fuzz (the new metamorphic) / 3 fresh 10k
+strict-span seeds / pty color+multiline+quality / e2e incl. the
+hostile-byte fixture and a new trailing block / full ritual green.
+
+## showcase refresh: the review's nine items (2026-08-04)
+
+All nine actioned on the floats branch (the tour needed Duration and
+floats anyway, so the freshness complaint and the branch coincide).
+The substantive ones: the files section now runs INSIDE `within tmp`
+(the scope creates and deletes — two File.delete cleanup lines died;
+the env file keeps one as the member's demo), `within cd` joins its
+family after `within env`, and Cli gained `[<Default 30s>] timeout:
+Duration` feeding a Duration/floats section — `budget 30s, half 15s,
+30.0 seconds` demonstrates the literal, the algebra, `Duration.toS`,
+and the integral-float rendering in one line. The `== ` demo lost its
+unreachable `else "?"`; the seq-print spelling unified with the
+equivalence stated once; the shadow section's load-bearing LAST
+position is now said in the file; the dead match arms name their env
+var; `print ()` gained the comment its section title was owed (it
+prints NOTHING — verified zero bytes; the reviewer's empty-line
+premise was wrong but the code was under-documented).
+
+A finding the edit surfaced: **trailing comments after code are not a
+script feature** — `let x = 5 // note` is a parse error in a script.
+stripComment exists and is unit-tested, but its callers are Fmt, the
+REPL, and doc-name extraction only; the execution pipeline never
+strips, and CANNOT safely: command lines carry bare argv words that
+legitimately contain `//` (`http://a`, `--format=a//b`), and
+quote-awareness alone cannot tell them from a comment. Full-line
+comments are the script law BY NECESSITY, not omission. Worth a
+SKILL/GUIDE sentence some session (the REPL divergence too); not
+landed here — the showcase uses full-line comments throughout, as it
+already did.
+
+[AMENDED same day, by the trailing-comments bless: "BY NECESSITY"
+was true of the PRE-PASS and overstated about the language — the
+whitespace-preceded rule (yaml's own `#` law) distinguishes
+`http://a` from ` // note` without parsing, and stripComment already
+implemented exactly that rule for the REPL. The session below landed
+it everywhere.]
+
 ## floats, finite-only — session 1 (2026-08-04)
 
 The design held everywhere the report predicted, and the two report
