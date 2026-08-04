@@ -315,6 +315,11 @@ let manifest name port tag pairs = yaml
 let doc0 = manifest "web" 8080 cli.tag [("app", "web"); ("tier", "edge")]
 doc0 |> to yaml |> print
 
+// ---- cleanup: the scratch files go (File.delete is real now) ----------
+
+File.delete store
+File.delete envFile
+
 // ---- bindings shadow commands; ^ still reaches PATH -------------------
 
 let weir = "a local binding now shadows the command name"

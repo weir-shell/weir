@@ -563,6 +563,23 @@ within env vars
     sh -c "echo committing as $GIT_AUTHOR_NAME"
 ```
 
+A scratch TREE composes the family [D:fs-members]: `Dir.create` for
+structure, `Path.glob` to find, `Dir.deleteAll` (the visibly-named
+destructive one) to end it — all inside `within tmp`, whose exit
+tolerates a block that already removed its own directory:
+
+```weir
+within tmp d
+    Dir.create $"{d}/build/out"
+    ["artifact"] |> File.write $"{d}/build/out/a.txt"
+    print $"{Path.glob $"{d}/**/*.txt" |> Seq.length} artifact(s)"
+```
+
+Copies and moves take (src, dst) and REFUSE an existing destination —
+`File.delete` first is the overwriting spelling. `Dir.create` alone
+is idempotent: an existing directory is the post-condition it was
+asked for.
+
 Secret data is the base64 workload [D:encoding-law]: `Str.toBase64`
 encodes UTF-8 bytes as ONE unwrapped line (no 76-column MIME wrap, no
 `-w0` tax), so a token splices straight into the district:

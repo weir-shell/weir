@@ -1,5 +1,33 @@
 # Spike Notes
 
+## the filesystem family — File completed, Dir created (2026-08-04)
+
+Ten members, six rulings, all made in the plan and executed as
+written. The one that will read as inconsistent without its
+distinction, stated in DECISIONS: destinations REFUSE to overwrite
+(reject-don't-guess; delete-first is the overwriting spelling) while
+Dir.create is idempotent — because an existing directory IS create's
+post-condition, and an existing copy destination is data the caller
+did not ask to destroy. Dir.deleteAll is the visibly-named
+destructive one, shipped (scratch-tree scripts need it; rm -rf is
+worse in every way), its doc's first line all caps about what it
+does.
+
+THE PRODUCTS: the four error shapes pinned each naming its path;
+Dir.list full-path/sorted/both-kinds/eager; glob-then-delete as the
+composition e2e; and the within-tmp DOUBLE-DELETE pin — a block that
+deleteAlls its own binder exits clean, promoting the scope finally's
+vanished-dir tolerance from an implementation accident to a pinned
+product. The showcase's File.delete judgment row (the gap's first
+symptom) CLOSED with real cleanup — the scratch files it used to
+leave in the temp root now go.
+
+ONE HARNESS SHAPE learned: doc examples are single-LINE (the runner
+joins), so the filesystem examples became self-cleaning let-in + ';'
+chains (`let d = Path.newTempDir () in (…) ; File.delete … ;
+Dir.delete d`) — which incidentally makes each example a tiny
+composition demo of the family it documents.
+
 ## gap audit session A, the remainder (2026-08-04)
 
 Six members, every one receipt-cited, every decision made in the

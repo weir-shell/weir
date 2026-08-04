@@ -225,6 +225,12 @@ print first
   (`defaultValue` is the one that unwraps). `Path.tempRoot ()` is the
   pure query; `Path.newTempDir ()` CREATES (cleanup is yours —
   `within tmp` is the scoped-cleanup spelling).
+- Filesystem [D:fs-members]: `File.delete/copy/move/size` (copy/move
+  = (src, dst), REFUSE existing destinations — delete first to
+  overwrite), `Dir.create` (idempotent, makes parents) /`exists`/
+  `delete` (empty only)/`deleteAll` (RECURSIVE, destructive)/`list`
+  (full paths, sorted, both kinds; `Path.glob "**"` recurses)/`move`.
+  Every failure names its path.
 - `Seq.force` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, four customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
