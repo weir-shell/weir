@@ -4491,11 +4491,7 @@ let semanticTokenTests =
               // B5: an ERRORED statement still surfaces its command-head
               // warnings (parse-level walk — no typed tree exists)
               let lines2 =
-                  [ "let go t ="
-                    "    let e = targ etEnv t"
-                    "    !e"
-                    "        echo hi"
-                    "    print \"ok\"" ]
+                  [ "let go t ="; "    let e = targ etEnv t"; "    echo hi"; "    print \"ok\"" ]
 
               let diags2, _, _, _ = Weir.Script.analyzeLines "b2.weir" lines2
 
@@ -4656,10 +4652,9 @@ let semanticTokenTests =
 
               Expect.equal toks [] "no command tokens anywhere"
           }
-          test "district body lines token; the wrapper glyphs emit nothing" {
+          test "armed command-group lines token (retargeted [D:district-retirement])" {
               let toks =
-                  Weir.Lsp.semanticTokensFor
-                      [ "if 1 > 0 then !"; "    echo m one"; "    echo m two"; ""; "print \"z\"" ]
+                  Weir.Lsp.semanticTokensFor [ "if 1 > 0 then"; "    echo m one"; "    echo m two"; ""; "print \"z\"" ]
 
               Expect.equal
                   toks
@@ -6591,16 +6586,16 @@ let scannerTests =
               Expect.equal (Weir.Script.classifyPiece "elsewhere ()").Kind Weir.Script.PieceKind.Plain ""
               Expect.equal (Weir.Script.classifyPiece "letter x").Kind Weir.Script.PieceKind.Plain ""
           }
-          test "classifyPiece: marker and compound overlap on `if c then !`" {
-              let c = Weir.Script.classifyPiece "if c then !"
-              Expect.equal c.Marker Weir.Script.MarkerKind.Bare ""
-              Expect.isTrue c.OpensCompound ""
-          }
-          test "classifyPiece: env marker `!name` at line end (Layer 2)" {
-              Expect.equal (Weir.Script.classifyPiece "if c then !e").Marker (Weir.Script.MarkerKind.Env "e") ""
-              Expect.equal (Weir.Script.classifyPiece "!targetEnv").Marker (Weir.Script.MarkerKind.Env "targetEnv") ""
-              Expect.equal (Weir.Script.classifyPiece "echo hello!").Marker Weir.Script.MarkerKind.NoMarker ""
-              Expect.equal (Weir.Script.classifyPiece "!e(git st)").Marker Weir.Script.MarkerKind.NoMarker ""
+          test "classifyPiece: retired ! markers classify as NoMarker; the assembler TEACHES [D:district-retirement]" {
+              // the old Bare/Env marker pins FLIP: retirement makes them
+              // plain pieces, and the retiredDistrictMarker predicate is
+              // what routes the teaching error
+              Expect.equal (Weir.Script.classifyPiece "if c then !").Marker Weir.Script.MarkerKind.NoMarker ""
+              Expect.equal (Weir.Script.classifyPiece "if c then !e").Marker Weir.Script.MarkerKind.NoMarker ""
+              Expect.isTrue (Weir.Script.retiredDistrictMarker "if c then !") "bare spelling detected"
+              Expect.isTrue (Weir.Script.retiredDistrictMarker "!targetEnv") "env spelling detected"
+              Expect.isFalse (Weir.Script.retiredDistrictMarker "echo hello!") "a trailing ! word is not the marker"
+              Expect.isFalse (Weir.Script.retiredDistrictMarker "!e(git st)") "sigil forms stay"
           }
           test "classifyPiece: env sigil heads count as bang sigils in districts" {
               Expect.isTrue (Weir.Script.classifyPiece "!e(git st)").IsBangSigil ""
@@ -6654,7 +6649,9 @@ let childEnvTests =
           }
           test "env sigil: $e(...) attaches the overlay to the chain's spawn" {
               match Weir.Parser.parseLine realResolver "let x = $e(git status)" with
-              | Ok(SLet("x", { Kind = ECmd("git", _, Some { Kind = EVar "e" }) })) -> ()
+              // ECapture wraps: $() asserts capture in every position
+              // [D:district-retirement]
+              | Ok(SLet("x", { Kind = ECapture { Kind = ECmd("git", _, Some { Kind = EVar "e" }) } })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil: !e(...) is chain-with-env |> print" {
@@ -6664,14 +6661,17 @@ let childEnvTests =
           }
           test "env sigil: every segment in the chain gets the env" {
               match Weir.Parser.parseLine realResolver "let x = $e(git log | grep x)" with
-              | Ok(SLet("x", { Kind = EPipe({ Kind = ECmd("git", _, Some _) }, { Kind = ECmd("grep", _, Some _) }) })) ->
-                  ()
+              | Ok(SLet("x",
+                        { Kind = ECapture { Kind = EPipe({ Kind = ECmd("git", _, Some _) },
+                                                         { Kind = ECmd("grep", _, Some _) }) } })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil x complete: routes through completedEnv" {
               match Weir.Parser.parseLine realResolver "let r = $e(git status | complete)" with
-              | Ok(SLet("r", { Kind = EApp({ Kind = EApp({ Kind = EApp({ Kind = EVar "|completedEnv" }, _) }, _) }, _) })) ->
-                  ()
+              | Ok(SLet("r",
+                        { Kind = ECapture { Kind = EApp({ Kind = EApp({ Kind = EApp({ Kind = EVar "|completedEnv" }, _) },
+                                                                      _) },
+                                                        _) } })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil: a space after the ident falls back (no sigil)" {
@@ -6679,40 +6679,67 @@ let childEnvTests =
               | Ok(SLet("x", { Kind = ECmd _ })) -> failtest "space must not read as an env sigil"
               | _ -> ()
           }
-          test "district header: !e distributes the env over the block" {
-              match Weir.Script.assemble [ 1, "if go then !e"; 2, "    git pull"; 3, "    git push" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "if go then !e(git pull) ; !e(git push)" ""
-              | other -> failtest $"unexpected: {other}"
+          test "the wrap-it hint fires in fragment positions; plain unbound is unchanged [D:district-retirement]" {
+              let terr = checkErr "Seq.length (sh -c \"echo g\")"
+              Expect.stringContains (formatError terr) "wrap it: $(sh " "the repair named at the head"
+              Expect.stringContains (formatError terr) "unbound variable 'sh'" "did-you-mean line coexists"
+
+              // a LONE unbound var is not command-shaped — old text only
+              let plain = checkErr "zzznope"
+              Expect.isFalse ((formatError plain).Contains "wrap it") "no hint without application"
           }
-          test "district header x offside: closing sibling wraps the env district" {
-              match
-                  Weir.Script.assemble
-                      [ 1, "let f t ="
-                        2, "    if c then !e"
-                        3, "        git pull"
-                        4, "    print \"x\"" ]
-              with
-              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f t = (if c then !e(git pull)) ; print \"x\"") ""
-              | other -> failtest $"unexpected: {other}"
+          test "THE DEDENT FLOOR: unaligned dedents ERROR instead of silently joining [D:district-retirement]" {
+              // the silent-swallow class (legal-parse-wrong-meaning): a
+              // statement dedenting from a nested block used to SPACE-JOIN
+              // — absorbed as argv after a command line. Four shapes, one
+              // floor: within, block-let, for, if.
+              let shapes =
+                  [ [ 1, "within tmp d"
+                      2, "    within tmp e"
+                      3, "        sh -c \"echo x\""
+                      4, "    sh -c \"echo after\"" ]
+                    [ 1, "let x ="
+                      2, "    let y ="
+                      3, "        sh -c \"echo a\""
+                      4, "        1"
+                      5, "    sh -c \"echo b\""
+                      6, "    2" ]
+                    [ 1, "for a in [\"p\"] do"
+                      2, "    for b in [\"q\"] do"
+                      3, "        sh -c \"echo x\""
+                      4, "    sh -c \"echo after\"" ]
+                    [ 1, "let f t ="
+                      2, "    if t then"
+                      3, "        if t then"
+                      4, "            sh -c \"echo x\""
+                      5, "        sh -c \"echo after\"" ] ]
+
+              for shape in shapes do
+                  match Weir.Script.assemble shape with
+                  | Error msg -> Expect.stringContains msg "aligns with no enclosing statement" $"floor fires: {shape}"
+                  | Ok lls ->
+                      // an Ok is fine ONLY if the dedented line became a
+                      // real sibling (a sentinel precedes it) — never a
+                      // space-absorbed argv
+                      let joinedOk =
+                          lls
+                          |> List.forall (fun ll ->
+                              not (ll.Text.Contains "\" sh") || ll.Text.Contains Weir.Parser.sibSepStr)
+
+                      Expect.isTrue joinedOk $"no silent absorption: {lls |> List.map _.Text}"
           }
-          test "standalone marker: dedent after the district sequences (latent bare-! bug)" {
-              match
-                  Weir.Script.assemble [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
-              with
-              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = !e(git pull) ; printerr \"OK\"") ""
-              | other -> failtest $"unexpected: {other}"
-          }
-          test "standalone bare marker: same sequencing on dedent" {
-              match
-                  Weir.Script.assemble [ 1, "let f x ="; 2, "    !"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
-              with
-              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = !(git pull) ; printerr \"OK\"") ""
-              | other -> failtest $"unexpected: {other}"
-          }
-          test "district header x pipes: continuation keeps the wrap" {
-              match Weir.Script.assemble [ 1, "if go then !e"; 2, "    git log"; 3, "        | grep x" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "if go then !e(git log | grep x)" ""
-              | other -> failtest $"unexpected: {other}"
+          test "the env-district spellings teach their retirement [D:district-retirement]" {
+              // !e / !name at line end, standalone or headed — all five
+              // former district-header pins collapse to the teaching;
+              // `within env vars` is the block overlay now (e2e-pinned),
+              // and the $e()/!e() SIGIL pins below stay untouched
+              for fixture in
+                  [ [ 1, "if go then !e"; 2, "    git pull" ]
+                    [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
+                    [ 1, "let f x ="; 2, "    !"; 3, "        git pull"; 4, "    printerr \"OK\"" ] ] do
+                  match Weir.Script.assemble fixture with
+                  | Error msg -> Expect.stringContains msg "district retired" ""
+                  | other -> failtest $"unexpected: {other}"
           }
           test "fromFile: single quotes are shell-literal ($ allowed)" {
               // the NINTH \U site, found by the Windows hand-run — the
@@ -7330,15 +7357,15 @@ let offsideTests =
                   Expect.equal ll.Text (asmSib "let v = (match x with | A -> printerr \"a\") ; printerr \"z\"") ""
               | other -> failtest $"unexpected: {other}"
           }
-          test "district x offside: closing sibling wraps the marker's if" {
+          test "arming x offside: closing sibling wraps the bare-command if (retargeted [D:district-retirement])" {
               match
                   Weir.Script.assemble
                       [ 1, "let f t ="
-                        2, "    if c then !"
+                        2, "    if c then"
                         3, "        git pull"
                         4, "    print \"x\"" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f t = (if c then !(git pull)) ; print \"x\"") ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f t = (if c then git pull) ; print \"x\"") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "record continuation: bare fields get separators" {
@@ -7368,10 +7395,10 @@ let offsideTests =
           }
           // the span classes ride the consumed-separator law
           // [D:seq-commit] [D:arm-commit]: errors anchor on the junk
-          test "a parse error after a district anchors on the junk" {
+          test "a parse error after a command group anchors on the junk (retargeted)" {
               let lines =
                   [ "let v0 ="
-                    "    if 79 == 84 then !"
+                    "    if 79 == 84 then"
                     "        echo m0 w381"
                     "    if 0 > 99 then ?!?"
                     "        print \"x\""
@@ -7568,9 +7595,9 @@ let offsideTests =
               | Error e -> Expect.stringContains e "record literal" ""
               | other -> failtest $"unexpected: {other}"
           }
-          test "district lines never enter brace mode (commands are not records)" {
-              match Weir.Script.assemble [ 1, "if c then !"; 2, "    awk \"{print}\" f"; 3, "    git pull" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "if c then !(awk \"{print}\" f) ; !(git pull)" ""
+          test "bare command lines never enter brace mode (retargeted [D:district-retirement])" {
+              match Weir.Script.assemble [ 1, "if c then"; 2, "    awk \"{print}\" f"; 3, "    git pull" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if c then awk \"{print}\" f ; git pull") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "exit types like fail: int -> unit" {
@@ -7737,7 +7764,7 @@ let sigilTests =
         "Command sigils"
         [ test "capture sigil parses to the command chain (realResolver)" {
               match Weir.Parser.parseLine realResolver "let b = $(git branch) |> Seq.length" with
-              | Ok(SLet("b", { Kind = EPipe({ Kind = ECmd("git", _, _) }, _) })) -> ()
+              | Ok(SLet("b", { Kind = EPipe({ Kind = ECapture { Kind = ECmd("git", _, _) } }, _) })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "effect sigil desugars to chain |> print" {
@@ -7766,7 +7793,7 @@ let sigilTests =
           }
           test "sigils x complete inside: uniform interior grammar composes" {
               match Weir.Parser.parseLine realResolver "let r = $(git status | complete)" with
-              | Ok(SLet("r", { Kind = EApp _ })) -> ()
+              | Ok(SLet("r", { Kind = ECapture { Kind = EApp _ } })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "sigils x strict mode: grammar, not resolution" {
@@ -7778,60 +7805,30 @@ let sigilTests =
 
 let districtTests =
     testList
-        "Command district"
-        [ test "marker distributes: district equals the single-line form" {
-              match Weir.Script.assemble [ 1, "if go then !"; 2, "    git pull"; 3, "    git push" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "if go then !(git pull) ; !(git push)" ""
+        "Command district (RETIRED [D:district-retirement])"
+        [ test "the line-end ! marker teaches its retirement" {
+              match Weir.Script.assemble [ 1, "if go then !"; 2, "    git pull" ] with
+              | Error msg ->
+                  Expect.stringContains msg "district retired" "the teaching, not an expecting-list"
+                  Expect.stringContains msg "within env" "the overlay pointer"
               | other -> failtest $"unexpected: {other}"
           }
-          test "pipe-headed district lines continue the previous command" {
-              match Weir.Script.assemble [ 1, "if go then !"; 2, "    git branch"; 3, "    | Seq.map Str.trim" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "if go then !(git branch | Seq.map Str.trim)" ""
+          test "the !name marker teaches identically" {
+              match Weir.Script.assemble [ 1, "if go then !e"; 2, "    git pull" ] with
+              | Error msg -> Expect.stringContains msg "district retired" ""
               | other -> failtest $"unexpected: {other}"
           }
-          test "district x else: dedent to marker indent rejoins the if" {
-              match
-                  Weir.Script.assemble
-                      [ 1, "let m ="
-                        2, "    if c then !"
-                        3, "        git pull"
-                        4, "    else print \"x\"" ]
-              with
-              | Ok [ ll ] -> Expect.equal ll.Text "let m = if c then !(git pull) else print \"x\"" ""
-              | other -> failtest $"unexpected: {other}"
+          test "the arming spelling replaces it: bare commands under if assemble and check" {
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "r.weir" [ "let go = 1 > 0"; "if go then"; "    git status" ]
+
+              Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) "the replacement is legal"
           }
-          test "district x pending let: closing line still closes the let" {
-              match
-                  Weir.Script.assemble
-                      [ 1, "let w ="
-                        2, "    let r ="
-                        3, "        if c then !"
-                        4, "            git pull"
-                        5, "    r" ]
-              with
-              | Ok [ ll ] -> Expect.equal ll.Text "let w = let r = (if c then !(git pull)) in r" ""
-              | other -> failtest $"unexpected: {other}"
-          }
-          test "MECHANISM PIN: a closing line is reprocessed exactly once (no duplicated segments)" {
-              match
-                  Weir.Script.assemble
-                      [ 1, "let w ="
-                        2, "    let r ="
-                        3, "        if c then !"
-                        4, "            git pull"
-                        5, "    r" ]
-              with
-              | Ok [ ll ] ->
-                  let line5 = ll.Segments |> List.filter (fun (_, n, _) -> n = 5)
-                  Expect.hasLength line5 1 "one span-table entry for the district-closing let-closing line"
-              | other -> failtest $"unexpected: {other}"
-          }
-          test "MECHANISM PIN: assembler recursion bounded by nesting, not file length" {
-              // 500 sequential districts with deep dedents must not overflow
+          test "MECHANISM PIN: assembler recursion bounded by nesting, not file length (retargeted)" {
               let lines =
-                  [ for i in 1..500 do
+                  [ for _ in 1..500 do
                         yield "let go = 1 > 0"
-                        yield "if go then !"
+                        yield "if go then"
                         yield "    git status"
                         yield "" ]
                   |> List.mapi (fun i l -> i + 1, l)
@@ -7839,24 +7836,6 @@ let districtTests =
               match Weir.Script.assemble lines with
               | Ok lls -> Expect.equal (List.length lls) 1000 "all statements assembled"
               | Error e -> failtest e
-          }
-          test "district errors: hint, contract, empty block" {
-              match Weir.Script.assemble [ 1, "if go then !"; 2, "    !(git pull)" ] with
-              | Error msg -> Expect.stringContains msg "drop the !(" "sigil-inside hint"
-              | other -> failtest $"unexpected: {other}"
-
-              match Weir.Script.assemble [ 1, "if go then !"; 2, "    let x = 1" ] with
-              | Error msg -> Expect.stringContains msg "bind values outside" "commands-only contract"
-              | other -> failtest $"unexpected: {other}"
-
-              match Weir.Script.assemble [ 1, "if go then !"; 2, "print \"no\"" ] with
-              | Error msg -> Expect.stringContains msg "needs an indented block" "armed but empty"
-              | other -> failtest $"unexpected: {other}"
-          }
-          test "district x uneven indent: one command per line error" {
-              match Weir.Script.assemble [ 1, "if go then !"; 2, "    git pull"; 3, "        extra" ] with
-              | Error msg -> Expect.stringContains msg "one per line" ""
-              | other -> failtest $"unexpected: {other}"
           } ]
 
 let indexerTests =

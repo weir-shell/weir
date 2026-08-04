@@ -518,7 +518,11 @@ let private captureSigil =
                 .>> (pchar ')'
                      <?> "')' — close the sigil on this line, or bind with 'let x = <command>' at statement level")
     )
-    |>> fun (chain, span) -> { chain with Span = span }
+    |>> (fun (chain, span) ->
+        // the capture ASSERTION survives to the statement gate
+        // [D:district-retirement]: $() never arms, in any position
+        { Kind = ECapture { chain with Span = span }
+          Span = span })
     .>> ws
 
 let private effectSigil =
@@ -854,7 +858,7 @@ let private letIn =
 
                   (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in"
                   >>= fun value ->
-                      withAmbientName name seqExpr
+                      withAmbientName name (withExprParen false seqExpr)
                       |>> fun body ->
                           { Kind = ELet(name, nameSpan, curryParams ps value, body)
                             Span = { Start = pos p; End = body.Span.End } } ]
@@ -1102,7 +1106,7 @@ let private matchArm =
     // commas, so the guard sits OUTSIDE the tuple by construction
     commaPats
     >>= fun p ->
-        withPatNames p (opt (keyword "when" >>. expr) .>> str_ws "->" .>>. seqExpr)
+        withPatNames p (opt (keyword "when" >>. expr) .>> str_ws "->" .>>. withExprParen false seqExpr)
         |>> fun (guard, body) -> p, guard, body
 
 // within <kind> <binder> + block [D:within-scopes]: a scoped resource
@@ -1117,7 +1121,8 @@ let private withinExpr =
             // the dangle SPACE-joins the first body statement (the
             // then-convention); siblings arrive sentineled
             let block =
-                opt (str_ws ";" <|> str_ws sibSepStr) >>. (seqExpr <?> "the scope's block")
+                opt (str_ws ";" <|> str_ws sibSepStr)
+                >>. (withExprParen false seqExpr <?> "the scope's block")
 
             match kind with
             | "tmp" ->
@@ -1126,7 +1131,7 @@ let private withinExpr =
                 identSpanned
                 >>= fun (binder, bspan) ->
                     (opt (str_ws ";" <|> str_ws sibSepStr))
-                    >>. (withPatNames { PKind = PVar binder; PSpan = bspan } seqExpr
+                    >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
                          <?> "the scope's block")
                     |>> fun body ->
                         { Kind = EWithin("tmp", Some(binder, bspan), None, body)
@@ -1173,9 +1178,11 @@ let private ifExpr =
     pipe5
         getPosition
         (keyword "if" >>. expr)
-        (keyword "then" >>. seqExpr)
-        (many ((keyword "elif" >>. expr) .>>. (keyword "then" >>. seqExpr)))
-        (opt (keyword "else" >>. seqExpr))
+        // bodies are STATEMENT territory even inside (assembler-wrapped)
+        // parens [D:interior-arming] — the lambda-body precedent
+        (keyword "then" >>. withExprParen false seqExpr)
+        (many ((keyword "elif" >>. expr) .>>. (keyword "then" >>. withExprParen false seqExpr)))
+        (opt (keyword "else" >>. withExprParen false seqExpr))
         (fun p cond thn elifs els ->
             let rec build clauses =
                 match clauses with
@@ -1231,7 +1238,7 @@ let private forExpr =
             >>= fun source ->
                 // the body knows its binder [D:interior-arming] — same
                 // bindings-beat-PATH extension as lambda params
-                withPatNames binder (cmdBody <|> seqExpr)
+                withPatNames binder (cmdBody <|> withExprParen false seqExpr)
                 |>> fun body ->
                     let span = { Start = pos p; End = body.Span.End }
                     let mk k = { Kind = k; Span = span }

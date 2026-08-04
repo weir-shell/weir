@@ -449,7 +449,8 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                 emitCmd ind $"echo $@([{lit}])"
             | _ -> emitCmd ind ("echo " + String.concat " " words)
         | SDistrict(bid, headed, cmds) when cfg.ExplicitDistrict bid ->
-            // the marker's desugar claim: `!` block = `!(...)` per line
+            // the arming equivalence [D:interior-arming]: a bare command
+            // statement = `!(...)` — the retirement's surviving transform
             let line cmd = "!(echo " + String.concat " " cmd + ")"
 
             match headed with
@@ -462,12 +463,20 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                 for cmd in cmds do
                     emitCmd ind (line cmd)
         | SDistrict(bid, headed, cmds) ->
+            // RETARGETED at the district retirement
+            // [D:district-retirement]: the same coverage now renders the
+            // ARMING rule's spelling — bare command statements (headed:
+            // in an if body; standalone: at the statement level) — and
+            // the ExplicitDistrict transform is the bare-vs-!() sigil
+            // EQUIVALENCE, the arming rule's own metamorphic property
             (match headed with
-             | Some c -> emitCmd ind $"if {renderCond c} then !"
-             | None -> emitCmd ind "!")
+             | Some c -> emitCmd ind $"if {renderCond c} then"
+             | None -> ())
+
+            let cind = if headed.IsSome then ind + 4 + extra bid else ind
 
             for cmd in cmds do
-                emitCmd (ind + 4 + extra bid) ("echo " + String.concat " " cmd)
+                emitCmd cind ("echo " + String.concat " " cmd)
         | SCmdLet(g, words) ->
             let rhs = "echo " + String.concat " " words
 

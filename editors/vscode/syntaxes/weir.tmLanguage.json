@@ -79,9 +79,6 @@
       "include": "#sigil-open"
     },
     {
-      "include": "#district-marker"
-    },
-    {
       "include": "#force-prefix"
     },
     {
@@ -148,10 +145,6 @@
     "sigil-open": {
       "match": "\\$\\(|!\\(|[$!][a-z_][A-Za-z0-9_]*\\(",
       "name": "keyword.other.sigil.weir"
-    },
-    "district-marker": {
-      "match": "(?:^|(?<=[ \\t]))![A-Za-z_][A-Za-z0-9_]*$|(?:^|(?<=[ \\t]))!$",
-      "name": "keyword.other.district.weir"
     },
     "force-prefix": {
       "match": "\\^[A-Za-z][A-Za-z0-9_.-]*",

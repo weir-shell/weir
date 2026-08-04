@@ -544,6 +544,11 @@ let digest = within tmp dir
 print (Str.sub 0 12 digest)
 ```
 
+An `if` condition takes neither a bare chain nor a `$()`-piped one —
+BIND THE VERDICT FIRST, the canonical spelling: `let ok = cmd |
+succeeds` then `if ok then …` (making the inline form work wants a
+new argv-stop context, reported with its size in [D:district-retirement]).
+
 Statement position works too (`within tmp d` + effects, unit by the
 ordinary discard rule). The other kinds CONSUME an argument instead
 of producing one: `within cd "build"` runs its block there and
@@ -672,7 +677,7 @@ let ready = 1 > 0
 
 !e(sh -c "echo inline: $STAGE")
 
-if ready then !e
+within env e
     sh -c "echo block one: $STAGE"
     sh -c "echo block two: $STAGE"
 ```
@@ -807,7 +812,7 @@ runs-and-streams (unit, raises on nonzero):
 ```weir
 let ready = 1 > 0
 
-if ready then !
+if ready then
     sh -c "echo preparing"
     sh -c "echo prepared"
 

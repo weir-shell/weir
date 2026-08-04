@@ -75,10 +75,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "district_marker"
-        },
-        {
-          "type": "SYMBOL",
           "name": "adapter"
         },
         {
@@ -308,6 +304,10 @@
         {
           "type": "STRING",
           "value": "import"
+        },
+        {
+          "type": "STRING",
+          "value": "within"
         }
       ]
     },
@@ -573,17 +573,6 @@
             "value": "![A-Za-z_][A-Za-z0-9_]*\\("
           }
         ]
-      }
-    },
-    "district_marker": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PREC",
-        "value": -1,
-        "content": {
-          "type": "PATTERN",
-          "value": "![A-Za-z_0-9]*"
-        }
       }
     },
     "adapter": {

@@ -16,7 +16,7 @@ let cli = Args.load Cli
 
 let branch = git rev-parse --abbrev-ref HEAD |> Seq.head
 
-if cli.clean then !
+if cli.clean then
     git checkout main
     git pull
     git branch -D $branch

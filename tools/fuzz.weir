@@ -45,7 +45,7 @@ let fenv = Env.ofPairs [("WEIR_FUZZ_SEED", seed); ("WEIR_FUZZ_COUNT", count)]
 
 // orFail streams the test output live AND carries the reproduce
 // line on failure [D:exit-reifiers]
-!fenv
+within env fenv
     dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj | orFail $"deep fuzz FAILED — reproduce with: tools/fuzz.weir --seed {seed} --count {count}"
 
 // on failure orFail raised above and this never runs — the lock goes

@@ -39,7 +39,6 @@ module.exports = grammar({
         $.sigil,
         $.splice,
         $.bang_sigil,
-        $.district_marker,
         $.adapter,
         $.yaml_marker,
         $.yaml_key,
@@ -135,9 +134,6 @@ module.exports = grammar({
 
     // !( effect opener; !e( env-effect (glued)
     bang_sigil: _ => token(choice('!(', /![A-Za-z_][A-Za-z0-9_]*\(/)),
-
-    // line-end district markers `!` / `!name` (loosely: a lone bang)
-    district_marker: _ => token(prec(-1, /![A-Za-z_0-9]*/)),
 
     // `to yaml` / `from yaml` as ONE internal token: longest-match at the
     // `to`/`from` boundary means the external scanner is never consulted

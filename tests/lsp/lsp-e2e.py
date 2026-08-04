@@ -302,7 +302,7 @@ FIXTURE = """let path = "/etc"
 let f r =
     let g = echo tag $r
     g |> Seq.length
-if 1 > 0 then !
+if 1 > 0 then
     echo m one
 let echo x = x
 let y = echo 5
@@ -320,7 +320,7 @@ elapsed = (time.monotonic() - t0) * 1000
 got = decode(toks["result"]["data"])
 expect((2, 12, 4, 0) in got and (2, 17, 3, 1) in got and (2, 21, 2, 2) in got,
        f"block-let RHS command must token: {got}")
-expect((5, 4, 4, 0) in got and (5, 9, 1, 1) in got, f"district body must token: {got}")
+expect((5, 4, 4, 0) in got and (5, 9, 1, 1) in got, f"command-group body must token: {got}")
 expect((8, 0, 3, 0) in got and (8, 4, 6, 1) in got, f"statement command must token: {got}")
 expect(not any(t[0] == 7 for t in got), f"the shadowed echo must emit nothing: {got}")
 expect(not any(t[0] == 8 and t[1] > 23 for t in got),
