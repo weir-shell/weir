@@ -374,12 +374,12 @@ distdir=$(mktemp -d)
 cat > "$distdir/d.weir" <<'WEOF'
 let go = 1 > 0
 
-if go then !
+if go then
     sh -c "echo dist-one"
-    // comments are transparent inside districts
+    // comments are transparent inside blocks
     sh -c "echo dist-two"
 
-if 1 > 2 then !
+if 1 > 2 then
     sh -c "echo dist-never"
 
 print "dist-after"
@@ -389,18 +389,27 @@ for needle in dist-one dist-two dist-after; do
     expect "district: $needle" "$needle" "$out"
 done
 if echo "$out" | grep -qF "dist-never"; then fail "false-branch district ran"; fi
-echo "e2e ok: district effect counts, both branch ways, comments transparent"
+echo "e2e ok: command-group effect counts, both branch ways, comments transparent (districts retired)"
+
+# the retirement TEACHES [D:district-retirement]
+cat > "$distdir/old.weir" <<'WEOF'
+if go then !
+    sh -c "echo x"
+WEOF
+rerr=$($BIN check "$distdir/old.weir" 2>&1) && fail "the retired spelling must error" || true
+echo "$rerr" | grep -qF "district retired" || fail "retirement teaching: $rerr"
+echo "e2e ok: the retired ! spelling teaches [D:district-retirement]"
 
 cat > "$distdir/span.weir" <<'WEOF'
 let n = 3
 
-if 1 > 0 then !
+if 1 > 0 then
     sh -c "echo a"
     echo (n |> Seq.length)
 WEOF
 errout=$($BIN "$distdir/span.weir" 2>&1) && fail "bad splice in district must fail"
 echo "$errout" | grep -qE "span.weir:5:" || fail "district splice error must point at line 5: $errout"
-echo "e2e ok: district span translation points at the district line"
+echo "e2e ok: command-group span translation points at the offending line"
 rm -rf "$distdir"
 
 envdir=$(mktemp -d)
@@ -1847,19 +1856,19 @@ cat > "$sdir/district.weir" <<'WEOF'
 let e = Env.fromFile "s.env"
 let go = 1 > 0
 
-if go then !e
+within env e
     sh -c "echo d-one: $MARK"
     sh -c "echo d-two: $MARK"
 
-if go then !
+if go then
     sh -c "echo d-bare: [$MARK]"
 WEOF
 out=$(cd "$sdir" && $BIN district.weir 2>&1)
-expect "env district distributes over the block" "d-two: layered" "$out"
-expect "bare district stays env-less" "d-bare: []" "$out"
+expect "within env distributes over the block (was: env district)" "d-two: layered" "$out"
+expect "a plain block stays env-less" "d-bare: []" "$out"
 
-$BIN fmt --check "$sdir/district.weir" >/dev/null 2>&1 || fail "fmt must accept the env district"
-echo "e2e ok: fmt roundtrips the env district"
+$BIN fmt --check "$sdir/district.weir" >/dev/null 2>&1 || fail "fmt must accept the within env block"
+echo "e2e ok: fmt roundtrips the within env block"
 
 rm -rf "$sdir"
 
@@ -2385,14 +2394,14 @@ expect "gaps between match head and arms, and between arms" "other" "$out"
 
 cat > "$bbdir/district.weir" <<'WEOF'
 let ok = 1 > 0
-if ok then !
+if ok then
     sh -c "echo first"
 
     sh -c "echo second"
 print "after"
 WEOF
 out=$($BIN "$bbdir/district.weir")
-expect "a gapped district runs both commands" "second" "$out"
+expect "a gapped command group runs both commands" "second" "$out"
 echo "$out" | grep -qF "after" || fail "the district closes at col-0: $out"
 echo "e2e ok: district gaps group commands; effect count intact"
 
@@ -2768,12 +2777,12 @@ echo "$errout" | grep -qF "bind it (let rc = <command> | exitCode)" || fail "dis
 errout=$(printf 'git push | exitCode
 ' | $BIN check /dev/stdin 2>&1) && fail "statement discard must reject"
 echo "$errout" | grep -qF "drop '| exitCode' if you don't need the code" || fail "statement hint: $errout"
-# a district line inherits the !() ruling (the wrap desugar)
-errout=$(printf 'if 1 > 0 then !
+# an interior command line inherits the ruling (the arming desugar)
+errout=$(printf 'if 1 > 0 then
     git push | exitCode
-' | $BIN check /dev/stdin 2>&1) && fail "district exitCode line must reject"
-echo "$errout" | grep -qF "bind it (let rc = <command> | exitCode)" || fail "district cell: $errout"
-echo "e2e ok: exitCode conflict cells teach (sigil, bang, statement, district)"
+' | $BIN check /dev/stdin 2>&1) && fail "interior exitCode line must reject"
+echo "$errout" | grep -qF "bind it (let rc = <command> | exitCode)" || fail "interior cell keeps the tailored teaching: $errout"
+echo "e2e ok: exitCode conflict cells teach (sigil, bang, statement, interior line)"
 
 rm -rf "$rfdir"
 
@@ -2841,10 +2850,11 @@ expect "expression-position reification via \$(... | complete)" '["hi"]' "$out"
 # multi-external reifier still rejects (no new law)
 errout=$(printf 'echo hi | grep h | complete\n' | $BIN check /dev/stdin 2>&1) && fail "multi-external reifier must reject"
 echo "$errout" | grep -qF "single external command segment" || fail "multi-external rule changed: $errout"
-# the district/sigil teaching names the value-headed spelling
-errout=$(printf 'if true then !\n    ["x"] | cat\n' | $BIN check /dev/stdin 2>&1) && fail "value-headed in a district must reject"
-echo "$errout" | grep -qF "value-headed pipeline bound outside" || fail "district teaching: $errout"
-echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings, district teaching"
+# the sigil-interior teaching names the value-headed spelling
+# (retargeted from the retired district [D:district-retirement])
+errout=$(printf '!(["x"] | cat)\n' | $BIN check /dev/stdin 2>&1) && fail "value-headed in a sigil interior must reject"
+echo "$errout" | grep -qF "value-headed pipeline bound outside" || fail "sigil-interior teaching: $errout"
+echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings, sigil-interior teaching"
 rm -rf "$fddir"
 
 # ---- [<Default>]: the resting point moves [D:default-attr] ----
@@ -3384,13 +3394,13 @@ out=$($BIN "$fdir/loop.weir")
 expect "for/do runs a bare command body per element (implicit effect)" "got-one
 got-two" "$out"
 
-# the do ! district: multiple command lines per iteration
+# multi-line for bodies need no district [D:district-retirement]
 cat > "$fdir/district.weir" <<'WEOF'
-for f in ["a"; "b"] do !
+for f in ["a"; "b"] do
     sh -c $"echo made-{f}"
 WEOF
 out=$($BIN "$fdir/district.weir")
-expect "for/do arms a command district with do !" "made-a
+expect "for/do takes a plain multi-line command body" "made-a
 made-b" "$out"
 
 # the comprehension is eager and evaluates

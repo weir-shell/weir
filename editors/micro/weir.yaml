@@ -68,11 +68,6 @@ rules:
     - special: "\\$\\("
     - special: "!\\("
     - special: "[$!][a-z_][A-Za-z0-9_]*\\("
-    # line-end district marker: a STANDALONE token (bare ! or !envname);
-    # `echo hello!` is argv, not a marker — hence the boundary
-    # rule: district-marker
-    - special: "(^|[ \t])![A-Za-z_][A-Za-z0-9_]*$"
-    - special: "(^|[ \t])!$"
     # PATH-force prefix
     # rule: force-prefix
     - special: "\\^[A-Za-z][A-Za-z0-9_.-]*"

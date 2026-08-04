@@ -25,7 +25,7 @@ composition, not type complexity.
   — THIN: ~1% of base programs (4/400 measured); a 200-case smoke
   sees a handful, the shape leans on deep runs for real sweep
 - `print` statements (interp markers); `if ... then` unit bodies
-  (nested ifs, prints, headed districts)
+  (nested ifs, prints, headed command groups)
 - record type decls: inline, Stroustrup, aligned styles; `///` field
   docs in the Stroustrup style (doc line + field line as one aligned
   entry, governed by the doc-alignment lint)
@@ -41,8 +41,11 @@ composition, not type complexity.
 - command lines: top-level bare `echo`; command-backed `let` (top
   level AND block bodies — the spine flag); `seq |> print`;
   `(xs |> Seq.length)` forcing command output in expressions
-- districts: standalone `!` (top level), headed `if ... then !` (top
-  level, if bodies, block bodies)
+- bare command GROUPS (the retired districts' coverage, retargeted
+  [D:district-retirement]): standalone runs at statement level, headed
+  `if … then` bodies of bare commands — with the per-line `!(...)`
+  spelling as the bare-vs-sigil EQUIVALENCE transform (the arming
+  rule's own metamorphic property [D:interior-arming])
 - yaml districts (top-level only): 1–3 literal keys, int/word/splice
   values (splices draw existing int/string binders), one optional
   nested map, each rendered with a trailing `d |> to yaml |> print`
@@ -55,7 +58,7 @@ composition, not type complexity.
   as a bare iter statement and as a map on a let-RHS pipeline
 - placement laws the probes established (generator-enforced): bare
   command lines and type declarations are top-level only; if bodies
-  are expression territory (districts are the command spelling there);
+  are expression territory (bare commands are statements there now [D:interior-arming]);
   record field sets are unique per type (ambiguity)
 
 ## CANNOT yet produce
@@ -67,7 +70,7 @@ composition, not type complexity.
 - multiline string LITERALS (never — weir strings are single-line
   [D:raw-strings]; multiline string VALUES exist via yaml block
   scalars, covered by the yaml-district entry above)
-- env-parameterized districts (`!name`) and env sigils (`$e`/`!e`);
+- the RETIRED `!`/`!name` district markers (now a teaching error) and env sigils (`$e`/`!e`);
   `sh -c` lines; `| from porcelain/json` adapters; exit reifiers
   (`succeeds`/`complete`/`orFail`/`exitCode` — outside the MAIN
   grammar; reifier CHAINS are swept by invariant 6's dedicated
@@ -100,8 +103,8 @@ fails.
 1. Metamorphic equivalence on the AOT binary — (rc, stdout, stderr)
    byte-identical under: blank insertion (any gap), comment insertion
    (any gap, any indent 0–12), whole-block re-indent (+1..6 on one
-   block: let bodies, if bodies, district bodies, match-arm groups,
-   Stroustrup bracket groups, pipeline stages); district marker form
+   block: let bodies, if bodies, command groups, match-arm groups,
+   Stroustrup bracket groups, pipeline stages); yaml marker form
    ↔ explicit `!(...)` lines; bare command RHS ↔ `$(...)`; block
    siblings ↔ single-line `;` (print-only bodies — the probed
    boundary: inner lets spell `in`, commands take `;` as argv).

@@ -189,12 +189,11 @@ let gitrepoHeader =
 
 let writeGitrepo gitrepo repo =
     if not (File.exists gitrepo) then gitrepoHeader |> File.write gitrepo
-    !
-        git config --file $gitrepo subrepo.remote (repo.Remote)
-        git config --file $gitrepo subrepo.branch (repo.Branch)
-        git config --file $gitrepo subrepo.commit (repo.Commit)
-        git config --file $gitrepo subrepo.parent (repo.Parent)
-        git config --file $gitrepo subrepo.method (repo.Method)
+    git config --file $gitrepo subrepo.remote (repo.Remote)
+    git config --file $gitrepo subrepo.branch (repo.Branch)
+    git config --file $gitrepo subrepo.commit (repo.Commit)
+    git config --file $gitrepo subrepo.parent (repo.Parent)
+    !(git config --file $gitrepo subrepo.method (repo.Method))
 
 let commitMessage verb ctx =
     $"git subrepo {verb} (merge) {ctx.Subdir}"
@@ -226,11 +225,10 @@ let makeFreshCtx subdir repo =
 let assertRepoReady ctx =
     step "Assert repo state"
     if ctx.HeadBranch |> Str.isMatch @"^subrepo/" then fail "Can't pull while a subrepo branch is checked out."
-    !
-        // --exit-code instead of --quiet: orFail streams, so the
-        // failing paths SHOW [D:exit-reifiers]
-        git diff-files --exit-code --ignore-submodules | orFail "Can't pull subrepo. unstaged changes."
-        git diff-index --quiet --cached --ignore-submodules HEAD | orFail "Can't pull subrepo. Index has changes."
+    // --exit-code instead of --quiet: orFail streams, so the
+    // failing paths SHOW [D:exit-reifiers]
+    git diff-files --exit-code --ignore-submodules | orFail "Can't pull subrepo. unstaged changes."
+    git diff-index --quiet --cached --ignore-submodules HEAD | orFail "Can't pull subrepo. Index has changes."
 
 // ---- fetch (bash: subrepo:fetch) --------------------------------
 
@@ -251,12 +249,12 @@ let fetchUpstream ctx =
 let subdirTree subdir commit =
     let idx = $(mktemp -u) |> Seq.head
     let e = Env.ofPairs ["GIT_INDEX_FILE", idx]
-    !e
+    within env e
         git read-tree $"{commit}:{subdir}"
         git rm -q --cached --ignore-unmatch .gitrepo
-    let tree = $e(git write-tree) |> Seq.head
-    !(rm -f $idx)
-    tree
+        let tree = $(git write-tree) |> Seq.head
+        !(rm -f $idx)
+        tree
 
 // author-preserving commit-tree with explicit parents (bash: the
 // GIT_AUTHOR_* prefix; committer stays current, cherry-pick-style)
@@ -333,9 +331,8 @@ let commitSubrepo verb force ctx commitRef =
     step $"Put remote subrepo content into '{ctx.Subdir}/'."
     !(git read-tree $"--prefix={ctx.Subdir}" -u $commitRef)
     writeGitrepo (ctx.Gitrepo) { ctx.Repo with Commit = ctx.UpstreamHead; Parent = revParse "HEAD" }
-    !
-        git add -f -- (ctx.Gitrepo)
-        git commit -q -m (commitMessage verb ctx)
+    git add -f -- (ctx.Gitrepo)
+    git commit -q -m (commitMessage verb ctx)
     makeRef $"refs/subrepo/{ctx.Subref}/commit" commitRef
 
 // ---- pull (bash: subrepo:pull — branch, join, commit). The bash
@@ -423,9 +420,8 @@ let init subdir remote branch =
           Method = "merge" }
     let ctx = makeFreshCtx subdir repo
     writeGitrepo (ctx.Gitrepo) repo
-    !
-        git add -f -- (ctx.Gitrepo)
-        git commit -q -m (commitMessage "init" ctx)
+    git add -f -- (ctx.Gitrepo)
+    git commit -q -m (commitMessage "init" ctx)
     makeRef $"refs/subrepo/{ctx.Subref}/commit" (revParse "HEAD")
     say $"Subrepo created from '{subdir}' (remote: {repo.Remote})."
 
@@ -464,9 +460,8 @@ let push force ctx0 =
         makeRef $"refs/subrepo/{ctx.Subref}/push" branch
         deleteBranch branch
         writeGitrepo (ctx.Gitrepo) { ctx.Repo with Commit = newHead; Parent = revParse "HEAD" }
-        !
-            git add -f -- (ctx.Gitrepo)
-            git commit -q -m (commitMessage "push" ctx)
+        git add -f -- (ctx.Gitrepo)
+        git commit -q -m (commitMessage "push" ctx)
         say $"Subrepo '{ctx.Subdir}' pushed to '{ctx.Repo.Remote}' ({ctx.Repo.Branch})."
 
 // ---- clean (bash: subrepo:clean) --------------------------------

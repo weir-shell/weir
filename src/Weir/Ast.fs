@@ -64,6 +64,10 @@ and ExprKind =
     // no arg); cd and env CONSUME one (arg, no binder) — which is why
     // the form is `within <kind> <args…>`, not one fixed shape
     | EWithin of kind: string * binder: (string * Span) option * arg: Expr option * body: Expr
+    // the $() capture assertion [D:district-retirement]: $() means
+    // CAPTURE in every position — the wrapper marks the chain so
+    // statement arming never touches it; erased at check
+    | ECapture of Expr
     | ECmd of prog: string * args: Expr list * env: Expr option
     // $@xs / $@(expr) — N argv words [D:argv-splat]
     | ESplat of Expr
@@ -157,6 +161,7 @@ let exprChildren (e: Expr) : Expr list =
     | ELambda(_, _, b) -> [ b ]
     | ELambdaPat(_, b) -> [ b ]
     | EWithin(_, _, arg, b) -> Option.toList arg @ [ b ]
+    | ECapture e -> [ e ]
     | EApp(f, x) -> [ f; x ]
     | EPipe(x, f) -> [ x; f ]
     | EField(t, _, _) -> [ t ]
@@ -224,6 +229,7 @@ let rec sexpr (e: Expr) : string =
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""
         $"(within {k} {bn}{av} {sexpr b})"
+    | ECapture e -> $"(capture {sexpr e})"
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"
     | EField(t, f, _) -> $"{sexpr t}.{f}"

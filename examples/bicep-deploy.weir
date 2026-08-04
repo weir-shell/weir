@@ -58,10 +58,10 @@ let envVal t name =
 let quality t =
     header $"bicep quality: {t.Name}"
     let e = targetEnv t
-    !e
+    within env e
         bicep lint (t.BicepPath)
         bicep snapshot --mode validate (t.BicepPath) --subscription-id (envVal t "AZURE_SUBSCRIPTION_ID") --resource-group (envVal t "AZURE_DEFAULTS_GROUP")
-    printerr "OK"
+        printerr "OK"
 
 let snapshot t =
     header $"bicep snapshot: {t.Name}"
@@ -81,9 +81,9 @@ let azureLogin t =
         $(curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" |> from json Oidc)
         |> Seq.head
     let e = targetEnv t
-    !e
+    within env e
         az login --output table --federated-token (oidc.value) --service-principal --username (envVal t "AZURE_CLIENT_ID") --tenant (envVal t "AZURE_TENANT_ID")
-        az account set --subscription (envVal t "AZURE_SUBSCRIPTION_ID")
+        !(az account set --subscription (envVal t "AZURE_SUBSCRIPTION_ID"))
 
 let deploy t =
     quality t

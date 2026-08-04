@@ -393,8 +393,12 @@ quantity semantics now.
   logic; the district REPROCESSES closing lines through the one rule
   set instead of duplicating rules per mode). **The sugars ledger** —
   command-in-expression has exactly these spellings: `$()`/`!()`
-  atoms (anywhere an expression goes), bare-command let-RHS (capture,
-  least ink where legal), and the `!` district (runs of effects).
+  atoms (anywhere an expression goes) and bare-command let-RHS
+  (capture, least ink where legal). The `!`/`!name` DISTRICTS RETIRED
+  [D:district-retirement] — the arming rule made the mode gate
+  unnecessary and `within env` covers the overlay; the retired
+  spelling is a TEACHING error, and the $e()/!e() sigils STAY
+  (fragment and single-command uses have no block spelling).
 **`within` — scoped resources** [D:within-scopes]:
   `within <kind> <binder>` + an indented block, an ordinary
   EXPRESSION: the body is a plain expression block (statements
@@ -430,16 +434,16 @@ quantity semantics now.
 
   | position | bare command | `$()` | `!()` |
   |---|---|---|---|
-  | top-level statement | effect (streams, raises) | armed too (identical) | unit effect |
-  | interior statement | effect (armed) | seq-unit ERROR (observed asymmetry vs top level) | unit effect |
+  | top-level statement | effect (streams, raises) | discard ERROR + "drop the $( )" | unit effect |
+  | interior statement | effect (armed) | seq-unit ERROR + "drop the $( )" | unit effect |
   | final expression of a block | capture value | same (redundant) | unit (MEANING-CHANGING) |
   | plain let RHS | capture | redundant | unit (meaning-changing) |
-  | record field value | "unbound variable" ERROR | works | works |
+  | record field value | ERROR (DECIDED no: a field's RHS is newline-bounded and a bare command would silently extend argv across the wrap — the dedent-swallow class multiplied) | works | works |
   | function argument | "unbound variable" ERROR | works | works |
   | interpolation hole | "unbound variable" ERROR | works | works |
   | list/seq element | "unbound variable" ERROR | works | works |
   | splat interior | "unbound variable" ERROR | works | — |
-  | `if` condition | parse ERROR at the bare pipe | ERROR too — BIND FIRST (`let ok = … \| succeeds`) | — |
+  | `if` condition | parse ERROR at the bare pipe | ERROR too — BIND FIRST (`let ok = … \| succeeds`; inline wants a then-stop argv context, reported with size) | — |
   | `within` body interior / final | effect / capture | as any block | as any block |
 
   THE RULE the observations support (the draft's whole-value-slot rule
@@ -448,10 +452,13 @@ quantity semantics now.
   expression FRAGMENT — an argument, a hole, an element, a field, a
   condition — the wrapper is mandatory**, and the error a bare
   command produces there is the unbound-variable teaching on its head
-  word. REDUNDANT ($() on a let-RHS) is allowed with no lint;
+  word PLUS the wrap-it repair ("wrap it: $(git …)") when the head is
+  applied [D:district-retirement]. REDUNDANT ($() on a let-RHS) is allowed with no lint;
   MEANING-CHANGING (!() gives unit where bare gives seq<string>) is a
-  choice, not redundancy. The if-condition takes NEITHER spelling
-  inline — bind the verdict first.
+  choice, not redundancy. `$()` is now POSITION-INDEPENDENT: it means
+  CAPTURE everywhere, and a discarded `$(cmd)` names the repair (drop
+  the wrapper) [D:district-retirement]. The if-condition takes NEITHER
+  spelling inline — bind the verdict first.
 
   **The interior-arming rule** [D:interior-arming], ONE rule with one
   carve-out: a command line in INTERIOR-STATEMENT position (a

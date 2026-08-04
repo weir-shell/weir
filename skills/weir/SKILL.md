@@ -243,7 +243,7 @@ refs
   `()`, parenthesized irrefutable patterns; duplicates rejected).
 - A `(fun ... ->` dangling at line end opens a BODY BLOCK closed by
   its own `)`: ordinary block rules inside (block lets, siblings,
-  compounds, districts, blanks), body lines at or right of the
+  compounds, blocks, blanks), body lines at or right of the
   opener's indent, the `)` attached to the last body line or alone on
   its own line. The single-line `;`-joined spelling stays legal.
 
@@ -323,7 +323,7 @@ print $"{v}"
 ```
 
 ```weir-error
-// district lines are commands only — bind values outside the block
+// (the ! district retired [D:district-retirement]: commands are ordinary statements)
 if 1 > 0 then !
     let x = 1
 ```
@@ -413,7 +413,7 @@ print x
   BOOL (silent — a predicate's output IS its result); `cmd | orFail
   "msg"` STREAMS and raises `msg (exit N)` on nonzero, unit on
   success — THE assert idiom, legal as a statement, in `!()`, and in
-  districts; `cmd | exitCode` STREAMS and reifies the code as INT,
+  interior lines; `cmd | exitCode` STREAMS and reifies the code as INT,
   never raises — bind it or match it (`| 130 ->` for cancels); a
   bare/`!()`/`$()` position is a teaching error ($() captures — use
   `| complete` there). **`succeeds` is exitCode == 0, exactly** —
@@ -423,7 +423,7 @@ print x
   stderr }`; a COMPUTED argv splats into the chain —
   `$author(git commit-tree $@argv | complete) |> _.stdout` (literal
   head, splatted argv, sigil env; works with all four reifiers,
-  value-headed and districts too). `print ()` is silent (unit
+  value-headed and interior lines too). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
 - Capture is IN MEMORY: `| complete` holds the whole output as one

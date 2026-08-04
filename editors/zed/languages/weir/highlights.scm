@@ -43,7 +43,6 @@
 (sigil) @punctuation.special
 (splice) @punctuation.special
 (bang_sigil) @punctuation.special
-(district_marker) @punctuation.special
 
 ; the yaml district [D:yaml-district]: the marker word reads as a
 ; keyword; keys are members, scalar text is data (string); the

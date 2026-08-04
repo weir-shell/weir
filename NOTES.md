@@ -1,5 +1,56 @@
 # Spike Notes
 
+## the district retires — five movements, one long day (2026-08-04)
+
+THE SUBTRACTION (M1): the `!` and `!name` districts are gone.
+Mechanically small — the districts were sugar over the !() sigil at
+assembly (markerOpener), so two DU cases died and the compiler found
+every consumer. The retired spelling TEACHES (checked up front over
+every non-content line; yaml bodies are bytes). The sigil forms stay
+with the retention stated. The migrations, named: showcase ×3,
+jira-branch ×1, git-subrepo ×6, bicep ×2, fuzz.weir ×1, GUIDE ×2
+blocks, 10 e2e blocks, 17 unit pins, the LSP fixture. The subtle
+migration class: groups that ENDED function bodies made those
+functions unit; bare migration flips them to seq<string> — the
+!()-tail is the unit assertion (three sites). The fuzzer's
+production RETARGETED rather than deleted: it now generates the
+arming spelling, and the per-line-!() transform became the
+bare-vs-sigil arming equivalence — coverage preserved, meaning
+upgraded.
+
+THE FLOOR (M2): the silent swallow is dead. A line dedenting below
+the open block that aligns with no enclosing level now ERRORS with a
+located teaching instead of space-joining as the previous command's
+argv. The strict-first approach earned its keep: the full suite
+found exactly ONE legitimate exemption class (open lambdas/brackets/
+parens take dedented continuations). The correct-join goal is
+deferred WITH its size — a stack of open statement levels in Pend —
+its own session. Poetic justice: the floor BIT during this session's
+own migration (post-scope lets absorbed as argv in git-subrepo),
+the bug demonstrating itself while being fixed. Four shapes pinned.
+
+THE HINT PAIR (M3+M5): a bare command in a fragment now says
+"wrap it: $(sh …)" beside did-you-mean; a discarded $(cmd) says
+"drop the $( ) to run it as a command" — the same principle in both
+directions, each fired only where the shape is unambiguous. M5 took
+DIRECTION B as ruled: $() means capture EVERYWHERE, via a new
+ECapture marker (erased at check, invisible to armTail by
+construction — no armTail special case added, one removed). Zero
+corpus $()-statements existed. Five parse-shape pins wrapped.
+
+M4, REPORTED: if-conditions keep bind-first as the canonical
+(GUIDE-documented) spelling — the inline form wants a then-stop argv
+context + a reifier-follower addition + an acceptance gate, more
+than the tuple-comma entry-point swap; sized for its own session if
+wanted. Record fields: NO, with the reason in the table row — a
+field's RHS is newline-bounded, and bare commands there would
+multiply the dedent-swallow class the floor just killed.
+
+ONE RESTORATION along the way: the interior exitCode discard kept
+its tailored teaching ("bind it (let rc = …)") via a check-side
+spine test — the district cell died but its text was better than the
+generic if-unit error that replaced it.
+
 ## within cd, within env — the kinds slot in, the table lands (2026-08-04)
 
 The inheritance claim held to the letter: each kind cost one parser
