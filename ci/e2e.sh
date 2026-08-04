@@ -3997,4 +3997,33 @@ echo "$out" | grep -qF "aligns with no enclosing statement" || fail "the floor s
 rm -rf "$djdir"
 echo "e2e ok: dedent correct-join (post-scope statements join, the floor stays)"
 
+# ---- tasks underneath [D:tasks-underneath]: I/O-bound fan-out --------------
+# 100 arms each SPAWNING a child weir — the domain's real arm shape,
+# at the raised ceiling; order preserved, parent cwd untouched
+tudir=$(mktemp -d)
+cat > "$tudir/tu.weir" <<'WEOF'
+let before = pwd |> Seq.head
+let outs =
+    [1..100]
+    |> Seq.pmap (fun i ->
+        within cd "/tmp"
+            $(weir -e $"print {show i}") |> Seq.head
+    )
+    |> Seq.force
+let after = pwd |> Seq.head
+print (if before == after then "cwd-held" else "CWD-LEAKED")
+print (outs |> Seq.head)
+print (outs |> Seq.last)
+print $"{outs |> Seq.length}"
+WEOF
+start_ms=$(now_ms)
+out=$(PATH="$(dirname $BIN):$PATH" $BIN "$tudir/tu.weir")
+took=$(( $(now_ms) - start_ms ))
+[ "$(echo "$out" | sed -n 1p)" = "cwd-held" ] || fail "cwd scope at ceiling: $out"
+[ "$(echo "$out" | sed -n 2p)" = "1" ] || fail "order head: $out"
+[ "$(echo "$out" | sed -n 3p)" = "100" ] || fail "order last: $out"
+[ "$(echo "$out" | sed -n 4p)" = "100" ] || fail "all arms ran: $out"
+echo "e2e ok: tasks underneath (100 spawning arms at the ceiling in ${took}ms, order + scopes hold)"
+rm -rf "$tudir"
+
 echo "e2e battery: all green"

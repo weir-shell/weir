@@ -8328,6 +8328,62 @@ let durationTests =
               | Ok _ -> failtest "expected the literal-law rejection"
           } ]
 
+let tasksUnderneathTests =
+    testList
+        "Parallel fan-out for I/O-bound arms [D:tasks-underneath]"
+        [ test "input order is preserved (the contract, unchanged)" {
+              expectValue
+                  "[1; 2; 3; 4; 5] |> Seq.pmap (fun x -> x * 10) |> Seq.force"
+                  (VSeq [ VInt 10L; VInt 20L; VInt 30L; VInt 40L; VInt 50L ])
+          }
+          test "every arm runs; the FIRST error by INPUT ORDER rethrows after the join" {
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          run
+                              "[1; 2; 3] |> Seq.pmap (fun x -> if x > 1 then Float.parse $\"{x}z\" else 0.5) |> Seq.force"
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "not a float: '2z'" "index 1's error, not index 2's"
+          }
+          test "128 blocking arms complete in ~two 64-rounds, not sixteen core-rounds" {
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              run "[1..128] |> Seq.piter (fun i -> Duration.sleep 100ms)" |> ignore
+              sw.Stop()
+              // 2 rounds ≈ 200ms; the old ProcessorCount sizing would need
+              // 100ms × ceil(128/cores) ≥ 800ms on any machine ≤ 16 cores
+              Expect.isTrue (sw.ElapsedMilliseconds < 700L) $"took {sw.ElapsedMilliseconds}ms — the ceiling regressed"
+          }
+          test "pmapWith takes an explicit ceiling; degree < 1 raises naming the constraint" {
+              expectValue
+                  "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.force"
+                  (VSeq [ VInt 2L; VInt 3L; VInt 4L ])
+
+              let ex =
+                  Expect.throwsC (fun () -> run "[1] |> Seq.pmapWith 0 (fun x -> x) |> Seq.force" |> ignore) id
+
+              Expect.stringContains ex.Message "parallel degree must be at least 1" ""
+          }
+          test "within cd inside piter HOLDS at the raised ceiling (100 concurrent scope forks)" {
+              // the load-bearing pin, re-run above ProcessorCount: every
+              // arm forks its own cwd, the parent's survives untouched
+              let before =
+                  match run "pwd |> Seq.head" with
+                  | VStr s -> s
+                  | v -> failtest $"unexpected {v}"
+
+              run "[1..100] |> Seq.piter (fun i -> within cd \"/tmp\" Log.debug (pwd |> Seq.head) ; ())"
+              |> ignore
+
+              let after =
+                  match run "pwd |> Seq.head" with
+                  | VStr s -> s
+                  | v -> failtest $"unexpected {v}"
+
+              Expect.equal after before "the parent cwd is untouched after 100 forks"
+          } ]
+
 let dedentJoinTests =
     // whole-script probes: assemble + check + eval; the JOIN is proven
     // by the BINDINGS (absorption would corrupt or reject them)
@@ -9034,6 +9090,7 @@ let allTests =
           floatTests
           floatBoundaryTests
           dedentJoinTests
+          tasksUnderneathTests
           trailingCommentTests
           interpShowTests
           gapATests

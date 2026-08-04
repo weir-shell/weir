@@ -1,5 +1,42 @@
 # Spike Notes
 
+## tasks underneath: the fan-out fits the domain (2026-08-04)
+
+Two sessions on one branch, split exactly where the bless drew the
+line: the rekeying was the risk, and it landed provably inert before
+anything about scheduling moved.
+
+Session 1 was two lines of mechanism and a day of proof surface:
+ThreadLocal → AsyncLocal for cwd and the env overlay stack. The
+semantics wanted (a scope belongs to its arm, wherever the arm runs)
+is AsyncLocal's exact contract, and it degrades correctly to plain
+threads because every pmap arm enters/exits per invocation — pool
+reuse cannot leak a scope. The AOT probe: three publish warnings,
+which is the pre-existing baseline from the config spike — zero new.
+Zero pin movement, including the load-bearing within-cd-in-piter pin,
+plus both scope disciplines live-probed on the AOT binary.
+
+Session 2 replaced Parallel.For with a dedicated-thread worker pool
+(LongRunning) under a ceiling of 64. The wall-clock tells the story:
+128 blocking arms at 100ms each now finish in about two rounds where
+ProcessorCount sizing needed sixteen; the e2e probe runs 100 arms
+each SPAWNING a child weir in ~470ms with order and the parent cwd
+held. One contract moved, deliberately and recorded: Parallel.For
+stopped launching iterations after a failure and surfaced a
+nondeterministic first error; now every arm runs ("all arms
+complete" is literally true) and the first error BY INPUT ORDER
+rethrows — deterministic, pinned with distinguishable messages.
+
+The bless's "also worth fixing" item was half-done on arrival: the
+negative Duration.sleep raise landed as the dedent session's rider;
+this session added only the granularity doc line (a small sleep is a
+floor, not a promise — ~15ms Windows, ~1ms Linux).
+
+Unblocked and recorded, not built: Seq.pfirst is now the canonical
+Task.WhenAny + CancellationTokenSource + tree-kill shape; retry/poll
+get cancellable waits. Duration.sleep stays Thread.Sleep — session 2
+surfaced no reason to move a sibling.
+
 ## the dedent correct-join (2026-08-04)
 
 The bless made the enumeration the first deliverable and the

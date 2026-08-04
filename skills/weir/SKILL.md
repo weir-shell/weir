@@ -216,7 +216,11 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
 - No async/task/await — processes and pipelines are the concurrency
   model. A task that truly needs async belongs in full F#, not weir.
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
-  ordered results) / `Seq.piter` for effects. Workers fork the session:
+  ordered results) / `Seq.piter` for effects — sized for I/O-BOUND
+  arms (spawns/waits/sleeps): up to 64 concurrent arms regardless of
+  cores; `Seq.pmapWith n` / `piterWith n` set the ceiling explicitly.
+  Every arm runs even if one fails; the first error BY INPUT ORDER
+  rethrows after the join. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
   worker output inside the worker (`Seq.head`/`Seq.force`) if its cd
   matters.

@@ -2,6 +2,7 @@ module Weir.Builtins
 
 open System.Diagnostics
 open System.IO
+open System.Threading.Tasks
 open Weir.Types
 open Weir.Eval
 
@@ -871,28 +872,54 @@ let private rangeImpl: Value =
 // eager, input-order results, ProcessorCount degree, first worker error
 // rethrown. Output interleaving from piter workers is line-atomic and
 // owned by the user, as with any parallel tool.
-let private runParallel (f: Value) (items: seq<Value>) : Value array =
+// the fan-out ceiling [D:tasks-underneath]: 64, stated — well above any
+// core count because arms are I/O-bound by domain; the cap exists so an
+// unbounded fan-out over 10k items is not a well-mannered fork bomb
+let private parallelCeiling = 64
+
+let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value array =
+    if degree < 1 then
+        failwith $"parallel degree must be at least 1, got {degree}"
+
     let arr = Seq.toArray items
     let out = Array.zeroCreate arr.Length
     // fork the ambient session: workers inherit the parent cwd; cd inside
     // a worker is worker-local and dies at the join
     let parentCwd = Session.Cwd()
+    // arms BLOCK (child waits, sleeps, network) — LongRunning gives each
+    // active worker a dedicated thread, sidestepping the pool's slow
+    // injection heuristic; the ceiling is RESOURCE protection, not CPU
+    // sizing [D:tasks-underneath]
+    let workers = min degree (max 1 arr.Length)
+    let mutable next = -1
+    let errors = System.Collections.Concurrent.ConcurrentDictionary<int, exn>()
 
-    try
-        System.Threading.Tasks.Parallel.For(
-            0,
-            arr.Length,
-            fun i ->
-                Session.enterWorker parentCwd
+    let worker () =
+        let mutable i = System.Threading.Interlocked.Increment &next
 
+        while i < arr.Length do
+            Session.enterWorker parentCwd
+
+            try
                 try
                     out[i] <- apply f arr[i]
-                finally
-                    Session.exitWorker ()
-        )
-        |> ignore
-    with :? System.AggregateException as ae ->
-        raise (ae.Flatten().InnerExceptions[0])
+                with e ->
+                    // every arm still RUNS (data parallelism does not
+                    // half-finish); the FIRST error by INPUT ORDER
+                    // rethrows after the join
+                    errors[i] <- e
+            finally
+                Session.exitWorker ()
+
+            i <- System.Threading.Interlocked.Increment &next
+
+    let tasks =
+        Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+
+    Task.WaitAll(tasks: Task[])
+
+    if not errors.IsEmpty then
+        raise errors[Seq.min errors.Keys]
 
     out
 
@@ -900,15 +927,33 @@ let private pmapImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(runParallel f items :> seq<Value>)
+            | VSeq items -> VSeq(runParallelWith parallelCeiling f items :> seq<Value>)
             | v -> unreachable $"the checker rejects 'pmap' on {formatValue v}"))
+
+let private pmapWithImpl: Value =
+    VBuiltin(fun nv ->
+        VBuiltin(fun f ->
+            VBuiltin(fun s ->
+                match nv, s with
+                | VInt n, VSeq items -> VSeq(runParallelWith (int n) f items :> seq<Value>)
+                | v, _ -> unreachable $"the checker rejects 'pmapWith' on {formatValue v}")))
+
+let private piterWithImpl: Value =
+    VBuiltin(fun nv ->
+        VBuiltin(fun f ->
+            VBuiltin(fun s ->
+                match nv, s with
+                | VInt n, VSeq items ->
+                    runParallelWith (int n) f items |> ignore
+                    VUnit
+                | v, _ -> unreachable $"the checker rejects 'piterWith' on {formatValue v}")))
 
 let private piterImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                runParallel f items |> ignore
+                runParallelWith parallelCeiling f items |> ignore
                 VUnit
             | v -> unreachable $"the checker rejects 'piter' on {formatValue v}"))
 
@@ -1013,6 +1058,8 @@ let private seqMembers: (string * Ty * Value) list =
       "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
       "pmap", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), pmapImpl
       "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
+      "pmapWith", TFun(TInt, TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB))), pmapWithImpl
+      "piterWith", TFun(TInt, TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit))), piterWithImpl
       "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
       "windowed", TFun(TInt, TFun(TSeq tA, TSeq(TSeq tA))), windowedImpl
       "last", TFun(TSeq tA, tA), lastImpl
@@ -2268,7 +2315,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "text" ])
           "Duration.sleep",
           (bd
-              "Block for the duration (zero returns immediately; a negative duration raises). Module-qualified on purpose: bare sleep stays the coreutils command."
+              "Block for the duration (zero returns immediately; a negative duration raises; OS timer granularity applies — ~15ms Windows, ~1ms Linux — so a small sleep is a floor, not a promise). Module-qualified on purpose: bare sleep stays the coreutils command."
               (Some "Duration.sleep 10ms")
               None
            |> named [ "d" ])
