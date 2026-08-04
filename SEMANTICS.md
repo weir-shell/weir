@@ -13,8 +13,8 @@ weir rejects rather than guesses.
 
 ## Types and inference
 
-- **Base types and literals**: `int`, `string`, `bool`,
-  `seq<T>`, functions, declared records and unions. **No floats yet.**
+- **Base types and literals**: `int`, `float`, `string`, `bool`,
+  `Duration`, `seq<T>`, functions, declared records and unions.
   Literals: digit runs with prefix minus at operand positions
   (F#'s adjacency rule [D:prefix-minus] — `-5`, `2 * -3`; `x-1` and
   `x - 1` stay subtraction),
@@ -1498,6 +1498,106 @@ quantity semantics now.
   — operators yield values, never functions, so the shape is always
   wrong.
 
+## Floats — finite-only [D:floats]
+
+**The law: a weir float is always finite.** `checkedFloat` raises on
+any non-finite result — overflow to infinity, `x / 0.0`, `0.0 / 0.0`
+— exactly as `checkedInt` raises on integer overflow and `1 / 0`
+raises today. NaN and Infinity are UNREPRESENTABLE: every boundary
+parse rejects their text, `-0.0` normalizes to `0.0` at
+construction. This is not an accommodation of IEEE, it is the
+existing checked-arithmetic law applied to a new type — weir exposes
+IEEE semantics nowhere else.
+
+- **Literals**: `0.5`, `1.0`, `1e5`, `1.5e-3`. Digits are required
+  on both sides of the point — `1.` and `.5` are located teaching
+  errors naming the full spelling (`.5` collides with the accessor
+  glyph; `1.` is a typo more often than an intent). `1..10` stays a
+  range; a letter after an exponent backtracks (`2e` is an ident
+  tail, never a trap). Out-of-range literals (`1e999`) reject at the
+  literal. Prefix minus FOLDS into the literal (`-0.5`; the `0 - e`
+  desugar would mix types — the same fold fixed `-30s`).
+- **No implicit widening — the one deliberate footgun**: `3 / 2` is
+  `1` (int division, unchanged), `3.0 / 2.0` is `1.5`, and
+  `3 / 2.0` is a type error naming the spelling: wrap the int with
+  `Float.ofInt`. This is the no-implicit-conversion posture applied
+  to the most-used operator, and the located message is the
+  mitigation.
+- **Classes**: `Show` yes (holes and `print` follow — landing floats
+  confirmed the interp-show zero-edit property before `Size` did);
+  `Ord` yes (genuinely total BECAUSE finite-only — no `<`-vs-sort
+  divergence); **`Eq` NO** — `0.1 + 0.2 == 0.3` is false by
+  representation, and having excluded NaN to keep equality
+  reflexive, admitting a member whose `==` still surprises would be
+  inconsistent about what Eq promises. `==`, `Seq.distinct`, and
+  `Seq.contains` on floats are teaching errors naming the idiom:
+  `Float.near a b eps`, or compare after `Float.round`. Floats are
+  the first Ord-but-not-Eq type.
+- **Rendering**: shortest round-trippable, and an integral float
+  keeps a visible decimal (`show 1.0` is `"1.0"`) so a float never
+  renders identically to an int. `Float.parse` reads exactly what
+  `show` writes (and rejects `NaN`/`Infinity` text); the round-trip
+  holds both directions.
+- **The module**: `Float.ofInt` / `toInt` (truncates toward zero,
+  raises outside the 64-bit range) / `round` (halves away from
+  zero) / `abs` / `near` / `parse` / `tryParse`. `Float` members
+  never flatten to bare aliases (`toInt` stays `Str`'s).
+- **`Duration.toS`** is float-returning and lossless (`2500ms` is
+  `2.5`) — the member the truncation kept unshipped. Duration's own
+  parse/render path stays integer.
+- **Boundaries wait for session 2**: float fields at JSON, YAML,
+  `Args.load`/`Env.load` reject with today's messages — nothing is
+  half-admitted.
+
+## Duration — time as a type [D:duration]
+
+**The storage law: a `Duration` is an integer count of milliseconds.**
+No float exists anywhere in the implementation — decimals appear only
+at the TEXT edges (parse and render), where they are digit
+manipulation, not arithmetic. This is what makes the no-floats decline
+a position rather than a gap: the decimal cases that actually arrive
+in shell work are time, and time has a unit.
+
+- **Literals are single-unit**: `500ms`, `30s`, `2m`, `1h` — a digit
+  run with a unit suffix, expression position only. In command
+  position `30s` stays an argv WORD (`sleep 30s` passes the text to
+  coreutils sleep — the literal never captures a command argument).
+  Four spellings teach instead of parsing: decimal-with-unit (`2.5s`
+  names the ms form), bare decimal (no float literals; decimals live
+  in Duration text), `d` (a day is not a fixed length; write hours),
+  and compound (`1m30s` is text — add single units or `Duration.parse`).
+- **The algebra is closed**: `+`/`-` over two durations; `*`/`/`
+  against an `int` (ms division truncates, the int rule); comparisons
+  over two durations. `Duration / Duration` is REJECTED naming the
+  spelling for a ratio (`Duration.toMs d1 / Duration.toMs d2`) —
+  a unitless quotient is not a duration and weir does not guess.
+  Negative durations are legal (`10s - 30s` is `-20s`); nothing
+  converts implicitly (`30s + 5` is a type error, not seconds, not ms).
+- **`Duration` is in Eq, Show, and Ord** — the first widening since
+  the class set closed. `show` renders the Go shape: largest unit
+  first, no zero components, one leading sign, decimals only below
+  the seconds (`90500ms` shows `1m30.5s`; zero is `0s`; sub-second
+  is `5ms`). `Duration.parse` reads exactly what `show` writes (plus
+  compound and signed text); the round-trip holds in both directions.
+  Sub-millisecond text (`1.0001s`) is a parse error naming the floor.
+- **The module**: `Duration.ms/s/m/h` (int -> Duration),
+  `Duration.toMs` (int ms) and `Duration.toS` (float seconds,
+  lossless — [D:floats]), `Duration.parse` / `tryParse`
+  (raise / Option — the X/tryX rule), and `Duration.sleep` —
+  module-qualified ON PURPOSE: a bare `sleep` binding would shadow
+  the coreutils command and flip the meaning of `sleep 5`.
+- **Boundaries**: `Args.load` and `Env.load` parse duration text into
+  `Duration` fields (`--timeout 90s`, `TICK=1h30m`), `[<Default 30s>]`
+  is a legal resting point, and `--help` renders the default in the
+  Show shape. JSON is PARKED: a `Duration` field at the json boundary
+  is rejected naming the conversion (`Duration.toMs` into an int
+  field) — ms-int vs ISO-8601 both defensible, so the choice waits
+  for a receipt. Interpolation holes render a `Duration` directly
+  (`$"took {elapsed}"` — holes consult `Show` [D:interp-show]);
+  command-argument splices do NOT — the argv form is the program's
+  business, and the rejection names the deliberate spellings
+  (`Duration.toMs d` or `show d`).
+
 ## Type classes — Eq (Session A, 2026-07-20)
 
 Closed, compiler-owned, structural, INFERRED — qualified types over
@@ -1518,10 +1618,20 @@ constrained scheme — sentinel customer three RETIRED. Session B
 not; bare-value show no longer defaults to string, it stays generic
 with Show riding) and `Seq.sortBy : Ord b => ...` (Ord = int | string
 | bool EXACTLY, no decomposition — a record of orderable fields is
-still not orderable, tripwired). THE SOLE RUNTIME TYPE CHECK DIED
+still not orderable, tripwired; Duration widened the class set —
+[D:duration]). THE SOLE RUNTIME TYPE CHECK DIED
 with sortBy's static constraint: "zero runtime type checks" is fully
 true for the first time (check-first e2e proves a bad key runs zero
-effects). The splice family is NOT Show and stays scalar-exact.
+effects). The splice family split [D:interp-show]: interpolation
+holes consult Show — a hole renders exactly what `show` renders,
+except that a bare top-level string stays RAW (the value, not its
+quoted rendering) — while command-argument splices are NOT Show and
+stay scalar-exact: an argv word is a bet on the child's parser that
+weir refuses to make (`sleep 1h30m` works on GNU sleep and fails on
+plenty else); a spliced Duration teaches the deliberate spellings.
+The law lives ONCE (`spliceAdmit`) for both the eager check and the
+deferred-var discharge, and the hole side asks the CLASS — a new
+Show-admissible type needs no edit there.
 
 ## The F# border — rejected vs pending (2026-07-20)
 

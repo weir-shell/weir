@@ -1,5 +1,174 @@
 # Spike Notes
 
+## floats, finite-only — session 1 (2026-08-04)
+
+The design held everywhere the report predicted, and the two report
+items the bless asked to confirm both resolved cleanly:
+
+**The interp-show zero-edit property: CONFIRMED.** `$"{100.0 * 7.0 /
+8.0}"` rendered `pct=87.5` with zero interpolation changes — the
+hole asked the Show class and the class said yes. The property's
+first customer arrived before `Size`, as the rider hoped. Pinned as
+its own test naming the property.
+
+**The Ty-addition ritual: both halves run.** FS0025 grep came back
+CLEAN this time (the Duration session's arms left wildcards in the
+right places), the tyVars arm went in with the first Types.fs batch
+(the startup-death lesson applied preemptively), and the binary ran
+before probes. What the compiler could NOT catch: `print`'s VALUE
+side (printImpl's scalar group is a pattern the checker admits
+types into — check passed, eval hit unreachable). The probe caught
+it; the lesson is that value-side scalar GROUPS (print/printerr/
+scalarString) are the FS0025-invisible sites of a scalar addition.
+
+**What the Eq exclusion made awkward in practice — one real thing:**
+the round-trip pin itself. `Float.parse (show x) == x` is the
+natural spelling and it is a check error by our own rule. The pinned
+spelling is `Float.near (Float.parse (show x)) x 0.0` — near with
+zero epsilon IS exact equality, so the idiom covers the exact case
+too. Worth knowing before someone asks.
+
+Unplanned finds, both landed:
+- **`-30s` was broken** (prefix minus desugars to `0 - e`, mixing
+  int with Duration) — the identical seam floats hit, so negAtom now
+  FOLDS the minus into float and Duration literals. Pinned.
+- **`Float.toInt` shadowed bare `toInt`** (Str's) through the
+  bare-alias flattening — Float now joins Option in the
+  never-flattens filter. Pinned (`toInt "42"` stays Str's).
+- **The oracle refereed the equality pin and won**: my first
+  spelling claimed F# accepts `0.1 == 0.2` — it does not (`==` is
+  weir's; F#'s is `=`). pinT with both spellings landed. The
+  divergence machinery caught a wrong claim about F# before it
+  entered the ledger, which is exactly its job.
+
+Deferred with reasons, not silently: fuzz float production waits for
+session 2 — the generator's typed int/str core wires literals into
+`CCmp "=="` arms, which floats cannot join (Eq excluded); giving
+floats their own comparison-free productions is a design change to
+the grammar, not a mechanical add. Boundaries (json/yaml/Args/Env)
+are session 2 by the bless; float fields reject with today's
+messages — verified nothing is half-admitted.
+
+## floats: the cost analysis (2026-08-04, zero code)
+
+Report at plans/PLAN-floats-cost.md; every decision priced with a
+pointer, both DECISIONS row texts written. Three things the pricing
+turned up that the bless did not predict:
+
+1. **Finite-only floats dissolve the two worst costs.** weir
+   arithmetic is already checked, not wrap-silent (`checkedInt`,
+   Eval.fs:196, raises on overflow; `1 / 0` already raises). A
+   checkedFloat that raises on non-finite results makes NaN and
+   Infinity unrepresentable — Eq stays reflexive, Ord becomes
+   genuinely total (no `<`-vs-sortBy divergence), show never faces
+   special values, and to-json cannot emit invalid tokens. The
+   report's recommendations all assume it.
+
+2. **Show admission is not a choice.** Since interp-show, holes
+   consult the class and print follows the scalar family — a
+   non-Show float cannot be printed or interpolated. Floats would be
+   the zero-edit property's first confirmation, before Size.
+
+3. **The schema seam the bless worried about is clean.** kindOk
+   already encodes integer ⊆ number (Contracts.fs:575), and the
+   reverse-Norway law already quotes `"1.5"`/`"1e5"` strings
+   (Yaml.fs:584) — the yaml quoting machinery was built for exactly
+   this adjacency and does not weaken.
+
+Corpus sweep for section 5: zero ratio/percentage/average sites in
+examples/ and tools/ today — every numeric shape is a Seq.length
+count or integer ms; ci/timing.sh divides ns→ms in shell. Stated as
+the family-shaped hole it is, not as evidence against.
+
+The Eq recommendation (exclude, teach the eps idiom) is the one most
+likely to draw a veto — it is the honest reading of reject-don't-
+guess, but it will surprise anyone arriving from pwsh/nushell. The
+row texts cover both worlds; the ruling is one line either way.
+
+## interpolation holes consult Show, not a list (2026-08-04, rider)
+
+The diagnosis the plan asked for first: **the arm enumerated.**
+`checkScalarSplice` hardcoded string/int/bool, and the deferred-var
+discharge in `resolvePendingSplices` repeated the same list — the
+policy existed twice and neither asked `Cls.Show`, which was one
+`demand` call away. The fix was the clean substitution: one
+`spliceAdmit` law shared by both paths; the hole arm demands Show
+with its own Describe. The class exposed everything the arm needed —
+nothing was missing from it.
+
+**The property, stated for `Size` to confirm:** a new Show-admissible
+type needs no edit at the hole — the arm asks the class. When Size
+lands, `$"{sz}"` should render with zero interpolation changes; if it
+does not, this property broke and the report was wrong.
+
+The splice question was decided separately, outcome (1) — split. A
+hole renders for a human; a command argument becomes an argv word for
+a program, and `sleep 1h30m` working on GNU sleep but not elsewhere
+is exactly the semantic bet weir refuses. The Duration splice arm
+teaches both deliberate spellings; both check clean, pinned.
+
+Deliberate flips, each retargeted or converted rather than deleted:
+records, seqs, and unit now render in holes (show's form — the
+update-in-hole rejection pin became a render pin with the exact
+string; unit's exclusion pin became an admission pin). The two
+rejection pins that guarded the rule now guard it with functions
+(eager and deferred paths). The bare top-level string hole stays RAW
+— eval renders `VStr` as the value itself and everything else through
+`formatValue`, which is precisely show's renderer. Deferred-hole
+defaulting untouched: an unresolved hole var still defaults to string
+([D:splice-default-last] — the pipe-into-lambda pins stayed green).
+
+## duration — time as a type, decimals only at the edges (2026-08-04)
+
+The plan executed as blessed; the law held everywhere: a Duration is
+an integer count of milliseconds, and no float exists in the
+implementation — `formatDuration`/`parseDurationMs` are digit
+manipulation (pow10 division, sub-ms rejection), and even
+`Duration.sleep` runs on integer ticks after a first draft reached
+for `TimeSpan.FromMilliseconds(float n)` and got caught by the
+grep-clean bar. The no-floats divergence row now points here: the
+decimal cases that actually arrive are time.
+
+The sharpest pin (command-mode `30s` stays an argv word) was true by
+construction — the literal lives in `intLit`, command arguments never
+visit it — and is pinned at the parse level (`expectCmd "echo 30s"`)
+plus on the AOT binary in e2e. The class widening (TDur into
+Eq/Show/Ord) cost exactly the predicted shape: one arm per class
+table, plus every exhaustive `Ty`/`AttrArg` match in the codebase —
+the compiler found them all as FS0025 warnings except `tyVars` in
+Types.fs, which had no wildcard and DIED AT STARTUP (Builtins' static
+init generalizes schemes). Lesson repeated from the last widening
+attempt: after adding a Ty case, grep the build output for FS0025
+AND run the binary once before probing behavior.
+
+Unplanned but landed: the compound-literal teaching. `1m30s` lexed as
+`1m` applied to `30s` and produced "takes at most 1 argument, got 2"
+— the doc-runner hit it in my own `Duration.toMs 1m30s` example
+before any user could. The suffix parser now captures a digit-follow
+instead of rejecting it (`lookAhead` inside the `attempt`, the fatal
+raised OUTSIDE it — `attempt` un-fatals anything inside), and the
+error names both spellings: add single units or `Duration.parse`.
+Letter-follow still backtracks, so `30si` stays an ordinary unbound.
+
+Reported, not widened: interpolation holes and command-argument
+splices share one rule (`checkScalarSplice`) and stay scalar-exact —
+a Duration in a hole errors; the spelling is `$"took {show elapsed}"`.
+Admitting TDur there is one arm and arguably follows from Show, but
+it was not in the blessed scope and the plan's text is gone
+(transcript compacted), so it waits for a ruling. Same posture as
+the JSON park, which landed as planned: a teaching rejection naming
+`Duration.toMs` into an int field.
+
+One session-ritual note: the [<Default 30s>] attr literal needed its
+own lexing (attrArgLit is a separate tiny parser from intLit — easy
+to forget it exists), and Args.load pins need the Self module in the
+test env (script-only teaching fires otherwise).
+
+Ritual: 991 unit / e2e green (new duration block: defaults rest,
+both boundaries parse, rejection locates, argv word) / 21 fuzz +
+3 fresh 10k deep seeds (lexer changed) / 68 doc blocks (+1: the
+GUIDE timeout idiom) / 158 oracle / timing flat.
+
 ## the filesystem family — File completed, Dir created (2026-08-04)
 
 Ten members, six rulings, all made in the plan and executed as

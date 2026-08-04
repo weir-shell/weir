@@ -39,6 +39,9 @@ type Expr = { Kind: ExprKind; Span: Span }
 
 and ExprKind =
     | EInt of value: int64
+    // a duration literal: 30s / 250ms, stored as ms [D:duration]
+    | EDur of ms: int64
+    | EFloat of value: float
     | EStr of string
     | EBool of bool
     | EUnit
@@ -150,6 +153,8 @@ let rec yamlTplExprs (tpl: YamlTpl) : Expr list =
 let exprChildren (e: Expr) : Expr list =
     match e.Kind with
     | EInt _
+    | EDur _
+    | EFloat _
     | EStr _
     | EBool _
     | EUnit
@@ -217,6 +222,8 @@ let rec sexprPat (p: Pattern) : string =
 let rec sexpr (e: Expr) : string =
     match e.Kind with
     | EInt n -> string n
+    | EDur n -> formatDuration n
+    | EFloat f -> formatFloat f
     | EStr s -> $"\"{s}\""
     | EBool b -> if b then "true" else "false"
     | EVar x -> x

@@ -3898,4 +3898,53 @@ echo "$out" | grep -qF "got 3 — quote the expression" || fail "-e names its ar
 $BIN --help | grep -qF "usage: weir" || fail "--help prints usage on stdout, exit 0"
 echo "e2e ok: CLI teaching arms (--e did-you-mean, -e arity, --help)"
 
+# ---- Duration [D:duration]: the Args/Env spine on the real binary ----------
+ddir=$(mktemp -d)
+cat > "$ddir/dur.weir" <<'WEOF'
+type DurCli = {
+    [<Default 30s>]
+    /// give up after this long
+    timeout: Duration
+}
+type DurEnv = {
+    [<Default 500ms>]
+    WEIR_E2E_TICK: Duration
+}
+let cli = Args.load DurCli
+let e = Env.load DurEnv
+print $"t={show cli.timeout} k={show e.WEIR_E2E_TICK} sum={show (cli.timeout + e.WEIR_E2E_TICK)}"
+WEOF
+out=$($BIN "$ddir/dur.weir")
+[ "$out" = "t=30s k=500ms sum=30.5s" ] || fail "duration defaults rest: $out"
+out=$(WEIR_E2E_TICK=1h30m $BIN "$ddir/dur.weir" --timeout 90s)
+[ "$out" = "t=1m30s k=1h30m sum=1h31m30s" ] || fail "duration text parses at both boundaries: $out"
+out=$($BIN "$ddir/dur.weir" --timeout nope 2>&1) && fail "bad duration flag must exit nonzero" || true
+echo "$out" | grep -qF "not a duration: 'nope'" || fail "flag rejection names the text: $out"
+$BIN "$ddir/dur.weir" --help | grep -qF "default: 30s" || fail "--help renders the Show shape"
+# command-mode: 30s is an argv WORD on the published binary
+out=$($BIN -e '$(echo 30s) |> Seq.head')
+[ "$out" = '"30s" : string' ] || fail "command-mode 30s stays a word: $out"
+# holes consult Show [D:interp-show]; command splices do not
+out=$($BIN -e '$"took {90500ms}"')
+[ "$out" = '"took 1m30.5s" : string' ] || fail "a Duration hole renders: $out"
+out=$($BIN -e 'let d = 30s in $(echo (d))' 2>&1) && fail "spliced Duration must reject" || true
+echo "$out" | grep -qF "pass Duration.toMs d or show d deliberately" || fail "splice teaching names the spellings: $out"
+rm -rf "$ddir"
+echo "e2e ok: Duration (defaults rest, both boundaries parse, rejection locates, argv word, hole renders / splice teaches)"
+
+# ---- floats, finite-only [D:floats] ----------------------------------------
+out=$($BIN -e '0.5 + 0.5')
+[ "$out" = "1.0 : float" ] || fail "float arithmetic on AOT: $out"
+out=$($BIN -e '3 / 2.0' 2>&1) && fail "mixed arithmetic must reject" || true
+echo "$out" | grep -qF "wrap the int: Float.ofInt" || fail "mixed teaching names ofInt: $out"
+out=$($BIN -e '0.1 == 0.2' 2>&1) && fail "float == must reject" || true
+echo "$out" | grep -qF "use Float.near a b eps" || fail "Eq teaching names near: $out"
+out=$($BIN -e '1.0 / 0.0' 2>&1) && fail "float div by zero must raise" || true
+echo "$out" | grep -qF "float division by zero" || fail "div-zero named: $out"
+out=$($BIN -e 'Duration.toS 2500ms')
+[ "$out" = "2.5 : float" ] || fail "toS lossless: $out"
+out=$($BIN -e 'Float.near (Float.parse (show 1.5e-3)) 1.5e-3 0.0')
+[ "$out" = "true : bool" ] || fail "show/parse round-trip: $out"
+echo "e2e ok: floats (finite-only raises, teachings name spellings, toS lossless, round-trip)"
+
 echo "e2e battery: all green"

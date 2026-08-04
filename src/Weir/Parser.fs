@@ -238,17 +238,98 @@ let private commaExpr, private commaExprRef =
 let private updateSource, private updateSourceRef =
     createParserForwardedToRef<Expr, unit> ()
 
+// exponent tail of a float literal [D:floats]: e5 / E-3; a letter
+// follow backtracks (2e stays int-applied-to-ident, never a trap)
+let private floatExponent =
+    attempt (
+        (pchar 'e' <|> pchar 'E') >>. opt (anyOf "+-") .>>. many1Satisfy isDigit
+        .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+        |>> fun (sign, ds) ->
+            (match sign with
+             | Some c -> string c
+             | None -> "")
+            + ds
+    )
+
 let private intLit =
     spanned (
         // anchor at the literal's start [D:anchor-before-read]: the fail
         // fires after consuming the digits (and the measure), so seek back
         getPosition
-        .>>. (many1Satisfy isDigit .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>')))
-        >>= fun (at, (digits, m)) ->
-            match m, System.Int64.TryParse digits with
+        .>>. (many1Satisfy isDigit
+              .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
+              .>>. opt (
+                  attempt (
+                      // a digit after the unit is captured, not rejected:
+                      // 1m30s deserves its own teaching, below
+                      (choice [ pstring "ms"; pstring "s"; pstring "m"; pstring "h"; pstring "d" ])
+                      .>>. lookAhead (opt (satisfy System.Char.IsDigit))
+                      .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetter c || c = '_'))
+                  )
+              )
+              // fraction digits OPTIONAL so `1.` reaches its teaching;
+              // `..` (a range) backtracks before consuming [D:floats]
+              .>>. opt (
+                  attempt (
+                      pchar '.' >>. notFollowedBy (pchar '.') >>. opt (many1Satisfy isDigit)
+                      .>>. opt (choice [ pstring "ms"; pstring "s"; pstring "m"; pstring "h" ])
+                  )
+              )
+              .>>. opt floatExponent)
+        >>= fun (at, ((((digits, m), sfx), dec), expo)) ->
+            match m, sfx with
             | Some _, _ -> failFatallyAt at "units of measure are not supported; use bare int"
-            | None, (true, n) -> preturn (EInt n)
-            | None, (false, _) -> failFatallyAt at $"int literal out of range (64-bit): {digits}"
+            | _, Some(_, Some _) ->
+                // compound spellings are TEXT [D:duration]: literals are
+                // single-unit
+                failFatallyAt
+                    at
+                    "compound durations are text, not literals — add single units (1m + 30s) or parse: Duration.parse \"1m30s\""
+            | _, Some("d", _) ->
+                // no 'd' [D:duration]: a day is not a uniform length
+                failFatallyAt at "durations have no 'd' suffix — a day is not a fixed length; write hours (24h)"
+            | _, Some(unit, None) ->
+                match dec, expo, System.Int64.TryParse digits with
+                | None, None, (true, n) ->
+                    let mult =
+                        match unit with
+                        | "ms" -> 1L
+                        | "s" -> 1000L
+                        | "m" -> 60000L
+                        | _ -> 3600000L
+
+                    preturn (EDur(n * mult))
+                | _ ->
+                    failFatallyAt
+                        at
+                        "compound durations are text, not literals — add single units (1m + 30s) or parse: Duration.parse \"1m30s\""
+            | None, None ->
+                match dec, expo with
+                | Some(None, _), _ ->
+                    failFatallyAt at "float literals need digits on both sides of the point (write 1.0)"
+                | Some(Some _, Some _), _ ->
+                    // 2.5s is a RENDERING, not a literal [D:duration]
+                    failFatallyAt
+                        at
+                        $"decimal duration literals do not exist — decimals are a rendering; write the ms form (2.5s is 2500ms)"
+                | Some(Some frac, None), _ ->
+                    let text =
+                        $"{digits}.{frac}"
+                        + (match expo with
+                           | Some e -> "e" + e
+                           | None -> "")
+
+                    match parseFloat text with
+                    | Result.Ok f -> preturn (EFloat f)
+                    | Result.Error _ -> failFatallyAt at $"float literal out of range: {text}"
+                | None, Some e ->
+                    match parseFloat $"{digits}e{e}" with
+                    | Result.Ok f -> preturn (EFloat f)
+                    | Result.Error _ -> failFatallyAt at $"float literal out of range: {digits}e{e}"
+                | None, None ->
+                    match System.Int64.TryParse digits with
+                    | true, n -> preturn (EInt n)
+                    | _ -> failFatallyAt at $"int literal out of range (64-bit): {digits}"
     )
     |>> mkExpr
     .>> ws
@@ -579,8 +660,16 @@ let private negAtom =
     >>= fun p ->
         postfixAtomFwd
         |>> fun e ->
-            { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
-              Span = { Start = pos p; End = e.Span.End } }
+            let span = { Start = pos p; End = e.Span.End }
+
+            // fold into the literal for the non-int scalars [D:floats]:
+            // the 0 - e desugar would MIX types (0 is an int)
+            match e.Kind with
+            | EFloat f -> { Kind = EFloat(-f); Span = span }
+            | EDur n -> { Kind = EDur(-n); Span = span }
+            | _ ->
+                { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
+                  Span = span }
 
 // Depth guard [D:depth-guard]: unbounded expression depth blows the
 // native stack — the recursive-descent parser on deep NESTING (parens/
@@ -627,12 +716,20 @@ let private deepen (p: Parser<'a, unit>) : Parser<'a, unit> =
 let private comprehensionLit, private comprehensionLitRef =
     createParserForwardedToRef<Expr, unit> ()
 
+// a leading '.' before a digit is the .5 spelling [D:floats]: teach
+// the full form (attempted AFTER intLit — digits-first literals never
+// reach it; `_.name` and command paths live in other grammars)
+let private dotFloatTeaching =
+    attempt (getPosition .>> pchar '.' .>> lookAhead (satisfy System.Char.IsDigit))
+    >>= fun at -> failFatallyAt at "float literals need a digit before the point (write 0.5)"
+
 let private atom =
     deepen (
         choice
             [ attrsRejectHere >>% Unchecked.defaultof<Expr>
               negAtom
               intLit
+              dotFloatTeaching
               tripleLit
               verbatimLit
               strLit
@@ -2340,6 +2437,8 @@ tySynRef.Value <-
               | "string" -> ws >>% TStr
               | "bool" -> ws >>% TBool
               | "unit" -> ws >>% TUnit
+              | "Duration" -> ws >>% TDur
+              | "float" -> ws >>% TFloat
               | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
               | w when keywords.Contains w -> fail $"'{w}' is a keyword"
               | w ->
@@ -2356,7 +2455,22 @@ tySynRef.Value <-
 let private attrArgLit =
     choice
         [ between (pchar '"') (pchar '"') (manyChars stringChar) |>> AStr
-          many1Satisfy isDigit |>> (int64 >> AInt)
+          many1Satisfy isDigit
+          .>>. opt (
+              attempt (
+                  (choice [ pstring "ms"; pstring "s"; pstring "m"; pstring "h" ])
+                  .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+              )
+          )
+          |>> fun (digits, sfx) ->
+              let n = int64 digits
+
+              match sfx with
+              | Some "ms" -> ADur n
+              | Some "s" -> ADur(n * 1000L)
+              | Some "m" -> ADur(n * 60000L)
+              | Some "h" -> ADur(n * 3600000L)
+              | _ -> AInt n
           keyword "true" >>% ABool true
           keyword "false" >>% ABool false ]
     .>> ws

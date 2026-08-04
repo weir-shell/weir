@@ -84,6 +84,8 @@ and TypedKind =
     | TERecord of record: string * fields: (string * TypedExpr) list
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
+    | TEDur of ms: int64
+    | TEFloat of value: float
     | TESeq of first: TypedExpr * rest: TypedExpr
     | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
@@ -167,6 +169,13 @@ let private substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
 
     go ty
 
+// The two splice sites [D:interp-show]: a hole RENDERS for a human
+// (Show is the law), a command argument becomes an argv WORD for a
+// program (scalar-exact — no bet on the child's parser)
+type private SpliceSite =
+    | Hole
+    | CmdArg
+
 // A pending class constraint on an unresolved type/row var: the
 // demanding site's span and message formatter travel with it, so a
 // later discharge failure reads at the place that demanded it.
@@ -174,6 +183,20 @@ type private Pending =
     { Cls: Cls
       Span: Span
       Describe: Ty -> string }
+
+// == on floats is representation, not a promise weir makes [D:floats]:
+// the Eq exclusion's teaching names the idiom
+let rec private tyHasFloat (ty: Ty) : bool =
+    match ty with
+    | TFloat -> true
+    | TSeq t -> tyHasFloat t
+    | TFun(a, b) -> tyHasFloat a || tyHasFloat b
+    | TTuple ts -> ts |> List.exists tyHasFloat
+    | TNamed(_, targs) -> targs |> List.exists tyHasFloat
+    | _ -> false
+
+let private floatEqTeaching =
+    "floats do not join '==' (0.1 + 0.2 is not 0.3); use Float.near a b eps, or compare after Float.round"
 
 type private Ctx =
     { mutable Fresh: int
@@ -187,7 +210,7 @@ type private Ctx =
       // statement boundary [D:splice-default-last]: defaulting fired
       // early once and rejected `1 |> (fun k -> $"{k}")` — order, not
       // rule; the shape check defers with it
-      mutable PendingSplices: (string * Span * string) list }
+      mutable PendingSplices: (string * Span * SpliceSite) list }
 
 let private newCtx () =
     { Fresh = 0
@@ -326,11 +349,14 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                             match cls with
                             | Cls.Eq ->
                                 fun t ->
-                                    $"this use requires equatable values, got {formatTy t} — sequences and functions cannot be compared with '=='"
+                                    if tyHasFloat t then
+                                        floatEqTeaching
+                                    else
+                                        $"this use requires equatable values, got {formatTy t} — sequences and functions cannot be compared with '=='"
                             | Cls.Show -> fun t -> $"show cannot render functions; this is {formatTy t}"
                             | Cls.Ord ->
                                 fun t ->
-                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, string, or bool" })
+                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, or Duration" })
 
                 ctx.Cons <- Map.add v' (ps @ (Map.tryFind v' ctx.Cons |> Option.defaultValue [])) ctx.Cons
             | None -> ()
@@ -379,19 +405,26 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
 
             match p.Cls, t with
             // Eq: no function or seq anywhere, recursively
-            | Cls.Eq, (TInt | TStr | TBool | TUnit) -> true
+            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur) -> true
+            // floats are EXCLUDED from Eq [D:floats] — finite-only kept
+            // equality reflexive; representation (0.1 + 0.2) is the trap
+            // that remains, and weir does not vouch for it
+            | Cls.Eq, TFloat -> false
             | Cls.Eq, (TFun _ | TSeq _) -> false
             | Cls.Eq, TTuple ts -> ts |> List.forall (ok seen)
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
-            | Cls.Show, (TInt | TStr | TBool | TUnit) -> true
+            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur) -> true
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
             | Cls.Show, TNamed(n, targs) -> decompose n targs
             // Ord: int | string | bool EXACTLY — no decomposition, no
             // record/union ordering (no receipts; the message names it)
-            | Cls.Ord, (TInt | TStr | TBool) -> true
+            // Duration joins Ord [D:duration] — the first widening since
+            // the class set closed; elapsed > timeout is the point
+            // floats join Ord [D:floats]: total BECAUSE finite-only
+            | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur) -> true
             | Cls.Ord, _ -> false
             // vars and row vars are consumed by the outer match arms;
             // the compiler cannot see that through this nesting
@@ -401,6 +434,34 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
         Ok()
     else
         err p.Span (p.Describe(finalTy ctx ty0))
+
+// the splice law, shared by the eager check and the deferred
+// discharge [D:interp-show]: holes consult the Show CLASS (one arm
+// asking beats a second list — the next Show type needs no edit
+// here); command arguments stay the scalar-exact list, with the
+// Duration arm naming the deliberate spellings
+let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span) (ty: Ty) : Result<unit, TypeError> =
+    match ty with
+    | TStr
+    | TInt
+    | TBool -> Ok()
+    | ty ->
+        match site with
+        | Hole ->
+            demand
+                ctx
+                env
+                { Cls = Cls.Show
+                  Span = span
+                  Describe =
+                    fun t ->
+                        $"interpolation holes render what show renders; {formatTy t} cannot be shown (functions never render)" }
+                ty
+        | CmdArg ->
+            match ty with
+            | TDur ->
+                err span "a Duration's argv form depends on the program; pass Duration.toMs d or show d deliberately"
+            | ty -> err span $"command arguments must be strings, ints or bools; this one is {formatTy ty}"
 
 // vars discharge their pendings the moment they resolve — no trial
 // resolution exists anywhere in the checker, so a discharge is final
@@ -575,7 +636,7 @@ let distinctScheme: Scheme =
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with
     | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
-    | (TStr | TInt | TBool) as t -> Ok t
+    | (TStr | TInt | TFloat | TBool) as t -> Ok t
     // unit is printable as NOTHING [D:exit-reifiers]: the !()/district
     // desugar wraps interiors in print, and `| orFail` interiors are
     // unit — one rule instead of a shadow drain builtin
@@ -585,8 +646,8 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
          | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TSeq TStr)
          | TStr -> Ok(TSeq TStr)
          | TUnit -> err span "print cannot take seq<unit> — a lazy effect sequence never runs; use Seq.iter"
-         | t -> err span $"print takes a string, int, bool, or seq<string>; this is {formatTy (TSeq t)}")
-    | t -> err span $"print takes a string, int, bool, or seq<string>; this is {formatTy t}"
+         | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy (TSeq t)}")
+    | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy t}"
 
 let rec private typeBinOp
     (ctx: Ctx)
@@ -635,8 +696,8 @@ let rec private typeBinOp
             bind ctx env l.Span TBool l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span TBool r.Ty)
         )
-    | _, TVar _, ((TInt | TStr | TBool) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
-    | _, ((TInt | TStr | TBool) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
+    | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
+    | _, ((TInt | TFloat | TStr | TBool | TDur) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
     | ("==" | "<>"), a, b ->
         // Eq via the class solver (Session A): concrete failures keep the
         // pre-class message verbatim; unresolved operands now DEFER (the
@@ -647,12 +708,30 @@ let rec private typeBinOp
                 { Cls = Cls.Eq
                   Span = opSpan
                   Describe =
-                    fun t -> $"'{op}' is not defined for {formatTy t}; sequences and functions cannot be compared" }
+                    fun t ->
+                        if tyHasFloat t then
+                            floatEqTeaching
+                        else
+                            $"'{op}' is not defined for {formatTy t}; sequences and functions cannot be compared" }
 
             demand ctx env p a |> Result.map (fun () -> TBool))
     | _, TVar _, TVar _ -> err opSpan $"cannot infer the operand types of '{op}'; pipe data in or use concrete values"
     | _, TRowVar _, _
     | _, _, TRowVar _ -> err opSpan $"operator '{op}' is not defined for records"
+    | ("+" | "-" | "*" | "/"), TFloat, TFloat -> Ok TFloat
+    | (">" | "<" | ">=" | "<="), TFloat, TFloat -> Ok TBool
+    // no implicit widening [D:floats] — the one deliberate footgun,
+    // and its message is the most likely first stumble
+    | ("+" | "-" | "*" | "/" | ">" | "<" | ">=" | "<="), TInt, TFloat
+    | ("+" | "-" | "*" | "/" | ">" | "<" | ">=" | "<="), TFloat, TInt ->
+        err opSpan $"'{op}' needs both sides the same type; wrap the int: Float.ofInt x {op} y"
+    | ("+" | "-"), TDur, TDur -> Ok TDur
+    | "*", TDur, TInt -> Ok TDur
+    | "*", TInt, TDur -> Ok TDur
+    | "/", TDur, TInt -> Ok TDur
+    | "/", TDur, TDur ->
+        err opSpan "duration ÷ duration has no unit — Duration.toMs d1 / Duration.toMs d2 gives the integer ratio"
+    | (">" | "<" | ">=" | "<="), TDur, TDur -> Ok TBool
     | ("+" | "-"), TInt, TInt -> Ok TInt
     | "+", TStr, TStr -> Ok TStr
     | ("*" | "/"), TInt, TInt -> Ok(TInt)
@@ -712,6 +791,13 @@ let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeErro
     allOk def.Fields (fun (name, ty) ->
         if jsonFieldOk ty then
             Ok()
+        elif ty = TDur then
+            // parked [D:duration]: JSON has no duration convention
+            // (ms-int vs ISO-8601 both defensible; the choice wants a
+            // receipt) — an honest rejection beats a guess
+            err
+                span
+                $"field '{name}': Duration has no JSON convention yet — convert explicitly (Duration.toMs into an int field)"
         else
             err span $"field '{name}' has type {formatTy ty}; json rows support int, string, bool, and Option of those")
 
@@ -1219,6 +1305,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEInt n
               Ty = TInt
               Span = expr.Span }
+    | EDur n ->
+        Ok
+            { Kind = TEDur n
+              Ty = TDur
+              Span = expr.Span }
+    | EFloat f ->
+        Ok
+            { Kind = TEFloat f
+              Ty = TFloat
+              Span = expr.Span }
     | EStr s ->
         Ok
             { Kind = TEStr s
@@ -1524,7 +1620,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              | TStr
                              | TInt
                              | TBool
-                             | TNamed("Option", [ TStr | TInt | TBool ]) -> true
+                             | TDur
+                             | TNamed("Option", [ TStr | TInt | TBool | TDur ]) -> true
                              | ty -> isEnum ty
 
                          // a payload-carrying case is a SCHEMA error, named at
@@ -2222,7 +2319,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             return! err a.Span $"$@ splices a seq<string>; this is {formatTy t} — one value? use $x"
                         | t -> return! err a.Span $"$@ splices a seq<string>; this is {formatTy t}"
                     }
-                | _ -> checkScalarSplice ctx env "command arguments" a
+                | _ -> checkScalarSplice ctx env CmdArg a
 
             let! targs =
                 args
@@ -2247,7 +2344,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | EInterp parts ->
         result {
-            let checkHole = checkScalarSplice ctx env "interpolation holes"
+            let checkHole = checkScalarSplice ctx env Hole
 
             let! tparts =
                 parts
@@ -2690,7 +2787,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             return te
         }
 
-and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (what: string) (arg: Expr) : Result<TypedExpr, TypeError> =
+and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg: Expr) : Result<TypedExpr, TypeError> =
     result {
         let! targ = infer ctx env arg
 
@@ -2699,12 +2796,11 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (what: string) (arg: Exp
             // DEFER [D:splice-default-last]: the enclosing statement's
             // inference may still resolve v (the pipe-into-lambda
             // repro); default-or-reject happens at the boundary
-            ctx.PendingSplices <- (v, arg.Span, what) :: ctx.PendingSplices
+            ctx.PendingSplices <- (v, arg.Span, site) :: ctx.PendingSplices
             return targ
-        | TStr
-        | TInt
-        | TBool -> return targ
-        | ty -> return! err arg.Span $"{what} must be strings, ints or bools; this one is {formatTy ty}"
+        | ty ->
+            do! spliceAdmit ctx env site arg.Span ty
+            return targ
     }
 
 // the yaml district's template typing [D:yaml-district]: splices carry
@@ -2831,15 +2927,12 @@ let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) : Result<unit, TypeE
     ctx.PendingSplices
     |> List.rev
     |> List.fold
-        (fun acc (v, span, what) ->
+        (fun acc (v, span, site) ->
             acc
             |> Result.bind (fun () ->
                 match resolve ctx (TVar v) with
                 | TVar _ -> bind ctx env span TStr (TVar v)
-                | TStr
-                | TInt
-                | TBool -> Ok()
-                | ty -> err span $"{what} must be strings, ints or bools; this one is {formatTy ty}"))
+                | ty -> spliceAdmit ctx env site span ty))
         (Ok())
 
 let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
@@ -2875,6 +2968,8 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
                 |> List.map (fun (p, g, b) -> p, g |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
             )
         | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
+        | TEDur _ -> te.Kind
+        | TEFloat _ -> te.Kind
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
         | TEWithin(k, n, a, b) -> TEWithin(k, n, a |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
         | TEEnvLoad _
@@ -3044,6 +3139,8 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TERecord(_, fields) -> fields |> List.map snd
     | TEMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
     | TEIf(cnd, t, e) -> cnd :: t :: Option.toList e
+    | TEDur _ -> []
+    | TEFloat _ -> []
     | TESeq(a, b) -> [ a; b ]
     | TEWithin(_, _, a, b) -> Option.toList a @ [ b ]
     | TEList items -> items
@@ -3071,9 +3168,11 @@ let rec private validateTy
     : Result<unit, TypeError> =
     match ty with
     | TInt
+    | TFloat
     | TStr
     | TBool
-    | TUnit -> Ok()
+    | TUnit
+    | TDur -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
     | TTuple ts -> allOk ts (validateTy env selfName selfArity allowed span)
     | TFun(a, b) ->
@@ -3120,8 +3219,8 @@ let private attrRegistry: Map<string, AttrArg option -> string option> =
           // error (the did-you-mean over the remaining names).
           "Default",
           (function
-          | Some(AStr _ | AInt _ | ABool _) -> None
-          | None -> Some "expects a literal (string, int, or bool), e.g. [<Default 10>]") ]
+          | Some(AStr _ | AInt _ | ABool _ | ADur _) -> None
+          | None -> Some "expects a literal (string, int, bool, or duration), e.g. [<Default 10>]") ]
 
 let private validateFieldAttrs (recName: string) (field: string, _: Ty, specs: AttrSpec list) =
     let conflicts a b (seen: Set<string>) (spec: AttrSpec) = spec.AName = a && Set.contains b seen
