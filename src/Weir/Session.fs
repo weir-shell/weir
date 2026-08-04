@@ -8,8 +8,13 @@ module Weir.Session
 
 let mutable private rootCwd: string = System.IO.Directory.GetCurrentDirectory()
 
-let private localCwd =
-    new System.Threading.ThreadLocal<string option>(fun () -> None)
+// AsyncLocal, not ThreadLocal [D:tasks-underneath]: session scopes
+// belong to the LOGICAL context (an arm's scope follows the arm across
+// whatever thread resumes it), which is also correct under plain
+// thread parallelism — each pmap arm enters/exits per invocation, so
+// pool-thread reuse never leaks a scope. Value's default (null) IS
+// None for an option — the unset context falls to the root.
+let private localCwd = System.Threading.AsyncLocal<string option>()
 
 let Cwd: unit -> string =
     fun () ->
@@ -30,7 +35,7 @@ let setCwd (path: string) : unit =
 let private rootEnvOverlay: (string * string) list list ref = ref []
 
 let private localEnvOverlay =
-    new System.Threading.ThreadLocal<(string * string) list list option>(fun () -> None)
+    System.Threading.AsyncLocal<(string * string) list list option>()
 
 /// newest layer FIRST
 let envOverlay () : (string * string) list list =

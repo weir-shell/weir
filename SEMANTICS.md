@@ -1600,6 +1600,22 @@ IEEE semantics nowhere else.
     (`--help` renders it), and the parse/render pair agrees —
     `--rate 0.5` round-trips through `show`.
 
+## Parallel fan-out — sized for I/O-bound arms [D:tasks-underneath]
+
+weir orchestrates processes, so a `pmap`/`piter` arm typically
+SPAWNS and WAITS — I/O-bound, not CPU-bound. The workers are
+dedicated threads up to a ceiling of **64 concurrent arms** (not
+`ProcessorCount`): the ceiling exists for RESOURCE protection (an
+unbounded fan-out over 10k items is a fork bomb with good manners),
+not CPU sizing. `Seq.pmapWith n` / `Seq.piterWith n` set it
+explicitly; degree < 1 raises naming the constraint. The contracts:
+results preserve INPUT ORDER; every arm runs even when one fails,
+and the first error BY INPUT ORDER rethrows after the join
+(deterministic — data parallelism does not half-finish). Session
+scopes are keyed to the LOGICAL context (`AsyncLocal`), so a scope
+established inside an arm belongs to that arm wherever it runs —
+the cwd/env fork discipline is unchanged and holds at the ceiling.
+
 ## Duration — time as a type [D:duration]
 
 **The storage law: a `Duration` is an integer count of milliseconds.**
