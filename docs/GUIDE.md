@@ -283,12 +283,12 @@ print $"budget {cli.timeout}, half {cli.timeout / 2}"
 rests at `30s`, and `--help` shows `default: 30s`. The algebra is
 closed — add and subtract durations, scale by ints — and
 `Duration / Duration` is rejected naming the ratio spelling
-(`Duration.toMs a / Duration.toMs b`). `Duration.sleep 500ms`
+(`Duration.toMillis a / Duration.toMillis b`). `Duration.sleep 500ms`
 blocks; it is module-qualified so `sleep 5` keeps meaning
 coreutils sleep. In command position `30s` stays an ordinary argv
 word — `timeout 30s cmd` passes the text through untouched — and a
 SPLICED duration is rejected with the deliberate spellings
-(`Duration.toMs d` or `show d`): the argv form is the program's
+(`Duration.toMillis d` or `show d`): the argv form is the program's
 business, not weir's guess.
 
 ## Rates and percentages: floats, finite-only
@@ -306,16 +306,22 @@ let pct = 100.0 * Float.ofInt passed / Float.ofInt total
 print $"pass rate {pct}%"
 ```
 
+A float crosses every boundary: a `--rate 0.5` flag with
+`[<Default 0.5>]`, an `Env.load` field, a JSON `number` (integer-
+shaped values widen on read — JSON has one number type), a YAML
+scalar (`rate: 1.5` unquoted is the number; `"1.5"` quoted is a
+string — the quoting law tells them apart in both directions).
+
 Floats render shortest-form and round-trip through `Float.parse`;
 an integral float keeps its decimal (`show 1.0` is `"1.0"`).
 Equality is the one thing floats do not do: `==` is a check error
 (0.1 + 0.2 is not 0.3) and the error names the idiom —
 `Float.near a b 1e-9`, or compare after `Float.round`. Sorting
 works (`Seq.sortBy` takes float keys); timing ratios read naturally
-with `Duration.toS`:
+with `Duration.toSeconds`:
 
 ```weir
-let ratio = Duration.toS 90s / Duration.toS 1m
+let ratio = Duration.toSeconds 90s / Duration.toSeconds 1m
 print $"{ratio}x the budget"
 ```
 

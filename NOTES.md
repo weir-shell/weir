@@ -1,5 +1,51 @@
 # Spike Notes
 
+## floats session 2: the boundaries, the fuzzer, and a rename rider (2026-08-04)
+
+The two boundaries the cost report called clean WERE clean, confirmed
+not redesigned: kindOk's integer ⊆ number needed nothing, and the
+reverse-Norway machinery quoted "1.5"-the-string before floats
+existed. The two that needed design got their rulings: integer-shaped
+numbers WIDEN into float fields at json/yaml (a parse, not weir
+arithmetic — stated in SEMANTICS so it does not read as an exception
+to no-implicit-widening), and .inf/.nan reject on the way in with the
+finite-only teaching (the session's sharpest pin — there is no value
+to read into).
+
+One deviation from the bless, recorded: "a float-shaped number into
+an int field stays a rejection with today's message" — today's
+message was a RAW FormatException leak ("One of the identified items
+was in an invalid format"). Pinning that would enshrine an accident;
+it teaches "declare it float" instead.
+
+One judgment call the bless's wording forced: the YFloat node. The
+bless says the district splice path admits floats, but the district
+tree is TYPED Yaml — a raw VFloat inside it would be unsound, and
+the literal case decided it: `cpu: 1.5` in a district self-typed
+YStr and rendered QUOTED ("1.5") — wrong for any manifest that means
+a number. YFloat joined the prelude union (Yaml was already non-Eq
+via its seq payloads, so no class movement), and unquoted
+float-shaped literals self-type like ints always did.
+
+The fuzzer's expect-red prediction did not fire: 30k fresh-seed
+cases green on the first run — exact-quarter literals (n/4.0) made
+every render deterministic, which is the flakiness the prediction
+priced. The Eq cost is stated in GRAMMAR.md's denominator: floats
+never join the CCmp "==" arms; they are ==-free, not
+comparison-free (Ord prints generate). Division stays out of the
+production — a generated zero divisor would raise by our own law.
+
+Mid-session, two background agents landed work in this same tree:
+five showcase review fixes (folded, plus the blessed --rate 0.5
+flag), and the Duration.toS/toMs → toSeconds/toMillis rename rider
+(members, three teaching messages). A did-you-mean PREFIX arm was
+landed and REVERTED within the hour on the user's ruling — no hint
+machinery: a stale toS/toMs spelling gets the plain unknown-member
+error, and the rename row records the widening as tried-and-
+unshipped so the question stays closed. The ledger's rows sit in
+chronological order: the boundary row's member names predate the
+rename row that follows it.
+
 ## trailing comments (2026-08-04)
 
 The session's shape surprised twice, both in the good direction.

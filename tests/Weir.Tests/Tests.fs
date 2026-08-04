@@ -2955,7 +2955,7 @@ let typedArgvTests =
                   (match Weir.Check.typecheck e3 (parse "Args.load B2") with
                    | Error terr -> terr.Message
                    | Ok _ -> failtest "expected rejection")
-                  "must be string, int, bool"
+                  "must be string, int, float, bool"
                   ""
           }
           test "duplicate derived flags reject at check" {
@@ -3091,7 +3091,7 @@ let typedArgvTests =
 
               Expect.stringContains
                   (rejects e5 "Env.load CE")
-                  "string, int, bool, an enum union (0-arity cases), or Option of these"
+                  "string, int, float, bool, Duration, an enum union (0-arity cases), or Option of these"
                   ""
           }
           test "Env.load enum conversion: casing, candidates, collect [D:env-enums]" {
@@ -3308,7 +3308,7 @@ let typedArgvTests =
                   (match Weir.Check.typecheck e2 (parse "Args.load Cli") with
                    | Error terr -> terr.Message
                    | Ok _ -> failtest "expected rejection")
-                  "must be string, int, bool"
+                  "must be string, int, float, bool"
                   ""
           }
           test "scriptPath is script-only, with its teaching [D:script-path]" {
@@ -7934,7 +7934,7 @@ let envLoadTests =
 
               for bad in [ "Env.load WtSeq"; "Env.load WtNest" ] do
                   match Weir.Check.typecheck e2 (parse bad) with
-                  | Error terr -> Expect.stringContains (formatError terr) "must be string, int, bool" bad
+                  | Error terr -> Expect.stringContains (formatError terr) "must be string, int, float, bool" bad
                   | Ok _ -> failtest $"{bad} should be rejected"
           }
           test "from-json-family errors: generic, union, unknown, non-type" {
@@ -8247,10 +8247,10 @@ let durationTests =
               Expect.equal (run "1h / 7") (VDur 514285L) "integer ms division"
               Expect.stringContains (checkErr "30s + 5").Message "expected Duration, got int" "no implicit ms"
           }
-          test "Dur / Dur is rejected naming the toMs ratio" {
+          test "Dur / Dur is rejected naming the toMillis ratio" {
               Expect.stringContains
                   (checkErr "30s / 15s").Message
-                  "duration ÷ duration has no unit — Duration.toMs d1 / Duration.toMs d2 gives the integer ratio"
+                  "duration ÷ duration has no unit — Duration.toMillis d1 / Duration.toMillis d2 gives the integer ratio"
                   ""
           }
           test "Eq, Show, Ord all admit Duration (the class widening)" {
@@ -8262,10 +8262,10 @@ let durationTests =
                   (VDur 1000L)
                   "sortBy takes duration keys"
           }
-          test "the constructors and toMs are total; parse raises, tryParse options" {
+          test "the constructors and toMillis are total; parse raises, tryParse options" {
               Expect.equal (run "Duration.ms 500") (VDur 500L) ""
               Expect.equal (run "Duration.s 30") (VDur 30000L) ""
-              Expect.equal (run "Duration.toMs 1m") (VInt 60000L) ""
+              Expect.equal (run "Duration.toMillis 1m") (VInt 60000L) ""
               Expect.equal (run "Duration.parse \"2.5s\"") (VDur 2500L) "decimals live in TEXT"
               Expect.equal (run "Duration.parse \"-1h30m\"") (VDur -5400000L) ""
               Expect.equal (run "Duration.tryParse \"nope\"") (VUnion("None", None)) ""
@@ -8296,7 +8296,7 @@ let durationTests =
               match Weir.Check.typecheck e (parse "[{ dj = 5s }] |> to json") with
               | Error terr ->
                   Expect.stringContains terr.Message "Duration has no JSON convention yet" ""
-                  Expect.stringContains terr.Message "Duration.toMs into an int field" "the conversion named"
+                  Expect.stringContains terr.Message "Duration.toMillis into an int field" "the conversion named"
               | Ok _ -> failtest "expected the park rejection"
           }
           test "[<Default 30s>] literal law: match admits, mismatch names the field type" {
@@ -8316,6 +8316,112 @@ let durationTests =
               let e2 = scriptEnv |> declare "type DurB = { [<Default 30s>] port: int }"
 
               match Weir.Check.typecheck e2 (parse "Args.load DurB") with
+              | Error terr -> Expect.stringContains terr.Message "the Default literal does not match the field" ""
+              | Ok _ -> failtest "expected the literal-law rejection"
+          } ]
+
+let floatBoundaryTests =
+    testList
+        "Floats at the boundaries [D:floats-boundaries]"
+        [ test "from json: floats read, integer-shaped numbers WIDEN (a parse, not weir arithmetic)" {
+              let e = env |> declare "type FJ = { rate: float }"
+
+              let read line =
+                  match
+                      Weir.Check.typecheck e (parse $"[\"{line}\"] |> from json FJ |> Seq.head")
+                      |> Result.map (eval valueEnv)
+                  with
+                  | Ok(VRecord(_, fs)) -> fs["rate"]
+                  | other -> failtest $"unexpected {other}"
+
+              Expect.equal (read "{\\\"rate\\\": 1.5}") (VFloat 1.5) "float reads"
+              Expect.equal (read "{\\\"rate\\\": 3}") (VFloat 3.0) "3 and 3.0 are the same JSON token class"
+          }
+          test "from json: a decimal into an int field teaches float (no silent truncation)" {
+              let e = env |> declare "type FI = { n: int }"
+
+              let te =
+                  match Weir.Check.typecheck e (parse "[\"{\\\"n\\\": 1.5}\"] |> from json FI |> Seq.head") with
+                  | Ok te -> te
+                  | Error terr -> failtest terr.Message
+
+              let ex = Expect.throwsC (fun () -> eval valueEnv te |> ignore) id
+              Expect.stringContains ex.Message "expected int, got a decimal number — declare it float" ""
+          }
+          test "to json: 1.0 emits as 1.0 (the show shape; a float field is not an integer field)" {
+              let e = env |> declare "type FE = { r: float }"
+
+              match Weir.Check.typecheck e (parse "[{ r = 1.0 }] |> to json |> Seq.head") with
+              | Ok te -> Expect.equal (eval valueEnv te) (VStr "{\"r\":1.0}") ""
+              | Error terr -> failtest terr.Message
+          }
+          test "yaml: the float/float-string PAIR — value unquoted, lookalike string quoted, both round-trip" {
+              let e = env |> declare "type FY = { rate: float; label: string }"
+
+              let rendered =
+                  match Weir.Check.typecheck e (parse "[{ rate = 1.5; label = \"1.5\" }] |> to yaml |> Seq.force") with
+                  | Ok te -> eval valueEnv te
+                  | Error terr -> failtest terr.Message
+
+              match rendered with
+              | VSeq lines ->
+                  let ls =
+                      lines
+                      |> Seq.map (function
+                          | VStr s -> s
+                          | _ -> "?")
+                      |> List.ofSeq
+
+                  Expect.contains ls "rate: 1.5" "the float renders UNQUOTED"
+                  Expect.contains ls "label: \"1.5\"" "the lookalike string renders QUOTED (reverse-Norway)"
+              | v -> failtest $"unexpected {v}"
+
+              // and back: the reader honors the same quotedness split
+              let read =
+                  match
+                      Weir.Check.typecheck
+                          e
+                          (parse "[\"rate: 1.5\"; \"label: \\\"1.5\\\"\"] |> from yaml FY |> Seq.head")
+                  with
+                  | Ok te -> eval valueEnv te
+                  | Error terr -> failtest terr.Message
+
+              match read with
+              | VRecord(_, fs) ->
+                  Expect.equal fs["rate"] (VFloat 1.5) "unquoted is the number"
+                  Expect.equal fs["label"] (VStr "1.5") "quoted is the string"
+              | v -> failtest $"unexpected {v}"
+          }
+          test "yaml: .inf/.nan are REJECTED on the way in — no value exists to read into" {
+              let e = env |> declare "type FN = { r: float }"
+
+              let readErr line =
+                  match Weir.Check.typecheck e (parse $"[\"{line}\"] |> from yaml FN |> Seq.head") with
+                  | Ok te -> (Expect.throwsC (fun () -> eval valueEnv te |> ignore) id).Message
+                  | Error terr -> failtest terr.Message
+
+              Expect.stringContains (readErr "r: .nan") "not representable — weir floats are finite" ""
+              Expect.stringContains (readErr "r: .inf") "not representable" ""
+
+              Expect.stringContains
+                  (readErr "r: nope")
+                  "expected float, got 'nope'"
+                  "plain garbage keeps the plain message"
+          }
+          test "[<Default 0.5>] end to end: attrArgLit lexes the float, help renders it" {
+              let scriptEnv =
+                  { env with
+                      Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers }
+
+              let e = scriptEnv |> declare "type FCli = { [<Default 0.5>] rate: float }"
+
+              match Weir.Check.typecheck e (parse "Args.load FCli") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "FCli" ""
+              | Error terr -> failtest $"expected Ok, got {terr.Message}"
+
+              let e2 = scriptEnv |> declare "type FBad = { [<Default 0.5>] port: int }"
+
+              match Weir.Check.typecheck e2 (parse "Args.load FBad") with
               | Error terr -> Expect.stringContains terr.Message "the Default literal does not match the field" ""
               | Ok _ -> failtest "expected the literal-law rejection"
           } ]
@@ -8460,9 +8566,9 @@ let floatTests =
               let ex = Expect.throwsC (fun () -> run "Float.parse \"NaN\"" |> ignore) id
               Expect.stringContains ex.Message "not a finite float" "boundaries reject non-finite too"
           }
-          test "Duration.toS is lossless; Duration internals stay integer" {
-              Expect.equal (run "Duration.toS 2500ms") (VFloat 2.5) "the defect that prompted the session"
-              Expect.equal (run "Duration.toS 1ms") (VFloat 0.001) ""
+          test "Duration.toSeconds is lossless; Duration internals stay integer" {
+              Expect.equal (run "Duration.toSeconds 2500ms") (VFloat 2.5) "the defect that prompted the session"
+              Expect.equal (run "Duration.toSeconds 1ms") (VFloat 0.001) ""
               Expect.equal (run "Duration.parse \"2.5s\"") (VDur 2500L) "duration text still parses on the integer path"
           }
           test "the hole renders with ZERO interpolation edits (the interp-show property, confirmed)" {
@@ -8513,7 +8619,7 @@ let interpShowTests =
               | Error terr ->
                   Expect.stringContains
                       terr.Message
-                      "a Duration's argv form depends on the program; pass Duration.toMs d or show d deliberately"
+                      "a Duration's argv form depends on the program; pass Duration.toMillis d or show d deliberately"
                       ""
               | Ok _ -> failtest "expected the splice rejection"
 
@@ -8522,9 +8628,9 @@ let interpShowTests =
               | Ok _ -> ()
               | Error terr -> failtest $"show spelling: {terr.Message}"
 
-              match Weir.Check.typecheck env (parseCmd "echo (Duration.toMs 30s)") with
+              match Weir.Check.typecheck env (parseCmd "echo (Duration.toMillis 30s)") with
               | Ok _ -> ()
-              | Error terr -> failtest $"toMs spelling: {terr.Message}"
+              | Error terr -> failtest $"toMillis spelling: {terr.Message}"
           }
           test "command-argument splices keep the scalar list for other types" {
               match Weir.Check.typecheck env (parseCmd "echo (ls)") with
@@ -8810,6 +8916,7 @@ let allTests =
           fsMemberTests
           durationTests
           floatTests
+          floatBoundaryTests
           trailingCommentTests
           interpShowTests
           gapATests

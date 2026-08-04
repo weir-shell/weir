@@ -56,6 +56,17 @@ composition, not type complexity.
 - multiline lambdas [D:multiline-lambda]: dangling `(fun p ->` opening
   a body block (block-let + prints inside), closer attached AND alone,
   as a bare iter statement and as a map on a let-RHS pipeline
+- float statements (top-level only): `let f = a op b` over exact
+  quarter literals (+ - *; division excluded — a generated zero
+  divisor would RAISE by the finite-only law), a `show`/interp print,
+  and an optional `Ord` comparison print (`f < c`). **The Eq
+  exclusion shaped this production** — the first time a class
+  decision shaped the generator: float expressions can NEVER join the
+  `CCmp "=="` arms (`==` on floats is a check error by design), so
+  floats are not wired into the shared typed-expression grammar; they
+  are `==`-free but NOT comparison-free (`<`/`>` are admitted — Ord
+  holds). Trailing comments ride the append-trailing metamorphic over
+  these lines like any other code line.
 - placement laws the probes established (generator-enforced): bare
   command lines and type declarations are top-level only; if bodies
   are expression territory (bare commands are statements there now [D:interior-arming]);
@@ -75,6 +86,11 @@ composition, not type complexity.
   (`succeeds`/`complete`/`orFail`/`exitCode` — outside the MAIN
   grammar; reifier CHAINS are swept by invariant 6's dedicated
   splat-reifier generator, safe words only)
+- float `/` (a generated zero divisor would raise — the float
+  production stays total by construction), floats inside the SHARED
+  int/string expression grammar (the Eq-exclusion wiring stated in
+  the CAN entry), and float literal PATTERNS (declined by design
+  [D:floats])
 - `let ... in` inline form; param-ful lets / function defs;
   seq patterns; Regex patterns; tuples; copy-and-update literals;
   `Args.load` / `Env.load`; raw strings; `#loose` mode

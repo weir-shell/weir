@@ -26,6 +26,10 @@ type Cli = {
     /// a Duration flag: --timeout 90s or 1m30s parses at the boundary
     timeout: Duration
 
+    [<Default 0.5>]
+    /// a float flag: --rate 0.25 parses; the default renders in --help
+    rate: float
+
     /// optional label stamped into the YAML demo
     tag: Option<string>
 }
@@ -128,8 +132,11 @@ print $"generic == on ints: {sameInts}; on strings: {sameStrs}"
 // ---- Duration and floats: time as a type, decimals at the edges -------
 
 let half = cli.timeout / 2
-print $"budget {cli.timeout}, half {half}, {Duration.toS cli.timeout} seconds"
-Duration.sleep 1ms
+// float DIVISION on toSeconds's floats — 0.5 below is a float, not a
+// formatted string (finite-only; == on floats is a check error)
+let ratio = Duration.toSeconds cli.timeout / Duration.toSeconds 1m
+print $"budget {cli.timeout}, half {half}, {ratio}x a minute at rate {cli.rate}"
+Duration.sleep 1ms // takes a Duration, not a number; module-qualified so coreutils sleep stays reachable
 
 // ---- seqs: Regex patterns, choose, seq patterns, fold -----------------
 
@@ -188,7 +195,7 @@ Str.rmatchAll @"(https://\S+)" text0
 let banner = "showcase"
 weir $echoArgs tag $banner (40 + 2) $"--label={banner}"
 
-// extras is typed seq<string> by the splat's demand on the next line
+// extras is typed seq<string> by the splat's demand below
 let extras = []
 weir $echoArgs empty splat drops $@extras zero words
 
@@ -272,6 +279,8 @@ within env ev
 // within cd is the third scope kind (tmp ran the files section above):
 // the working directory changes for the block and restores at its end
 within cd helperDir
+    // pwd is a weir BUILTIN (like ls/cd) — no PATH head resolves here,
+    // so the weir+git-only portability claim in the header holds
     let here = pwd |> Seq.head
     print $"cd-scoped: running beside {Path.fileName here}"
 
@@ -339,6 +348,9 @@ let doc0 = manifest "web" 8080 cli.tag [("app", "web"); ("tier", "edge")]
 doc0 |> to yaml |> print
 
 // ---- cleanup: File.delete asserts its target exists -------------------
+// envFile stays MANUAL on purpose: ev outlives any one block (the
+// sigil pair and the within env section both use it), so a tmp scope
+// cannot own it — and the one remaining delete demos the member.
 // (the tmp scope already deleted its own files at block end)
 
 File.delete envFile

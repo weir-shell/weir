@@ -2462,15 +2462,18 @@ let private attrArgLit =
                   .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
               )
           )
-          |>> fun (digits, sfx) ->
-              let n = int64 digits
-
-              match sfx with
-              | Some "ms" -> ADur n
-              | Some "s" -> ADur(n * 1000L)
-              | Some "m" -> ADur(n * 60000L)
-              | Some "h" -> ADur(n * 3600000L)
-              | _ -> AInt n
+          // [<Default 0.5>] — attrArgLit is its own tiny lexer
+          // [D:floats], the Duration session's recorded gotcha
+          .>>. opt (attempt (pchar '.' >>. many1Satisfy isDigit))
+          |>> fun ((digits, sfx), frac) ->
+              match sfx, frac with
+              | _, Some f ->
+                  AFloat(System.Double.Parse($"{digits}.{f}", System.Globalization.CultureInfo.InvariantCulture))
+              | Some "ms", _ -> ADur(int64 digits)
+              | Some "s", _ -> ADur(int64 digits * 1000L)
+              | Some "m", _ -> ADur(int64 digits * 60000L)
+              | Some "h", _ -> ADur(int64 digits * 3600000L)
+              | _ -> AInt(int64 digits)
           keyword "true" >>% ABool true
           keyword "false" >>% ABool false ]
     .>> ws

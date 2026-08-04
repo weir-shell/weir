@@ -163,6 +163,7 @@ type AttrArg =
     | ABool of bool
     // a duration literal (30s, 250ms) — stored as ms [D:duration]
     | ADur of int64
+    | AFloat of float
 
 type RecordDef =
     { Name: string

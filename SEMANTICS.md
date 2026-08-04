@@ -1562,12 +1562,33 @@ IEEE semantics nowhere else.
   raises outside the 64-bit range) / `round` (halves away from
   zero) / `abs` / `near` / `parse` / `tryParse`. `Float` members
   never flatten to bare aliases (`toInt` stays `Str`'s).
-- **`Duration.toS`** is float-returning and lossless (`2500ms` is
+- **`Duration.toSeconds`** is float-returning and lossless (`2500ms` is
   `2.5`) — the member the truncation kept unshipped. Duration's own
   parse/render path stays integer.
-- **Boundaries wait for session 2**: float fields at JSON, YAML,
-  `Args.load`/`Env.load` reject with today's messages — nothing is
-  half-admitted.
+- **The boundaries admit floats [D:floats-boundaries]** (session 2):
+  - **JSON**: a `float` field reads JSON's number type, and an
+    integer-shaped number WIDENS (`{"rate": 3}` reads as `3.0`) —
+    **this is a parse, not weir arithmetic**: the no-implicit-widening
+    rule governs the language's operators, not what a boundary can
+    read from a wire format with one number type. The reverse — a
+    decimal into an `int` field — teaches "declare it float" (no
+    silent truncation). `to json` emits `1.0` as `1.0` (the show
+    shape; a float field is not an integer field), and CANNOT emit
+    `NaN`/`Infinity` — the finite-only law means no such value
+    exists to serialize. The schema validator needed no change:
+    `integer ⊆ number` was already encoded.
+  - **YAML**: a float value renders UNQUOTED (`rate: 1.5`) while a
+    float-lookalike string renders QUOTED (`label: "1.5"`) — the
+    reverse-Norway law was built for this adjacency and both
+    directions round-trip. `.inf`/`.nan` are REJECTED on the way in
+    (there is no value to read into); a quoted scalar at a float
+    field is a string, the quotedness law unchanged. District float
+    literals self-type (`cpu: 1.5` is a number, not a quoted
+    string) and float splices lift via the new `YFloat` node.
+  - **`Args.load`/`Env.load`**: float fields parse via the
+    `Float.parse` shape, `[<Default 0.5>]` is a legal resting point
+    (`--help` renders it), and the parse/render pair agrees —
+    `--rate 0.5` round-trips through `show`.
 
 ## Duration — time as a type [D:duration]
 
@@ -1589,7 +1610,7 @@ in shell work are time, and time has a unit.
 - **The algebra is closed**: `+`/`-` over two durations; `*`/`/`
   against an `int` (ms division truncates, the int rule); comparisons
   over two durations. `Duration / Duration` is REJECTED naming the
-  spelling for a ratio (`Duration.toMs d1 / Duration.toMs d2`) —
+  spelling for a ratio (`Duration.toMillis d1 / Duration.toMillis d2`) —
   a unitless quotient is not a duration and weir does not guess.
   Negative durations are legal (`10s - 30s` is `-20s`); nothing
   converts implicitly (`30s + 5` is a type error, not seconds, not ms).
@@ -1601,7 +1622,7 @@ in shell work are time, and time has a unit.
   compound and signed text); the round-trip holds in both directions.
   Sub-millisecond text (`1.0001s`) is a parse error naming the floor.
 - **The module**: `Duration.ms/s/m/h` (int -> Duration),
-  `Duration.toMs` (int ms) and `Duration.toS` (float seconds,
+  `Duration.toMillis` (int ms) and `Duration.toSeconds` (float seconds,
   lossless — [D:floats]), `Duration.parse` / `tryParse`
   (raise / Option — the X/tryX rule), and `Duration.sleep` —
   module-qualified ON PURPOSE: a bare `sleep` binding would shadow
@@ -1610,13 +1631,13 @@ in shell work are time, and time has a unit.
   `Duration` fields (`--timeout 90s`, `TICK=1h30m`), `[<Default 30s>]`
   is a legal resting point, and `--help` renders the default in the
   Show shape. JSON is PARKED: a `Duration` field at the json boundary
-  is rejected naming the conversion (`Duration.toMs` into an int
+  is rejected naming the conversion (`Duration.toMillis` into an int
   field) — ms-int vs ISO-8601 both defensible, so the choice waits
   for a receipt. Interpolation holes render a `Duration` directly
   (`$"took {elapsed}"` — holes consult `Show` [D:interp-show]);
   command-argument splices do NOT — the argv form is the program's
   business, and the rejection names the deliberate spellings
-  (`Duration.toMs d` or `show d`).
+  (`Duration.toMillis d` or `show d`).
 
 ## Type classes — Eq (Session A, 2026-07-20)
 

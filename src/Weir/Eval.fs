@@ -257,6 +257,10 @@ let private jsonLine (v: Value) : string =
     let rec write (v: Value) =
         match v with
         | VInt n -> writer.WriteNumberValue n
+        // the show shape [D:floats-boundaries]: 1.0 emits as 1.0 (a
+        // float field is not an integer field); formatFloat is always a
+        // valid JSON number — non-finite is unrepresentable by law
+        | VFloat f -> writer.WriteRawValue(formatFloat f)
         | VStr s -> writer.WriteStringValue s
         | VBool b -> writer.WriteBooleanValue b
         // Option [D:json-option]: Some writes its scalar; a bare None at the
@@ -297,7 +301,20 @@ let private jsonRow (def: RecordDef) (line: string) : Value =
     // property [D:json-option]
     let readScalar (name: string) (scalarTy: Ty) (prop: System.Text.Json.JsonElement) =
         match scalarTy, prop.ValueKind with
-        | TInt, System.Text.Json.JsonValueKind.Number -> VInt(prop.GetInt64())
+        | TInt, System.Text.Json.JsonValueKind.Number ->
+            match prop.TryGetInt64() with
+            | true, n -> VInt n
+            | _ -> failwith $"from json: field '{name}' expected int, got a decimal number — declare it float"
+        | TFloat, System.Text.Json.JsonValueKind.Number ->
+            // integer-shaped numbers WIDEN here [D:floats-boundaries]:
+            // JSON has one number type — this is a parse, not weir
+            // arithmetic, so the no-implicit-widening rule does not bite
+            let d = prop.GetDouble()
+
+            if System.Double.IsFinite d then
+                VFloat(if d = 0.0 then 0.0 else d)
+            else
+                failwith $"from json: field '{name}': number out of float range"
         | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
         | TBool, System.Text.Json.JsonValueKind.True -> VBool true
         | TBool, System.Text.Json.JsonValueKind.False -> VBool false
@@ -439,12 +456,31 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             VBool false
         else
             failwith $"from yaml: line {line}: expected bool (exactly true/false), got '{raw}'"
+    | Yaml.SFloat, Yaml.NScalar(raw, quoted, line) ->
+        if quoted then
+            failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects float"
+        else
+            // parseFloat rejects non-finite; .inf/.nan additionally
+            // TEACH — yaml spells them, weir's law forbids the value
+            match raw.Trim().ToLowerInvariant() with
+            | ".inf"
+            | "-.inf"
+            | "+.inf"
+            | ".nan" ->
+                failwith
+                    $"from yaml: line {line}: '{raw}' is not representable — weir floats are finite (non-finite results raise; there is no value to read into)"
+            | _ ->
+                match parseFloat raw with
+                | Ok f -> VFloat f
+                | Error _ -> failwith $"from yaml: line {line}: expected float, got '{raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
     // blockness is quotedness's sibling [D:block-scalars]: a block
     // scalar is unambiguously a string
     | Yaml.SStr, Yaml.NBlock(text, _) -> VStr text
     | Yaml.SInt, Yaml.NBlock(_, line) ->
         failwith $"from yaml: line {line}: a block scalar is a string; this field expects int"
+    | Yaml.SFloat, Yaml.NBlock(_, line) ->
+        failwith $"from yaml: line {line}: a block scalar is a string; this field expects float"
     | Yaml.SBool, Yaml.NBlock(_, line) ->
         failwith $"from yaml: line {line}: a block scalar is a string; this field expects bool"
     | Yaml.SRec(name, fields), Yaml.NMap(entries, line) ->
@@ -461,7 +497,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | None, Yaml.SSeq _ -> fname, VSeq Seq.empty
                 | None, Yaml.SPairs _ -> fname, VSeq Seq.empty
                 | None, _ -> failwith $"from yaml: line {line}: missing field '{fname}' in '{name}'"
-                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SStr | Yaml.SBool | Yaml.SRec _) ->
+                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SRec _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
 
@@ -481,6 +517,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
         let want =
             match shape with
             | Yaml.SInt -> "an int scalar"
+            | Yaml.SFloat -> "a float scalar"
             | Yaml.SStr -> "a string scalar"
             | Yaml.SBool -> "a bool scalar"
             | Yaml.SRec(n, _) -> $"a mapping ({n})"
@@ -585,6 +622,7 @@ let rec private yamlRender (v: Value) : Rendered =
     | VStr s -> renderString s
     | VUnion("YStr", Some(VStr s)) -> renderString s
     | VUnion("YInt", Some(VInt n)) -> Inline(string n)
+    | VUnion("YFloat", Some(VFloat f)) -> Inline(formatFloat f)
     | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
     | VUnion("YNull", None) -> Inline ""
     | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq (List.ofSeq items))
@@ -775,6 +813,7 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
             | _, Some(AStr s) -> $"default: {s}"
             | _, Some(AInt n) -> $"default: {n}"
             | _, Some(ADur n) -> $"default: {formatDuration n}"
+            | _, Some(AFloat fl) -> $"default: {formatFloat fl}"
             | _, _ -> "required"
 
         let right =
@@ -931,6 +970,7 @@ let private argvFill
             match Argv.defaultOf def f with
             | Some(AStr s) -> f, VStr s
             | Some(AInt n) -> f, VInt n
+            | Some(AFloat fl) -> f, VFloat fl
             | Some(ABool b) -> f, VBool b
             | Some(ADur n) -> f, VDur n
             | None ->
@@ -982,6 +1022,11 @@ let private argvParseValue
     | TNamed("Option", [ TDur ]) ->
         match parseDurationMs raw with
         | Ok n -> values[f] <- wrapOpt ty (VDur n)
+        | Error e -> problems.Add $"{flagTok}: {e}"
+    | TFloat
+    | TNamed("Option", [ TFloat ]) ->
+        match parseFloat raw with
+        | Ok fl -> values[f] <- wrapOpt ty (VFloat fl)
         | Error e -> problems.Add $"{flagTok}: {e}"
     | _ -> values[f] <- wrapOpt ty (VStr raw)
 
@@ -1446,6 +1491,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         match Argv.defaultOf def name with
                         | Some(AStr s) -> VStr s
                         | Some(AInt n) -> VInt n
+                        | Some(AFloat fl) -> VFloat fl
                         | Some(ABool b) -> VBool b
                         | Some(ADur n) -> VDur n
                         | None ->
@@ -1468,6 +1514,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     | (TDur | TNamed("Option", [ TDur ])), v ->
                         match parseDurationMs v with
                         | Ok n -> wrapOpt ty (VDur n)
+                        | Error e ->
+                            problems.Add $"{name}: {e}"
+                            VUnit
+                    | (TFloat | TNamed("Option", [ TFloat ])), v ->
+                        match parseFloat v with
+                        | Ok fl -> wrapOpt ty (VFloat fl)
                         | Error e ->
                             problems.Add $"{name}: {e}"
                             VUnit
@@ -1583,8 +1635,9 @@ and private liftYaml (v: Value) : Value option =
     match v with
     | VStr s -> Some(VUnion("YStr", Some(VStr s)))
     | VInt n -> Some(VUnion("YInt", Some(VInt n)))
+    | VFloat f -> Some(VUnion("YFloat", Some(VFloat f)))
     | VBool b -> Some(VUnion("YBool", Some(VBool b)))
-    | VUnion(("YStr" | "YInt" | "YBool" | "YNull" | "YSeq" | "YMap"), _) -> Some v
+    | VUnion(("YStr" | "YInt" | "YFloat" | "YBool" | "YNull" | "YSeq" | "YMap"), _) -> Some v
     | VUnion("Some", Some inner) -> liftYaml inner
     | VUnion("None", None) -> None
     | VSeq items ->
@@ -1619,7 +1672,13 @@ and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
         else
             match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
             | true, n -> VUnion("YInt", Some(VInt n))
-            | _ -> VUnion("YStr", Some(VStr raw))
+            | _ ->
+                // unquoted float-shaped literals self-type [D:floats-boundaries]
+                // — `cpu: 1.5` must not render as "1.5" (the int precedent;
+                // parseFloat refuses non-finite so nan/inf text stays string)
+                match (if quoted then Error "" else parseFloat raw) with
+                | Ok f -> VUnion("YFloat", Some(VFloat f))
+                | Error _ -> VUnion("YStr", Some(VStr raw))
     | Check.TYtSplice te -> liftYaml (eval env te) |> Option.defaultValue (VUnion("YNull", None))
     | Check.TYtSeq(items, _) -> VUnion("YSeq", Some(VSeq(evalYamlItems env items |> List.toSeq)))
     | Check.TYtMap(entries, _) ->
