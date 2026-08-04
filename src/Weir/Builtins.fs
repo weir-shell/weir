@@ -1477,12 +1477,153 @@ let private logMembers: (string * Ty * Value) list =
       "infoWith", TFun(thunk, TUnit), logWithMember 2 "32" "INFO"
       "warnWith", TFun(thunk, TUnit), logWithMember 3 "33" "WARN" ]
 
+// ---- the filesystem family [D:fs-members] ---------------------------
+// copy/move take (src, dst) — the universal convention; neither arg is
+// "the data", so data-last does not apply. Destinations REFUSE to
+// overwrite (reject-don't-guess; the overwriting spelling is an
+// explicit File.delete first). Dir.create is the ONE idempotent
+// exception: an existing directory IS create's post-condition, where
+// an existing copy destination is data the caller did not ask to
+// destroy. Every path resolves against the session cwd.
+let private fsStr2 (name: string) (f: string -> string -> unit) : Value =
+    VBuiltin(fun a ->
+        VBuiltin(fun b ->
+            match a, b with
+            | VStr src, VStr dst ->
+                f (Session.resolve src) (Session.resolve dst)
+                VUnit
+            | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
+
+let private fsMoreFileMembers: (string * Ty * Value) list =
+    [ "delete",
+      TFun(TStr, TUnit),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.File.Exists r) then
+                  failwith $"File.delete: no such file: {r}"
+
+              System.IO.File.Delete r
+              VUnit
+          | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
+      "copy",
+      TFun(TStr, TFun(TStr, TUnit)),
+      fsStr2 "File.copy" (fun src dst ->
+          if not (System.IO.File.Exists src) then
+              failwith $"File.copy: no such file: {src}"
+
+          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
+              failwith $"File.copy: destination exists: {dst}"
+
+          System.IO.File.Copy(src, dst))
+      "move",
+      TFun(TStr, TFun(TStr, TUnit)),
+      fsStr2 "File.move" (fun src dst ->
+          if not (System.IO.File.Exists src) then
+              failwith $"File.move: no such file: {src}"
+
+          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
+              failwith $"File.move: destination exists: {dst}"
+
+          System.IO.File.Move(src, dst))
+      "size",
+      TFun(TStr, TInt),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.File.Exists r) then
+                  failwith $"File.size: no such file: {r}"
+
+              VInt (System.IO.FileInfo r).Length
+          | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}") ]
+
+let private dirMembers: (string * Ty * Value) list =
+    [ "create",
+      TFun(TStr, TUnit),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              // mkdir -p: parents created, existing = the post-condition
+              System.IO.Directory.CreateDirectory(Session.resolve p) |> ignore
+              VUnit
+          | v -> unreachable $"the checker rejects 'Dir.create' on {formatValue v}")
+      "exists",
+      TFun(TStr, TBool),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p -> VBool(System.IO.Directory.Exists(Session.resolve p))
+          | v -> unreachable $"the checker rejects 'Dir.exists' on {formatValue v}")
+      "delete",
+      TFun(TStr, TUnit),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.Directory.Exists r) then
+                  failwith $"Dir.delete: no such directory: {r}"
+
+              if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
+                  failwith $"Dir.delete: not empty: {r} — Dir.deleteAll removes a tree"
+
+              System.IO.Directory.Delete r
+              VUnit
+          | v -> unreachable $"the checker rejects 'Dir.delete' on {formatValue v}")
+      "deleteAll",
+      TFun(TStr, TUnit),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.Directory.Exists r) then
+                  failwith $"Dir.deleteAll: no such directory: {r}"
+
+              System.IO.Directory.Delete(r, true)
+              VUnit
+          | v -> unreachable $"the checker rejects 'Dir.deleteAll' on {formatValue v}")
+      "list",
+      TFun(TStr, TSeq TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.Directory.Exists r) then
+                  failwith $"Dir.list: no such directory: {r}"
+
+              // full paths, files AND directories, SORTED (the glob
+              // precedent), EAGER (a listing is bounded); ** recursion
+              // is Path.glob's job
+              VSeq(
+                  System.IO.Directory.EnumerateFileSystemEntries r
+                  |> Seq.sort
+                  |> Seq.map VStr
+                  |> Seq.cache
+              )
+          | v -> unreachable $"the checker rejects 'Dir.list' on {formatValue v}")
+      "move",
+      TFun(TStr, TFun(TStr, TUnit)),
+      fsStr2 "Dir.move" (fun src dst ->
+          if not (System.IO.Directory.Exists src) then
+              failwith $"Dir.move: no such directory: {src}"
+
+          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
+              failwith $"Dir.move: destination exists: {dst}"
+
+          System.IO.Directory.Move(src, dst)) ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
       "Path", pathMembers
       "Option", optionMembers
-      "File", fileMembers
+      "File", fileMembers @ fsMoreFileMembers
+      "Dir", dirMembers
       "Args", argsMembers
       "Env", envMembers
       "Log", logMembers ]
@@ -1830,6 +1971,67 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "File.exists",
           (bd "True when a path exists." (Some "File.exists \"README.md\"") None
            |> named [ "path" ])
+          "File.delete",
+          (bd
+              "Delete a file (raises naming the path when absent). The explicit pre-step for an overwriting copy/move."
+              (Some
+                  "let d = Path.newTempDir () in ([\"x\"] |> File.write $\"{d}/f.txt\") ; File.delete $\"{d}/f.txt\" ; Dir.delete d")
+              None
+           |> named [ "path" ])
+          "File.copy",
+          (bd
+              "Copy src to dst — (src, dst), the universal convention (neither arg is 'the data', so data-last does not apply). REFUSES an existing destination (raises naming it); delete first to overwrite."
+              (Some
+                  "let d = Path.newTempDir () in ([\"x\"] |> File.write $\"{d}/a.txt\") ; File.copy $\"{d}/a.txt\" $\"{d}/b.txt\" ; Dir.deleteAll d")
+              None
+           |> named [ "src"; "dst" ])
+          "File.move",
+          (bd
+              "Move (rename) src to dst — (src, dst); refuses an existing destination."
+              (Some
+                  "let d = Path.newTempDir () in ([\"x\"] |> File.write $\"{d}/a.txt\") ; File.move $\"{d}/a.txt\" $\"{d}/b.txt\" ; Dir.deleteAll d")
+              None
+           |> named [ "src"; "dst" ])
+          "File.size",
+          (bd
+              "The file's size in bytes (raises when absent — the plain name asserts; a trySize is a park)."
+              (Some
+                  "let d = Path.newTempDir () in let f = $\"{d}/a.txt\" in ([\"x\"] |> File.write f) ; print $\"{File.size f}\" ; Dir.deleteAll d")
+              None
+           |> named [ "path" ])
+          "Dir.create",
+          (bd
+              "Create a directory AND its parents; succeeds silently when it already exists (idempotent — an existing directory IS the post-condition; the one deliberate exception to refuse-overwrite)."
+              (Some "Dir.create (Path.tempRoot ())")
+              None
+           |> named [ "path" ])
+          "Dir.exists",
+          (bd "True when the directory exists." (Some "Dir.exists \".\"") None
+           |> named [ "path" ])
+          "Dir.delete",
+          (bd
+              "Delete an EMPTY directory (refuses a non-empty one, naming Dir.deleteAll; raises when absent)."
+              (Some "Dir.delete (Path.newTempDir ())")
+              None
+           |> named [ "path" ])
+          "Dir.deleteAll",
+          (bd
+              "DELETE THE DIRECTORY AND EVERYTHING UNDER IT, recursively. The destructive one — there is no undo."
+              (Some "let d = Path.newTempDir () in Dir.create $\"{d}/tree-a/tree-b\" ; Dir.deleteAll d")
+              None
+           |> named [ "path" ])
+          "Dir.list",
+          (bd
+              "The directory's entries as FULL paths — files and directories both, SORTED (the glob precedent), eager. Filter with Seq.where + File.exists/Dir.exists; `Path.glob \"**\"` is the recursive spelling."
+              (Some "let d = Path.newTempDir () in print $\"{Dir.list d |> Seq.length}\" ; Dir.delete d")
+              None
+           |> named [ "path" ])
+          "Dir.move",
+          (bd
+              "Move (rename) a directory — (src, dst); refuses an existing destination."
+              (Some "let d = Path.newTempDir () in Dir.move d $\"{d}-m\" ; Dir.delete $\"{d}-m\"")
+              None
+           |> named [ "src"; "dst" ])
           "File.read", (bd "Read a file's lines lazily." None None |> named [ "path" ])
           "File.write",
           (bd "Write a sequence of lines to a file (overwrites)." None None

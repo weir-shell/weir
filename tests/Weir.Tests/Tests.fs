@@ -8144,6 +8144,70 @@ let adversarialTests =
 // ---- Windows v1, session 1 [D:windows-v1] — both-ways platform pins:
 // each asserts ITS OWN platform's semantics, so the suite is meaningful
 // on Linux today and on Windows when the CI matrix arrives
+let fsMemberTests =
+    testList
+        "Filesystem members [D:fs-members]"
+        [ test "the four error shapes, each naming its path" {
+              let d =
+                  match run "Path.newTempDir ()" with
+                  | VStr s -> s
+                  | v -> failtest $"unexpected {v}"
+
+              // missing source
+              let ex =
+                  Expect.throwsC (fun () -> run $"File.copy \"{d}/absent\" \"{d}/x\"" |> ignore) id
+
+              Expect.stringContains ex.Message "File.copy: no such file:" "missing source"
+              Expect.stringContains ex.Message "/absent" "path named"
+
+              // existing destination refuses
+              run $"[\"a\"] |> File.write \"{d}/a.txt\"" |> ignore
+              run $"[\"b\"] |> File.write \"{d}/b.txt\"" |> ignore
+
+              let ex2 =
+                  Expect.throwsC (fun () -> run $"File.copy \"{d}/a.txt\" \"{d}/b.txt\"" |> ignore) id
+
+              Expect.stringContains ex2.Message "destination exists:" "refuse-overwrite"
+
+              // non-empty refusal points at deleteAll
+              let ex3 = Expect.throwsC (fun () -> run $"Dir.delete \"{d}\"" |> ignore) id
+              Expect.stringContains ex3.Message "not empty:" "non-empty refusal"
+              Expect.stringContains ex3.Message "Dir.deleteAll" "the pointer"
+
+              run $"Dir.deleteAll \"{d}\"" |> ignore
+              Expect.isFalse (System.IO.Directory.Exists d) "tree gone"
+
+              // missing directory
+              let ex4 = Expect.throwsC (fun () -> run $"Dir.deleteAll \"{d}\"" |> ignore) id
+              Expect.stringContains ex4.Message "no such directory:" "absent asserts"
+          }
+          test "Dir.create is the idempotent exception; Dir.list is full-path sorted both-kinds" {
+              let d =
+                  match run "Path.newTempDir ()" with
+                  | VStr s -> s
+                  | v -> failtest $"unexpected {v}"
+
+              run $"Dir.create \"{d}/sub\"" |> ignore
+              run $"Dir.create \"{d}/sub\"" |> ignore // twice: the post-condition
+              run $"[\"x\"] |> File.write \"{d}/a.txt\"" |> ignore
+
+              match run $"Dir.list \"{d}\" |> Seq.force" with
+              | VSeq items ->
+                  let got =
+                      items
+                      |> Seq.map (function
+                          | VStr s -> s
+                          | _ -> "?")
+                      |> List.ofSeq
+
+                  Expect.equal got (List.sort got) "sorted"
+                  Expect.isTrue (got |> List.forall (fun p -> p.StartsWith d)) "full paths"
+                  Expect.equal got.Length 2 "files and dirs both"
+              | v -> failtest $"unexpected {v}"
+
+              run $"Dir.deleteAll \"{d}\"" |> ignore
+          } ]
+
 let gapATests =
     testList
         "Gap audit session A remainder"
@@ -8419,6 +8483,7 @@ let allTests =
     testList
         "Weir"
         [ parserTests
+          fsMemberTests
           gapATests
           withinTests
           windowsV1Tests

@@ -1096,7 +1096,34 @@ WEOF
 vout=$( cd "$widir" && $BIN envval.weir )
 [ "$vout" = "carried" ] || fail "env value case captures under the overlay: $vout"
 echo "e2e ok: within env expression position yields a captured value"
-rm -rf "$widir"
+
+# ---- filesystem members [D:fs-members] -------------------------------------
+fsdir=$(mktemp -d)
+cat > "$fsdir/glob.weir" <<'WEOF'
+let d = Path.newTempDir ()
+Dir.create $"{d}/sub"
+["1"] |> File.write $"{d}/a.txt"
+["2"] |> File.write $"{d}/sub/b.txt"
+Path.glob $"{d}/**/*.txt" |> Seq.force |> Seq.iter File.delete
+print $"{Path.glob $"{d}/**/*.txt" |> Seq.length}"
+Dir.deleteAll d
+WEOF
+out=$($BIN "$fsdir/glob.weir") || fail "the glob-delete composition must run"
+[ "$out" = "0" ] || fail "glob a tree, delete the results: $out"
+echo "e2e ok: Path.glob composes with File.delete (the obvious composition)"
+
+# within tmp DOUBLE-DELETE: a block that deleteAlls its own binder must
+# exit clean — the scope's cleanup tolerates an already-gone directory
+cat > "$fsdir/dd.weir" <<'WEOF'
+within tmp d
+    ["x"] |> File.write $"{d}/f.txt"
+    Dir.deleteAll d
+print "survived the double delete"
+WEOF
+out=$($BIN "$fsdir/dd.weir") || fail "double-delete must not raise on scope exit"
+echo "$out" | grep -qF "survived" || fail "double-delete: $out"
+echo "e2e ok: within tmp tolerates a block that already removed its own directory"
+rm -rf "$fsdir"
 
 # bare-pipe caret anchors ON the '|', not the space after [PLAN-anchor-before-read]
 cat > "$ckdir/bp.weir" <<'WEOF'
