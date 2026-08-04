@@ -887,7 +887,17 @@ quantity semantics now.
 - **Multi-line statements via logical-line reconstruction** (scripts
   only): a statement head starts at column 0; indented lines continue it
   and join with a single space; a blank line ends the statement; tabs in
-  indentation are errors. **Comment-only lines are transparent**
+  indentation are errors. **A dedenting
+  line resolves to the enclosing statement level whose column it
+  matches — innermost first** [D:dedent-join]: a statement after a
+  `within`/`for`/`if`/`match` body continues at the level it aligns
+  with (the block closes, paren-wrapped, exactly as conditionals
+  always did — within/for heads joined the same compound machinery,
+  no new stack); a column matching NO enclosing level is a located
+  teaching error (the dedent floor — the silent argv-absorption this
+  replaced cannot return). Open lambdas/brackets/parens still take
+  dedented continuations (the exemption class, unchanged).
+  **Comment-only lines are transparent**
   (F#-faithful; fixed 2026-07-20 — they used to strip to blank and end
   the statement, breaking any block with an interior comment; oracle
   pin). **Parse errors translate to physical `file:line:col`** through

@@ -8290,6 +8290,14 @@ let durationTests =
 
               Expect.stringContains (perr "1m30s") "compound durations are text" "compound spellings point at parse"
           }
+          test
+              "Duration.sleep: zero returns immediately, a negative duration raises (the deadline idiom must not silently no-op)" {
+              Expect.equal (run "Duration.sleep 0ms") VUnit "zero is immediate"
+
+              let ex = Expect.throwsC (fun () -> run "Duration.sleep (0s - 5s)" |> ignore) id
+
+              Expect.stringContains ex.Message "Duration.sleep: negative duration (-5s)" "located, naming the value"
+          }
           test "JSON is parked: the boundary rejects Duration naming the conversion" {
               let e = env |> declare "type DurJ = { dj: Duration }"
 
@@ -8318,6 +8326,114 @@ let durationTests =
               match Weir.Check.typecheck e2 (parse "Args.load DurB") with
               | Error terr -> Expect.stringContains terr.Message "the Default literal does not match the field" ""
               | Ok _ -> failtest "expected the literal-law rejection"
+          } ]
+
+let dedentJoinTests =
+    // whole-script probes: assemble + check + eval; the JOIN is proven
+    // by the BINDINGS (absorption would corrupt or reject them)
+    let runScript (lines: string list) : Map<string, Value> =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Error e -> failtest $"assemble: {e}"
+        | Ok lls ->
+            lls
+            |> List.fold
+                (fun (te, ve) ll ->
+                    match Weir.Parser.parseLine cmdResolver ll.Text with
+                    | Error m -> failtest $"parse: {m}"
+                    | Ok(SExpr e)
+                    | Ok(SCmd e) ->
+                        match Weir.Check.typecheck te e with
+                        | Error terr -> failtest $"check: {formatError terr}"
+                        | Ok typed ->
+                            eval ve typed |> ignore
+                            te, ve
+                    | Ok(SLet(n, e)) ->
+                        match Weir.Check.typecheck te e with
+                        | Error terr -> failtest $"check: {formatError terr}"
+                        | Ok typed ->
+                            let v = eval ve typed
+
+                            { te with
+                                Values = Map.add n (Weir.Types.generalize typed.Ty) te.Values },
+                            Map.add n v ve
+                    | Ok other -> failtest $"unexpected statement {other}")
+                (env, valueEnv)
+            |> snd
+
+    testList
+        "The dedent correct-join [D:dedent-join]"
+        [ test "a statement after a within body inside a let JOINS (the git-subrepo shape; never argv)" {
+              let ve =
+                  runScript
+                      [ "let sub ="
+                        "    within tmp d"
+                        "        Log.debug d"
+                        "    let post = \"not-an-argv-word\""
+                        "    post" ]
+
+              Expect.equal ve["sub"] (VStr "not-an-argv-word") "post is BOUND, not absorbed"
+          }
+          test "a statement after a for body inside a let JOINS" {
+              let ve =
+                  runScript
+                      [ "let h ="
+                        "    for x in [1; 2] do"
+                        "        Log.debug (show x)"
+                        "    let n = 9"
+                        "    n" ]
+
+              Expect.equal ve["h"] (VInt 9L) ""
+          }
+          test "within-in-within: a sibling in the OUTER body after the inner closes" {
+              let ve =
+                  runScript
+                      [ "let w ="
+                        "    within tmp a"
+                        "        within tmp b"
+                        "            Log.debug b"
+                        "        Log.debug a"
+                        "    42" ]
+
+              Expect.equal ve["w"] (VInt 42L) ""
+          }
+          test "the TWO-level dedent: for containing within, sibling back at let level" {
+              let ve =
+                  runScript
+                      [ "let d2 ="
+                        "    for x in [1] do"
+                        "        within tmp t"
+                        "            Log.debug (show x)"
+                        "    let z = 9"
+                        "    z" ]
+
+              Expect.equal ve["d2"] (VInt 9L) ""
+          }
+          test "the FLOOR stays: a genuinely unmatched column still errors, located" {
+              match
+                  Weir.Script.assemble
+                      [ 1, "let bad ="
+                        2, "    within tmp d"
+                        3, "        print d"
+                        4, "      let z = 1"
+                        5, "    z" ]
+              with
+              | Error e ->
+                  Expect.stringContains e "aligns with no enclosing statement" "the swallow cannot return"
+                  Expect.stringContains e "line 4" "located"
+              | Ok _ -> failtest "expected the floor"
+          }
+          test "the exemption class is unchanged: a lambda inside a within body takes dedented continuations" {
+              let ve =
+                  runScript
+                      [ "let lam ="
+                        "    within tmp d"
+                        "        let r = [1; 2] |> Seq.map (fun v ->"
+                        "            v + 1"
+                        "        ) |> Seq.sum"
+                        "        Log.debug (show r)"
+                        "    7" ]
+
+              Expect.equal ve["lam"] (VInt 7L) "the compound case: lambda-in-within"
           } ]
 
 let floatBoundaryTests =
@@ -8917,6 +9033,7 @@ let allTests =
           durationTests
           floatTests
           floatBoundaryTests
+          dedentJoinTests
           trailingCommentTests
           interpShowTests
           gapATests

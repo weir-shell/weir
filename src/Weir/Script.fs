@@ -314,7 +314,15 @@ let classifyPiece (piece: string) : PieceClass =
             MarkerKind.Yaml
         else
             MarkerKind.NoMarker
-      OpensCompound = piece.StartsWith "if " || piece.StartsWith "match "
+      OpensCompound =
+        // within/for block heads close-and-wrap exactly like the
+        // conditionals [D:dedent-join] — same machine, two more
+        // members, NOT a fifth alignment stack (let-prefixed forms
+        // stay Lets-owned, the if/match convention)
+        piece.StartsWith "if "
+        || piece.StartsWith "match "
+        || piece.StartsWith "within "
+        || piece.StartsWith "for "
       IsBangSigil =
         piece.StartsWith "!("
         || (piece.StartsWith "!"
