@@ -3972,4 +3972,29 @@ cmp -s "$tcdir/fmt.weir" "$tcdir/fmt2.weir" || fail "fmt idempotent with trailin
 rm -rf "$tcdir"
 echo "e2e ok: trailing comments (script + -e strip, strings stay data, fmt preserves + idempotent)"
 
+# ---- the dedent correct-join [D:dedent-join] -------------------------------
+djdir=$(mktemp -d)
+cat > "$djdir/dj.weir" <<'WEOF'
+let sub =
+    within tmp d
+        !(weir -e "print 10")
+    let post = "not-an-argv-word"
+    post
+print (sub)
+WEOF
+out=$($BIN "$djdir/dj.weir")
+[ "$out" = '10
+not-an-argv-word' ] || fail "the git-subrepo shape joins on AOT: $out"
+cat > "$djdir/floor.weir" <<'WEOF'
+let bad =
+    within tmp d
+        print d
+      let z = 1
+    z
+WEOF
+out=$($BIN "$djdir/floor.weir" 2>&1) && fail "unmatched column must still error" || true
+echo "$out" | grep -qF "aligns with no enclosing statement" || fail "the floor stays: $out"
+rm -rf "$djdir"
+echo "e2e ok: dedent correct-join (post-scope statements join, the floor stays)"
+
 echo "e2e battery: all green"

@@ -1,5 +1,54 @@
 # Spike Notes
 
+## the dedent correct-join (2026-08-04)
+
+The bless made the enumeration the first deliverable and the
+stop-if-empty gate real. It was not empty, and the matrix was
+sharper than expected: block-lets, if/match, and col-0 continuations
+ALREADY resolved dedents (Lets and Compounds carry levels); `within`
+and `for` bodies owned no level bookkeeping at all — a statement
+after either, at any interior level, hit the floor, and even
+within-in-within could not continue its own outer body. One shape
+(within under an if) worked purely by riding the if's close. The
+corpus was clean only because the district-retirement migration
+restructured around the limitation — the workarounds were the
+evidence.
+
+The landed fix is smaller than the plan sized. The plan sketched a
+statement-level stack in Pend and worried it would read as a fifth
+alignment stack; the fix adds NO stack — within/for heads became two
+more members of the existing compound machinery (one classifier
+expression: OpensCompound). The reasoning that got there: in
+sentinel-flattened text a dedent-JOIN alone cannot work — the parser
+cannot see columns, so a within body would eat the joined sibling as
+its next statement. The block must close WRAPPED, and
+close-and-wrap-on-sibling is precisely what compounds already do for
+if/match, with alignment, spans, and deepest-first pops paid for.
+The ambiguity ruling (innermost wins) is therefore inherited, not
+implemented.
+
+What the probes re-found, recorded but not this session's business:
+an interior block ending in a bare command still owes a !()-tail
+(the arming rule's final-position capture under a unit demand — the
+migration's own convention). And one probe briefly blamed the join
+for a splice-default error that was its own: a parameter-sourced
+interp hole defaults to string, dedent or no dedent.
+
+A rider landed in-tree mid-session (background agent):
+Duration.sleep on a NEGATIVE duration now raises located, naming the
+value in the Show shape — it was a silent no-op by accident of the
+`> 0L` guard, and the deadline idiom (sleep (deadline - now)) must
+not silently skip a past deadline; zero is pinned immediate-return.
+Go's return-immediately alternative is a one-arm flip if ever
+preferred; the ruling is a check-and-teach, the reject-don't-guess
+posture.
+
+Zero movement: 1021 pre-existing pins untouched, the four alignment
+stacks untouched (Compounds gained members, not a sibling — the
+census trigger should not fire), fmt is IDENTITY on every
+newly-joining shape, 30k strict-span deep cases green. 1027 unit /
+e2e +1 block (the git-subrepo shape joins on AOT, the floor stays).
+
 ## floats session 2: the boundaries, the fuzzer, and a rename rider (2026-08-04)
 
 The two boundaries the cost report called clean WERE clean, confirmed

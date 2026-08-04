@@ -1730,7 +1730,12 @@ let private durationMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VDur n ->
-              if n > 0L then
+              // a negative duration REJECTS, located — the deadline
+              // idiom (sleep (deadline - now)) must not silently no-op
+              // on a past deadline [D:duration]
+              if n < 0L then
+                  failwith $"Duration.sleep: negative duration ({formatDuration n})"
+              elif n > 0L then
                   // integer ticks — no float anywhere [D:duration]
                   System.Threading.Thread.Sleep(System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond))
 
@@ -2263,7 +2268,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "text" ])
           "Duration.sleep",
           (bd
-              "Block for the duration. Module-qualified on purpose: bare sleep stays the coreutils command."
+              "Block for the duration (zero returns immediately; a negative duration raises). Module-qualified on purpose: bare sleep stays the coreutils command."
               (Some "Duration.sleep 10ms")
               None
            |> named [ "d" ])
