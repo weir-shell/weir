@@ -816,14 +816,14 @@ let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeErro
             // and a string both defensible; the choice wants a receipt)
             err
                 span
-                $"field '{name}': Size has no JSON convention yet — convert explicitly (Size.toBytes into an int field)"
+                $"field '{name}': Size is not representable in JSON — convert explicitly (Size.toBytes into an int field, or show for a string)"
         elif ty = TDur then
             // parked [D:duration]: JSON has no duration convention
             // (ms-int vs ISO-8601 both defensible; the choice wants a
             // receipt) — an honest rejection beats a guess
             err
                 span
-                $"field '{name}': Duration has no JSON convention yet — convert explicitly (Duration.toMillis into an int field)"
+                $"field '{name}': Duration is not representable in JSON — convert explicitly (Duration.toMillis into an int field, or show for a string)"
         else
             err
                 span
@@ -850,8 +850,8 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
 let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<Yaml.Shape, TypeError> =
     match ty with
     | TInt -> Ok Yaml.SInt
-    | TSize -> err span "Size has no yaml convention yet — convert explicitly (Size.toBytes into an int field)"
-    | TDur -> err span "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)"
+    | TSize -> err span "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TDur -> err span "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
     | TFloat -> Ok Yaml.SFloat
     | TStr -> Ok Yaml.SStr
     | TBool -> Ok Yaml.SBool
@@ -876,14 +876,18 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
             | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
             | Some(Union _) -> err span $"'{n}' is a union; the yaml tree law takes records, seqs, scalars, and Option"
             | None -> err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+    | TVar v when v.StartsWith "__hole" ->
+        // cascade suppression [PLAN-diagnostics-arc B6]: the hole means
+        // an earlier error was already reported — never print its name
+        Ok Yaml.SStr
     | ty ->
         err span $"type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option)"
 
 // the to-side: the same law, plus `Yaml` NODES render directly
 let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<unit, TypeError> =
     match ty with
-    | TSize -> err span "Size has no yaml convention yet — convert explicitly (Size.toBytes into an int field)"
-    | TDur -> err span "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)"
+    | TSize -> err span "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TDur -> err span "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
     | TInt
     | TFloat
     | TStr
@@ -907,6 +911,9 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty:
             | Some(Union _) ->
                 err span $"'{n}' is a union; the yaml tree law takes records, seqs, scalars, Option, and Yaml nodes"
             | None -> err span $"unknown type '{n}'"
+    | TVar v when v.StartsWith "__hole" ->
+        // cascade suppression [PLAN-diagnostics-arc B6]
+        Ok()
     | ty ->
         err
             span
@@ -2923,10 +2930,16 @@ and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<Typed
             if yamlSpliceable ctx rty then
                 return TYtSplice te
             else
+                let hint =
+                    match rty with
+                    | TDur -> " — convert explicitly (Duration.toMillis for the number, or show for the text)"
+                    | TSize -> " — convert explicitly (Size.toBytes for the number, or show for the text)"
+                    | _ -> ""
+
                 return!
                     err
                         e.Span
-                        $"a yaml splice takes string/int/bool, a Yaml node, Option of one, or a seq of those; got {formatTy rty}"
+                        $"a yaml splice takes string/int/bool, a Yaml node, Option of one, or a seq of those; got {formatTy rty}{hint}"
         }
     | YtSeq(items, sp) ->
         items

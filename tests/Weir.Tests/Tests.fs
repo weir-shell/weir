@@ -8312,7 +8312,7 @@ let durationTests =
 
               match Weir.Check.typecheck e (parse "[{ dj = 5s }] |> to json") with
               | Error terr ->
-                  Expect.stringContains terr.Message "Duration has no JSON convention yet" ""
+                  Expect.stringContains terr.Message "Duration is not representable in JSON" ""
                   Expect.stringContains terr.Message "Duration.toMillis into an int field" "the conversion named"
               | Ok _ -> failtest "expected the park rejection"
           }
@@ -8467,6 +8467,29 @@ let sizeTests =
 
               run $"Dir.deleteAll \"{d}\"" |> ignore
           }
+          test "a unit-type district splice teaches its exits; the cascade never leaks a hole name" {
+              let terrs =
+                  let p =
+                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-leak-{System.Guid.NewGuid():N}.weir")
+
+                  System.IO.File.WriteAllLines(
+                      p,
+                      [ "let d = 5s"; "let m = yaml"; "    wait: $d"; "m |> to yaml |> print" ]
+                  )
+
+                  try
+                      let ds, _, _, _ =
+                          Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+
+                      ds |> List.filter (fun d -> d.Severity = "error")
+                  finally
+                      System.IO.File.Delete p
+
+              match terrs with
+              | [ d ] ->
+                  Expect.stringContains d.Message "got Duration — convert explicitly (Duration.toMillis" "the splice hint"
+              | other -> failtest $"expected ONE error (the cascade is suppressed), got {other.Length}"
+          }
           test "the JSON and YAML parks each name Size.toBytes" {
               let e = env |> declare "type SJ = { sz: Size }"
 
@@ -8474,12 +8497,12 @@ let sizeTests =
               | Error terr ->
                   Expect.stringContains
                       terr.Message
-                      "Size has no JSON convention yet — convert explicitly (Size.toBytes into an int field)"
+                      "Size is not representable in JSON — convert explicitly (Size.toBytes into an int field, or show for a string)"
                       ""
               | Ok _ -> failtest "expected the park"
 
               match Weir.Check.typecheck e (parse "[{ sz = 1MiB }] |> to yaml") with
-              | Error terr -> Expect.stringContains terr.Message "Size has no yaml convention yet" ""
+              | Error terr -> Expect.stringContains terr.Message "Size is not representable in yaml" ""
               | Ok _ -> failtest "expected the yaml park"
 
               // and Duration's yaml park, tailored to match (it had only
@@ -8491,7 +8514,7 @@ let sizeTests =
               | Error terr ->
                   Expect.stringContains
                       terr.Message
-                      "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)"
+                      "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
                       ""
               | Ok _ -> failtest "expected Duration's yaml park"
           }
