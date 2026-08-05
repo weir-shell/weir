@@ -9,7 +9,12 @@ thing that will catch you out. It is not a tutorial
 
 Every fenced `weir` block below runs against the release binary in CI
 (`ci/skill-doc.sh`); `weir-error` blocks must fail. A translation
-that stops being true fails the build.
+that stops being true fails the build. The harness is POSIX by
+design (the doc-test CI is Linux), so blocks may lean on `sh` and
+`printf` where the SHOWCASE — which must run on Windows too —
+restricts itself to weir and git. The tables are the unverified
+surface: cells were hand-checked against the binary (2026-08-05),
+but only the fenced blocks re-verify on every build.
 
 ## Coming from bash / POSIX sh
 
@@ -25,7 +30,7 @@ representable.
 | `out=$(git branch)` | `let out = git branch` — a `seq<string>`, one element per line |
 | `for f in *.txt; do … done` | `for f in Path.glob "*.txt" do …` |
 | `if grep -q pat f; then` | `let hit = grep -q pat f \| succeeds` then `if hit then` |
-| `cmd > out.txt` | `cmd \| File.write "out.txt"` |
+| `cmd > out.txt` | `cmd \|> File.write "out.txt"` — a function on the right takes `\|>` (the pipe rule) |
 | `$?` | `cmd \| exitCode` (streams, reifies the code as `int`) |
 | `cat <<EOF … EOF \| cmd` | `lines \| cmd` — a value pipes into stdin |
 | `# comment` | `// comment` — full-line or trailing (needs a preceding space) |
@@ -66,7 +71,8 @@ print "unreached"
   returning a typed seq; splat a batch with
   `git add $@(Path.glob "*.txt" |> Seq.force)`.
 - Redirects — `>`/`>>` pass through as literal argv words with a
-  warning naming `cmd | File.write` / `File.append`.
+  warning naming the spelling: `cmd |> File.write "out.txt"`
+  (`File.append` for `>>`).
 - `&&`, `;` chaining — one command per line; a failure already stops
   the script, so sequential lines are the `&&` chain.
 - `$VAR` expansion — `Env.get "VAR"` (an `Option<string>`), then
@@ -85,7 +91,8 @@ Weir is F#-shaped on purpose — pipelines, records, unions, match,
 offside blocks — and it is not F#. The full border is machine-verified
 against the real F# compiler: every divergence is a row in
 [tests/fidelity/divergences.md](../tests/fidelity/divergences.md).
-The short version: no mutation, no exceptions, no OO, no async, no
+The short version: no mutation, no exceptions, no OO, no async
+(parallelism is `Seq.pmap`/`piter` — the TS section shows the shape), no
 computation expressions, no `let rec`, no implicit widening.
 
 | F# | weir |
@@ -233,7 +240,8 @@ and child-environment the same way.
 ```weir
 within tmp d
     ["data"] |> File.write $"{d}/f.txt"
-    print (File.read $"{d}/f.txt" |> Seq.head)
+    let back = File.read $"{d}/f.txt"
+    print (back |> Seq.head)
 ```
 
 **Not here, and what to write instead:**
@@ -258,14 +266,14 @@ Two real differences. Weir checks the whole file before running a
 line — types, fields, match coverage, and whether the commands exist
 — where zx discovers a typo'd binary at await-time, halfway through
 the deploy. And there is no runtime to install: one AOT binary,
-~7ms startup, no `node_modules`, no `package.json`.
+millisecond startup, no `node_modules`, no `package.json`.
 
 | zx / Node | weir |
 |---|---|
 | ``await $`git status` `` | `git status` |
 | ``$`git add ${file}` `` (zx escapes) | `git add $file` — one argv word by construction, nothing to escape |
 | `$.nothrow` / `.exitCode` | `cmd \| complete` / `cmd \| exitCode` |
-| `await Promise.all(xs.map(f))` / `p-map` | `xs \|> Seq.pmap f` — bounded (64), results in input order, first error by input order |
+| `await Promise.all(xs.map(f))` / `p-map` | `xs \|> Seq.pmap f` — bounded (`Seq.pmapWith n` sets the ceiling), results in input order, first error by input order |
 | `globby`, `fs/promises` | `Path.glob`, `File.*` / `Dir.*` |
 | `zod` schema `.parse(...)` at runtime | `from json T` and vendored JSON-schema contracts, at CHECK time |
 
@@ -421,7 +429,9 @@ command line or a string — and there is no sigil on ordinary
 variables at all. `use strict` is unconditional and unnamed.
 
 ```weir-error
-// the Regex literal is raw-only — the double-escape footgun cannot be written
+// a Regex pattern must be a RAW string (@"a\+") — an ordinary string
+// is rejected here, which is what makes the double-escape footgun
+// unrepresentable rather than merely avoidable
 let m = match "a+b" with | Regex "a\\+" () -> "hit" | _ -> "miss"
 print m
 ```
