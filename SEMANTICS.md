@@ -887,7 +887,20 @@ quantity semantics now.
 - **Multi-line statements via logical-line reconstruction** (scripts
   only): a statement head starts at column 0; indented lines continue it
   and join with a single space; a blank line ends the statement; tabs in
-  indentation are errors. **A dedenting
+  indentation are errors. **Type
+  declarations are unique per file** [D:dup-type-decl]: a second
+  `type T = …` (record or union) is a check error at the second
+  declaration naming the first's line — a silent replacement was
+  RETROACTIVE (code above the redeclaration re-resolved against the
+  winner, which no shadowing rule in weir does; `let` shadowing is
+  lexical and forward-only). Declaring a type an import already
+  provides errors the same way, in either order, once. **The REPL
+  REPLACES instead** (ruled — redeclaring while iterating is the
+  point of a prompt), with a note when it happens: *"T redeclared;
+  earlier values keep the old shape"* — because an old value still
+  echoes with its fields while field ACCESS resolves against the new
+  shape (the probe's finding). This joins the stated script/REPL
+  divergences (echo, strict mode). **A dedenting
   line resolves to the enclosing statement level whose column it
   matches — innermost first** [D:dedent-join]: a statement after a
   `within`/`for`/`if`/`match` body continues at the level it aligns
