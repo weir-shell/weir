@@ -72,6 +72,46 @@ let exitWorker () : unit =
 let resolve (path: string) : string =
     System.IO.Path.GetFullPath(System.IO.Path.Combine(Cwd(), path))
 
+// pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live
+// children in its race group (AsyncLocal — the registration follows
+// the arm's logical context, the same keying as cwd/env). The winner
+// CONDEMNS every other group: registered trees die, and a child
+// spawned after condemnation dies at registration (the race window a
+// plain bag would leak).
+type RaceGroup() =
+    let procs =
+        System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
+
+    let mutable condemned = false
+
+    member _.Register(p: System.Diagnostics.Process) =
+        if condemned then
+            try
+                p.Kill true
+            with _ ->
+                ()
+        else
+            procs.Add p
+
+    member _.Condemn() =
+        condemned <- true
+
+        for p in procs do
+            try
+                p.Kill true
+            with _ ->
+                ()
+
+let private raceGroup = System.Threading.AsyncLocal<RaceGroup option>()
+
+let enterRace (g: RaceGroup) : unit = raceGroup.Value <- Some g
+let exitRace () : unit = raceGroup.Value <- None
+
+let registerChild (p: System.Diagnostics.Process) : unit =
+    match raceGroup.Value with
+    | Some g -> g.Register p
+    | None -> ()
+
 // script argv, for the Args module scanners (script-only semantics:
 // the REPL leaves this empty)
 let mutable ScriptArgs: string list = []

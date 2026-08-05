@@ -234,7 +234,10 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   rethrows after the join. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
   worker output inside the worker (`Seq.head`/`Seq.force`) if its cd
-  matters.
+  matters. The RACE is `xs |> Seq.pfirst (fun x -> ...)`: the first
+  arm to SUCCEED wins, losers' spawned processes are tree-killed and
+  their failures never surface (all-failed rethrows the first by
+  input order; empty raises). `Seq.pfirstWith n` sets the ceiling.
 - A `let` RHS takes command mode wherever lets go — top level AND
   inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
   function); `$()` covers sub-expression positions. `function` is

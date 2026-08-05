@@ -34,12 +34,22 @@ median() {
 
 $BIN -e '1 + 1' > /dev/null # warm the fs cache
 
-expr_ms=$(median 'ls |> where (fun f -> f.bytes > 1048576) |> first 5')
-cmd_ms=$(median 'echo hi | first 1')
+EXPR_SNIPPET='ls |> where (fun f -> f.bytes > 1048576) |> first 5'
+CMD_SNIPPET='echo hi |> Seq.first 1'
+
+# pre-flight each snippet OUTSIDE the timing substitution
+# [D:masking-mechanized]: set -e is disabled inside $(...), so a snippet
+# the binary rejects would otherwise time the error path 15 times
+$BIN -e "$EXPR_SNIPPET" > /dev/null
+$BIN -e "$CMD_SNIPPET" > /dev/null
+
+expr_ms=$(median "$EXPR_SNIPPET")
+cmd_ms=$(median "$CMD_SNIPPET")
 
 # whole-file check on a representative script — this median is the LSP's
 # per-keystroke budget (chain 2/3, 2026-07-21): no-incrementality is
 # licensed by this number staying single-digit-ish
+$BIN check "$(dirname "$0")/../examples/repo-report.weir" > /dev/null
 check_ms=$(for _ in $(seq 1 15); do
     start=$(date +%s%N)
     $BIN check "$(dirname "$0")/../examples/repo-report.weir" > /dev/null
