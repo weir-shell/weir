@@ -1,5 +1,37 @@
 # Spike Notes
 
+## the leftovers sweep: yet-retired, hole-sealed, ledger-trued (2026-08-05)
+
+Four leftovers closed in one pass. The four unit-type boundary
+messages dropped their "yet" ("has no JSON convention yet" → "is not
+representable in JSON"), each now naming BOTH exits (toX into an int
+field, or show for a string) — the receipt framing is gone from
+behaviour as well as the docs; four pins moved with the wording.
+
+The district-splice finding resolved into two smaller things than it
+looked like: the splice already HAD a located message (the '__hole1
+error was a CASCADE — the failed splice left the binding's type
+unresolved, and the next line's boundary wall printed the internal
+hole name). The splice message now teaches the unit-type exits, and
+both yaml walls join the B6 cascade-suppression law (a __hole var
+means the real error was already reported — stay silent, never print
+the name). Net: ONE located error where there were two, the second
+of which leaked internals. Pinned as exactly-one-error.
+
+The divergence ledger: no-user-modules RETIRED (modules landed
+07-29; the no-let-param-sugar precedent), no-imperative-loops
+NARROWED to no-while (for…do landed 07-30; retry/poll are the
+bounded loops — the tombstone comment carries the history), the
+no-heredoc row's stale `xs | into "cmd"` spelling corrected to the
+value-headed pipe, and the long-unrowed type-name-in-expression-
+position family (Args.load Cli, from json T) got its row. Oracle
+green — no pins referenced the touched rows.
+
+The branch sweep: 31 local branches deleted, 29 verified by their
+merge commits in main's log, two (duration, floats-cost — they rode
+the combined Floats+Duration MR) verified by CONTENT per the
+standing lesson, plus one straggler (gap-a-remainder) the same way.
+
 ## a duplicate type declaration errors; the REPL replaces (2026-08-05)
 
 The seam the desugar-capture session sized, closed as ruled. The
