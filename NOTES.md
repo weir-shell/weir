@@ -1,5 +1,43 @@
 # Spike Notes
 
+## command signatures: customer two rides the spine (2026-08-04)
+
+Both sessions landed on one branch, and the spine held exactly where
+its report said it would: verify was genuinely two-arm-shaped (the
+version arm is an arm, not a rewrite), the #sig walk is findWeirDir's
+second customer, and #sig sits in the directive family — the
+marker-line fourth-face guard is not applicable, confirmed rather
+than assumed.
+
+The design simplification worth recording: a signature file is an
+ordinary weir MODULE. loadModuleCached supplies parsing, the
+decl-only and weak-purity laws, and cycle guards for free; `let
+version` and `let exhaustive = true` are plain bindings extractable
+from the typed body without evaluation; and non-inheritance through
+imports — the design's own worry — is vacuously strong, because
+modules cannot contain commands at all.
+
+Validate-before-write caught its own first bug: the generator's
+probe loaded the temp file as importing itself and the self-import
+guard fired — nothing persisted, which is the principle doing its
+job against the generator itself. The fixture-based e2e then cost
+four wrong hypotheses on a failure I misattributed: under set -e a
+died battery prints NO fail() line, and the real culprit was the
+SECOND add (missing its env prefix, so the fixture's --help touched
+"" and exited nonzero) while I instrumented the first. The lesson,
+recorded: when e2e dies showing only a program's stderr, the
+unguarded line ABOVE the next fail() is the suspect — and the
+capture-then-grep rule caught its third victim in the same block
+(verify exits nonzero on mismatch; pipefail sinks the grep).
+
+Session 2's honest hit rate: dotnet scraped 10 flags from --help;
+git and python3 refuse cleanly to "write by hand" (their help shapes
+defeat the leading-whitespace scraper — git puts flags in the usage
+line, python3 uses single-dash longs); no Cobra/clap tools in this
+container, so the completion-fish source is fixture-pinned and
+awaits a kubectl-shaped receipt. The provenance comment and the
+lock's generated:<source> slot record which probe produced what.
+
 ## CI fix: the dedent block's child weir missed the PATH prefix (2026-08-04)
 
 The dedent-join e2e block's script spawns a child weir

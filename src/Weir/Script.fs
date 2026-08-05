@@ -1717,17 +1717,59 @@ type Mode =
     | Strict
     | Loose
 
-// shebang/#loose peeling — ONE derivation for the runner and the
-// check-side analyzeLines
-let private scriptBody (rawLines: string list) : Mode * string list * int =
+// a `#sig` head directive [D:command-signatures]: tool + optional
+// override path + its physical line (for the declared-by teaching)
+type SigDecl =
+    { Tool: string
+      Override: string option
+      Line: int }
+
+// shebang/#loose/#sig peeling — ONE derivation for the runner and the
+// check-side analyzeLines. The head block takes any mix of #loose and
+// #sig lines; a #-line past it stays the misplaced-directive error.
+let private scriptBody (rawLines: string list) : Mode * string list * int * SigDecl list =
     let afterShebang, shebangOffset =
         match rawLines with
         | first :: rest when first.StartsWith "#!" -> rest, 1
         | _ -> rawLines, 0
 
-    match afterShebang with
-    | first :: rest when first.Trim() = "#loose" -> Loose, rest, shebangOffset + 1
-    | _ -> Strict, afterShebang, shebangOffset
+    let mutable mode = Strict
+    let mutable rest = afterShebang
+    let mutable off = shebangOffset
+    let sigs = ResizeArray<SigDecl>()
+    let mutable go = true
+
+    while go do
+        match rest with
+        | first :: tail when first.Trim() = "#loose" ->
+            mode <- Loose
+            rest <- tail
+            off <- off + 1
+        | first :: tail when first.TrimStart().StartsWith "#sig" ->
+            let t = (stripComment first).Trim()
+
+            let decl =
+                match t.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray with
+                | [ "#sig"; tool ] ->
+                    { Tool = tool
+                      Override = None
+                      Line = off + 1 }
+                | [ "#sig"; tool; path ] when path.StartsWith "\"" && path.EndsWith "\"" && path.Length > 1 ->
+                    { Tool = tool
+                      Override = Some(path.Substring(1, path.Length - 2))
+                      Line = off + 1 }
+                | _ ->
+                    // malformed: carry the raw for the diagnostic
+                    { Tool = ""
+                      Override = Some t
+                      Line = off + 1 }
+
+            sigs.Add decl
+            rest <- tail
+            off <- off + 1
+        | _ -> go <- false
+
+    mode, rest, off, List.ofSeq sigs
 
 type CheckedStmt =
     | CLet of name: string * te: Check.TypedExpr
@@ -2432,7 +2474,7 @@ let rec loadModuleCached
         stmt $"cannot resolve import: no file at {absPath}"
     else
         let rawLines = readImportSource absPath |> Option.get
-        let _, body, bodyOffset = scriptBody rawLines
+        let _, body, bodyOffset, _ = scriptBody rawLines
 
         let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
 
@@ -2808,11 +2850,499 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
             | Error e -> [ mk dspan e ]
             | Ok schema -> Contracts.validateTpl name "" schema tpl |> List.map (fun (sp, m) -> mk sp m)))
 
+// ---- external contracts: command signatures [D:command-signatures] --------
+// a loaded signature's checkable surface. Subs: kebab-cased subcommand
+// -> (long-flag set, explicit-short set); the "" key is the flag-only
+// shape (Cmd declared as a record). Shorts are EXPLICIT [<Short>] only —
+// weir's own derivation is a convention, and a signature records a
+// foreign tool's FACTS.
+type SigInfo =
+    { Tool: string
+      DeclLine: int
+      Exhaustive: bool
+      Subs: Map<string, Set<string> * Set<string>> }
+
+let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
+    let positional f =
+        match Map.tryFind f def.Attrs with
+        | Some specs -> specs |> List.exists (fun (n, _) -> n = "Positional")
+        | None -> false
+
+    let longs =
+        def.Fields
+        |> List.filter (fun (f, _) -> not (positional f))
+        |> List.map (fun (f, _) -> Weir.Argv.kebabFlag f)
+        |> Set.ofList
+
+    let shorts = Weir.Argv.explicitShorts def |> List.map snd |> Set.ofList
+    longs, shorts
+
+/// load the signatures a file declared; errors become diagnostics at
+/// the declaring line. The sig file is an ordinary weir MODULE
+/// (decl-only + weak purity for free): `module X`, `let version =
+/// "<verbatim --version>"`, optionally `let exhaustive = true`, and
+/// the surface as the type named `Cmd`.
+let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo list =
+    let diags = ResizeArray<Diagnostic>()
+    let infos = ResizeArray<SigInfo>()
+
+    let mk (line: int) (msg: string) : Diagnostic =
+        { File = path
+          Line = line
+          Col = 1
+          EndLine = None
+          EndCol = None
+          Severity = "error"
+          Code = "sig"
+          Message = msg }
+
+    let scriptDir =
+        try
+            let full = IO.Path.GetFullPath path
+            let d = IO.Path.GetDirectoryName full
+            if String.IsNullOrEmpty d then "." else d
+        with _ ->
+            "."
+
+    for decl in decls do
+        if decl.Tool = "" then
+            diags.Add(mk decl.Line "malformed #sig — usage: #sig <tool> [\"path/to/sig.weir\"]")
+        else
+            let resolved =
+                match decl.Override with
+                | Some p -> Ok(IO.Path.GetFullPath(IO.Path.Combine(scriptDir, p)))
+                | None ->
+                    match Contracts.findWeirDir scriptDir with
+                    | Error e -> Error $"#sig {decl.Tool}: {e}"
+                    | Ok weirDir -> Ok(IO.Path.Combine(weirDir, "sigs", decl.Tool + ".weir"))
+
+            match resolved with
+            | Error e -> diags.Add(mk decl.Line e)
+            | Ok sigFile when not (IO.File.Exists sigFile) ->
+                // the checker can tell restore from add (the schema precedent)
+                let locked =
+                    match Contracts.findWeirDir scriptDir with
+                    | Ok weirDir ->
+                        match Contracts.readLock weirDir with
+                        | Ok entries -> entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = decl.Tool)
+                        | Error _ -> false
+                    | Error _ -> false
+
+                let hint =
+                    if locked then
+                        "the lock records it; the file should be checked in — restore cannot regenerate a signature"
+                    else
+                        $"generate it: weir add sig {decl.Tool}"
+
+                diags.Add(mk decl.Line $"#sig {decl.Tool}: no {sigFile} (searched from {scriptDir}) — {hint}")
+            | Ok sigFile ->
+                let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
+                let absScript = IO.Path.GetFullPath path
+
+                match loadModuleCached cache [ absScript ] absScript sigFile None with
+                | Error ie -> diags.Add(mk decl.Line $"#sig {decl.Tool}: {ie.Message}")
+                | Ok lm ->
+                    let letStr name =
+                        lm.Body
+                        |> List.tryPick (function
+                            | CLet(n, te) when n = name ->
+                                match te.Kind with
+                                | Check.TEStr s -> Some s
+                                | _ -> None
+                            | _ -> None)
+
+                    let letBool name =
+                        lm.Body
+                        |> List.tryPick (function
+                            | CLet(n, te) when n = name ->
+                                match te.Kind with
+                                | Check.TEBool b -> Some b
+                                | _ -> None
+                            | _ -> None)
+
+                    if (letStr "version").IsNone then
+                        diags.Add(
+                            mk
+                                decl.Line
+                                $"#sig {decl.Tool}: the signature has no `let version = \"…\"` — a signature records its tool's verbatim --version output"
+                        )
+                    else
+                        let recordOf name =
+                            lm.TypeDefs
+                            |> List.tryPick (function
+                                | (n, Record rd) when n = name -> Some rd
+                                | _ -> None)
+
+                        match lm.TypeDefs |> List.tryFind (fun (n, _) -> n = "Cmd") with
+                        | None ->
+                            diags.Add(
+                                mk
+                                    decl.Line
+                                    $"#sig {decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
+                            )
+                        | Some(_, Record rd) ->
+                            infos.Add
+                                { Tool = decl.Tool
+                                  DeclLine = decl.Line
+                                  Exhaustive = letBool "exhaustive" |> Option.defaultValue false
+                                  Subs = Map [ "", sigFlagSets rd ] }
+                        | Some(_, Union ud) ->
+                            let subs =
+                                ud.Cases
+                                |> List.map (fun (case, payload) ->
+                                    let flags =
+                                        match payload with
+                                        | Some(TNamed(rn, [])) ->
+                                            match recordOf rn with
+                                            | Some rd -> sigFlagSets rd
+                                            | None -> Set.empty, Set.empty
+                                        | _ -> Set.empty, Set.empty
+
+                                    Weir.Argv.kebabFlag case, flags)
+                                |> Map.ofList
+
+                            infos.Add
+                                { Tool = decl.Tool
+                                  DeclLine = decl.Line
+                                  Exhaustive = letBool "exhaustive" |> Option.defaultValue false
+                                  Subs = subs }
+
+    List.ofSeq diags, List.ofSeq infos
+
+/// unknown-flag checking (v1: flags ONLY — L2) over every command whose
+/// head has a declared signature. Partial signatures WARN; exhaustive
+/// ones ERROR. A subcommand word matching no declared case disables
+/// flag checking for that command (L2's discipline: no operand model).
+let sigCmdDiagnostics
+    (path: string)
+    (infos: SigInfo list)
+    (pairs: (LogicalLine * CheckedStatement) list)
+    : Diagnostic list =
+    if infos.IsEmpty then
+        []
+    else
+        let byTool = infos |> List.map (fun i -> i.Tool, i) |> Map.ofList
+
+        pairs
+        |> List.collect (fun (ll, chk) ->
+            let roots =
+                match chk.Kind with
+                | KLet(_, _, te)
+                | KLetPat(_, _, te)
+                | KCmd te
+                | KExpr te -> [ te ]
+                | KType _
+                | KModule _
+                | KImport _ -> []
+
+            let rec cmds (te: Check.TypedExpr) =
+                (match te.Kind with
+                 | Check.TECmd(prog, args, _) -> [ prog, args ]
+                 | _ -> [])
+                @ (Check.childExprs te |> List.collect cmds)
+
+            roots
+            |> List.collect cmds
+            |> List.collect (fun (prog, args) ->
+                match Map.tryFind prog byTool with
+                | None -> []
+                | Some si ->
+                    let words =
+                        args
+                        |> List.choose (fun a ->
+                            match a.Kind with
+                            | Check.TEStr w -> Some(w, a.Span)
+                            | _ -> None)
+
+                    let surface =
+                        match Map.tryFind "" si.Subs with
+                        | Some fs -> Some fs
+                        | None ->
+                            words
+                            |> List.tryFind (fun (w, _) -> not (w.StartsWith "-"))
+                            |> Option.bind (fun (w, _) -> Map.tryFind w si.Subs)
+
+                    match surface with
+                    | None -> [] // no matching subcommand: L2 stops here
+                    | Some(longs, shorts) ->
+                        let sev = if si.Exhaustive then "error" else "warning"
+
+                        let note =
+                            if si.Exhaustive then
+                                $"(#sig {si.Tool}, line {si.DeclLine}; exhaustive signature)"
+                            else
+                                $"(#sig {si.Tool}, line {si.DeclLine}; partial signature — a scraped surface may be incomplete)"
+
+                        let mk (sp: Span) (msg: string) =
+                            let l1, c1 = translate ll sp.Start.Col
+                            let l2, c2 = translate ll (max sp.Start.Col (sp.End.Col - 1))
+
+                            { File = path
+                              Line = l1
+                              Col = c1
+                              EndLine = Some l2
+                              EndCol = Some(c2 + 1)
+                              Severity = sev
+                              Code = "sig"
+                              Message = msg }
+
+                        let rec check acc ws =
+                            match ws with
+                            | [] -> acc
+                            | ("--", _) :: _ -> acc // end-of-flags: everything after is operands
+                            | (w: string, sp) :: rest when w.StartsWith "--" ->
+                                let name = w.Substring(2).Split('=')[0]
+
+                                let acc =
+                                    if longs.Contains name then
+                                        acc
+                                    else
+                                        let dym =
+                                            Weir.Types.didYouMean ("--" + name) (longs |> Seq.map (fun l -> "--" + l))
+
+                                        mk sp $"unknown flag '--{name}' for {si.Tool}{dym} {note}" :: acc
+
+                                check acc rest
+                            | (w, sp) :: rest when w.StartsWith "-" && w.Length = 2 && not (System.Char.IsDigit w[1]) ->
+                                let acc =
+                                    if shorts.Contains(w.Substring 1) then
+                                        acc
+                                    else
+                                        mk sp $"unknown flag '{w}' for {si.Tool} {note}" :: acc
+
+                                check acc rest
+                            | _ :: rest -> check acc rest
+
+                        check [] words |> List.rev))
+
+// ---- `weir add sig <tool>`: generation [D:command-signatures] --------------
+// Three sources in fidelity order, the chosen one recorded in the
+// provenance comment AND the lock's Url slot ("generated:<source>"):
+// a completion endpoint (`<tool> completion fish` — Cobra/clap emit
+// parseable `complete` lines), a shipped fish completion file, then
+// `--help` scraping. v1 generates a FLAT surface (one Cmd record —
+// flags across the whole line); splitting into subcommand records is
+// the hand edit the provenance comment invites. The generated file
+// VALIDATES (loads as a signature) before anything persists.
+module SigGen =
+    let private runTool (tool: string) (args: string) : string option =
+        try
+            let psi = System.Diagnostics.ProcessStartInfo(tool, args)
+            psi.RedirectStandardOutput <- true
+            psi.RedirectStandardError <- true
+            psi.UseShellExecute <- false
+            use p = System.Diagnostics.Process.Start psi
+
+            let out = p.StandardOutput.ReadToEnd()
+            let err = p.StandardError.ReadToEnd()
+            p.WaitForExit()
+
+            if p.ExitCode = 0 then
+                Some(if out.Trim() <> "" then out else err)
+            else
+                None
+        with _ ->
+            None
+
+    // one discovered flag: long name (kebab), optional short, optional doc
+    type private Flag =
+        { Long: string
+          Short: string option
+          Doc: string option }
+
+    let private legalLong (l: string) =
+        l.Length > 0
+        && System.Char.IsLetter l[0]
+        && l |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '-')
+
+    let private parseFish (text: string) (tool: string) : Flag list =
+        // `complete -c <tool> … -l long [-s x] [-d 'desc']` — token walk,
+        // quote-aware enough for the -d payload
+        let flags = System.Collections.Generic.Dictionary<string, Flag>()
+
+        for line in text.Split '\n' do
+            let t = line.Trim()
+
+            if t.StartsWith "complete " && t.Contains $"-c {tool}" then
+                let tokens =
+                    System.Text.RegularExpressions.Regex.Matches(t, "'[^']*'|\"[^\"]*\"|\\S+")
+                    |> Seq.map (fun m -> m.Value.Trim([| '\''; '"' |]))
+                    |> List.ofSeq
+
+                let rec walk (long: string option) (short: string option) (doc: string option) toks =
+                    match toks with
+                    | "-l" :: v :: rest -> walk (Some v) short doc rest
+                    | "-s" :: v :: rest -> walk long (Some v) doc rest
+                    | "-d" :: v :: rest -> walk long short (Some v) rest
+                    | _ :: rest -> walk long short doc rest
+                    | [] -> long, short, doc
+
+                match walk None None None tokens with
+                | Some l, sh, d when legalLong l ->
+                    if not (flags.ContainsKey l) then
+                        flags[l] <- { Long = l; Short = sh; Doc = d }
+                | _ -> ()
+
+        flags.Values |> List.ofSeq
+
+    let private parseHelp (text: string) : Flag list =
+        // `  -o, --outfile <x>  desc` / `  --stdout  desc` — the usual
+        // help shapes; unreliable by design, a starting point
+        let flags = System.Collections.Generic.Dictionary<string, Flag>()
+
+        for line in text.Split '\n' do
+            let m =
+                System.Text.RegularExpressions.Regex.Match(
+                    line,
+                    "^\\s+(?:-(\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(?:[= ]?\\S*)?\\s*(.*)$"
+                )
+
+            if m.Success then
+                let long = m.Groups[2].Value
+
+                if legalLong long && not (flags.ContainsKey long) then
+                    flags[long] <-
+                        { Long = long
+                          Short = (if m.Groups[1].Success then Some m.Groups[1].Value else None)
+                          Doc = (let d = m.Groups[3].Value.Trim() in if d = "" then None else Some d) }
+
+        flags.Values |> List.ofSeq
+
+    let private fieldName (long: string) =
+        // inverse kebab: dry-run -> dryRun
+        long.Split '-'
+        |> Array.mapi (fun i part ->
+            if i = 0 || part = "" then
+                part
+            else
+                string (System.Char.ToUpper part[0]) + part.Substring 1)
+        |> String.concat ""
+
+    let private escape (s: string) =
+        s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n")
+
+    let generate (weirDir: string) (tool: string) : Result<string, string> =
+        match Contracts.toolVersionOutput tool with
+        | None -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
+        | Some rawVersion ->
+            let version = rawVersion.Trim()
+
+            let source, flags =
+                match runTool tool "completion fish" with
+                | Some text when text.Contains "complete " ->
+                    match parseFish text tool with
+                    | [] -> "help", (runTool tool "--help" |> Option.map parseHelp |> Option.defaultValue [])
+                    | fs -> "completion-fish", fs
+                | _ ->
+                    let shipped =
+                        [ $"/usr/share/fish/completions/{tool}.fish"
+                          $"/usr/share/fish/vendor_completions.d/{tool}.fish" ]
+                        |> List.tryFind IO.File.Exists
+
+                    match shipped with
+                    | Some f ->
+                        match parseFish (IO.File.ReadAllText f) tool with
+                        | [] -> "help", (runTool tool "--help" |> Option.map parseHelp |> Option.defaultValue [])
+                        | fs -> "fish-file", fs
+                    | None -> "help", (runTool tool "--help" |> Option.map parseHelp |> Option.defaultValue [])
+
+            match flags with
+            | [] ->
+                Error
+                    $"'{tool}': found no flags to record (probed: completion fish, shipped fish files, --help) — write .weir/sigs/{tool}.weir by hand"
+            | flags ->
+                let flags = flags |> List.sortBy (fun f -> f.Long)
+
+                let moduleName =
+                    string (System.Char.ToUpper tool[0])
+                    + (tool.Substring 1 |> String.filter (fun c -> System.Char.IsLetterOrDigit c))
+
+                let sb = System.Text.StringBuilder()
+                let line (l: string) = sb.AppendLine l |> ignore
+                line $"module {moduleName}"
+
+                line (
+                    "/// generated from '"
+                    + tool
+                    + " --version' on "
+                    + System.DateTime.UtcNow.ToString "yyyy-MM-dd"
+                )
+
+                line $"/// source: {source} — a scraped surface may be incomplete (partial"
+                line "/// by default; add `let exhaustive = true` once verified by hand)"
+                line "/// flat surface: flags checked across the whole line — split into"
+                line "/// subcommand records by hand if the tool warrants it"
+                line $"let version = \"{escape version}\""
+                line "type Cmd = {"
+
+                for f in flags do
+                    match f.Doc with
+                    | Some d -> line $"    /// {escape d}"
+                    | None -> ()
+
+                    match f.Short with
+                    | Some sh when sh.Length = 1 && sh <> "h" -> line $"    [<Short \"{sh}\">]"
+                    | _ -> ()
+
+                    line $"    {fieldName f.Long}: bool"
+
+                line "}"
+                let text = sb.ToString()
+
+                // VALIDATE BEFORE WRITE [D:add-validates]: the generated
+                // signature must itself load as one; nothing persists if
+                // it does not
+                let tmp =
+                    IO.Path.Combine(IO.Path.GetTempPath(), $"weir-siggen-{System.Guid.NewGuid():N}.weir")
+
+                try
+                    IO.File.WriteAllText(tmp, text)
+
+                    let probe =
+                        // a synthetic importer path — the sig file must
+                        // not read as importing itself
+                        loadSigs
+                            (tmp + ".from")
+                            [ { Tool = tool
+                                Override = Some tmp
+                                Line = 1 } ]
+
+                    match probe with
+                    | d :: _, _ -> Error $"generated signature does not validate: {d.Message} — this is a generator bug"
+                    | [], _ ->
+                        let dest = IO.Path.Combine(weirDir, "sigs", tool + ".weir")
+                        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
+                        IO.File.WriteAllText(dest, text)
+                        let bytes = IO.File.ReadAllBytes dest
+
+                        let entry: Contracts.LockEntry =
+                            { Kind = "sig"
+                              Name = tool
+                              Url = $"generated:{source}"
+                              Sha256 = Contracts.sha256Hex bytes
+                              Path = IO.Path.Combine("sigs", tool + ".weir")
+                              Version = Some version }
+
+                        match Contracts.readLock weirDir with
+                        | Error e -> Error e
+                        | Ok entries ->
+                            let others = entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
+
+                            Contracts.writeLock weirDir (others @ [ entry ])
+
+                            Ok
+                                $"added sig {tool} ({flags.Length} flag(s), source: {source}, version: {escape version}) — partial by default; verify and mark exhaustive by hand"
+                finally
+                    try
+                        IO.File.Delete tmp
+                    with _ ->
+                        ()
+
 let analyzeLines
     (path: string)
     (rawLines: string list)
     : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv * LogicalLine list =
-    let _, body, bodyOffset = scriptBody rawLines
+    let _, body, bodyOffset, sigDecls = scriptBody rawLines
     let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
 
     let typeEnv0, _ = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
@@ -3067,10 +3597,14 @@ let analyzeLines
                           Message = nmsg }
                 | None -> ()
 
-        List.ofSeq assemblyDiags
-        @ List.ofSeq diags
-        @ docMisalignments path rawLines
-        @ schemaDiagnostics path (List.ofSeq stmts),
+        (let sigLoadDiags, sigInfos = loadSigs path sigDecls
+
+         List.ofSeq assemblyDiags
+         @ List.ofSeq diags
+         @ docMisalignments path rawLines
+         @ schemaDiagnostics path (List.ofSeq stmts)
+         @ sigLoadDiags
+         @ sigCmdDiagnostics path sigInfos (List.ofSeq stmts)),
         List.ofSeq stmts,
         typeEnv0,
         logicalLines
@@ -3138,7 +3672,7 @@ let run (path: string) (scriptArgs: string list) : int =
     else
         let rawLines = IO.File.ReadAllLines path |> Array.toList
 
-        let mode, body, bodyOffset = scriptBody rawLines
+        let mode, body, bodyOffset, runSigDecls = scriptBody rawLines
 
         // COLUMN-0 only: a directive is a statement-position thing.
         // Indented `#` lines are continuations — inside a yaml district
@@ -3191,6 +3725,12 @@ let run (path: string) (scriptArgs: string list) : int =
                 let entryImport: ImportLoader =
                     let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
                     fun p _ alias -> loadModuleCached cache [ absScriptPath ] absScriptPath p alias
+
+                // signatures load ONCE, before the check fold; a load
+                // failure (missing/malformed sig) is a check error —
+                // absence is loud, never a silent fallback
+                // [D:command-signatures]
+                let sigLoadDiags, runSigInfos = loadSigs path runSigDecls
 
                 let checkedProgram =
                     logicalLines
@@ -3269,9 +3809,22 @@ let run (path: string) (scriptArgs: string list) : int =
                                             $"{path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
                                         )
 
+                                    // signature warnings PRINT, signature errors
+                                    // gate exactly as schemas do
+                                    // [D:command-signatures]
+                                    let sigDs = sigCmdDiagnostics path runSigInfos [ (ll, chk) ]
+
+                                    for d in sigDs |> List.filter (fun d -> d.Severity = "warning") do
+                                        Console.Error.WriteLine(
+                                            $"{path}:{d.Line}:{d.Col}: " + Color.yellow c "warning" + $": {d.Message}"
+                                        )
+
                                     // schema contracts gate the RUN too — check
                                     // before effects [D:yaml-schemas]
-                                    match schemaDiagnostics path [ (ll, chk) ] with
+                                    match
+                                        (sigDs |> List.filter (fun d -> d.Severity = "error"))
+                                        @ schemaDiagnostics path [ (ll, chk) ]
+                                    with
                                     | d :: _ ->
                                         let src = rawByLine |> Map.tryFind d.Line |> Option.defaultValue ""
 
@@ -3336,7 +3889,12 @@ let run (path: string) (scriptArgs: string list) : int =
                                  ll.Head
                                  "a module declares; it does not run. To run a script from a script, invoke it as a command"
                          )
-                     | None -> checkedProgram)
+                     | None ->
+                         // a signature that fails to LOAD is a check
+                         // error — nothing runs [D:command-signatures]
+                         match sigLoadDiags with
+                         | d :: _ -> Error(located path d.Line d.Message)
+                         | [] -> checkedProgram)
                 with
                 | Error msg ->
                     Console.Error.WriteLine msg

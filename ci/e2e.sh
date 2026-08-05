@@ -2317,9 +2317,12 @@ echo "$out" | grep -qE -- '^      --host' || fail "h-initial field must not deri
 echo "e2e ok: -h is help; h-initial fields never derive"
 
 # [<Positional>] DROPPED [D:drop-positional] — now an unknown attribute
-errout=$(printf 'type P = { [<Positional>] t: string }\n' | $BIN check /dev/stdin 2>&1) && fail "Positional must be unknown"
-echo "$errout" | grep -qF "unknown attribute 'Positional'" || fail "the unknown-attr message: $errout"
-echo "e2e ok: [<Positional>] is an unknown attribute (dropped)"
+# Positional RETURNED for signatures [D:command-signatures] — registered
+# and inert on weir's own records; its no-argument law still checks
+printf 'type P = { [<Positional>] t: string }\nprint "ok"\n' | $BIN check /dev/stdin >/dev/null 2>&1 || fail "Positional declares clean (inert)"
+errout=$(printf 'type P = { [<Positional 3>] t: string }\n' | $BIN check /dev/stdin 2>&1) && fail "Positional takes no argument" || true
+echo "$errout" | grep -qF "takes no argument" || fail "the arg law: $errout"
+echo "e2e ok: [<Positional>] returned for signatures, inert elsewhere"
 
 errout=$(printf 'type C = { b: Option<bool> }\nlet c = Args.load C\n' | $BIN check /dev/stdin 2>&1) && fail "Option<bool> field must reject"
 echo "$errout" | grep -qF "a presence flag is already optional" || fail "Option<bool> message: $errout"
@@ -4051,5 +4054,47 @@ echo "$out" | grep -qF "poll: timed out after" || fail "poll exhaustion: $out"
 [ "$took" -lt 5000 ] || fail "the pending 10s interval was not cancelled (took ${took}ms)"
 rm -rf "$rpdir"
 echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, cancellable wait)"
+
+# ---- command signatures [D:command-signatures] -----------------------------
+sgdir=$(mktemp -d)
+mkdir -p "$sgdir/proj/bin" "$sgdir/proj/.git"
+cat > "$sgdir/proj/bin/sigtool" <<'WEOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "sigtool 3.1.4";;
+  --help) printf 'Flags:\n  -n, --name <x>   a name\n      --dry-run    no effects\n'; touch "$SIGTOOL_MARK";;
+  *) echo "ran:$@";;
+esac
+WEOF
+chmod +x "$sgdir/proj/bin/sigtool"
+cd "$sgdir/proj"
+# generation: probes the tool, validates, writes sig + lock
+SIGTOOL_MARK="$sgdir/gen-mark" PATH="$sgdir/proj/bin:$PATH" $BIN add sig sigtool | grep -qF "added sig sigtool (2 flag(s), source: help" || fail "add sig generates"
+test -f .weir/sigs/sigtool.weir || fail "sig file written"
+grep -qF '"version": "sigtool 3.1.4"' .weir/lock.json || fail "lock carries the verbatim version"
+# checking: typo caught, and CHECK SPAWNS NOTHING (the marker pin)
+printf '#sig sigtool\nsigtool --dry-run --nmae x\nprint "done"\n' > use.weir
+rm -f "$sgdir/gen-mark"
+out=$(SIGTOOL_MARK="$sgdir/gen-mark" PATH="$sgdir/proj/bin:$PATH" $BIN check use.weir 2>&1)
+echo "$out" | grep -qF "unknown flag '--nmae' for sigtool. Did you mean '--name'?" || fail "sig typo catch: $out"
+test -f "$sgdir/gen-mark" && fail "weir check SPAWNED the tool" || true
+# property 3: output byte-identical with and without the contract
+printf 'sigtool run-arg\nprint "p3"\n' > p3.weir
+PATH="$sgdir/proj/bin:$PATH" $BIN p3.weir > with.out 2>/dev/null
+rm -rf .weir
+PATH="$sgdir/proj/bin:$PATH" $BIN p3.weir > without.out 2>/dev/null
+cmp -s with.out without.out || fail "property 3: contracts changed run output"
+# verify: version arm both ways; restore: the ruled generated behaviour
+SIGTOOL_MARK="$sgdir/gen-mark2" PATH="$sgdir/proj/bin:$PATH" $BIN add sig sigtool >/dev/null
+PATH="$sgdir/proj/bin:$PATH" $BIN verify | grep -qF "ok (hash + version)" || fail "verify version arm (match)"
+sed -i 's/3.1.4/9.0.0/' bin/sigtool
+out=$(PATH="$sgdir/proj/bin:$PATH" $BIN verify 2>/dev/null) && fail "verify must FAIL on a mismatch" || true
+echo "$out" | grep -qF "VERSION MISMATCH" || fail "verify version arm (mismatch): $out"
+rm .weir/sigs/sigtool.weir
+out=$($BIN restore 2>&1) && fail "restore of an absent generated sig must fail" || true
+echo "$out" | grep -qF "ABSENT and generated (nothing to fetch)" || fail "restore never regenerates: $out"
+cd - >/dev/null
+rm -rf "$sgdir"
+echo "e2e ok: command signatures (generate, typo+did-you-mean, check spawns nothing, property 3, verify arms, restore never regenerates)"
 
 echo "e2e battery: all green"

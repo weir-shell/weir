@@ -2973,13 +2973,17 @@ let typedArgvTests =
                   "derive the same flag '--dry-run'"
                   ""
           }
-          test "Positional is an unknown attribute — dropped, not reserved" {
-              // was "[<Positional>] fires its not-yet": the registration and
-              // its not-yet consumer retired together (the rider — one
-              // receipt, contract-mimicry from model-authored code, nothing
-              // blocked). It is not a thing; weir scripts take FLAGS.
-              let terr = argvEnv |> declErr "type P = { [<Positional>] t: string }"
-              Expect.stringContains terr.Message "unknown attribute 'Positional'" ""
+          test "Positional RETURNED for signatures — inert on weir's own CLIs [D:command-signatures]" {
+              // the drop's archaeology stands (weir scripts take FLAGS;
+              // its one receipt was contract-mimicry) — but a SIGNATURE
+              // describes a FOREIGN tool, and foreign CLIs have operands.
+              // Registered again: legal-and-inert here (the attribute
+              // law), meaningful only inside .weir/sigs files
+              let e = argvEnv |> declare "type WithPos = { [<Positional>] target: string }"
+              Expect.isTrue (Map.containsKey "WithPos" e.Types) "declares clean"
+
+              let terr = argvEnv |> declErr "type BadPos = { [<Positional 3>] t: string }"
+              Expect.stringContains terr.Message "takes no argument" "the arg law still checks"
           }
           test "union payload rules: single record only; case collisions" {
               let e2 = argvEnv |> declare "type U1 = Go of string | Stop"
@@ -8333,6 +8337,135 @@ let durationTests =
               | Ok _ -> failtest "expected the literal-law rejection"
           } ]
 
+let sigTests =
+    // disk fixtures: a .weir/sigs tree in a temp dir (the fs-members style)
+    let withSigTree (sigSource: string list) (f: string -> 'a) : 'a =
+        let root =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-sig-{System.Guid.NewGuid():N}")
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".weir", "sigs"))
+        |> ignore
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".git"))
+        |> ignore
+
+        System.IO.File.WriteAllLines(System.IO.Path.Combine(root, ".weir", "sigs", "fixtool.weir"), sigSource)
+
+        try
+            f root
+        finally
+            System.IO.Directory.Delete(root, true)
+
+    let fixSig =
+        [ "module Fixtool"
+          "let version = \"fixtool 1.2.3\""
+          "type BuildArgs = {"
+          "    [<Short \"o\">]"
+          "    outfile: bool"
+          "    [<Positional>]"
+          "    target: string"
+          "}"
+          "type Cmd = Build of BuildArgs | Clean" ]
+
+    let diagsFor (root: string) (extraSig: string list) (script: string list) =
+        let p = System.IO.Path.Combine(root, "use.weir")
+        System.IO.File.WriteAllLines(p, script)
+
+        let ds, _, _, _ =
+            Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+
+        ds |> List.filter (fun d -> d.Code = "sig")
+
+    testList
+        "Command signatures [D:command-signatures]"
+        [ test "unknown long flag warns with did-you-mean, naming the declaring line" {
+              withSigTree fixSig (fun root ->
+                  let ds =
+                      diagsFor root [] [ "#sig fixtool"; "fixtool build --outfil x t"; "print \"ok\"" ]
+
+                  match ds with
+                  | [ d ] ->
+                      Expect.equal d.Severity "warning" "partial warns"
+                      Expect.stringContains d.Message "unknown flag '--outfil' for fixtool" ""
+                      Expect.stringContains d.Message "Did you mean '--outfile'?" ""
+                      Expect.stringContains d.Message "#sig fixtool, line 1" "declared-by teaching"
+                  | other -> failtest $"expected one sig diagnostic, got {other.Length}")
+          }
+          test "exhaustive signatures ERROR; positionals derive no flag; shorts are explicit-only" {
+              let exSig =
+                  fixSig
+                  |> List.map (fun l ->
+                      if l.StartsWith "let version" then
+                          l + "\nlet exhaustive = true"
+                      else
+                          l)
+
+              withSigTree exSig (fun root ->
+                  let ds =
+                      diagsFor
+                          root
+                          []
+                          [ "#sig fixtool"
+                            "fixtool build -o positional-word --target-is-operand-not-flag"
+                            "print \"ok\"" ]
+
+                  match ds with
+                  | [ d ] ->
+                      Expect.equal d.Severity "error" "exhaustive errors"
+
+                      Expect.stringContains
+                          d.Message
+                          "'--target-is-operand-not-flag'"
+                          "the positional field derived no flag"
+                  | other -> failtest $"expected one (the -o short is DECLARED), got {other.Length}")
+          }
+          test "a subcommand matching no case disables flag checking (L2's discipline)" {
+              withSigTree fixSig (fun root ->
+                  let ds =
+                      diagsFor root [] [ "#sig fixtool"; "fixtool frobnicate --whatever"; "print \"ok\"" ]
+
+                  Expect.equal ds [] "no operand model, no guess")
+          }
+          test "end-of-flags: words after a bare -- are operands" {
+              withSigTree fixSig (fun root ->
+                  let ds =
+                      diagsFor root [] [ "#sig fixtool"; "fixtool build -- --not-a-flag"; "print \"ok\"" ]
+
+                  Expect.equal ds [] "")
+          }
+          test "a missing signature is a located check error naming path, search root, and the fix" {
+              withSigTree fixSig (fun root ->
+                  let ds = diagsFor root [] [ "#sig ghost"; "print \"ok\"" ]
+
+                  match ds with
+                  | [ d ] ->
+                      Expect.equal d.Severity "error" ""
+                      Expect.equal d.Line 1 "at the directive"
+                      Expect.stringContains d.Message "ghost.weir" ""
+                      Expect.stringContains d.Message "weir add sig ghost" "names the fix"
+                  | other -> failtest $"unexpected {other.Length}")
+          }
+          test "a declared-but-unused signature is INERT" {
+              withSigTree fixSig (fun root ->
+                  let ds = diagsFor root [] [ "#sig fixtool"; "print \"never calls it\"" ]
+                  Expect.equal ds [] "legal, not an error")
+          }
+          test "the sig file must carry version and Cmd — each absence teaches" {
+              withSigTree [ "module Fixtool"; "type Cmd = { x: bool }" ] (fun root ->
+                  let ds = diagsFor root [] [ "#sig fixtool"; "print \"x\"" ]
+
+                  match ds with
+                  | [ d ] -> Expect.stringContains d.Message "no `let version" "version required"
+                  | other -> failtest $"unexpected {other.Length}")
+
+              withSigTree [ "module Fixtool"; "let version = \"v\""; "type Other = { x: bool }" ] (fun root ->
+                  let ds = diagsFor root [] [ "#sig fixtool"; "print \"x\"" ]
+
+                  match ds with
+                  | [ d ] -> Expect.stringContains d.Message "no type `Cmd`" "the surface is Cmd by name"
+                  | other -> failtest $"unexpected {other.Length}")
+          } ]
+
 let retryPollTests =
     let sx (input: string) = show (parse input)
 
@@ -9183,6 +9316,7 @@ let allTests =
           dedentJoinTests
           tasksUnderneathTests
           retryPollTests
+          sigTests
           trailingCommentTests
           interpShowTests
           gapATests

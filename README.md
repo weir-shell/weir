@@ -38,7 +38,10 @@ match changes with
   and history.
 
 Start with [docs/GUIDE.md](docs/GUIDE.md) -- every example in it is
-executed in CI against the release binary. The language rulebook with
+executed in CI against the release binary. Arriving from bash,
+PowerShell, Python, F#, or another glue language?
+[docs/COMING-FROM.md](docs/COMING-FROM.md) is the per-language diff —
+what you write there, what you write here, and the surprises. The language rulebook with
 decision rationale is [SEMANTICS.md](SEMANTICS.md); the exact border
 with F# (different / rejected / pending, machine-verified against the
 F# compiler) is [tests/fidelity/divergences.md](tests/fidelity/divergences.md).
