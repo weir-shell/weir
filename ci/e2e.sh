@@ -4122,4 +4122,19 @@ out=$($BIN -e '$(echo 10MiB word) |> Seq.head')
 rm -rf "$szdir"
 echo "e2e ok: Size (defaults + File.size compare, flag parse, SI teaching, argv word)"
 
+# ---- the showcase's own .weir tree [D:showcase-covers] ---------------------
+# the tour imports a module, validates a district against the COMMITTED
+# schema, and declares the hand-written git signature — check needs no
+# restore and no network (the fresh-tree copy proves it)
+sctdir=$(mktemp -d)
+mkdir -p "$sctdir/root/.git"
+cp -r "$(dirname "$0")/../examples" "$sctdir/root/examples"
+( cd "$sctdir/root" && $BIN check examples/showcase.weir >/dev/null 2>&1 ) || fail "the showcase checks in a fresh tree, offline, no restore"
+# the caught-typo proof the showcase's comment points at
+printf '#sig git\nlet rc = git status --porcelian | exitCode\nprint (show rc)\n' > "$sctdir/root/examples/typo.weir"
+out=$(cd "$sctdir/root" && $BIN check examples/typo.weir 2>&1) || true
+echo "$out" | grep -qF "unknown flag '--porcelian' for git. Did you mean '--porcelain'?" || fail "the git sig catches the typo (reified shape): $out"
+rm -rf "$sctdir"
+echo "e2e ok: showcase .weir tree (offline check, no restore; the typo the comment names is caught)"
+
 echo "e2e battery: all green"

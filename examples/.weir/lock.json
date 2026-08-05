@@ -1,0 +1,11 @@
+{
+  "artifacts": [
+    {
+      "kind": "schema",
+      "name": "k8s-configmap",
+      "url": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.28.0-standalone-strict/configmap-v1.json",
+      "sha256": "1db2c4fecb34d1cf4c5a95b8eb85c45a6c5da1700a3b3992f6fea1ca3f9185b0",
+      "path": "schemas/k8s-configmap.json"
+    }
+  ]
+}

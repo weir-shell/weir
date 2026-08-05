@@ -8442,7 +8442,11 @@ let sizeTests =
               let e2 = env |> declare "type DY = { d: Duration }"
 
               match Weir.Check.typecheck e2 (parse "[{ d = 5s }] |> to yaml") with
-              | Error terr -> Expect.stringContains terr.Message "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)" ""
+              | Error terr ->
+                  Expect.stringContains
+                      terr.Message
+                      "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)"
+                      ""
               | Ok _ -> failtest "expected Duration's yaml park"
           }
           test "[<Default 10MiB>] end to end (attrArgLit's third reminder)" {
@@ -8564,6 +8568,23 @@ let sigTests =
                       Expect.stringContains d.Message "ghost.weir" ""
                       Expect.stringContains d.Message "weir add sig ghost" "names the fix"
                   | other -> failtest $"unexpected {other.Length}")
+          }
+          test "REIFIED commands are checked too (the desugar replaces ECmd — recovered from the builtin spine)" {
+              withSigTree fixSig (fun root ->
+                  let ds =
+                      diagsFor
+                          root
+                          []
+                          [ "#sig fixtool"
+                            "let a = fixtool build --outfil x | exitCode"
+                            "let b = fixtool build --outfil x | succeeds"
+                            "fixtool build --outfil x | orFail \"boom\""
+                            "print (show a)" ]
+
+                  Expect.equal ds.Length 3 "each reifier shape recovers (prog is the LAST string in orFail's spine)"
+
+                  for d in ds do
+                      Expect.stringContains d.Message "unknown flag '--outfil'" "")
           }
           test "a declared-but-unused signature is INERT" {
               withSigTree fixSig (fun root ->

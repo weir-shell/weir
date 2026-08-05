@@ -3038,7 +3038,41 @@ let sigCmdDiagnostics
             let rec cmds (te: Check.TypedExpr) =
                 (match te.Kind with
                  | Check.TECmd(prog, args, _) -> [ prog, args ]
-                 | _ -> [])
+                 | _ ->
+                     // reified commands DESUGAR the ECmd away — the chain
+                     // becomes a `|succeeded`-family builtin applied to the
+                     // prog string and an argv list [D:command-signatures]:
+                     // recover (prog, words) from that application spine so
+                     // `git … | succeeds` is checked like the bare form
+                     let rec spine (e: Check.TypedExpr) (acc: Check.TypedExpr list) =
+                         match e.Kind with
+                         | Check.TEApp(f, a) -> spine f (a :: acc)
+                         | Check.TEVar n when n.StartsWith "|" -> Some(n, acc)
+                         | _ -> None
+
+                     match spine te [] with
+                     | Some(_, args) ->
+                         let prog =
+                             // orFail's spine carries (msg, prog, argv) —
+                             // the prog is the LAST string before the list
+                             args
+                             |> List.choose (fun a ->
+                                 match a.Kind with
+                                 | Check.TEStr p -> Some p
+                                 | _ -> None)
+                             |> List.tryLast
+
+                         let words =
+                             args
+                             |> List.tryPick (fun a ->
+                                 match a.Kind with
+                                 | Check.TEList items -> Some items
+                                 | _ -> None)
+
+                         match prog, words with
+                         | Some p, Some ws -> [ p, ws ]
+                         | _ -> []
+                     | None -> [])
                 @ (Check.childExprs te |> List.collect cmds)
 
             roots

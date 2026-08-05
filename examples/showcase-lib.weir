@@ -1,0 +1,11 @@
+module Lib
+// a DEMO MODULE: declaration-only by law (types + lets, no commands),
+// imported qualified-always by the showcase
+
+/// a context record crossing the module boundary — types cross, and
+/// the importer builds one with the qualified literal Lib.Ctx { … }
+type Ctx = { name: string; port: int }
+
+/// derive a display label from any record carrying name and port
+/// (row-typed: the function generalizes past Ctx)
+let label c = $"{c.name}:{show c.port}"

@@ -13,7 +13,8 @@ that stops being true fails the build. The harness is POSIX by
 design (the doc-test CI is Linux), so blocks may lean on `sh` and
 `printf` where the SHOWCASE — which must run on Windows too —
 restricts itself to weir and git. The tables are the unverified
-surface: cells were hand-checked against the binary (2026-08-05),
+surface: cells were hand-checked against the binary (2026-08-05, re-swept
+same day after `Size` landed — the `File.*` cells are type-unchanged),
 but only the fenced blocks re-verify on every build.
 
 ## Coming from bash / POSIX sh

@@ -1,5 +1,53 @@
 # Spike Notes
 
+## the showcase covers everything, and what it caught (2026-08-05)
+
+The stale sweep came back empty — zero hits per document across
+File.size, the toSeconds/toMillis rename, and floats-absent claims.
+The session discipline of updating docs WITH the change held; the
+sweep's value was proving it.
+
+The interesting half was the tour catching two real things the
+suites had not:
+
+1. **The retry-desugar capture.** The showcase's own
+   `Verdict = … | Retry of string * int` captured the key=value
+   sugar: `retry attempts=2 …` desugars to `Retry.defaults`, and the
+   local constructor named Retry shadowed the options module —
+   "only records have fields; this expression has type
+   string * int -> Verdict". Any user binding named Retry or Poll
+   breaks the sugar the same way — the F#-type-name-capture class
+   the record-update rows deliberately dodged. The showcase renamed
+   its case (Again); the LANGUAGE seam stays open and recorded: the
+   desugar wants a non-capturable module reference, its own small
+   session.
+
+2. **The reifier signature gap, fixed in-session.** Reified commands
+   — `git status --porcelain | succeeds`, the most idiomatic shape —
+   desugar their ECmd into the |succeeded-family builtin spine, so
+   signature checking silently missed them. The walker now recovers
+   (prog, argv) from the spine; prog is the LAST string because
+   orFail's message precedes it. All four reifiers pinned. Worth
+   saying plainly: before this, the signatures feature checked bare
+   commands and pipes but not the reifier shapes scripts actually
+   use most.
+
+The tour now hosts a module (qualified literal crossing the
+boundary), a committed .weir/ (real ConfigMap schema + lockfile —
+a fresh-tree copy CHECKS offline with no restore, e2e-pinned), a
+hand-written partial git signature (no lock entry — hand-written
+sigs are source; git refuses to scrape, per its own session's
+report), and a two-line retry demo (added beyond the bless because
+the header's honesty rule demanded demonstrated-or-excused and no
+excuse existed). Still not in the tour, with reasons in the header:
+the REPL (interactive) and add-sig generation (spawns the probe).
+Windows walk = the standing hand-run item.
+
+And one for the pattern book: my own e2e fixture died the silent
+set-e death (the typo probe tripped weir's discard rule, rc 1 inside
+a command substitution) — diagnosed in one step this time because
+the dedent session named the pattern.
+
 ## size: the Duration copy, and where it did not fit (2026-08-05)
 
 The session's brief was to copy a proven pattern and report the
