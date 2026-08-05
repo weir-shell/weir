@@ -93,7 +93,7 @@ computation expressions, no `let rec`, no implicit widening.
 | `if x = y then` | `if x == y then` — `=` is for `let` and record fields only |
 | `printfn "%d files" n` | `print $"{n} files"` — no printf family, interpolation is the mechanism |
 | `try … with` | no catching: `fail "msg"` raises; `cmd \| complete` makes failure data |
-| `while` / `let rec` | `retry`/`poll` bounded loops; pipelines and `Seq.fold` for iteration |
+| `while` / `let rec` | `retry`/`poll` for condition loops (bounded); pipelines/`Seq.fold` to transform/accumulate; `for … do` ≡ `Seq.iter` for effects |
 | `open Seq` | no `open` — access is always qualified; `import "./lib/x.weir" as X` shares code |
 | `[\| 1; 2 \|]` arrays, `list` | one sequence type, `seq<'a>` — `[1; 2]` literals are eager seqs |
 
