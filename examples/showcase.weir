@@ -131,11 +131,14 @@ print $"generic == on ints: {sameInts}; on strings: {sameStrs}"
 
 // ---- Duration and floats: time as a type, decimals at the edges -------
 
+// the SAME / glyph, two algebras: a Duration is integer ms by law,
+// so Duration / int stays integer (half is 15s, no fraction) …
 let half = cli.timeout / 2
-// float DIVISION on toSeconds's floats — 0.5 below is a float, not a
-// formatted string (finite-only; == on floats is a check error)
+// … while toSeconds returns floats, so THIS / is float division —
+// visible in the output: 60.0 keeps its .0 (a float never renders
+// as an int; finite-only, and == on floats is a check error)
 let ratio = Duration.toSeconds cli.timeout / Duration.toSeconds 1m
-print $"budget {cli.timeout}, half {half}, {ratio}x a minute at rate {cli.rate}"
+print $"budget {cli.timeout}, half {half}, ratio {ratio} of {Duration.toSeconds 1m} seconds, rate {cli.rate}"
 Duration.sleep 1ms // takes a Duration, not a number; module-qualified so coreutils sleep stays reachable
 
 // ---- seqs: Regex patterns, choose, seq patterns, fold -----------------
