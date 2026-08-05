@@ -19,9 +19,14 @@ unit type comes third:
    asymmetry (literals refuse MB; parse reads it as 10^6, because
    the writer of foreign text chose the unit) is new ground — the
    json integer-widens shape applied to unit systems.
-3. **the YAML park was not in the copy.** Duration predates the yaml
-   boundary carrying unit types, so its park was JSON-only; Size
-   needed the yaml rejection written fresh (both name Size.toBytes).
+3. **the YAML park was not in the copy — and the first explanation
+   of why was WRONG** (a user question caught it): yaml landed
+   07-30, Duration 08-04, so "predates" does not hold. The true
+   story: the Duration bless parked JSON explicitly and never
+   mentioned yaml, whose generic field law caught TDur with an
+   untailored rejection. The follow-up commit gave Duration the
+   matching tailored park (Duration.toMillis named), so both unit
+   types now teach their exit at both boundaries.
 
 The zero-edit interpolation property CONFIRMED for the second time:
 $"{2MiB}" rendered "2 MiB" with the interpolation machinery

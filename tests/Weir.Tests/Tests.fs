@@ -8435,6 +8435,15 @@ let sizeTests =
               match Weir.Check.typecheck e (parse "[{ sz = 1MiB }] |> to yaml") with
               | Error terr -> Expect.stringContains terr.Message "Size has no yaml convention yet" ""
               | Ok _ -> failtest "expected the yaml park"
+
+              // and Duration's yaml park, tailored to match (it had only
+              // the GENERIC rejection — the seam this session's misfit
+              // report surfaced)
+              let e2 = env |> declare "type DY = { d: Duration }"
+
+              match Weir.Check.typecheck e2 (parse "[{ d = 5s }] |> to yaml") with
+              | Error terr -> Expect.stringContains terr.Message "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)" ""
+              | Ok _ -> failtest "expected Duration's yaml park"
           }
           test "[<Default 10MiB>] end to end (attrArgLit's third reminder)" {
               let scriptEnv =
