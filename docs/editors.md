@@ -9,7 +9,16 @@ The server provides diagnostics, hover, completion, semantic tokens,
 formatting, and go-to-definition — top-level bindings, record
 fields, union cases (expressions and match patterns), record-literal
 field names, and LOCAL binders (params, inner lets, pattern payload
-binders — lexically resolved, innermost wins). Two
+binders — lexically resolved, innermost wins). Both hover and
+definition CROSS FILES [D:lsp-cross-file]: a module member (`Lib.f`)
+hovers its signature + `///` doc and jumps to its declaration; an
+imported type's fields and cases resolve to the declaring module; the
+import path itself jumps to the file; and a `#sig`-signed command's
+head hovers its identity + recorded version (no spawn — works with
+the tool off PATH) and opens the signature file, its flags hovering
+and jumping to their field declarations. Definition targets carry the
+client's own URI for open files. Module member COMPLETION offers the
+names (`Lib.` lists members), without their docs yet. Two
 facts every block encodes, matching `weir fmt`: comment token `//`,
 indent 4 spaces. The formatting request runs `weir fmt`'s canonical
 pipeline — editor options (tabSize etc.) are ignored by design, so a
@@ -192,6 +201,9 @@ before retrying.
 
 ## Scope
 
-The server analyzes the text the client sends; it does not read files
-the editor did not send — see [SECURITY.md](../SECURITY.md)'s
-non-claims for the boundary as stated.
+The server analyzes the text the client sends, plus the files those
+documents reach by `import` or `#sig` (an open dependency from its
+buffer, an unopened one from disk) — never anything else. A
+cross-file definition jump OPENS a file only by the client's own
+action. See [SECURITY.md](../SECURITY.md)'s non-claims for the
+boundary as stated.

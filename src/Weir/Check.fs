@@ -850,8 +850,14 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
 let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<Yaml.Shape, TypeError> =
     match ty with
     | TInt -> Ok Yaml.SInt
-    | TSize -> err span "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
-    | TDur -> err span "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
+    | TSize ->
+        err
+            span
+            "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TDur ->
+        err
+            span
+            "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
     | TFloat -> Ok Yaml.SFloat
     | TStr -> Ok Yaml.SStr
     | TBool -> Ok Yaml.SBool
@@ -886,8 +892,14 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
 // the to-side: the same law, plus `Yaml` NODES render directly
 let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<unit, TypeError> =
     match ty with
-    | TSize -> err span "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
-    | TDur -> err span "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
+    | TSize ->
+        err
+            span
+            "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TDur ->
+        err
+            span
+            "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
     | TInt
     | TFloat
     | TStr

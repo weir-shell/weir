@@ -408,4 +408,95 @@ expect(mod_uri in seen and any("expected string" in d["message"] for d in seen[m
 send3({"jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": {}}); read3()
 send3({"jsonrpc": "2.0", "method": "exit", "params": {}}); p3.wait(timeout=5)
 
+# ---- cross-file navigation [D:lsp-cross-file] -----------------------
+# hover and definition cross the file boundary: module members, the
+# import path, and signed commands — Locations carry the CLIENT's URI
+# for open targets, pathToUri only for files the client never named.
+td2 = tempfile.mkdtemp()
+os.makedirs(os.path.join(td2, ".weir", "sigs"))
+libp = os.path.join(td2, "lib.weir")
+open(libp, "w").write("module Lib\n\n/// doubles a number\nlet double n = n * 2\n")
+open(os.path.join(td2, ".weir", "sigs", "mytool.weir"), "w").write(
+    'module Mytool\nlet version = "mytool 1.0"\ntype Cmd = {\n    /// run without side effects\n    dryRun: bool\n}\n')
+entp = os.path.join(td2, "main.weir")
+ENTRY = '#sig mytool\nimport "./lib.weir" as Lib\n\nlet x = Lib.double 21\nlet st = mytool --dry-run\nprint (show x)\n'
+open(entp, "w").write(ENTRY)
+p4 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+def send4(o):
+    b = json.dumps(o).encode()
+    p4.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p4.stdin.flush()
+def read4():
+    length = None
+    while True:
+        line = p4.stdout.readline().strip()
+        if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
+        elif line == b"": break
+    return json.loads(p4.stdout.read(length))
+def req4(i, method, uri, line, char):
+    send4({"jsonrpc": "2.0", "id": i, "method": method,
+           "params": {"textDocument": {"uri": uri}, "position": {"line": line, "character": char}}})
+    m = read4()
+    while m.get("id") != i:
+        m = read4()
+    return m
+send4({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}); read4()
+ent_uri = "file://" + entp
+send4({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": ent_uri, "text": ENTRY}}})
+
+# a module member hovers its annotated signature + the /// doc read from
+# the MODULE file, in the local format (type, blank line, doc)
+v = req4(2, "textDocument/hover", ent_uri, 3, 13)["result"]["contents"]["value"]
+expect(v == "Lib.double (n: int) : int\n\ndoubles a number",
+       f"module member hover must read the module's doc: {v!r}")
+
+# definition crosses to the UNOPENED module file — pathToUri spelling
+d = req4(3, "textDocument/definition", ent_uri, 3, 13)["result"]
+expect(d and d["uri"] == "file://" + libp
+       and d["range"]["start"] == {"line": 3, "character": 4},
+       f"cross-file definition to the unopened module: {d}")
+
+# definition on the import path opens the module file at 0:0
+d = req4(4, "textDocument/definition", ent_uri, 1, 12)["result"]
+expect(d and d["uri"] == "file://" + libp and d["range"]["start"]["line"] == 0,
+       f"import-path definition: {d}")
+
+# a signed head hovers identity + the RECORDED version (mytool is NOT on
+# PATH — nothing spawns), and definition opens the sig file
+v = req4(5, "textDocument/hover", ent_uri, 4, 10)["result"]["contents"]["value"]
+expect("signed command" in v and "partial signature" in v and "version: mytool 1.0" in v,
+       f"signed head hover: {v!r}")
+d = req4(6, "textDocument/definition", ent_uri, 4, 10)["result"]
+expect(d and d["uri"].endswith("/.weir/sigs/mytool.weir"), f"head definition: {d}")
+
+# a flag hovers its field's type + /// doc from the sig file, and jumps
+# to the field declaration
+v = req4(7, "textDocument/hover", ent_uri, 4, 19)["result"]["contents"]["value"]
+expect(v == "bool\n\nrun without side effects", f"flag hover: {v!r}")
+d = req4(8, "textDocument/definition", ent_uri, 4, 19)["result"]
+expect(d and d["uri"].endswith("/mytool.weir") and d["range"]["start"] == {"line": 4, "character": 4},
+       f"flag definition: {d}")
+
+# once the target is OPEN under the client's own spelling, Locations ride
+# THAT string [D:lsp-uri-spelling] — never a re-derived one
+lib_spelled = "file://" + os.path.dirname(libp) + "/%6Cib.weir"
+send4({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": lib_spelled, "text": open(libp).read()}}})
+d = req4(9, "textDocument/definition", ent_uri, 3, 13)["result"]
+expect(d and d["uri"] == lib_spelled, f"open target must use the client's spelling: {d}")
+
+# invalidation: editing the module BUFFER (spelled URI, unsaved) refreshes
+# the importer's hover — buffer over disk through the decoded-path match
+send4({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": lib_spelled},
+                  "contentChanges": [{"text": "module Lib\n\n/// TRIPLES a number\nlet double n = n * 3\n"}]}})
+v = req4(10, "textDocument/hover", ent_uri, 3, 13)["result"]["contents"]["value"]
+expect("TRIPLES a number" in v, f"module edit must refresh the importer's hover: {v!r}")
+
+send4({"jsonrpc": "2.0", "id": 11, "method": "shutdown", "params": {}})
+m = read4()
+while m.get("id") != 11:
+    m = read4()
+send4({"jsonrpc": "2.0", "method": "exit", "params": {}}); p4.wait(timeout=5)
+
 print("lsp-e2e: all probes green")

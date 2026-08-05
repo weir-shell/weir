@@ -611,35 +611,209 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
             Some(formatSignature n (lambdaParamNames tvalue) tvalue.Ty)
         | _ -> None
 
+// ---- cross-file navigation [D:lsp-cross-file] ---------------------
+// the server retains nothing between requests, so a cross-file target
+// RE-ANALYZES the target file's lines, read through the import channel
+// (open buffers first, then disk) — the same stateless discipline as
+// every other request
+
+let private targetStmts (absPath: string) =
+    Script.targetSourceLines absPath
+    |> Option.map (fun lines ->
+        let _, stmts, _, _ = Script.analyzeLines absPath lines
+        lines, stmts)
+
+// the KType declaring `tyName` among `stmts` — file-agnostic so the
+// entry file and an imported module search the same way: a member's
+// column sits after the first `=`, the type name's before it (joined
+// text spans the whole multi-line declaration; translate maps back to
+// physical)
+let private typeSiteIn
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (tyName: string)
+    (member_: string option)
+    : (int * int * int) option =
+    stmts
+    |> List.tryPick (fun (ll, c) ->
+        match c.Kind with
+        | Script.KType d when d.Name = tyName ->
+            let eq = ll.Text.IndexOf '='
+
+            let jc =
+                match member_ with
+                | Some m -> wordFind m ll.Text (if eq >= 0 then eq else 0) ll.Text.Length
+                | None -> wordFind tyName ll.Text 0 (if eq >= 0 then eq else ll.Text.Length)
+
+            jc
+            |> Option.map (fun jcol ->
+                let pl, pc = Script.translate ll jcol
+                (pl, pc, (member_ |> Option.defaultValue tyName).Length))
+        | _ -> None)
+
+// the LAST top-level binder `n` among stmts; the entry file bounds the
+// search by the use site, a module file has no use site to bound by
+let private letSiteIn
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (bound: int option)
+    (n: string)
+    : (int * int * int) option =
+    stmts
+    |> List.filter (fun (ll, _) ->
+        match bound with
+        | Some b -> ll.Head < b
+        | None -> true)
+    |> List.rev
+    |> List.tryPick (fun (ll, c) ->
+        let binds =
+            match c.Kind with
+            | Script.KLet(bn, _, _) -> bn = n
+            | Script.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
+            | _ -> false
+
+        if binds then
+            binderCol n ll.Text
+            |> Option.map (fun bc ->
+                let pl, pc = Script.translate ll bc
+                (pl, pc, n.Length))
+        else
+            None)
+
+/// the command surface containing the column — bare TECmd or the
+/// reified spine (| succeeds desugars the ECmd away; recover prog and
+/// the literal argv words like the unknown-flag check does
+/// [D:command-signatures]): (prog, head start col, words with spans)
+let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int * (string * Span) list) option =
+    match Check.childExprs te |> List.tryPick (cmdSurfaceAt jcol) with
+    | Some r -> Some r
+    | None when te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
+        (match te.Kind with
+         | Check.TECmd(prog, args, _) ->
+             Some(
+                 prog,
+                 te.Span.Start.Col,
+                 args
+                 |> List.choose (fun a ->
+                     match a.Kind with
+                     | Check.TEStr w -> Some(w, a.Span)
+                     | _ -> None)
+             )
+         | _ ->
+             let rec spine (e: Check.TypedExpr) acc =
+                 match e.Kind with
+                 | Check.TEApp(f, a) -> spine f (a :: acc)
+                 | Check.TEVar v when v.StartsWith "|" -> Some acc
+                 | _ -> None
+
+             match spine te [] with
+             | Some args ->
+                 let progE =
+                     args
+                     |> List.choose (fun a ->
+                         match a.Kind with
+                         | Check.TEStr p -> Some(p, a.Span)
+                         | _ -> None)
+                     |> List.tryLast
+
+                 let rec lists (e: Check.TypedExpr) =
+                     match e.Kind with
+                     | Check.TEList items -> items
+                     | _ -> Check.childExprs e |> List.collect lists
+
+                 let words =
+                     args
+                     |> List.collect lists
+                     |> List.choose (fun a ->
+                         match a.Kind with
+                         | Check.TEStr w -> Some(w, a.Span)
+                         | _ -> None)
+
+                 progE |> Option.map (fun (p, psp) -> p, psp.Start.Col, words)
+             | None -> None)
+    | None -> None
+
+/// the flag's field in its signature, resolved the way the unknown-flag
+/// check resolves surfaces (record = the "" sub; union = the first
+/// non-dash word): (record name, field, field type, sig lines, sig stmts)
+let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: string) =
+    let rn =
+        match Map.tryFind "" si.SubRecords with
+        | Some rn -> Some rn
+        | None ->
+            words
+            |> List.tryFind (fun (x, _) -> not (x.StartsWith "-"))
+            |> Option.bind (fun (x, _) -> Map.tryFind x si.SubRecords)
+
+    rn
+    |> Option.bind (fun rn ->
+        targetStmts si.SigPath
+        |> Option.bind (fun (sigLines, sigStmts) ->
+            sigStmts
+            |> List.tryPick (fun (_, c) ->
+                match c.Kind with
+                | Script.KType d when d.Name = rn -> Map.tryFind rn c.Env.Types
+                | _ -> None)
+            |> Option.bind (function
+                | Record rd ->
+                    let field =
+                        if w.StartsWith "--" then
+                            let name = w.Substring(2).Split('=')[0]
+
+                            rd.Fields
+                            |> List.map fst
+                            |> List.tryFind (fun f -> Weir.Argv.kebabFlag f = name)
+                        elif w.Length = 2 && w.StartsWith "-" then
+                            Weir.Argv.explicitShorts rd
+                            |> List.tryPick (fun (f, sh) -> if sh = w.Substring 1 then Some f else None)
+                        else
+                            None
+
+                    field
+                    |> Option.map (fun f ->
+                        let fty = rd.Fields |> List.pick (fun (fn, t) -> if fn = f then Some t else None)
+                        rn, f, fty, sigLines, sigStmts)
+                | _ -> None)))
+
 /// definition site for the identifier at (1-based physical line, col):
-/// Some (physLine, physCol, nameLength), or None. Pure — the handler
-/// and the unit pins share this. Scope: top-level let/letpat binders;
-/// record fields (access + literal), union cases (expression AND
-/// pattern position — PSpan carries the arm's location), and type
-/// names, each resolving to the KType declaration site.
-let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int) option =
-    let _, stmts, _, _ = Script.analyzeLines "defn" lines
+/// Some (target file or None for THIS one, physLine, physCol,
+/// nameLength), or None. Pure — the handler and the unit pins share
+/// this. Scope: top-level let/letpat binders; record fields (access +
+/// literal), union cases (expression AND pattern position), and type
+/// names, resolving to the KType declaration site IN THE FILE THAT
+/// DECLARES IT (an imported type re-analyzes its module); qualified
+/// module members; the import path itself; a signed command's head
+/// (the sig file) and flags (the field declaration) [D:lsp-cross-file].
+let definitionTarget
+    (path: string)
+    (lines: string list)
+    (line: int)
+    (col: int)
+    : (string option * int * int * int) option =
+    let _, stmts, _, _ = Script.analyzeLines path lines
+
+    let imports =
+        stmts
+        |> List.choose (fun (_, c) ->
+            match c.Kind with
+            | Script.KImport lm -> Some lm
+            | _ -> None)
 
     // the KType declaring `tyName`: a member's column sits after the
     // first `=`, the type name's before it (joined text spans the
     // whole multi-line declaration; translate maps back to physical)
+    // local KType first; else the IMPORT that declared the type (imported
+    // types merge in unqualified, so the name alone picks the module)
     let typeSite (tyName: string) (member_: string option) =
-        stmts
-        |> List.tryPick (fun (ll, c) ->
-            match c.Kind with
-            | Script.KType d when d.Name = tyName ->
-                let eq = ll.Text.IndexOf '='
-
-                let jc =
-                    match member_ with
-                    | Some m -> wordFind m ll.Text (if eq >= 0 then eq else 0) ll.Text.Length
-                    | None -> wordFind tyName ll.Text 0 (if eq >= 0 then eq else ll.Text.Length)
-
-                jc
-                |> Option.map (fun jcol ->
-                    let pl, pc = Script.translate ll jcol
-                    (pl, pc, (member_ |> Option.defaultValue tyName).Length))
-            | _ -> None)
+        match typeSiteIn stmts tyName member_ with
+        | Some(pl, pc, len) -> Some(None, pl, pc, len)
+        | None ->
+            imports
+            |> List.tryPick (fun lm ->
+                if lm.TypeDefs |> List.exists (fun (tn, _) -> tn = tyName) then
+                    targetStmts lm.AbsPath
+                    |> Option.bind (fun (_, mstmts) -> typeSiteIn mstmts tyName member_)
+                    |> Option.map (fun (pl, pc, len) -> Some lm.AbsPath, pl, pc, len)
+                else
+                    None)
 
     let unionOf (env: TypeEnv) (ctor: string) =
         env.Types
@@ -653,24 +827,7 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
         | Some(Record d) -> d.Fields |> List.exists (fun (f, _) -> f = field)
         | _ -> false
 
-    let letSite (useHead: int) (n: string) =
-        stmts
-        |> List.filter (fun (ll, _) -> ll.Head < useHead)
-        |> List.rev
-        |> List.tryPick (fun (ll, c) ->
-            let binds =
-                match c.Kind with
-                | Script.KLet(bn, _, _) -> bn = n
-                | Script.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
-                | _ -> false
-
-            if binds then
-                binderCol n ll.Text
-                |> Option.map (fun bc ->
-                    let pl, pc = Script.translate ll bc
-                    (pl, pc, n.Length))
-            else
-                None)
+    let letSite (useHead: int) (n: string) = letSiteIn stmts (Some useHead) n
 
     // a PCase whose CTOR WORD contains the column (a payload binder is
     // a local binder — the binder-span park, not this)
@@ -700,72 +857,134 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
 
     toLogical stmts line col
     |> Option.bind (fun (useLl, chk, jcol) ->
-        let env = chk.Env
+        match chk.Kind with
+        | Script.KImport lm ->
+            // definition ON THE IMPORT PATH opens the imported file; a
+            // path that does not resolve never reaches here (the failed
+            // import leaves no KImport statement) [D:lsp-cross-file]
+            let q1 = useLl.Text.IndexOf '"'
+            let q2 = (if q1 >= 0 then useLl.Text.IndexOf('"', q1 + 1) else -1)
 
-        let fromPattern =
-            teOf chk
-            |> Option.bind (matchCaseAt jcol)
-            |> Option.bind (fun ctor -> unionOf env ctor |> Option.bind (fun tn -> typeSite tn (Some ctor)))
+            if q1 >= 0 && q2 > q1 && jcol - 1 >= q1 && jcol - 1 <= q2 then
+                Some(Some lm.AbsPath, 1, 1, 0)
+            else
+                None
+        | _ ->
 
-        match fromPattern with
-        | Some r -> Some r
-        | None ->
-            teOf chk
-            |> Option.bind (fun te -> nodeAt te jcol)
-            |> Option.bind (fun node ->
-                match node.Kind with
-                | Check.TEVar n when Types.isUserName n && not (n.Contains '.') ->
-                    if Char.IsUpper n[0] then
-                        // expression-position union case
-                        unionOf env n |> Option.bind (fun tn -> typeSite tn (Some n))
-                    else
-                        // LOCAL binders first — lexical, innermost wins
-                        // (params, inner lets, pattern payload binders);
-                        // the top-level scan is the fallback
-                        // [PLAN-diagnostics-arc C]
-                        match teOf chk |> Option.bind (localDef Map.empty n jcol) with
-                        | Some(Some bspan) ->
-                            let pl, pc = Script.translate useLl bspan.Start.Col
-                            Some(pl, pc, n.Length)
-                        | _ -> letSite useLl.Head n
-                | Check.TEField(target, field) when jcol > target.Span.End.Col ->
-                    (match target.Ty with
-                     | TNamed(tn, _) -> typeSite tn (Some field)
-                     | _ -> None)
-                | Check.TERecord(recName, _) ->
-                    // the literal's own words: the record name or a field
-                    wordAt useLl.Text jcol
-                    |> Option.bind (fun w ->
-                        if w = recName then
-                            typeSite recName None
-                        elif recordHasField env recName w then
-                            typeSite recName (Some w)
+            let env = chk.Env
+
+            // a signed command's HEAD opens its signature file; a FLAG jumps
+            // to its field declaration; an unsigned head stays quiet
+            // [D:lsp-cross-file]
+            let sigSite () =
+                teOf chk
+                |> Option.bind (cmdSurfaceAt jcol)
+                |> Option.bind (fun (prog, progCol, words) ->
+                    Script.sigInfosForFile path lines
+                    |> List.tryFind (fun si -> si.Tool = prog)
+                    |> Option.bind (fun si ->
+                        if progCol <= jcol && jcol < progCol + prog.Length then
+                            Some(Some si.SigPath, 1, 1, 0)
                         else
-                            None)
-                // `from json T`: the adapter's type name jumps to its
-                // declaration [PLAN-diagnostics-arc A3]
-                | Check.TEFrom(_, rowDef) ->
-                    wordAt useLl.Text jcol
-                    |> Option.bind (fun w -> if w = rowDef.Name then typeSite rowDef.Name None else None)
-                | Check.TEFromYaml(tyName, _) ->
-                    wordAt useLl.Text jcol
-                    |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
-                // `Env.load T` / `Args.load T`: the target TYPE name jumps to
-                // its declaration — the bespoke arm absorbs the argument, so
-                // it is no TEVar; resolve it off the load node's own def
-                | Check.TEEnvLoad(def, _) ->
-                    wordAt useLl.Text jcol
-                    |> Option.bind (fun w -> if w = def.Name then typeSite def.Name None else None)
-                | Check.TEArgsLoad target ->
-                    let tyName =
-                        match target with
-                        | Check.ArgsRecord def -> def.Name
-                        | Check.ArgsUnion(udef, _) -> udef.Name
-                        | Check.ArgsShared(outer, _, _, _) -> outer.Name
+                            words
+                            |> List.tryFind (fun (w, sp) ->
+                                w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
+                            |> Option.bind (fun (w, _) -> sigFlagField si words w)
+                            |> Option.bind (fun (rn, f, _, _, sigStmts) ->
+                                typeSiteIn sigStmts rn (Some f)
+                                |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len))))
 
-                    wordAt useLl.Text jcol
-                    |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
-                | _ -> None))
+            let fromPattern =
+                teOf chk
+                |> Option.bind (matchCaseAt jcol)
+                |> Option.bind (fun ctor -> unionOf env ctor |> Option.bind (fun tn -> typeSite tn (Some ctor)))
+
+            match fromPattern with
+            | Some r -> Some r
+            | None ->
+                teOf chk
+                |> Option.bind (fun te -> nodeAt te jcol)
+                |> Option.bind (fun node ->
+                    match node.Kind with
+                    // a qualified MODULE member: the member word jumps to its
+                    // declaration in the module file, the alias word to the
+                    // file itself [D:lsp-cross-file] (a dotted builtin matches
+                    // no import and stays on its own arms)
+                    | Check.TEVar n when n.Contains '.' ->
+                        (match n.Split '.' with
+                         | [| alias; mem |] ->
+                             imports
+                             |> List.tryFind (fun lm -> lm.Alias = alias)
+                             |> Option.bind (fun lm ->
+                                 if wordAt useLl.Text jcol = Some alias then
+                                     Some(Some lm.AbsPath, 1, 1, 0)
+                                 else
+                                     targetStmts lm.AbsPath
+                                     |> Option.bind (fun (_, mstmts) -> letSiteIn mstmts None mem)
+                                     |> Option.map (fun (pl, pc, len) -> Some lm.AbsPath, pl, pc, len))
+                         | _ -> None)
+                    | Check.TEVar n when Types.isUserName n && not (n.Contains '.') ->
+                        if Char.IsUpper n[0] then
+                            // expression-position union case
+                            unionOf env n |> Option.bind (fun tn -> typeSite tn (Some n))
+                        else
+                            // LOCAL binders first — lexical, innermost wins
+                            // (params, inner lets, pattern payload binders);
+                            // the top-level scan is the fallback
+                            // [PLAN-diagnostics-arc C]
+                            match teOf chk |> Option.bind (localDef Map.empty n jcol) with
+                            | Some(Some bspan) ->
+                                let pl, pc = Script.translate useLl bspan.Start.Col
+                                Some(None, pl, pc, n.Length)
+                            | _ -> letSite useLl.Head n |> Option.map (fun (pl, pc, len) -> None, pl, pc, len)
+                    | Check.TEField(target, field) when jcol > target.Span.End.Col ->
+                        (match target.Ty with
+                         | TNamed(tn, _) -> typeSite tn (Some field)
+                         | _ -> None)
+                    | Check.TERecord(recName, _) ->
+                        // the literal's own words: the record name or a field
+                        wordAt useLl.Text jcol
+                        |> Option.bind (fun w ->
+                            if w = recName then
+                                typeSite recName None
+                            elif recordHasField env recName w then
+                                typeSite recName (Some w)
+                            else
+                                None)
+                    // `from json T`: the adapter's type name jumps to its
+                    // declaration [PLAN-diagnostics-arc A3]
+                    | Check.TEFrom(_, rowDef) ->
+                        wordAt useLl.Text jcol
+                        |> Option.bind (fun w -> if w = rowDef.Name then typeSite rowDef.Name None else None)
+                    | Check.TEFromYaml(tyName, _) ->
+                        wordAt useLl.Text jcol
+                        |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
+                    // `Env.load T` / `Args.load T`: the target TYPE name jumps to
+                    // its declaration — the bespoke arm absorbs the argument, so
+                    // it is no TEVar; resolve it off the load node's own def
+                    | Check.TEEnvLoad(def, _) ->
+                        wordAt useLl.Text jcol
+                        |> Option.bind (fun w -> if w = def.Name then typeSite def.Name None else None)
+                    | Check.TEArgsLoad target ->
+                        let tyName =
+                            match target with
+                            | Check.ArgsRecord def -> def.Name
+                            | Check.ArgsUnion(udef, _) -> udef.Name
+                            | Check.ArgsShared(outer, _, _, _) -> outer.Name
+
+                        wordAt useLl.Text jcol
+                        |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
+                    | _ -> None)
+                |> Option.orElseWith sigSite)
+
+/// the single-file view of definitionTarget: Some (physLine, physCol,
+/// nameLength) when the definition is in THIS file, None otherwise —
+/// the unit pins' surface; the handler serves definitionTarget
+let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int) option =
+    definitionTarget "defn" lines line col
+    |> Option.bind (function
+        | None, pl, pc, len -> Some(pl, pc, len)
+        | _ -> None)
 
 /// hover text at (1-based physical line, col), or None. Pure. TYPE first,
 /// then the `///` doc. Silence guard first [D:hover-silence]; then the
@@ -774,8 +993,8 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
 /// doc — at the cursor for a declaration, or at the RESOLVED declaration
 /// site for a usage / field / case reference (definitionFor) [Group 1a],
 /// else the builtin's [D:builtin-docs].
-let hoverType (lines: string list) (line: int) (col: int) : string option =
-    let _, stmts, _, _ = Script.analyzeLines "hover" lines
+let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string option =
+    let _, stmts, _, _ = Script.analyzeLines path lines
 
     match toLogical stmts line col with
     | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
@@ -852,11 +1071,86 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
                     | _ -> Some(formatSignature name d.Params n.Ty)
                 | _ -> None)
 
+        // a MODULE member at a use site hovers as its annotated signature,
+        // the builtin rendering shared [D:lsp-cross-file]: params read off
+        // the module's typed body; a function with no named params
+        // degrades to the arrow, a VALUE renders name-and-type
+        let moduleMemberSig =
+            node
+            |> Option.bind (fun nd ->
+                match nd.Kind with
+                | Check.TEVar name when name.Contains '.' && not (Map.containsKey name Builtins.builtinDocs) ->
+                    (match name.Split '.' with
+                     | [| alias; mem |] ->
+                         stmts
+                         |> List.tryPick (fun (_, c) ->
+                             match c.Kind with
+                             | Script.KImport lm when lm.Alias = alias -> Some lm
+                             | _ -> None)
+                         |> Option.bind (fun lm ->
+                             lm.Body
+                             |> List.tryPick (function
+                                 | Script.CLet(bn, te) when bn = mem -> Some te
+                                 | _ -> None))
+                         |> Option.bind (fun te ->
+                             match te.Ty, lambdaParamNames te with
+                             | TFun _, [] -> None // unnamed function -> arrow
+                             | mty, ps -> Some(formatSignature name ps mty))
+                     | _ -> None)
+                | _ -> None)
+
+        // ---- signed commands [D:lsp-cross-file]: the head hovers its
+        // identity off the sig FILE alone (the version is the RECORDED
+        // one — no spawn, so it works with the tool off PATH); a flag
+        // hovers its field's type, and the field's /// doc rides below
+        let sigSurface =
+            teOf chk
+            |> Option.bind (cmdSurfaceAt jcol)
+            |> Option.bind (fun (prog, progCol, words) ->
+                Script.sigInfosForFile path lines
+                |> List.tryFind (fun si -> si.Tool = prog)
+                |> Option.map (fun si -> si, prog, progCol, words))
+
+        let sigHead =
+            sigSurface
+            |> Option.bind (fun (si, prog, progCol, _) ->
+                if progCol <= jcol && jcol < progCol + prog.Length then
+                    let status = if si.Exhaustive then "exhaustive" else "partial"
+
+                    Some(
+                        $"{prog} — signed command (#sig {prog}, line {si.DeclLine}; {status} signature)",
+                        $"{si.SigPath}\nversion: {si.Version}"
+                    )
+                else
+                    None)
+
+        let sigFlag =
+            sigSurface
+            |> Option.bind (fun (si, _, _, words) ->
+                words
+                |> List.tryFind (fun (w, sp) -> w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
+                |> Option.bind (fun (w, _) -> sigFlagField si words w)
+                |> Option.map (fun (rn, f, fty, sigLines, sigStmts) ->
+                    let fdoc =
+                        typeSiteIn sigStmts rn (Some f)
+                        |> Option.bind (fun (dl, dc, _) ->
+                            Script.docAttachments sigLines
+                            |> List.tryPick (fun d ->
+                                if d.Line = dl && d.Col = dc then
+                                    Some(String.concat "\n" d.Doc)
+                                else
+                                    None))
+
+                    formatTy fty, fdoc))
+
         let ty =
-            fieldInLiteral
+            (sigHead |> Option.map fst)
+            |> Option.orElse (sigFlag |> Option.map fst)
+            |> Option.orElse fieldInLiteral
             |> Option.orElse constructorSig
             |> Option.orElse binderSig
             |> Option.orElse builtinSig
+            |> Option.orElse moduleMemberSig
             |> Option.orElseWith (fun () -> paramTy |> Option.map formatTy)
             |> Option.orElse exactUse
             |> Option.orElseWith (fun () ->
@@ -911,16 +1205,25 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
             match sourceDoc with
             | Some _ -> None
             | None ->
-                definitionFor lines line col
-                |> Option.bind (fun (dl, dc, _) ->
-                    Script.docAttachments lines
-                    |> List.tryPick (fun d ->
-                        if d.Line = dl && d.Col = dc then
-                            Some(String.concat "\n" d.Doc)
-                        else
-                            None))
+                definitionTarget path lines line col
+                |> Option.bind (fun (fileOpt, dl, dc, _) ->
+                    (match fileOpt with
+                     | None -> Some lines
+                     | Some f -> Script.targetSourceLines f)
+                    |> Option.bind (fun docSrc ->
+                        Script.docAttachments docSrc
+                        |> List.tryPick (fun d ->
+                            if d.Line = dl && d.Col = dc then
+                                Some(String.concat "\n" d.Doc)
+                            else
+                                None)))
 
-        let doc = sourceDoc |> Option.orElse usageDoc |> Option.orElse builtinDoc
+        let doc =
+            (sigHead |> Option.map snd)
+            |> Option.orElse (sigFlag |> Option.bind snd)
+            |> Option.orElse sourceDoc
+            |> Option.orElse usageDoc
+            |> Option.orElse builtinDoc
 
         match ty, doc with
         | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc
@@ -928,6 +1231,11 @@ let hoverType (lines: string list) (line: int) (col: int) : string option =
         | None, Some d -> Some d
         | None, None -> None
     | _ -> None
+
+/// hoverAt with no file identity — the unit pins' single-file surface
+/// (imports and signatures resolve relative to the REAL path, so the
+/// handler serves hoverAt)
+let hoverType (lines: string list) (line: int) (col: int) : string option = hoverAt "hover" lines line col
 
 // ---- the server ---------------------------------------------------
 
@@ -942,9 +1250,16 @@ let run (debug: bool) : int =
     // read from its (possibly unsaved) buffer, else disk (decision 14)
     Script.importSourceOverride.Value <-
         Some(fun absPath ->
-            match docs.TryGetValue(pathToUri absPath) with
-            | true, text -> Some(text.Replace("\r\n", "\n").Split('\n') |> Array.toList)
-            | _ ->
+            // match by DECODED path, not a re-derived URI spelling — a
+            // dependency open under the client's own spelling (%6C…) must
+            // still read from its buffer [D:lsp-uri-spelling]
+            let buffered =
+                docs
+                |> Seq.tryPick (fun kv -> if uriToPath kv.Key = absPath then Some kv.Value else None)
+
+            match buffered with
+            | Some text -> Some(text.Replace("\r\n", "\n").Split('\n') |> Array.toList)
+            | None ->
                 if IO.File.Exists absPath then
                     Some(IO.File.ReadAllLines absPath |> Array.toList)
                 else
@@ -1245,10 +1560,10 @@ let run (debug: bool) : int =
                     | "textDocument/hover" ->
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
-                            | Some(_, text), Some(line, col) ->
+                            | Some(uri, text), Some(line, col) ->
                                 let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                                match hoverType lines line col with
+                                match hoverAt (uriToPath uri) lines line col with
                                 | Some t ->
                                     w.WriteStartObject()
                                     w.WritePropertyName "contents"
@@ -1267,10 +1582,21 @@ let run (debug: bool) : int =
                             | Some(uri, text), Some(line, col) ->
                                 let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                                match definitionFor lines line col with
-                                | Some(pl, pc, len) ->
+                                match definitionTarget (uriToPath uri) lines line col with
+                                | Some(fileOpt, pl, pc, len) ->
+                                    let targetUri =
+                                        match fileOpt with
+                                        | None -> uri
+                                        | Some f ->
+                                            // the client's own spelling when the target is
+                                            // an open doc [D:lsp-uri-spelling]; pathToUri
+                                            // serves only files the client never named
+                                            docs.Keys
+                                            |> Seq.tryFind (fun k -> uriToPath k = f)
+                                            |> Option.defaultValue (pathToUri f)
+
                                     w.WriteStartObject()
-                                    w.WriteString("uri", uri)
+                                    w.WriteString("uri", targetUri)
                                     w.WritePropertyName "range"
                                     w.WriteStartObject()
                                     w.WritePropertyName "start"

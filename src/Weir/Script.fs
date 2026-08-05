@@ -2860,7 +2860,13 @@ type SigInfo =
     { Tool: string
       DeclLine: int
       Exhaustive: bool
-      Subs: Map<string, Set<string> * Set<string>> }
+      Subs: Map<string, Set<string> * Set<string>>
+      // the resolved sig FILE, its recorded version, and each surface's
+      // record TYPE name — what hover/definition need to reach the
+      // declaration site [D:lsp-cross-file]
+      SigPath: string
+      Version: string
+      SubRecords: Map<string, string> }
 
 let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
     let positional f =
@@ -2985,7 +2991,10 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 { Tool = decl.Tool
                                   DeclLine = decl.Line
                                   Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                                  Subs = Map [ "", sigFlagSets rd ] }
+                                  Subs = Map [ "", sigFlagSets rd ]
+                                  SigPath = sigFile
+                                  Version = letStr "version" |> Option.defaultValue ""
+                                  SubRecords = Map [ "", "Cmd" ] }
                         | Some(_, Union ud) ->
                             let subs =
                                 ud.Cases
@@ -3001,11 +3010,23 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                     Weir.Argv.kebabFlag case, flags)
                                 |> Map.ofList
 
+                            let subRecords =
+                                ud.Cases
+                                |> List.choose (fun (case, payload) ->
+                                    match payload with
+                                    | Some(TNamed(rn, [])) when (recordOf rn).IsSome ->
+                                        Some(Weir.Argv.kebabFlag case, rn)
+                                    | _ -> None)
+                                |> Map.ofList
+
                             infos.Add
                                 { Tool = decl.Tool
                                   DeclLine = decl.Line
                                   Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                                  Subs = subs }
+                                  Subs = subs
+                                  SigPath = sigFile
+                                  Version = letStr "version" |> Option.defaultValue ""
+                                  SubRecords = subRecords }
 
     List.ofSeq diags, List.ofSeq infos
 
@@ -3013,6 +3034,18 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
 /// head has a declared signature. Partial signatures WARN; exhaustive
 /// ones ERROR. A subcommand word matching no declared case disables
 /// flag checking for that command (L2's discipline: no operand model).
+/// the source lines of a file the way imports read them (open editor
+/// buffers first when the LSP is driving, else disk) — cross-file hover
+/// and definition read the TARGET file through the same channel
+/// [D:lsp-cross-file]
+let targetSourceLines (absPath: string) : string list option = readImportSource absPath
+
+/// the signatures a file's #sig head declares, loaded; QUIET on load
+/// errors — diagnostics are analyzeLines' job [D:lsp-cross-file]
+let sigInfosForFile (path: string) (rawLines: string list) : SigInfo list =
+    let _, _, _, decls = scriptBody rawLines
+    loadSigs path decls |> snd
+
 let sigCmdDiagnostics
     (path: string)
     (infos: SigInfo list)

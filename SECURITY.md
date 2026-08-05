@@ -42,8 +42,11 @@ it, by design):
   AND, since user modules landed [D:modules-v1], the files reachable
   by `import` from an open document — an open dependency from its
   editor buffer, an unopened one from disk (buffer-over-disk,
-  decision 14). It never reads a file the open documents do not
-  import; resolution is the same check-time path the CLI uses, so the
+  decision 14) — plus the signature files an open document's `#sig`
+  lines declare [D:command-signatures]. Cross-file hover and
+  definition [D:lsp-cross-file] read the SAME set, nothing wider. It
+  never reads a file the open documents do not name;
+  resolution is the same check-time path the CLI uses, so the
   server evaluates nothing.
 - **The REPL records typed lines to a history file** [D:repl-quality]
   at `$XDG_STATE_HOME/weir/history` (Windows:
