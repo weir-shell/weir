@@ -1731,9 +1731,9 @@ only in parse and render. The type earns its keep through `show` —
   intended break: `File.size p > 10MiB` compares directly; against
   a bare int it errors legibly ("expected Size, got int").
 - **Boundaries**: `Args.load`/`Env.load` parse size text
-  (`--max 1.5GiB`, `[<Default 10MiB>]`); JSON and YAML are PARKED
-  with teachings naming `Size.toBytes` (no convention; the choice
-  wants a receipt).
+  (`--max 1.5GiB`, `[<Default 10MiB>]`). **Unit types do not cross
+  the json/yaml boundaries** — see the shared statement under
+  Duration; the rejection teaches `Size.toBytes`.
 
 ## Duration — time as a type [D:duration]
 
@@ -1775,10 +1775,22 @@ in shell work are time, and time has a unit.
 - **Boundaries**: `Args.load` and `Env.load` parse duration text into
   `Duration` fields (`--timeout 90s`, `TICK=1h30m`), `[<Default 30s>]`
   is a legal resting point, and `--help` renders the default in the
-  Show shape. JSON is PARKED: a `Duration` field at the json boundary
-  is rejected naming the conversion (`Duration.toMillis` into an int
-  field) — ms-int vs ISO-8601 both defensible, so the choice waits
-  for a receipt. Interpolation holes render a `Duration` directly
+  Show shape. **Unit types are NON-REPRESENTABLE at the wire
+  boundaries [D:unit-types-wire]** — `Duration` and `Size`, json and
+  yaml, both directions, and this is not awaiting evidence: JSON and
+  YAML have no duration or size type, so whatever weir emitted would
+  be an INVENTED encoding the consumer must learn (`"1m30s"` is
+  weir-specific; `90500` loses the unit) — and a read-side field law
+  would apply weir's format *silently on the author's behalf*,
+  asserting the document's writer used it, which weir cannot know.
+  The parse-reads-what-someone-else-wrote principle argues FOR the
+  rejection: `Duration.parse`/`Size.parse` are invoked BY the author
+  on text they chose to interpret. So the boundary rejects, naming
+  the exits, and the author picks the consumer's convention —
+  `Duration.toMillis`/`Size.toBytes` into an int field, or `show`
+  where a string is what the consumer wants; one call, visible at
+  the call site. The same posture as refusing `MB` in literals.
+  Interpolation holes render a `Duration` directly
   (`$"took {elapsed}"` — holes consult `Show` [D:interp-show]);
   command-argument splices do NOT — the argv form is the program's
   business, and the rejection names the deliberate spellings
