@@ -58,15 +58,15 @@ let env0 = Env.load EnvCfg
 let level = env0.WEIR_SHOWCASE_LEVEL |> Option.defaultValue Info
 let home = env0.HOME |> Option.defaultValue "(no HOME)"
 
-printerr $"starting under {home} (level {show level}, pid {Self.pid})"
+printerr $"starting under {home} (level {level}, pid {Self.pid})"
 
 if cli.verbose then printerr (show cli)
 
 // the platform's own temp root, one match expression
 let tmpBase =
-    match (env0.TMPDIR, env0.TEMP) with
-    | (Some d, _) -> d
-    | (_, Some d) -> d
+    match env0.TMPDIR, env0.TEMP with
+    | Some d, _ -> d
+    | _, Some d -> d
     | _ -> "/tmp"
 
 // the showcase's helper scripts live beside this file — Self.scriptPath
@@ -88,7 +88,7 @@ print $"sum of squares to {cli.limit}: {squares |> Seq.sum}"
 
 // ---- tuples, records, copy-and-update ---------------------------------
 
-let pair = (3, "three")
+let pair = 3, "three"
 let n0, name0 = pair
 print $"{n0} spells {name0} (fst = {fst pair})"
 
@@ -239,7 +239,7 @@ let peer =
     |> from json Peer
     |> Seq.head
 
-print $"peer {peer.host}:{peer.port} (note {show peer.note})"
+print $"peer {peer.host}:{peer.port} (note {peer.note})"
 
 // ---- files, paths, glob — inside `within tmp` -------------------------
 // the scope CREATES the directory and DELETES it at block end: the
@@ -252,7 +252,7 @@ within tmp scratch
     let back = File.read store
     print $"file roundtrip: {back |> Seq.length} lines in {Path.fileName store}"
     // xs[0] raises out of range (it IS Seq.item 0); tryItem asks instead
-    print $"first back: {back[0]}; missing 99th: {show (back |> Seq.tryItem 99)}"
+    print $"first back: {back[0]}; missing 99th: {back |> Seq.tryItem 99}"
     let txts = Path.glob (Path.combine scratch "*.txt") |> Seq.force
     print $"glob sees {txts |> Seq.length} txt file(s); stem = {Path.stem store}"
 
@@ -307,7 +307,7 @@ shouts |> print
 
 // ---- YAML: nodes, adapters, and the checked template district ---------
 
-let ordered = YMap [("zulu", YStr "keeps"); ("alpha", YStr "your order")]
+let ordered = YMap ["zulu", YStr "keeps"; "alpha", YStr "your order"]
 ordered |> to yaml |> print
 
 type PeerDoc = { host: string; port: int }
@@ -336,7 +336,7 @@ let manifest name port tag pairs = yaml
             weir.dev/tag: $tag
             weir.dev/switch: "on"
         labels:
-            for (k, v) in pairs
+            for k, v in pairs
                 $k: $v
     spec:
         selector:
@@ -344,7 +344,7 @@ let manifest name port tag pairs = yaml
         ports:
             - port: $port
 
-let doc0 = manifest "web" 8080 cli.tag [("app", "web"); ("tier", "edge")]
+let doc0 = manifest "web" 8080 cli.tag ["app", "web"; "tier", "edge"]
 doc0 |> to yaml |> print
 
 // ---- cleanup: File.delete asserts its target exists -------------------
