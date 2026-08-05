@@ -276,3 +276,37 @@ against. A new byte-exact region extends the fixture before it
 ships; a new normalizing pass breaks the fixture rather than
 shipping. The mask (`Script.districtContentMask`) is the shared
 answer for line-walking passes that must not read content as syntax.
+
+## Desugars never reference user-namespace names
+
+A rewrite that inserts a NAME resolves that name in the user's scope —
+so every desugar-inserted reference is capturable by an ordinary
+declaration. Two instances proved it before the rule was written: the
+reifiers were designed against it from day one (`|`-prefixed
+un-typeable keys), and retry/poll was not — a user union case named
+`Retry` captured `Retry.defaults` and the error talked about records
+on a type the failing line never mentioned. The audit then found the
+same class in every Seq-referencing rewrite (for/do, comprehensions,
+ranges, indexers, splats — capturable by `type T = Seq of int`) and in
+the arming pipe's `print` (shadowing print changed what BARE COMMANDS
+meant). The rule: a desugar targets an internal `|`-key registered
+with the SAME scheme and value objects as the public member
+(reference-equality pinned), and the public spelling stays the user's
+own — their shadow, their ordinary error. The TYPE half has its own
+face: built-in type names refuse redeclaration (a silent retype of
+`Retry`/`Option`/`Yaml` re-broke the sugar through the type after the
+value was fixed).
+
+## A checker walking source shapes needs a pin per DESUGARED shape
+
+A desugar is exactly where the shape a checker was written against
+disappears. Signature checking shipped walking `TECmd` — bare
+commands and pipes, the shapes scripts use LEAST — and silently
+missed every reified chain (`git … | succeeds`, the idiomatic form)
+for two sessions, because the reifier desugar replaces the `ECmd`
+with a builtin application spine. The rule: when a checker consumes a
+source shape, enumerate every rewrite that transforms that shape
+(reifiers, arming, splats, for/within/retry bodies, districts) and
+pin each one — the pin battery is the enumeration, and a new desugar
+joins it on arrival.
+

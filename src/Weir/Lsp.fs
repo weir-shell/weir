@@ -224,7 +224,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     let rec emitArgv (ll: Script.LogicalLine) (te: Check.TypedExpr) =
         match te.Kind with
         | Check.TEList args -> args |> List.iter (emitArg ll)
-        | Check.TEApp({ Kind = Check.TEApp({ Kind = Check.TEVar "Seq.append" }, a) }, b) ->
+        | Check.TEApp({ Kind = Check.TEApp({ Kind = Check.TEVar("Seq.append" | "|seqAppend") }, a) }, b) ->
             emitArgv ll a
             emitArgv ll b
         | _ ->

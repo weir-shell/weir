@@ -25,6 +25,8 @@ let source =
       "type Poll = { timeout: Duration; interval: Duration }" ]
 
 let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
+    Check.preludeLoading.Value <- true
+
     source
     |> List.fold
         (fun (te, ve) line ->
@@ -41,3 +43,13 @@ let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
                 | Result.Error terr -> failwith $"prelude: {Check.formatError terr}"
             | _ -> failwith $"prelude: expected a declaration: {line}")
         (typeEnv, valueEnv)
+    |> fun (te, ve) ->
+        // register every type name present at prelude-close as BUILT-IN
+        // [D:desugar-capture]: a later user declaration of one is a
+        // located error, not a silent retype of the builtins behind it
+        Check.preludeLoading.Value <- false
+
+        for name in te.Types |> Map.keys do
+            Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
+
+        te, ve

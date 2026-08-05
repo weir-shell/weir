@@ -1030,9 +1030,9 @@ let boundaryTests =
               Expect.isError (Weir.Parser.parseLine cmdResolver "let module = 1") "module reserved"
           }
           test "for/do desugars to Seq.iter — the typed tree never sees `for` [D:for-do]" {
-              expectParse "for x in [1; 2] do print (show x)" "((Seq.iter (funpat x (print (show x)))) [1; 2])"
+              expectParse "for x in [1; 2] do print (show x)" "((|seqIter (funpat x (print (show x)))) [1; 2])"
               // tuple binder rides binderPat
-              expectParse "for (k, v) in pairs do print k" "((Seq.iter (funpat (k, v) (print k))) pairs)"
+              expectParse "for (k, v) in pairs do print k" "((|seqIter (funpat (k, v) (print k))) pairs)"
           }
           test "for/do equivalence: both spellings evaluate identically [D:for-do]" {
               skipOnWindows ()
@@ -1046,13 +1046,13 @@ let boundaryTests =
           test "a bare command body is implicit !(…) — pipes into print [D:for-do]" {
               match Weir.Parser.parseLine cmdResolver "for f in xs do git add $f" with
               | Ok(SExpr e | SCmd e) ->
-                  Expect.stringContains (show e) "(cmd git \"add\" f) |> print" "the command body wraps as effect"
+                  Expect.stringContains (show e) "(cmd git \"add\" f) |> |print" "the command body wraps as effect"
               | other -> failtest $"unexpected: {other}"
           }
           test "the comprehension desugars to Seq.map |> Seq.force, bypassing EList [D:for-do]" {
               // the session finding: same desugar path as the statement form —
               // list-literal inference (empty-list var, unification) untouched
-              expectParse "[for x in xs -> x * 2]" "(Seq.force ((Seq.map (funpat x (* x 2))) xs))"
+              expectParse "[for x in xs -> x * 2]" "(|seqForce ((|seqMap (funpat x (* x 2))) xs))"
               Expect.equal (run "[for x in [1; 2; 3] -> x * 10]" |> forceSeq) [ VInt 10L; VInt 20L; VInt 30L ] ""
           }
           test "for and do are reserved words; sudo at EOL does not dangle [D:for-do]" {
@@ -5638,8 +5638,8 @@ let unitPrintTests =
 let rangeTests =
     testList
         "Range literals"
-        [ test "desugars to Seq.range" { expectParse "[1..5]" "(((Seq.range 1) 1) 5)" }
-          test "stepped form" { expectParse "[0..2..10]" "(((Seq.range 0) 2) 10)" }
+        [ test "desugars to Seq.range" { expectParse "[1..5]" "(((|seqRange 1) 1) 5)" }
+          test "stepped form" { expectParse "[0..2..10]" "(((|seqRange 0) 2) 10)" }
           test "basic ascending" { expectValue "[1..5] |> Seq.length" (VInt 5L) }
           test "empty when start exceeds stop" { expectValue "[1..0] |> Seq.isEmpty" (VBool true) }
           test "stepped" { expectValue "[0..2..10] |> Seq.length" (VInt 6L) }
@@ -6174,12 +6174,12 @@ let agentFindingsTests =
           test "a splat rides a reifier chain — argv desugars to a seq value [D:splat-reifier-chains]" {
               // mixed literal+splat argv folds with Seq.append
               match Weir.Parser.parseLine cmdResolver "echo one $@xs | complete" with
-              | Ok(SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "append" "the append-fold desugar"
+              | Ok(SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "|seqAppend" "the append-fold desugar"
               | other -> failtest $"expected the splatted-reifier desugar, got {other}"
 
               // splat-free argv keeps the plain list node (zero movement)
               match Weir.Parser.parseLine cmdResolver "echo one two | complete" with
-              | Ok(SCmd e) -> Expect.isFalse ((Weir.Ast.sexpr e).Contains "append") "no append for splat-free argv"
+              | Ok(SCmd e) -> Expect.isFalse ((Weir.Ast.sexpr e).Contains "|seqAppend") "no append for splat-free argv"
               | other -> failtest $"expected the plain desugar, got {other}"
 
               // the env-sigil and value-headed routes take the same desugar
@@ -6663,7 +6663,7 @@ let childEnvTests =
           }
           test "env sigil: !e(...) is chain-with-env |> print" {
               match Weir.Parser.parseLine realResolver "!e(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, Some _) }, { Kind = EVar "print" }) }) -> ()
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, Some _) }, { Kind = EVar "|print" }) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil: every segment in the chain gets the env" {
@@ -7704,7 +7704,7 @@ let siblingSentinelTests =
                         { Kind = ELambda("t",
                                          _,
                                          { Kind = ESeq({ Kind = EPipe({ Kind = ECmd("git", _, _) },
-                                                                      { Kind = EVar "print" }) },
+                                                                      { Kind = EVar "|print" }) },
                                                        _) }) })) -> ()
               | other -> failtest $"expected ESeq(armed cmd, ...), got: {other}"
           }
@@ -7780,7 +7780,7 @@ let sigilTests =
           }
           test "effect sigil desugars to chain |> print" {
               match Weir.Parser.parseLine realResolver "!(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, _) }, { Kind = EVar "print" }) }) -> ()
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, _) }, { Kind = EVar "|print" }) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "sigils x interpolation: holes never open command mode" {
@@ -7860,7 +7860,7 @@ let indexerTests =
           test "the whitespace rule: space means application (F# 6 dotless precedent)" {
               expectValue "Seq.sum [1; 2]" (VInt 3L)
               expectParse "f [0]" "(f [0])"
-              expectParse "f[0]" "((Seq.item 0) f)"
+              expectParse "f[0]" "((|seqItem 0) f)"
           }
           test "underscore shorthand extends to indexing" {
               expectValue "[[\"a\"; \"b\"]] |> Seq.map _[0]" (VSeq [ VStr "a" ])
@@ -8569,6 +8569,49 @@ let sigTests =
                       Expect.stringContains d.Message "weir add sig ghost" "names the fix"
                   | other -> failtest $"unexpected {other.Length}")
           }
+          test
+              "a pin per DESUGARED shape [D:desugar-capture]: for/within/retry bodies, if groups, splats plain AND reified" {
+              let sig1 =
+                  [ "module Ftool"; "let version = \"ftool 1.0\""; "type Cmd = { alpha: bool }" ]
+
+              let root =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-sigshape-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".weir", "sigs"))
+              |> ignore
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".git"))
+              |> ignore
+
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(root, ".weir", "sigs", "ftool.weir"), sig1)
+
+              try
+                  let shapes =
+                      [ "for-body", [ "#sig ftool"; "for x in [1] do ftool --alhpa" ]
+                        "within-body", [ "#sig ftool"; "within tmp w"; "    ftool --alhpa"; "print \"x\"" ]
+                        "retry-body", [ "#sig ftool"; "retry attempts=1 delay=0ms"; "    ftool --alhpa | succeeds" ]
+                        "if-group",
+                        [ "#sig ftool"
+                          "let ok = true"
+                          "if ok then"
+                          "    ftool --alhpa"
+                          "print \"x\"" ]
+                        "splat-plain", [ "#sig ftool"; "let ws = [\"w\"]"; "ftool --alhpa $@ws" ]
+                        "splat-reified", [ "#sig ftool"; "let ws = [\"w\"]"; "ftool --alhpa $@ws | orFail \"x\"" ] ]
+
+                  for name, script in shapes do
+                      let p = System.IO.Path.Combine(root, "use.weir")
+                      System.IO.File.WriteAllLines(p, script)
+
+                      let ds, _, _, _ =
+                          Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+
+                      match ds |> List.filter (fun d -> d.Code = "sig") with
+                      | [ d ] -> Expect.stringContains d.Message "unknown flag '--alhpa'" name
+                      | other -> failtest $"{name}: expected one sig diagnostic, got {other.Length}"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           test "REIFIED commands are checked too (the desugar replaces ECmd — recovered from the builtin spine)" {
               withSigTree fixSig (fun root ->
                   let ds =
@@ -8612,16 +8655,71 @@ let retryPollTests =
 
     testList
         "retry / poll [D:retry-poll]"
-        [ test "the desugar is BYTE-IDENTICAL to the manual record spelling" {
+        [ test
+              "the desugar targets the INTERNAL key; sugar and manual spelling are VALUE-equivalent [D:desugar-capture]" {
+              // the old byte-identical AST pin moved BY DESIGN: the sugar
+              // now references |retryDefaults (un-shadowable), the manual
+              // spelling references Retry.defaults (the user's own name).
+              // Equivalence is guaranteed by both naming the SAME OBJECT
+              // (pinned below by reference) — pin both sexpr forms:
               Expect.equal
                   (sx "retry attempts=5 delay=30s (1 == 1)")
-                  (sx "retry { Retry.defaults with attempts = 5; delay = 30s } (1 == 1)")
-                  "key=value builds the same nodes"
+                  "(retry {|retryDefaults with attempts = 5; delay = 30s} (== 1 1))"
+                  "the sugar's form"
 
               Expect.equal
-                  (sx "poll timeout=5m interval=10s (1 == 1)")
-                  (sx "poll { Poll.defaults with timeout = 5m; interval = 10s } (1 == 1)")
-                  ""
+                  (sx "retry { Retry.defaults with attempts = 5; delay = 30s } (1 == 1)")
+                  "(retry {Retry.defaults with attempts = 5; delay = 30s} (== 1 1))"
+                  "the manual form stays writable, unchanged"
+
+              // behavioral equivalence, both members
+              expectValue "retry attempts=2 delay=0ms (1 + 1) until r (r == 2)" (VInt 2L)
+              expectValue "retry { Retry.defaults with attempts = 2; delay = 0ms } (1 + 1) until r (r == 2)" (VInt 2L)
+          }
+          test "the public name and the internal key are the SAME OBJECT (a divergence would out-bug the bug)" {
+              Expect.isTrue
+                  (obj.ReferenceEquals(
+                      Weir.Builtins.valueEnv["|retryDefaults"],
+                      Weir.Builtins.valueEnv["Retry.defaults"]
+                  ))
+                  "Retry"
+
+              Expect.isTrue
+                  (obj.ReferenceEquals(Weir.Builtins.valueEnv["|pollDefaults"], Weir.Builtins.valueEnv["Poll.defaults"]))
+                  "Poll"
+          }
+          test "the CAPTURE is a non-event: the showcase's original union beside the sugar [D:desugar-capture]" {
+              let e = env |> declare "type CaptV = CPass of int | Retry of string * int"
+
+              match Weir.Check.typecheck e (parse "retry attempts=2 delay=0ms (1 == 1)") with
+              | Ok te -> Expect.equal te.Ty TUnit "the sugar survives a user constructor named Retry"
+              | Error terr -> failtest $"captured: {terr.Message}"
+
+              // the user's OWN reference to the shadowed name stays an
+              // ordinary error — the fix protects the DESUGAR only
+              match Weir.Check.typecheck e (parse "{ Retry.defaults with attempts = 2 }") with
+              | Error terr -> Expect.stringContains terr.Message "only records have fields" "their name, their shadow"
+              | Ok _ -> failtest "expected ordinary shadowing"
+          }
+          test "a built-in type name cannot be redeclared (the TYPE half of the capture)" {
+              for bad in
+                  [ "type Retry = { x: int }"
+                    "type Poll = { x: int }"
+                    "type Option = { x: int }" ] do
+                  let terr = env |> declErr bad
+                  Expect.stringContains terr.Message "is a built-in type — pick another name" bad
+          }
+          test "every Seq-referencing desugar survives a user constructor named Seq [D:desugar-capture]" {
+              let e = env |> declare "type SeqCap = Seq of int"
+
+              for src in
+                  [ "for x in [1; 2] do print (show x)"
+                    "[for v in [3; 4] -> v * 2]"
+                    "[1..3]"
+                    "[9; 8][0]" ] do
+                  match Weir.Check.typecheck e (parse src) with
+                  | Ok _ -> ()
+                  | Error terr -> failtest $"'{src}' captured: {terr.Message}"
           }
           test "ruling 5's table, all four rows" {
               // bool body, no until: yields UNIT — legal as a bare statement

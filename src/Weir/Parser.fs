@@ -552,9 +552,7 @@ let private rangeBody =
 let private buildBracket (content, span) : Expr =
     match content with
     | Choice1Of2(start, step, stop) ->
-        let rangeFn =
-            { Kind = EField({ Kind = EVar "Seq"; Span = span }, "range", span)
-              Span = span }
+        let rangeFn = { Kind = EVar "|seqRange"; Span = span }
 
         let app f a = { Kind = EApp(f, a); Span = span }
         app (app (app rangeFn start) step) stop
@@ -673,7 +671,7 @@ let private effectSigil =
                      <?> "')' — close the sigil on this line, or use line-end '!' for a block of commands")
     )
     |>> (fun (chain, span) ->
-        { Kind = EPipe(chain, { Kind = EVar "print"; Span = span })
+        { Kind = EPipe(chain, { Kind = EVar "|print"; Span = span })
           Span = span })
     .>> ws
 
@@ -808,9 +806,7 @@ let private indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
         { Start = target.Span.Start
           End = endPos }
 
-    let seqItem =
-        { Kind = EField({ Kind = EVar "Seq"; Span = span }, "item", span)
-          Span = span }
+    let seqItem = { Kind = EVar "|seqItem"; Span = span }
 
     { Kind =
         EApp(
@@ -1334,13 +1330,9 @@ let private retryExpr =
                      postfixAtom <?> $"{headWord}'s options (key=value pairs or a {famName} record)"
                  | _ ->
                      let defaults =
-                         { Kind =
-                             EField(
-                                 { Kind = EVar famName
-                                   Span = { Start = pos p; End = pos p } },
-                                 "defaults",
-                                 { Start = pos p; End = pos p }
-                             )
+                         // an INTERNAL, un-shadowable key [D:desugar-capture]
+                         // — the same VALUE Retry.defaults names publicly
+                         { Kind = EVar(if isPoll then "|pollDefaults" else "|retryDefaults")
                            Span = { Start = pos p; End = pos p } }
 
                      preturn
@@ -1446,7 +1438,7 @@ let private forExpr =
                         "this discards the exit code -- bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
                 else
                     preturn
-                        { Kind = EPipe(chain, { Kind = EVar "print"; Span = span })
+                        { Kind = EPipe(chain, { Kind = EVar "|print"; Span = span })
                           Span = span }
         )
 
@@ -1462,7 +1454,7 @@ let private forExpr =
                 |>> fun body ->
                     let span = { Start = pos p; End = body.Span.End }
                     let mk k = { Kind = k; Span = span }
-                    let iter = mk (EField(mk (EVar "Seq"), "iter", span))
+                    let iter = mk (EVar "|seqIter")
                     mk (EApp(mk (EApp(iter, mk (ELambdaPat(binder, body)))), source))
 
 // [for p in xs -> e] [D:for-do]: F#'s list comprehension, desugared to
@@ -1482,7 +1474,7 @@ comprehensionLitRef.Value <-
         let mk k = { Kind = k; Span = span }
 
         let field name =
-            mk (EField(mk (EVar "Seq"), name, span))
+            mk (EVar(if name = "map" then "|seqMap" else "|seqForce"))
 
         let mapped =
             mk (EApp(mk (EApp(field "map", mk (ELambdaPat(binder, elem)))), source))
@@ -2027,7 +2019,7 @@ let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
                     { Kind =
                         EPipe(
                             chain,
-                            { Kind = EVar "print"
+                            { Kind = EVar "|print"
                               Span = chain.Span }
                         )
                       Span = chain.Span })
@@ -2410,7 +2402,7 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                                 let span = Span.union a.Span b.Span
 
                                 let f =
-                                    { Kind = EField({ Kind = EVar "Seq"; Span = span }, "append", span)
+                                    { Kind = EVar "|seqAppend"
                                       Span = span }
 
                                 { Kind = EApp({ Kind = EApp(f, a); Span = span }, b)
