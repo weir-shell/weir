@@ -848,8 +848,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
     match ty with
     | TInt -> Ok Yaml.SInt
     | TSize -> err span "Size has no yaml convention yet — convert explicitly (Size.toBytes into an int field)"
-    | TDur ->
-        err span "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)"
+    | TDur -> err span "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)"
     | TFloat -> Ok Yaml.SFloat
     | TStr -> Ok Yaml.SStr
     | TBool -> Ok Yaml.SBool
@@ -881,8 +880,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
 let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<unit, TypeError> =
     match ty with
     | TSize -> err span "Size has no yaml convention yet — convert explicitly (Size.toBytes into an int field)"
-    | TDur ->
-        err span "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)"
+    | TDur -> err span "Duration has no yaml convention yet — convert explicitly (Duration.toMillis into an int field)"
     | TInt
     | TFloat
     | TStr

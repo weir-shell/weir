@@ -1,0 +1,31 @@
+module Git
+/// hand-written, PARTIAL — covers only the subcommands the showcase
+/// tour uses (git's --help defeats the scraper: flags live in its
+/// usage line). Unknown flags therefore WARN, never error; verify
+/// does not version-pin this signature (it is source, not a locked
+/// artifact — git versions legitimately vary by machine).
+/// https://git-scm.com/docs
+let version = "git version 2.53.0"
+type StatusArgs = {
+    /// machine-readable output — the from-porcelain adapter's input
+    porcelain: bool
+    short: bool
+    branch: bool
+}
+type LogArgs = {
+    oneline: bool
+    format: Option<string>
+}
+type RevParseArgs = {
+    verify: bool
+    short: bool
+}
+type AddArgs = {
+    all: bool
+    update: bool
+}
+type Cmd =
+    | Status of StatusArgs
+    | Log of LogArgs
+    | RevParse of RevParseArgs
+    | Add of AddArgs
