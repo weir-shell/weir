@@ -10,6 +10,10 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 # warn-only mtime check here — a doc-test validating against a stale
 # binary is exactly the masked failure the gate exists to prevent)
 "$(dirname "$0")/check-fresh.sh" "$BIN"
+
+# child weir in doc blocks resolves through the binary's own dir — the
+# e2e blocks' rule applied once at harness level (CI has no weir on PATH)
+export PATH="$(dirname "$BIN"):$PATH"
 DOCS=("$(dirname "$0")/../skills/weir/SKILL.md" "$(dirname "$0")/../docs/GUIDE.md" "$(dirname "$0")/../docs/COMING-FROM.md")
 
 work=$(mktemp -d)
