@@ -1,5 +1,46 @@
 # Spike Notes
 
+## size: the Duration copy, and where it did not fit (2026-08-05)
+
+The session's brief was to copy a proven pattern and report the
+misfits, and there were exactly three — the useful part for whatever
+unit type comes third:
+
+1. **show is a truncated report, not an exact encoding.** Duration's
+   show renders the exact ms decomposition, so value→text→value is
+   total. Base-1024 decimals do not terminate, so Size's one-decimal
+   rendering truncates by design; the round-trip law is
+   text→value→text plus the representable value cases, and toBytes
+   is the exact exit. A third unit type should decide this FIRST —
+   whether its rendering can be exact decides which round-trip law
+   it gets to claim.
+2. **parse met ambiguous foreign units.** Duration's units are
+   unambiguous, so its parse had nothing to rule. Size's SI-in-parse
+   asymmetry (literals refuse MB; parse reads it as 10^6, because
+   the writer of foreign text chose the unit) is new ground — the
+   json integer-widens shape applied to unit systems.
+3. **the YAML park was not in the copy.** Duration predates the yaml
+   boundary carrying unit types, so its park was JSON-only; Size
+   needed the yaml rejection written fresh (both name Size.toBytes).
+
+The zero-edit interpolation property CONFIRMED for the second time:
+$"{2MiB}" rendered "2 MiB" with the interpolation machinery
+untouched — the class was asked, the class answered. Floats were
+the first confirmation; the property is now load-bearing.
+
+Mechanical notes: the suffix table MERGED rather than doubled (one
+choice serves durations and sizes; case distinguishes MiB from
+minutes; the digit-follow compound fix and the letter-follow
+backtrack are inherited by construction). The batch-edit discipline
+earned its keep twice — two failed asserts (a fantomas'd attr
+anchor, a reworded doc string) discarded whole batches with nothing
+half-written, and the one silently-missing edit (the main suffix
+choice, lost between the two batches) announced itself as every
+literal probing as int-applied-to-ident. Exactly one suite pin
+moved for the File.size break (the Ord key-list message). FParsec
+wraps long teaching messages across lines — pin fragments, not the
+joined sentence.
+
 ## command signatures: customer two rides the spine (2026-08-04)
 
 Both sessions landed on one branch, and the spine held exactly where

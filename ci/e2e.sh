@@ -4097,4 +4097,29 @@ cd - >/dev/null
 rm -rf "$sgdir"
 echo "e2e ok: command signatures (generate, typo+did-you-mean, check spawns nothing, property 3, verify arms, restore never regenerates)"
 
+# ---- Size [D:size] ---------------------------------------------------------
+szdir=$(mktemp -d)
+cat > "$szdir/sz.weir" <<'WEOF'
+type Cli = {
+    [<Default 10MiB>]
+    /// upload ceiling
+    max: Size
+}
+let cli = Args.load Cli
+["12345"] |> File.write "probe.bin"
+let big = File.size "probe.bin" > 4B
+File.delete "probe.bin"
+print $"cap {cli.max}, big {big}"
+WEOF
+out=$(cd "$szdir" && $BIN sz.weir)
+[ "$out" = "cap 10 MiB, big true" ] || fail "Size defaults + File.size comparison: $out"
+out=$(cd "$szdir" && $BIN sz.weir --max 1.5GiB)
+[ "$out" = "cap 1.5 GiB, big true" ] || fail "Size flag parses: $out"
+out=$($BIN -e '1MB' 2>&1) && fail "1MB must teach" || true
+echo "$out" | grep -qF "'MB' is ambiguous" || fail "the SI teaching: $out"
+out=$($BIN -e '$(echo 10MiB word) |> Seq.head')
+[ "$out" = '"10MiB word" : string' ] || fail "command-mode 10MiB stays a word: $out"
+rm -rf "$szdir"
+echo "e2e ok: Size (defaults + File.size compare, flag parse, SI teaching, argv word)"
+
 echo "e2e battery: all green"

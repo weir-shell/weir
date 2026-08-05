@@ -87,6 +87,7 @@ and TypedKind =
     | TEDur of ms: int64
     | TEFloat of value: float
     | TERetry of poll: bool * opts: TypedExpr * body: TypedExpr * until: (string * TypedExpr) option
+    | TESize of bytes: int64
     | TESeq of first: TypedExpr * rest: TypedExpr
     | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
@@ -357,7 +358,7 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                             | Cls.Show -> fun t -> $"show cannot render functions; this is {formatTy t}"
                             | Cls.Ord ->
                                 fun t ->
-                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, or Duration" })
+                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, Duration, or Size" })
 
                 ctx.Cons <- Map.add v' (ps @ (Map.tryFind v' ctx.Cons |> Option.defaultValue [])) ctx.Cons
             | None -> ()
@@ -406,7 +407,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
 
             match p.Cls, t with
             // Eq: no function or seq anywhere, recursively
-            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur) -> true
+            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize) -> true
             // floats are EXCLUDED from Eq [D:floats] — finite-only kept
             // equality reflexive; representation (0.1 + 0.2) is the trap
             // that remains, and weir does not vouch for it
@@ -415,7 +416,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             | Cls.Eq, TTuple ts -> ts |> List.forall (ok seen)
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
-            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur) -> true
+            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize) -> true
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
@@ -425,7 +426,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // Duration joins Ord [D:duration] — the first widening since
             // the class set closed; elapsed > timeout is the point
             // floats join Ord [D:floats]: total BECAUSE finite-only
-            | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur) -> true
+            | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur | TSize) -> true
             | Cls.Ord, _ -> false
             // vars and row vars are consumed by the outer match arms;
             // the compiler cannot see that through this nesting
@@ -464,6 +465,7 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
                 err
                     span
                     "a Duration's argv form depends on the program; pass Duration.toMillis d or show d deliberately"
+            | TSize -> err span "a Size's argv form depends on the program; pass Size.toBytes s or show s deliberately"
             | ty -> err span $"command arguments must be strings, ints or bools; this one is {formatTy ty}"
 
 // vars discharge their pendings the moment they resolve — no trial
@@ -699,8 +701,8 @@ let rec private typeBinOp
             bind ctx env l.Span TBool l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span TBool r.Ty)
         )
-    | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
-    | _, ((TInt | TFloat | TStr | TBool | TDur) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
+    | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur | TSize) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
+    | _, ((TInt | TFloat | TStr | TBool | TDur | TSize) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
     | ("==" | "<>"), a, b ->
         // Eq via the class solver (Session A): concrete failures keep the
         // pre-class message verbatim; unresolved operands now DEFER (the
@@ -728,6 +730,15 @@ let rec private typeBinOp
     | ("+" | "-" | "*" | "/" | ">" | "<" | ">=" | "<="), TInt, TFloat
     | ("+" | "-" | "*" | "/" | ">" | "<" | ">=" | "<="), TFloat, TInt ->
         err opSpan $"'{op}' needs both sides the same type; wrap the int: Float.ofInt x {op} y"
+    | ("+" | "-"), TSize, TSize -> Ok TSize
+    | "*", TSize, TInt -> Ok TSize
+    | "*", TInt, TSize -> Ok TSize
+    | "/", TSize, TInt -> Ok TSize
+    | "/", TSize, TSize ->
+        err
+            opSpan
+            "size ÷ size has no unit — Size.toBytes a / Size.toBytes b gives the integer ratio (Float.ofInt each for a fraction)"
+    | (">" | "<" | ">=" | "<="), TSize, TSize -> Ok TBool
     | ("+" | "-"), TDur, TDur -> Ok TDur
     | "*", TDur, TInt -> Ok TDur
     | "*", TInt, TDur -> Ok TDur
@@ -797,6 +808,12 @@ let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeErro
     allOk def.Fields (fun (name, ty) ->
         if jsonFieldOk ty then
             Ok()
+        elif ty = TSize then
+            // parked [D:size]: JSON has no size convention (bytes-int
+            // and a string both defensible; the choice wants a receipt)
+            err
+                span
+                $"field '{name}': Size has no JSON convention yet — convert explicitly (Size.toBytes into an int field)"
         elif ty = TDur then
             // parked [D:duration]: JSON has no duration convention
             // (ms-int vs ISO-8601 both defensible; the choice wants a
@@ -830,6 +847,7 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
 let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<Yaml.Shape, TypeError> =
     match ty with
     | TInt -> Ok Yaml.SInt
+    | TSize -> err span "Size has no yaml convention yet — convert explicitly (Size.toBytes into an int field)"
     | TFloat -> Ok Yaml.SFloat
     | TStr -> Ok Yaml.SStr
     | TBool -> Ok Yaml.SBool
@@ -860,6 +878,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
 // the to-side: the same law, plus `Yaml` NODES render directly
 let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<unit, TypeError> =
     match ty with
+    | TSize -> err span "Size has no yaml convention yet — convert explicitly (Size.toBytes into an int field)"
     | TInt
     | TFloat
     | TStr
@@ -1325,6 +1344,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEFloat f
               Ty = TFloat
               Span = expr.Span }
+    | ESize b ->
+        Ok
+            { Kind = TESize b
+              Ty = TSize
+              Span = expr.Span }
     | ERetry(isPoll, opts, body, until) ->
         result {
             let famTy = TNamed((if isPoll then "Poll" else "Retry"), [])
@@ -1676,7 +1700,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              | TFloat
                              | TBool
                              | TDur
-                             | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur ]) -> true
+                             | TSize
+                             | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur | TSize ]) -> true
                              | ty -> isEnum ty
 
                          // a payload-carrying case is a SCHEMA error, named at
@@ -3026,6 +3051,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
         | TEDur _ -> te.Kind
         | TEFloat _ -> te.Kind
+        | TESize _ -> te.Kind
         | TERetry(ip, o, b, u) ->
             TERetry(ip, finalizeExpr ctx o, finalizeExpr ctx b, u |> Option.map (fun (n, p) -> n, finalizeExpr ctx p))
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
@@ -3199,6 +3225,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEIf(cnd, t, e) -> cnd :: t :: Option.toList e
     | TEDur _ -> []
     | TEFloat _ -> []
+    | TESize _ -> []
     | TERetry(_, o, b, u) -> [ o; b ] @ (u |> Option.map (snd >> List.singleton) |> Option.defaultValue [])
     | TESeq(a, b) -> [ a; b ]
     | TEWithin(_, _, a, b) -> Option.toList a @ [ b ]
@@ -3231,7 +3258,8 @@ let rec private validateTy
     | TStr
     | TBool
     | TUnit
-    | TDur -> Ok()
+    | TDur
+    | TSize -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
     | TTuple ts -> allOk ts (validateTy env selfName selfArity allowed span)
     | TFun(a, b) ->
@@ -3286,8 +3314,8 @@ let private attrRegistry: Map<string, AttrArg option -> string option> =
           // error (the did-you-mean over the remaining names).
           "Default",
           (function
-          | Some(AStr _ | AInt _ | ABool _ | ADur _ | AFloat _) -> None
-          | None -> Some "expects a literal (string, int, float, bool, or duration), e.g. [<Default 10>]") ]
+          | Some(AStr _ | AInt _ | ABool _ | ADur _ | AFloat _ | ASize _) -> None
+          | None -> Some "expects a literal (string, int, float, bool, duration, or size), e.g. [<Default 10>]") ]
 
 let private validateFieldAttrs (recName: string) (field: string, _: Ty, specs: AttrSpec list) =
     let conflicts a b (seen: Set<string>) (spec: AttrSpec) = spec.AName = a && Set.contains b seen

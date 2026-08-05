@@ -626,6 +626,7 @@ let private scalarCompare (name: string) (a: Value) (b: Value) : int =
     | VBool x, VBool y -> compare x y
     | VFloat x, VFloat y -> compare x y
     | VDur x, VDur y -> compare x y
+    | VSize x, VSize y -> compare x y
     | v, _ -> unreachable $"the checker rejects '{name}' keys of {formatValue v}"
 
 let private foldImpl: Value =
@@ -1578,7 +1579,9 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
 
           System.IO.File.Move(src, dst))
       "size",
-      TFun(TStr, TInt),
+      // Size, not int [D:size] — the type is the POINT: show can render
+      // what the type names (the one intended break of the session)
+      TFun(TStr, TSize),
       VBuiltin(fun v ->
           match v with
           | VStr p ->
@@ -1587,7 +1590,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               if not (System.IO.File.Exists r) then
                   failwith $"File.size: no such file: {r}"
 
-              VInt (System.IO.FileInfo r).Length
+              VSize (System.IO.FileInfo r).Length
           | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}") ]
 
 let private dirMembers: (string * Ty * Value) list =
@@ -1724,6 +1727,39 @@ let private floatMembers: (string * Ty * Value) list =
                | Error _ -> VUnion("None", None))
           | v -> unreachable $"the checker rejects 'Float.tryParse' on {formatValue v}") ]
 
+// ---- Size [D:size]: integer bytes; decimals only in text -----------
+let private sizeMembers: (string * Ty * Value) list =
+    [ "bytes",
+      TFun(TInt, TSize),
+      VBuiltin(fun v ->
+          match v with
+          | VInt n -> VSize n
+          | v -> unreachable $"the checker rejects 'Size.bytes' on {formatValue v}")
+      "toBytes",
+      TFun(TSize, TInt),
+      VBuiltin(fun v ->
+          match v with
+          | VSize b -> VInt b
+          | v -> unreachable $"the checker rejects 'Size.toBytes' on {formatValue v}")
+      "parse",
+      TFun(TStr, TSize),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              (match parseSize s with
+               | Ok b -> VSize b
+               | Error e -> failwith $"Size.parse: {e}")
+          | v -> unreachable $"the checker rejects 'Size.parse' on {formatValue v}")
+      "tryParse",
+      TFun(TStr, TNamed("Option", [ TSize ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              (match parseSize s with
+               | Ok b -> VUnion("Some", Some(VSize b))
+               | Error _ -> VUnion("None", None))
+          | v -> unreachable $"the checker rejects 'Size.tryParse' on {formatValue v}") ]
+
 // ---- Duration [D:duration]: integer ms; decimals only in text ------
 let private durCtor (name: string) (mult: int64) : Value =
     VBuiltin(fun v ->
@@ -1800,6 +1836,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Env", envMembers
       "Log", logMembers
       "Duration", durationMembers
+      "Size", sizeMembers
       // the bounded-loop option templates [D:retry-poll]: the resting
       // values the key=value head desugars over
       "Retry",
@@ -2176,7 +2213,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "src"; "dst" ])
           "File.size",
           (bd
-              "The file's size in bytes (raises when absent — the plain name asserts; a trySize is a park)."
+              "The file's size as a Size — compare directly (File.size p > 10MiB); Size.toBytes for the int. Raises when absent (the plain name asserts; a trySize is a park)."
               (Some
                   "let d = Path.newTempDir () in let f = $\"{d}/a.txt\" in ([\"x\"] |> File.write f) ; print $\"{File.size f}\" ; Dir.deleteAll d")
               None
@@ -2303,6 +2340,26 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               None
           "Poll.defaults", bd "The poll template: timeout = 1m, interval = 1s." None None
+
+          // ---- Size: bytes as a type [D:size] --------------------------
+          "Size.bytes",
+          (bd "A size of n bytes — the literal 512B, as a function." (Some "Size.bytes 512") None
+           |> named [ "n" ])
+          "Size.toBytes",
+          (bd
+              "The total bytes as an int — the exact exit (show's rendering truncates to one decimal)."
+              (Some "Size.toBytes 2KiB")
+              None
+           |> named [ "s" ])
+          "Size.parse",
+          (bd
+              "Parse size text: binary units at 1024 (1.5MiB), the SI spellings at powers of ten (1MB is 10^6 — the writer chose the unit), B for bytes; sub-byte precision raises."
+              (Some "Size.parse \"1.5MiB\"")
+              None
+           |> named [ "text" ])
+          "Size.tryParse",
+          (bd "Size.parse as an Option — None instead of the raise." (Some "Size.tryParse \"nope\"") None
+           |> named [ "text" ])
 
           // ---- Duration: time as a type [D:duration] -------------------
           "Duration.ms",

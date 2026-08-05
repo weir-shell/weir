@@ -291,6 +291,24 @@ SPLICED duration is rejected with the deliberate spellings
 (`Duration.toMillis d` or `show d`): the argv form is the program's
 business, not weir's guess.
 
+## Size thresholds: bytes as a type
+
+`File.size` returns a `Size`, so a threshold reads as written and
+renders as meant:
+
+```weir
+["payload"] |> File.write "guide-sz.bin"
+let sz = File.size "guide-sz.bin"
+if sz > 4B then print $"large: {sz}"
+File.delete "guide-sz.bin"
+```
+
+Literals are binary units only (`10MiB`, never `10MB` — the SI
+suffixes are ambiguous in the wild and weir refuses to guess; the
+teaching error names the fix). `Size.parse` reads foreign text and
+accepts SI as powers of ten there, because the writer of that text
+chose the unit.
+
 ## Rates and percentages: floats, finite-only
 
 A weir float is always finite — a result that would be `NaN` or

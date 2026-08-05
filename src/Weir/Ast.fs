@@ -42,6 +42,7 @@ and ExprKind =
     // a duration literal: 30s / 250ms, stored as ms [D:duration]
     | EDur of ms: int64
     | EFloat of value: float
+    | ESize of bytes: int64
     // retry/poll [D:retry-poll]: a two-segment compound — options
     // record, block body yielding 'a, optional `until` binder+predicate
     // block (absent = the body IS the predicate, form yields unit)
@@ -159,6 +160,7 @@ let exprChildren (e: Expr) : Expr list =
     | EInt _
     | EDur _
     | EFloat _
+    | ESize _
     | EStr _
     | EBool _
     | EUnit
@@ -231,6 +233,7 @@ let rec sexpr (e: Expr) : string =
     | EInt n -> string n
     | EDur n -> formatDuration n
     | EFloat f -> formatFloat f
+    | ESize b -> formatSize b
     | ERetry(isPoll, opts, body, until) ->
         let head = if isPoll then "poll" else "retry"
 

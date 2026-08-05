@@ -266,7 +266,21 @@ let private intLit =
                   attempt (
                       // a digit after the unit is captured, not rejected:
                       // 1m30s deserves its own teaching, below
-                      (choice [ pstring "ms"; pstring "s"; pstring "m"; pstring "h"; pstring "d" ])
+                      (choice
+                          [ pstring "KiB"
+                            pstring "MiB"
+                            pstring "GiB"
+                            pstring "TiB"
+                            pstring "KB"
+                            pstring "MB"
+                            pstring "GB"
+                            pstring "TB"
+                            pstring "ms"
+                            pstring "B"
+                            pstring "s"
+                            pstring "m"
+                            pstring "h"
+                            pstring "d" ])
                       .>>. lookAhead (opt (satisfy System.Char.IsDigit))
                       .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetter c || c = '_'))
                   )
@@ -276,46 +290,80 @@ let private intLit =
               .>>. opt (
                   attempt (
                       pchar '.' >>. notFollowedBy (pchar '.') >>. opt (many1Satisfy isDigit)
-                      .>>. opt (choice [ pstring "ms"; pstring "s"; pstring "m"; pstring "h" ])
+                      .>>. opt (
+                          choice
+                              [ pstring "KiB"
+                                pstring "MiB"
+                                pstring "GiB"
+                                pstring "TiB"
+                                pstring "ms"
+                                pstring "B"
+                                pstring "s"
+                                pstring "m"
+                                pstring "h" ]
+                      )
                   )
               )
               .>>. opt floatExponent)
         >>= fun (at, ((((digits, m), sfx), dec), expo)) ->
+            let isSizeUnit u =
+                match u with
+                | "B"
+                | "KiB"
+                | "MiB"
+                | "GiB"
+                | "TiB" -> true
+                | _ -> false
+
+            let compoundTeaching u =
+                if isSizeUnit u then
+                    // nobody writes compound sizes [D:size]
+                    "sizes take a single unit — write 1536KiB, not a compound (decimals live in Size text: Size.parse \"1.5MiB\")"
+                else
+                    "compound durations are text, not literals — add single units (1m + 30s) or parse: Duration.parse \"1m30s\""
+
             match m, sfx with
             | Some _, _ -> failFatallyAt at "units of measure are not supported; use bare int"
-            | _, Some(_, Some _) ->
-                // compound spellings are TEXT [D:duration]: literals are
-                // single-unit
+            | _, Some(("KB" | "MB" | "GB" | "TB") as si, _) ->
+                // the SI suffixes are AMBIGUOUS in the wild [D:size] —
+                // 10^n in SI, 2^n in common usage — and weir refuses to
+                // guess; Size.parse reads them (the writer chose)
                 failFatallyAt
                     at
-                    "compound durations are text, not literals — add single units (1m + 30s) or parse: Duration.parse \"1m30s\""
+                    $"'{si}' is ambiguous (10^n in SI, 2^n in common usage) — write the binary unit ({si[0]}iB), or Size.parse \"…{si}\" for SI text"
+            | _, Some(u, Some _) -> failFatallyAt at (compoundTeaching u)
             | _, Some("d", _) ->
                 // no 'd' [D:duration]: a day is not a uniform length
                 failFatallyAt at "durations have no 'd' suffix — a day is not a fixed length; write hours (24h)"
             | _, Some(unit, None) ->
                 match dec, expo, System.Int64.TryParse digits with
                 | None, None, (true, n) ->
-                    let mult =
-                        match unit with
-                        | "ms" -> 1L
-                        | "s" -> 1000L
-                        | "m" -> 60000L
-                        | _ -> 3600000L
-
-                    preturn (EDur(n * mult))
-                | _ ->
-                    failFatallyAt
-                        at
-                        "compound durations are text, not literals — add single units (1m + 30s) or parse: Duration.parse \"1m30s\""
+                    match unit with
+                    | "ms" -> preturn (EDur n)
+                    | "s" -> preturn (EDur(n * 1000L))
+                    | "m" -> preturn (EDur(n * 60000L))
+                    | "h" -> preturn (EDur(n * 3600000L))
+                    | "B" -> preturn (ESize n)
+                    | "KiB" -> preturn (ESize(n * 1024L))
+                    | "MiB" -> preturn (ESize(n * 1024L * 1024L))
+                    | "GiB" -> preturn (ESize(n * 1024L * 1024L * 1024L))
+                    | _ -> preturn (ESize(n * 1024L * 1024L * 1024L * 1024L))
+                | _ -> failFatallyAt at (compoundTeaching unit)
             | None, None ->
                 match dec, expo with
                 | Some(None, _), _ ->
                     failFatallyAt at "float literals need digits on both sides of the point (write 1.0)"
-                | Some(Some _, Some _), _ ->
-                    // 2.5s is a RENDERING, not a literal [D:duration]
-                    failFatallyAt
-                        at
-                        $"decimal duration literals do not exist — decimals are a rendering; write the ms form (2.5s is 2500ms)"
+                | Some(Some fr, Some su), _ ->
+                    if isSizeUnit su then
+                        // 1.5MiB is TEXT, not a literal [D:size]
+                        failFatallyAt
+                            at
+                            $"decimal size literals do not exist — decimals are a rendering; write whole units ({digits}.{fr}{su} — e.g. 1.5MiB is 1536KiB) or Size.parse"
+                    else
+                        // 2.5s is a RENDERING, not a literal [D:duration]
+                        failFatallyAt
+                            at
+                            $"decimal duration literals do not exist — decimals are a rendering; write the ms form (2.5s is 2500ms)"
                 | Some(Some frac, None), _ ->
                     let text =
                         $"{digits}.{frac}"
@@ -671,6 +719,7 @@ let private negAtom =
             match e.Kind with
             | EFloat f -> { Kind = EFloat(-f); Span = span }
             | EDur n -> { Kind = EDur(-n); Span = span }
+            | ESize b -> { Kind = ESize(-b); Span = span }
             | _ ->
                 { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
                   Span = span }
@@ -2525,6 +2574,7 @@ tySynRef.Value <-
               | "unit" -> ws >>% TUnit
               | "Duration" -> ws >>% TDur
               | "float" -> ws >>% TFloat
+              | "Size" -> ws >>% TSize
               | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
               | w when keywords.Contains w -> fail $"'{w}' is a keyword"
               | w ->
@@ -2544,7 +2594,16 @@ let private attrArgLit =
           many1Satisfy isDigit
           .>>. opt (
               attempt (
-                  (choice [ pstring "ms"; pstring "s"; pstring "m"; pstring "h" ])
+                  (choice
+                      [ pstring "KiB"
+                        pstring "MiB"
+                        pstring "GiB"
+                        pstring "TiB"
+                        pstring "ms"
+                        pstring "B"
+                        pstring "s"
+                        pstring "m"
+                        pstring "h" ])
                   .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
               )
           )
@@ -2559,6 +2618,11 @@ let private attrArgLit =
               | Some "s", _ -> ADur(int64 digits * 1000L)
               | Some "m", _ -> ADur(int64 digits * 60000L)
               | Some "h", _ -> ADur(int64 digits * 3600000L)
+              | Some "B", _ -> ASize(int64 digits)
+              | Some "KiB", _ -> ASize(int64 digits * 1024L)
+              | Some "MiB", _ -> ASize(int64 digits * 1024L * 1024L)
+              | Some "GiB", _ -> ASize(int64 digits * 1024L * 1024L * 1024L)
+              | Some "TiB", _ -> ASize(int64 digits * 1024L * 1024L * 1024L * 1024L)
               | _ -> AInt(int64 digits)
           keyword "true" >>% ABool true
           keyword "false" >>% ABool false ]
