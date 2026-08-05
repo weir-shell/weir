@@ -10,7 +10,7 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 # warn-only mtime check here — a doc-test validating against a stale
 # binary is exactly the masked failure the gate exists to prevent)
 "$(dirname "$0")/check-fresh.sh" "$BIN"
-DOCS=("$(dirname "$0")/../skills/weir/SKILL.md" "$(dirname "$0")/../docs/GUIDE.md")
+DOCS=("$(dirname "$0")/../skills/weir/SKILL.md" "$(dirname "$0")/../docs/GUIDE.md" "$(dirname "$0")/../docs/COMING-FROM.md")
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

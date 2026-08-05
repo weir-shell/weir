@@ -3273,6 +3273,14 @@ let private attrRegistry: Map<string, AttrArg option -> string option> =
           (function
           | None -> None
           | Some _ -> Some "takes no argument")
+          // [<Positional>] returns for SIGNATURES [D:command-signatures]:
+          // foreign CLIs have operands and a signature describes theirs
+          // (its drop was about weir's own CLIs); inert everywhere else,
+          // the attribute law
+          "Positional",
+          (function
+          | None -> None
+          | Some _ -> Some "takes no argument")
           // [<Doc>] RETIRED [D:doc-help] — a `///` above the field is the one
           // source; a stale `[<Doc "x">]` is now the ordinary unknown-attribute
           // error (the did-you-mean over the remaining names).

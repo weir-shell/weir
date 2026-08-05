@@ -50,9 +50,19 @@ let findWeirDir (fromDir: string) : Result<string, string> =
 type LockEntry =
     { Kind: string
       Name: string
+      // for a GENERATED artifact (a signature) there is no URL: the
+      // slot records the generation source instead ("generated:help",
+      // "generated:completion-fish", …) [D:command-signatures] — the
+      // ninth ruling's edge: the lock is still the record of intent,
+      // and the intent of a generated entry is "this signature
+      // describes the tool I had"
       Url: string
       Sha256: string
-      Path: string }
+      Path: string
+      // sig entries only: the tool's VERBATIM --version output at
+      // generation time — denormalized from the file (hash-protected,
+      // so they cannot drift apart) so verify needs no weir parser
+      Version: string option }
 
 let sha256Hex (bytes: byte[]) : string =
     use sha = Security.Cryptography.SHA256.Create()
@@ -78,7 +88,11 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
                   Name = e.GetProperty("name").GetString()
                   Url = e.GetProperty("url").GetString()
                   Sha256 = e.GetProperty("sha256").GetString()
-                  Path = e.GetProperty("path").GetString() })
+                  Path = e.GetProperty("path").GetString()
+                  Version =
+                    match e.TryGetProperty "version" with
+                    | true, v -> Some(v.GetString())
+                    | _ -> None })
             |> List.ofSeq
             |> Ok
         with ex ->
@@ -100,6 +114,11 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
          w.WriteString("url", e.Url)
          w.WriteString("sha256", e.Sha256)
          w.WriteString("path", e.Path)
+
+         match e.Version with
+         | Some v -> w.WriteString("version", v)
+         | None -> ()
+
          w.WriteEndObject()
 
      w.WriteEndArray()
@@ -434,7 +453,8 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                               Name = name
                               Url = url
                               Sha256 = hash
-                              Path = rel }
+                              Path = rel
+                              Version = None }
 
                         let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
@@ -463,6 +483,15 @@ let restore (weirDir: string) : Result<string list, string> =
 
                 if File.Exists dest then
                     Ok $"{e.Kind} {e.Name}: present"
+                elif e.Url.StartsWith "generated:" then
+                    // the ruled restore behaviour for a GENERATED entry
+                    // [D:command-signatures]: NEVER regenerate (that would
+                    // make a checked-in signature depend on the machine
+                    // running restore). Present = confirmed by the verify
+                    // pass; absent = it was never checked in, and only
+                    // regeneration can recreate it — say so.
+                    Error
+                        $"{e.Kind} {e.Name}: ABSENT and generated (nothing to fetch) — the file should be checked in; recreate deliberately with `weir add sig {e.Name}`"
                 else
                     match fetchBytes e.Url with
                     | Error err -> Error $"{e.Kind} {e.Name}: {err}"
@@ -492,12 +521,36 @@ let restore (weirDir: string) : Result<string list, string> =
                     | Error _ -> "")
             )
 
-/// `weir verify`, two-arm shaped (ruling: today the hash arm; a future
+/// spawn `<tool> --version` and capture its combined first output —
+/// FENCED to the two commands allowed to ask the environment
+/// (`weir verify`, `weir add sig`); check/completion never call this
+/// [D:command-signatures]
+let toolVersionOutput (tool: string) : string option =
+    try
+        let psi = Diagnostics.ProcessStartInfo(tool, "--version")
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+        psi.UseShellExecute <- false
+        use p = Diagnostics.Process.Start psi
+        let out = p.StandardOutput.ReadToEnd()
+        let err = p.StandardError.ReadToEnd()
+        p.WaitForExit()
+        Some(if out.Trim() <> "" then out else err)
+    with _ ->
+        None
+
+/// `weir verify`, two-arm shaped (ruling: today the hash arm; the
 /// signature arm — tool `--version` against the recorded identity —
-/// slots beside it, not into a rewrite).
+/// landed beside it [D:command-signatures]).
 type VerifyFinding =
     | Absent of LockEntry
     | Modified of LockEntry * actual: string
+    // the signature arm [D:command-signatures]: the tool's --version
+    // no longer matches the recorded identity, or the tool is missing
+    // (an environment mismatch — verify is the command allowed to ask
+    // the environment)
+    | VersionMismatch of LockEntry * actual: string
+    | ToolMissing of LockEntry
 
 let verify (weirDir: string) : Result<string list * VerifyFinding list, string> =
     match readLock weirDir with
@@ -523,7 +576,24 @@ let verify (weirDir: string) : Result<string list * VerifyFinding list, string> 
                     lines.Add
                         $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}…"
                 else
-                    lines.Add $"{e.Kind} {e.Name}: ok"
+                    // the VERSION arm — sig entries compare the tool's
+                    // verbatim --version against the recorded identity;
+                    // exact match, no tolerance [D:command-signatures]
+                    match e.Version with
+                    | Some recorded ->
+                        match toolVersionOutput e.Name with
+                        | None ->
+                            findings.Add(ToolMissing e)
+
+                            lines.Add
+                                $"{e.Kind} {e.Name}: TOOL MISSING — '{e.Name}' is not on PATH (the signature records: {recorded})"
+                        | Some actual when actual.Trim() <> recorded.Trim() ->
+                            findings.Add(VersionMismatch(e, actual))
+
+                            lines.Add
+                                $"{e.Kind} {e.Name}: VERSION MISMATCH — installed says '{actual.Trim()}', the signature records '{recorded.Trim()}' — regenerate: weir add sig {e.Name}"
+                        | Some _ -> lines.Add $"{e.Kind} {e.Name}: ok (hash + version)"
+                    | None -> lines.Add $"{e.Kind} {e.Name}: ok"
 
         Ok(List.ofSeq lines, List.ofSeq findings)
 

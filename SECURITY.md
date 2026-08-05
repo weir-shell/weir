@@ -154,3 +154,14 @@ refereed by the real F# compiler as an oracle (`tests/Weir.Fidelity`),
 and grammar totality/soundness is patrolled by a metamorphic fuzzer
 (`tests/Weir.Fuzz`). The development history is the `plans/` directory,
 one blessed plan per session. Read the evidence, not the byline.
+
+## Signatures check your invocations, not your binaries
+
+A command signature (`#sig tool`) constrains what weir ACCEPTS as a
+command line — an unknown flag is caught at check time. It says
+nothing about what runs: a hostile `tool` earlier on PATH still runs,
+and `weir verify`'s version comparison fingerprints identity only as
+far as `--version` output can (a wrapper that forwards `--version`
+passes it). Same genre as word-integrity-is-not-flag-safety: the
+guarantee is about the command line weir constructs, never about the
+binary the OS resolves.

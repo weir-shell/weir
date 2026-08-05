@@ -1600,6 +1600,38 @@ IEEE semantics nowhere else.
     (`--help` renders it), and the parse/render pair agrees —
     `--rate 0.5` round-trips through `show`.
 
+## Command signatures — contracts customer two [D:command-signatures]
+
+`#sig <tool>` (file head, beside `#loose`; or `#sig <tool> "path"` to
+override) declares that a tool's command lines are checked against
+`.weir/sigs/<tool>.weir` — found by the same walk schemas use (up to
+the first `.weir/`, never past `.git`; absence is a LOUD check error
+naming the resolved path, the searched-from directory, and the fix).
+A signature is an ordinary weir MODULE: `let version = "<verbatim
+--version output>"`, optionally `let exhaustive = true`, and the
+surface as the type named `Cmd` — a union of subcommands carrying
+records of flags, or a single record for a flag-only tool. Fields
+derive long flags by the `Args.load` kebab law; `[<Short "x">]`
+declares shorts (never derived — a foreign tool's shorts are facts);
+`[<Positional>]` marks operands, which derive no flag (the attribute
+returned for DESCRIBING foreign CLIs; its earlier drop was about
+weir's own). v1 checks UNKNOWN FLAGS only: a partial signature (the
+generated default) WARNS, `exhaustive` makes it an ERROR, both with
+did-you-mean and the declaring line. A subcommand matching no case
+disables flag checking for that line; words after a bare `--` are
+operands. `weir check` NEVER spawns the tool (pinned) — the version
+comparison is `weir verify`'s job, which may ask the environment and
+hard-fails on any mismatch. `weir add sig <tool>` GENERATES: probes
+a completion endpoint, then shipped fish completions, then `--help`
+(the chosen source rides the provenance comment and the lock entry's
+`generated:<source>` slot); the result validates as a signature
+before anything persists, and `restore` NEVER regenerates a
+generated entry (a checked-in signature must not depend on the
+machine restoring it). Signatures contribute NOTHING at runtime —
+with and without them, output is byte-identical (property 3, pinned).
+Modules cannot declare `#sig` (they are decl-only; commands cannot
+appear in them, so inheritance through imports cannot arise).
+
 ## retry / poll — the bounded loops [D:retry-poll]
 
 Two-segment compound forms, the machine `if`/`match` (and, since the

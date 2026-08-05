@@ -851,6 +851,28 @@ floor remains for hand-rolled shapes: `Args.flag "--clean" "-c"` and
 `Args.value "--out"` scan the raw `Self.args` seq, and multi-value options
 reshape as one flag per value (`--stack X --env Y`).
 
+## Declaring a tool: command signatures
+
+Weir checks that `bicep` exists; a signature closes the next gap —
+`bicep buidl --outfil x` becomes a check-time catch instead of a 3am
+failure. Generate one from the installed binary, then declare it per
+script (prose here because signatures need a `.weir/` tree; the e2e
+battery holds the runnable truth):
+
+    weir add sig bicep        # probes the tool, writes .weir/sigs/bicep.weir + the lock
+
+    #sig bicep                # in each script that wants the checking
+    bicep build --outfile x.json
+
+A generated signature is PARTIAL — unknown flags warn, because a
+scraped surface may be incomplete. Verify it by hand, add
+`let exhaustive = true`, and unknown flags become errors. The
+signature records the tool's verbatim `--version`; `weir verify`
+compares it against the installed binary (exact match — patch churn
+is handled by regenerating, and an empty diff is the useful signal).
+`weir check` never runs the tool, so checking works for tools that
+only exist in CI.
+
 ## Retrying and polling
 
 The bounded loops are compound forms: a `key=value` head, a block
@@ -961,8 +983,8 @@ without params (`let branch = git rev-parse HEAD |> Seq.head`,
 their own RHS, so `let f x = x` stays the identity whatever is
 installed) — prefer bare when the whole RHS is the chain; `$()` is
 for everywhere the command is a SUB-expression (inside bodies, holes,
-nested splices). `run`/`cmd` remain the spellings when the
-program NAME is computed. And do not bind an `if`-effect block to a
+nested splices). A computed program NAME has no head spelling —
+branch the whole command line (`if hot then rg pat else grep pat`). And do not bind an `if`-effect block to a
 `let`: the binding is eagerly evaluated unit — a bare `if` statement
 says what it means.
 
@@ -999,4 +1021,6 @@ outgrows a shell, the graduation path is full F# — weir points there
 on purpose.
 
 For the language rulebook with rationale, read `SEMANTICS.md`. For the
-compressed agent rules, `skills/weir/SKILL.md`.
+compressed agent rules, `skills/weir/SKILL.md`. Arriving with another
+language's reflexes — bash, PowerShell, Python, Make? The per-language
+translation tables live in [COMING-FROM.md](COMING-FROM.md).

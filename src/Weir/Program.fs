@@ -163,10 +163,21 @@ let main argv =
          | Error e ->
              Console.Error.WriteLine $"weir add: {e}"
              1)
-    | "add" :: "sig" :: _ ->
-        Console.Error.WriteLine
-            "weir add sig: command signatures are the spine's next customer — not built yet (DESIGN-command-signatures.md); `add sig <tool>` will GENERATE from the installed binary"
+    | [ "add"; "sig"; tool ] ->
+        let weirDir =
+            match Contracts.findWeirDir "." with
+            | Ok d -> d
+            | Error _ -> IO.Path.GetFullPath ".weir"
 
+        (match Script.SigGen.generate weirDir tool with
+         | Ok line ->
+             Console.WriteLine line
+             0
+         | Error e ->
+             Console.Error.WriteLine $"weir add sig: {e}"
+             1)
+    | "add" :: "sig" :: _ ->
+        Console.Error.WriteLine "usage: weir add sig <tool>   generate a signature from the installed binary"
         2
     | "add" :: "module" :: _ ->
         Console.Error.WriteLine
