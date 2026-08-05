@@ -3994,6 +3994,129 @@ let blockLetCmdTests =
               | Ok _ -> failtest "expected the reservation"
           } ]
 
+let lspCrossFileTests =
+    // real files on disk: cross-file targets re-analyze the TARGET file
+    // through the import channel [D:lsp-cross-file]
+    let withTree (f: string -> string list -> string -> string -> unit) =
+        let td =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-lspx-{System.Guid.NewGuid():N}")
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".weir", "sigs"))
+        |> ignore
+
+        let lib = System.IO.Path.Combine(td, "lib.weir")
+
+        System.IO.File.WriteAllLines(
+            lib,
+            [| "module Lib"
+               ""
+               "/// the context row"
+               "type Ctx = {"
+               "    /// the display name"
+               "    Name: string"
+               "    Port: int"
+               "}"
+               ""
+               "/// outcome marker"
+               "type Verdict ="
+               "    | Good"
+               "    | Bad of int"
+               ""
+               "/// doubles a number"
+               "let double n = n * 2"
+               ""
+               "/// a plain constant"
+               "let origin = \"here\""
+               ""
+               "let sample = Bad 7" |]
+        )
+
+        let sigp = System.IO.Path.Combine(td, ".weir", "sigs", "mytool.weir")
+
+        System.IO.File.WriteAllLines(
+            sigp,
+            [| "module Mytool"
+               "let version = \"mytool 1.0\""
+               "let exhaustive = true"
+               "type Cmd = {"
+               "    /// run without side effects"
+               "    dryRun: bool"
+               "}" |]
+        )
+
+        let entry = System.IO.Path.Combine(td, "main.weir")
+
+        let entryLines =
+            [ "#sig mytool"
+              "import \"./lib.weir\" as Lib"
+              ""
+              "let x = Lib.double 21"
+              "let who = Lib.origin"
+              "let c = { Name = \"a\"; Port = 1 }"
+              "let st = mytool --dry-run"
+              "let e = echo hi"
+              "let k = match Lib.sample with | Bad n -> n | _ -> 0"
+              "print (show c)" ]
+
+        try
+            f entry entryLines lib sigp
+        finally
+            System.IO.Directory.Delete(td, true)
+
+    testList
+        "LSP cross-file navigation [D:lsp-cross-file]"
+        [ test "a module member hovers as its annotated signature + /// doc — the LOCAL format (type, blank, doc)" {
+              withTree (fun entry lines _ _ ->
+                  Expect.equal
+                      (Weir.Lsp.hoverAt entry lines 4 14)
+                      (Some "Lib.double (n: int) : int\n\ndoubles a number")
+                      "the function member"
+
+                  Expect.equal
+                      (Weir.Lsp.hoverAt entry lines 5 16)
+                      (Some "Lib.origin : string\n\na plain constant")
+                      "the zero-param value renders name-and-type")
+          }
+          test "an imported record's field in a literal hovers the FIELD's doc, read from the module file" {
+              withTree (fun entry lines _ _ ->
+                  Expect.equal (Weir.Lsp.hoverAt entry lines 6 12) (Some "string\n\nthe display name") "")
+          }
+          test "definition crosses files: member, field, union case, each to the declaring module" {
+              withTree (fun entry lines lib _ ->
+                  Expect.equal (Weir.Lsp.definitionTarget entry lines 4 14) (Some(Some lib, 16, 5, 6)) "Lib.double"
+                  Expect.equal (Weir.Lsp.definitionTarget entry lines 6 12) (Some(Some lib, 6, 5, 4)) "field Name"
+                  // imported cases reach expressions only through PATTERNS (a bare
+                  // `Bad 3` reads as a command head — cases do not merge into
+                  // value scope); the pattern position resolves cross-file
+                  Expect.equal (Weir.Lsp.definitionTarget entry lines 9 33) (Some(Some lib, 13, 7, 3)) "case Bad")
+          }
+          test "definition on the import path opens the module file; an unresolved path stays quiet" {
+              withTree (fun entry lines lib _ ->
+                  Expect.equal (Weir.Lsp.definitionTarget entry lines 2 12) (Some(Some lib, 1, 1, 0)) ""
+
+                  let broken = [ "import \"./nope.weir\" as N"; "print 1" ]
+                  Expect.equal (Weir.Lsp.definitionTarget entry broken 1 12) None "unresolved: quiet, never bogus")
+          }
+          test
+              "a signed head hovers identity + RECORDED version (the tool is NOT on PATH — no spawn) and opens its sig file" {
+              withTree (fun entry lines _ sigp ->
+                  Expect.equal
+                      (Weir.Lsp.hoverAt entry lines 7 11)
+                      (Some
+                          $"mytool — signed command (#sig mytool, line 1; exhaustive signature)\n\n{sigp}\nversion: mytool 1.0")
+                      "head hover"
+
+                  Expect.equal (Weir.Lsp.definitionTarget entry lines 7 11) (Some(Some sigp, 1, 1, 0)) "head def")
+          }
+          test "a signed flag hovers its field type + /// doc from the sig file, and jumps to the field" {
+              withTree (fun entry lines _ sigp ->
+                  Expect.equal (Weir.Lsp.hoverAt entry lines 7 20) (Some "bool\n\nrun without side effects") ""
+                  Expect.equal (Weir.Lsp.definitionTarget entry lines 7 20) (Some(Some sigp, 6, 5, 6)) "flag def")
+          }
+          test "an UNSIGNED command head stays quiet — no bogus location" {
+              withTree (fun entry lines _ _ -> Expect.equal (Weir.Lsp.definitionTarget entry lines 8 9) None "")
+          } ]
+
 let semanticTokenTests =
     testList
         "Semantic tokens"
@@ -8487,7 +8610,10 @@ let sizeTests =
 
               match terrs with
               | [ d ] ->
-                  Expect.stringContains d.Message "got Duration — convert explicitly (Duration.toMillis" "the splice hint"
+                  Expect.stringContains
+                      d.Message
+                      "got Duration — convert explicitly (Duration.toMillis"
+                      "the splice hint"
               | other -> failtest $"expected ONE error (the cascade is suppressed), got {other.Length}"
           }
           test "the JSON and YAML parks each name Size.toBytes" {
@@ -9667,6 +9793,7 @@ let allTests =
           blockLetCmdTests
           multilineLambdaTests
           semanticTokenTests
+          lspCrossFileTests
           pipeAlignTests
           optionSweepTests
           moduleTests

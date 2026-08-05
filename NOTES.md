@@ -1,5 +1,59 @@
 # Spike Notes
 
+## LSP cross-file navigation: the retention answer (2026-08-05)
+
+The plan ordered a retention diagnosis first, and the answer is the
+fact the next LSP session will want: THERE IS NOTHING TO RETAIN. The
+server's stateless design (per-document text, whole-file re-analyze
+per request) already carries everything — a KImport statement holds
+the full LoadedModule (path, typed body, type defs), and doc
+attachments are a pure function of lines. All five symptoms were one
+gap: the reference-site→definition-site mapping stopped at the file
+boundary. definitionFor returned file-less positions and skipped
+dotted names by guard; the doc lookup read only the entry file. So
+the fix is definitionTarget growing a file dimension and re-analyzing
+the TARGET file's lines through the import channel — the same
+stateless discipline, one file over. Invalidation therefore holds
+trivially (pinned: edit the module buffer, the importer's hover
+refreshes).
+
+The probes corrected two assumptions in the plan's own text. "Lib.Ctx
+in a qualified literal" does not exist — imported types merge
+UNQUALIFIED (`from json Ctx`; `Lib.Ctx` is a parse error), so the
+type half of the fix is a fallback from the local KType search into
+the import whose TypeDefs declare the name, and every type-position
+arm (fields, cases, from json, Args.load…) crossed for free through
+that one seam. And imported union cases never enter value scope at
+all (`Bad 3` reads as a command head) — only pattern positions reach
+them, which is where the pin sits.
+
+The signature half really was the same fix with a different
+reference-site shape — but SigInfo had to learn its own file first
+(it carried Tool + DeclLine; the resolved sig path died inside
+loadSigs). cmdSurfaceAt mirrors the unknown-flag check's recovery
+(bare TECmd + the reified spine), and the flag word reverses through
+kebabFlag/explicitShorts to its field. The off-PATH question
+resolved cleanly: a signed absent tool only WARNS cmd-not-found, so
+the runner-only-tool story works, and the head-hover pin runs with
+the tool genuinely off PATH — version is the RECORDED string, spawn
+never happens.
+
+One found-and-fixed beyond the plan: the buffer-over-disk override
+looked open buffers up by pathToUri(abs) — a dependency open under
+the client's own spelling (%6C…) silently read DISK. The Windows
+session's mirror-bug rule (spellings must round-trip, both
+directions) applied to the read direction; now matched by decoded
+path, and the e2e invalidation probe runs under a percent-encoded
+spelling on purpose.
+
+Completion report, as ordered: `Lib.` offers member NAMES (that was
+never blocked) with no docs — docs did not come free because the fix
+was not retention. Flag completion did not fall out either. Both
+stay future work. Stale docs trued while there: SECURITY.md's
+non-claim now names #sig files (missed by the signatures session),
+and editors.md's scope line still claimed the server reads no files
+at all (pre-modules text).
+
 ## the leftovers sweep: yet-retired, hole-sealed, ledger-trued (2026-08-05)
 
 Four leftovers closed in one pass. The four unit-type boundary
