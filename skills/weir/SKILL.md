@@ -197,6 +197,17 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   fields error naming float), yaml (unquoted `1.5` is the number,
   quoted `"1.5"` the string; `.nan`/`.inf` reject — finite-only),
   Args/Env (`--rate 0.5`, `[<Default 0.5>]`).
+- Bytes are `Size` (integer bytes inside): literals `512B`/`1KiB`/
+  `2MiB`/`1GiB`/`1TiB` — binary units ONLY (`1MB` is a teaching
+  error: SI is ambiguous in the wild; `Size.parse "1MB"` reads it as
+  10^6 — parse reads foreign text). `show` = binary units, one
+  truncated decimal (`1.5 MiB`), bytes plain (`847 B`);
+  `Size.toBytes` is the exact exit. `+`/`-` between sizes, `*`/`/`
+  by int; `Size / Size` errors naming both alternatives.
+  `File.size p : Size` — compare directly (`File.size p > 10MiB`).
+  Args/Env fields parse (`--max 1.5GiB`, `[<Default 10MiB>]`);
+  json/yaml REJECT (convert via `Size.toBytes`). No `print` (holes
+  render: `$"{sz}"`).
 - Time is `Duration` (integer ms inside): literals `500ms`/`30s`/`2m`/`1h`
   (single-unit, expression position; in command position `30s` is an
   ordinary argv word). `+`/`-` between durations, `*`/`/` by int;

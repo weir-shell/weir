@@ -15,6 +15,10 @@ type Ty =
     | TStr
     | TBool
     | TUnit
+    // bytes as a type [D:size]: an INTEGER of bytes (int64 — ~8 EiB
+    // ceiling); decimals exist only in parse and render, the Duration
+    // pattern copied
+    | TSize
     // time as a type [D:duration]: an INTEGER of milliseconds; decimals
     // exist only in parsing and rendering — the no-floats law's answer
     // to the time want
@@ -29,6 +33,7 @@ type Ty =
 let rec formatTy (ty: Ty) : string =
     match ty with
     | TDur -> "Duration"
+    | TSize -> "Size"
     | TVar v -> $"'{v}"
     | TRowVar(_, []) -> "{ .. }"
     | TRowVar(_, fields) ->
@@ -97,7 +102,8 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TStr
     | TBool
     | TUnit
-    | TDur -> Set.empty
+    | TDur
+    | TSize -> Set.empty
 
 // The closed class family [D:inferred-type-classes] — fully erased
 // after checking: a constraint never reaches the value domain.
@@ -164,6 +170,8 @@ type AttrArg =
     // a duration literal (30s, 250ms) — stored as ms [D:duration]
     | ADur of int64
     | AFloat of float
+    // a size literal (10MiB) — stored as bytes [D:size]
+    | ASize of int64
 
 type RecordDef =
     { Name: string
@@ -270,6 +278,84 @@ let parseFloat (text: string) : Result<float, string> =
     | true, f when System.Double.IsFinite f -> Ok(if f = 0.0 then 0.0 else f)
     | true, _ -> Error $"not a finite float: '{text}'"
     | _ -> Error $"not a float: '{text}'"
+
+// sizes render BINARY units [D:size] — KiB/MiB/GiB/TiB, one decimal
+// above bytes (TRUNCATED tenths: a REPORT, not an encoding — base-1024
+// decimals do not terminate, so unlike Duration's show this is lossy
+// by design; toBytes is the exact exit), plain bytes with no decimal.
+// Integer math throughout (no float, the grep-clean bar).
+let formatSize (totalBytes: int64) : string =
+    let sign = if totalBytes < 0L then "-" else ""
+    let b = abs totalBytes
+
+    let unitOf =
+        [ 1024L * 1024L * 1024L * 1024L, "TiB"
+          1024L * 1024L * 1024L, "GiB"
+          1024L * 1024L, "MiB"
+          1024L, "KiB" ]
+        |> List.tryFind (fun (u, _) -> b >= u)
+
+    match unitOf with
+    | None -> $"{sign}{b} B"
+    | Some(u, name) ->
+        let tenths = b * 10L / u
+        let whole = tenths / 10L
+        let dec = tenths % 10L
+
+        if dec = 0L then
+            $"{sign}{whole} {name}"
+        else
+            $"{sign}{whole}.{dec} {name}"
+
+// parse reads FOREIGN text [D:size]: binary units at 1024-powers, the
+// SI spellings as powers of TEN (the writer chose the unit — unlike a
+// literal, where weir would be guessing), optional space, decimals
+// down to whole bytes (sub-byte precision rejects, the sub-ms rule)
+let parseSize (text: string) : Result<int64, string> =
+    let t = text.Trim()
+    let neg = t.StartsWith "-"
+    let t = if neg then (t.Substring 1).TrimStart() else t
+
+    let units =
+        [ "TiB", 1024L * 1024L * 1024L * 1024L
+          "GiB", 1024L * 1024L * 1024L
+          "MiB", 1024L * 1024L
+          "KiB", 1024L
+          "TB", 1000_000_000_000L
+          "GB", 1000_000_000L
+          "MB", 1000_000L
+          "KB", 1000L
+          "B", 1L ]
+
+    let m =
+        System.Text.RegularExpressions.Regex.Match(t, "^([0-9]+)(?:\.([0-9]+))? ?([A-Za-z]+)$")
+
+    if not m.Success then
+        Error $"not a size: '{text}' — expected digits then a unit (512B, 1.5MiB)"
+    else
+        match units |> List.tryFind (fun (u, _) -> u = m.Groups[3].Value) with
+        | None ->
+            Error
+                $"not a size: '{text}' — unknown unit '{m.Groups[3].Value}' (binary KiB/MiB/GiB/TiB, SI KB/MB/GB/TB, or B)"
+        | Some(_, unit) ->
+            let whole = int64 m.Groups[1].Value
+
+            let bytes =
+                if m.Groups[2].Success then
+                    let frac = m.Groups[2].Value
+                    let fracVal = int64 frac
+                    let pow10 = pown 10L frac.Length
+
+                    if (fracVal * unit) % pow10 <> 0L then
+                        Error $"not a size: '{text}' — sub-byte precision (bytes are the unit)"
+                    else
+                        Ok(whole * unit + fracVal * unit / pow10)
+                else
+                    Ok(whole * unit)
+
+            match bytes with
+            | Error e -> Error e
+            | Ok b -> Ok(if neg then -b else b)
 
 let formatDuration (totalMs: int64) : string =
     if totalMs = 0L then

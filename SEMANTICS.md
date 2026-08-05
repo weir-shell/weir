@@ -1693,6 +1693,48 @@ scopes are keyed to the LOGICAL context (`AsyncLocal`), so a scope
 established inside an arm belongs to that arm wherever it runs —
 the cwd/env fork discipline is unchanged and holds at the ceiling.
 
+## Size — bytes as a type [D:size]
+
+**The storage law: a `Size` is an integer count of bytes** (int64 —
+the ceiling is ~8 EiB). The Duration pattern copied: decimals exist
+only in parse and render. The type earns its keep through `show` —
+`File.size p : Size` renders `1.5 GiB` where an int rendered
+`1610612736`, with no formatter member to name or maintain.
+
+- **Literals are binary-only**: `512B`, `1KiB`, `2MiB`, `1GiB`,
+  `1TiB` — integer magnitudes, single-unit. **`MB`/`KB`/`GB`/`TB`
+  are REJECTED with a teaching** naming the `MiB` spelling: the SI
+  suffixes mean 10ⁿ in SI and 2ⁿ in common usage (`ls -lh`, `df -h`,
+  and Windows all disagree), and weir refuses to guess. Decimal
+  (`1.5MiB`) and compound (`1GiB512MiB`) literals teach, mirroring
+  Duration. In command position `10MiB` stays an argv word.
+- **`show` renders binary units** — one decimal above bytes
+  (`1.5 GiB`), TRUNCATED tenths, no decimal for bytes (`847 B`),
+  switching at 1024, zero decimals dropped (`2 MiB`). **Where the
+  Duration copy did not fit**: base-1024 decimals do not terminate,
+  so `show` is a truncated REPORT, not an exact encoding —
+  `Size.toBytes` is the exact exit, and the round-trip law holds
+  text→value→text plus for representable values.
+- **`Size.parse` reads FOREIGN text**, so the asymmetry: it accepts
+  the SI spellings as powers of ten (`"1MB"` → 10⁶ — the writer
+  chose the unit; a literal would be weir guessing — the same shape
+  as JSON's integer-widens ruling), decimals down to whole bytes,
+  optional space. Sub-byte precision rejects (the sub-ms rule).
+- **The algebra is closed**: `+`/`-` over sizes, `*`/`/` by int;
+  `Size / Size` is rejected naming BOTH alternatives (`Size.toBytes`
+  ratio, `Float.ofInt` fraction). Negatives legal.
+- **Eq, Show, Ord all admit `Size`** — and the hole rendered with
+  ZERO interpolation edits, the interp-show property's second
+  confirmation. `print` excludes it (as Duration): holes and `show`
+  are the spellings.
+- **`File.size` returns `Size`** — the type's point, and the one
+  intended break: `File.size p > 10MiB` compares directly; against
+  a bare int it errors legibly ("expected Size, got int").
+- **Boundaries**: `Args.load`/`Env.load` parse size text
+  (`--max 1.5GiB`, `[<Default 10MiB>]`); JSON and YAML are PARKED
+  with teachings naming `Size.toBytes` (no convention; the choice
+  wants a receipt).
+
 ## Duration — time as a type [D:duration]
 
 **The storage law: a `Duration` is an integer count of milliseconds.**

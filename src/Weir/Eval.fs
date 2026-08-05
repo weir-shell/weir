@@ -16,6 +16,7 @@ type Value =
     | VInt of int64
     | VFloat of float
     | VDur of ms: int64
+    | VSize of bytes: int64
     | VStr of string
     | VBool of bool
     | VUnit
@@ -35,6 +36,7 @@ type Value =
             // finite-only and -0.0-normalized [D:floats]: reflexive
             | VFloat a, VFloat b -> a = b
             | VDur a, VDur b -> a = b
+            | VSize a, VSize b -> a = b
             | VStr a, VStr b -> a = b
             | VBool a, VBool b -> a = b
             | VUnit, VUnit -> true
@@ -53,6 +55,7 @@ type Value =
         | VInt n -> hash n
         | VFloat f -> hash f
         | VDur n -> hash ("dur", n)
+        | VSize b -> hash ("size", b)
         | VStr s -> hash s
         | VBool b -> hash b
         | VUnit -> 17
@@ -98,6 +101,7 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VInt n -> string n
         | VFloat f -> formatFloat f
         | VDur n -> formatDuration n
+        | VSize b -> formatSize b
         | VStr s ->
             let raw, clipped =
                 match lim.MaxStr with
@@ -229,6 +233,15 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<", VFloat a, VFloat b -> VBool(a < b)
     | ">=", VFloat a, VFloat b -> VBool(a >= b)
     | "<=", VFloat a, VFloat b -> VBool(a <= b)
+    | "+", VSize a, VSize b -> VSize(Checked.(+) a b)
+    | "-", VSize a, VSize b -> VSize(Checked.(-) a b)
+    | "*", VSize a, VInt b -> VSize(Checked.(*) a b)
+    | "*", VInt a, VSize b -> VSize(Checked.(*) a b)
+    | "/", VSize a, VInt b -> VSize(a / b)
+    | ">", VSize a, VSize b -> VBool(a > b)
+    | "<", VSize a, VSize b -> VBool(a < b)
+    | ">=", VSize a, VSize b -> VBool(a >= b)
+    | "<=", VSize a, VSize b -> VBool(a <= b)
     | "+", VDur a, VDur b -> VDur(Checked.(+) a b)
     | "-", VDur a, VDur b -> VDur(Checked.(-) a b)
     | "*", VDur a, VInt b -> VDur(Checked.(*) a b)
@@ -618,6 +631,7 @@ let rec private yamlRender (v: Value) : Rendered =
     | VInt n -> Inline(string n)
     | VFloat f -> Inline(formatFloat f)
     | VDur n -> Inline(formatDuration n)
+    | VSize b -> Inline(formatSize b)
     | VBool b -> Inline(if b then "true" else "false")
     | VStr s -> renderString s
     | VUnion("YStr", Some(VStr s)) -> renderString s
@@ -814,6 +828,7 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
             | _, Some(AInt n) -> $"default: {n}"
             | _, Some(ADur n) -> $"default: {formatDuration n}"
             | _, Some(AFloat fl) -> $"default: {formatFloat fl}"
+            | _, Some(ASize b) -> $"default: {formatSize b}"
             | _, _ -> "required"
 
         let right =
@@ -973,6 +988,7 @@ let private argvFill
             | Some(AFloat fl) -> f, VFloat fl
             | Some(ABool b) -> f, VBool b
             | Some(ADur n) -> f, VDur n
+            | Some(ASize b) -> f, VSize b
             | None ->
                 match ty with
                 | TBool -> f, VBool false
@@ -1022,6 +1038,11 @@ let private argvParseValue
     | TNamed("Option", [ TDur ]) ->
         match parseDurationMs raw with
         | Ok n -> values[f] <- wrapOpt ty (VDur n)
+        | Error e -> problems.Add $"{flagTok}: {e}"
+    | TSize
+    | TNamed("Option", [ TSize ]) ->
+        match parseSize raw with
+        | Ok b -> values[f] <- wrapOpt ty (VSize b)
         | Error e -> problems.Add $"{flagTok}: {e}"
     | TFloat
     | TNamed("Option", [ TFloat ]) ->
@@ -1319,6 +1340,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
     | TEInt n -> VInt(int64 n)
     | TEDur n -> VDur n
+    | TESize b -> VSize b
     | TEFloat f -> VFloat f
     | TERetry(isPoll, optsE, body, until) ->
         let head = if isPoll then "poll" else "retry"
@@ -1592,6 +1614,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | Some(AFloat fl) -> VFloat fl
                         | Some(ABool b) -> VBool b
                         | Some(ADur n) -> VDur n
+                        | Some(ASize b) -> VSize b
                         | None ->
                             problems.Add $"{name} is missing"
                             VUnit
@@ -1612,6 +1635,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     | (TDur | TNamed("Option", [ TDur ])), v ->
                         match parseDurationMs v with
                         | Ok n -> wrapOpt ty (VDur n)
+                        | Error e ->
+                            problems.Add $"{name}: {e}"
+                            VUnit
+                    | (TSize | TNamed("Option", [ TSize ])), v ->
+                        match parseSize v with
+                        | Ok b -> wrapOpt ty (VSize b)
                         | Error e ->
                             problems.Add $"{name}: {e}"
                             VUnit

@@ -7132,7 +7132,7 @@ let typeClassBTests =
 
               Expect.stringContains
                   (formatError terr)
-                  "cannot be ordered — keys are int, float, string, bool, or Duration"
+                  "cannot be ordered — keys are int, float, string, bool, Duration, or Size"
                   ""
           }
           test "Ord: function key rejects" {
@@ -8337,6 +8337,117 @@ let durationTests =
               | Ok _ -> failtest "expected the literal-law rejection"
           } ]
 
+let sizeTests =
+    let perr input =
+        match Weir.Parser.parseExpr input with
+        | Error msg -> msg
+        | Ok e -> failtest $"expected a parse rejection, got {show e}"
+
+    testList
+        "Size [D:size]"
+        [ test "literals: the binary suffixes land in bytes; prefix minus folds" {
+              Expect.equal (run "512B") (VSize 512L) ""
+              Expect.equal (run "1KiB") (VSize 1024L) ""
+              Expect.equal (run "2MiB") (VSize 2097152L) ""
+              Expect.equal (run "1GiB") (VSize 1073741824L) ""
+              Expect.equal (run "-1MiB") (VSize -1048576L) "negatives fold into the literal"
+          }
+          test "command-mode 10MiB stays an argv WORD (the sharpest pin, inherited)" {
+              expectCmd "echo 10MiB" "(cmd echo \"10MiB\")"
+          }
+          test "show renders binary units, one TRUNCATED decimal above bytes, none for bytes" {
+              Expect.equal (run "show 847B") (VStr "847 B") "bytes take no decimal"
+              Expect.equal (run "show 1536KiB") (VStr "1.5 MiB") ""
+              Expect.equal (run "show (10MiB + 512KiB)") (VStr "10.5 MiB") ""
+              Expect.equal (run "show 2MiB") (VStr "2 MiB") "a zero decimal drops"
+              Expect.equal (run "show (0B - 1536KiB)") (VStr "-1.5 MiB") "one leading sign"
+          }
+          test "show/parse round-trips: text-value-text, and the representable value cases" {
+              Expect.equal
+                  (run "Size.parse (show 1536KiB) == 1536KiB")
+                  (VBool true)
+                  "value -> text -> value (representable)"
+
+              Expect.equal (run "show (Size.parse \"1.5 MiB\")") (VStr "1.5 MiB") "text -> value -> text"
+              Expect.equal (run "Size.toBytes (Size.parse \"1.5MiB\")") (VInt 1572864L) "the blessed non-round case"
+          }
+          test "parse reads FOREIGN units: SI at powers of ten (the asymmetry ruling)" {
+              Expect.equal (run "Size.toBytes (Size.parse \"1MB\")") (VInt 1000000L) "MB is 10^6 in parse"
+              Expect.equal (run "Size.toBytes (Size.parse \"1KB\")") (VInt 1000L) ""
+
+              let ex = Expect.throwsC (fun () -> run "Size.parse \"1.3GiB\"" |> ignore) id
+
+              Expect.stringContains ex.Message "sub-byte precision" "the sub-ms rule's mirror"
+          }
+          test "the closed algebra; Size / Size names BOTH alternatives" {
+              Expect.equal (run "2MiB / 2") (VSize 1048576L) ""
+              Expect.equal (run "1KiB * 3") (VSize 3072L) ""
+
+              Expect.stringContains
+                  (checkErr "1MiB / 512KiB").Message
+                  "Size.toBytes a / Size.toBytes b gives the integer ratio (Float.ofInt each for a fraction)"
+                  ""
+
+              Expect.stringContains (checkErr "1MiB + 5").Message "expected Size, got int" "no implicit bytes"
+          }
+          test "the class trio admits Size; the hole renders with ZERO interp edits (property, 2nd confirmation)" {
+              Expect.equal (run "1MiB == 1024KiB") (VBool true) "Eq"
+              Expect.equal (run "[3MiB; 1MiB; 2MiB] |> Seq.sortBy (fun s -> s) |> Seq.head") (VSize 1048576L) "Ord"
+              expectValue "$\"cap {2MiB}\"" (VStr "cap 2 MiB")
+          }
+          test "the teaching rejections, each located" {
+              Expect.stringContains
+                  (perr "1MB")
+                  "'MB' is ambiguous (10^n in SI, 2^n in common usage)"
+                  "SI refuses to guess"
+
+              Expect.stringContains (perr "1MB") "(MiB)" "names the fix (FParsec wraps the line)"
+              Expect.stringContains (perr "1.5MiB") "decimal size literals do not exist" ""
+              Expect.stringContains (perr "1GiB512MiB") "sizes take a single unit" "nobody writes compound sizes"
+          }
+          test "File.size returns Size — the one intended break, and it compares" {
+              let d =
+                  match run "Path.newTempDir ()" with
+                  | VStr s -> s
+                  | v -> failtest $"unexpected {v}"
+
+              run $"[\"12345\"] |> File.write \"{d}/f.txt\"" |> ignore
+              Expect.equal (run $"File.size \"{d}/f.txt\" > 5B") (VBool true) "direct comparison"
+
+              Expect.stringContains
+                  (checkErr $"File.size \"{d}/f.txt\" > 6").Message
+                  "expected Size, got int"
+                  "the break errors legibly"
+
+              run $"Dir.deleteAll \"{d}\"" |> ignore
+          }
+          test "the JSON and YAML parks each name Size.toBytes" {
+              let e = env |> declare "type SJ = { sz: Size }"
+
+              match Weir.Check.typecheck e (parse "[{ sz = 1MiB }] |> to json") with
+              | Error terr ->
+                  Expect.stringContains
+                      terr.Message
+                      "Size has no JSON convention yet — convert explicitly (Size.toBytes into an int field)"
+                      ""
+              | Ok _ -> failtest "expected the park"
+
+              match Weir.Check.typecheck e (parse "[{ sz = 1MiB }] |> to yaml") with
+              | Error terr -> Expect.stringContains terr.Message "Size has no yaml convention yet" ""
+              | Ok _ -> failtest "expected the yaml park"
+          }
+          test "[<Default 10MiB>] end to end (attrArgLit's third reminder)" {
+              let scriptEnv =
+                  { env with
+                      Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers }
+
+              let e = scriptEnv |> declare "type SzCli = { [<Default 10MiB>] max: Size }"
+
+              match Weir.Check.typecheck e (parse "Args.load SzCli") with
+              | Ok te -> Expect.equal (formatTy te.Ty) "SzCli" ""
+              | Error terr -> failtest $"expected Ok, got {terr.Message}"
+          } ]
+
 let sigTests =
     // disk fixtures: a .weir/sigs tree in a temp dir (the fs-members style)
     let withSigTree (sigSource: string list) (f: string -> 'a) : 'a =
@@ -9317,6 +9428,7 @@ let allTests =
           tasksUnderneathTests
           retryPollTests
           sigTests
+          sizeTests
           trailingCommentTests
           interpShowTests
           gapATests
