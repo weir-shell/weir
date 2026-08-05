@@ -1,5 +1,31 @@
 # Spike Notes
 
+## unit types are non-representable at the wire (2026-08-05, rider)
+
+Docs and reasoning only, zero behaviour moved. The Duration and Size
+json/yaml parks said "undecided encoding, wants a receipt" — a
+temporary framing that would have been re-litigated forever, and the
+Size session's SI-in-parse asymmetry was already being read as an
+argument for boundary parsing. The replacement reasoning closes it:
+the wire formats have no such types, an emitted encoding would be
+weir's invention in someone else's document, and a read-side law
+would assert — silently, on the author's behalf — that the document's
+writer used weir's format. The parse asymmetry's own principle cuts
+the other way: parse is invoked BY the author on text they chose.
+Receipt trigger dropped, explicitly.
+
+All eight direction-cells read live and confirmed tailored. Two
+findings reported rather than folded, per the zero-change bar:
+
+1. Every message says "no … convention YET" — the receipt framing
+   survives in the message text itself. Retiring the word moves four
+   pins; a separate rider if wanted.
+2. A FIFTH cell: a unit-type DISTRICT SPLICE (`wait: $d`) rejects
+   with the generic yaml-boundary wall and LEAKS an internal name —
+   "type '__hole1 cannot cross the yaml boundary". Untailored plus a
+   cosmetic bug (a synthetic hole variable shown to a user); its own
+   small fix.
+
 ## the showcase covers everything, and what it caught (2026-08-05)
 
 The stale sweep came back empty — zero hits per document across
@@ -67,6 +93,15 @@ unit type comes third:
    asymmetry (literals refuse MB; parse reads it as 10^6, because
    the writer of foreign text chose the unit) is new ground — the
    json integer-widens shape applied to unit systems.
+0. [Filed 2026-08-05 by the unit-types-wire rider — the rule the
+   misfits below feed:] **a unit type's wire representation is the
+   CONSUMER's convention, not weir's.** The json/yaml boundary
+   rejects (non-representable — not awaiting a receipt), the author
+   converts: toX into an int field, or show where a string is what
+   the consumer wants. Decide rendering-exactness first (misfit 1),
+   expect foreign-unit questions in parse (misfit 2), and write BOTH
+   boundary rejections tailored on day one (misfit 3).
+
 3. **the YAML park was not in the copy — and the first explanation
    of why was WRONG** (a user question caught it): yaml landed
    07-30, Duration 08-04, so "predates" does not hold. The true
