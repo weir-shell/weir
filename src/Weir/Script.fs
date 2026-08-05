@@ -3063,11 +3063,18 @@ let sigCmdDiagnostics
                              |> List.tryLast
 
                          let words =
-                             args
-                             |> List.tryPick (fun a ->
-                                 match a.Kind with
-                                 | Check.TEList items -> Some items
-                                 | _ -> None)
+                             // a SPLATTED reified argv is a Seq.append fold
+                             // [D:desugar-capture]: the literal chunks are
+                             // TEList descendants — collect them all (the
+                             // spliced seq's own words stay runtime-unknowable)
+                             let rec lists (e: Check.TypedExpr) =
+                                 match e.Kind with
+                                 | Check.TEList items -> items
+                                 | _ -> Check.childExprs e |> List.collect lists
+
+                             match args |> List.collect lists with
+                             | [] -> None
+                             | ws -> Some ws
 
                          match prog, words with
                          | Some p, Some ws -> [ p, ws ]

@@ -608,8 +608,11 @@ let printScheme: Scheme =
       RowOrigins = Map.empty }
 
 let private isPrintFamily (env: TypeEnv) (name: string) =
-    (name = "print" || name = "printerr")
-    && Map.tryFind name env.Values = Some printScheme
+    // "|print" is the arming desugar's un-typeable alias
+    // [D:desugar-capture]: always the builtin, shadowable by no one
+    name = "|print"
+    || ((name = "print" || name = "printerr")
+        && Map.tryFind name env.Values = Some printScheme)
 
 // show : Show a => a -> string — the debugging renderer (REPL-shaped,
 // lossy) [D:inferred-type-classes]: an ordinary constrained scheme
@@ -1462,7 +1465,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         first.Span
                         $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it{drop}"
         }
-    | EVar(("print" | "printerr") as pname) when isPrintFamily env pname ->
+    | EVar(("print" | "printerr" | "|print") as pname) when isPrintFamily env pname ->
         // Bare-value position (e.g. Seq.iter print): the defaulted form.
         Ok
             { Kind = TEVar pname
@@ -1947,7 +1950,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                          | Some(Union _) -> err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
                          | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
                      | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
-            | EVar(("print" | "printerr") as pname), [ arg ] when isPrintFamily env pname ->
+            | EVar(("print" | "printerr" | "|print") as pname), [ arg ] when isPrintFamily env pname ->
                 result {
                     let! targ = infer ctx env arg
                     let! argTy = printArgTy ctx env arg.Span targ.Ty
@@ -2033,7 +2036,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = TSeq TStr
                   Span = expr.Span }
         }
-    | EPipe(arg, ({ Kind = EVar(("print" | "printerr") as pname) } as printExpr)) when isPrintFamily env pname ->
+    | EPipe(arg, ({ Kind = EVar(("print" | "printerr" | "|print") as pname) } as printExpr)) when
+        isPrintFamily env pname
+        ->
         result {
             let! targ = infer ctx env arg
             let! argTy = printArgTy ctx env arg.Span targ.Ty
@@ -2708,7 +2713,7 @@ and private isCmdChain (e: Expr) =
 // sequences. Pure AST pre-pass so teaching errors keep their text.
 and armTail (e: Expr) : Expr =
     if isCmdChain e then
-        { Kind = EPipe(e, { Kind = EVar "print"; Span = e.Span })
+        { Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
           Span = e.Span }
     else
         match e.Kind with
@@ -2751,7 +2756,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             { Kind =
                 EPipe(
                     expr,
-                    { Kind = EVar "print"
+                    { Kind = EVar "|print"
                       Span = expr.Span }
                 )
               Span = expr.Span }
@@ -3362,86 +3367,104 @@ let private validateShortCollisions (fields: (string * Ty * AttrSpec list) list)
 
     go Map.empty explicitShorts
 
+// the built-in type names, registered once by Prelude.extend
+// [D:desugar-capture]: a user redeclaring one silently RETYPED every
+// builtin referencing it (type Retry = { x: int } re-broke the retry
+// sugar through the TYPE after the value was made un-shadowable)
+// concurrent: tests build envs in PARALLEL (the oracle found the
+// plain HashSet corrupting under simultaneous extends)
+let builtinTypeNames: System.Collections.Concurrent.ConcurrentDictionary<string, byte> =
+    System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
+
+// the prelude REPLAYS its own declarations on every extend (tests build
+// envs repeatedly) — exempt it; the ThreadLocal keeps parallel test
+// runs isolated (the toPhys pattern)
+let preludeLoading: System.Threading.ThreadLocal<bool> =
+    new System.Threading.ThreadLocal<bool>(fun () -> false)
+
 let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
-    let allowed = Set.ofList decl.Params
-    let selfArity = decl.Params.Length
-    let selfTy = TNamed(decl.Name, decl.Params |> List.map TVar)
+    if not preludeLoading.Value && builtinTypeNames.ContainsKey decl.Name then
+        err decl.Span $"'{decl.Name}' is a built-in type — pick another name"
+    else
+        let allowed = Set.ofList decl.Params
+        let selfArity = decl.Params.Length
+        let selfTy = TNamed(decl.Name, decl.Params |> List.map TVar)
 
-    match firstDup decl.Params with
-    | Some dup -> err decl.Span $"duplicate type parameter '{dup}"
-    | None ->
-        match decl.Body with
-        | DRecord fields ->
-            result {
-                match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
-                | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
-                | None ->
-                    let plain = fields |> List.map (fun (n, t, _) -> n, t)
+        match firstDup decl.Params with
+        | Some dup -> err decl.Span $"duplicate type parameter '{dup}"
+        | None ->
+            match decl.Body with
+            | DRecord fields ->
+                result {
+                    match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
+                    | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
+                    | None ->
+                        let plain = fields |> List.map (fun (n, t, _) -> n, t)
 
-                    do! allOk plain (snd >> validateTy env decl.Name selfArity allowed decl.Span)
-                    do! allOk fields (validateFieldAttrs decl.Name)
-                    do! validateShortCollisions fields
+                        do! allOk plain (snd >> validateTy env decl.Name selfArity allowed decl.Span)
+                        do! allOk fields (validateFieldAttrs decl.Name)
+                        do! validateShortCollisions fields
 
-                    let attrs =
-                        fields
-                        |> List.choose (fun (n, _, specs) ->
-                            if List.isEmpty specs then
-                                None
-                            else
-                                Some(n, specs |> List.map (fun a -> a.AName, a.AArg)))
-                        |> Map.ofList
+                        let attrs =
+                            fields
+                            |> List.choose (fun (n, _, specs) ->
+                                if List.isEmpty specs then
+                                    None
+                                else
+                                    Some(n, specs |> List.map (fun a -> a.AName, a.AArg)))
+                            |> Map.ofList
 
-                    let def =
-                        Record
-                            { Name = decl.Name
-                              Params = decl.Params
-                              Fields = plain
-                              Attrs = attrs
-                              // the runner enriches this from the `///` docs
-                              // after checkDecl [D:doc-help]
-                              Docs = Map.empty }
+                        let def =
+                            Record
+                                { Name = decl.Name
+                                  Params = decl.Params
+                                  Fields = plain
+                                  Attrs = attrs
+                                  // the runner enriches this from the `///` docs
+                                  // after checkDecl [D:doc-help]
+                                  Docs = Map.empty }
 
-                    return
-                        { env with
-                            Types = Map.add decl.Name def env.Types }
-            }
-        | DUnion cases ->
-            result {
-                match firstDup (List.map fst cases) with
-                | Some dup -> return! err decl.Span $"duplicate case '{dup}'"
-                | None ->
-                    do!
-                        allOk cases (fun (_, payload) ->
+                        return
+                            { env with
+                                Types = Map.add decl.Name def env.Types }
+                }
+            | DUnion cases ->
+                result {
+                    match firstDup (List.map fst cases) with
+                    | Some dup -> return! err decl.Span $"duplicate case '{dup}'"
+                    | None ->
+                        do!
+                            allOk cases (fun (_, payload) ->
+                                match payload with
+                                | Some ty -> validateTy env decl.Name selfArity allowed decl.Span ty
+                                | None -> Ok())
+
+                        let def =
+                            Union
+                                { Name = decl.Name
+                                  Params = decl.Params
+                                  Cases = cases }
+
+                        let ctorTy payload =
                             match payload with
-                            | Some ty -> validateTy env decl.Name selfArity allowed decl.Span ty
-                            | None -> Ok())
+                            | None -> selfTy
+                            | Some ty -> TFun(ty, selfTy)
 
-                    let def =
-                        Union
-                            { Name = decl.Name
-                              Params = decl.Params
-                              Cases = cases }
+                        let ctorScheme payload =
+                            { Forall = allowed + tyVars (ctorTy payload)
+                              Cs = Map.empty
+                              Ty = ctorTy payload
+                              RowOrigins = Map.empty }
 
-                    let ctorTy payload =
-                        match payload with
-                        | None -> selfTy
-                        | Some ty -> TFun(ty, selfTy)
+                        let values =
+                            cases
+                            |> List.fold (fun vs (c, payload) -> Map.add c (ctorScheme payload) vs) env.Values
 
-                    let ctorScheme payload =
-                        { Forall = allowed + tyVars (ctorTy payload)
-                          Cs = Map.empty
-                          Ty = ctorTy payload
-                          RowOrigins = Map.empty }
-
-                    let values =
-                        cases
-                        |> List.fold (fun vs (c, payload) -> Map.add c (ctorScheme payload) vs) env.Values
-
-                    return
-                        { env with
-                            Types = Map.add decl.Name def env.Types
-                            Values = values }
-            }
+                        return
+                            { env with
+                                Types = Map.add decl.Name def env.Types
+                                Values = values }
+                }
 
 // Advisory findings only — coverage and reachability are checker
 // errors [D:exhaustiveness-hard-error].

@@ -2632,6 +2632,32 @@ let private runEnvImpl: Value =
 
 let commandCallable: Set<string> = Set [ "cd" ]
 
+// desugar-internal aliases [D:desugar-capture]: every name a DESUGAR
+// references, re-registered under a `|`-prefixed un-typeable key (the
+// reifier precedent, second use) — the SAME scheme and value OBJECTS
+// as the public members, so the sugar and the manual spelling cannot
+// diverge (pinned by reference equality). A user constructor named
+// Seq or a shadowed print no longer changes what a rewrite means.
+let internalAliases: (string * Ty * Value) list =
+    let m (modName: string) (field: string) =
+        moduleTable
+        |> List.find (fst >> (=) modName)
+        |> snd
+        |> List.find (fun (n, _, _) -> n = field)
+        |> fun (_, ty, v) -> ty, v
+
+    [ for key, modName, field in
+          [ "|seqIter", "Seq", "iter"
+            "|seqMap", "Seq", "map"
+            "|seqForce", "Seq", "force"
+            "|seqAppend", "Seq", "append"
+            "|seqRange", "Seq", "range"
+            "|seqItem", "Seq", "item"
+            "|retryDefaults", "Retry", "defaults"
+            "|pollDefaults", "Poll", "defaults" ] do
+          let ty, v = m modName field
+          key, ty, v ]
+
 let bareAliasHomes: Map<string, string> =
     moduleTable
     |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float")
@@ -2654,11 +2680,13 @@ let private sortByScheme: Scheme =
 
 let typeEnv: TypeEnv =
     { Values =
-        entries
+        entries @ internalAliases
         |> List.map (fun (n, ty, _) -> n, generalize ty)
         |> Map.ofList
         |> Map.add "print" Check.printScheme
         |> Map.add "printerr" Check.printScheme
+        // the arming desugar's un-shadowable print [D:desugar-capture]
+        |> Map.add "|print" Check.printScheme
         |> Map.add "show" Check.showScheme
       Modules =
         moduleTable
@@ -2688,6 +2716,11 @@ let valueEnv: Env =
         moduleTable
         |> List.collect (fun (m, members) -> members |> List.map (fun (n, _, v) -> $"{m}.{n}", v))
 
-    ("print", printImpl) :: ("printerr", printerrImpl) :: ("show", showImpl) :: flat
+    ("print", printImpl)
+    :: ("printerr", printerrImpl)
+    :: ("show", showImpl)
+    :: ("|print", printImpl)
+    :: (internalAliases |> List.map (fun (n, _, v) -> n, v))
+    @ flat
     @ mangled
     |> Map.ofList

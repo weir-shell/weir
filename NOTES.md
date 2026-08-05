@@ -1,5 +1,49 @@
 # Spike Notes
 
+## the desugar-capture seam, closed everywhere it existed (2026-08-05)
+
+The bless asked for the retry fix plus an enumeration, and the
+enumeration was the session: every Seq-referencing rewrite (for/do,
+comprehensions, ranges, indexers, the splat fold) was capturable by
+`type T = Seq of int`, and the arming pipe — parse-side and
+check-side both — was capturable by shadowing print, which meant a
+legal-by-design shadow changed what BARE COMMANDS meant. The probe
+that showed it: `let print = fun s -> "SWALLOWED"` turned an armed
+interior command into a seq-unit error; with a unit-returning shadow
+it would have silently eaten output.
+
+All of it takes one fix shape: the reifier precedent generalized.
+Nine parser sites and two checker sites now target `|`-prefixed
+un-typeable keys registered with the SAME objects as the public
+members — reference-equality pinned, because the sugar and the
+manual spelling silently diverging would be worse than the capture.
+The boundary is stated and pinned: the fix protects the DESUGAR;
+a user who shadows Seq or print and writes the name themselves gets
+their ordinary shadow.
+
+The type half turned out real: `type Retry = { x: int }` silently
+redeclared the prelude type and re-broke the sugar through env.Types
+after the value was fixed. Built-in type names now refuse
+redeclaration, with the prelude's own replay exempted (ThreadLocal,
+the toPhys pattern — tests rebuild envs in parallel). User-vs-user
+redeclaration is ALSO silent (last wins) — a separate pre-existing
+seam, sized for its own decision rather than smuggled in here.
+
+The equivalence pin moved by design and got stronger: byte-identical
+ASTs became both-forms-pinned plus behavioral equivalence plus
+reference-equality. Twelve pins retargeted, all of the same species —
+they pinned the desugar's SPELLING, and pins of implementation
+spelling move with the implementation. The LSP's splat-token matcher
+was the one non-test consumer of the old spelling.
+
+The second audit closed its own finding: signature checking sees
+commands in for/within/retry bodies, if groups, and splats — and the
+reified+splat corner was UNCOVERED when probed (the fold buries the
+literal chunks below the spine recovery); the chunks are now
+deep-collected. What remains unknowable is inherent: a spliced seq's
+runtime contents. Both PROCESS rules are recorded with this session
+as archaeology.
+
 ## unit types are non-representable at the wire (2026-08-05, rider)
 
 Docs and reasoning only, zero behaviour moved. The Duration and Size
