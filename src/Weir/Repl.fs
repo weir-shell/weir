@@ -791,7 +791,14 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
             | DUnion cases -> Eval.constructorValues cases
             | DRecord _ -> []
 
-        Console.WriteLine $"type {decl.Name} declared"
+        // the REPL REPLACES on redeclaration (ruled [D:dup-type-decl] —
+        // scripts error instead); the note exists because the probe
+        // showed the confusing half: an old value still ECHOES with its
+        // fields while field ACCESS resolves against the new shape
+        if Map.containsKey decl.Name state.TypeEnv.Types then
+            Console.WriteLine $"type {decl.Name} redeclared; earlier values keep the old shape"
+        else
+            Console.WriteLine $"type {decl.Name} declared"
 
         { TypeEnv = chk.Env
           Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }

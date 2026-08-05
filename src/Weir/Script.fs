@@ -3453,6 +3453,9 @@ let analyzeLines
     | Some logicalLines ->
         let diags = ResizeArray<Diagnostic>()
         let stmts = ResizeArray<LogicalLine * CheckedStatement>()
+        // first declaration per type name: line * came-from-import
+        // [D:dup-type-decl]
+        let declaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
 
         let warn (wl, wc, wm) =
             diags.Add
@@ -3512,6 +3515,35 @@ let analyzeLines
             match checkStatement true assumeResolver analyzeImport tenv ll with
             | Ok chk ->
                 chk.Warnings |> List.iter warn
+
+                // a duplicate type declaration is an ERROR, not a silent
+                // replacement [D:dup-type-decl] — the replacement was
+                // RETROACTIVE (code above the redeclaration re-resolved
+                // against the winner). Scripts only; the REPL replaces
+                // by ruling.
+                (match chk.Kind with
+                 | KType decl ->
+                     match declaredTypes.TryGetValue decl.Name with
+                     | true, (firstLine, viaImport) ->
+                         diags.Add
+                             { File = path
+                               Line = ll.Head
+                               Col = 1
+                               EndLine = None
+                               EndCol = None
+                               Severity = "error"
+                               Code = "dup-type"
+                               Message =
+                                 if viaImport then
+                                     $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
+                                 else
+                                     $"type '{decl.Name}' is already declared at line {firstLine}" }
+                     | _ -> declaredTypes[decl.Name] <- (ll.Head, false)
+                 | KImport lm ->
+                     for tn in lm.TypeNames do
+                         if not (declaredTypes.ContainsKey tn) then
+                             declaredTypes[tn] <- (ll.Head, true)
+                 | _ -> ())
 
                 (match chk.Kind with
                  | KType _
@@ -3772,6 +3804,7 @@ let run (path: string) (scriptArgs: string list) : int =
                 // absence is loud, never a silent fallback
                 // [D:command-signatures]
                 let sigLoadDiags, runSigInfos = loadSigs path runSigDecls
+                let runDeclaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
 
                 let checkedProgram =
                     logicalLines
@@ -3885,40 +3918,71 @@ let run (path: string) (scriptArgs: string list) : int =
                                         )
                                     | [] ->
 
-                                        let stmt =
-                                            match chk.Kind with
-                                            | KType decl -> CType decl
-                                            | KLet(name, _, te) -> CLet(name, te)
-                                            | KLetPat(pat, _, te) -> CLetPat(pat, te)
-                                            | KCmd te -> CCmd te
-                                            | KExpr te -> CExpr te
-                                            | KImport lm -> CImport lm
-                                            // unreachable: the marker is caught before the fold
-                                            | KModule _ -> CNoop
-
-                                        // enrich a record's Docs from the `///`
-                                        // field docs, so --help reads them
-                                        // [D:doc-help]; the Args.load arm (checked
-                                        // later, the type comes first) captures it
-                                        let env' =
+                                        // duplicate type declarations gate the
+                                        // run too [D:dup-type-decl]
+                                        let dupError =
                                             match chk.Kind with
                                             | KType decl ->
-                                                let docs = fieldDocsFor rawLines ll
+                                                match runDeclaredTypes.TryGetValue decl.Name with
+                                                | true, (firstLine, viaImport) ->
+                                                    Some(
+                                                        located
+                                                            path
+                                                            ll.Head
+                                                            (if viaImport then
+                                                                 $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
+                                                             else
+                                                                 $"type '{decl.Name}' is already declared at line {firstLine}")
+                                                    )
+                                                | _ ->
+                                                    runDeclaredTypes[decl.Name] <- (ll.Head, false)
+                                                    None
+                                            | KImport lm ->
+                                                for tn in lm.TypeNames do
+                                                    if not (runDeclaredTypes.ContainsKey tn) then
+                                                        runDeclaredTypes[tn] <- (ll.Head, true)
 
-                                                if Map.isEmpty docs then
-                                                    chk.Env
-                                                else
-                                                    { chk.Env with
-                                                        Types =
-                                                            chk.Env.Types
-                                                            |> Map.change
-                                                                decl.Name
-                                                                (Option.map (function
-                                                                    | Record rd -> Record { rd with Docs = docs }
-                                                                    | u -> u)) }
-                                            | _ -> chk.Env
+                                                None
+                                            | _ -> None
 
-                                        Ok(env', (ll.Head, stmt) :: acc))
+                                        match dupError with
+                                        | Some e -> Error e
+                                        | None ->
+
+                                            let stmt =
+                                                match chk.Kind with
+                                                | KType decl -> CType decl
+                                                | KLet(name, _, te) -> CLet(name, te)
+                                                | KLetPat(pat, _, te) -> CLetPat(pat, te)
+                                                | KCmd te -> CCmd te
+                                                | KExpr te -> CExpr te
+                                                | KImport lm -> CImport lm
+                                                // unreachable: the marker is caught before the fold
+                                                | KModule _ -> CNoop
+
+                                            // enrich a record's Docs from the `///`
+                                            // field docs, so --help reads them
+                                            // [D:doc-help]; the Args.load arm (checked
+                                            // later, the type comes first) captures it
+                                            let env' =
+                                                match chk.Kind with
+                                                | KType decl ->
+                                                    let docs = fieldDocsFor rawLines ll
+
+                                                    if Map.isEmpty docs then
+                                                        chk.Env
+                                                    else
+                                                        { chk.Env with
+                                                            Types =
+                                                                chk.Env.Types
+                                                                |> Map.change
+                                                                    decl.Name
+                                                                    (Option.map (function
+                                                                        | Record rd -> Record { rd with Docs = docs }
+                                                                        | u -> u)) }
+                                                | _ -> chk.Env
+
+                                            Ok(env', (ll.Head, stmt) :: acc))
                         (Ok(typeEnv0, []))
 
                 match

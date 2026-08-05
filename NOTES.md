@@ -1,5 +1,30 @@
 # Spike Notes
 
+## a duplicate type declaration errors; the REPL replaces (2026-08-05)
+
+The seam the desugar-capture session sized, closed as ruled. The
+script check lives in both pipelines (the analyze diagnostics and
+the runner's own gate), one KType arm covering records and unions,
+message naming both sites. The declare-after-import direction turned
+out UNGUARDED — the module session's collision check only fired the
+other way — so the local check covers it symmetrically, and the two
+cannot double-report (probed, one error per direction).
+
+The REPL probe made the note decision, as the bless demanded: an old
+binding still ECHOES with its old fields ({ a = 1 } : T) while field
+access resolves against the new shape ("T has no field 'a'") — the
+value and the checker visibly disagreeing is the confusing case, so
+redeclaration prints the one-liner. The pty probe is in the report;
+no pty pin added (the divergence is documented and the script side
+is unit-pinned — a repl-quality scenario can join later if the REPL
+suite grows a types section).
+
+Sibling audit: duplicate top-level lets are forward-only lexical
+shadowing (correct); duplicate union cases across types are forward
+constructor shadowing, F#-consistent, values stay tagged; duplicate
+fields were already an error. The type map was the only retroactive
+one — which is exactly why it was the defect.
+
 ## the desugar-capture seam, closed everywhere it existed (2026-08-05)
 
 The bless asked for the retry fix plus an enumeration, and the

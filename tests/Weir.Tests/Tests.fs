@@ -8337,6 +8337,52 @@ let durationTests =
               | Ok _ -> failtest "expected the literal-law rejection"
           } ]
 
+let dupTypeTests =
+    let analyze (lines: string list) =
+        let p =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dup-{System.Guid.NewGuid():N}.weir")
+
+        System.IO.File.WriteAllLines(p, lines)
+
+        try
+            let ds, _, _, _ =
+                Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+
+            ds |> List.filter (fun d -> d.Severity = "error")
+        finally
+            System.IO.File.Delete p
+
+    testList
+        "Duplicate type declarations [D:dup-type-decl]"
+        [ test "a duplicate record errors at the SECOND declaration, naming the first's line" {
+              match
+                  analyze
+                      [ "type T = { a: int }"
+                        "let x = { a = 1 }"
+                        "type T = { b: string }"
+                        "print \"n\"" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "located at the second"
+                  Expect.equal d.Message "type 'T' is already declared at line 1" "exact text, both sites"
+              | other -> failtest $"expected one error, got {other.Length}"
+          }
+          test "unions too — every type-declaring form rides the one KType arm" {
+              match analyze [ "type U = Go of int | Halt"; "type U = Stop"; "print \"n\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "type 'U' is already declared at line 1" ""
+              | other -> failtest $"expected one error, got {other.Length}"
+          }
+          test "the loader surprise dissolves: a duplicate Cli errors at the declaration, not at Args.load" {
+              match
+                  analyze
+                      [ "type Cli = { name: string }"
+                        "type Cli = { name: string; extra: bool }"
+                        "print \"n\"" ]
+              with
+              | [ d ] -> Expect.equal d.Line 2 ""
+              | other -> failtest $"expected one error, got {other.Length}"
+          } ]
+
 let sizeTests =
     let perr input =
         match Weir.Parser.parseExpr input with
@@ -9557,6 +9603,7 @@ let allTests =
           retryPollTests
           sigTests
           sizeTests
+          dupTypeTests
           trailingCommentTests
           interpShowTests
           gapATests
