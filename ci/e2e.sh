@@ -4055,6 +4055,32 @@ echo "$out" | grep -qF "poll: timed out after" || fail "poll exhaustion: $out"
 rm -rf "$rpdir"
 echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, cancellable wait)"
 
+# ---- Seq.pfirst [D:seq-pfirst]: the race -----------------------------------
+# the winner returns without joining the losers, and a loser's spawned
+# TREE dies: its `sleep 2 && touch marker` orphan would fire at ~2s if
+# the kill missed, so the absence check waits past that
+pfdir=$(mktemp -d)
+cat > "$pfdir/pf.weir" <<'WEOF'
+let racer n =
+    if n == 1 then sh -c "sleep 2 && touch marker"
+    Duration.sleep 200ms
+    n * 10
+
+let r = [1; 2] |> Seq.pfirst racer
+print $"winner: {r}"
+WEOF
+start_ms=$(now_ms)
+out=$(cd "$pfdir" && $BIN pf.weir)
+took=$(( $(now_ms) - start_ms ))
+[ "$out" = "winner: 20" ] || fail "pfirst winner: $out"
+[ "$took" -lt 1800 ] || fail "pfirst waited for the loser (took ${took}ms)"
+sleep 2.5
+[ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
+out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
+echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
+rm -rf "$pfdir"
+echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed, first-by-order error)"
+
 # ---- command signatures [D:command-signatures] -----------------------------
 sgdir=$(mktemp -d)
 mkdir -p "$sgdir/proj/bin" "$sgdir/proj/.git"

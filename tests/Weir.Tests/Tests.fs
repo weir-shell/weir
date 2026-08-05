@@ -9042,6 +9042,50 @@ let tasksUnderneathTests =
               Expect.equal after before "the parent cwd is untouched after 100 forks"
           } ]
 
+let seqPfirstTests =
+    testList
+        "The race: Seq.pfirst [D:seq-pfirst]"
+        [ test "the first SUCCESS wins; a failing arm is swallowed by construction" {
+              expectValue
+                  "[1; 2] |> Seq.pfirst (fun n -> match n with | 1 -> fail \"one dies\" ; 0 | _ -> n * 10)"
+                  (VInt 20L)
+          }
+          test "a slow loser loses: the call returns on the winner, not the join" {
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+
+              expectValue
+                  "[1; 2] |> Seq.pfirst (fun n -> match n with | 1 -> Duration.sleep 2s ; 999 | _ -> n * 10)"
+                  (VInt 20L)
+
+              sw.Stop()
+              Expect.isTrue (sw.ElapsedMilliseconds < 1500L) $"took {sw.ElapsedMilliseconds}ms — waited for a loser"
+          }
+          test "ALL arms failed: the first error by INPUT ORDER rethrows, not the first to arrive" {
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          run
+                              "[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 300ms ; fail \"seven dies\" | _ -> fail \"eight dies\")"
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "seven dies" "index 0's error, though index 1 failed first"
+          }
+          test "an empty sequence raises the family shape" {
+              let ex = Expect.throwsC (fun () -> run "[] |> Seq.pfirst (fun n -> n)" |> ignore) id
+              Expect.stringContains ex.Message "pfirst: empty sequence" ""
+          }
+          test "pfirstWith: degree 1 degrades to sequential fallback; degree < 1 raises" {
+              expectValue
+                  "[1; 2] |> Seq.pfirstWith 1 (fun n -> match n with | 1 -> fail \"one dies\" ; 0 | _ -> n * 100)"
+                  (VInt 200L)
+
+              let ex =
+                  Expect.throwsC (fun () -> run "[1] |> Seq.pfirstWith 0 (fun n -> n)" |> ignore) id
+
+              Expect.stringContains ex.Message "parallel degree must be at least 1" ""
+          } ]
+
 let dedentJoinTests =
     // whole-script probes: assemble + check + eval; the JOIN is proven
     // by the BINDINGS (absorption would corrupt or reject them)
@@ -9749,6 +9793,7 @@ let allTests =
           floatBoundaryTests
           dedentJoinTests
           tasksUnderneathTests
+          seqPfirstTests
           retryPollTests
           sigTests
           sizeTests

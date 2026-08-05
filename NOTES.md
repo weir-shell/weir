@@ -53,6 +53,45 @@ stay future work. Stale docs trued while there: SECURITY.md's
 non-claim now names #sig files (missed by the signatures session),
 and editors.md's scope line still claimed the server reads no files
 at all (pre-modules text).
+## Seq.pfirst: the race (2026-08-05)
+
+The park's shape held almost exactly — the one design correction:
+the recorded "Task.WhenAny + CTS" became a TaskCompletionSource with
+an Interlocked winner claim. WhenAny answers "who finished first",
+but the contract is "who SUCCEEDED first" — a fast failure must not
+win the race, it must be swallowed and the race must continue. So
+the winner is claimed by CompareExchange on the success path only,
+failures accumulate, and only the last failure (count == n) forfeits
+the race with the first error by input order. No CTS either:
+cancellation's real target is child PROCESSES, and the kill is the
+RaceGroup, not a token — weir arms have no await points a token
+could interrupt anyway.
+
+The kill mechanism is two small pieces: Session.RaceGroup (a
+ConcurrentBag of processes + a condemned flag) carried by AsyncLocal
+exactly like the cwd fork, and one line in Proc after Process.Start
+registering the child into the ambient group. The condemned flag
+closes the register-vs-condemn window: a child spawned a moment
+after its arm lost is killed at registration instead of leaking.
+Condemn runs BEFORE TrySetResult, so by the time the winner's value
+is in the caller's hands every loser tree is already dead — the e2e
+pin is a loser running `sleep 2 && touch marker`: winner returns in
+~275ms, and the marker still absent past the 2s mark proves the
+orphan died rather than merely being un-waited.
+
+Honesty line, stated in SEMANTICS: loser THREADS are cooperative. A
+pure-compute loser finishes in the background and is discarded; the
+kill reaches what arms actually wait on. The 64-ceiling pool shape
+is shared with pmap — workers stop pulling indices once won flips,
+so a win with unstarted arms never spawns them.
+
+Probe surprises, small: `fail` is string -> unit, not polymorphic —
+a racing arm mixing `fail` with a value needs `fail "x" ; 0` to
+type (the unit-pin lambdas hit this). And found-in-passing staleness
+from the tasks session: pmap's doc string and the runner comment
+both still said ProcessorCount; fixed to the ceiling. The docs table
+never got pmapWith/piterWith entries — left as found, noted in the
+DECISIONS row.
 
 ## the leftovers sweep: yet-retired, hole-sealed, ledger-trued (2026-08-05)
 

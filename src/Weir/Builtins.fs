@@ -870,7 +870,7 @@ let private rangeImpl: Value =
                 | _ -> unreachable "the checker rejects non-int range bounds")))
 
 // Data parallelism, NOT concurrency machinery (see the async rejection):
-// eager, input-order results, ProcessorCount degree, first worker error
+// eager, input-order results, ceiling-64 degree, first worker error
 // rethrown. Output interleaving from piter workers is line-atomic and
 // owned by the user, as with any parallel tool.
 // the fan-out ceiling [D:tasks-underneath]: 64, stated — well above any
@@ -923,6 +923,84 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
         raise errors[Seq.min errors.Keys]
 
     out
+
+// the race [D:seq-pfirst]: the FIRST SUCCESS wins; losers' spawned
+// process trees are killed via their RaceGroup, so their failures are
+// swallowed BY CONSTRUCTION. Loser arm THREADS are cooperative: the
+// kill reaches processes (what arms actually wait on); a pure-compute
+// loser finishes in the background and is discarded. All-failed
+// rethrows the first error by INPUT ORDER; empty input raises.
+let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
+    if degree < 1 then
+        failwith $"parallel degree must be at least 1, got {degree}"
+
+    let arr = Seq.toArray items
+
+    if arr.Length = 0 then
+        failwith "pfirst: empty sequence"
+
+    let parentCwd = Session.Cwd()
+    let groups = Array.init arr.Length (fun _ -> Session.RaceGroup())
+    let mutable won = 0
+    let mutable failedCount = 0
+    let errors = System.Collections.Concurrent.ConcurrentDictionary<int, exn>()
+
+    let outcome =
+        TaskCompletionSource<Value>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let workers = min degree arr.Length
+    let mutable next = -1
+
+    let worker () =
+        let mutable i = System.Threading.Interlocked.Increment &next
+
+        while i < arr.Length && System.Threading.Volatile.Read &won = 0 do
+            Session.enterWorker parentCwd
+            Session.enterRace groups[i]
+
+            try
+                try
+                    let v = apply f arr[i]
+
+                    if System.Threading.Interlocked.CompareExchange(&won, 1, 0) = 0 then
+                        for j in 0 .. arr.Length - 1 do
+                            if j <> i then
+                                groups[j].Condemn()
+
+                        outcome.TrySetResult v |> ignore
+                with e ->
+                    errors[i] <- e
+
+                    if System.Threading.Interlocked.Increment &failedCount = arr.Length then
+                        outcome.TrySetException errors[Seq.min errors.Keys] |> ignore
+            finally
+                Session.exitRace ()
+                Session.exitWorker ()
+
+            i <- System.Threading.Interlocked.Increment &next
+
+    for _ in 1..workers do
+        Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning) |> ignore
+
+    try
+        outcome.Task.Result
+    with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
+        raise ae.InnerExceptions[0]
+
+let private pfirstImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items -> runRaceWith parallelCeiling f items
+            | v -> unreachable $"the checker rejects 'pfirst' on {formatValue v}"))
+
+let private pfirstWithImpl: Value =
+    VBuiltin(fun nv ->
+        VBuiltin(fun f ->
+            VBuiltin(fun s ->
+                match nv, s with
+                | VInt n, VSeq items -> runRaceWith (int n) f items
+                | v, _ -> unreachable $"the checker rejects 'pfirstWith' on {formatValue v}")))
 
 let private pmapImpl: Value =
     VBuiltin(fun f ->
@@ -1060,6 +1138,8 @@ let private seqMembers: (string * Ty * Value) list =
       "pmap", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), pmapImpl
       "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
       "pmapWith", TFun(TInt, TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB))), pmapWithImpl
+      "pfirst", TFun(TFun(tA, tB), TFun(TSeq tA, tB)), pfirstImpl
+      "pfirstWith", TFun(TInt, TFun(TFun(tA, tB), TFun(TSeq tA, tB))), pfirstWithImpl
       "piterWith", TFun(TInt, TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit))), piterWithImpl
       "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
       "windowed", TFun(TInt, TFun(TSeq tA, TSeq(TSeq tA))), windowedImpl
@@ -2013,7 +2093,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               "Map in parallel across worker threads."
               (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.force")
-              (Some "ordered, eager, ProcessorCount workers; the first error wins.")
+              (Some "ordered, eager, at most 64 workers; the first error by input order wins.")
           |> named [ "f"; "xs" ]
           "Seq.piter",
           bd
@@ -2021,6 +2101,15 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "[1; 2; 3] |> Seq.piter (fun x -> ())")
               (Some "workers fork the session (worker-local cd, dies at join).")
           |> named [ "f"; "xs" ]
+          "Seq.pfirst",
+          bd
+              "Race an arm over every element; the FIRST SUCCESS wins. Losers' spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises."
+              (Some "[3; 1; 2] |> Seq.pfirst (fun n -> n * 10)")
+              (Some "a race, not a retry: same fetch against N mirrors, first answer wins.")
+          |> named [ "f"; "xs" ]
+          "Seq.pfirstWith",
+          bd "Seq.pfirst at an explicit concurrency ceiling." (Some "[1; 2] |> Seq.pfirstWith 2 (fun n -> n)") None
+          |> named [ "degree"; "f"; "xs" ]
 
           // ---- Option ----
           "Option.iter",

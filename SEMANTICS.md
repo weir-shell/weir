@@ -1706,6 +1706,18 @@ scopes are keyed to the LOGICAL context (`AsyncLocal`), so a scope
 established inside an arm belongs to that arm wherever it runs —
 the cwd/env fork discipline is unchanged and holds at the ceiling.
 
+**The race is `Seq.pfirst` [D:seq-pfirst]** — a race, not a retry,
+so it lives with its siblings. Arms run under the same worker pool
+and ceiling (`Seq.pfirstWith n` sets it); the **first SUCCESS**
+wins — the call returns without joining the losers, and every
+process a loser arm has spawned is tree-killed, so partial output
+cannot leak and losers' failures are swallowed BY CONSTRUCTION.
+Cancellation is cooperative: the kill reaches processes (what arms
+actually wait on); a pure-compute loser finishes in the background
+and its result is discarded. If EVERY arm fails, the first error by
+INPUT ORDER rethrows (the fan-out convention); an empty sequence
+raises — a race with no contestants has no winner.
+
 ## Size — bytes as a type [D:size]
 
 **The storage law: a `Size` is an integer count of bytes** (int64 —

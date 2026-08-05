@@ -38,6 +38,10 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
         with :? System.ComponentModel.Win32Exception ->
             failwith $"command not found or not executable: {s.Prog}"
 
+    // a racing arm's children join its group [D:seq-pfirst] — a no-op
+    // outside pfirst
+    Session.registerChild p
+
     match s.Input with
     | Some lines ->
         System.Threading.Tasks.Task.Run(fun () ->
