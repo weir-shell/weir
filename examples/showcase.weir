@@ -8,8 +8,10 @@
 // resolver to find). The POSIX escape hatch is still a feature:
 // !(sh -c "...") on POSIX, cmd /c on Windows — spelled here in prose
 // because a named head must resolve on YOUR platform.
-// The one feature not here: `module`/`import` — it needs a second
-// file (see docs/GUIDE.md).
+// Not here, each for a hosting reason: `module`/`import` (needs a
+// second file), and `#sig` signatures + schema contracts (need a
+// checked-in .weir/ tree this tour's cwd cannot carry) — the e2e
+// battery holds their runnable truth; see docs/GUIDE.md.
 
 // ---- typed argv: flags derive from a record ---------------------------
 
@@ -97,6 +99,8 @@ type Endpoint = { Host: string; Port: int }
 let dev = { Host = "localhost"; Port = 8080 }
 let prod = { dev with Port = 443 }
 print $"{prod.Host}:{prod.Port}"
+// print takes scalars/seq<string>, so a whole record goes through
+// show — the SAME rendering a hole gives inline ($"{prod}")
 print (show prod)
 
 // ---- unions, match, guards --------------------------------------------
@@ -138,7 +142,8 @@ let half = cli.timeout / 2
 // visible in the output: 60.0 keeps its .0 (a float never renders
 // as an int; finite-only, and == on floats is a check error)
 let ratio = Duration.toSeconds cli.timeout / Duration.toSeconds 1m
-print $"budget {cli.timeout}, half {half}, ratio {ratio} of {Duration.toSeconds 1m} seconds, rate {cli.rate}"
+print $"budget {cli.timeout}, half {half}"
+print $"ratio {ratio} of {Duration.toSeconds 1m} seconds, at rate {cli.rate}"
 Duration.sleep 1ms // takes a Duration, not a number; module-qualified so coreutils sleep stays reachable
 
 // ---- seqs: Regex patterns, choose, seq patterns, fold -----------------
