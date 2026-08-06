@@ -2851,6 +2851,16 @@ let reifierSurface (name: string) : string option =
 let renderBuiltinDoc (d: BuiltinDoc) : string =
     [ Some d.Summary; d.Example; d.Pointer ] |> List.choose id |> String.concat "\n"
 
+// the ALLOWLIST [D:bare-allowlist]: only these modules contribute bare
+// aliases to loose mode / the REPL. Inverted from a blocklist after
+// three collisions (Secret.map stole bare `map` — 22 unrelated tests
+// failed naming a module they never mentioned; Http.head stole `head`;
+// Option/Float were earlier rounds): a blocklist made every NEW module
+// unsafe by default, a collision away from the next hot-path-named
+// member. Widening this set is a deliberate act with a recorded reason,
+// never a side effect of adding a module.
+let bareAliasModules: Set<string> = Set [ "Seq"; "Str" ]
+
 let private bareAliases: Set<string> =
     Set
         [ "map"
@@ -2874,15 +2884,15 @@ let private bareAliases: Set<string> =
           "toInt"
           "tryToInt" ]
 
-let private bareEntries: (string * Ty * Value) list =
-    moduleTable
-    // Float never flattens [D:floats]: its toInt would shadow the bare
-    // toInt alias (Str's) — module-qualified only, like Option. Secret
-    // joins them [D:secret]: bare `map`/`of`/`reveal` would collide with
-    // Seq.map and read as un-namespaced — a Secret member is always qualified
-    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float" && m <> "Secret" && m <> "Http")
+// factored over the table so the PROPERTY is pinnable: a hypothetical
+// module with a `map`/`head` member must contribute nothing
+let bareEntriesOf (table: (string * (string * Ty * Value) list) list) : (string * Ty * Value) list =
+    table
+    |> List.filter (fun (m, _) -> bareAliasModules.Contains m)
     |> List.collect snd
     |> List.filter (fun (n, _, _) -> bareAliases.Contains n && n <> "length")
+
+let private bareEntries: (string * Ty * Value) list = bareEntriesOf moduleTable
 
 let private failImpl: Value =
     VBuiltin(fun v ->
@@ -3049,9 +3059,9 @@ let internalAliases: (string * Ty * Value) list =
           let ty, v = m modName field
           key, ty, v ]
 
-let bareAliasHomes: Map<string, string> =
-    moduleTable
-    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float" && m <> "Secret" && m <> "Http")
+let bareAliasHomesOf (table: (string * (string * Ty * Value) list) list) : Map<string, string> =
+    table
+    |> List.filter (fun (m, _) -> bareAliasModules.Contains m)
     |> List.collect (fun (m, members) ->
         members
         |> List.choose (fun (n, _, _) ->
@@ -3060,6 +3070,8 @@ let bareAliasHomes: Map<string, string> =
             else
                 None))
     |> Map.ofList
+
+let bareAliasHomes: Map<string, string> = bareAliasHomesOf moduleTable
 
 // sortBy : Ord b => (a -> b) -> seq<a> -> seq<a> — the constraint that
 // killed the runtime scalar-key rule (sentinel-ledger customer four).

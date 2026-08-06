@@ -203,6 +203,20 @@ each grammar hard-codes the set in its own idiom (tree-sitter widened
 its existing `adapter` token; TextMate and micro got a two-word rule),
 verified per engine, never assumed symmetric.
 
+## Batched edits are all-or-nothing — in BOTH directions
+
+A batched edit (several replaces guarded by asserts, one write at the
+end) discards EVERYTHING on a failed assert — including the replaces
+that succeeded. That is the virtue (nothing half-written; the Size
+session's lesson) and the trap (the Http `insecure` session's): a
+batch that aborts on the SECOND replace's assertion silently drops the
+FIRST, and per-edit stdout confirmations are not receipts — "printed"
+is not "landed" for a sibling edit in the same batch. The symptom
+arrives far away: a runtime "key not present" for a field one replace
+added to the type and the aborted batch never added to the value. So:
+check the FILE after a failed batch, not the exit code or the
+printout, and re-apply the whole intent, never the "missing half".
+
 ## Fuzzer grammar membership
 
 New assembler/grammar features add their line shapes to the fuzzer's

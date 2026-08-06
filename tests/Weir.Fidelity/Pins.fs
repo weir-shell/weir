@@ -451,6 +451,11 @@ let pins =
           "let b = 0.1 == 0.2\n"
           "let b = 0.1 = 0.2\n"
           (Diverges "floats-finite-only")
+      pinT
+          "seq equality: weir refuses at check; F# compiles (and the ANSWER depends on the runtime type)"
+          "let b = [1; 2] == [1; 2]\n"
+          "let b = Seq.map id [1; 2] = Seq.map id [1; 2]\n"
+          (Diverges "seq-equality")
 
       // --- corpus-born pins (dotnet/fsharp @ 5928e91, ComponentTests mining) ---
       pin "let parameter sugar (corpus-born feature, 2026-07-20)" "let f x = x + 1\n" Same

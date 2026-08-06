@@ -5501,6 +5501,35 @@ let moduleTests =
               expectValue "ls |> where _.readOnly |> map _.name |> head" (VStr "b.bin")
               expectValue "split \",\" \"a,b\" |> join \";\"" (VStr "a;b")
           }
+          test "the bare-alias ALLOWLIST: a new module CANNOT steal a bare alias [D:bare-allowlist]" {
+              // the property, not the outcome: a hypothetical module with
+              // hot-path-named members contributes NOTHING — safe by
+              // construction, no blocklist entry to remember (the guard
+              // three collisions bought: Secret.map, Http.head, Float.toInt)
+              let evil =
+                  [ "Evil",
+                    [ "map", Weir.Types.TInt, VUnit
+                      "head", Weir.Types.TInt, VUnit
+                      "trim", Weir.Types.TInt, VUnit ] ]
+
+              Expect.equal
+                  (Weir.Builtins.bareAliasHomesOf evil)
+                  Map.empty
+                  "a non-allowlisted module contributes no homes"
+
+              Expect.isEmpty (Weir.Builtins.bareEntriesOf evil) "and no entries"
+
+              // with Seq present beside it, bare map still homes to Seq
+              let both = evil @ [ "Seq", [ "map", Weir.Types.TInt, VUnit ] ]
+              Expect.equal (Weir.Builtins.bareAliasHomesOf both) (Map [ "map", "Seq" ]) "Seq keeps the alias"
+          }
+          test
+              "the allowlist is RULED as exactly Seq + Str — widening it is a deliberate test edit, never a side effect" {
+              Expect.equal Weir.Builtins.bareAliasModules (Set [ "Seq"; "Str" ]) "the ruling"
+
+              for KeyValue(alias, home) in Weir.Builtins.bareAliasHomes do
+                  Expect.isTrue (home = "Seq" || home = "Str") $"bare '{alias}' homes to {home} — outside the allowlist"
+          }
           test "Option members are qualified-only" {
               expectValue "[7] |> Seq.tryHead |> Option.map double |> Option.defaultValue 0" (VInt 14)
               Expect.stringContains (checkErr "[7] |> Seq.tryHead |> defaultTo 0").Message "Option.defaultValue" ""
