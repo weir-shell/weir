@@ -1992,52 +1992,128 @@ let private httpDefaults: Value =
               "headers", VSeq Seq.empty
               "secretHeaders", VSeq Seq.empty
               "body", VUnion("NoBody", None)
-              "timeout", VDur 30000L ]
+              "timeout", VDur 30000L
+              "insecure", VBool false ]
     )
+
+// translate the request record to Http.Req, send, RAISE on transport
+// failure (status is data — the caller decides) [D:http]
+let private runRequest (reqV: Value) : Http.Resp =
+    match reqV with
+    | VRecord("HttpRequest", f) ->
+        let get k = Map.find k f
+
+        let req: Http.Req =
+            { Method = httpMethodName (get "method")
+              Url =
+                (match get "url" with
+                 | VStr s -> s
+                 | v -> unreachable $"url {formatValue v}")
+              Headers =
+                authHeaders (get "auth")
+                @ headerPairs (get "headers")
+                @ headerPairs (get "secretHeaders")
+              Body = httpBodyOf (get "body")
+              TimeoutMs =
+                (match get "timeout" with
+                 | VDur ms -> int ms
+                 | v -> unreachable $"timeout {formatValue v}")
+              Insecure =
+                (match get "insecure" with
+                 | VBool b -> b
+                 | v -> unreachable $"insecure {formatValue v}") }
+
+        match Http.send req with
+        | Ok resp -> resp
+        | Error msg -> failwith msg
+    | v -> unreachable $"the checker rejects a request on {formatValue v}"
+
+// split the response bytes back into lines, byte-exact with the join at
+// send — a body pipes straight into `from json T`
+let private respBodyLines (resp: Http.Resp) : seq<Value> =
+    resp.Body.Split('\n') |> Array.map VStr :> seq<Value>
 
 // status is DATA [D:http]: a 4xx/5xx binds, never raises (the `| complete`
 // posture for exit codes); ONLY transport failure raises
 let private httpSendImpl: Value =
     VBuiltin(fun reqV ->
-        match reqV with
-        | VRecord("HttpRequest", f) ->
-            let get k = Map.find k f
+        let resp = runRequest reqV
 
-            let req: Http.Req =
-                { Method = httpMethodName (get "method")
-                  Url =
-                    (match get "url" with
-                     | VStr s -> s
-                     | v -> unreachable $"url {formatValue v}")
-                  Headers =
-                    authHeaders (get "auth")
-                    @ headerPairs (get "headers")
-                    @ headerPairs (get "secretHeaders")
-                  Body = httpBodyOf (get "body")
-                  TimeoutMs =
-                    (match get "timeout" with
-                     | VDur ms -> int ms
-                     | v -> unreachable $"timeout {formatValue v}") }
+        VRecord(
+            "HttpResponse",
+            Map
+                [ "status", VInt(int64 resp.Status)
+                  "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
+                  "body", VSeq(respBodyLines resp) ]
+        ))
 
-            match Http.send req with
-            | Ok resp ->
-                // split the response bytes back into lines, byte-exact with
-                // the join at send — a body pipes straight into `from json T`
-                let bodyLines = resp.Body.Split('\n') |> Array.map VStr :> seq<Value>
+// a CONSTRUCTOR [D:http-s2]: `Http.get u` = `{ Http.defaults with method =
+// Get; url = u }` byte-identically (pinned) — a record PRODUCER, not a
+// builder combinator; names only the method, the one thing already
+// enumerated. The common case stops naming the record.
+let private httpCtor (methodCase: string) : Value =
+    VBuiltin(fun urlV ->
+        match urlV, httpDefaults with
+        | VStr url, VRecord("HttpRequest", f) ->
+            VRecord("HttpRequest", f |> Map.add "method" (VUnion(methodCase, None)) |> Map.add "url" (VStr url))
+        | v, _ -> unreachable $"the checker rejects an Http constructor on {formatValue v}")
 
-                VRecord(
-                    "HttpResponse",
-                    Map
-                        [ "status", VInt(int64 resp.Status)
-                          "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
-                          "body", VSeq bodyLines ]
-                )
-            | Error msg -> failwith msg
-        | v -> unreachable $"the checker rejects Http.send on {formatValue v}")
+// the raising shorthand [D:http-s2]: GET, raise on non-2xx naming the
+// status, body only — the `curl -sf` analogue. Two names, no boolean:
+// Http.fetch RAISES, Http.send RETURNS (the same 404 send binds as data)
+let private httpFetchImpl: Value =
+    VBuiltin(fun urlV ->
+        match urlV, httpDefaults with
+        | VStr url, VRecord("HttpRequest", f) ->
+            let resp = runRequest (VRecord("HttpRequest", Map.add "url" (VStr url) f))
+
+            if resp.Status < 200 || resp.Status >= 300 then
+                failwith $"{url} answered {resp.Status}"
+            else
+                VSeq(respBodyLines resp)
+        | v, _ -> unreachable $"the checker rejects 'Http.fetch' on {formatValue v}")
+
+// the query-string builder [D:http-s2] — NAMED withQuery so it does not
+// collide with `query` the METHOD constructor. Percent-encodes each key
+// and value: `$"{base}/search?q={term}"` can escape a path or break on a
+// raw `&`; this cannot. (The non-claim's PATH half still stands.)
+let private httpWithQueryImpl: Value =
+    VBuiltin(fun baseV ->
+        VBuiltin(fun paramsV ->
+            match baseV, paramsV with
+            | VStr baseUrl, VSeq items ->
+                let enc (x: string) = System.Uri.EscapeDataString x
+
+                let qs =
+                    items
+                    |> Seq.map (fun it ->
+                        match it with
+                        | VTuple [ VStr k; VStr v ] -> $"{enc k}={enc v}"
+                        | v -> unreachable $"the checker rejects a query pair {formatValue v}")
+                    |> String.concat "&"
+
+                if qs = "" then
+                    VStr baseUrl
+                else
+                    let sep = if baseUrl.Contains "?" then "&" else "?"
+                    VStr(baseUrl + sep + qs)
+            | v, _ -> unreachable $"the checker rejects 'Http.withQuery' on {formatValue v}"))
 
 let private httpMembers: (string * Ty * Value) list =
+    let ctorTy = TFun(TStr, TNamed("HttpRequest", []))
+
     [ "defaults", TNamed("HttpRequest", []), httpDefaults
-      "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl ]
+      "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl
+      "fetch", TFun(TStr, TSeq TStr), httpFetchImpl
+      "withQuery", TFun(TStr, TFun(TSeq(TTuple [ TStr; TStr ]), TStr)), httpWithQueryImpl
+      "get", ctorTy, httpCtor "Get"
+      "post", ctorTy, httpCtor "Post"
+      "put", ctorTy, httpCtor "Put"
+      "delete", ctorTy, httpCtor "Delete"
+      "patch", ctorTy, httpCtor "Patch"
+      "head", ctorTy, httpCtor "Head"
+      "options", ctorTy, httpCtor "Options"
+      "query", ctorTy, httpCtor "Query" ]
 
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
@@ -2582,6 +2658,38 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               None
            |> named [ "request" ])
+          "Http.get",
+          (bd
+              "A request CONSTRUCTOR: `Http.get u` = `{ Http.defaults with method = Get; url = u }`. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`."
+              (Some "Http.get \"http://x/y\"")
+              None
+           |> named [ "url" ])
+          "Http.post",
+          (bd "Constructor: a Post request to the url (add body/auth with `with`)." None None
+           |> named [ "url" ])
+          "Http.put", (bd "Constructor: a Put request to the url." None None |> named [ "url" ])
+          "Http.delete", (bd "Constructor: a Delete request to the url." None None |> named [ "url" ])
+          "Http.patch", (bd "Constructor: a Patch request to the url." None None |> named [ "url" ])
+          "Http.head", (bd "Constructor: a Head request to the url." None None |> named [ "url" ])
+          "Http.options", (bd "Constructor: an Options request to the url." None None |> named [ "url" ])
+          "Http.query",
+          (bd
+              "Constructor: a QUERY request (RFC 10008) — idempotent, so `retry` around it is safe by the method's definition. Almost nothing serves it yet; expect 405."
+              None
+              None
+           |> named [ "url" ])
+          "Http.fetch",
+          (bd
+              "The raising GET shorthand: body only, RAISES on non-2xx naming the status (the `curl -sf` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
+              None
+              None
+           |> named [ "url" ])
+          "Http.withQuery",
+          (bd
+              "Append a percent-encoded query string to a url: keys and values are escaped, so a space or `&` cannot break the url. (NOT `Http.query` the method constructor.)"
+              (Some "Http.withQuery \"http://x/s\" [(\"q\", \"a b\")]")
+              None
+           |> named [ "base"; "params" ])
 
           // ---- Size: bytes as a type [D:size] --------------------------
           "Size.bytes",
@@ -2772,7 +2880,7 @@ let private bareEntries: (string * Ty * Value) list =
     // toInt alias (Str's) — module-qualified only, like Option. Secret
     // joins them [D:secret]: bare `map`/`of`/`reveal` would collide with
     // Seq.map and read as un-namespaced — a Secret member is always qualified
-    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float" && m <> "Secret")
+    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float" && m <> "Secret" && m <> "Http")
     |> List.collect snd
     |> List.filter (fun (n, _, _) -> bareAliases.Contains n && n <> "length")
 
@@ -2943,7 +3051,7 @@ let internalAliases: (string * Ty * Value) list =
 
 let bareAliasHomes: Map<string, string> =
     moduleTable
-    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float" && m <> "Secret")
+    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float" && m <> "Secret" && m <> "Http")
     |> List.collect (fun (m, members) ->
         members
         |> List.choose (fun (n, _, _) ->

@@ -8787,6 +8787,15 @@ let httpTests =
               Expect.equal (run "Http.defaults.auth") (VUnion("NoAuth", None)) "auth"
               Expect.equal (run "Http.defaults.body") (VUnion("NoBody", None)) "body"
               Expect.equal (run "Http.defaults.timeout") (VDur 30000L) "the mandatory 30s default"
+              Expect.equal (run "Http.defaults.insecure") (VBool false) "TLS verification ON by default"
+          }
+          test "insecure is a LOUD per-request field, off by default [D:http-s2]" {
+              Expect.equal
+                  (run "{ Http.get \"u\" with insecure = true }.insecure")
+                  (VBool true)
+                  "opt-in, visible at the call site"
+
+              Expect.equal (run "(Http.get \"u\").insecure") (VBool false) "a constructor is secure by default"
           }
           test "Basic auth is base64(user:pass) — an ENCODING the runner does, not a caller" {
               Expect.equal (Weir.Http.basicToken "alice" "s3cr3t") "YWxpY2U6czNjcjN0" ""
@@ -8810,6 +8819,31 @@ let httpTests =
                       Expect.equal (lines |> Seq.map strOf |> List.ofSeq) [ "{\"name\":\"a\"}" ] "one NDJSON line"
                   | v -> failtest $"body not Json: {v}"
               | v -> failtest $"not a request: {v}"
+          }
+          test "a constructor equals its record form BYTE-IDENTICALLY [D:http-s2] — a producer, not a drift" {
+              // `==` cannot compare a record with a seq field; the pin is
+              // value-level (the constructor cannot drift from the record)
+              Expect.equal
+                  (run "Http.post \"http://x/y\"")
+                  (run "{ Http.defaults with method = Post; url = \"http://x/y\" }")
+                  "Http.post u IS its record form"
+
+              Expect.equal (run "(Http.query \"u\").method") (VUnion("Query", None)) "the QUERY method exists"
+              Expect.equal (run "(Http.delete \"u\").method") (VUnion("Delete", None)) "delete"
+              Expect.equal (run "(Http.get \"u\").method") (VUnion("Get", None)) "get"
+          }
+          test "Http.withQuery percent-encodes keys and values; withQuery != query the constructor [D:http-s2]" {
+              Expect.equal
+                  (run "Http.withQuery \"http://x/s\" [(\"q\", \"a b\"); (\"t\", \"x&y\")]")
+                  (VStr "http://x/s?q=a%20b&t=x%26y")
+                  "spaces and ampersands are encoded, not path-escaping"
+
+              Expect.equal (run "Http.withQuery \"http://x\" []") (VStr "http://x") "no params, no ?"
+
+              Expect.equal
+                  (run "Http.withQuery \"http://x?a=1\" [(\"b\", \"2\")]")
+                  (VStr "http://x?a=1&b=2")
+                  "an existing query gets & not ?"
           } ]
 
 let sizeTests =

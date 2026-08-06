@@ -4274,7 +4274,7 @@ class H(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(n) if n else b''
         if self.path == '/auth':
             body = self.headers.get('Authorization', 'NONE').encode()
-        code = int(self.headers.get('X-Want-Status', '200'))
+        code = 404 if self.path == '/missing' else int(self.headers.get('X-Want-Status', '200'))
         self.send_response(code); self.end_headers(); self.wfile.write(body)
     do_GET = do_POST = do_PUT = _h
     def log_message(self, *a): pass
@@ -4318,6 +4318,27 @@ WEOF
     echo "$out" | grep -qF "Bearer tok123" || { kill $hsrv 2>/dev/null; fail "Bearer not sent: $out"; }
     echo "$out" | grep -qF "Basic YWxpY2U6czNjcjN0" || { kill $hsrv 2>/dev/null; fail "Basic base64 wrong: $out"; }
 
+    # Http.fetch RAISES on non-2xx (naming the status); the SAME 404 that
+    # send BINDS as data [D:http-s2] — two names, no boolean
+    cat > "$hdir/fetch.weir" <<WEOF
+let ok = Http.fetch "http://127.0.0.1:$hport/x"
+print \$"fetch-ok lines={ok |> Seq.length}"
+let bound = Http.send (Http.get "http://127.0.0.1:$hport/missing")
+print \$"send-binds={bound.status}"
+WEOF
+    out=$($BIN "$hdir/fetch.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "fetch/send failed: $out"; }
+    echo "$out" | grep -qF "send-binds=404" || { kill $hsrv 2>/dev/null; fail "send must BIND a 404: $out"; }
+    out=$($BIN -e 'Http.fetch "http://127.0.0.1:'"$hport"'/missing" |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null; fail "fetch must RAISE on 404"; } || true
+    echo "$out" | grep -qF "answered 404" || { kill $hsrv 2>/dev/null; fail "fetch raise must name the status: $out"; }
+
+    # a constructor round-trips through send (Http.post carries the method)
+    cat > "$hdir/ctor.weir" <<WEOF
+let r = Http.send (Http.post "http://127.0.0.1:$hport/x")
+print \$"ctor-status={r.status}"
+WEOF
+    out=$($BIN "$hdir/ctor.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "constructor send failed: $out"; }
+    echo "$out" | grep -qF "ctor-status=200" || { kill $hsrv 2>/dev/null; fail "constructor did not send: $out"; }
+
     # parallel fetches via Seq.pmap
     cat > "$hdir/pmap.weir" <<WEOF
 let urls = ["http://127.0.0.1:$hport/a"; "http://127.0.0.1:$hport/b"; "http://127.0.0.1:$hport/c"]
@@ -4338,8 +4359,45 @@ WEOF
     out=$($BIN "$hdir/dead.weir" 2>&1) && fail "transport failure must raise" || true
     echo "$out" | grep -qF "cannot reach" || fail "transport message not contracts-shaped: $out"
 
+    # insecure: TLS verification is ON by default and OFF per-request when
+    # asked [D:http-s2] — a self-signed server the default REJECTS and
+    # insecure = true accepts (openssl-guarded)
+    if command -v openssl >/dev/null 2>&1; then
+        tport=$((22800 + RANDOM % 200))
+        openssl req -x509 -newkey rsa:2048 -keyout "$hdir/k.pem" -out "$hdir/c.pem" -days 1 -nodes -subj "/CN=127.0.0.1" >/dev/null 2>&1
+        cat > "$hdir/tls.py" <<TLSEOF
+import http.server, ssl, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"secure-ok")
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("$hdir/c.pem", "$hdir/k.pem")
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+srv.serve_forever()
+TLSEOF
+        python3 "$hdir/tls.py" "$tport" 2>/dev/null &
+        tsrv=$!
+        sleep 0.8
+        # default REJECTS the self-signed cert (verification on)
+        out=$($BIN -e 'Http.send (Http.get "https://127.0.0.1:'"$tport"'/")' 2>&1) && { kill $tsrv 2>/dev/null; fail "default must reject a self-signed cert"; } || true
+        echo "$out" | grep -qiE "certificate|cannot reach" || { kill $tsrv 2>/dev/null; fail "TLS rejection message: $out"; }
+        # insecure = true ACCEPTS it
+        cat > "$hdir/ins.weir" <<WEOF
+let r = Http.send { Http.get "https://127.0.0.1:$tport/" with insecure = true }
+print \$"insecure-status={r.status}"
+WEOF
+        out=$($BIN "$hdir/ins.weir" 2>&1) || { kill $tsrv 2>/dev/null; fail "insecure=true must accept the self-signed cert: $out"; }
+        echo "$out" | grep -qF "insecure-status=200" || { kill $tsrv 2>/dev/null; fail "insecure did not connect: $out"; }
+        kill $tsrv 2>/dev/null
+        echo "e2e ok: Http insecure (default rejects a self-signed cert, insecure=true accepts — per-request)"
+    else
+        echo "e2e SKIP: openssl absent — Http insecure TLS pin not run" >&2
+    fi
+
     rm -rf "$hdir"
-    echo "e2e ok: Http (mangling byte-exact, status-is-data, auth reaches, pmap, transport raises, check silent)"
+    echo "e2e ok: Http (mangling, status-is-data, auth, fetch-raises/send-binds, constructors, pmap, transport raises, check silent)"
 else
     echo "e2e SKIP: python3 absent — Http offline server not run" >&2
 fi

@@ -308,16 +308,43 @@ the caller's `to json` output byte-exact.
 ```
 type Item = { name: string; count: int }
 
+let created =
+    Http.send (Http.get $"{api}/items/1") |> fun r -> r.body |> from json Item
+
 let resp =
-    Http.send { Http.defaults with
-                  method = Post
-                  url = $"{api}/items"
+    Http.send { Http.post $"{api}/items" with
                   auth = Bearer token
                   body = Json ([{ name = "widget"; count = 3 }] |> to json) }
 
 if resp.status >= 400 then fail $"api said {resp.status}"
-let created = resp.body |> from json Item
 ```
+
+The common case is a CONSTRUCTOR — `Http.get url`, `Http.post url` —
+with `with` for the optional part, which is how records are meant to
+be used. `Http.get url` equals `{ Http.defaults with method = Get; url
+= url }` byte-identically; the constructors just stop you naming the
+record. All eight methods have one (`get`/`post`/`put`/`delete`/
+`patch`/`head`/`options`/`query`).
+
+For the simplest read — a GET whose body is all you want — `Http.fetch`
+is the raising shorthand (the `curl -sf` analogue): it returns the body
+and raises on a non-2xx naming the status, where `Http.send` binds the
+same status as data.
+
+```
+let items = Http.fetch $"{api}/items" |> from json Item
+```
+
+`Http.query` is the QUERY method (RFC 10008): it is IDEMPOTENT by
+definition, so `retry attempts=5` around an `Http.query` is safe by the
+method's own guarantee — where the same wrapper around a POST is a
+correctness question you must answer. (Almost nothing serves QUERY yet,
+so expect 405 from most endpoints.) For query STRINGS, `Http.withQuery
+base [("q", term)]` percent-encodes — a space or `&` cannot break the
+url (that is the query half of the URL-construction non-claim; the path
+half still stands). TLS verification is on by default; `Http.send { …
+with insecure = true }` turns it off for ONE request (self-signed
+clusters) — a loud, per-call field, never global.
 
 **Status is data.** A 404 binds and you branch on it (`if resp.status
 >= 400`) exactly as `| complete` treats an exit code — only a

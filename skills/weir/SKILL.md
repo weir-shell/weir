@@ -236,9 +236,18 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   rejected. Qualified-only (no bare `of`/`map`). Not memory-hardening:
   the value is an un-zeroed managed string (see SECURITY.md).
 - HTTP is `Http.send : HttpRequest -> HttpResponse` (a record + one
-  runner, no new grammar): `Http.send { Http.defaults with method =
-  Post; url = u; auth = Bearer tok; body = Json (payload |> to json) }`.
-  `Http.defaults` is the template (Get, 30s timeout). `auth` is a UNION
+  runner, no new grammar). The common case is a CONSTRUCTOR:
+  `Http.send (Http.get u)`, `Http.send { Http.post u with auth = Bearer
+  tok; body = Json (payload |> to json) }` — one per method
+  (get/post/put/delete/patch/head/options/query), each equal to `{
+  Http.defaults with method = M; url = u }`. `Http.fetch u : seq<string>`
+  is the raising GET shorthand (body only, raises on non-2xx — the pair
+  to send, which binds it). `Http.withQuery base [(k, v)]` percent-encodes
+  a query string. `Http.query` is the QUERY method (idempotent, so
+  `retry` around it is safe by definition). TLS verification is ON;
+  `{ req with insecure = true }` disables it for ONE request (a loud
+  per-call field for self-signed clusters). `Http.defaults` is the
+  template (Get, 30s timeout, secure). `auth` is a UNION
   (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=

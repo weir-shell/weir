@@ -124,8 +124,19 @@ it, by design):
   - **URL construction is the author's job.** There is no shell, so
     there is no injection to make unrepresentable — but
     `$"{base}/{userInput}"` can still escape a path with `../` or a
-    query. weir builds no URL for you; a `Http.url base [segments]`
+    query. `Http.withQuery base [(k, v)]` percent-encodes the QUERY
+    half (a space or `&` cannot break the url); the PATH half stands —
+    weir builds no path for you, and a `Http.url base [segments]`
     helper is parked.
+  - **`insecure` disables TLS verification for ONE request** and is a
+    loud opt-in [D:http-s2]. TLS verification is ON by default; a
+    `Http.send { … with insecure = true }` accepts any certificate
+    (self-signed clusters) — but ONLY that request, and the field is
+    visible at the call site (a record field, never a subtle global or
+    an env switch). `insecure = true` means "I have verified this
+    endpoint some other way"; a `show` of the request displays it, so
+    a review sees it. There is no way to disable verification globally,
+    by design.
   - **`Secret` reaches the socket in the clear at `send`** — the one
     deliberate reveal (auth headers, `secretHeaders`), exactly
     analogous to argv. `show` masks it up to that point; the wire sees
