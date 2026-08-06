@@ -218,6 +218,7 @@ splice is one word, and no shell ever re-parses your line.
 | `os.environ.get("PORT")` | `Env.get "PORT"` — or `Env.load Config`, typed, one error for all fields |
 | `argparse` | `Args.load Cli` — the flags DERIVE from a record you declare |
 | `json.loads(...)` → dict soup | `\|> from json T` → your declared record |
+| `requests.post(url, json=payload)` | `Http.send { Http.defaults with method = Post; url = u; body = Json (payload \|> to json) }` — status is data, `Secret` auth, body byte-exact |
 
 ```weir
 type Cfg = { name: string; port: int }
@@ -278,6 +279,7 @@ millisecond startup, no `node_modules`, no `package.json`.
 | `await Promise.any(xs.map(f))` | `xs \|> Seq.pfirst f` — first arm to SUCCEED wins, losers' processes tree-killed (`Seq.pfirstWith n` sets the ceiling); losers' failures swallowed |
 | `globby`, `fs/promises` | `Path.glob`, `File.*` / `Dir.*` |
 | `zod` schema `.parse(...)` at runtime | `from json T` and vendored JSON-schema contracts, at CHECK time |
+| `await fetch(url).then(r => r.json())` | `Http.send { Http.defaults with url = u }` then `resp.body \|> from json T`; a plain GET is `curl url \|> from json T` |
 
 ```weir
 let target = "seed.txt"

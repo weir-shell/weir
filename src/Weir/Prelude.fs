@@ -22,7 +22,13 @@ let source =
       // the reference: keys, shapes, and (via Retry.defaults /
       // Poll.defaults) the resting values
       "type Retry = { attempts: int; delay: Duration; timeout: Option<Duration> }"
-      "type Poll = { timeout: Duration; interval: Duration }" ]
+      "type Poll = { timeout: Duration; interval: Duration }"
+      // the typed request boundary [D:http] — field names are PUBLIC API
+      "type HttpMethod = Get | Post | Put | Delete | Patch | Head | Options | Query"
+      "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
+      "type HttpBody = NoBody | Json of seq<string> | Text of string"
+      "type HttpRequest = { method: HttpMethod; url: string; auth: Auth; headers: seq<string * string>; secretHeaders: seq<string * Secret>; body: HttpBody; timeout: Duration }"
+      "type HttpResponse = { status: int; headers: seq<string * string>; body: seq<string> }" ]
 
 let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
     Check.preludeLoading.Value <- true

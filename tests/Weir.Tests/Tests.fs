@@ -8754,6 +8754,64 @@ let secretTests =
               Expect.equal (Weir.Eval.scalarString "command argument" (VSecret "tok")) "tok" "argv gets the raw value"
           } ]
 
+let httpTests =
+    // Http [D:http] — the typed request boundary. The NETWORK behavior
+    // (mangling round-trip, status-is-data, transport-raises, auth-reaches,
+    // pmap) is pinned OFFLINE in e2e against a local server; here the pure
+    // and render-level guarantees, the show-masking foremost.
+    let evalWith te input =
+        match Weir.Check.typecheck te (parse input) with
+        | Ok typed -> eval valueEnv typed
+        | Error terr -> failtest $"check failed: {formatError terr}"
+
+    let strOf =
+        function
+        | VStr s -> s
+        | v -> failtest $"not a string: {v}"
+
+    testList
+        "Http [D:http]"
+        [ test "show of a request MASKS its Secret — auth union AND secret headers (formatWith recursion, confirmed)" {
+              let r =
+                  run
+                      "{ Http.defaults with auth = Bearer (Secret.of \"tok\"); secretHeaders = [(\"X-API-Key\", Secret.of \"k\")] }"
+
+              let s = Weir.Eval.formatValue r
+              Expect.stringContains s "Bearer (***)" "the auth token is masked"
+              Expect.stringContains s "(\"X-API-Key\", ***)" "the secret header value is masked"
+              Expect.isFalse (s.Contains "tok") "the raw token never renders"
+          }
+          test "Http.defaults is the template: Get, empty url, NoAuth, NoBody, 30s" {
+              Expect.equal (run "Http.defaults.method") (VUnion("Get", None)) "method"
+              Expect.equal (run "Http.defaults.url") (VStr "") "url"
+              Expect.equal (run "Http.defaults.auth") (VUnion("NoAuth", None)) "auth"
+              Expect.equal (run "Http.defaults.body") (VUnion("NoBody", None)) "body"
+              Expect.equal (run "Http.defaults.timeout") (VDur 30000L) "the mandatory 30s default"
+          }
+          test "Basic auth is base64(user:pass) — an ENCODING the runner does, not a caller" {
+              Expect.equal (Weir.Http.basicToken "alice" "s3cr3t") "YWxpY2U6czNjcjN0" ""
+          }
+          test "a Secret does not interpolate into a url — the draft's Bearer spelling is now illegal" {
+              let m = (checkErr "let t = Secret.of \"x\" in $\"Bearer {t}\"").Message
+              Expect.stringContains m "does not interpolate" "the auth union carries the Secret whole instead"
+          }
+          test "the request body carries pre-serialized `to json` lines (no generic, no Jsonable class)" {
+              // Json is a content-type tag over seq<string>; the caller's
+              // `to json` is the typed serialization [D:http]
+              let e = env |> declare "type P = { name: string }"
+
+              let v =
+                  evalWith e "{ Http.defaults with body = Json ([{ name = \"a\" }] |> to json) }"
+
+              match v with
+              | VRecord("HttpRequest", f) ->
+                  match Map.find "body" f with
+                  | VUnion("Json", Some(VSeq lines)) ->
+                      Expect.equal (lines |> Seq.map strOf |> List.ofSeq) [ "{\"name\":\"a\"}" ] "one NDJSON line"
+                  | v -> failtest $"body not Json: {v}"
+              | v -> failtest $"not a request: {v}"
+          } ]
+
 let sizeTests =
     let perr input =
         match Weir.Parser.parseExpr input with
@@ -10049,6 +10107,7 @@ let allTests =
           sigTests
           sizeTests
           secretTests
+          httpTests
           dupTypeTests
           trailingCommentTests
           interpShowTests

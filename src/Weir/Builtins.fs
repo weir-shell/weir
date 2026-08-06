@@ -1943,6 +1943,102 @@ let private secretMembers: (string * Ty * Value) list =
                    | v' -> unreachable $"the checker rejects 'Secret.map' result {formatValue v'}")
               | v -> unreachable $"the checker rejects 'Secret.map' on {formatValue v}")) ]
 
+let private httpMethodName (v: Value) : string =
+    match v with
+    | VUnion(m, None) -> m.ToUpperInvariant()
+    | v -> unreachable $"the checker rejects a non-method {formatValue v}"
+
+// auth is a UNION the runner encodes [D:http]: Basic is base64(user:pass),
+// an ENCODING no caller should build by hand. The Secret is REVEALED here —
+// the one deliberate reveal (the value reaches the socket in the clear, a
+// stated non-claim, the argv analogue)
+let private authHeaders (v: Value) : (string * string) list =
+    match v with
+    | VUnion("NoAuth", None) -> []
+    | VUnion("Bearer", Some(VSecret t)) -> [ "Authorization", "Bearer " + t ]
+    | VUnion("Basic", Some(VTuple [ VStr u; VSecret p ])) -> [ "Authorization", "Basic " + Http.basicToken u p ]
+    | v -> unreachable $"the checker rejects this auth {formatValue v}"
+
+let private httpBodyOf (v: Value) : (string * string) option =
+    match v with
+    | VUnion("NoBody", None) -> None
+    // Json carries pre-serialized `to json` lines [D:http]: send joins them
+    // with \n and sets the content type — BYTE-EXACT, the whole point over
+    // curl -d (which strips the newlines)
+    | VUnion("Json", Some(VSeq lines)) -> Some("application/json", lines |> Seq.map asString |> String.concat "\n")
+    | VUnion("Text", Some(VStr s)) -> Some("text/plain", s)
+    | v -> unreachable $"the checker rejects this body {formatValue v}"
+
+let private headerPairs (v: Value) : (string * string) list =
+    match v with
+    | VSeq items ->
+        items
+        |> Seq.map (fun it ->
+            match it with
+            | VTuple [ VStr k; VStr hv ] -> k, hv
+            // secretHeaders: revealed at send, the same deliberate reveal
+            | VTuple [ VStr k; VSecret hv ] -> k, hv
+            | v -> unreachable $"the checker rejects a header pair {formatValue v}")
+        |> List.ofSeq
+    | v -> unreachable $"the checker rejects a header seq {formatValue v}"
+
+let private httpDefaults: Value =
+    VRecord(
+        "HttpRequest",
+        Map
+            [ "method", VUnion("Get", None)
+              "url", VStr ""
+              "auth", VUnion("NoAuth", None)
+              "headers", VSeq Seq.empty
+              "secretHeaders", VSeq Seq.empty
+              "body", VUnion("NoBody", None)
+              "timeout", VDur 30000L ]
+    )
+
+// status is DATA [D:http]: a 4xx/5xx binds, never raises (the `| complete`
+// posture for exit codes); ONLY transport failure raises
+let private httpSendImpl: Value =
+    VBuiltin(fun reqV ->
+        match reqV with
+        | VRecord("HttpRequest", f) ->
+            let get k = Map.find k f
+
+            let req: Http.Req =
+                { Method = httpMethodName (get "method")
+                  Url =
+                    (match get "url" with
+                     | VStr s -> s
+                     | v -> unreachable $"url {formatValue v}")
+                  Headers =
+                    authHeaders (get "auth")
+                    @ headerPairs (get "headers")
+                    @ headerPairs (get "secretHeaders")
+                  Body = httpBodyOf (get "body")
+                  TimeoutMs =
+                    (match get "timeout" with
+                     | VDur ms -> int ms
+                     | v -> unreachable $"timeout {formatValue v}") }
+
+            match Http.send req with
+            | Ok resp ->
+                // split the response bytes back into lines, byte-exact with
+                // the join at send — a body pipes straight into `from json T`
+                let bodyLines = resp.Body.Split('\n') |> Array.map VStr :> seq<Value>
+
+                VRecord(
+                    "HttpResponse",
+                    Map
+                        [ "status", VInt(int64 resp.Status)
+                          "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
+                          "body", VSeq bodyLines ]
+                )
+            | Error msg -> failwith msg
+        | v -> unreachable $"the checker rejects Http.send on {formatValue v}")
+
+let private httpMembers: (string * Ty * Value) list =
+    [ "defaults", TNamed("HttpRequest", []), httpDefaults
+      "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -1964,6 +2060,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
         VRecord("Retry", Map [ "attempts", VInt 5L; "delay", VDur 1000L; "timeout", VUnion("None", None) ]) ]
       "Poll",
       [ "defaults", TNamed("Poll", []), VRecord("Poll", Map [ "timeout", VDur 60000L; "interval", VDur 1000L ]) ]
+      "Http", httpMembers
       "Float", floatMembers ]
 
 // ---- builtin docs [D:builtin-docs] (PLAN-doc-comments half 2) --------
@@ -2474,6 +2571,17 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               None
           "Poll.defaults", bd "The poll template: timeout = 1m, interval = 1s." None None
+          "Http.defaults",
+          bd
+              "The request template: method = Get, empty url, NoAuth, no body, 30s timeout. `Http.send { Http.defaults with url = u }`."
+              None
+              None
+          "Http.send",
+          (bd
+              "Run a request. Status is DATA (a 404 binds; only transport failure raises). A Json body carries `to json` lines byte-exact; auth is a Secret-carrying union; show masks secrets."
+              None
+              None
+           |> named [ "request" ])
 
           // ---- Size: bytes as a type [D:size] --------------------------
           "Size.bytes",

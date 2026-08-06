@@ -4260,6 +4260,90 @@ echo "$out" | sed -n 1p | grep -qF "supersecret" && fail "the shown record LEAKE
 rm -rf "$scdir"
 echo "e2e ok: Secret (show ***, reveal + argv splice reveal, the shown record does not leak)"
 
+# ---- Http [D:http]: the typed request boundary (OFFLINE local server) ------
+if command -v python3 >/dev/null 2>&1; then
+    hport=$((21000 + RANDOM % 2000))
+    hdir=$(mktemp -d)
+    # an echo server: returns the request body byte-exact, status from a
+    # header, and the Authorization header on /auth
+    cat > "$hdir/echo.py" <<'PYEOF2'
+import http.server, socketserver, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def _h(self):
+        n = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(n) if n else b''
+        if self.path == '/auth':
+            body = self.headers.get('Authorization', 'NONE').encode()
+        code = int(self.headers.get('X-Want-Status', '200'))
+        self.send_response(code); self.end_headers(); self.wfile.write(body)
+    do_GET = do_POST = do_PUT = _h
+    def log_message(self, *a): pass
+socketserver.TCPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PYEOF2
+    python3 "$hdir/echo.py" "$hport" &
+    hsrv=$!
+    sleep 0.6
+
+    # THE MANGLING PIN: a multi-object NDJSON body (spans lines) round-trips
+    # BYTE-EXACT — the exact bytes curl -d would have eaten
+    cat > "$hdir/mangle.weir" <<WEOF
+type P = { name: string; count: int }
+let items = [{ name = "a"; count = 1 }; { name = "b"; count = 2 }; { name = "c"; count = 3 }]
+let sent = items |> to json
+let resp = Http.send { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/x"; body = Json sent }
+let ok = (sent |> Seq.length) == (resp.body |> Seq.length)
+print \$"lines={resp.body |> Seq.length} match={ok}"
+resp.body |> Seq.iter print
+WEOF
+    out=$($BIN "$hdir/mangle.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "mangle send failed: $out"; }
+    echo "$out" | grep -qF "lines=3 match=true" || { kill $hsrv 2>/dev/null; fail "body did not round-trip line-count: $out"; }
+    echo "$out" | grep -qF '{"count":2,"name":"b"}' || { kill $hsrv 2>/dev/null; fail "body bytes mangled: $out"; }
+
+    # STATUS IS DATA: a 404 binds, never raises
+    cat > "$hdir/status.weir" <<WEOF
+let resp = Http.send { Http.defaults with url = "http://127.0.0.1:$hport/x"; headers = [("X-Want-Status", "404")] }
+print \$"status={resp.status}"
+WEOF
+    out=$($BIN "$hdir/status.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "404 must bind, not raise: $out"; }
+    echo "$out" | grep -qF "status=404" || { kill $hsrv 2>/dev/null; fail "404 not bound as data: $out"; }
+
+    # auth reaches the server, the Secret revealed only at send
+    cat > "$hdir/auth.weir" <<WEOF
+let r1 = Http.send { Http.defaults with url = "http://127.0.0.1:$hport/auth"; auth = Bearer (Secret.of "tok123") }
+r1.body |> Seq.iter print
+let r2 = Http.send { Http.defaults with url = "http://127.0.0.1:$hport/auth"; auth = Basic ("alice", Secret.of "s3cr3t") }
+r2.body |> Seq.iter print
+WEOF
+    out=$($BIN "$hdir/auth.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "auth send failed: $out"; }
+    echo "$out" | grep -qF "Bearer tok123" || { kill $hsrv 2>/dev/null; fail "Bearer not sent: $out"; }
+    echo "$out" | grep -qF "Basic YWxpY2U6czNjcjN0" || { kill $hsrv 2>/dev/null; fail "Basic base64 wrong: $out"; }
+
+    # parallel fetches via Seq.pmap
+    cat > "$hdir/pmap.weir" <<WEOF
+let urls = ["http://127.0.0.1:$hport/a"; "http://127.0.0.1:$hport/b"; "http://127.0.0.1:$hport/c"]
+urls |> Seq.pmap (fun u -> Http.send { Http.defaults with url = u }) |> Seq.map (fun r -> show r.status) |> Seq.iter print
+WEOF
+    out=$($BIN "$hdir/pmap.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "pmap fetch failed: $out"; }
+    [ "$(echo "$out" | grep -c '^200$')" -eq 3 ] || { kill $hsrv 2>/dev/null; fail "pmap did not fetch all: $out"; }
+
+    kill $hsrv 2>/dev/null
+
+    # TRANSPORT failure raises (nothing listening) — contracts-shaped message;
+    # and CHECK makes NO request (a bogus URL checks clean, no network)
+    cat > "$hdir/dead.weir" <<'WEOF'
+let resp = Http.send { Http.defaults with url = "http://127.0.0.1:1/never" }
+print "unreached"
+WEOF
+    $BIN check "$hdir/dead.weir" >/dev/null 2>&1 || fail "check must not make a request (should pass clean)"
+    out=$($BIN "$hdir/dead.weir" 2>&1) && fail "transport failure must raise" || true
+    echo "$out" | grep -qF "cannot reach" || fail "transport message not contracts-shaped: $out"
+
+    rm -rf "$hdir"
+    echo "e2e ok: Http (mangling byte-exact, status-is-data, auth reaches, pmap, transport raises, check silent)"
+else
+    echo "e2e SKIP: python3 absent — Http offline server not run" >&2
+fi
+
 # ---- the showcase's own .weir tree [D:showcase-covers] ---------------------
 # the tour imports a module, validates a district against the COMMITTED
 # schema, and declares the hand-written git signature — check needs no

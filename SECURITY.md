@@ -112,6 +112,34 @@ it, by design):
     protection, and weir does not notice, warn, or infer. A heuristic
     on field names would be exactly the guessing this type replaces.
 
+- **`Http` types your request; it does not vet your endpoint**
+  [D:http]. `Http.send` fetches whatever URL it is given — including
+  `localhost`, link-local, and cloud-metadata addresses. What it does
+  NOT defend:
+  - **SSRF is the caller's problem.** A script that takes a URL from
+    `Args.load` and fetches it is an SSRF if it runs anywhere
+    privileged; weir does not restrict the target. Same family as
+    word-integrity-is-not-flag-safety: weir carries the value
+    faithfully, it does not judge it.
+  - **URL construction is the author's job.** There is no shell, so
+    there is no injection to make unrepresentable — but
+    `$"{base}/{userInput}"` can still escape a path with `../` or a
+    query. weir builds no URL for you; a `Http.url base [segments]`
+    helper is parked.
+  - **`Secret` reaches the socket in the clear at `send`** — the one
+    deliberate reveal (auth headers, `secretHeaders`), exactly
+    analogous to argv. `show` masks it up to that point; the wire sees
+    it. And a credential the author puts in a URL as a plain string is
+    not a `Secret` at all — error messages redact userinfo
+    (`user:pass@`), but a token in a query string is unprotected.
+  - **TLS verification is ON** and there is no `insecure` in v1.
+  - **`Http` shares the BCL `HttpClient` with the contracts fetch** —
+    deliberate and stated: the contracts fetch has a fetch-only fence
+    (never `check`, completion, or run), `Http.send` is an ordinary
+    runtime builtin with no such fence, and neither runs during
+    `check` or in the LSP (a runtime builtin is never evaluated
+    there).
+
 ## What weir defends by design
 
 These are properties of the language, verified the way the rest of
