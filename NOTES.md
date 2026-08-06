@@ -1,5 +1,48 @@
 # Spike Notes
 
+## error messages speak the user's language (2026-08-06)
+
+The motivating message carried two faults, and the second was the
+better find. A user wrote `| code, _ :: rest` meaning `(code, _) ::
+rest`; because `::` binds tighter than `,`, it parsed as a two-element
+tuple whose second element is a cons, and the checker reported a
+faithful type mismatch that pointed nowhere near the two-character
+repair. The fix names the grouping — not the category — because the
+grouping IS the repair: on the unambiguous shape (a tuple pattern
+whose last element is a cons, matched against a seq) the message now
+reads "`,` groups looser than `::`, so `code, _ :: rest` is a tuple;
+did you mean `(code, _) :: rest`?", the suggestion rendered straight
+from the parsed pattern via sexprPat. The near-miss (a plain `a, b`
+tuple against a seq) keeps the bare message — pinned, because a hint
+that fires on the ambiguous case is worse than none.
+
+The sibling positions turned out to be covered by redirection: a
+refutable tuple/cons in a `let`-destructure or a `for`-binder trips
+"this pattern can fail; use match" FIRST, which routes the user to a
+match — where the did-you-mean then fires. So the footgun only
+reaches its full form in a match scrutinee, and that is the one place
+that needed the hint.
+
+The vocabulary sweep was smaller than feared: "scrutinee" was the
+ONLY compiler-writer word in the message surface — ten of them, all
+now "value" — and the other suspects (unify, desugar, arity, row
+variable, thunk, variant) grepped zero in message strings. The
+synthetic-name grep came back clean too: no `__hole`, no `|`-prefixed
+desugar key, no internal name reaches a message (the district-splice
+session's B6 cascade suppression already guards the hole case). The
+one thing that DOES surface is a generated type variable — `'a1` in
+"this one has type 'a1" — but that is a legitimate "some type"
+rendering, F#'s `'a` with a numeric suffix, not an internal leak;
+prettifying it to sequential letters is a display concern that would
+churn many pins for little gain, so it is reported, not touched.
+
+The boundary that makes the sweep decidable rather than a taste
+argument is now one line in PROCESS: a message speaks the script
+author's language; SEMANTICS, DECISIONS, and NOTES may speak the
+implementation's, because a reader of the theory opted in and a reader
+of an error did not. That is the rule that says "scrutinee" belongs in
+this very file but never in the binary's output.
+
 ## from/to adapters in the editor — the within-kinds sibling (2026-08-06)
 
 The live check shrank this before it started: the three adapter WORDS
