@@ -55,6 +55,7 @@
     <Compile Include="Diagnose.fs" />
     <Compile Include="Proc.fs" />
     <Compile Include="Eval.fs" />
+    <Compile Include="Http.fs" />
     <Compile Include="Builtins.fs" />
     <!-- after Extern + Builtins: completion reuses the PATH cache and
          command-callable set for command-head suggestions [D:repl-quality] -->

@@ -1,5 +1,57 @@
 # Spike Notes
 
+## Http: the typed request boundary, session 1 (2026-08-06)
+
+The design collapsed once the body question was answered honestly. The
+plan sketched `Json of 'a` — send serializes a typed value — but weir
+has no Jsonable CLASS (the closed, erased Eq/Show/Ord set), so a
+generic union case carrying a jsonability constraint, inside a record,
+behind a polymorphic `defaults`, is heavy checker machinery for a
+feature that needs none. The realization: `to json` ALREADY produces
+`seq<string>`, so the body is `NoBody | Json of seq<string> | Text of
+string` (monomorphic) and the caller writes `body = Json (payload |>
+to json)`. The jsonable law is reused for free, `Json`/`Text` just tag
+the content type, and the whole feature becomes prelude types + two
+ordinary builtins — no new Ty, no bespoke checker node, no generic
+records. That is the session's main lesson: a typed-value-to-wire
+feature does not need a generic body if the serializer already exists
+as a value-producing function.
+
+Three things fell out for free from prior sessions. `show` masks the
+request's secrets with zero new code — an `HttpRequest` is a record
+containing an `Auth` union containing a `Secret`, and `formatWith` is
+the one recursive renderer, so `Bearer (***)` and `secretHeaders =
+[(..., ***)]` render by construction (the Secret session's property,
+confirmed and pinned). The `defaults`-template pattern is retry/poll's
+second customer and wanted nothing shared — a prelude type plus a
+`Http.defaults` record value is the whole mechanism. And the transport
+error reuses the contracts fetch's message shape ("cannot reach {host}
+— {root}") rather than inventing a third.
+
+Auth as a union rather than a function-per-scheme paid off exactly
+where the plan predicted: `Basic` is base64(user:pass), an ENCODING
+the runner does inside `send`, so `Secret.map` is not even needed —
+the union case carries `string * Secret` and the base64 happens once,
+correctly, where a hand-built `Authorization` header would get it
+wrong.
+
+The reifier-over-HttpResponse question was answered before coding by
+reading the machinery: the reifiers are spawn-and-reify FUSED (they
+call Proc.completeWith) and pure parse markers (`succeeds` is not a
+nameable value), so `Http.send | succeeds` has nothing to attach to.
+The honest generalization needs a runtime-witnessed success-predicate
+class, which breaks the erased-class invariant — so it is deferred on
+benefit/cost, not tractability, and written up in PLAN-http with
+`Completed`/`HttpResponse` named as its two customers. `Map` is parked
+the same way, with headers staying `seq<string * string>`.
+
+Binary delta is ~0 as the plan leaned on: HttpClient is BCL and
+already linked for the contracts fetch, so no NuGet reference was
+added and only ~130 lines of IL joined the 12MB binary. e2e is
+offline against an inline Python echo server — the mangling pin sends
+a 3-object NDJSON body and confirms it returns byte-exact, the bytes
+`curl -d` would have joined into one line.
+
 ## Secret: a marker the renderers respect (2026-08-06)
 
 The type is trivial and the coverage IS the feature — which the build

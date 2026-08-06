@@ -297,6 +297,58 @@ A `Secret` splices into a command in the clear (`curl -H $header` is
 what the type exists for), refuses interpolation (`$"tok: {token}"`
 is a check error naming `reveal`), and refuses `to json`/`to yaml`.
 
+## Making requests: `Http`
+
+A typed body reaching the wire through `curl` is one flag away from
+silent corruption — `-d @-` strips newlines, `--data-binary @-`
+preserves them, and nothing errors between. `Http` closes that: the
+request is a record, `Http.send` runs it, and a `Json` body carries
+the caller's `to json` output byte-exact.
+
+```
+type Item = { name: string; count: int }
+
+let resp =
+    Http.send { Http.defaults with
+                  method = Post
+                  url = $"{api}/items"
+                  auth = Bearer token
+                  body = Json ([{ name = "widget"; count = 3 }] |> to json) }
+
+if resp.status >= 400 then fail $"api said {resp.status}"
+let created = resp.body |> from json Item
+```
+
+**Status is data.** A 404 binds and you branch on it (`if resp.status
+>= 400`) exactly as `| complete` treats an exit code — only a
+transport failure (unreachable, TLS, timeout) raises. The health-check
+idiom falls out:
+
+```
+let up = (Http.send { Http.defaults with url = $"{api}/health" }).status == 200
+```
+
+**Auth is a union carrying a `Secret` whole** — `Bearer token`,
+`Basic ("user", pass)` (which does the base64 for you). Interpolating a
+token into a string is a check error, and `show` on the request masks
+it as `***`. A shared base config is the record's own case:
+
+```
+let github = { Http.defaults with
+                 auth = Bearer token
+                 headers = [("Accept", "application/vnd.github+json")] }
+
+let user = Http.send { github with url = $"{api}/user" }
+```
+
+For a plain GET with no body or auth, `curl url |> from json T` stays
+the recommended read — `Http` earns its keep on the REQUEST side.
+Parallel fetches are `urls |> Seq.pmap (fun u -> Http.send {
+Http.defaults with url = u })`. The 30s timeout defaults (a request
+with none is the classic CI hang); `Http` types your request but does
+not vet your endpoint — SSRF and URL construction are yours (see
+[SECURITY.md](../SECURITY.md)).
+
 ## Time: the timeout flag idiom
 
 Time is a type, not a bare int whose unit lives in a comment.

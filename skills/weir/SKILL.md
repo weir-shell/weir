@@ -235,6 +235,21 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   keeps a derived value secret; `[<Default>]` on a `Secret` field is
   rejected. Qualified-only (no bare `of`/`map`). Not memory-hardening:
   the value is an un-zeroed managed string (see SECURITY.md).
+- HTTP is `Http.send : HttpRequest -> HttpResponse` (a record + one
+  runner, no new grammar): `Http.send { Http.defaults with method =
+  Post; url = u; auth = Bearer tok; body = Json (payload |> to json) }`.
+  `Http.defaults` is the template (Get, 30s timeout). `auth` is a UNION
+  (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
+  the base64); a `Secret` carries WHOLE (interpolating a token is a
+  check error) and `show` masks it. Status is DATA (`if resp.status >=
+  400 then fail …`, a 404 binds); only TRANSPORT failure raises. The
+  body is `NoBody`/`Json of seq<string>`/`Text of string` — `Json`
+  carries the caller's `to json` lines, byte-exact to the wire (the
+  curl `-d` mangling this exists to prevent). `resp.body |> from json
+  T` reads the response; for a plain GET, `curl url |> from json T` is
+  still the spelling. `secretHeaders` for credential headers; parallel
+  fetches are `urls |> Seq.pmap (fun u -> Http.send { Http.defaults with
+  url = u })`.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
   `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency

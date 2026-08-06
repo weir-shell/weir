@@ -1,4 +1,46 @@
-# weir — `Http`: the typed request boundary (DRAFT)
+# weir — `Http`: the typed request boundary
+
+**SESSION 1 SHIPPED (2026-08-06) [D:http].** The core landed: the
+`HttpRequest`/`HttpResponse` records, the `Auth`/`HttpBody`/`HttpMethod`
+unions (all prelude types — field names are public API), `Http.defaults`,
+`Http.send`, the 30s timeout, status-is-data, transport-raises with the
+contracts shapes, `Secret` auth with `show` masking, and the byte-exact
+mangling pin. **The body ruling** (the plan left it open with a `?`):
+`HttpBody = NoBody | Json of seq<string> | Text of string` — monomorphic,
+the caller serializes with the existing `to json` (`body = Json (payload
+|> to json)`), because weir has no Jsonable class to constrain a generic
+`Json of 'a`. So the whole feature is prelude types + ordinary builtins:
+no new `Ty`, no bespoke node, no generic records. **Session 2** (below,
+"The rest") is unstarted: remaining methods incl `Query`, `Http.fetch`,
+the query-string builder, `insecure`.
+
+**Two settled non-goals from session 1, recorded here so they stay
+closed:**
+
+- **Reifiers over `HttpResponse` — DEFERRED, benefit/cost not
+  tractability.** Grounded in the code: the reifier family is
+  spawn-and-reify FUSED (`|succeeded` etc. call `Proc.completeWith`)
+  and pure PARSE MARKERS (`succeeds` is not a nameable value —
+  `unbound`), hard-matched to `ECmd` in `foldChain`. Only `succeeds`
+  (2xx→true) and `orFail` (non-2xx→raise) map; `exitCode` has no HTTP
+  analogue; `complete` is redundant because `HttpResponse` IS the
+  record. The clean generalization ("a reifier attaches to a value
+  with a success predicate") needs a RUNTIME-witnessed class, which
+  breaks weir's closed/erased Eq/Show/Ord invariant (a foundational
+  change, its own bless). The cheap version is a hard-coded
+  `Completed`+`HttpResponse` pair that saves one line over
+  `resp.status >= 400`. **So it is deferred because it buys almost
+  nothing** — `HttpResponse` already exposes `.status`, and `Http.fetch`
+  (session 2) covers the raise-on-non-2xx shorthand. If a
+  success-predicate law ever earns a bless, `Completed` and
+  `HttpResponse` are its two customers.
+- **`Map` PARKED** (headers stay `seq<string * string>`). Two standing
+  receipts: HTTP response headers, and `from json` into a `Map<string,
+  T>`. Ramifications past API surface: keys need `Ord`, so it is weir's
+  first CONSTRAINED container; literal syntax or none; and `show`'s
+  ordering (sorted for determinism).
+
+---
 
 Status: DRAFT for bless (2026-08-01). Origin: the parked sixth
 boundary-loader instance (SEMANTICS "http parked"), unparked by two
