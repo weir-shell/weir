@@ -1,5 +1,54 @@
 # Spike Notes
 
+## Secret: a marker the renderers respect (2026-08-06)
+
+The type is trivial and the coverage IS the feature — which the build
+process kept proving. `TSecret`/`VSecret` wrap a plain string; the
+work is that every renderer refuses it. Two of those renderers are
+exhaustive matches (formatWith, validateTy), so they SHOULD have
+warned FS0025 on the new case — but the incremental build reported
+zero warnings and a clean binary. `--no-incremental` surfaced them.
+That is the three-part-ritual's part one made concrete: an incremental
+F# build caches away the very incompleteness warnings the ritual
+exists to catch. The value-side wildcards were the invisible half:
+`scalarString` ends in `| v -> unreachable`, so a Secret spliced to
+argv (which the checker now ALLOWS) would have crashed rather than
+warned — the probe caught it, and VSecret→raw is the argv ruling's
+teeth (the value reaches argv in the clear, ps-visible, a stated
+non-claim).
+
+The load-bearing render is the recursion: formatWith is the ONE
+recursive renderer, so `| VSecret _ -> "***"` there makes a Secret
+inside a shown record, union, tuple, or seq render `***` for free —
+the containing-record case the plan named as the likeliest naive
+miss, handled by construction rather than by enumerating containers.
+The REPL echo falls out the same way (echoValue routes through
+formatWith).
+
+The splice law split cleanly along the two sites it already had: a
+Hole REFUSES a Secret (a secret must not reach a log line — show
+gives ***, reveal is the deliberate use), a CmdArg ALLOWS it (curl -H
+$auth is the point). The wire boundaries refuse like the unit types
+do, each naming reveal.
+
+One regression the plan did not predict, and the sharpest lesson:
+adding `secretMembers` (of/map/reveal) polluted the BARE ALIASES.
+`bareEntries` flattens every module's members into unqualified names
+for loose mode, and bare `map` collided with `Seq.map` the moment
+`Secret.map` existed — 22 unrelated ls/sortBy tests failed with
+"expected Secret, got seq<FileRow>". Secret joins Option and Float as
+qualified-only (excluded from the flattening). The lesson: a new
+module with a member named like a hot-path alias (map, of, reveal) is
+a bare-alias event, not just a type-family event.
+
+The in-memory honesty is stated up front in SECURITY.md, and the
+SecureString pre-refusal in DECISIONS was verified live (dotnet/
+platform-compat DE0001): Microsoft say don't use it for new code, it
+is unencrypted off .NET Framework (theatre on Linux/macOS), the value
+must be plaintext at every use, and immutable strings cannot be
+zeroed. So the type claims exactly what it does — a rendering marker
+weir respects consistently — and no more.
+
 ## error messages speak the user's language (2026-08-06)
 
 The motivating message carried two faults, and the second was the

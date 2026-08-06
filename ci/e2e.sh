@@ -4240,6 +4240,26 @@ out=$($BIN -e '$(echo 10MiB word) |> Seq.head')
 rm -rf "$szdir"
 echo "e2e ok: Size (defaults + File.size compare, flag parse, SI teaching, argv word)"
 
+# ---- Secret [D:secret]: the renderers refuse; reveal/argv are the exits ----
+scdir=$(mktemp -d)
+cat > "$scdir/sec.weir" <<'WEOF'
+type Cfg = { user: string; token: Secret }
+let cfg = Env.load Cfg
+print (show cfg)
+print (Secret.reveal cfg.token)
+let tok = cfg.token
+echo $tok
+WEOF
+out=$(cd "$scdir" && user=admin token=supersecret "$BIN" "$scdir/sec.weir" 2>&1)
+# show renders ***, reveal + argv reveal the real value
+echo "$out" | grep -qF "token = ***" || fail "show must render the Secret field as ***: $out"
+n=$(echo "$out" | grep -cF "supersecret" || true)
+[ "$n" -eq 2 ] || fail "reveal + argv must each surface the value exactly once (got $n): $out"
+# a containing record's show must not leak
+echo "$out" | sed -n 1p | grep -qF "supersecret" && fail "the shown record LEAKED the secret: $out"
+rm -rf "$scdir"
+echo "e2e ok: Secret (show ***, reveal + argv splice reveal, the shown record does not leak)"
+
 # ---- the showcase's own .weir tree [D:showcase-covers] ---------------------
 # the tour imports a module, validates a district against the COMMITTED
 # schema, and declares the hand-written git signature — check needs no

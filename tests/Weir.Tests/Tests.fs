@@ -3100,7 +3100,7 @@ let typedArgvTests =
 
               Expect.stringContains
                   (rejects e5 "Env.load CE")
-                  "string, int, float, bool, Duration, an enum union (0-arity cases), or Option of these"
+                  "string, int, float, bool, Duration, Size, Secret, an enum union (0-arity cases), or Option of these"
                   ""
           }
           test "Env.load enum conversion: casing, candidates, collect [D:env-enums]" {
@@ -5562,7 +5562,7 @@ let scriptTests =
                   Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
 
               match Weir.Check.typecheck strictEnv (parse "ls |> map (fun x -> x)") with
-              | Error terr -> Expect.stringContains terr.Message "use Option.map or Seq.map" ""
+              | Error terr -> Expect.stringContains terr.Message "use Option.map or Secret.map or Seq.map" ""
               | Ok _ -> failtest "expected strict rejection"
           }
           test "fmt qualifies bare uses span-precisely" {
@@ -8677,6 +8677,83 @@ let dupTypeTests =
               | other -> failtest $"expected one error, got {other.Length}"
           } ]
 
+let secretTests =
+    // Secret [D:secret] — a marker the renderers respect; the COVERAGE is
+    // the feature, so every rendering site is pinned, the containing-record
+    // case FIRST (the likeliest miss a naive implementation makes)
+    let evalWith te input =
+        match Weir.Check.typecheck te (parse input) with
+        | Ok typed -> eval valueEnv typed
+        | Error terr -> failtest $"check failed: {formatError terr}"
+
+    let checkErrIn te input =
+        match Weir.Check.typecheck te (parse input) with
+        | Error terr -> terr
+        | Ok _ -> failtest "expected a type error"
+
+    testList
+        "Secret [D:secret]"
+        [ test "the CONTAINING-RECORD case: a Secret field inside a shown record renders *** (the load-bearing pin)" {
+              let e = env |> declare "type Cfg = { user: string; token: Secret }"
+              let v = evalWith e "{ user = \"admin\"; token = Secret.of \"hunter\" }"
+
+              Expect.equal
+                  (Weir.Eval.formatValue v)
+                  "{ token = ***; user = \"admin\" }"
+                  "the secret field is ***, the public is not"
+          }
+          test "show of a bare Secret, and inside seq/tuple, all render ***" {
+              Expect.equal (run "show (Secret.of \"x\")") (VStr "***") "bare"
+              Expect.equal (run "show [Secret.of \"a\"; Secret.of \"b\"]") (VStr "[***; ***]") "seq"
+              Expect.equal (run "show (Secret.of \"a\", \"pub\")") (VStr "(***, \"pub\")") "tuple"
+          }
+          test "reveal is the one exit; map keeps the derived value secret" {
+              Expect.equal (run "Secret.reveal (Secret.of \"hunter\")") (VStr "hunter") "reveal returns the plain value"
+
+              Expect.equal
+                  (run "Secret.reveal (Secret.map (fun t -> \"Bearer \" + t) (Secret.of \"xyz\"))")
+                  (VStr "Bearer xyz")
+                  "map transforms under the wrapper"
+
+              Expect.equal
+                  (run "show (Secret.map (fun t -> t) (Secret.of \"x\"))")
+                  (VStr "***")
+                  "the map result is still secret"
+          }
+          test "interpolation REFUSES, naming reveal (a secret must not reach a log line)" {
+              let m = (checkErr "let s = Secret.of \"x\" in $\"tok: {s}\"").Message
+              Expect.stringContains m "does not interpolate" "refused"
+              Expect.stringContains m "Secret.reveal" "names the exit"
+          }
+          test "the wire boundaries REFUSE, naming reveal" {
+              let e = env |> declare "type Cfg = { token: Secret }"
+              let j = (checkErrIn e "[{ token = Secret.of \"x\" }] |> to json").Message
+              Expect.stringContains j "must not cross to JSON" ""
+              Expect.stringContains j "Secret.reveal" "names the exit"
+              let y = (checkErrIn e "{ token = Secret.of \"x\" } |> to yaml").Message
+              Expect.stringContains y "must not cross to yaml" ""
+          }
+          test "print refuses a Secret (show s -> ***), and Secret is not arithmetic" {
+              Expect.stringContains (checkErr "print (Secret.of \"x\")").Message "will not render a Secret" ""
+
+              Expect.stringContains
+                  (checkErr "Secret.of \"x\" + Secret.of \"y\"").Message
+                  "'+' is not defined for Secret"
+                  ""
+          }
+          test "Eq compares two secrets; Ord refuses (sorting secrets is meaningless)" {
+              Expect.equal (run "show (Secret.of \"x\" == Secret.of \"x\")") (VStr "true") "equal"
+              Expect.equal (run "show (Secret.of \"x\" == Secret.of \"y\")") (VStr "false") "unequal"
+
+              Expect.stringContains
+                  (checkErr "[Secret.of \"x\"] |> Seq.sortBy (fun s -> s) |> Seq.force").Message
+                  "cannot be ordered"
+                  "Ord refused"
+          }
+          test "the argv splice is ALLOWED — a Secret reaches argv in the clear (the ruling)" {
+              Expect.equal (Weir.Eval.scalarString "command argument" (VSecret "tok")) "tok" "argv gets the raw value"
+          } ]
+
 let sizeTests =
     let perr input =
         match Weir.Parser.parseExpr input with
@@ -9971,6 +10048,7 @@ let allTests =
           retryPollTests
           sigTests
           sizeTests
+          secretTests
           dupTypeTests
           trailingCommentTests
           interpShowTests

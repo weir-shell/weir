@@ -77,6 +77,41 @@ it, by design):
   fetched only by an explicit `weir add`/`weir restore`, and never during
   `check`, completion, or run.
 
+- **`Secret` is a rendering marker, not memory protection** [D:secret].
+  A `Secret` makes weir's own renderers refuse to print a value —
+  `show` gives `***`, interpolation and the wire boundaries refuse,
+  the REPL echo is safe. That is its entire enforcement surface, and
+  the honest claim is narrow: **weir gives you a way to SAY a value is
+  secret and then respects it consistently, at the boundaries weir
+  owns.** It is NOT a secrets manager and NOT memory hardening. What
+  it does NOT protect:
+  - a secret the author `Secret.reveal`s and then prints, or splices
+    into **argv** — visible in `ps` on many systems (allowed by
+    design: `curl -H $auth` is the point; `ps` visibility is the
+    platform's property, not weir's);
+  - a secret in a command's OUTPUT, a response body, or anything
+    written to a file — weir cannot know a `Completed`'s stdout holds
+    one;
+  - a secret carried in an **env var** — process inheritance and
+    `/proc/<pid>/environ` make it visible to children and to anyone
+    who can read the process, and `within env` propagates it to
+    children by design (env is still THE standard CI secret channel,
+    so `Env.load` with a `Secret` field is the main producer — the
+    non-claim is about what the platform exposes, not a weakness in
+    the type);
+  - **the in-memory value itself** — a `Secret` wraps a plain string
+    in a managed, GC'd heap: not zeroed, not pinned, not encrypted. A
+    core dump, a debugger, or swap sees it. This is deliberate, not an
+    oversight — see [D:secret] for why `SecureString`/zeroing was
+    pre-refused (in short: `SecureString` is unencrypted off .NET
+    Framework and Microsoft advise against it for new code, immutable
+    strings cannot be zeroed, and the value must be plaintext at every
+    use anyway);
+  - **anything the author never marked.** `Secret` is OPT-IN: declare
+    `GITHUB_TOKEN: string` and you get a plain string with no
+    protection, and weir does not notice, warn, or infer. A heuristic
+    on field names would be exactly the guessing this type replaces.
+
 ## What weir defends by design
 
 These are properties of the language, verified the way the rest of

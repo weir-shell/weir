@@ -222,6 +222,19 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (convert via `Duration.toMillis` into an int field). Interpolation holes
   render Durations directly (`$"took {elapsed}"`); command arguments
   do NOT — pass `Duration.toMillis d` or `show d` deliberately.
+- Secrets are `Secret` (a plain string inside — a RENDERING marker, not
+  memory protection): `show` renders `***` (including a `Secret` field
+  inside a shown record), interpolation REFUSES (`$"tok: {s}"` is a
+  check error), `to json`/`to yaml` REFUSE, `print` refuses — each
+  naming `Secret.reveal`, the one exit. It DOES splice into argv in the
+  clear (`curl -H $auth` — `ps`-visible, a stated non-claim). `Eq`
+  compares (`s1 == s2`), `Ord` refuses. Produced by `Env.load`/`Args.load`
+  `Secret` fields (env is the CI secret channel), `File.readSecret p`
+  (a mounted secret file), and `Secret.of` (assert secrecy, for computed
+  secrets — the safe direction). `Secret.map (fun t -> "Bearer " + t) s`
+  keeps a derived value secret; `[<Default>]` on a `Secret` field is
+  rejected. Qualified-only (no bare `of`/`map`). Not memory-hardening:
+  the value is an un-zeroed managed string (see SECURITY.md).
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
   `cleanup 5` is a type error). Other pattern params stay rejected.
 - No async/task/await — processes and pipelines are the concurrency

@@ -1502,6 +1502,16 @@ let private fileMembers: (string * Ty * Value) list =
           match v with
           | VStr path -> VSeq(File.ReadAllLines(Session.resolve path) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
+      // a token in a file is a real pattern [D:secret]: a mounted k8s /
+      // docker secret IS a file. ONE member (a family would be parked):
+      // the whole content is the secret, trailing newlines trimmed (the
+      // tooling convention — `echo tok > f` adds one, k8s does not)
+      "readSecret",
+      TFun(TStr, TSecret),
+      VBuiltin(fun v ->
+          match v with
+          | VStr path -> VSecret(File.ReadAllText(Session.resolve path).TrimEnd('\n', '\r'))
+          | v -> unreachable $"the checker rejects 'File.readSecret' on {formatValue v}")
       "write",
       TFun(TStr, TFun(TSeq TStr, TUnit)),
       VBuiltin(fun pathV ->
@@ -1905,6 +1915,34 @@ let private durationMembers: (string * Ty * Value) list =
               VUnit
           | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
 
+let private secretMembers: (string * Ty * Value) list =
+    // a marker the renderers respect [D:secret] — of ASSERTS secrecy (the
+    // safe direction, for computed secrets), reveal is the one guarded exit
+    [ "of",
+      TFun(TStr, TSecret),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s -> VSecret s
+          | v -> unreachable $"the checker rejects 'Secret.of' on {formatValue v}")
+      "reveal",
+      TFun(TSecret, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VSecret s -> VStr s
+          | v -> unreachable $"the checker rejects 'Secret.reveal' on {formatValue v}")
+      // map keeps a derived value secret [D:secret]: `"Bearer " + reveal`
+      // would defeat the type; Secret.map (fun t -> "Bearer " + t) does not
+      "map",
+      TFun(TFun(TStr, TStr), TFun(TSecret, TSecret)),
+      VBuiltin(fun f ->
+          VBuiltin(fun v ->
+              match v with
+              | VSecret s ->
+                  (match apply f (VStr s) with
+                   | VStr s' -> VSecret s'
+                   | v' -> unreachable $"the checker rejects 'Secret.map' result {formatValue v'}")
+              | v -> unreachable $"the checker rejects 'Secret.map' on {formatValue v}")) ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -1917,6 +1955,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Log", logMembers
       "Duration", durationMembers
       "Size", sizeMembers
+      "Secret", secretMembers
       // the bounded-loop option templates [D:retry-poll]: the resting
       // values the key=value head desugars over
       "Retry",
@@ -2341,6 +2380,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
            |> named [ "src"; "dst" ])
           "File.read", (bd "Read a file's lines lazily." None None |> named [ "path" ])
+          "File.readSecret",
+          (bd
+              "Read a file's whole content as a Secret (a mounted k8s/docker secret is a file); trailing newlines are trimmed."
+              None
+              None
+           |> named [ "path" ])
           "File.write",
           (bd "Write a sequence of lines to a file (overwrites)." None None
            |> named [ "path"; "lines" ])
@@ -2440,6 +2485,24 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Size.toBytes 2KiB")
               None
            |> named [ "s" ])
+          "Secret.of",
+          (bd
+              "ASSERT that a string is secret — the SAFE direction, for computed secrets (a generated token, a derived key). show renders ***; Secret.reveal is the one exit."
+              (Some "Secret.of \"hunter2\"")
+              None
+           |> named [ "s" ])
+          "Secret.reveal",
+          (bd
+              "The one guarded exit: the secret's plain value. Every use of the value (a header, a hash) is a deliberate reveal — the audit is the call site."
+              (Some "Secret.reveal (Secret.of \"x\")")
+              None
+           |> named [ "s" ])
+          "Secret.map",
+          (bd
+              "Transform a secret's value, keeping it secret. `Secret.map (fun t -> \"Bearer \" + t)` stays secret where reveal-then-concat would not."
+              (Some "Secret.map (fun t -> \"Bearer \" + t) (Secret.of \"x\")")
+              None
+           |> named [ "f"; "s" ])
           "Size.parse",
           (bd
               "Parse size text: binary units at 1024 (1.5MiB), the SI spellings at powers of ten (1MB is 10^6 — the writer chose the unit), B for bytes; sub-byte precision raises."
@@ -2598,8 +2661,10 @@ let private bareAliases: Set<string> =
 let private bareEntries: (string * Ty * Value) list =
     moduleTable
     // Float never flattens [D:floats]: its toInt would shadow the bare
-    // toInt alias (Str's) — module-qualified only, like Option
-    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float")
+    // toInt alias (Str's) — module-qualified only, like Option. Secret
+    // joins them [D:secret]: bare `map`/`of`/`reveal` would collide with
+    // Seq.map and read as un-namespaced — a Secret member is always qualified
+    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float" && m <> "Secret")
     |> List.collect snd
     |> List.filter (fun (n, _, _) -> bareAliases.Contains n && n <> "length")
 
@@ -2770,7 +2835,7 @@ let internalAliases: (string * Ty * Value) list =
 
 let bareAliasHomes: Map<string, string> =
     moduleTable
-    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float")
+    |> List.filter (fun (m, _) -> m <> "Option" && m <> "Float" && m <> "Secret")
     |> List.collect (fun (m, members) ->
         members
         |> List.choose (fun (n, _, _) ->

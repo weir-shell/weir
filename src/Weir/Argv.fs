@@ -165,6 +165,11 @@ let private badArgsDefault (label: string) (def: RecordDef) : string option =
             | TBool, ABool true -> None
             | TBool, ABool false ->
                 Some $"{label}'{f}': [<Default false>] is redundant — presence already rests at false"
+            | TSecret, _ ->
+                // a literal default secret is a secret hardcoded in source —
+                // the exact anti-pattern this type exists to replace [D:secret]
+                Some
+                    $"{label}'{f}': a Secret takes no [<Default>] — a hardcoded default secret defeats the type; load it from env or an argument"
             | TNamed("Option", _), _ ->
                 Some(
                     $"{label}'"
@@ -184,7 +189,8 @@ let private badArgsShape (label: string) (def: RecordDef) : string option =
             | TBool
             | TDur
             | TSize
-            | TNamed("Option", [ TStr | TInt | TFloat | TDur | TSize ]) -> false
+            | TSecret
+            | TNamed("Option", [ TStr | TInt | TFloat | TDur | TSize | TSecret ]) -> false
             | _ -> true)
 
     match badShape with
@@ -192,7 +198,7 @@ let private badArgsShape (label: string) (def: RecordDef) : string option =
         Some $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
     | Some(f, ft) ->
         Some
-            $"{label}Args.load fields must be string, int, float, bool, Duration, or Size, or Option of string|int|float|Duration|Size; '{f}' is {formatTy ft}"
+            $"{label}Args.load fields must be string, int, float, bool, Duration, Size, Secret, or Option of those; '{f}' is {formatTy ft}"
     | None -> None
 
 let private dupFlag (label: string) (def: RecordDef) : string option =
