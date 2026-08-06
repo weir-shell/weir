@@ -1,5 +1,56 @@
 # Spike Notes
 
+## Http session 2: constructors, methods, the shorthand (2026-08-06)
+
+Purely additive, and it went fast because session 1's shape held. The
+constructors are the interesting ruling: `Http.get u` is a record
+PRODUCER, not a builder combinator — it names only the method (the one
+thing already enumerated), so it does not reopen session 1's rejection
+of a function-per-field. The pin that keeps it honest is value-level:
+`Http.get u` must equal `{ Http.defaults with method = Get; url = u }`
+BYTE-IDENTICALLY, which I could not write as `a == b` in weir because
+the record has a seq field (`headers`) and `==` refuses seqs — so the
+pin compares the two evaluated records in F#. A constructor that
+drifted from the record it claims to produce would fail it.
+
+`Http.fetch`/`Http.send` are the raising/returning pair — the same 404
+that `fetch` raises on, `send` binds as data, pinned together. That is
+Arquidev's `ensureOk=true` boolean turned into two names, which reads
+better and needs no flag.
+
+The name collision the plan flagged was real and I ruled it before
+building: `Http.query` is the METHOD constructor (consistency with the
+other seven), and the query-STRING builder is `Http.withQuery`. It
+percent-encodes so a space or `&` cannot break the url — which narrows
+the URL-construction non-claim's query half, though the path half
+stands and the docs still say so.
+
+`insecure` I first parked, then built when the user said the receipts
+were coming. It is a loud per-request field (`insecure: bool`, default
+false) — TLS verification on by default, off for one request via a
+self-signed `HttpClientHandler` callback, never global. The e2e pin is
+a real self-signed server (openssl-generated cert): the default
+request rejects it with UntrustedRoot, `insecure = true` accepts it.
+One implementation slip worth remembering: a batched Python edit that
+did two replaces in one write ABORTED on the second's failed assertion
+BEFORE writing the file, so the FIRST replace (the `insecure = false`
+default) silently did not land either — the symptom was a runtime
+"key not present in dictionary" when a bare constructor's record lacked
+the field. Batched edits are all-or-nothing on the assertion, so a
+half-applied intent reads as a missing field, not an error at edit
+time.
+
+The recurring footgun bit a THIRD time: `Http.head` polluted the bare
+`head` alias (Seq.head), exactly as `Secret.map` hit bare `map`. The
+fix is the same — Http joins Option/Float/Secret in the qualified-only
+blocklist — but three occurrences is a pattern. The bare-alias
+mechanism is a BLOCKLIST (exclude these modules), so every new module
+with a hot-path-named member (`map`, `head`, `of`, `first`, `sum`, …)
+silently collides until remembered. A future harden should invert it
+to an ALLOWLIST (only Seq and Str contribute bare aliases), which
+would make a new module safe by default. Noted, not done — it is its
+own small change with its own risk.
+
 ## Http: the typed request boundary, session 1 (2026-08-06)
 
 The design collapsed once the body question was answered honestly. The

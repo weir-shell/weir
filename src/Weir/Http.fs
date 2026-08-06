@@ -19,7 +19,10 @@ type Req =
       // (contentType, body) — the body is the EXACT bytes to send, no
       // re-encoding, no newline stripping (the whole point over curl -d)
       Body: (string * string) option
-      TimeoutMs: int }
+      TimeoutMs: int
+      // TLS verification OFF for THIS request [D:http-s2]: a loud
+      // per-request opt-out for self-signed clusters — never global
+      Insecure: bool }
 
 type Resp =
     { Status: int
@@ -39,7 +42,14 @@ let private rootMessage (ex: exn) : string =
 /// TLS, timeout), shaped like the contracts fetch's message.
 let send (req: Req) : Result<Resp, string> =
     try
-        use client = new HttpClient()
+        // a per-request handler only when insecure — the default path keeps
+        // the plain HttpClient (TLS verification ON) [D:http-s2]
+        use handler = new HttpClientHandler()
+
+        if req.Insecure then
+            handler.ServerCertificateCustomValidationCallback <- (fun _ _ _ _ -> true)
+
+        use client = new HttpClient(handler)
         client.Timeout <- TimeSpan.FromMilliseconds(float req.TimeoutMs)
 
         use msg = new HttpRequestMessage(HttpMethod(req.Method), req.Url)
