@@ -937,7 +937,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     let arr = Seq.toArray items
 
     if arr.Length = 0 then
-        failwith "pfirst: empty sequence"
+        failwith "pfirst: empty sequence — a race needs at least one arm; guard with Seq.isEmpty"
 
     let parentCwd = Session.Cwd()
     let groups = Array.init arr.Length (fun _ -> Session.RaceGroup())
@@ -2103,7 +2103,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "f"; "xs" ]
           "Seq.pfirst",
           bd
-              "Race an arm over every element; the FIRST SUCCESS wins. Losers' spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises."
+              "Race an arm over every element; the FIRST SUCCESS wins. Losers' spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm's failure is DISCARDED — if only one arm can succeed, the others' errors are hidden, so a misconfigured fan-out still looks healthy."
               (Some "[3; 1; 2] |> Seq.pfirst (fun n -> n * 10)")
               (Some "a race, not a retry: same fetch against N mirrors, first answer wins.")
           |> named [ "f"; "xs" ]

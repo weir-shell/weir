@@ -275,6 +275,7 @@ millisecond startup, no `node_modules`, no `package.json`.
 | ``$`git add ${file}` `` (zx escapes) | `git add $file` — one argv word by construction, nothing to escape |
 | `$.nothrow` / `.exitCode` | `cmd \| complete` / `cmd \| exitCode` |
 | `await Promise.all(xs.map(f))` / `p-map` | `xs \|> Seq.pmap f` — bounded (`Seq.pmapWith n` sets the ceiling), results in input order, first error by input order |
+| `await Promise.any(xs.map(f))` | `xs \|> Seq.pfirst f` — first arm to SUCCEED wins, losers' processes tree-killed (`Seq.pfirstWith n` sets the ceiling); losers' failures swallowed |
 | `globby`, `fs/promises` | `Path.glob`, `File.*` / `Dir.*` |
 | `zod` schema `.parse(...)` at runtime | `from json T` and vendored JSON-schema contracts, at CHECK time |
 

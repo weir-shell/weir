@@ -9242,9 +9242,12 @@ let seqPfirstTests =
 
               Expect.stringContains ex.Message "seven dies" "index 0's error, though index 1 failed first"
           }
-          test "an empty sequence raises the family shape" {
+          test "an empty sequence raises the family shape AND names the guard" {
               let ex = Expect.throwsC (fun () -> run "[] |> Seq.pfirst (fun n -> n)" |> ignore) id
-              Expect.stringContains ex.Message "pfirst: empty sequence" ""
+              Expect.stringContains ex.Message "pfirst: empty sequence" "the family shape"
+              // the reject-don't-guess full form: there is no tryPfirst, so
+              // the message points at the pre-check
+              Expect.stringContains ex.Message "guard with Seq.isEmpty" "names the guard"
           }
           test "pfirstWith: degree 1 degrades to sequential fallback; degree < 1 raises" {
               expectValue

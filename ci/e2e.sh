@@ -4141,8 +4141,37 @@ sleep 2.5
 [ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
 echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
+# empty raises AND names the guard (reject-don't-guess full form) — pin the
+# FRAGMENT, not the joined sentence (FParsec wraps long messages)
+out=$($BIN -e '[] |> Seq.pfirst (fun n -> n)' 2>&1) && fail "empty must raise" || true
+echo "$out" | grep -qF "a race needs at least one arm" || fail "empty names Seq.isEmpty: $out"
 rm -rf "$pfdir"
-echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed, first-by-order error)"
+echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed, first-by-order error, empty names the guard)"
+
+# a loser's within-tmp cleanup DOES run — the `finally` executes on the
+# loser's own (un-aborted) thread once its killed child fails; here the
+# process OUTLIVES the loser (a 1s wait after the winner), so cleanup
+# completes and the dir is gone. The exit-race leak [D:seq-pfirst] is the
+# OTHER case (process exits immediately) — parked, not pinned.
+pfdir2=$(mktemp -d)
+cat > "$pfdir2/pf2.weir" <<WEOF
+let racer n =
+    within tmp d
+        echo \$d |> File.write "$pfdir2/loserdir.txt"
+        if n == 1 then sh -c "sleep 5"
+    Duration.sleep 200ms
+    n
+let w = [1; 2] |> Seq.pfirst racer
+print \$"winner: {w}"
+Duration.sleep 1s
+let loserDir = File.read "$pfdir2/loserdir.txt" |> Seq.head
+let gone = sh -c \$"test -d {loserDir}" | succeeds
+print \$"loser-tmp-exists: {gone}"
+WEOF
+out=$($BIN "$pfdir2/pf2.weir")
+echo "$out" | grep -qF "loser-tmp-exists: false" || fail "loser within-tmp cleanup did not run: $out"
+rm -rf "$pfdir2"
+echo "e2e ok: Seq.pfirst loser within-tmp cleanup runs (finally on the un-aborted thread)"
 
 # ---- command signatures [D:command-signatures] -----------------------------
 sgdir=$(mktemp -d)
