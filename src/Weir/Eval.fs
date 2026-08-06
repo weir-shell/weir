@@ -1752,14 +1752,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
 
             System.IO.Directory.CreateDirectory dir |> ignore
+            // the exit hook's backstop registration [D:exit-hook]: a hard
+            // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
+            // could not; the clean path deregisters and the hook is idle
+            Session.registerTmpDir dir
 
             try
                 eval (Map.add binderName (VStr dir) env) body
             finally
-                try
+                (try
                     System.IO.Directory.Delete(dir, true)
-                with _ ->
-                    ()
+                 with _ ->
+                     ())
+
+                Session.deregisterTmpDir dir
         | _ -> unreachable "within kinds are closed at parse"
     | TEIf(cond, thn, els) ->
         match eval env cond, els with

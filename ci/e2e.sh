@@ -4173,6 +4173,58 @@ echo "$out" | grep -qF "loser-tmp-exists: false" || fail "loser within-tmp clean
 rm -rf "$pfdir2"
 echo "e2e ok: Seq.pfirst loser within-tmp cleanup runs (finally on the un-aborted thread)"
 
+# ---- the exit hook [D:exit-hook]: temp dirs survive a hard exit no more ----
+ehdir=$(mktemp -d)
+
+# PROBE B REGRESSION: a pfirst whose script exits immediately after the
+# winner used to leak the loser's within-tmp dir (a background thread
+# killed mid-finally on NORMAL completion); the ProcessExit sweep fixes it
+cat > "$ehdir/probeb.weir" <<WEOF
+let racer n =
+    within tmp d
+        echo \$d |> File.write "$ehdir/bdir.txt"
+        if n == 1 then sh -c "sleep 5"
+    Duration.sleep 200ms
+    n
+let w = [1; 2] |> Seq.pfirst racer
+print \$"winner: {w}"
+WEOF
+out=$($BIN "$ehdir/probeb.weir") || fail "probe-b script failed: $out"
+sleep 0.5
+loser=$(cat "$ehdir/bdir.txt")
+[ ! -d "$loser" ] || { rm -rf "$loser"; fail "pfirst exit-race leaked the loser's tmp dir: $loser"; }
+
+# the SIGNAL sweep (customer 1 — the leak every script always had) and
+# REGISTRATION IS PER-PROCESS: a second weir's live dir survives the
+# first one's sweep (never a blind scan of the temp root). Pinned via
+# SIGTERM: a POSIX shell without job control starts background jobs
+# with SIGINT IGNORED (and .NET honors an inherited SIG_IGN — the
+# nohup convention), so a harness kill -INT is a no-op by DESIGN;
+# real Ctrl-C (default disposition) takes the same handler, verified
+# interactively. TERM exercises the identical sweep path.
+cat > "$ehdir/hold.weir" <<WEOF
+within tmp d
+    echo \$d |> File.write \$"$ehdir/{Self.pid}.txt"
+    sh -c "sleep 30"
+WEOF
+$BIN "$ehdir/hold.weir" & ehp1=$!
+$BIN "$ehdir/hold.weir" & ehp2=$!
+sleep 1.2
+kill -TERM $ehp1 2>/dev/null
+wait $ehp1 2>/dev/null || true
+sleep 0.5
+d1=$(cat "$ehdir/$ehp1.txt" 2>/dev/null || true)
+d2=$(cat "$ehdir/$ehp2.txt" 2>/dev/null || true)
+[ -n "$d1" ] && [ ! -d "$d1" ] || { kill -9 $ehp2 2>/dev/null; fail "the TERM sweep did not remove the interrupted weir's dir: $d1"; }
+[ -n "$d2" ] && [ -d "$d2" ] || { kill -9 $ehp2 2>/dev/null; fail "the OTHER process's dir was touched (registration must be per-process)"; }
+kill -TERM $ehp2 2>/dev/null
+wait $ehp2 2>/dev/null || true
+sleep 0.5
+[ ! -d "$d2" ] || { rm -rf "$d2"; fail "the second weir's own SIGINT sweep failed"; }
+
+rm -rf "$ehdir"
+echo "e2e ok: exit hook (pfirst exit-race fixed, signal sweep via TERM, registration per-process)"
+
 # ---- command signatures [D:command-signatures] -----------------------------
 sgdir=$(mktemp -d)
 mkdir -p "$sgdir/proj/bin" "$sgdir/proj/.git"

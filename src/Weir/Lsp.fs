@@ -1056,11 +1056,47 @@ let private adapterFormHover (text: string) (jcol: int) : string option =
             )
         | _ -> None)
 
-/// a FORM-WORD hover: within/from/to and their form-words — the union of
-/// the two form hovers [D:form-word-hover]. Gated by the caller to CODE
-/// position (the same letters inside a string or comment are data).
-let private formWordHover (text: string) (jcol: int) : string option =
-    withinFormHover text jcol |> Option.orElse (adapterFormHover text jcol)
+// retry/poll/until answer as FORMS [D:form-word-hover] — the stated
+// rule's remaining customers. The KEY lists derive from the prelude
+// options records (env.Types Retry/Poll — the same shapes the
+// key=value head desugars over), so a new key appears here with no
+// second edit; a hand-written list would drift.
+let private retryPollFormHover (env: TypeEnv) (text: string) (jcol: int) : string option =
+    let keysOf tyName =
+        match Map.tryFind tyName env.Types with
+        | Some(Record d) ->
+            d.Fields
+            |> List.map (fun (fn, t) -> $"{fn}: {formatTy t}")
+            |> String.concat ", "
+        | _ -> ""
+
+    wordAt text jcol
+    |> Option.bind (fun w ->
+        match w with
+        | "retry" ->
+            Some(
+                "retry key=value … — a bounded retry loop: the body reruns until it yields true (a VALUE body adds an `until` segment); exhaustion raises\nkeys: "
+                + keysOf "Retry"
+            )
+        | "poll" ->
+            Some(
+                "poll key=value … — retry's wall-clock twin: rerun until true or the timeout elapses; timing out raises\nkeys: "
+                + keysOf "Poll"
+            )
+        | "until" ->
+            Some
+                "until <name> — the predicate segment of a retry/poll VALUE body: names the body's binding and decides when the loop stops"
+        | _ -> None)
+
+/// a FORM-WORD hover: within/from/to/retry/poll/until and their
+/// form-words — the union of the form hovers [D:form-word-hover]. Gated
+/// by the ONE caller to CODE position (the same letters inside a string
+/// or comment are data) — a new form hover joins this union and the
+/// gate covers it; never a second path.
+let private formWordHover (env: TypeEnv) (text: string) (jcol: int) : string option =
+    withinFormHover text jcol
+    |> Option.orElse (adapterFormHover text jcol)
+    |> Option.orElse (retryPollFormHover env text jcol)
 
 /// is the (1-based) physical column inside a string literal or a trailing
 /// comment on this physical line? [D:within-kinds] The form hovers run
@@ -1076,6 +1112,30 @@ let private inStringOrComment (lines: string list) (line: int) (col: int) : bool
         (col >= 1 && col <= text.Length && (Script.inStringMask text)[col - 1])
         || col - 1 >= (Script.stripComment text).Length
 
+/// the TYPE ARGUMENT's own hover: `Config` in `from json Config` (and
+/// from yaml / Env.load / Args.load) is no expression node — the bespoke
+/// arm absorbs it — so the enclosing adapter's ARROW type used to answer
+/// [D:form-word-hover]. Rendered byte-equal to declHover's shape at the
+/// declaration, so the two positions cannot drift.
+let private typeDefHover (env: TypeEnv) (tyName: string) : string option =
+    Map.tryFind tyName env.Types
+    |> Option.map (fun def ->
+        match def with
+        | Record d ->
+            let body =
+                d.Fields
+                |> List.map (fun (fn, t) -> $"{fn}: {formatTy t}")
+                |> String.concat "; "
+
+            $"{{ {body} }}"
+        | Union d ->
+            d.Cases
+            |> List.map (fun (cn, tyO) ->
+                match tyO with
+                | Some t -> $"{cn} of {formatTy t}"
+                | None -> cn)
+            |> String.concat " | ")
+
 /// hover text at (1-based physical line, col), or None. Pure. TYPE first,
 /// then the `///` doc. Silence guard first [D:hover-silence]; then the
 /// type from the binder/param/typed-node/scheme, with a field IN A LITERAL
@@ -1087,8 +1147,11 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
     let _, stmts, _, _ = Script.analyzeLines path lines
 
     match toLogical stmts line col with
-    | Some(ll, _, jcol) when not (inStringOrComment lines line col) && (formWordHover ll.Text jcol).IsSome ->
-        formWordHover ll.Text jcol
+    | Some(ll, chk, jcol) when
+        not (inStringOrComment lines line col)
+        && (formWordHover chk.Env ll.Text jcol).IsSome
+        ->
+        formWordHover chk.Env ll.Text jcol
     | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
         // an inner-let binder hovers as its ANNOTATED signature (names +
         // types), degrading to the arrow when it has no named params
@@ -1249,6 +1312,29 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 word
                 |> Option.bind (fun w -> teOf chk |> Option.bind (varUseType w))
                 |> Option.map formatTy)
+            // the type ARGUMENT in a boundary form hovers ITS OWN shape,
+            // not the enclosing arrow [D:form-word-hover] — placed just
+            // before the node fallback so nothing that answered earlier
+            // moves; only the leak case changes
+            |> Option.orElseWith (fun () ->
+                node
+                |> Option.bind (fun nd ->
+                    let named tyName =
+                        if word = Some tyName then
+                            typeDefHover chk.Env tyName
+                        else
+                            None
+
+                    match nd.Kind with
+                    | Check.TEFrom(_, rowDef) -> named rowDef.Name
+                    | Check.TEFromYaml(tyName, _) -> named tyName
+                    | Check.TEEnvLoad(def, _) -> named def.Name
+                    | Check.TEArgsLoad target ->
+                        (match target with
+                         | Check.ArgsRecord def -> named def.Name
+                         | Check.ArgsUnion(udef, _) -> named udef.Name
+                         | Check.ArgsShared(outer, _, _, _) -> named outer.Name)
+                    | _ -> None))
             |> Option.orElseWith (fun () -> node |> Option.map (fun n -> formatTy n.Ty))
             |> Option.orElseWith (fun () ->
                 match chk.Kind with

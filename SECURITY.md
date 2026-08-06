@@ -58,6 +58,16 @@ it, by design):
   protection by inheritance, not by mode bits. An administrator can
   read it on either platform (root can too). Scripts never write it
   (only the REPL does).
+- **Temp-dir cleanup ends at SIGKILL** [D:exit-hook]. `within tmp`
+  directories are removed by the scope's own `finally`, and a
+  process-exit hook sweeps the registered leftovers on normal exit,
+  SIGINT, and SIGTERM (per-process registration — never a scan of the
+  temp root, so concurrent weirs cannot delete each other's dirs).
+  SIGKILL / `TerminateProcess` runs no user-mode code, so a killed-9
+  weir leaves its live temp dirs behind; the `weir-tmp-` prefix keeps
+  them identifiable for external cleanup. `Dir.newTempDir` is exempt
+  by contract (it exists to outlive the scope).
+
 - **Capture is unbounded by design.** `| complete` and `Seq.force`
   materialize their whole input in memory (`complete` holds one byte
   buffer + line offsets — ~2x the raw text in RSS, measured; a

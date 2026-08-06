@@ -1715,11 +1715,15 @@ cannot leak and losers' failures are swallowed BY CONSTRUCTION.
 Cancellation is cooperative: the kill reaches processes (what arms
 actually wait on); a pure-compute loser finishes in the background
 and its result is discarded. A loser's `within tmp` removal (any
-managed `finally`) runs on its own background thread, so it completes
-ONLY if the process outlives the loser: a script that exits right
-after the winner returns cuts that cleanup off, and the temp directory
-leaks. Ctrl-C and `kill` cut it the same way — the process-exit
-cleanup hook that would close both is parked. If EVERY arm fails, the
+managed `finally`) runs on its own background thread — and when the
+process exits before it finishes, the EXIT HOOK sweeps what the
+`finally` could not [D:exit-hook]: every live, REGISTERED `weir-tmp-*`
+directory this process created is removed at normal exit, SIGINT, and
+SIGTERM (registration is per-process — a concurrent weir's directory
+is never touched, and the clean path deregisters so the hook normally
+has nothing to do). The residual gap is SIGKILL /
+`TerminateProcess`: no user-mode code runs, the directory survives,
+and the `weir-tmp-` prefix is what keeps such leftovers identifiable. If EVERY arm fails, the
 first error by INPUT ORDER rethrows (the fan-out convention); an empty
 sequence raises — a race with no contestants has no winner.
 
