@@ -513,6 +513,15 @@ errout=$($BIN "$scriptdir/nonex.weir" 2>&1) && fail "non-exhaustive match must b
 echo "$errout" | grep -qF "not exhaustive" || fail "exhaustiveness error text missing: $errout"
 echo "e2e ok: non-exhaustive match is a hard check error"
 
+# the bare-comma precedence did-you-mean [D:user-language-messages]:
+# `code, _ :: rest` against a seq names the grouping repair, and no
+# pattern message says "scrutinee". Pin the FRAGMENTS (FParsec wraps).
+errout=$($BIN -e 'match ["a"; "b"] with | code, _ :: rest -> code | _ -> "z"' 2>&1) && fail "the tuple/cons footgun must error"
+echo "$errout" | grep -qF "groups looser than" || fail "did-you-mean must name the precedence cause: $errout"
+echo "$errout" | grep -qF "(code, _) :: rest" || fail "did-you-mean must name the repair: $errout"
+echo "$errout" | grep -qF "scrutinee" && fail "messages must not say 'scrutinee': $errout"
+echo "e2e ok: tuple/cons precedence did-you-mean names the repair; no 'scrutinee' jargon"
+
 cat > "$scriptdir/warn.weir" <<'WEOF'
 echo one ; two
 print "ran"
@@ -2573,7 +2582,7 @@ expect "arms + rest consumption over a command seq" "a/b-c" "$out"
 echo "e2e ok: the memoize-once law holds live (one spawn across arms + rest)"
 
 errout=$($BIN -e 'match 5 with | [] -> 0 | _ -> 1' 2>&1) && fail "non-seq scrutinee must reject"
-echo "$errout" | grep -qF "seq patterns need a seq scrutinee" || fail "scrutinee message: $errout"
+echo "$errout" | grep -qF "seq patterns need a seq value" || fail "seq-pattern message: $errout"
 printf 'let bad =\n    match [1] |> Seq.skip 0 with\n    | [] -> 0\n' > "$spdir/nx.weir"
 errout=$($BIN check "$spdir/nx.weir" 2>&1 || true)
 echo "$errout" | grep -qF "missing: _ :: _" || fail "seq exhaustiveness names the gap: $errout"

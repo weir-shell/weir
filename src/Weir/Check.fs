@@ -956,19 +956,19 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
     | PBool _ ->
         match ty with
         | TBool -> Ok []
-        | ty -> err p.PSpan $"bool patterns need a bool scrutinee; this one has type {formatTy ty}"
+        | ty -> err p.PSpan $"bool patterns need a bool value; this one has type {formatTy ty}"
     | PInt _ ->
         match ty with
         | TInt -> Ok []
-        | ty -> err p.PSpan $"int literal patterns need an int scrutinee; this one has type {formatTy ty}"
+        | ty -> err p.PSpan $"int literal patterns need an int value; this one has type {formatTy ty}"
     | PStr _ ->
         match ty with
         | TStr -> Ok []
-        | ty -> err p.PSpan $"string literal patterns need a string scrutinee; this one has type {formatTy ty}"
+        | ty -> err p.PSpan $"string literal patterns need a string value; this one has type {formatTy ty}"
     | PSeqNil ->
         (match ty with
          | TSeq _ -> Ok []
-         | ty -> err p.PSpan $"seq patterns need a seq scrutinee; this one has type {formatTy ty}")
+         | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
     | PCons(h, t) ->
         (match ty with
          | TSeq elem ->
@@ -977,7 +977,7 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
                  let! tb = checkPattern env ty t
                  return hb @ tb
              }
-         | ty -> err p.PSpan $"seq patterns need a seq scrutinee; this one has type {formatTy ty}")
+         | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
     | PSeqList ps ->
         (match ty with
          | TSeq elem ->
@@ -987,7 +987,7 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
                      acc
                      |> Result.bind (fun bs -> checkPattern env elem sub |> Result.map (fun b -> bs @ b)))
                  (Ok [])
-         | ty -> err p.PSpan $"seq patterns need a seq scrutinee; this one has type {formatTy ty}")
+         | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
     | PRegex(pat, litSpan, raw, binder) ->
         // check-time compilation [D:regex-pattern]: an invalid literal
         // is a check error, and the binder's arity must equal the
@@ -1038,11 +1038,11 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
                     match firstDup names with
                     | Some d -> err binder.PSpan $"duplicate binder '{d}'"
                     | None -> Ok(names |> List.map (fun n -> n, TStr)))
-        | ty -> err p.PSpan $"Regex patterns need a string scrutinee; this one has type {formatTy ty}"
+        | ty -> err p.PSpan $"Regex patterns need a string value; this one has type {formatTy ty}"
     | PUnit ->
         match ty with
         | TUnit -> Ok []
-        | ty -> err p.PSpan $"'()' patterns need a unit scrutinee; this one has type {formatTy ty}"
+        | ty -> err p.PSpan $"'()' patterns need a unit value; this one has type {formatTy ty}"
     | PTuple ps ->
         match ty with
         | TTuple ts when List.length ps = List.length ts ->
@@ -1052,9 +1052,31 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
                     acc
                     |> Result.bind (fun bs -> checkPattern env subTy subP |> Result.map (fun b -> bs @ b)))
                 (Ok [])
-        | TTuple ts ->
-            err p.PSpan $"this tuple pattern has {List.length ps} elements; the scrutinee has {List.length ts}"
-        | ty -> err p.PSpan $"tuple patterns need a tuple scrutinee; this one has type {formatTy ty}"
+        | TTuple ts -> err p.PSpan $"this tuple pattern has {List.length ps} elements; the value has {List.length ts}"
+        | ty ->
+            // the bare-comma precedence footgun [D:user-language-messages]:
+            // `code, _ :: rest` parses as a TUPLE whose last element is a
+            // cons (`,` groups looser than `::`), so a seq value lands here,
+            // not a tuple. The repair IS the grouping, so NAME it — but only
+            // on the unambiguous shape (a trailing cons against a seq); any
+            // other tuple-vs-non-tuple keeps the plain message.
+            let hint =
+                match ty, List.tryLast ps with
+                | TSeq _, Some { PKind = PCons(h, t) } ->
+                    let front = ps |> List.take (List.length ps - 1)
+
+                    let loose =
+                        (front |> List.map sexprPat |> String.concat ", ")
+                        + ", "
+                        + sexprPat h
+                        + " :: "
+                        + sexprPat t
+
+                    let grouped = (front @ [ h ]) |> List.map sexprPat |> String.concat ", "
+                    $" — `,` groups looser than `::`, so `{loose}` is a tuple; did you mean `({grouped}) :: {sexprPat t}`?"
+                | _ -> ""
+
+            err p.PSpan $"tuple patterns need a tuple value; this one has type {formatTy ty}{hint}"
     | PCase(ctor, argPat) ->
         match ty with
         | TNamed(typeName, targs) ->

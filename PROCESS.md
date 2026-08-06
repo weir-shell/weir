@@ -6,6 +6,22 @@ plan explicitly overrides. The vocabulary these rules use — receipt,
 park, pin, harness-truth, graded positive control, stop-and-report —
 is defined in [LEXICON.md](LEXICON.md).
 
+## Messages speak the user's language
+
+An error message speaks the SCRIPT AUTHOR's language; SEMANTICS,
+DECISIONS, and NOTES may speak the implementation's. A reader of
+SEMANTICS opted into the theory; a reader of an error did not. So
+compiler-writer vocabulary — "scrutinee", "unify", "row variable",
+"desugar", "arity" — belongs in the docs, never in a message the
+binary emits. Two corollaries: an internal or synthetic name
+(`__hole1`, a `|`-prefixed desugar key, a raw generated tyvar) must
+never reach a message [D:user-language-messages]; and where a message
+CAN name the repair rather than the category, it should (the
+did-you-mean family) — a precedence surprise like `code, _ :: rest`
+against a seq (`,` groups looser than `::`) names the grouping fix,
+because the grouping IS the repair. This line is what makes the
+vocabulary sweep decidable rather than a matter of taste.
+
 ## Composition-product rule
 
 A new grammar/assembler/checker decision ships with pins for its

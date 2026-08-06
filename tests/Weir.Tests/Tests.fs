@@ -624,7 +624,7 @@ let warningTests =
           }
           test "Regex pattern: needs a string scrutinee" {
               let terr = checkErr "match 5 with | Regex @\"(a)\" v -> v | _ -> \"?\""
-              Expect.stringContains terr.Message "string scrutinee" ""
+              Expect.stringContains terr.Message "string value" ""
           }
           test "the raw literal: backslashes belong to the regex (no doubling)" {
               // the source below contains a SINGLE backslash before w/d
@@ -3897,14 +3897,38 @@ let seqPatternTests =
           test "non-seq scrutinee rejects by name" {
               Expect.stringContains
                   (checkErr "match 5 with | [] -> 0 | _ -> 1").Message
-                  "seq patterns need a seq scrutinee"
+                  "seq patterns need a seq value"
                   ""
           }
           test "element types flow: string elems reject int literals in element position" {
               Expect.stringContains
                   (checkErr "match [\"a\"] with | [1] -> 1 | _ -> 0").Message
-                  "int literal patterns need an int scrutinee"
+                  "int literal patterns need an int value"
                   ""
+          }
+          test
+              "the bare-comma precedence footgun: `code, _ :: rest` vs a seq NAMES the grouping [D:user-language-messages]" {
+              let m =
+                  (checkErr "match [\"a\"; \"b\"] with | code, _ :: rest -> code | _ -> \"z\"").Message
+              // FParsec wraps long messages — pin FRAGMENTS, not the joined sentence
+              Expect.stringContains m "groups looser than" "names the precedence cause"
+              Expect.stringContains m "(code, _) :: rest" "names the repair, not the category"
+          }
+          test "the did-you-mean fires ONLY on the unambiguous shape — a plain tuple vs a seq stays quiet" {
+              let m = (checkErr "match [\"a\"; \"b\"] with | a, b -> a | _ -> \"z\"").Message
+              Expect.stringContains m "tuple patterns need a tuple value" "the plain message"
+              Expect.isFalse (m.Contains "groups looser than") "no precedence hint on a non-cons tuple pattern"
+          }
+          test "no user-facing pattern message says 'scrutinee' (the vocabulary sweep)" {
+              // a representative spread across the moved messages (bool, int
+              // literal, seq, unit) — none may carry the jargon
+              for input in
+                  [ "match 5 with | [] -> 0 | _ -> 1" // seq vs int
+                    "match 5 with | () -> 0 | _ -> 1" // unit vs int
+                    "match [\"a\"] with | [1] -> 1 | _ -> 0" ] do // int-lit vs string
+                  match typecheck env (parse input) with
+                  | Error e -> Expect.isFalse (e.Message.Contains "scrutinee") $"jargon leaked: {e.Message}"
+                  | Ok _ -> failtest $"expected a type error for: {input}"
           }
           test "the memoize-once law: probes + rest consumption pull ONE enumeration" {
               let opens = ref 0
@@ -6087,7 +6111,7 @@ let boolBranchTests =
           }
           test "bool patterns on a non-bool scrutinee rejected" {
               let terr = checkErr "match 3 with | true -> 1 | false -> 0"
-              Expect.stringContains (formatError terr) "bool patterns need a bool scrutinee" ""
+              Expect.stringContains (formatError terr) "bool patterns need a bool value" ""
           }
           test "bool exhaustiveness: both cases check, one case is a hard error" {
               Expect.isEmpty (warningsOf "match 1 == 1 with | true -> 1 | false -> 0") ""
@@ -7286,7 +7310,7 @@ let literalThunkTests =
           }
           test "conflicting literal kinds error at the bind" {
               let terr = checkErr "let f x = match x with | 0 -> 1 | \"s\" -> 2 | _ -> 3 in f"
-              Expect.stringContains (formatError terr) "need a string scrutinee" ""
+              Expect.stringContains (formatError terr) "need a string value" ""
           }
           test "guard idiom remains legal alongside literals" {
               expectValue "match 7 with | 0 -> \"z\" | n when n > 5 -> \"big\" | _ -> \"small\"" (VStr "big")
