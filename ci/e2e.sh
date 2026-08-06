@@ -4118,6 +4118,35 @@ echo "$out" | grep -qF "poll: timed out after" || fail "poll exhaustion: $out"
 rm -rf "$rpdir"
 echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, cancellable wait)"
 
+# ---- if cmd | succeeds then [D:if-succeeds] --------------------------------
+# the inline command condition: the let-RHS acceptance gate one position
+# over; `then` stops the chain's argv ONLY inside a condition
+isdir=$(mktemp -d)
+cat > "$isdir/is.weir" <<'WEOF'
+if test -f /etc/hostname | succeeds then
+    print "inline-if"
+let r =
+    if test -f /nonexistent-weir-e2e | succeeds then "a"
+    elif test -f /etc/hostname | succeeds then "elif-inline"
+    else "c"
+print r
+let ok = test -f /etc/hostname | succeeds
+if ok then
+    print "bind-first-still"
+echo then one
+WEOF
+out=$($BIN "$isdir/is.weir")
+[ "$(echo "$out" | sed -n 1p)" = "inline-if" ] || fail "inline if: $out"
+[ "$(echo "$out" | sed -n 2p)" = "elif-inline" ] || fail "inline elif: $out"
+[ "$(echo "$out" | sed -n 3p)" = "bind-first-still" ] || fail "bind-first kept: $out"
+# `then` stays ordinary argv OUTSIDE a condition — the stop is positional
+[ "$(echo "$out" | sed -n 4p)" = "then one" ] || fail "argv then at top level: $out"
+# a streaming chain parses and teaches at the CHECKER (bool demanded)
+out=$($BIN -e 'if git ls-files then 1 else 2' 2>&1) && fail "non-bool chain must check-error" || true
+echo "$out" | grep -qF "expected bool, got seq<string>" || fail "bool teaching: $out"
+rm -rf "$isdir"
+echo "e2e ok: if cmd | succeeds then (inline if/elif, bind-first kept, argv-then positional, checker demands bool)"
+
 # ---- Seq.pfirst [D:seq-pfirst]: the race -----------------------------------
 # the winner returns without joining the losers, and a loser's spawned
 # TREE dies: its `sleep 2 && touch marker` orphan would fire at ~2s if

@@ -86,6 +86,55 @@ Session note: a concurrent fork was mid-flight in the same tree
 scoped to its own files and the one unit failure in the full run is
 that fork's in-progress pin, not this session's.
 
+||||||| parent of 6af8d91 (if cmd | succeeds then: the inline command condition — the let-RHS gate one position over)
+## if cmd | succeeds then — the gate was already built (2026-08-06)
+
+Diagnose-first, and the diagnosis dissolved the fear. Movement 4's
+"acceptance gate" — the item that would have stopped this session if
+it meant a mode decision at the condition head — turned out to name
+something the language already owns: the let-RHS's ordered choice.
+`rhsCmd <|> seqExpr` never decides command-vs-expression up front;
+it ATTEMPTS the command grammar, whose head parser backtracks on
+keywords and known bindings ("known name; expression mode" +
+`attempt head`), and falls through to the expression grammar having
+consumed nothing. The if condition is that gate one position over:
+`withIfCond true ifCondCmd <|> expr`. Bindings-beat-PATH does the
+rest — `if ok then` stays a variable, and `if true then` stays the
+bool literal even though /usr/bin/true exists, because keywords
+refuse the head slot. No mode boundary was created; the fuzz and
+arming pins never moved.
+
+The two additions priced exactly as their precedents suggested. The
+argv `then`-stop generalized `cmdArgWith stopAtIn` into `cmdArgStops`
+with a second stop word — and the positionality is free: only the
+condition's command grammar passes stopAtThen, so `echo then` at top
+level never consults it, and a literal `then` in a condition quotes
+(the strLit arm precedes barewords), which is the let-RHS's
+quote-"in" law one keyword over. The reifierEnd follower is the
+inStop shape with a new ThreadLocal (ifCondOk), because the marker
+parsers are module-level and cannot be re-parameterized per position
+— the same reason letCmdOk exists.
+
+The checker does the enforcing, deliberately: a condition chain that
+does not end in a bool-producing reifier PARSES and then teaches —
+"expected bool, got seq<string>" for a streaming chain, got Completed
+/ got int / got unit for the other three cells. Parse-then-teach
+beats a parse-time reifier requirement both in message quality and in
+grammar complexity.
+
+The survey: elif landed with if (same production — the asymmetry
+would have read as a bug); until's predicate block already took bare
+chains on main (block position is statement territory, so the
+interior-arming follower covers it — verified against the main
+binary before claiming it); for…do's header needs nothing, because
+`$(cmd)` is its spelling and the wrap-it hint already names it. One
+probe-shape lesson along the way: the "obvious" multi-line if with a
+col-0 `else` after an indented body block was never legal weir — the
+else-join is the space-joined single-statement form — and half an
+hour of apparent regression was the fixture's bug, not the parser's.
+Confirmed against the main binary before touching anything, which is
+the habit that kept this session honest.
+
 ## the bare-alias allowlist, and two ledger items (2026-08-06)
 
 The inversion was the easy half; the verification was the point. The

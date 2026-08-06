@@ -760,10 +760,14 @@ let digest = within tmp dir
 print (Str.sub 0 12 digest)
 ```
 
-An `if` condition takes neither a bare chain nor a `$()`-piped one —
-BIND THE VERDICT FIRST, the canonical spelling: `let ok = cmd |
-succeeds` then `if ok then …` (making the inline form work wants a
-new argv-stop context, reported with its size in [D:district-retirement]).
+An `if`/`elif` condition takes a command chain directly
+[D:if-succeeds]: `if test -f $path | succeeds then …` — the chain's
+argv stops at `then` (only there; `then` stays an ordinary argv word
+everywhere else — quote `"then"` to pass the literal word to a command
+from a condition). The checker still demands `bool`, so a streaming
+chain teaches (`expected bool, got seq<string>` — add `| succeeds`).
+Bind first when the verdict is used twice: `let ok = cmd | succeeds`
+then `if ok then …`.
 
 Statement position works too (`within tmp d` + effects, unit by the
 ordinary discard rule). The other kinds CONSUME an argument instead

@@ -31,7 +31,7 @@ representable.
 |---|---|
 | `out=$(git branch)` | `let out = git branch` — a `seq<string>`, one element per line |
 | `for f in *.txt; do … done` | `for f in Path.glob "*.txt" do …` |
-| `if grep -q pat f; then` | `let hit = grep -q pat f \| succeeds` then `if hit then` |
+| `if grep -q pat f; then` | `if grep -q pat f \| succeeds then` — inline; bind first (`let hit = …`) when the verdict is reused |
 | `cmd > out.txt` | `cmd \|> File.write "out.txt"` — a function on the right takes `\|>` (the pipe rule) |
 | `$?` | `cmd \| exitCode` (streams, reifies the code as `int`) |
 | `cat <<EOF … EOF \| cmd` | `lines \| cmd` — a value pipes into stdin |

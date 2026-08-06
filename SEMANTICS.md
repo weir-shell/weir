@@ -93,7 +93,14 @@ weir rejects rather than guesses.
   output is for the human — the result travels separately (`orFail` →
   unit/raise with the message, `exitCode` → the code as int, never
   raising). Four cells, one rule; a proposed reifier is tested
-  against the law, not appended to a zoo. Streaming reifiers refuse
+  against the law, not appended to a zoo. An `if`/`elif` CONDITION
+  accepts a command chain [D:if-succeeds] — the let-RHS acceptance
+  gate one position over (the command grammar is attempted first,
+  its head refusing keywords and known bindings, so bindings beat
+  PATH; the expression grammar is the fallthrough), with `then`
+  terminating the chain's argv only in that position. The condition
+  must still CHECK as bool, so `… | succeeds` is the productive
+  ending and a streaming chain errors naming the expectation. Streaming reifiers refuse
   capture/discard contexts at parse (`$(… | exitCode)`,
   `!(… | exitCode)`, district lines, bare statements — each error
   teaches the spelling that fits); `complete` remains the

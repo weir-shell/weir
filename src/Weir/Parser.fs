@@ -87,8 +87,18 @@ let private withExprParen (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             exprParen.Value <- saved
 
+// The inline command condition [D:if-succeeds]: TRUE only while an
+// if/elif CONDITION parses — gates the then-stop in reifierEnd exactly
+// as letCmdOk gates the in-stop, so a `then` after a reifier ends the
+// condition there and nowhere else.
+let private ifCondOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
+
 // forwarded: the let-in value position sits above the command grammar
 let private letRhsCmd, private letRhsCmdRef =
+    createParserForwardedToRef<Expr, unit> ()
+
+// forwarded: the if/elif condition position sits above it too [D:if-succeeds]
+let private ifCondCmd, private ifCondCmdRef =
     createParserForwardedToRef<Expr, unit> ()
 
 let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
@@ -100,6 +110,16 @@ let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
             p stream
         finally
             letCmdOk.Value <- saved
+
+let private withIfCond (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = ifCondOk.Value
+        ifCondOk.Value <- v
+
+        try
+            p stream
+        finally
+            ifCondOk.Value <- saved
 
 // the param-ful law one scope deeper [D:block-let-cmd]: a block-let
 // name shadows PATH for every later parse in its body
@@ -1384,17 +1404,30 @@ let private matchExpr =
                 { Start = pos p
                   End = lastBody.Span.End } })
 
+// the condition takes a COMMAND CHAIN too [D:if-succeeds]: the let-RHS
+// acceptance gate one position over — the command grammar is ATTEMPTED
+// first (its head backtracks on keywords and known bindings, so
+// `if ok then` and `if true then` stay expression mode by the same
+// bindings-beat-PATH rule), and the expression grammar is the
+// fallthrough. `then` terminates the chain's argv (position-sensitive:
+// only inside a condition), so `if test -f $p | succeeds then` parses;
+// the checker still demands bool, so a streaming chain teaches there.
+let private ifCond: Parser<Expr, unit> = withIfCond true ifCondCmd <|> expr
+
 let private ifExpr =
     // elif is SPELLING [D:elif]: `elif c then e` desugars at parse to
     // `else if c then e` — zero checker surface; the trailing else
     // stays optional under the unit rule, F#'s chain exactly
     pipe5
         getPosition
-        (keyword "if" >>. expr)
+        (keyword "if" >>. ifCond)
         // bodies are STATEMENT territory even inside (assembler-wrapped)
         // parens [D:interior-arming] — the lambda-body precedent
         (keyword "then" >>. withExprParen false seqExpr)
-        (many ((keyword "elif" >>. expr) .>>. (keyword "then" >>. withExprParen false seqExpr)))
+        (many (
+            (keyword "elif" >>. ifCond)
+            .>>. (keyword "then" >>. withExprParen false seqExpr)
+        ))
         (opt (keyword "else" >>. withExprParen false seqExpr))
         (fun p cond thn elifs els ->
             let rec build clauses =
@@ -2131,22 +2164,26 @@ let private spliceSplat: Parser<Expr, unit> =
         { Kind = ESplat inner; Span = span })
     .>> ws
 
-let private cmdArgWith (stopAtIn: bool) =
+let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) =
+    let stopWord (w: string) =
+        notFollowedBy (attempt (pstring w .>> notFollowedBy (satisfy cmdWordChar)))
+
     let bareword =
         // the machine boundary, arg face [D:yaml-district]: a bareword
         // GLUED to the sentinel can only be the assembler's yaml wrap
         // (`yaml schema=x` + glued sentinel) — statement joins SPACE it.
         // Refusing here makes the command path fall through to the
         // district arm, exactly as the head guard does for bare `yaml`.
-        if stopAtIn then
-            // In a let RHS, a bareword `in` would silently become argv (the
-            // let...in cliff). Stop instead: the parse falls through to the
-            // expression grammar and surfaces a check error. Quote "in" to
-            // pass it to a command from a let RHS.
-            notFollowedBy (attempt (pstring "in" .>> notFollowedBy (satisfy cmdWordChar)))
-            >>. (spanned (cmdWord |>> EStr) |>> mkExpr .>> notFollowedBy (pchar sibSep) .>> ws)
-        else
+        let core =
             spanned (cmdWord |>> EStr) |>> mkExpr .>> notFollowedBy (pchar sibSep) .>> ws
+
+        // In a let RHS, a bareword `in` would silently become argv (the
+        // let...in cliff); in an if/elif condition, a bareword `then`
+        // would [D:if-succeeds]. Stop instead: the parse falls through
+        // to the expression grammar / the keyword. Quote the word to
+        // pass it to a command from those positions.
+        let core = if stopAtThen then stopWord "then" >>. core else core
+        if stopAtIn then stopWord "in" >>. core else core
 
     choice
         [ strLit
@@ -2157,6 +2194,8 @@ let private cmdArgWith (stopAtIn: bool) =
           spliceVar
           parens
           bareword ]
+
+let private cmdArgWith (stopAtIn: bool) = cmdArgStops stopAtIn false
 
 let private cmdArg = cmdArgWith false
 
@@ -2282,6 +2321,16 @@ let private reifierEnd =
             else
                 fail "no in-stop here" stream
 
+    // an if/elif condition's chain ends at `then` [D:if-succeeds] — the
+    // in-stop shape one keyword over, gated so `then` is ordinary argv
+    // everywhere else
+    let thenStop: Parser<unit, unit> =
+        fun stream ->
+            if ifCondOk.Value then
+                (attempt (pstring "then" .>> notFollowedBy (satisfy cmdWordChar)) |>> ignore) stream
+            else
+                fail "no then-stop here" stream
+
     // a reifier also ends at a STATEMENT boundary [D:interior-arming] —
     // without this, `| orFail "m"` as an interior statement demoted the
     // reifier to a bareword stage (the addendum's cmd-not-found mystery)
@@ -2291,6 +2340,7 @@ let private reifierEnd =
               pchar ')' |>> ignore
               eof
               inStop
+              thenStop
               attempt (pchar ';') |>> ignore
               attempt (pstring sibSepStr) |>> ignore ]
     )
@@ -2546,6 +2596,11 @@ let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
     cmdLineWith false (cmdArgWith true) None r
 
 letRhsCmdRef.Value <- fun stream -> (cmdLineLetRhs ambientResolver.Value) stream
+
+// the condition's command grammar [D:if-succeeds]: the let-RHS shape
+// (no builtin heads — `myfunc x` in a condition is already expression
+// application) with `then` stopping argv instead of `in`
+ifCondCmdRef.Value <- fun stream -> (cmdLineWith false (cmdArgStops false true) None ambientResolver.Value) stream
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
