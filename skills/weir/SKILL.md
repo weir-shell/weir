@@ -537,7 +537,11 @@ print x
   bare/`!()`/`$()` position is a teaching error ($() captures — use
   `| complete` there). **`succeeds` is exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
-  fzf), use `| complete` and read the record.
+  fzf), use `| complete` and read the record. An `if`/`elif`
+  CONDITION takes the chain inline: `if test -f $p | succeeds then`
+  (`then` ends the argv only there — quote `"then"` to pass the word;
+  the checker demands bool, so a bare streaming chain errors naming
+  it). Bind first when the verdict is used twice.
   Full inspection: `cmd | complete` gives `{ exitCode; stdout;
   stderr }`; a COMPUTED argv splats into the chain —
   `$author(git commit-tree $@argv | complete) |> _.stdout` (literal

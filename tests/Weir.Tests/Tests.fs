@@ -9325,6 +9325,80 @@ let sigTests =
                   | other -> failtest $"unexpected {other.Length}")
           } ]
 
+let ifSucceedsTests =
+    // the inline command condition [D:if-succeeds] — the let-RHS
+    // acceptance gate one position over; `then` terminates the chain's
+    // argv ONLY inside a condition. The REAL resolver (PATH heads), not
+    // the bare parse helper: the gate is resolver-driven by design.
+    let parseReal input =
+        match Weir.Parser.parseLine realResolver input with
+        | Ok(SExpr e)
+        | Ok(SCmd e) -> e
+        | Ok other -> failtest $"expected an expression line, got {other}"
+        | Error msg -> failtest $"parse failed: {msg}"
+
+    let runReal input =
+        match Weir.Check.typecheck env (parseReal input) with
+        | Ok typed -> eval valueEnv typed
+        | Error terr -> failtest $"check failed: {formatError terr}"
+
+    let checkErrReal input =
+        match Weir.Check.typecheck env (parseReal input) with
+        | Error terr -> terr
+        | Ok _ -> failtest "expected a type error"
+
+    testList
+        "if cmd | succeeds then [D:if-succeeds]"
+        [ test "the inline form parses and evaluates, both branches" {
+              Expect.equal (runReal "if test -f /etc/hostname | succeeds then \"yes\" else \"no\"") (VStr "yes") ""
+
+              Expect.equal
+                  (runReal "if test -f /nonexistent-weir-xyz | succeeds then \"yes\" else \"no\"")
+                  (VStr "no")
+                  ""
+          }
+          test "elif takes the inline form too (the asymmetry would be worse than neither)" {
+              Expect.equal
+                  (runReal
+                      "if test -f /nonexistent-weir-xyz | succeeds then \"a\" elif test -f /etc/hostname | succeeds then \"b\" else \"c\"")
+                  (VStr "b")
+                  ""
+          }
+          test "bindings beat PATH at the condition head — `test` bound stays expression mode" {
+              Expect.equal (runReal "let test = true in if test then \"shadow\" else \"b\"") (VStr "shadow") ""
+          }
+          test "`if true then` is the bool literal, never /usr/bin/true (keyword heads refuse)" {
+              Expect.equal (runReal "if true then \"t\" else \"f\"") (VStr "t") ""
+          }
+          test "a quoted \"then\" is ordinary argv inside a condition; the STOP is the bareword only" {
+              // grep for the literal word then in a file that contains it
+              Expect.equal
+                  (runReal "if grep -q \"then\" /etc/hostname | succeeds then \"found\" else \"absent\"")
+                  (VStr "absent")
+                  ""
+          }
+          test "a non-bool chain teaches at the CHECKER, not the parser: streaming, complete, exitCode, orFail" {
+              Expect.stringContains
+                  (checkErrReal "if git ls-files then 1 else 2").Message
+                  "expected bool, got seq<string>"
+                  ""
+
+              Expect.stringContains
+                  (checkErrReal "if git status | complete then 1 else 2").Message
+                  "expected bool, got Completed"
+                  ""
+
+              Expect.stringContains
+                  (checkErrReal "if test -f /x | exitCode then 1 else 2").Message
+                  "expected bool, got int"
+                  ""
+
+              Expect.stringContains
+                  (checkErrReal "if git status | orFail \"m\" then 1 else 2").Message
+                  "expected bool, got unit"
+                  ""
+          } ]
+
 let retryPollTests =
     let sx (input: string) = show (parse input)
 
@@ -10277,6 +10351,7 @@ let allTests =
           dedentJoinTests
           tasksUnderneathTests
           seqPfirstTests
+          ifSucceedsTests
           retryPollTests
           sigTests
           sizeTests
