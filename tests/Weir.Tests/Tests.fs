@@ -4288,6 +4288,117 @@ let adapterFormTests =
               Expect.equal (Weir.Lsp.hoverType [ "let x = 1 // from json T"; "print x" ] 1 15) None "from in a comment"
           } ]
 
+let hoverResidueTests =
+    // the form-word rule's remaining customers + the type-argument leak
+    // [D:form-word-hover] — reported-not-fixed by the adapter session,
+    // fixed here
+    testList
+        "hover residue: retry/poll/until forms + the type argument [D:form-word-hover]"
+        [ test "retry and poll hover their meaning + KEYS derived from the prelude options records" {
+              let retryLines =
+                  [ "let out = retry attempts=2 delay=0ms (1 == 1)"; "print (show out)" ]
+
+              match Weir.Lsp.hoverType retryLines 1 12 with
+              | Some hv ->
+                  Expect.stringContains hv "bounded retry loop" "the form's meaning"
+                  // the expectation DERIVES from the same source the hover
+                  // reads — a new Retry key appears in both with no edit here
+                  let expected =
+                      match Map.tryFind "Retry" preludeTypeEnv.Types with
+                      | Some(Weir.Types.Record d) ->
+                          d.Fields
+                          |> List.map (fun (fn, t) -> $"{fn}: {Weir.Types.formatTy t}")
+                          |> String.concat ", "
+                      | _ -> failtest "Retry missing from the prelude"
+
+                  Expect.stringContains hv expected "keys read from the options record, not a second list"
+              | None -> failtest "retry must answer"
+
+              match
+                  Weir.Lsp.hoverType [ "let out = poll timeout=50ms interval=10ms (1 == 1)"; "print (show out)" ] 1 12
+              with
+              | Some hv ->
+                  Expect.stringContains hv "wall-clock twin" "poll's meaning"
+                  Expect.stringContains hv "timeout: Duration, interval: Duration" "poll's keys"
+              | None -> failtest "poll must answer"
+          }
+          test "until hovers the predicate segment's meaning" {
+              let lines =
+                  [ "let out = retry attempts=2 delay=0ms"
+                    "    let r = 1 + 1"
+                    "    r"
+                    "until r"
+                    "    r == 2"
+                    "print (show out)" ]
+
+              match Weir.Lsp.hoverType lines 4 2 with
+              | Some hv -> Expect.stringContains hv "names the body's binding" "the binder explanation"
+              | None -> failtest "until must answer"
+          }
+          test "the string/comment gate covers the three new words (the one gate, no second path)" {
+              Expect.equal
+                  (Weir.Lsp.hoverType [ "let m = \"retry it later\""; "print m" ] 1 12)
+                  None
+                  "retry in a string is data"
+
+              Expect.equal
+                  (Weir.Lsp.hoverType [ "let x = 1 // poll again"; "print x" ] 1 15)
+                  None
+                  "poll in a comment is data"
+          }
+          test "T in `from json T` hovers the TYPE's own shape, EQUAL to hovering it at its declaration" {
+              let lines =
+                  [ "/// the config row"
+                    "type Config = { name: string; count: int }"
+                    "let rows = [\"{}\"] |> from json Config" ]
+
+              let atUse = Weir.Lsp.hoverType lines 3 34
+              let atDecl = Weir.Lsp.hoverType lines 2 7
+              Expect.isSome atUse "the type argument answers"
+              Expect.equal atUse atDecl "the two positions cannot drift (shape AND /// doc)"
+
+              match atUse with
+              | Some hv ->
+                  Expect.stringContains
+                      hv
+                      "{ name: string; count: int }"
+                      "the record's own shape (declared field order), not the adapter's arrow"
+
+                  Expect.stringContains hv "the config row" "the /// doc rides below"
+                  Expect.isFalse (hv.Contains "seq<string> ->") "the enclosing arrow no longer leaks"
+              | None -> ()
+          }
+          test "the sibling positions share the fix: from yaml, Env.load, Args.load (record and union)" {
+              Expect.equal
+                  (Weir.Lsp.hoverType [ "type Doc = { title: string }"; "let d = [\"title: x\"] |> from yaml Doc" ] 2 36)
+                  (Some "{ title: string }")
+                  "from yaml T"
+
+              Expect.equal
+                  (Weir.Lsp.hoverType [ "type Cfg = { HOME: string }"; "let c = Env.load Cfg"; "print c.HOME" ] 2 19)
+                  (Some "{ HOME: string }")
+                  "Env.load T"
+
+              Expect.equal
+                  (Weir.Lsp.hoverType
+                      [ "type Cli = { flag: bool }"; "let c = Args.load Cli"; "print (show c.flag)" ]
+                      2
+                      20)
+                  (Some "{ flag: bool }")
+                  "Args.load T (record)"
+
+              Expect.equal
+                  (Weir.Lsp.hoverType
+                      [ "type UpArgs = { fast: bool }"
+                        "type Cmd = Up of UpArgs | Down"
+                        "let c = Args.load Cmd"
+                        "print \"x\"" ]
+                      3
+                      20)
+                  (Some "Up of UpArgs | Down")
+                  "Args.load T (union front door)"
+          } ]
+
 let semanticTokenTests =
     testList
         "Semantic tokens"
@@ -10215,6 +10326,7 @@ let allTests =
           lspCrossFileTests
           withinKindsTests
           adapterFormTests
+          hoverResidueTests
           pipeAlignTests
           optionSweepTests
           moduleTests

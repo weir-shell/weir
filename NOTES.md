@@ -1,5 +1,91 @@
 # Spike Notes
 
+## hover residue: three form words, one leaking type argument (2026-08-06)
+
+Applying the form-word rule to its remaining customers cost almost
+nothing because the machinery was already one-brained: retry/poll/
+until join the formWordHover UNION, and the single gated call site
+means the string/comment exclusion covered them the moment they
+existed — there was no second path to forget. The one design choice
+worth recording: the plan said "read the keys from the options
+records", meaning Retry.defaults/Poll.defaults — but those are VALUES,
+and the LSP is check-side. The prelude TYPE declarations are the same
+single source (the key=value desugar keys off the record shape), live
+in env.Types, and carry field types, so the hover reads richer
+(`attempts: int, delay: Duration, timeout: Option<Duration>`) and the
+derivation pin computes its expectation from the same env — a new key
+reaches hover and pin with zero further edits.
+
+The type-argument leak was exactly the predicted shape: the type name
+in `from json T` is no expression node (the bespoke checker arm
+absorbs it), so nodeAt returns the enclosing TEFrom and the node
+FALLBACK answered with the adapter's arrow. The doc half never leaked
+— usageDoc already resolved through definitionTarget to the
+declaration and attached the /// doc — so the fix is one ty-chain arm
+just before the fallback, rendering from env.Types byte-equal to
+declHover's declaration rendering. The equality pin (hover at use =
+hover at declaration, shape and doc) is the drift-proof form, and it
+caught my own wrong guess in review: fields render in DECLARED order,
+not sorted — the pin's fragment had to be corrected, which is the pin
+doing its job before it ever shipped.
+
+All four sibling positions (from yaml, Env.load, Args.load record and
+union) shared the cause and the one arm fixed them. schema=<name> is
+different in kind — a vendored file name, not a type in env.Types; it
+currently hovers the district's Yaml type via the fallback, and a
+schema-file hover would be its own small design, reported not built.
+
+## the exit hook: temp dirs survive a hard exit no more (2026-08-06)
+
+The park's two customers both close. The mechanism is small — a
+per-process ConcurrentDictionary of live tmp dirs in Session, a
+register after CreateDirectory and a deregister after the finally's
+own delete in `within tmp`, and a lazily installed sweep (first
+registration installs it, so the shebang path pays nothing; timing
+gates unchanged). Registration-not-scanning is the sharpest
+constraint and it is pinned: two concurrent weirs, one killed, the
+other's directory untouched — a blind temp-root sweep of weir-tmp-*
+would have been a one-line bug deleting a neighbour's scratch space.
+
+The coverage matrix, live-verified on POSIX:
+
+    path                    covered   mechanism
+    normal process exit     YES       AppDomain.ProcessExit (Probe B fixed)
+    SIGINT (Ctrl-C)         YES       PosixSignalRegistration, sweep then die
+    SIGTERM (kill)          YES       same registration pair
+    SIGKILL / kill -9       NO        unreachable by definition — residual,
+                                      weir-tmp- prefix keeps leftovers findable
+    Windows normal exit     YES       ProcessExit (same arm)
+    Windows Ctrl-C          compiled  Console.CancelKeyPress — untested until
+                                      the Windows walk
+
+The harness finding is the session's best lesson: the first e2e pin
+sent `kill -INT` to a backgrounded weir and NOTHING happened — no
+sweep, no death, while the identical interactive probe worked. The
+cause is POSIX, not weir: a shell without job control starts
+background jobs with SIGINT set to SIG_IGN, and .NET honors an
+inherited SIG_IGN (the nohup convention — a deliberately-ignored
+signal stays ignored). So a set -e harness literally cannot deliver
+a meaningful SIGINT to a backgrounded child; real Ctrl-C, with the
+default disposition, takes the handler (verified interactively). The
+e2e pins the signal path via SIGTERM — bash only ignores INT/QUIT
+for background jobs — which exercises the identical sweep handler.
+Chasing that took three instrumented probes because the first
+blocktest run ALSO tripped an unguarded `kill` under set -e, stacking
+the known silent-death lesson on top of the SIG_IGN one.
+
+Scope stayed temp-dirs-only as blessed: within cd/env are AsyncLocal
+state with nothing on disk, Dir.newTempDir is exempt by contract
+(it exists to outlive the scope — its doc's "neither cleans on
+Ctrl+C" half was the one stale sentence this session had to fix
+beyond SEMANTICS), and this is NOT the defer/trap feature — that
+stays a predicted receipt.
+
+Session note: a concurrent fork was mid-flight in the same tree
+(retry/poll/until form hovers in Lsp.fs), so this session's commit is
+scoped to its own files and the one unit failure in the full run is
+that fork's in-progress pin, not this session's.
+
 ## the bare-alias allowlist, and two ledger items (2026-08-06)
 
 The inversion was the easy half; the verification was the point. The

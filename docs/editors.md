@@ -22,7 +22,14 @@ names (`Lib.` lists members), without their docs yet. The `within`
 form is understood [D:within-kinds]: hovering `within` explains the
 form, hovering a kind (`tmp`/`cd`/`env`) gives its meaning and whether
 it BINDS a resource or CONSUMES one, and completion after `within `
-offers the three kinds and nothing else. Two
+offers the three kinds and nothing else. The other form keywords
+answer too: `retry`/`poll` hover their meaning plus their KEYS (read
+from the options records, so the list cannot drift), `until` its
+predicate role, `from`/`to` their adapters — and none of them fires
+inside a string or comment. A type argument (`Config` in
+`from json Config`, and the `from yaml`/`Env.load`/`Args.load`
+positions) hovers the type's OWN shape and `///` doc, identical to
+hovering it at its declaration. Two
 facts every block encodes, matching `weir fmt`: comment token `//`,
 indent 4 spaces. The formatting request runs `weir fmt`'s canonical
 pipeline — editor options (tabSize etc.) are ignored by design, so a

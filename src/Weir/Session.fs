@@ -115,3 +115,59 @@ let registerChild (p: System.Diagnostics.Process) : unit =
 // script argv, for the Args module scanners (script-only semantics:
 // the REPL leaves this empty)
 let mutable ScriptArgs: string list = []
+
+
+// ---- the temp-dir exit hook [D:exit-hook] --------------------------
+// REGISTRATION, not scanning: the hook removes only directories THIS
+// process created and still considers live — never a sweep of the temp
+// root, so two concurrent weirs cannot clean up after each other. The
+// hook is the BACKSTOP: a `within tmp` that exits cleanly deletes its
+// dir AND its registration, leaving the hook nothing to do. Installed
+// LAZILY on the first registration — the shebang path never pays for it.
+
+let private liveTmpDirs =
+    System.Collections.Concurrent.ConcurrentDictionary<string, unit>()
+
+let private hookInstalled = ref 0
+
+// signal registrations must stay ROOTED for the process lifetime — a
+// collected registration stops handling
+let mutable private hookRoots: obj list = []
+
+let private sweepLiveTmpDirs () =
+    // runs at exit while finallys may also be running: a vanished dir is
+    // benign (the double-delete pin's territory), and the hook must
+    // never throw during exit
+    for kv in liveTmpDirs do
+        try
+            System.IO.Directory.Delete(kv.Key, true)
+        with _ ->
+            ()
+
+let private installExitHook () =
+    // NORMAL process exit — the pfirst exit-race customer: a background
+    // loser killed mid-finally no longer leaks its dir
+    System.AppDomain.CurrentDomain.ProcessExit.Add(fun _ -> sweepLiveTmpDirs ())
+
+    // SIGINT/SIGTERM — the Ctrl-C customer. POSIX arm only: Create
+    // throws on Windows (the SIGWINCH guard's lesson [D:windows-v1]);
+    // Windows takes Console.CancelKeyPress instead. After the handler,
+    // default termination proceeds (Cancel stays false) — sweep, then die.
+    if not (System.OperatingSystem.IsWindows()) then
+        for posixSig in
+            [ System.Runtime.InteropServices.PosixSignal.SIGINT
+              System.Runtime.InteropServices.PosixSignal.SIGTERM ] do
+            let reg =
+                System.Runtime.InteropServices.PosixSignalRegistration.Create(posixSig, fun _ -> sweepLiveTmpDirs ())
+
+            hookRoots <- (reg :> obj) :: hookRoots
+    else
+        System.Console.CancelKeyPress.Add(fun _ -> sweepLiveTmpDirs ())
+
+let registerTmpDir (dir: string) : unit =
+    if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
+        installExitHook ()
+
+    liveTmpDirs[dir] <- ()
+
+let deregisterTmpDir (dir: string) : unit = liveTmpDirs.TryRemove dir |> ignore

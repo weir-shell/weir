@@ -2476,7 +2476,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "()" ])
           "Path.newTempDir",
           (bd
-              "CREATE a fresh unique directory under the temp root and return its path (within tmp's naming). Cleanup is the caller's or the OS's — use `within tmp dir` for removal on scope exit; newTempDir when the directory must OUTLIVE the block. Neither cleans up on Ctrl+C (SIGINT runs no managed cleanup)."
+              "CREATE a fresh unique directory under the temp root and return its path (within tmp's naming). Cleanup is the caller's or the OS's — use `within tmp dir` for removal on scope exit (which the exit hook also sweeps on Ctrl+C/kill); newTempDir DELIBERATELY outlives the block and is never swept."
               (Some "Path.newTempDir () |> Str.startsWith (Path.tempRoot ())")
               None
            |> named [ "()" ])
