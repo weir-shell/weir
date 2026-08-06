@@ -259,6 +259,44 @@ let cli = Args.load Cli
 print $"count={cli.count} seed={show cli.seed}"
 ```
 
+## Secrets: the token-from-env idiom
+
+A `Secret` is a marker the renderers respect: `show` gives `***`,
+interpolation and the wire boundaries refuse, and `Secret.reveal` is
+the one place the value comes back out. It is flow control at the
+boundaries weir owns — not storage, not memory protection (see
+[SECURITY.md](../SECURITY.md) for the non-claims). The point is
+coverage: a token cannot slip into a log line or a shown record by
+accident.
+
+The primary producer is `Env.load` — env is the standard CI secret
+channel (`secrets.GITHUB_TOKEN` becomes an env var), so a `Secret`
+field is the main way a token enters:
+
+```
+type Cfg = { GITHUB_TOKEN: Secret }
+let cfg = Env.load Cfg
+git push https://$(Secret.reveal cfg.GITHUB_TOKEN)@github.com/…
+```
+
+`Args.load` takes a `Secret` field too (`ps`-visible — a stated
+non-claim), and `File.readSecret` reads a mounted k8s/docker secret
+file. Every USE of the value is a deliberate `Secret.reveal`, so the
+audit is the call site. To keep a derived value secret, `Secret.map`
+stays inside the wrapper — `"Bearer " + reveal` would launder it:
+
+```weir
+let token = Secret.of "s3cr3t"
+let header = Secret.map (fun t -> "Bearer " + t) token
+print (show token)
+print (show header)
+print (Secret.reveal header)
+```
+
+A `Secret` splices into a command in the clear (`curl -H $header` is
+what the type exists for), refuses interpolation (`$"tok: {token}"`
+is a check error naming `reveal`), and refuses `to json`/`to yaml`.
+
 ## Time: the timeout flag idiom
 
 Time is a type, not a bare int whose unit lives in a comment.

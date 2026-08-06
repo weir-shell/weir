@@ -18,6 +18,9 @@ type Value =
     | VDur of ms: int64
     | VSize of bytes: int64
     | VStr of string
+    // a Secret wraps a plain string [D:secret]; the renderers show *** —
+    // Secret.reveal is the only unwrap
+    | VSecret of string
     | VBool of bool
     | VUnit
     | VRecord of record: string * fields: Map<string, Value>
@@ -38,6 +41,7 @@ type Value =
             | VDur a, VDur b -> a = b
             | VSize a, VSize b -> a = b
             | VStr a, VStr b -> a = b
+            | VSecret a, VSecret b -> a = b
             | VBool a, VBool b -> a = b
             | VUnit, VUnit -> true
             | VRecord(n1, f1), VRecord(n2, f2) -> n1 = n2 && f1 = f2
@@ -57,6 +61,7 @@ type Value =
         | VDur n -> hash ("dur", n)
         | VSize b -> hash ("size", b)
         | VStr s -> hash s
+        | VSecret s -> hash ("secret", s)
         | VBool b -> hash b
         | VUnit -> 17
         | VRecord(n, _) -> hash n
@@ -102,6 +107,10 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VFloat f -> formatFloat f
         | VDur n -> formatDuration n
         | VSize b -> formatSize b
+        // the load-bearing render [D:secret]: *** ALWAYS, and because this
+        // is the one recursive renderer, a Secret inside a shown record /
+        // union / tuple / seq renders *** too (sub calls back here)
+        | VSecret _ -> "***"
         | VStr s ->
             let raw, clipped =
                 match lim.MaxStr with
@@ -707,6 +716,10 @@ let private yamlToImpl: Value =
 let scalarString (what: string) (v: Value) : string =
     match v with
     | VStr s -> s
+    // a Secret splices to argv in the CLEAR [D:secret]: the argv ruling —
+    // `curl -H $auth` needs the real value. print/printerr reject Secret
+    // at the type (printArgTy), so this arm is reached only via argv
+    | VSecret s -> s
     | VInt n -> string n
     | VBool true -> "true"
     | VBool false -> "false"
@@ -1049,6 +1062,11 @@ let private argvParseValue
         match parseFloat raw with
         | Ok fl -> values[f] <- wrapOpt ty (VFloat fl)
         | Error e -> problems.Add $"{flagTok}: {e}"
+    | TSecret
+    | TNamed("Option", [ TSecret ]) ->
+        // the boundary wraps [D:secret]: a Secret field's token is secret
+        // from the moment it enters, so it is VSecret, never a bare VStr
+        values[f] <- wrapOpt ty (VSecret raw)
     | _ -> values[f] <- wrapOpt ty (VStr raw)
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
@@ -1650,6 +1668,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | Error e ->
                             problems.Add $"{name}: {e}"
                             VUnit
+                    // env is THE secret channel [D:secret]: wrap at the boundary
+                    | (TSecret | TNamed("Option", [ TSecret ])), v -> wrapOpt ty (VSecret v)
                     | (TNamed(un, []) | TNamed("Option", [ TNamed(un, []) ])), v ->
                         // the enum conversion [D:env-enums]: matching is
                         // CASE-INSENSITIVE against the declared names (env

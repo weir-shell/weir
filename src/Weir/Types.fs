@@ -23,6 +23,12 @@ type Ty =
     // exist only in parsing and rendering — the no-floats law's answer
     // to the time want
     | TDur
+    // a marker the renderers respect [D:secret]: a plain string the
+    // rendering machinery refuses to print — show is ***, interpolation
+    // and the wire boundaries refuse; Secret.reveal is the one exit. NOT
+    // storage, NOT memory protection (the in-memory value is a plain
+    // string) — flow control at the boundaries weir owns
+    | TSecret
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
     | TTuple of elements: Ty list // arity 2+ [D:tuples-reversal]
@@ -34,6 +40,7 @@ let rec formatTy (ty: Ty) : string =
     match ty with
     | TDur -> "Duration"
     | TSize -> "Size"
+    | TSecret -> "Secret"
     | TVar v -> $"'{v}"
     | TRowVar(_, []) -> "{ .. }"
     | TRowVar(_, fields) ->
@@ -103,7 +110,8 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TBool
     | TUnit
     | TDur
-    | TSize -> Set.empty
+    | TSize
+    | TSecret -> Set.empty
 
 // The closed class family [D:inferred-type-classes] — fully erased
 // after checking: a constraint never reaches the value domain.

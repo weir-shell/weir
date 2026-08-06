@@ -407,7 +407,10 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
 
             match p.Cls, t with
             // Eq: no function or seq anywhere, recursively
-            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize) -> true
+            // Secret admits Eq [D:secret] (did the token change?) but NOT
+            // Ord — sorting secrets is meaningless; constant-time is not
+            // claimed (weir is not a crypto library)
+            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize | TSecret) -> true
             // floats are EXCLUDED from Eq [D:floats] — finite-only kept
             // equality reflexive; representation (0.1 + 0.2) is the trap
             // that remains, and weir does not vouch for it
@@ -416,7 +419,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             | Cls.Eq, TTuple ts -> ts |> List.forall (ok seen)
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
-            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize) -> true
+            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TSecret) -> true
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
@@ -450,17 +453,29 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
     | ty ->
         match site with
         | Hole ->
-            demand
-                ctx
-                env
-                { Cls = Cls.Show
-                  Span = span
-                  Describe =
-                    fun t ->
-                        $"interpolation holes render what show renders; {formatTy t} cannot be shown (functions never render)" }
-                ty
+            match ty with
+            // a Secret does NOT interpolate [D:secret]: `$"token: {s}"` is
+            // how a secret reaches a log line. show renders ***; using the
+            // value is the deliberate Secret.reveal
+            | TSecret ->
+                err span "a Secret does not interpolate — Secret.reveal s to use its value, or show s to render ***"
+            | _ ->
+                demand
+                    ctx
+                    env
+                    { Cls = Cls.Show
+                      Span = span
+                      Describe =
+                        fun t ->
+                            $"interpolation holes render what show renders; {formatTy t} cannot be shown (functions never render)" }
+                    ty
         | CmdArg ->
             match ty with
+            // a Secret splices to argv [D:secret]: `curl -H $auth` must
+            // work — that is what the type exists for. The value reaches
+            // argv in the clear (visible in `ps` — the platform's property,
+            // a stated non-claim), which is why this is deliberate, not silent
+            | TSecret -> Ok()
             | TDur ->
                 err
                     span
@@ -655,6 +670,10 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
          | TStr -> Ok(TSeq TStr)
          | TUnit -> err span "print cannot take seq<unit> — a lazy effect sequence never runs; use Seq.iter"
          | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy (TSeq t)}")
+    | TSecret ->
+        // a Secret refuses print [D:secret] — show s prints ***; the value
+        // is the deliberate Secret.reveal
+        err span "print will not render a Secret — show s prints ***, or Secret.reveal s to print its value"
     | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy t}"
 
 let rec private typeBinOp
@@ -824,6 +843,12 @@ let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeErro
             err
                 span
                 $"field '{name}': Duration is not representable in JSON — convert explicitly (Duration.toMillis into an int field, or show for a string)"
+        elif ty = TSecret then
+            // a Secret crossing to a wire format is almost certainly a
+            // mistake [D:secret]; Secret.reveal is the deliberate spelling
+            err
+                span
+                $"field '{name}': a Secret must not cross to JSON — Secret.reveal it into a string field if you truly mean to write it"
         else
             err
                 span
@@ -834,6 +859,10 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
         Ok()
     else
         match elem with
+        | TSecret ->
+            err
+                span
+                "a Secret must not cross to JSON — Secret.reveal it into a string first if you truly mean to write it"
         | TNamed(n, []) ->
             match Map.tryFind n env.Types with
             | Some(Record def) -> jsonableRecord span def
@@ -858,6 +887,8 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
         err
             span
             "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
+    | TSecret ->
+        err span "a Secret must not cross to yaml — Secret.reveal it into a string first if you truly mean to write it"
     | TFloat -> Ok Yaml.SFloat
     | TStr -> Ok Yaml.SStr
     | TBool -> Ok Yaml.SBool
@@ -900,6 +931,8 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty:
         err
             span
             "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
+    | TSecret ->
+        err span "a Secret must not cross to yaml — Secret.reveal it into a string first if you truly mean to write it"
     | TInt
     | TFloat
     | TStr
@@ -1747,7 +1780,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              | TBool
                              | TDur
                              | TSize
-                             | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur | TSize ]) -> true
+                             // env is THE secret channel in CI [D:secret]:
+                             // secrets.GITHUB_TOKEN becomes an env var, so a
+                             // Secret field is the main producer, not a
+                             // compromise (the non-claim is in SECURITY.md)
+                             | TSecret
+                             | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur | TSize | TSecret ]) -> true
                              | ty -> isEnum ty
 
                          // a payload-carrying case is a SCHEMA error, named at
@@ -1798,7 +1836,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              | Some(bad, badTy) ->
                                  err
                                      arg.Span
-                                     $"Env.load fields must be string, int, float, bool, Duration, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
+                                     $"Env.load fields must be string, int, float, bool, Duration, Size, Secret, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
                              | None ->
 
                                  match caseCollision with
@@ -3313,7 +3351,8 @@ let rec private validateTy
     | TBool
     | TUnit
     | TDur
-    | TSize -> Ok()
+    | TSize
+    | TSecret -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
     | TTuple ts -> allOk ts (validateTy env selfName selfArity allowed span)
     | TFun(a, b) ->

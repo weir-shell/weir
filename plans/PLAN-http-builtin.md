@@ -47,6 +47,19 @@ a value flowing through a pipeline.**
     if resp.status >= 400 then fail $"api said {resp.status}"
     let items = resp.body |> from json Item
 
+- **AMENDED for `Secret` [D:secret]:** the spelling above interpolates
+  `$"Bearer {tok}"`, which now REFUSES if `tok` is a `Secret` (the
+  whole point — a token must not reach a string). So `Http.auth` takes
+  a `Secret` directly (`Http.auth : Secret -> HttpRequest ->
+  HttpRequest`), and a `Bearer ` prefix is applied with
+  `Secret.map (fun t -> "Bearer " + t) tok` — which stays secret. The
+  same holds for a `Http.header` carrying a credential: a `Secret`
+  overload (or a `Secret`-typed value) keeps it off `show`. Two
+  consequences to settle in the session: `HttpRequest`'s `show` MUST
+  render auth/secret headers as `***` (it consults the field, like a
+  record does), and the value reaches the socket in the clear at
+  `send` (the one deliberate reveal — a stated non-claim, the argv
+  analogue).
 - `Http.get/post : string -> HttpRequest` — constructors. LEANING:
   `put`/`delete` too (four verbs, cheap, no model growth).
 - Builder ops are data-last (`Http.header : string -> string ->

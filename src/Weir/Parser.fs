@@ -2568,6 +2568,7 @@ tySynRef.Value <-
               | "Duration" -> ws >>% TDur
               | "float" -> ws >>% TFloat
               | "Size" -> ws >>% TSize
+              | "Secret" -> ws >>% TSecret
               | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
               | w when keywords.Contains w -> fail $"'{w}' is a keyword"
               | w ->
