@@ -36,6 +36,15 @@ rules:
     # rule: keywords
     - statement: "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of)\\b"
     - statement: "\\b(from|to|for|do|module|import|within|retry|poll|until)\\b"
+    # the within KIND is part of the form, not a name [D:within-kinds] —
+    # micro paints the whole match, so within + kind share the statement
+    # color (the richer engines give the kind its own capture)
+    # rule: within-kind
+    - statement: "\\bwithin[ \\t]+(tmp|cd|env)\\b"
+    # the from/to ADAPTER word is form, not a name [D:form-word-hover] —
+    # same whole-match paint (the richer engines scope the adapter apart)
+    # rule: adapter-word
+    - statement: "\\b(from|to)[ \\t]+(json|yaml|porcelain)\\b"
     # reserved (rejected by the parser, but color them so muscle-memory
     # F# reads as "claimed", not "identifier")
     # rule: reserved

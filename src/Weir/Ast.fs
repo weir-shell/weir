@@ -35,6 +35,37 @@ type InterpPart<'e> =
     | IStr of string
     | IExpr of 'e
 
+// the `within` kinds as DATA — one table, three consumers (the
+// parser's dispatch, hover, completion) [D:within-kinds]. Binds is the
+// form's central asymmetry: tmp PRODUCES a binder, cd/env CONSUME an
+// atom. The editor grammars list the same closed set by necessity
+// (separate files); the inventory guard pins them to this table.
+type WithinKind =
+    { Name: string
+      Binds: bool
+      Doc: string }
+
+let withinKinds: WithinKind list =
+    [ { Name = "tmp"
+        Binds = true
+        Doc = "a fresh directory, removed when the block exits" }
+      { Name = "cd"
+        Binds = false
+        Doc = "the working directory for the block, restored after" }
+      { Name = "env"
+        Binds = false
+        Doc = "an environment overlay for the block's children" } ]
+
+/// "tmp, cd, or env" — the teaching list, derived so a new kind
+/// cannot miss the message
+let withinKindList =
+    match withinKinds |> List.map (fun k -> k.Name) with
+    | [] -> ""
+    | [ one ] -> one
+    | names ->
+        let front = names |> List.take (names.Length - 1) |> String.concat ", "
+        $"{front}, or {List.last names}"
+
 type Expr = { Kind: ExprKind; Span: Span }
 
 and ExprKind =

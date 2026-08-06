@@ -160,6 +160,10 @@
           "named": true
         },
         {
+          "type": "within_head",
+          "named": true
+        },
+        {
           "type": "yaml_for",
           "named": true
         },
@@ -197,6 +201,27 @@
         ]
       }
     }
+  },
+  {
+    "type": "within_head",
+    "named": true,
+    "fields": {
+      "kind": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "within_kind",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "within_kind",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "!=",
@@ -327,6 +352,10 @@
     "named": true
   },
   {
+    "type": "cd",
+    "named": false
+  },
+  {
     "type": "comment",
     "named": true,
     "extra": true
@@ -345,6 +374,10 @@
   },
   {
     "type": "else",
+    "named": false
+  },
+  {
+    "type": "env",
     "named": false
   },
   {
@@ -453,6 +486,10 @@
   },
   {
     "type": "then",
+    "named": false
+  },
+  {
+    "type": "tmp",
     "named": false
   },
   {

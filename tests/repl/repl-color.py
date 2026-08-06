@@ -79,6 +79,16 @@ if "  ... " in plain6:
 if not re.search(r"\x1b\[1;34mecho\x1b\[0m", t6):  # the known-head paint (bold+blue)
     failures.append("leading-space head must keep its verdict paint")
 
+# the within KIND paints as part of the form [D:within-kinds]: `within`
+# is a keyword (blue), and `cd`/`tmp`/`env` after it are the SAME blue —
+# not an identifier's colour. The block opens a multiline buffer, so
+# cancel with Ctrl+C.
+t7 = run({}, ["within cd helperDir\r", "\x03"])
+if not re.search(r"\x1b\[34mwithin\x1b\[0m", t7):
+    failures.append("within keyword must paint blue")
+if not re.search(r"\x1b\[34mcd\x1b\[0m", t7):
+    failures.append("the within KIND must paint as the form, not an identifier")
+
 # Log.* at the prompt: stderr interleaves after evaluation, the next
 # prompt still renders (the harness completing IS the no-corruption
 # check) [D:log-module]

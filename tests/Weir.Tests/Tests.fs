@@ -3789,9 +3789,21 @@ let replColorTests =
               Expect.stringContains c "\u001b[36m$x\u001b[0m" "the splice island"
               Expect.isFalse (c.Contains "\u001b[2mhead") "after | the stage is expression land"
           }
+          test
+              "form-words paint as the form: a within kind and a from/to adapter colour keyword, not identifier [D:form-word-hover]" {
+              let kw = "\x1b[34m"
+              let reset = "\x1b[0m"
+              Expect.stringContains (colorize "within cd d") $"{kw}cd{reset}" "the within kind"
+              Expect.stringContains (colorize "xs |> from json Config") $"{kw}json{reset}" "the from adapter"
+              Expect.stringContains (colorize "xs |> to yaml") $"{kw}yaml{reset}" "the to adapter"
+              // a binding that merely STARTS with an adapter word stays plain
+              Expect.isFalse ((colorize "let jsonData = 1").Contains $"{kw}jsonData{reset}") "not a false match"
+          }
           test "paint transparency: strip after colorize is the identity" {
               let fixtures =
                   [ "let x = 1 + 2"
+                    "within cd d"
+                    "xs |> from json Config"
                     "ls |> where (fun f -> f.bytes > 10)"
                     "let s = @\"unclosed raw to eol"
                     "let t = \"\"\"triple \\ and \" inside\"\"\""
@@ -4115,6 +4127,141 @@ let lspCrossFileTests =
           }
           test "an UNSIGNED command head stays quiet — no bogus location" {
               withTree (fun entry lines _ _ -> Expect.equal (Weir.Lsp.definitionTarget entry lines 8 9) None "")
+          } ]
+
+let withinKindsTests =
+    // one table [D:within-kinds], three consumers: hover, completion,
+    // and the grammar inventories (the last checked mechanically in
+    // ci/e2e.sh, alongside the existing micro-vs-tmLanguage guard)
+    let ws (t: string) =
+        let mutable i = t.Length
+
+        while i > 0
+              && (System.Char.IsLetterOrDigit t[i - 1] || t[i - 1] = '_' || t[i - 1] = '.') do
+            i <- i - 1
+
+        i
+
+    let sug (line: string) =
+        Weir.Complete.suggest Weir.Builtins.typeEnvStrict line (ws line)
+
+    testList
+        "within kinds — one table, three consumers [D:within-kinds]"
+        [ test "hover on a kind gives its doc AND its binds/consumes nature — never unit" {
+              let lines = [ "let d = \"x\""; "within cd d"; "    print \"in\"" ]
+
+              Expect.equal
+                  (Weir.Lsp.hoverType lines 2 8)
+                  (Some "cd — consumes: the working directory for the block, restored after")
+                  "the consuming kind"
+
+              let t = [ "within tmp scratch"; "    print scratch" ]
+
+              Expect.equal
+                  (Weir.Lsp.hoverType t 1 8)
+                  (Some "tmp — binds: a fresh directory, removed when the block exits")
+                  "the binding kind"
+          }
+          test "hover on `within` itself answers (the form carries weir's novelty); an ordinary keyword stays silent" {
+              let t = [ "within tmp scratch"; "    print scratch" ]
+
+              match Weir.Lsp.hoverType t 1 3 with
+              | Some h ->
+                  Expect.stringContains h "scoped block" "the form's meaning"
+                  Expect.stringContains h "tmp" "names the kinds"
+              | None -> failtest "within must answer"
+
+              Expect.equal (Weir.Lsp.hoverType [ "match 1 with | _ -> 0" ] 1 3) None "an ordinary keyword stays silent"
+          }
+          test "the BINDER hovers its resource type, even UNUSED — the wrong-answer class the session closes" {
+              let t = [ "within tmp ghost"; "    print \"x\""; "print \"done\"" ]
+              Expect.equal (Weir.Lsp.hoverType t 1 13) (Some "string") "the binder is the dir path, not unit"
+          }
+          test "completion after `within ` offers the kinds and NOTHING else; a boundary non-match stays normal" {
+              Expect.equal (sug "within ") [ "tmp"; "cd"; "env" ] "the closed set"
+              Expect.equal (sug "within c") [ "cd" ] "prefix-filtered"
+              Expect.equal (sug "within t") [ "tmp" ] ""
+              Expect.isFalse (sug "notwithin " = [ "tmp"; "cd"; "env" ]) "boundary: notwithin is not within"
+              Expect.isFalse (sug "within cd " = [ "tmp"; "cd"; "env" ]) "the arg slot is not the kind slot"
+          }
+          test "the teaching list derives from the table (a new kind cannot miss the message)" {
+              Expect.equal Weir.Ast.withinKindList "tmp, cd, or env" "derived, not hand-written"
+          }
+          test "a form word inside a STRING or a COMMENT is data, not a form — no hover [D:within-kinds]" {
+              // the form hovers run before the silence guard, so the
+              // string/comment exclusion is theirs to enforce
+              Expect.equal
+                  (Weir.Lsp.hoverType [ "let m = \"run within cd first\""; "print m" ] 1 18)
+                  None
+                  "within in a string"
+
+              Expect.equal
+                  (Weir.Lsp.hoverType [ "let x = 1 // within cd here"; "print x" ] 1 15)
+                  None
+                  "within in a comment"
+          } ]
+
+let adapterFormTests =
+    // the from/to adapters — the within kinds' sibling [D:form-word-hover].
+    // The adapter LIST is derived from the one source (builtinDocs keys)
+    // that already backs each adapter's own hover, so they cannot drift.
+    let ws (t: string) =
+        let mutable i = t.Length
+
+        while i > 0
+              && (System.Char.IsLetterOrDigit t[i - 1] || t[i - 1] = '_' || t[i - 1] = '.') do
+            i <- i - 1
+
+        i
+
+    let sug (line: string) =
+        Weir.Complete.suggest Weir.Builtins.typeEnvStrict line (ws line)
+
+    testList
+        "from/to adapters — the discovery surface [D:form-word-hover]"
+        [ test "`from`/`to` hover the FORM plus the available adapters (the discovery surface)" {
+              let lines =
+                  [ "type Config = { name: string }"; "let rows = [\"{}\"] |> from json Config" ]
+
+              match Weir.Lsp.hoverType lines 2 22 with
+              | Some h ->
+                  Expect.stringContains h "from <adapter>" "the form"
+                  Expect.stringContains h "json, porcelain, yaml" "every from-adapter, derived"
+              | None -> failtest "from must answer"
+
+              let t = [ "let back = rows |> to yaml" ]
+
+              match Weir.Lsp.hoverType t 1 20 with
+              | Some h ->
+                  Expect.stringContains h "to <adapter>" "the form"
+                  Expect.stringContains h "json, yaml" "the to-adapters"
+                  Expect.isFalse (h.Contains "porcelain") "to omits the read-only adapter"
+              | None -> failtest "to must answer"
+          }
+          test "the adapter WORD's own hover is unchanged — signature + doc, not touched" {
+              let lines =
+                  [ "type Config = { name: string }"; "let rows = [\"{}\"] |> from json Config" ]
+
+              match Weir.Lsp.hoverType lines 2 27 with
+              | Some h ->
+                  Expect.stringContains h "seq<string> -> seq<Config>" "the adapter's own type"
+                  Expect.stringContains h "Parse a JSON line stream" "the adapter's own doc"
+              | None -> failtest "the adapter word must still hover"
+          }
+          test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
+              Expect.equal (sug "xs |> from ") [ "json"; "porcelain"; "yaml" ] "every from-adapter"
+              Expect.equal (sug "xs |> from j") [ "json" ] "prefix-filtered"
+              Expect.equal (sug "xs |> to ") [ "json"; "yaml" ] "to omits porcelain"
+              Expect.equal (sug "xs |> to por") [] "to never offers a read-only adapter"
+              Expect.isFalse (sug "xs |> into " = [ "json"; "porcelain"; "yaml" ]) "boundary: into is not from"
+          }
+          test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
+              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "porcelain"; "yaml" ] "from"
+              Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "yaml" ] "to — read-only excluded"
+          }
+          test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {
+              Expect.equal (Weir.Lsp.hoverType [ "let m = \"read from json\""; "print m" ] 1 15) None "from in a string"
+              Expect.equal (Weir.Lsp.hoverType [ "let x = 1 // from json T"; "print x" ] 1 15) None "from in a comment"
           } ]
 
 let semanticTokenTests =
@@ -9839,6 +9986,8 @@ let allTests =
           multilineLambdaTests
           semanticTokenTests
           lspCrossFileTests
+          withinKindsTests
+          adapterFormTests
           pipeAlignTests
           optionSweepTests
           moduleTests

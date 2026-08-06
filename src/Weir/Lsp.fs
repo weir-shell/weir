@@ -986,6 +986,96 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
         | None, pl, pc, len -> Some(pl, pc, len)
         | _ -> None)
 
+// the within FORM answers [D:within-kinds] — one table, three
+// consumers. The kind hovers its doc + binds/consumes nature; the
+// `within` keyword itself ANSWERS (a form that carries weir's novelty;
+// ordinary keywords keep the silence guard); a binding kind's BINDER
+// is always the resource's type — a use-less binder must not fall
+// through to the enclosing node's type (the same wrong-answer class).
+let private withinFormHover (text: string) (jcol: int) : string option =
+    let endsWithWord (kw: string) (s: string) =
+        s.EndsWith kw
+        && (s.Length = kw.Length || not (isWord s[s.Length - kw.Length - 1]))
+
+    wordAt text jcol
+    |> Option.bind (fun w ->
+        let wordStart =
+            let mutable st = jcol - 1
+
+            while st > 0 && isWord text[st - 1] do
+                st <- st - 1
+
+            st
+
+        let before = text.Substring(0, wordStart).TrimEnd()
+
+        if w = "within" then
+            let kinds =
+                Ast.withinKinds
+                |> List.map (fun k -> k.Name + (if k.Binds then " (binds)" else ""))
+                |> String.concat ", "
+
+            Some(
+                "within <kind> — a scoped block: the resource holds while the block runs and reverts when it exits\nkinds: "
+                + kinds
+            )
+        else
+            match Ast.withinKinds |> List.tryFind (fun k -> k.Name = w) with
+            | Some wk when endsWithWord "within" before ->
+                let nature = if wk.Binds then "binds" else "consumes"
+                Some $"{wk.Name} — {nature}: {wk.Doc}"
+            | _ ->
+                Ast.withinKinds
+                |> List.tryPick (fun k ->
+                    if k.Binds && endsWithWord k.Name before then
+                        let b2 = before.Substring(0, before.Length - k.Name.Length).TrimEnd()
+                        if endsWithWord "within" b2 then Some "string" else None
+                    else
+                        None))
+
+// the from/to FORM answers with the DISCOVERY surface [D:form-word-hover]
+// — the adapter LIST, which nothing else in the editor provides. The
+// adapters' OWN words already hover (their builtinDocs entry); this fills
+// only the bare keyword, and the list is derived from that same source so
+// the two cannot drift. Direction-aware: `to` omits the read-only ones.
+// The form-word hover rule: a keyword that names a FORM answers; a
+// punctuation-in-word-form keyword keeps the silence guard [D:form-word-hover].
+let private adapterFormHover (text: string) (jcol: int) : string option =
+    wordAt text jcol
+    |> Option.bind (fun w ->
+        match w with
+        | "from" ->
+            Some(
+                "from <adapter> [T] — parse a text line stream into typed values. Adapters: "
+                + (Builtins.adapterNames "from" |> String.concat ", ")
+            )
+        | "to" ->
+            Some(
+                "to <adapter> — render typed values as a text line stream. Adapters: "
+                + (Builtins.adapterNames "to" |> String.concat ", ")
+            )
+        | _ -> None)
+
+/// a FORM-WORD hover: within/from/to and their form-words — the union of
+/// the two form hovers [D:form-word-hover]. Gated by the caller to CODE
+/// position (the same letters inside a string or comment are data).
+let private formWordHover (text: string) (jcol: int) : string option =
+    withinFormHover text jcol |> Option.orElse (adapterFormHover text jcol)
+
+/// is the (1-based) physical column inside a string literal or a trailing
+/// comment on this physical line? [D:within-kinds] The form hovers run
+/// BEFORE the silence guard (they answer for keywords it would silence),
+/// so their string/comment exclusion lives here — on the PHYSICAL line,
+/// never the joined logical text whose sentinels confuse the scanner.
+let private inStringOrComment (lines: string list) (line: int) (col: int) : bool =
+    if line < 1 || line > List.length lines then
+        false
+    else
+        let text = List.item (line - 1) lines
+
+        (col >= 1 && col <= text.Length && (Script.inStringMask text)[col - 1])
+        || col - 1 >= (Script.stripComment text).Length
+
 /// hover text at (1-based physical line, col), or None. Pure. TYPE first,
 /// then the `///` doc. Silence guard first [D:hover-silence]; then the
 /// type from the binder/param/typed-node/scheme, with a field IN A LITERAL
@@ -997,6 +1087,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
     let _, stmts, _, _ = Script.analyzeLines path lines
 
     match toLogical stmts line col with
+    | Some(ll, _, jcol) when not (inStringOrComment lines line col) && (formWordHover ll.Text jcol).IsSome ->
+        formWordHover ll.Text jcol
     | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
         // an inner-let binder hovers as its ANNOTATED signature (names +
         // types), degrading to the arrow when it has no named params
@@ -1681,6 +1773,20 @@ let run (debug: bool) : int =
 
                                 let word = upto.Substring wordStart
 
+                                // the within KIND slot [D:within-kinds] — the
+                                // ITEMS come from Complete.suggest (the schema=
+                                // mechanism kin); this gate only scopes the
+                                // binds/consumes detail to the slot
+                                let kindSlot =
+                                    let beforeW = upto.Substring(0, wordStart).TrimEnd()
+
+                                    beforeW.EndsWith "within"
+                                    && (beforeW.Length = "within".Length
+                                        || not (
+                                            Char.IsLetterOrDigit beforeW[beforeW.Length - 7]
+                                            || beforeW[beforeW.Length - 7] = '_'
+                                        ))
+
                                 // error-recovery path: a single-dot word whose
                                 // head is unknown — repair the (possibly broken)
                                 // containing statement and read the head's
@@ -1795,6 +1901,17 @@ let run (debug: bool) : int =
                                     // the annotated signature as `detail` — the
                                     // other surface names are read on
                                     // [D:annotated-signature]
+                                    let kindDetail =
+                                        if kindSlot then
+                                            Ast.withinKinds
+                                            |> List.tryPick (fun k ->
+                                                if k.Name = label then
+                                                    Some((if k.Binds then "binds — " else "consumes — ") + k.Doc)
+                                                else
+                                                    None)
+                                        else
+                                            None
+
                                     let sigDetail =
                                         Map.tryFind label Builtins.builtinDocs
                                         |> Option.filter (fun d -> not (List.isEmpty d.Params))
@@ -1812,7 +1929,7 @@ let run (debug: bool) : int =
 
                                             tyOf |> Option.map (fun ty -> formatSignature label d.Params ty))
 
-                                    match sigDetail with
+                                    match kindDetail |> Option.orElse sigDetail with
                                     | Some s -> w.WriteString("detail", s)
                                     | None -> ()
 

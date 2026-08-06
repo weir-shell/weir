@@ -2536,6 +2536,27 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
           "Group", bd "A key and its items, from `Seq.groupBy`." None None ]
 
+/// the boundary adapters a direction supports, DERIVED from the doc keys
+/// (`from json` / `to yaml` …) [D:form-word-hover] — the one source the
+/// adapters' own hovers already read, so the `from`/`to` discovery hover,
+/// the completion, and the colorizer cannot drift from it. `dir` is
+/// "from" or "to"; `porcelain` is read-only, so `to` yields only what has
+/// a `to <x>` doc. Map is key-sorted, so the order is stable.
+let adapterNames (dir: string) : string list =
+    builtinDocs
+    |> Map.toList
+    |> List.choose (fun (k, _) ->
+        if k.StartsWith(dir + " ") then
+            Some(k.Substring(dir.Length + 1))
+        else
+            None)
+    |> List.distinct
+
+/// every adapter word in either direction — the colorizer's membership
+/// test (it has no direction context, only "is this word an adapter")
+let allAdapterNames: Set<string> =
+    Set.union (Set.ofList (adapterNames "from")) (Set.ofList (adapterNames "to"))
+
 /// map a reifier's internal key (|completed, |completedEnv, |completedIn,
 /// and the succeeded/orFailed/exitCoded families) back to the surface
 /// name a user wrote, so hover keys the doc [D:builtin-docs].

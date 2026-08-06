@@ -157,6 +157,36 @@ var is worse than mis-painting `'a` as a string). The worked example:
 distinguish `'a` from `'x'`; micro's RE2 cannot peek for the closing
 quote, so it is exempt with that reason.
 
+## Form-word hover rule; form-words are a colour list, not a lexical shape
+
+Two rulings that stop being re-derived per keyword [D:form-word-hover].
+
+**Hover.** A keyword that names a FORM answers a hover — its meaning,
+and for a family the members it heads (`within` names its kinds;
+`from`/`to` name their adapters). A keyword that is punctuation-in-word
+form stays silent, under the hover-silence guard [D:hover-silence]: a
+fallback type on `let`/`in`/`=`/`;`/`then`/`do`/brackets teaches
+nothing and risks teaching a wrong type. The line is weir's NOVELTY:
+the forms carrying it (`within`, `from`, `to`, `retry`, `poll`,
+`until`, the district markers) are what a reader hovering wants
+explained; the grammar scaffolding is not. This is the same
+distinction that settled the operators question, stated once so the
+next form-keyword is not decided from scratch.
+
+**Colour.** A weir form-word is lexically an ordinary lowercase
+identifier — `cd`, `json`, `porcelain`, `configmap` — so a grammar
+colouring by lexical SHAPE cannot tell it from a binding. Only an
+explicit list can. That is structural, not per-feature: every future
+closed set of form-words arrives with the same colour gap, and the fix
+is always the same — the set added to each grammar's list (and the
+REPL colorizer's), pinned against its source by an inventory e2e. The
+three closed sets to date (`yaml schema=<name>`, `within` kinds,
+`from`/`to` adapters) sit in three different syntactic contexts, so
+they are three small rules rather than one unified "form-word" rule —
+each grammar hard-codes the set in its own idiom (tree-sitter widened
+its existing `adapter` token; TextMate and micro got a two-word rule),
+verified per engine, never assumed symmetric.
+
 ## Fuzzer grammar membership
 
 New assembler/grammar features add their line shapes to the fuzzer's

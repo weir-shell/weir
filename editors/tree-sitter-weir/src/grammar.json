@@ -31,6 +31,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "within_head"
+        },
+        {
+          "type": "SYMBOL",
           "name": "keyword"
         },
         {
@@ -229,6 +233,44 @@
           }
         ]
       }
+    },
+    "within_head": {
+      "type": "PREC_RIGHT",
+      "value": 2,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "within"
+          },
+          {
+            "type": "FIELD",
+            "name": "kind",
+            "content": {
+              "type": "SYMBOL",
+              "name": "within_kind"
+            }
+          }
+        ]
+      }
+    },
+    "within_kind": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "tmp"
+        },
+        {
+          "type": "STRING",
+          "value": "cd"
+        },
+        {
+          "type": "STRING",
+          "value": "env"
+        }
+      ]
     },
     "keyword": {
       "type": "CHOICE",
@@ -613,8 +655,21 @@
               "value": "[ \\t]+"
             },
             {
-              "type": "STRING",
-              "value": "yaml"
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "json"
+                },
+                {
+                  "type": "STRING",
+                  "value": "yaml"
+                },
+                {
+                  "type": "STRING",
+                  "value": "porcelain"
+                }
+              ]
             }
           ]
         }

@@ -821,6 +821,60 @@ print(f"inventories match ({len(micro)} rules, {len(exempt)} stated micro-exempt
 PYEOF
     echo "e2e ok: grammar inventories match (micro == tmLanguage)"
 
+    # within-kind inventory [D:within-kinds]: the kinds are a CLOSED SET
+    # in ONE table (src/Weir/Ast.fs withinKinds); the three grammars
+    # hard-code the same set by necessity — this pins all four together
+    # so a new kind cannot land in the table and leave a grammar grey
+    python3 - "$(dirname "$0")/.." <<'PYWK' || fail "within-kind inventories diverge from Ast.withinKinds"
+import re, sys
+root = sys.argv[1]
+ast = open(f"{root}/src/Weir/Ast.fs").read()
+# the table block: Name = "..." entries inside withinKinds
+tbl_block = re.search(r"let withinKinds[^=]*=\n(.*?)\n\n", ast, re.S).group(1)
+table = set(re.findall(r'Name = "(\w+)"', tbl_block))
+def alt(path, rx):
+    m = re.search(rx, open(f"{root}/{path}").read())
+    if not m: return None
+    return set(re.findall(r"[a-z]+", m.group(1)))
+grammars = {
+    "micro": alt("editors/micro/weir.yaml", r"within\[ \\\\t\]\+\(([a-z|]+)\)"),
+    "tmLanguage": alt("editors/vscode/syntaxes/weir.tmLanguage.json", r"within\)\[ \\\\t\]\+\(([a-z|]+)\)"),
+    "tree-sitter": alt("editors/tree-sitter-weir/grammar.js", r"within_kind: _ => choice\(([^)]+)\)"),
+}
+bad = {k: v for k, v in grammars.items() if v != table}
+if not table or bad:
+    print(f"table={sorted(table)}  mismatches=" + str({k: sorted(v) if v else None for k, v in bad.items()}))
+    sys.exit(1)
+print(f"within kinds match across the table + 3 grammars ({sorted(table)})")
+PYWK
+    echo "e2e ok: within-kind inventory (Ast.withinKinds == micro == tmLanguage == tree-sitter)"
+
+    # adapter inventory [D:form-word-hover]: the from/to adapters are a
+    # CLOSED SET whose SOURCE is the builtinDocs keys (`from X`/`to X`) —
+    # the same one hover/completion derive from. The three grammars
+    # hard-code the union of both directions; this pins all four together
+    python3 - "$(dirname "$0")/.." <<'PYADP' || fail "adapter inventories diverge from builtinDocs"
+import re, sys
+root = sys.argv[1]
+docs = open(f"{root}/src/Weir/Builtins.fs").read()
+# the builtinDocs keys of the form "from X" / "to X" — the one source
+source = set(re.findall(r'"(?:from|to) (\w+)"', docs))
+def alt(path, rx):
+    m = re.search(rx, open(f"{root}/{path}").read())
+    return set(re.findall(r"[a-z]+", m.group(1))) if m else None
+grammars = {
+    "micro": alt("editors/micro/weir.yaml", r"\(from\|to\)\[ \\\\t\]\+\(([a-z|]+)\)"),
+    "tmLanguage": alt("editors/vscode/syntaxes/weir.tmLanguage.json", r"\(from\|to\)\[ \\\\t\]\+\(([a-z|]+)\)"),
+    "tree-sitter": alt("editors/tree-sitter-weir/grammar.js", r"choice\('to', 'from'\), [^,]+, choice\(([^)]+)\)"),
+}
+bad = {k: v for k, v in grammars.items() if v != source}
+if not source or bad:
+    print(f"source={sorted(source)}  mismatches=" + str({k: sorted(v) if v else None for k, v in bad.items()}))
+    sys.exit(1)
+print(f"adapters match across builtinDocs + 3 grammars ({sorted(source)})")
+PYADP
+    echo "e2e ok: adapter inventory (builtinDocs == micro == tmLanguage == tree-sitter)"
+
     # tree-sitter highlight DRIFT guard: the Zed extension bundles its own
     # copy of highlights.scm (Zed reads languages/<lang>/, not the grammar
     # repo's queries), so the two MUST stay identical — six coloring fixes

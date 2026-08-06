@@ -151,7 +151,7 @@ let private declName (raw: string) : (int * int) option =
 // string kind (plain/single/verbatim/triple). The scanner family's
 // third consumer face [D:fmt-respace]: respacing must never touch
 // string interiors.
-let private inStringMask (s: string) : bool[] =
+let inStringMask (s: string) : bool[] =
     let mask = Array.create s.Length false
     let mutable outside = System.Collections.Generic.HashSet<int>()
 
@@ -1585,6 +1585,8 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
         // token pass over the code region
         let mutable i = 0
         let mutable headSeen = false
+        // the within KIND paints as part of the form [D:within-kinds]
+        let mutable prevWord = ""
         // the mode tint [D:semantic-tokens]: an external head arms
         // command mode; argv words render DIM until a '|' hands the
         // chain to an expression stage — the same three-way the LSP
@@ -1608,6 +1610,10 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         // near-identically in some themes) is reserved for
                         // exactly one signal: a head that would fail
                         Some "34"
+                    elif prevWord = "within" && Ast.withinKinds |> List.exists (fun k -> k.Name = word) then
+                        Some "34" // the kind is form, not a name [D:within-kinds]
+                    elif (prevWord = "from" || prevWord = "to") && Builtins.allAdapterNames.Contains word then
+                        Some "34" // the adapter is form, not a name [D:form-word-hover]
                     elif not headSeen && start = 0 then
                         // the fish trick: the head resolves live
                         if isKnown word then
@@ -1625,6 +1631,7 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         None
 
                 headSeen <- true
+                prevWord <- word
 
                 match code with
                 | Some c ->

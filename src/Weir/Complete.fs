@@ -188,6 +188,39 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                 |> List.distinct
                 |> render
     elif
+        (let b = before.TrimEnd() in
+
+         b.EndsWith "within"
+         && (b.Length = "within".Length
+             || not (System.Char.IsLetterOrDigit b[b.Length - 7] || b[b.Length - 7] = '_')))
+    then
+        // the within KIND slot [D:within-kinds]: a closed set off the one
+        // table — the kinds and NOTHING else (an identifier cannot sit
+        // there); the schema= shape, its mechanism kin
+        Weir.Ast.withinKinds
+        |> List.map (fun k -> k.Name)
+        |> List.filter (fun k -> k.StartsWith word && k <> word)
+    elif
+        (let b = before.TrimEnd() in
+
+         (b.EndsWith "from" || b.EndsWith "to")
+         && (let kw = if b.EndsWith "from" then "from" else "to" in
+
+             b.Length = kw.Length
+             || not (
+                 System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
+                 || b[b.Length - kw.Length - 1] = '_'
+             )))
+    then
+        // the from/to ADAPTER slot [D:form-word-hover]: direction-aware, off
+        // the one source (builtinDocs keys) — `to ` never offers a read-only
+        // adapter; a closed set, so NOTHING else completes here (the within
+        // and schema= slots' third sibling — closed-set slot completion)
+        let dir = if (before.TrimEnd()).EndsWith "from" then "from" else "to"
+
+        Weir.Builtins.adapterNames dir
+        |> List.filter (fun a -> a.StartsWith word && a <> word)
+    elif
         before.EndsWith "schema="
         && Weir.Parser.isYamlMarkerPiece (before.Substring(0, before.Length - 7).TrimEnd())
     then
