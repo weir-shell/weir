@@ -43,6 +43,45 @@ implementation's, because a reader of the theory opted in and a reader
 of an error did not. That is the rule that says "scrutinee" belongs in
 this very file but never in the binary's output.
 
+||||||| parent of 6f2584c (Seq.pfirst follow-ups: empty-guard message, swallowed-loser doc, exit-race park)
+
+## Seq.pfirst follow-ups: the exit-race park, named customers (2026-08-06)
+
+Six small closes after the race landed, and one decision worth the
+record. The empty-sequence message gained the guard it should always
+have named — "a race needs at least one arm; guard with Seq.isEmpty"
+— the reject-don't-guess full form (there is no tryPfirst, so the
+message points at the pre-check). The member doc gained the
+swallowed-loser hazard in one sentence: if only one arm can succeed,
+the others' errors are hidden, so a misconfigured fan-out still looks
+healthy — correct semantics, an hour of debugging without the warning.
+And `pfirstWith n` was confirmed already shipped (not a
+recommendation), so the coming-from parallelism row now carries it
+beside pmapWith with the Promise.any anchor.
+
+The decision is the exit-race leak (Probe B, from the design review):
+pfirst leaks a `within tmp` directory under NORMAL, uninterrupted
+completion. The workers are background threads; when the script exits
+right after the winner returns, a losing arm still inside its `within
+tmp` block is killed mid-`finally`, so the temp dir never gets removed.
+This is NOT a race-mechanism bug — the loser's `finally` runs fine on
+its own un-aborted thread WHEN the process outlives it (pinned in e2e:
+loser blocked in `sleep 5`, winner returns, dir gone 1s later). It is
+the process-exit case that leaks.
+
+PARKED — a process-exit cleanup hook that removes live/registered
+`weir-tmp-*` dirs on exit. TWO customers, which is the argument to
+eventually build it: (1) pfirst's exit-race — a background loser
+thread killed mid-`finally` on NORMAL, uninterrupted completion leaks
+its `within tmp` dir (Probe B, reproduced); (2) the PRE-EXISTING leak
+every script already has — `within tmp` cleanup is a managed `finally`
+(Eval.fs, "best-effort" by comment), so Ctrl-C / `kill` has always
+leaked it. pfirst didn't create the class; it added the first
+NO-signal instance, which is what makes the class worth a hook.
+Trigger: a receipt where leaked temp dirs cause real trouble, OR the
+Windows job-objects session (same hard-exit-skips-cleanup family
+[D:windows-s2]).
+
 ## from/to adapters in the editor — the within-kinds sibling (2026-08-06)
 
 The live check shrank this before it started: the three adapter WORDS
