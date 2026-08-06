@@ -18,7 +18,11 @@ head hovers its identity + recorded version (no spawn — works with
 the tool off PATH) and opens the signature file, its flags hovering
 and jumping to their field declarations. Definition targets carry the
 client's own URI for open files. Module member COMPLETION offers the
-names (`Lib.` lists members), without their docs yet. Two
+names (`Lib.` lists members), without their docs yet. The `within`
+form is understood [D:within-kinds]: hovering `within` explains the
+form, hovering a kind (`tmp`/`cd`/`env`) gives its meaning and whether
+it BINDS a resource or CONSUMES one, and completion after `within `
+offers the three kinds and nothing else. Two
 facts every block encodes, matching `weir fmt`: comment token `//`,
 indent 4 spaces. The formatting request runs `weir fmt`'s canonical
 pipeline — editor options (tabSize etc.) are ignored by design, so a

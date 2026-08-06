@@ -28,6 +28,7 @@ module.exports = grammar({
         $.attribute,
         $.let_head,
         $.type_head,
+        $.within_head,
         $.keyword,
         $.boolean,
         $.interp_string,
@@ -70,6 +71,13 @@ module.exports = grammar({
       prec.right(2, seq('let', field('name', choice($.identifier, '_')))),
 
     type_head: $ => prec.right(2, seq('type', field('name', $.constructor))),
+
+    // within <kind>: the kind is part of the FORM (a closed set), not a
+    // name the user wrote [D:within-kinds] — the let_head shape, with
+    // precedence over the bare `within` keyword fallback
+    within_head: $ => prec.right(2, seq('within', field('kind', $.within_kind))),
+
+    within_kind: _ => choice('tmp', 'cd', 'env'),
 
     keyword: _ =>
       choice(
@@ -138,11 +146,14 @@ module.exports = grammar({
     // !( effect opener; !e( env-effect (glued)
     bang_sigil: _ => token(choice('!(', /![A-Za-z_][A-Za-z0-9_]*\(/)),
 
-    // `to yaml` / `from yaml` as ONE internal token: longest-match at the
-    // `to`/`from` boundary means the external scanner is never consulted
-    // at the `yaml` position, so the adapters can never open a district
-    // [D:yaml-district] — the marker exclusion, done lexically
-    adapter: _ => token(prec(3, seq(choice('to', 'from'), /[ \t]+/, 'yaml'))),
+    // `from`/`to` + an adapter word as ONE internal token, coloured whole:
+    // the adapter is part of the FORM, not a name [D:form-word-hover]. For
+    // `yaml` this doubles as the district exclusion — longest-match at the
+    // `to`/`from` boundary means the external scanner is never consulted at
+    // the `yaml` position, so an adapter can never open a district
+    // [D:yaml-district]. Over-accepts `to porcelain` (a renderer bound; the
+    // checker rejects it — porcelain is read-only).
+    adapter: _ => token(prec(3, seq(choice('to', 'from'), /[ \t]+/, choice('json', 'yaml', 'porcelain')))),
 
     number: _ => token(/\d+/),
 

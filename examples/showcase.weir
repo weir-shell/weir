@@ -165,6 +165,17 @@ Duration.sleep 1ms // takes a Duration, not a number; module-qualified so coreut
 retry attempts=2 delay=10ms
     weir -e "print 7" | succeeds
 
+// poll, the wall-clock twin, with the `until` segment: a VALUE body
+// cannot be its own predicate, so `until` names the body's binding
+// and reads it — two segments, both heads at column 0; the block
+// yields the value once the condition holds
+let polled = poll timeout=2s interval=10ms
+    let r = weir -e "print 9" | complete
+    r
+until r
+    r.exitCode == 0
+print (polled.stdout |> Seq.head)
+
 // ---- seqs: Regex patterns, choose, seq patterns, fold -----------------
 
 let logs = ["ok 200 /index"; "noise"; "ok 404 /missing"; "ok 200 /api"]

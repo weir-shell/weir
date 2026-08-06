@@ -24,6 +24,8 @@
 (let_head name: (identifier) @variable)
 (type_head "type" @keyword)
 (type_head name: (constructor) @type)
+(within_head "within" @keyword)
+(within_head kind: (within_kind) @keyword)
 
 (constructor) @type
 

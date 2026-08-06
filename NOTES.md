@@ -1,5 +1,91 @@
 # Spike Notes
 
+## from/to adapters in the editor — the within-kinds sibling (2026-08-06)
+
+The live check shrank this before it started: the three adapter WORDS
+(`json`, `yaml`, `porcelain`) already hovered with signature + purpose
++ usage. But the backing turned out to be HARDCODED per-(direction,
+adapter) strings in `builtinDocs` (`"from json"`, `"to yaml"`, …), not
+a table — so the plan's premise "three adapters with docs means a
+table already exists" was wrong, and its "keep the shape already
+serving three members" resolved to the opposite of what it expected:
+there is no table to keep, so DERIVE from the one source that already
+works. `adapterNames dir` scans the `builtinDocs` keys with the `from
+`/`to ` prefix — direction-aware for free (`from` → json/porcelain/
+yaml, `to` → json/yaml), and `porcelain`'s read-only-ness falls out
+because there simply is no `"to porcelain"` key. Nothing can drift
+from the adapters' own hovers because it IS their source.
+
+What was actually missing was three things, all the within-kinds
+shape one form over: `from`/`to` themselves hovered NOTHING (they are
+keywords, swallowed by the hover-silence guard), so `adapterFormHover`
+adds the DISCOVERY surface — the form plus the adapter list, which is
+the one thing no other editor affordance tells you. Completion after
+`from `/`to ` offered the general identifier soup; it now offers the
+direction-appropriate adapters and nothing else, a sibling arm to the
+`within ` and `schema=` slots (three instances — closed-set slot
+completion earned its name). And the adapter word painted as an
+identifier in all three grammars.
+
+The colour work confirmed the "verify each" lesson again: tree-sitter
+already had an `adapter` token — but `yaml`-ONLY, built to stop `to
+yaml` opening a district, not for colour. Widening its inner `choice`
+to `json`/`yaml`/`porcelain` colours all of them (and harmlessly
+over-accepts `to porcelain` — a renderer bound). TextMate and micro
+had nothing; each got a two-word rule in its own idiom. An adapter
+inventory e2e now pins `builtinDocs` == all three grammars, the same
+mechanical drift guard the kinds got.
+
+Two things reported, not fixed (out of scope): `retry`/`poll`/`until`
+still hover nothing — the same form-keyword class, trivially fixable
+under the now-stated form-word hover rule, owed a line when someone
+touches them. And the type argument `T` in `from json T` hovers the
+adapter's arrow type (`seq<string> -> seq<Config>`) rather than the
+record's own shape — not `unit`, not wrong, but imprecise; the same
+enclosing-node-leak class the within binder question raised, left
+untouched under zero-movement. The form-word hover rule is now in
+PROCESS so `within`, `from`/`to`, and the next form-keyword are ruled
+the same way once, not re-litigated per keyword.
+
+
+## within kinds in the editor — one table, three consumers (2026-08-06)
+
+The bug that opened it: hovering `within cd helperDir` returned
+`unit`. Not silence — a WRONG answer, teaching that `cd` is a
+unit-typed value. The hover-completeness session's own law (a wrong
+type is worse than nothing) was being violated by the very form the
+session added. The fix is the table: Ast.withinKinds (Name, Binds,
+Doc) as ONE source the parser dispatches off (Binds is the arity
+switch — tmp binds a directory, cd/env consume an atom), hover reads
+(kind → doc + binds/consumes; `within` itself answers; the binder
+hovers `string` even unused — it used to fall through to `unit`), and
+completion reads (the kind slot, a closed set). The teaching list
+"tmp, cd, or env" derives from the table so a fourth kind cannot ship
+with a stale message.
+
+The subtle bug, caught by the from/to fork reading my work: the form
+hovers run BEFORE the silence guard — they have to, because `within`
+is a keyword the guard would silence, and the whole point is that it
+answers. But that means a form word inside a STRING (`"run within cd
+first"`) or a trailing comment also bypasses the guard and fires the
+discovery text. The first fix gated on the joined logical-line text
+and broke the code case — the sentinel separators in the joined text
+threw off stripComment's length, so every real `within` read as "past
+the comment". The gate has to run on the PHYSICAL line at the physical
+column (inStringOrComment), never the joined text. One gate now covers
+both within and the adapter form hover — the shared consumer the
+sibling session predicted.
+
+Grammars: the kinds are a closed set hard-coded in three files
+(micro whole-match, tmLanguage two-capture rule before keywords,
+tree-sitter within_head/within_kind nodes with regenerated parser.c
+and a Zed sync). Engine-verified individually — vscode-textmate
+tokenize and a tree-sitter query, not eyeballed. And the single-source
+law is made mechanical: an e2e inventory pins Ast.withinKinds equal to
+all three grammars' hard-coded sets, so a kind added to the table but
+not a grammar fails CI. The REPL colorizer paints the kind as the form
+(a prevWord=within arm), with a pty pin.
+
 ## LSP cross-file navigation: the retention answer (2026-08-05)
 
 The plan ordered a retention diagnosis first, and the answer is the

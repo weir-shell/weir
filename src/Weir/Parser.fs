@@ -1270,9 +1270,11 @@ let private withinExpr =
                 opt (str_ws ";" <|> str_ws sibSepStr)
                 >>. (withExprParen false seqExpr <?> "the scope's block")
 
-            match kind with
-            | "tmp" ->
-                // tmp PRODUCES its path: a binder, joining
+            // dispatch off the kinds TABLE [D:within-kinds]: Binds is the
+            // arity switch, membership and the teaching list derive
+            match Ast.withinKinds |> List.tryFind (fun k -> k.Name = kind) with
+            | Some wk when wk.Binds ->
+                // a binding kind PRODUCES its resource: a binder, joining
                 // bindings-beat-PATH (the patLeafNames class, 5th site)
                 identSpanned
                 >>= fun (binder, bspan) ->
@@ -1280,12 +1282,11 @@ let private withinExpr =
                     >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
                          <?> "the scope's block")
                     |>> fun body ->
-                        { Kind = EWithin("tmp", Some(binder, bspan), None, body)
+                        { Kind = EWithin(kind, Some(binder, bspan), None, body)
                           Span = { Start = pos p; End = body.Span.End } }
-            | "cd"
-            | "env" ->
-                // cd/env CONSUME a value: ONE ATOM (a literal, a name,
-                // a paren, an interpolation) — never a greedy expr,
+            | Some _ ->
+                // a consuming kind takes a value: ONE ATOM (a literal, a
+                // name, a paren, an interpolation) — never a greedy expr,
                 // which would swallow the space-joined first statement
                 (postfixAtom <?> $"the {kind} scope's argument (parenthesize a compound)")
                 >>= fun argE ->
@@ -1293,7 +1294,7 @@ let private withinExpr =
                     |>> fun body ->
                         { Kind = EWithin(kind, None, Some argE, body)
                           Span = { Start = pos p; End = body.Span.End } }
-            | other -> failFatally $"unknown scope kind '{other}' — within takes tmp, cd, or env"
+            | None -> failFatally $"unknown scope kind '{kind}' — within takes {Ast.withinKindList}"
 
 // retry/poll [D:retry-poll]: `retry attempts=5 delay=30s` desugars AT
 // PARSE to `retry { Retry.defaults with attempts = 5; delay = 30s }` —
