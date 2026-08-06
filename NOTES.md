@@ -1,5 +1,52 @@
 # Spike Notes
 
+## the bare-alias allowlist, and two ledger items (2026-08-06)
+
+The inversion was the easy half; the verification was the point. The
+pre-inversion homes map came out 100% Seq/Str-homed — twenty aliases,
+none from a third module — which means the blocklist survived four
+rounds only because no OTHER module happens to carry a hot-path name.
+File, Dir, Path, Env, Duration, Size, Retry, Poll all pass the old
+filter and contribute nothing by luck of naming (`parse` is not a bare
+alias; `read` is not). That is "unsafe by default" made concrete. The
+usage enumeration across surfaces found the real bare names in use —
+where, first, map, sum, trim, startsWith, join — in two REPL and two
+#loose e2e fixtures plus the loose-env unit corpus, all Seq/Str; the
+28 grep hits in the .weir corpus are user BINDINGS named `head` and
+`force` in strict scripts (git-subrepo's), which is shadowing, not
+aliasing. So the change moved zero usages, verified from both ends
+(homes identity + usage walk).
+
+The property pin is the session's actual product: bareEntriesOf and
+bareAliasHomesOf are factored over the table, and a hypothetical Evil
+module with map/head/trim members is pinned to contribute nothing
+while Seq keeps the alias. The allowlist SET is pinned too — {Seq,
+Str} exactly — so widening it fails a test until done deliberately.
+The failure mode teaches as required: a bare non-allowlisted member
+gets "moved into a module; use 'X.y'", multi-home lists candidates.
+
+The seq-equality rider corrected its own plan. The prose claimed
+upcast lists compare by reference — BACKWARDS, the 0.1 == 0.2 pattern
+again: real F# (fsy-refereed) says `(list :> seq) = (list :> seq)` is
+TRUE, because generic equality dispatches on the RUNTIME type and
+lists are structural regardless of static type. What IS reference
+equality: computed seqs — `Seq.map id [1;2] = Seq.map id [1;2]` is
+false on equal values, `seq { 1; 2 } = seq { 1; 2 }` false. So F#'s
+answer changes with PROVENANCE at one static type, which is a
+sharper argument for weir's refusal than plain reference equality
+would have been. The row, the oracle pinT (the fidelity harness
+itself refused the pin until the row existed — the drift guard
+working), and the coming-from paragraph all carry the verified
+version. One near-miss in my own docs line: I first wrote "compare
+after Seq.force-ing", which is wrong in weir (Eq excludes the TYPE,
+forced or not) — the honest idiom is compare a value you mean
+(Seq.length, a Str.join-ed string).
+
+The batched-edit lesson went to PROCESS with both halves stated: a
+failed assert leaves NOTHING including the parts that succeeded, and
+per-edit printouts are not receipts — check the file, re-apply the
+whole intent, never the "missing half".
+
 ## Http session 2: constructors, methods, the shorthand (2026-08-06)
 
 Purely additive, and it went fast because session 1's shape held. The

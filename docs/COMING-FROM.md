@@ -15,7 +15,8 @@ design (the doc-test CI is Linux), so blocks may lean on `sh` and
 restricts itself to weir and git. The tables are the unverified
 surface: cells were hand-checked against the binary (2026-08-05, re-swept
 same day after `Size` landed — the `File.*` cells are type-unchanged),
-but only the fenced blocks re-verify on every build.
+but only the fenced blocks re-verify on every build (the fish
+section's cells were probe-checked 2026-08-06).
 
 ## Coming from bash / POSIX sh
 
@@ -86,6 +87,69 @@ print "unreached"
   command; inside that quoted line `$w` is sh's variable, not weir's
   (interpolate first: `sh -c $"echo got-{w}"`).
 
+## Coming from fish
+
+Fish already fixed the half of bash that weir refuses to represent:
+variables are lists, expansion never re-splits on spaces, and `(cmd)`
+splits on newlines rather than IFS. weir agrees with all three
+instincts — and then types them. A capture is `seq<string>`, a list
+element is one argv word by construction, and the string toolbox is a
+module instead of a subcommand.
+
+| fish | weir |
+|---|---|
+| `set out (git branch)` | `let out = git branch` — a `seq<string>`, one element per line (the newline split you already expect) |
+| `echo $files` (one word per element) | `echo $@files` — the N-word splat is EXPLICIT; `$x` is always exactly ONE word |
+| `set files *.txt` (glob in argv) | `let files = Path.glob "*.txt"` — a function returning a typed seq |
+| `string split , $s` / `string trim` | `Str.split "," s` / `Str.trim` |
+| `string match -r 'v(\d+)' $s` | `match s with \| Regex @"v(\d+)" v -> v \| _ -> "0"` — the binding is typed, the miss arm is forced |
+| `if test -f $path` | `let ok = test -f $path \| succeeds` then `if ok then` |
+| `$status` | `cmd \| exitCode` (streams, reifies the code as `int`) |
+| `count $files` | `files \|> Seq.length` |
+| `function deploy; …; end` (`$argv`) | `let deploy target = …` — named, typed params instead of `$argv[1]` |
+| `for f in (cat list.txt); …; end` | `for f in File.read "list.txt" do …` |
+
+```weir
+let words = ["a b"; "c"]
+printf "<%s>" $@words
+
+let lines = $(printf "one\ntwo") |> Seq.map Str.toUpper
+lines |> Seq.iter print
+```
+
+That `printf` receives `a b` as ONE argument (then `c`) — the fish
+list rule, kept. The capture splits on newlines — the fish
+substitution rule, kept, and now typed.
+
+**The one thing that will catch you out:** fish expands an unset or
+empty variable to ZERO arguments and the command runs anyway; weir
+refuses the script before anything runs. `$x` is always exactly one
+argv word — an empty seq cannot vanish from argv, an unbound name is
+a check error, and a seq splices only through the explicit `$@x`.
+Where fish's flexibility silently changes a command's arity, weir
+makes the arity part of the program.
+
+```weir-error
+// fish: an unset $nope expands to nothing and echo runs bare;
+// weir: an unbound name is a check error before line one
+echo $nope
+```
+
+**Not here, and what to write instead:**
+
+- Universal variables (`set -U`) and interactive config — weir is a
+  script language, not your login shell; persistent config is a file
+  read at the boundary (`Env.load` / `Args.load` / `from json T`).
+- Autoloaded functions (`~/.config/fish/functions`) —
+  `import "./lib.weir" as Lib` names the dependency in the script.
+- `and` / `or` command chaining — a nonzero exit already raises when
+  the stream is forced, so sequential lines ARE the `and` chain; for
+  the boolean, reify with `cmd | succeeds`.
+- Abbreviations and `alias` — weir has no rewriting layer; a short
+  name is a `let`.
+- Globs expanding in argv — `Path.glob` is a function; splat a batch
+  with `git add $@(Path.glob "*.txt" |> Seq.force)`.
+
 ## Coming from F#
 
 Weir is F#-shaped on purpose — pipelines, records, unions, match,
@@ -121,6 +185,16 @@ equality and weir's binding glyph. (In weir,
 `0.1 == 0.2` is a check error either way: floats do not join `==` —
 `Float.near a b eps` is the idiom, because floats are finite-only
 here. See [GUIDE.md](GUIDE.md#rates-and-percentages-floats-finite-only).)
+
+`=` on collections is the other equality surprise, in the opposite
+direction: weir's `==` REFUSES seqs at check time, which reads as a
+limitation until you learn what F# was doing — `=` on a `seq<'T>`
+compiles and its answer depends on the RUNTIME type (structural if the
+object happens to be a list or array, REFERENCE equality for a
+computed seq: `Seq.map id [1;2] = Seq.map id [1;2]` is `false`).
+Refusing beats an answer that changes with provenance; compare a
+value you mean — `Seq.length`, a `Str.join`-ed string, or the
+element-wise check you actually intend.
 
 F#'s warnings are weir's errors: a non-exhaustive match, a discarded
 non-unit value, an unreachable arm below a catch-all, an off-by-one
