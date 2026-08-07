@@ -8986,6 +8986,44 @@ let httpTests =
                   "an existing query gets & not ?"
           } ]
 
+let windowsFindingsTests =
+    // the Windows hand-run's two message fixes [D:windows-findings] —
+    // neither is Windows-specific; Windows is just where they surfaced.
+    // Long messages pin as FRAGMENTS (FParsec rewraps).
+    let perrOf input =
+        match Weir.Parser.parseLine realResolver input with
+        | Error msg -> msg
+        | Ok _ -> failtest "expected a parse error"
+
+    testList
+        "Windows findings: two messages name the repair [D:windows-findings]"
+        [ test "a path-shaped escape (backslash + letter) names the verbatim-string repair" {
+              let m = perrOf "let p = \"C:\\Windows\""
+              Expect.stringContains m "is not an escape" "the diagnosis"
+              Expect.stringContains m "verbatim string" "the repair, named"
+              Expect.stringContains m "forward slashes" "the alternative"
+          }
+          test "a NON-letter invalid escape keeps the bare message (no hint on an ambiguous shape)" {
+              let m = perrOf "let p = \"a\\5b\""
+              Expect.stringContains m "any char in" "the bare expecting list"
+              Expect.isFalse (m.Contains "verbatim string") "no misfire"
+          }
+          test "a bare `let x =` says the binding has no value — no expecting list, no leaked gate label" {
+              let m = perrOf "let x ="
+              Expect.stringContains m "has no value" "the diagnosis"
+              Expect.stringContains m "right-hand side" "the repair"
+              Expect.isFalse (m.Contains "spine-only") "the internal gate label must not leak"
+          }
+          test "valid escapes and normal lets are unmoved" {
+              match Weir.Parser.parseLine realResolver "print \"a\\tb\"" with
+              | Ok _ -> ()
+              | Error e -> failtest $"valid escape must parse: {e}"
+
+              match Weir.Parser.parseLine realResolver "let x = 5 in x" with
+              | Ok _ -> ()
+              | Error e -> failtest $"normal let-in must parse: {e}"
+          } ]
+
 let sizeTests =
     let perr input =
         match Weir.Parser.parseExpr input with
@@ -10355,6 +10393,7 @@ let allTests =
           retryPollTests
           sigTests
           sizeTests
+          windowsFindingsTests
           secretTests
           httpTests
           dupTypeTests

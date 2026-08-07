@@ -105,6 +105,84 @@ for cols in (30, 80):
     if "55 : int" not in t:
         failures.append(f"wrapped line at width {cols} must edit and evaluate: {t[-300:]!r}")
 
+# --- 7b. CURSOR COLUMN at a wrap boundary [D:windows-findings] — the
+# column-N ambiguity: at width W, logical column W has two screen
+# positions; mid-line the true one is START of the next row, end-of-line
+# the wrap-PENDING last column. These assertions parse OUR OWN emitted
+# positioning escapes (deterministic — the "drivers lie about cursors"
+# law bans querying the DRIVER, not replaying what weir wrote): the tail
+# after the final \r is the last redraw's column move.
+def runraw(keys, cols=80):
+    d = tempfile.mkdtemp()
+    env = dict(os.environ)
+    env.update({"XDG_STATE_HOME": d + "/state", "XDG_CONFIG_HOME": d + "/cfg",
+                "PATH": "/usr/bin:/bin"})
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execve(WEIR, ["weir"], env)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, cols, 0, 0))
+    time.sleep(0.8)
+    for s, dl in keys:
+        os.write(fd, s.encode()); time.sleep(dl)
+    out = b""
+    for _ in range(50):
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if r:
+            try:
+                out += os.read(fd, 4096)
+            except OSError:
+                break
+    os.write(fd, b"\x03"); os.write(fd, b":q\r"); time.sleep(0.2)
+    return out
+
+def last_col_move(raw):
+    tail = raw.rsplit(b"\r", 1)[-1]
+    m = re.fullmatch(rb"\x1b\[(\d+)C", tail)
+    return int(m.group(1)) if m else (0 if tail == b"" else tail)
+
+for cols, boundary in ((30, 24), (40, 34)):  # (6+col) % cols == 0
+    # mid-line boundary: Right onto it must paint START of the next row (col 0)
+    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
+                 + [("\x1b[C", 0.05)] * boundary, cols=cols)
+    got = last_col_move(raw)
+    if got != 0:
+        failures.append(f"w={cols}: mid-line wrap boundary must paint col 0 of the next row, got {got!r}")
+    # one more Right: column 1 (adjacent positions differ by exactly one)
+    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
+                 + [("\x1b[C", 0.05)] * (boundary + 1), cols=cols)
+    got = last_col_move(raw)
+    if got != 1:
+        failures.append(f"w={cols}: one past the boundary must paint col 1, got {got!r}")
+    # Left back across: the mirror returns to col 0
+    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
+                 + [("\x1b[C", 0.05)] * (boundary + 1) + [("\x1b[D", 0.2)], cols=cols)
+    got = last_col_move(raw)
+    if got != 0:
+        failures.append(f"w={cols}: Left across the boundary must mirror to col 0, got {got!r}")
+    # END of line exactly at the boundary: wrap-PENDING — the last column,
+    # named explicitly (cols-1), never an off-screen col the terminal clamps
+    raw = runraw([("x" * boundary, 0.5)], cols=cols)
+    got = last_col_move(raw)
+    if got != cols - 1:
+        failures.append(f"w={cols}: exact-fill end-of-line must paint the pending col {cols-1}, got {got!r}")
+
+# --- 7c. completion keeps the tracked cursor [D:windows-findings]: Tab
+# with text AFTER the cursor shows the list, then typing continues at the
+# cursor, not end-of-line (value-asserted: the tail lands inside the parens)
+t, _ = run([('print ("a" |> Str.t)', 0.4), ("\x1b[D", 0.2),   # before the )
+            ("\t", 0.5),                                       # list (no insert)
+            ("oUpper", 0.3), ("\r", 0.6), (":q\r", 0.3)])
+if "\nA" not in t and "A\r" not in t:
+    failures.append(f"completion display must keep the cursor before the ): {t[-300:]!r}")
+
+# the common-prefix arm with trailing text: Str.sta -> inserts rtsWith,
+# cursor lands after the insertion, still inside the parens
+t, _ = run([('print (show ("ab" |> Str.sta))', 0.4), ("\x1b[D", 0.1), ("\x1b[D", 0.2),
+            ("\t", 0.5),                                       # completes startsWith
+            (' "a"', 0.3), ("\r", 0.6), (":q\r", 0.3)])
+if "true" not in t:
+    failures.append(f"common-prefix completion must leave the cursor after the insertion: {t[-300:]!r}")
+
 # --- 8. an UNCLOSED STRING submits (weir strings are single-line — more
 # input can never fix it; growing would trap the user; found when the
 # repl-color probe hung on `let s = @"raw` + Enter)

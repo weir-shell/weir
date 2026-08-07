@@ -406,14 +406,23 @@ let private intLit =
     |>> mkExpr
     .>> ws
 
-// the one escape decoder — plain strings and interp text share it
+// the one escape decoder — plain strings and interp text share it.
+// A backslash followed by a LETTER is overwhelmingly a Windows path
+// [D:windows-findings]: name the repair (the verbatim string), not just
+// the constraint — every Windows user hits this in their first hour.
+// Non-letter invalid escapes keep the bare expecting-list (a hint on an
+// ambiguous shape is worse than none).
 let private escapedChar =
     pchar '\\'
-    >>. (anyOf "\"\\nt"
-         |>> function
-             | 'n' -> '\n'
-             | 't' -> '\t'
-             | c -> c)
+    >>. ((anyOf "\"\\nt"
+          |>> function
+              | 'n' -> '\n'
+              | 't' -> '\t'
+              | c -> c)
+         <|> (lookAhead (satisfy System.Char.IsLetter)
+              >>= fun c ->
+                  failFatally
+                      $"'\\{c}' is not an escape — for a Windows path use a verbatim string: @\"C:\\path\" (forward slashes also work)"))
 
 let private stringChar =
     choice [ satisfy (fun c -> c <> '"' && c <> '\\'); escapedChar ]
@@ -1022,7 +1031,14 @@ let private letIn =
                           else
                               fail "block-let command RHS is spine-only" stream
 
-                  (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in"
+                  // a bare `let name =` with NOTHING after it gets its own
+                  // first-reached diagnosis [D:windows-findings] — without
+                  // this the report was a 12-item expecting list with the
+                  // spine-only gate's INTERNAL label leaking underneath as
+                  // a false "specific" diagnosis
+                  (followedBy eof
+                   >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
+                  <|> ((cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in")
                   >>= fun value ->
                       withAmbientName name (withExprParen false seqExpr)
                       |>> fun body ->
