@@ -8994,16 +8994,78 @@ let httpTests =
           }
           test "Http.withQuery percent-encodes keys and values; withQuery != query the constructor [D:http-s2]" {
               Expect.equal
-                  (run "Http.withQuery \"http://x/s\" [(\"q\", \"a b\"); (\"t\", \"x&y\")]")
+                  (run "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\"); (\"t\", \"x&y\")]")
                   (VStr "http://x/s?q=a%20b&t=x%26y")
                   "spaces and ampersands are encoded, not path-escaping"
 
-              Expect.equal (run "Http.withQuery \"http://x\" []") (VStr "http://x") "no params, no ?"
+              Expect.equal (run "\"http://x\" |> Http.withQuery []") (VStr "http://x") "no params, no ?"
 
               Expect.equal
-                  (run "Http.withQuery \"http://x?a=1\" [(\"b\", \"2\")]")
+                  (run "\"http://x?a=1\" |> Http.withQuery [(\"b\", \"2\")]")
                   (VStr "http://x?a=1&b=2")
                   "an existing query gets & not ?"
+          } ]
+
+let sizedFindingsTests =
+    // the sized findings [D:sized-findings]: the read side's weir shapes
+    // (fragments — FParsec never touches these but the fragment habit
+    // holds), Dir.copy's refusals, withQuery's data-last order
+    testList
+        "sized findings: fs read shapes, Dir.copy, withQuery [D:sized-findings]"
+        [ test "File.read failure shapes are weir's, the path named — never raw .NET" {
+              let m1 =
+                  try
+                      run "File.read \"/nope/missing.txt\" |> Seq.length" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m1 "File.read: no such file: /nope/missing.txt" "not-found"
+              Expect.isFalse (m1.Contains "Could not find") "no raw .NET words"
+
+              let m2 =
+                  try
+                      run "File.read \"/tmp\" |> Seq.length" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m2 "File.read: /tmp is a directory" "is-a-directory"
+          }
+          test "File.write to a missing parent names the directory (the delete side's shape)" {
+              let m =
+                  try
+                      run "File.write \"/nope/deep/x.txt\" [\"a\"]" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "File.write: no such directory: /nope/deep" ""
+          }
+          test "Dir.copy refuses per the family rule; recursive by nature" {
+              let m1 =
+                  try
+                      run "Dir.copy \"/nope\" \"/tmp/x-sfx\"" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m1 "Dir.copy: no such directory: /nope" ""
+
+              let m2 =
+                  try
+                      run "Dir.copy \"/tmp\" \"/etc\"" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m2 "Dir.copy: destination exists: /etc" ""
+          }
+          test "Http.withQuery is data-last: the url pipes in" {
+              Expect.equal
+                  (run "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
+                  (VStr "http://x/s?q=a%20b")
+                  "url |> withQuery params"
           } ]
 
 let windowsFindingsTests =
@@ -10414,6 +10476,7 @@ let allTests =
           sigTests
           sizeTests
           windowsFindingsTests
+          sizedFindingsTests
           secretTests
           httpTests
           dupTypeTests

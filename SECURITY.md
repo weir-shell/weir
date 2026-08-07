@@ -133,7 +133,7 @@ it, by design):
   - **URL construction is the author's job.** There is no shell, so
     there is no injection to make unrepresentable — but
     `$"{base}/{userInput}"` can still escape a path with `../` or a
-    query. `Http.withQuery base [(k, v)]` percent-encodes the QUERY
+    query. `url |> Http.withQuery [(k, v)]` percent-encodes the QUERY
     half (a space or `&` cannot break the url); the PATH half stands —
     weir builds no path for you, and a `Http.url base [segments]`
     helper is parked.
