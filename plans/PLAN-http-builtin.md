@@ -26,12 +26,24 @@ closed:**
   analogue; `complete` is redundant because `HttpResponse` IS the
   record. The clean generalization ("a reifier attaches to a value
   with a success predicate") needs a RUNTIME-witnessed class, which
-  breaks weir's closed/erased Eq/Show/Ord invariant (a foundational
-  change, its own bless). The cheap version is a hard-coded
-  `Completed`+`HttpResponse` pair that saves one line over
-  `resp.status >= 400`. **So it is deferred because it buys almost
-  nothing** — `HttpResponse` already exposes `.status`, and `Http.fetch`
-  (session 2) covers the raise-on-non-2xx shorthand. If a
+  breaks weir's closed/erased Eq/Show/Ord invariant — a language-
+  substrate change, **weeks**, its own bless. The cheap version is a
+  hard-coded `Completed`+`HttpResponse` pair, **~a day**, itemized:
+  a new `foldChain` branch producing a reify-only spine for the value
+  case (`succeeds`/`orFail` only); two eval impls that runtime-dispatch
+  on the record tag (`Completed` → exit code, `HttpResponse` → status);
+  a bespoke checker arm accepting exactly those two types; a
+  pipe-glyph ruling (reifiers are `|`, value pipelines are `|>`, so
+  `… |> Http.send | succeeds` mixes glyphs in a way the RHS-decides
+  rule has no answer for today); and the pins. Two further costs the
+  day-figure hides: `succeeds` is not a nameable value (a pure parse
+  marker — `xs |> succeeds` is `unbound`), so the value form must be
+  INVENTED, not reused; and the "law with two customers" is really a
+  two-element hard-coded list at the value domain — every future
+  customer is another entry, not a free generalization. It saves one
+  line over `resp.status >= 400`. **So it is deferred because it buys
+  almost nothing** — `HttpResponse` already exposes `.status`, and
+  `Http.fetch` covers the raise-on-non-2xx shorthand. If a
   success-predicate law ever earns a bless, `Completed` and
   `HttpResponse` are its two customers.
 - **`Map` PARKED** (headers stay `seq<string * string>`). Two standing
