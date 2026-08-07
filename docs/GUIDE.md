@@ -339,8 +339,8 @@ let items = Http.fetch $"{api}/items" |> from json Item
 definition, so `retry attempts=5` around an `Http.query` is safe by the
 method's own guarantee — where the same wrapper around a POST is a
 correctness question you must answer. (Almost nothing serves QUERY yet,
-so expect 405 from most endpoints.) For query STRINGS, `Http.withQuery
-base [("q", term)]` percent-encodes — a space or `&` cannot break the
+so expect 405 from most endpoints.) For query STRINGS, `base |> Http.withQuery
+[("q", term)]` percent-encodes — a space or `&` cannot break the
 url (that is the query half of the URL-construction non-claim; the path
 half still stands). TLS verification is on by default; `Http.send { …
 with insecure = true }` turns it off for ONE request (self-signed
@@ -693,8 +693,17 @@ always single argv entries, never re-split, so there is no injection
 class. No glob expansion (`Path.glob` is the function spelling), no
 `&&`, no `$VAR` expansion, no redirects — `>` and `>>` pass through as
 literal argv with a warning naming the weir spelling
-(`cmd |> File.write "out.txt"` / `File.append`). For bash semantics,
-run bash: `sh -c "the bash line"`.
+(`cmd |> File.write "out.txt"` / `File.append` — the fenced example
+below runs in CI, because this exact spelling has failed twice as
+unchecked prose). For bash semantics, run bash:
+`sh -c "the bash line"`.
+
+```weir
+// redirection: a function on the right takes |> (the pipe rule)
+within tmp d
+    echo redirected |> File.write $"{d}/out.txt"
+    File.read $"{d}/out.txt" |> Seq.iter print
+```
 
 One footgun rides along with that escape hatch: inside the quoted
 line, `$w` is SH'S variable, not weir's binding. Weir passes the

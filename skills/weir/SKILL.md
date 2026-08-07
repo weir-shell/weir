@@ -242,7 +242,7 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (get/post/put/delete/patch/head/options/query), each equal to `{
   Http.defaults with method = M; url = u }`. `Http.fetch u : seq<string>`
   is the raising GET shorthand (body only, raises on non-2xx — the pair
-  to send, which binds it). `Http.withQuery base [(k, v)]` percent-encodes
+  to send, which binds it). `url |> Http.withQuery [(k, v)]` percent-encodes
   a query string. `Http.query` is the QUERY method (idempotent, so
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
@@ -520,12 +520,20 @@ print x
   expansion — those
   characters pass through as literal argv (`echo a && b` prints
   "a && b"); `>`/`>>` additionally WARN with the File spelling
-  (redirection is `cmd |> File.write "out.txt"` / `File.append`).
+  (redirection is the fenced block below / `File.append`).
   For bash semantics: `sh -c "the bash line"` (a command
   line; streams, completes, pipes like any command). Inside that
   quoted line `$w` is SH's variable, not weir's binding — silently
   empty, not an error; splice weir values by interpolating first
   (`sh -c $"echo got-{w}"`).
+
+```weir
+// the redirection idiom — the spelling that failed TWICE in prose
+// [D:sized-findings]: a function on the right takes |>, never |
+within tmp d
+    echo redirected |> File.write $"{d}/out.txt"
+    File.read $"{d}/out.txt" |> Seq.iter print
+```
 - Nonzero exit RAISES when the stream is forced. The exit-code
   reifiers (complete's family, single external segment, one law:
   output goes where the meaning goes): `cmd | succeeds` reifies to

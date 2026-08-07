@@ -1495,12 +1495,46 @@ let private envMembers: (string * Ty * Value) list =
       )
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 
+// the read-side guards [D:sized-findings]: the delete side pre-checked
+// with weir-shaped messages while the read side leaked raw .NET
+// exceptions (FileNotFoundException's words, not weir's) — the same
+// split the floats session refused to pin. Pre-check the common
+// failures with the DELETE side's shapes (the path named, no second
+// family); wrap the residual (permissions, exotic IO) so no raw .NET
+// message reaches a user. Encoding never throws here — ReadAllLines
+// substitutes replacement chars, so is-a-directory / not-found /
+// permission are the whole enumerable surface.
+let private readGuard (op: string) (r: string) : unit =
+    if System.IO.Directory.Exists r then
+        failwith $"{op}: {r} is a directory"
+    elif not (File.Exists r) then
+        failwith $"{op}: no such file: {r}"
+
+let private writeGuard (op: string) (r: string) : unit =
+    if System.IO.Directory.Exists r then
+        failwith $"{op}: {r} is a directory"
+    else
+        let parent = System.IO.Path.GetDirectoryName r
+
+        if parent <> "" && not (System.IO.Directory.Exists parent) then
+            failwith $"{op}: no such directory: {parent}"
+
+let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
+    try
+        f ()
+    with
+    | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {r}"
+    | :? System.IO.IOException as e -> failwith $"{op}: cannot access {r} — {e.Message}"
+
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
       TFun(TStr, TSeq TStr),
       VBuiltin(fun v ->
           match v with
-          | VStr path -> VSeq(File.ReadAllLines(Session.resolve path) |> Seq.map VStr)
+          | VStr path ->
+              let r = Session.resolve path
+              readGuard "File.read" r
+              VSeq(ioGuarded "File.read" r (fun () -> File.ReadAllLines r) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
       // a token in a file is a real pattern [D:secret]: a mounted k8s /
       // docker secret IS a file. ONE member (a family would be parked):
@@ -1510,7 +1544,10 @@ let private fileMembers: (string * Ty * Value) list =
       TFun(TStr, TSecret),
       VBuiltin(fun v ->
           match v with
-          | VStr path -> VSecret(File.ReadAllText(Session.resolve path).TrimEnd('\n', '\r'))
+          | VStr path ->
+              let r = Session.resolve path
+              readGuard "File.readSecret" r
+              VSecret((ioGuarded "File.readSecret" r (fun () -> File.ReadAllText r)).TrimEnd('\n', '\r'))
           | v -> unreachable $"the checker rejects 'File.readSecret' on {formatValue v}")
       "write",
       TFun(TStr, TFun(TSeq TStr, TUnit)),
@@ -1518,7 +1555,9 @@ let private fileMembers: (string * Ty * Value) list =
           VBuiltin(fun linesV ->
               match pathV, linesV with
               | VStr path, VSeq lines ->
-                  File.WriteAllLines(Session.resolve path, lines |> Seq.map asString)
+                  let r = Session.resolve path
+                  writeGuard "File.write" r
+                  ioGuarded "File.write" r (fun () -> File.WriteAllLines(r, lines |> Seq.map asString))
                   VUnit
               | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
       "append",
@@ -1527,7 +1566,9 @@ let private fileMembers: (string * Ty * Value) list =
           VBuiltin(fun linesV ->
               match pathV, linesV with
               | VStr path, VSeq lines ->
-                  File.AppendAllLines(Session.resolve path, lines |> Seq.map asString)
+                  let r = Session.resolve path
+                  writeGuard "File.append" r
+                  ioGuarded "File.append" r (fun () -> File.AppendAllLines(r, lines |> Seq.map asString))
                   VUnit
               | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
       "exists",
@@ -1757,7 +1798,31 @@ let private dirMembers: (string * Ty * Value) list =
           if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
               failwith $"Dir.move: destination exists: {dst}"
 
-          System.IO.Directory.Move(src, dst)) ]
+          System.IO.Directory.Move(src, dst))
+      // copying a directory MEANS copying its contents — there is no
+      // non-recursive reading, so the delete/deleteAll naming split does
+      // not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
+      // overwrite rule unchanged: refuse an existing destination;
+      // Dir.deleteAll is the deliberate replace spelling.
+      "copy",
+      TFun(TStr, TFun(TStr, TUnit)),
+      fsStr2 "Dir.copy" (fun src dst ->
+          if not (System.IO.Directory.Exists src) then
+              failwith $"Dir.copy: no such directory: {src}"
+
+          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
+              failwith $"Dir.copy: destination exists: {dst}"
+
+          let rec go (s: string) (d: string) =
+              System.IO.Directory.CreateDirectory d |> ignore
+
+              for f in System.IO.Directory.EnumerateFiles s do
+                  System.IO.File.Copy(f, System.IO.Path.Combine(d, System.IO.Path.GetFileName f))
+
+              for sub in System.IO.Directory.EnumerateDirectories s do
+                  go sub (System.IO.Path.Combine(d, System.IO.Path.GetFileName sub))
+
+          go src dst) ]
 
 // ---- Float [D:floats]: finite-only; no implicit widening -----------
 let private floatFn (name: string) (f: float -> Value) : Value =
@@ -2057,8 +2122,11 @@ let private httpFetchImpl: Value =
 // and value: `$"{base}/search?q={term}"` can escape a path or break on a
 // raw `&`; this cannot. (The non-claim's PATH half still stands.)
 let private httpWithQueryImpl: Value =
-    VBuiltin(fun baseV ->
-        VBuiltin(fun paramsV ->
+    // DATA-LAST [D:sized-findings]: the URL is the pipeline operand
+    // (`url |> Http.withQuery [(k, v)]`) — the audit found it
+    // operand-first, flipped while Http is young enough to be free
+    VBuiltin(fun paramsV ->
+        VBuiltin(fun baseV ->
             match baseV, paramsV with
             | VStr baseUrl, VSeq items ->
                 let enc (x: string) = System.Uri.EscapeDataString x
@@ -2084,7 +2152,7 @@ let private httpMembers: (string * Ty * Value) list =
     [ "defaults", TNamed("HttpRequest", []), httpDefaults
       "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl
       "fetch", TFun(TStr, TSeq TStr), httpFetchImpl
-      "withQuery", TFun(TStr, TFun(TSeq(TTuple [ TStr; TStr ]), TStr)), httpWithQueryImpl
+      "withQuery", TFun(TSeq(TTuple [ TStr; TStr ]), TFun(TStr, TStr)), httpWithQueryImpl
       "get", ctorTy, httpCtor "Get"
       "post", ctorTy, httpCtor "Post"
       "put", ctorTy, httpCtor "Put"
@@ -2531,7 +2599,15 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "let d = Path.newTempDir () in Dir.move d $\"{d}-m\" ; Dir.delete $\"{d}-m\"")
               None
            |> named [ "src"; "dst" ])
-          "File.read", (bd "Read a file's lines lazily." None None |> named [ "path" ])
+          "Dir.copy",
+          (bd
+              "Copy a directory and its contents — (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory MEANS its contents: there is no non-recursive form."
+              (Some "let d = Path.newTempDir () in Dir.copy d $\"{d}-c\" ; Dir.deleteAll d ; Dir.deleteAll $\"{d}-c\"")
+              None
+           |> named [ "src"; "dst" ])
+          "File.read",
+          (bd "Read a file's lines (eager — the whole file reads at the call)." None None
+           |> named [ "path" ])
           "File.readSecret",
           (bd
               "Read a file's whole content as a Secret (a mounted k8s/docker secret is a file); trailing newlines are trimmed."
@@ -2665,10 +2741,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "url" ])
           "Http.withQuery",
           (bd
-              "Append a percent-encoded query string to a url: keys and values are escaped, so a space or `&` cannot break the url. (NOT `Http.query` the method constructor.)"
-              (Some "Http.withQuery \"http://x/s\" [(\"q\", \"a b\")]")
+              "Append a percent-encoded query string to a url — params first, the url last (data-last: `url |> Http.withQuery [(k, v)]`); keys and values are escaped, so a space or `&` cannot break the url. (NOT `Http.query` the method constructor.)"
+              (Some "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
               None
-           |> named [ "base"; "params" ])
+           |> named [ "params"; "base" ])
 
           // ---- Size: bytes as a type [D:size] --------------------------
           "Size.bytes",

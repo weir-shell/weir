@@ -1,5 +1,54 @@
 # Spike Notes
 
+## the sized findings, landed (2026-08-07)
+
+Five items from the sweep's sizing, ordered by user visibility, and
+the visible one first: File's read side now fails in weir's words.
+read/readSecret/write/append leaked raw .NET exception text — "Could
+not find a part of the path" where the delete side said "no such
+file: {path}". The fix is two pre-check guards reusing the delete
+side's exact shapes plus a residual wrapper (permission denied named;
+exotic IO prefixed with op and path), 4 members fixed of 13
+filesystem-touching examined — the other 9 were already weir-shaped.
+Encoding turned out not to be a failure mode at all (ReadAllLines
+substitutes replacement chars), so not-found / is-a-directory /
+permission is the whole enumerable surface. Found in passing:
+File.read's doc claimed "lazily" while ReadAllLines is eager — trued.
+
+Dir.copy landed with the family's overwrite rule and one sentence
+that prevents a future naming debate: copying a directory MEANS
+copying its contents — there is no non-recursive reading — so the
+delete/deleteAll split does not repeat and nobody should propose
+Dir.copyAll.
+
+The lookup-spelling diagnosis went exactly as the plan predicted:
+one row, zero renames. Env.get's bare noun is defensible because no
+asserting twin exists to distinguish it from (and the row states
+that if one ever lands, the Option one takes try- at that moment);
+rmatch keeps its domain name because regex-returns-Option is the
+universal expectation. The rule is now stated as a prediction
+procedure in [D:lookup-spellings].
+
+Http.withQuery was confirmed operand-first in the source and flipped
+while Http is young enough for the flip to be free: params first,
+url last, `url |> Http.withQuery [(k, v)]` — three unit pins and four
+doc sites moved, named in the row.
+
+The two mechanical guards: the conflict-marker gate runs at the top
+of e2e (any diff3 marker at line start in a tracked file fails — one
+grep, and the |||||||-leftover class from the rebase resolutions
+cannot recur), and the redirection idiom got its fenced twin in both
+SKILL and GUIDE after failing twice as unchecked prose — the blocks
+run in CI now (94 total), and the prose points at them. The general
+prescription is recorded: a spelling that fails twice in prose gets
+a fenced twin.
+
+The two durable records from the sweep are now findable rows rather
+than paragraphs in a session report: [D:fail-unit] (the decline with
+its mechanism — the unsolved-var surface and the dead-value
+tripwires) and the 178-row walk's search strategy inside
+[D:sized-findings] (grep source-only teaching messages first).
+
 ## the maintenance sweep, second edition (2026-08-07)
 
 Findings-first with denominators, run as five read-only agents with

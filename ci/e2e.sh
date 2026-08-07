@@ -14,6 +14,18 @@ fail() {
     exit 1
 }
 
+# conflict-marker gate [D:sized-findings]: three leftover diff3 `|||||||`
+# labels survived rebase resolutions into merged ledgers (the resolve
+# regex captured up to `=======`, which includes the base-section label).
+# One grep and the class cannot recur: any marker at line start in a
+# tracked file fails.
+if git -C "$(dirname "$0")/.." ls-files -z 2>/dev/null \
+    | xargs -0 grep -lE '^(<{7}|\|{7}|={7}|>{7})([^=<>|]|$)' 2>/dev/null | grep -q .; then
+    bad=$(git -C "$(dirname "$0")/.." ls-files -z | xargs -0 grep -lE '^(<{7}|\|{7}|={7}|>{7})([^=<>|]|$)' 2>/dev/null)
+    fail "conflict markers in tracked files: $bad"
+fi
+echo "e2e ok: no conflict markers in tracked files"
+
 # BSD date has no %N — millisecond clock via python3 there (python3 is
 # already a harness dependency via tests/lib). The overhead (~30ms) is
 # fine for e2e's generous wall-clock bounds; timing.sh's tight gates
