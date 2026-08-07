@@ -1,5 +1,52 @@
 # Spike Notes
 
+## the full DECISIONS-to-pins walk (2026-08-07)
+
+All 182 rows categorized: 159 pinned, 16 partial, 0 unpinned, 7
+unpinnable — 91% of the pinnable rows fully pinned and not one row
+with nothing asserting it. The number the sample promised, now with
+the whole denominator behind it.
+
+The strategy's hit-rate, since the next audit needs it: the grep pass
+came first and it paid. 249 message strings extracted from source, 26
+genuinely source-only after hand-verification — and writing those
+pins up front (including `command failed with exit code {n}`, the
+set-e analogue whose raise was pinned but whose words never were)
+meant the four row-walkers found almost no message-shaped misses
+left. What they found instead was exactly what the plan predicted the
+grep cannot see: absences (renamed members gone without hints, the
+dropped builtins' pure subtraction, parser reject sides), exact codes
+(exit 4 → rc 4; fail → rc exactly 1), and two rows independently
+converging on the same hole — File.readSecret had zero test coverage
+anywhere. The grep-then-walk recipe stands: the grep finds the
+message-shaped majority cheaply, the walk covers the rest.
+
+The walk's second finding is about the ledger itself: the 16 partials
+cluster by era. Rows 2-46 carry seven of them; rows 91-134 carry
+none. The pin-site-citing habit that began around 07-26 is measurably
+load-bearing — where the story column cites its pins, the pins are
+real (the sample said this; the full walk confirms it), and where the
+row predates the habit, the partial rate quadruples.
+
+About thirty cheap pins were written in-session; the sized-not-written
+list, for future sittings: the one-pipeline three-consumer parity
+harness (one two-error script through check --json, the runner, and
+LSP didOpen, asserting the identical code/line/col set), the LSP
+formatting-request probe, the LSP recheck-latency bound, TERM=dumb and
+per-stream diagnostic color under a pty, the dup-type import-half and
+REPL-note pins, the assembly-recovery ten-line cap — and one that is
+more than a missing pin: the fuzz harness's "equality detector graded
+positive control" has no surviving artifact in the tree. The claim's
+evidence vanished; restoring it (a deliberately output-changing
+transform that must FAIL invariant 1) is the highest-value item on
+the sized list.
+
+Zero defects: no row's message names a renamed member, and every
+superseded row traces to a later rowed decision whose retirement is
+itself pinned. The seven unpinnable rows are the architecture and
+process rulings a test cannot see, counted separately so the ratio
+stays honest.
+
 ## the sized findings, landed (2026-08-07)
 
 Five items from the sweep's sizing, ordered by user visibility, and
