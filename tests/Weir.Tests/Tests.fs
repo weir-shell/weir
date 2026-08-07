@@ -2154,6 +2154,13 @@ let commandModeTests =
               | Error msg -> Expect.stringContains msg "'|' chains commands; pipe expressions with '|>'" ""
               | Ok _ -> failtest "cmd | expr must error under the pipe rule"
           }
+          test "'|>' before a PROGRAM teaches the reverse direction — the RHS decides [D:pipe-rhs-decides]" {
+              // the rejecting half of the symmetric rule: the message lived
+              // only in the parser until the maintenance sweep's M4 sample
+              match Weir.Parser.parseLine cmdResolver "[\"x\"] |> cat" with
+              | Error msg -> Expect.stringContains msg "'|>' applies functions; feed a program with '|'" ""
+              | Ok _ -> failtest "expr |> program must error under the pipe rule"
+          }
           test "pipe accepts |> in command mode too" {
               expectCmd "git log |> first 5" "((cmd git \"log\") |> (first 5))"
           }
@@ -3436,6 +3443,10 @@ let chooseTests =
           test "qualified-only: bare choose does not resolve" {
               let terr = checkErr "[1] |> choose (fun x -> Some x)"
               Expect.stringContains terr.Message "choose" ""
+          }
+          test "qualified-only: bare append does not resolve [D:seq-append]" {
+              let terr = checkErr "[1] |> append [2]"
+              Expect.stringContains terr.Message "append" ""
           }
           test "non-Option chooser rejects at check" {
               let terr = checkErr "[1] |> Seq.choose (fun x -> x)"
@@ -7037,6 +7048,15 @@ let scannerTests =
               Expect.isTrue (Weir.Script.retiredDistrictMarker "!targetEnv") "env spelling detected"
               Expect.isFalse (Weir.Script.retiredDistrictMarker "echo hello!") "a trailing ! word is not the marker"
               Expect.isFalse (Weir.Script.retiredDistrictMarker "!e(git st)") "sigil forms stay"
+
+              // the TEACHES half, observed at the ASSEMBLER (the maintenance
+              // sweep's M5 found only the predicate asserted — if assemble
+              // stopped consulting it, this test still passed)
+              match Weir.Script.assemble [ 1, "if c then !"; 2, "    git pull" ] with
+              | Error e ->
+                  Expect.stringContains e "the line-end ! district retired" "the teaching fires"
+                  Expect.stringContains e "within env vars" "and names the env-overlay repair"
+              | Ok _ -> failtest "a retired marker must be an assembly error"
           }
           test "classifyPiece: env sigil heads count as bang sigils in districts" {
               Expect.isTrue (Weir.Script.classifyPiece "!e(git st)").IsBangSigil ""

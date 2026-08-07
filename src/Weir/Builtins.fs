@@ -226,7 +226,7 @@ let private toListImpl: Value =
         | VSeq items ->
             let materialized = List.ofSeq items
             VSeq(materialized :> seq<Value>)
-        | v -> unreachable $"the checker rejects 'toList' on {formatValue v}")
+        | v -> unreachable $"the checker rejects 'force' on {formatValue v}")
 
 let completedDef: RecordDef =
     { Name = "Completed"
@@ -760,7 +760,7 @@ let private defaultToImpl: Value =
             match opt with
             | VUnion("Some", Some v) -> v
             | VUnion("None", None) -> fallback
-            | v -> unreachable $"the checker rejects 'defaultTo' on {formatValue v}"))
+            | v -> unreachable $"the checker rejects 'defaultValue' on {formatValue v}"))
 
 let private defaultWithImpl: Value =
     VBuiltin(fun f ->
@@ -1766,6 +1766,33 @@ let private floatFn (name: string) (f: float -> Value) : Value =
         | VFloat x -> f x
         | v -> unreachable $"the checker rejects 'Float.{name}' on {formatValue v}")
 
+// the X.parse/X.tryParse pair builder [D:maintenance-2]: three families
+// (Float, Size, Duration) each spelled this 18-line pair with drift
+// (some used the vSome/vNone helpers, some VUnion literally) — the
+// dedupe re-run collapsed them onto one shape. parse RAISES with
+// "{label}.parse: {e}"; tryParse wraps Option. (The toInt/fromBase64
+// pairs stay separate: their message shapes differ.)
+let private parsePairImpl (label: string) (parser: string -> Result<'a, string>) (ctor: 'a -> Value) =
+    let parseImpl =
+        VBuiltin(fun v ->
+            match v with
+            | VStr s ->
+                (match parser s with
+                 | Ok x -> ctor x
+                 | Error e -> failwith $"{label}.parse: {e}")
+            | v -> unreachable $"the checker rejects '{label}.parse' on {formatValue v}")
+
+    let tryImpl =
+        VBuiltin(fun v ->
+            match v with
+            | VStr s ->
+                (match parser s with
+                 | Ok x -> VUnion("Some", Some(ctor x))
+                 | Error _ -> VUnion("None", None))
+            | v -> unreachable $"the checker rejects '{label}.tryParse' on {formatValue v}")
+
+    parseImpl, tryImpl
+
 let private floatMembers: (string * Ty * Value) list =
     [ "ofInt",
       TFun(TInt, TFloat),
@@ -1798,24 +1825,8 @@ let private floatMembers: (string * Ty * Value) list =
                       | VFloat eps -> VBool(abs (a - b) <= eps)
                       | v2 -> unreachable $"the checker rejects 'Float.near' on {formatValue v2}")
               | v -> unreachable $"the checker rejects 'Float.near' on {formatValue v}"))
-      "parse",
-      TFun(TStr, TFloat),
-      VBuiltin(fun v ->
-          match v with
-          | VStr str ->
-              (match parseFloat str with
-               | Ok f -> VFloat f
-               | Error e -> failwith $"Float.parse: {e}")
-          | v -> unreachable $"the checker rejects 'Float.parse' on {formatValue v}")
-      "tryParse",
-      TFun(TStr, TNamed("Option", [ TFloat ])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr str ->
-              (match parseFloat str with
-               | Ok f -> VUnion("Some", Some(VFloat f))
-               | Error _ -> VUnion("None", None))
-          | v -> unreachable $"the checker rejects 'Float.tryParse' on {formatValue v}") ]
+      "parse", TFun(TStr, TFloat), fst (parsePairImpl "Float" parseFloat VFloat)
+      "tryParse", TFun(TStr, TNamed("Option", [ TFloat ])), snd (parsePairImpl "Float" parseFloat VFloat) ]
 
 // ---- Size [D:size]: integer bytes; decimals only in text -----------
 let private sizeMembers: (string * Ty * Value) list =
@@ -1831,24 +1842,8 @@ let private sizeMembers: (string * Ty * Value) list =
           match v with
           | VSize b -> VInt b
           | v -> unreachable $"the checker rejects 'Size.toBytes' on {formatValue v}")
-      "parse",
-      TFun(TStr, TSize),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              (match parseSize s with
-               | Ok b -> VSize b
-               | Error e -> failwith $"Size.parse: {e}")
-          | v -> unreachable $"the checker rejects 'Size.parse' on {formatValue v}")
-      "tryParse",
-      TFun(TStr, TNamed("Option", [ TSize ])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              (match parseSize s with
-               | Ok b -> VUnion("Some", Some(VSize b))
-               | Error _ -> VUnion("None", None))
-          | v -> unreachable $"the checker rejects 'Size.tryParse' on {formatValue v}") ]
+      "parse", TFun(TStr, TSize), fst (parsePairImpl "Size" parseSize VSize)
+      "tryParse", TFun(TStr, TNamed("Option", [ TSize ])), snd (parsePairImpl "Size" parseSize VSize) ]
 
 // ---- Duration [D:duration]: integer ms; decimals only in text ------
 let private durCtor (name: string) (mult: int64) : Value =
@@ -1877,24 +1872,8 @@ let private durationMembers: (string * Ty * Value) list =
           match v with
           | VDur n -> VFloat(float n / 1000.0)
           | v -> unreachable $"the checker rejects 'Duration.toSeconds' on {formatValue v}")
-      "parse",
-      TFun(TStr, TDur),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              (match parseDurationMs s with
-               | Ok n -> VDur n
-               | Error e -> failwith $"Duration.parse: {e}")
-          | v -> unreachable $"the checker rejects 'Duration.parse' on {formatValue v}")
-      "tryParse",
-      TFun(TStr, TNamed("Option", [ TDur ])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              (match parseDurationMs s with
-               | Ok n -> VUnion("Some", Some(VDur n))
-               | Error _ -> VUnion("None", None))
-          | v -> unreachable $"the checker rejects 'Duration.tryParse' on {formatValue v}")
+      "parse", TFun(TStr, TDur), fst (parsePairImpl "Duration" parseDurationMs VDur)
+      "tryParse", TFun(TStr, TNamed("Option", [ TDur ])), snd (parsePairImpl "Duration" parseDurationMs VDur)
       // the one consumer worth landing with the type — module-qualified
       // so the coreutils sleep is NEVER shadowed (bindings-beat-PATH
       // would flip `sleep 5`'s meaning)
@@ -3013,7 +2992,7 @@ let private printImpl: Value =
         | (VStr _ | VInt _ | VFloat _ | VBool _) as scalar ->
             System.Console.WriteLine(scalarString "print argument" scalar)
             VUnit
-        // unit prints NOTHING [D:exit-reifiers] — the !()/district
+        // unit prints NOTHING [D:exit-reifiers] — the !() sigil
         // desugar's interior may be unit (| orFail)
         | VUnit -> VUnit
         | v -> unreachable $"the checker rejects 'print' on {formatValue v}")

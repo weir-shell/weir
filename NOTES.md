@@ -1,5 +1,67 @@
 # Spike Notes
 
+## the maintenance sweep, second edition (2026-08-07)
+
+Findings-first with denominators, run as five read-only agents with
+every fix applied serially in one checkout — the shared-tree collision
+class from the fork era made that split the safe one. The
+denominators: 62 comments, 34 quoted messages, 8 retired-name
+patterns, ~180 dedupe cells, 121 members across 11 families, 30 of
+178 DECISIONS rows, 20 pins from a 285-pool, ~411 prose spellings
+checked of ~474 found, ~15k prose lines de-slopped.
+
+The headline is Movement 4's ratio: 93% of sampled DECISIONS rows are
+pinned (28/2/0), and both partials were the same class — the
+REJECTING half of a symmetric rule, where the accepted direction got
+its pin and the teaching message lived only in the parser. If the
+full 178-row walk ever runs (sized: ~6x this, ~10-15 expected misses),
+grep for source-only teaching messages first. The reverse cross-check
+found exactly one dangling D-key citation in eight test surfaces,
+which says the citation discipline held.
+
+The find nobody planned: three leftover diff3 `|||||||` marker lines
+in NOTES and DECISIONS, from the rebase resolutions — the resolve
+regex captured up to `=======`, which includes the base-section label.
+Content was verified un-duplicated before removing the markers (each
+section and row exists exactly once); the damage was three stray
+lines, not lost or doubled records. The rebase-resolution scripts
+should match the diff3 shape explicitly next time.
+
+The quality verdicts, briefly. The quoted-message walk (the item the
+movement was amended for): 30 of 34 verbatim, and the ledger's
+pin-site citations checked out real in every sampled case — the
+ledgers are trustworthy where they cite. The 20-pin sample: 19 sound,
+zero spelling-pins — message-substring pins are MEANING pins in this
+tree because the wording is the deliverable; the one weak pin
+(asserting a routing predicate while its title claimed the assembler
+teaches) now observes the message. The de-slop pass: almost no slop —
+zero throat-clearing, zero tic vocabulary, zero intent-narrating
+comments in ~3400 comment lines; the one habit was the ledgers
+grading their own work ("sharpest" ×9), and ten delete-only cuts
+covered everything that could be cut without rewording a finding.
+
+Prose spellings confirmed the coming-from page's own warning about
+unexecuted surfaces: all six failures were in prose, four of them
+docs lagging a retirement or a later guard (the skill file still
+taught the whole line-end-`!` block; SEMANTICS' generic-declaration
+example was `type Option<'a>`, which the builtin-redeclare guard now
+rejects), and two the recurring `cmd | function` pipe class — the
+SKILL File.write bullet was the second verbatim recurrence of a
+failure found once before, which argues the class needs its fenced
+twin some day.
+
+Sized and not fixed, for future rulings: File's read side raises raw
+.NET exceptions where its delete side raises weir-shaped messages
+(the strongest intra-family split the shape audit found);
+Option-returning lookups are spelled three ways (tryX, bare Env.get,
+domain-named rmatch); Http.withQuery is operand-first; Dir.copy is
+missing where File has both. And the `fail` ruling stands as found:
+unit-typed on purpose per the existing Builtins comment — going
+polymorphic is one line of type but opens the unsolved-var surface
+(`let x = fail "m"` generalizing to `forall a. a` against the class
+solver, untested) and deletes the dead-value tripwires; `fail "x" ; 0`
+stays the taught idiom.
+
 ## the Windows hand-run's findings: banked, and four fixes (2026-08-06)
 
 The confirmations first, banked so nothing re-tests them: the 2D
@@ -143,7 +205,6 @@ Session note: a concurrent fork was mid-flight in the same tree
 scoped to its own files and the one unit failure in the full run is
 that fork's in-progress pin, not this session's.
 
-||||||| parent of 6af8d91 (if cmd | succeeds then: the inline command condition — the let-RHS gate one position over)
 ## if cmd | succeeds then — the gate was already built (2026-08-06)
 
 Diagnose-first, and the diagnosis dissolved the fear. Movement 4's
@@ -373,7 +434,7 @@ gives ***, reveal is the deliberate use), a CmdArg ALLOWS it (curl -H
 $auth is the point). The wire boundaries refuse like the unit types
 do, each naming reveal.
 
-One regression the plan did not predict, and the sharpest lesson:
+One regression the plan did not predict:
 adding `secretMembers` (of/map/reveal) polluted the BARE ALIASES.
 `bareEntries` flattens every module's members into unqualified names
 for loose mode, and bare `map` collided with `Seq.map` the moment
@@ -434,7 +495,6 @@ implementation's, because a reader of the theory opted in and a reader
 of an error did not. That is the rule that says "scrutinee" belongs in
 this very file but never in the binary's output.
 
-||||||| parent of 6f2584c (Seq.pfirst follow-ups: empty-guard message, swallowed-loser doc, exit-race park)
 
 ## Seq.pfirst follow-ups: the exit-race park, named customers (2026-08-06)
 
@@ -1082,8 +1142,7 @@ existed. The two that needed design got their rulings: integer-shaped
 numbers WIDEN into float fields at json/yaml (a parse, not weir
 arithmetic — stated in SEMANTICS so it does not read as an exception
 to no-implicit-widening), and .inf/.nan reject on the way in with the
-finite-only teaching (the session's sharpest pin — there is no value
-to read into).
+finite-only teaching (there is no value to read into).
 
 One deviation from the bless, recorded: "a float-shaped number into
 an int field stays a rejection with today's message" — today's
@@ -8352,8 +8411,7 @@ Two findings from the session's own tripwires:
   `let mutable x = 1` and `let rec f = 1` began parsing as functions
   named `mutable`/`rec` — both fidelity pins flipped to both=Accept.
   Fix: `rec` and `mutable` are reserved words now. This is the
-  oracle's first live catch, and the strongest possible argument for
-  it: the failure mode (F# muscle memory silently doing something
+  oracle's first live catch: the failure mode (F# muscle memory silently doing something
   else) is invisible to positive tests.
 - The sugar made var-var operands common and exposed that `-` and the
   comparisons were missing from the defaulting family by accident of
@@ -8570,8 +8628,7 @@ during the read week by design.
 - **The doc-test harness caught the author's own prior-bleed on its
   first run**: `let files = git ls-files` (the let-RHS command-mode
   gap) written reflexively INTO the skill file whose own commands
-  section says it doesn't work. Strongest possible validation of both
-  the doc-test discipline and the parked let-RHS extension.
+  section says it doesn't work.
 - ci/skill-doc.sh wired into ci.yml and ci/local.sh. Scripting policy
   in repo-level CLAUDE.md (the shared /output/CLAUDE.md is
   workspace-agnostic by its own rule, so the policy lives in the repo —

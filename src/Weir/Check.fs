@@ -656,11 +656,23 @@ let distinctScheme: Scheme =
       RowOrigins = Map.empty }
 
 
+// the sequenced-unit message, ONE home for its two arms (the infer and
+// check-mode ESeq twins were verbatim duplicates — a drift hazard the
+// dedupe re-run closed [D:maintenance-2])
+let private seqUnitError (first: Expr) (ty: Ty) : string =
+    let drop =
+        match first.Kind with
+        | ECapture { Kind = ECmd _ }
+        | ECapture { Kind = EPipe(_, { Kind = ECmd _ }) } -> ", or drop the $( ) to run it as a command"
+        | _ -> ""
+
+    $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it{drop}"
+
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with
     | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
     | (TStr | TInt | TFloat | TBool) as t -> Ok t
-    // unit is printable as NOTHING [D:exit-reifiers]: the !()/district
+    // unit is printable as NOTHING [D:exit-reifiers]: the !() sigil
     // desugar wraps interiors in print, and `| orFail` interiors are
     // unit — one rule instead of a shadow drain builtin
     | TUnit -> Ok TUnit
@@ -1527,17 +1539,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     { Kind = TESeq(tfirst, trest)
                       Ty = trest.Ty
                       Span = expr.Span }
-            | ty ->
-                let drop =
-                    match first.Kind with
-                    | ECapture { Kind = ECmd _ }
-                    | ECapture { Kind = EPipe(_, { Kind = ECmd _ }) } -> ", or drop the $( ) to run it as a command"
-                    | _ -> ""
-
-                return!
-                    err
-                        first.Span
-                        $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it{drop}"
+            | ty -> return! err first.Span (seqUnitError first ty)
         }
     | EVar(("print" | "printerr" | "|print") as pname) when isPrintFamily env pname ->
         // Bare-value position (e.g. Seq.iter print): the defaulted form.
@@ -2879,17 +2881,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                     { Kind = TESeq(tfirst, trest)
                       Ty = trest.Ty
                       Span = expr.Span }
-            | ty ->
-                let drop =
-                    match first.Kind with
-                    | ECapture { Kind = ECmd _ }
-                    | ECapture { Kind = EPipe(_, { Kind = ECmd _ }) } -> ", or drop the $( ) to run it as a command"
-                    | _ -> ""
-
-                return!
-                    err
-                        first.Span
-                        $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it{drop}"
+            | ty -> return! err first.Span (seqUnitError first ty)
         }
     | ELambdaPat(pat, body), TFun(dom, cod) ->
         // check-mode twin: the binder shape binds against the PUSHED
@@ -2970,7 +2962,8 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg:
     }
 
 // the yaml district's template typing [D:yaml-district]: splices carry
-// the LIFTABLE law (string/int/bool, Yaml, Option of one, seq of those),
+// the LIFTABLE law (string/int/float/bool, Yaml, Option of one, seq of
+// those),
 // key splices are strings, `for` binders bind like lambda params over
 // the source's element type, literal duplicate keys are check errors.
 and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool =
@@ -3011,7 +3004,7 @@ and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<Typed
                 return!
                     err
                         e.Span
-                        $"a yaml splice takes string/int/bool, a Yaml node, Option of one, or a seq of those; got {formatTy rty}{hint}"
+                        $"a yaml splice takes string/int/float/bool, a Yaml node, Option of one, or a seq of those; got {formatTy rty}{hint}"
         }
     | YtSeq(items, sp) ->
         items

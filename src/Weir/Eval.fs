@@ -1810,7 +1810,7 @@ and private liftYaml (v: Value) : Value option =
     | v ->
         // the sortBy posture: a polymorphic splice's law is enforced HERE
         failwith
-            $"yaml splice: got {formatValue v}; splices take string/int/bool, a Yaml node, Option of one, or a seq of those"
+            $"yaml splice: got {formatValue v}; splices take string/int/float/bool, a Yaml node, Option of one, or a seq of those"
 
 and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
     match tpl with

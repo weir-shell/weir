@@ -3589,7 +3589,7 @@ expect "a district roundtrips through from yaml" "app" "$out"
 # the splice law rejects a record, at the splice, under check
 printf 'type R = { a: int }\nlet d = yaml\n    x: $(R { a = 1 })\nd |> to yaml |> print\n' > "$yddir/law.weir"
 out=$($BIN check "$yddir/law.weir" 2>&1 || true)
-expect "the splice law rejects a record at the splice" "a yaml splice takes string/int/bool" "$out"
+expect "the splice law rejects a record at the splice" "a yaml splice takes string/int/float/bool" "$out"
 
 # ---- block scalars [D:block-scalars] --------------------------------------
 # the ConfigMap workload: literal content (splice-lookalikes are bytes),
