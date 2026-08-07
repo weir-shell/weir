@@ -157,10 +157,11 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
         // inline opener keeps column alignment [D:fmt-stroustrup]
         let mutable braces: (char * int * bool * int * int option) list = []
         // district: Some(markerOrigIndent, markerDepth) while inside a
-        // district block. A `!` block's command lines flatten to
-        // marker+1 depth; a yaml district's RELATIVE indentation is
-        // semantic [D:yaml-district] — its lines keep their offset from
-        // the block's first line (the base), re-anchored at marker+1
+        // district block — yaml is the ONE surviving marker
+        // [D:district-retirement], so yamlDistrict is always true here; a
+        // yaml district's RELATIVE indentation is semantic
+        // [D:yaml-district] — its lines keep their offset from the
+        // block's first line (the base), re-anchored at marker+1
         let mutable district: (int * int) option = None
         let mutable yamlDistrict = false
         let mutable yamlBase: int option = None
@@ -220,7 +221,9 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                             String.replicate ((mDepth + 1) * 4 + (indent - b)) " "
                             + raw.Substring(min indent raw.Length)
                         else
-                            // district lines: verbatim text at marker+1 depth
+                            // unreachable while yaml is the one marker
+                            // [D:district-retirement] — kept as the non-yaml
+                            // fallback shape, verbatim at marker+1 depth
                             String.replicate ((mDepth + 1) * 4) " " + content
                     | _ ->
 

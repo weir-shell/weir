@@ -259,7 +259,7 @@ weir rejects rather than guesses.
   (functions/seqs) or to statement end if nothing determines the type.
   The reject-don't-guess posture survived; only its timing moved. See
   the type-classes section.
-- **Generic declarations**: `type Option<'a> = Some of 'a | None` and
+- **Generic declarations**: `type Found<'a> = Hit of 'a | Miss` and
   `type Pair<'a> = { Fst: 'a; Snd: 'a }` — unions and records both take type
   parameters. Cases carry one payload, which may be a TUPLE
   (`Case of int * string` — legal since the tuples reversal,
@@ -1892,7 +1892,7 @@ implied→rejected when the sugar made `let mutable` parse strangely.
 
 When a line has more than one thing wrong, one error reaches you. The
 rule, in your terms: **weir reports the error at the furthest point the
-parser reached in your file.** Two consequences worth knowing:
+parser reached in your file.** Two consequences:
 
 - **Furthest REACHED, not latest in the file.** With two problems in
   one statement the parse stops at the first, so that is what you see —

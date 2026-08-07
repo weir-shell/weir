@@ -246,8 +246,8 @@ let classifyLine (raw: string) : LineKind =
         LineKind.Code
 
 /// Piece classification, inside assembly: the join/structure decisions.
-/// Kind is exclusive; IsMarker and OpensCompound are orthogonal flags —
-/// `if c then !` is a compound head AND arms a district.
+/// Kind is exclusive; Marker and OpensCompound are orthogonal fields —
+/// `let d = yaml` is a let head AND arms the yaml district.
 [<RequireQualifiedAccess>]
 type PieceKind =
     | PipeHead
@@ -255,8 +255,9 @@ type PieceKind =
     | LetHead
     | Plain
 
-/// Line-end district markers: bare `!` or the Layer-2 env header `!name`
-/// ([D:env-sugar-layers] — the marker distributes `!name(...)` over the block).
+/// Line-end district markers: `yaml` (with an optional schema= suffix)
+/// is the ONE surviving marker — the `!`/`!name` command districts were
+/// retired [D:district-retirement].
 [<RequireQualifiedAccess>]
 type MarkerKind =
     | NoMarker
@@ -548,8 +549,12 @@ let singleLine (text: string) : LogicalLine =
 // same "needs a body" error F# gives the shape. Every pending let must be
 // closed before the statement ends.
 // Unbalanced ( and { closers for a text fragment — the completion
-// repair path appends these so a mid-edit dangling line parses
-// (quote-aware via the one scanner, per the formalization rule).
+// repair path appends these so a mid-edit dangling line parses.
+// Quote-aware via its OWN stack machine, NOT stringScan: interp `$"`
+// holes reopen code land mid-string, which a flag-based scanner cannot
+// model — the four string-kind close rules are re-implemented here by
+// necessity (and stringScan reads `$"…"` as a plain string; this gives
+// it its own state).
 let closers (text: string) : string =
     // one stack of expected closers models the full nesting: brackets
     // in code, strings ('"' plain, '$' interp — closes with '"' but

@@ -13,7 +13,7 @@ Three properties, in the order they matter:
    wrong field, a discarded value, a missing match case — all of them
    stop the script with `file:line:col` and a hint, before any side
    effect. Bash tells you about your mistake halfway through making it.
-2. **Command output is typed data.** `git status --porcelain | from
+2. **Command output is typed data.** `git status --porcelain |> from
    porcelain` is a sequence of records with `path`/`staged` fields,
    not a string soup.
 3. **It starts in ~7ms** — a single AOT binary, fine for shebangs.
@@ -717,8 +717,7 @@ command body streams and raises per iteration (it is implicit
 `!(…)`), and a MULTI-LINE body needs no district — commands are
 legal statements inside any block [D:interior-arming]: `if force
 then` over two git lines, `fun f -> git add $f` under `Seq.iter`, a
-fetch line above a value in a block-let. `do !` still opens a
-command-only block; the loop variable splices like
+fetch line above a value in a block-let. The loop variable splices like
 any binding. Pipelines stay the spelling for TRANSFORMING values
 (`|> Seq.map …`); `for` is for doing things N times — same machine
 underneath (`for` desugars to `Seq.iter`).

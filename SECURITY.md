@@ -4,7 +4,7 @@ weir is a typed shell: it parses and runs `.weir` scripts. This file
 states what weir defends **by design**, the one thing it deliberately
 does **not** defend, and how to report a problem.
 
-## Scope — the one line that matters
+## Scope
 
 **weir is not a sandbox.** Running a `.weir` script is exactly as
 trusted as running a bash script: the script can do anything your user
@@ -51,7 +51,7 @@ it, by design):
 - **The REPL records typed lines to a history file** [D:repl-quality]
   at `$XDG_STATE_HOME/weir/history` (Windows:
   `%LOCALAPPDATA%\weir\history`). A REPL line can carry a secret
-  (`runEnv [Env.pair "TOKEN" "…"]`), so treat it as you would a
+  (`Secret.of "hunter2"` — the literal lands in the file as typed), so treat it as you would a
   shell's history — on POSIX the file is created `0600`. Windows has
   no chmod [D:windows-v1]: the file inherits the user profile's ACLs,
   which already deny other non-administrator accounts — equivalent
@@ -111,8 +111,7 @@ it, by design):
     the type);
   - **the in-memory value itself** — a `Secret` wraps a plain string
     in a managed, GC'd heap: not zeroed, not pinned, not encrypted. A
-    core dump, a debugger, or swap sees it. This is deliberate, not an
-    oversight — see [D:secret] for why `SecureString`/zeroing was
+    core dump, a debugger, or swap sees it. This is deliberate — see [D:secret] for why `SecureString`/zeroing was
     pre-refused (in short: `SecureString` is unencrypted off .NET
     Framework and Microsoft advise against it for new code, immutable
     strings cannot be zeroed, and the value must be plaintext at every

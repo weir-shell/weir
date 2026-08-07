@@ -520,7 +520,7 @@ print x
   expansion — those
   characters pass through as literal argv (`echo a && b` prints
   "a && b"); `>`/`>>` additionally WARN with the File spelling
-  (redirection is `cmd | File.write "out.txt"` / `File.append`).
+  (redirection is `cmd |> File.write "out.txt"` / `File.append`).
   For bash semantics: `sh -c "the bash line"` (a command
   line; streams, completes, pipes like any command). Inside that
   quoted line `$w` is SH's variable, not weir's binding — silently
@@ -587,13 +587,11 @@ print x
   `$VAR` and `for` lines inside it are bytes (embedded scripts stay
   verbatim); templated content interpolates upstream and splices as a
   whole value. Paste a manifest, replace values with `$`.
-- `!` runs commands: parens for one inline (`!(git pull)`), LINE-END
-  `!` for a block below — indented bare command lines, one per line
-  (no expressions, no `let`, no nested `!()` inside; leading `|`
-  continues a pipeline):
-
-  `if clean then !`
-  + indented `git checkout main` / `git pull` lines.
+- `!(…)` runs one command inline in expression position (`!(git
+  pull)`). There is NO line-end `!` block — that district was retired
+  [D:district-retirement]: commands are ordinary statements inside any
+  block, so `if clean then` + indented `git checkout main` /
+  `git pull` lines just works [D:interior-arming].
 - The glyph law: weir has no `!`-negation — negation is the word
   `not`; `!` means DO IT. And no `\`-escape for commands — `^ls`
   forces the PATH binary.
