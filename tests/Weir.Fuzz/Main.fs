@@ -55,33 +55,31 @@ let private cfg =
 let private showProgram (lines: string list) =
     lines |> List.map (fun l -> "  |" + l) |> String.concat "\n"
 
-// run P once, require it clean, then require T(P) identical
-let private metamorphic (name: string) (transform: Random -> Program -> string list option) =
-    testPropertyWithConfig cfg name (fun (p: Program) (NonNegativeInt s) ->
-        let baseLines = renderPlain p
+// invariant 1's detector CORE, extracted so the positive control can
+// call it and assert it fires BY NAME [D:walk-findings] — Ok means
+// byte-identical (rc, stdout, stderr); Error carries the invariant's
+// own failure text
+let private compareRuns (baseLines: string list) (transformed: string list) : Result<unit, string> =
+    let r0 = Runner.runProgram baseLines
 
-        match transform (Random s) p with
-        | None -> () // no applicable site (e.g. no reindentable block)
-        | Some transformed ->
-            let r0 = Runner.runProgram baseLines
+    if r0.TimedOut then
+        Error(sprintf "base program HANGS:\n%s" (showProgram baseLines))
+    elif r0.Rc <> 0 then
+        Error(
+            sprintf
+                "base program rejected (rc=%d) — generator claims validity:\n%s\nstderr:\n%s"
+                r0.Rc
+                (showProgram baseLines)
+                r0.Err
+        )
+    else
+        let r1 = Runner.runProgram transformed
 
-            if r0.TimedOut then
-                failtestf "base program HANGS:\n%s" (showProgram baseLines)
-
-            if r0.Rc <> 0 then
-                failtestf
-                    "base program rejected (rc=%d) — generator claims validity:\n%s\nstderr:\n%s"
-                    r0.Rc
-                    (showProgram baseLines)
-                    r0.Err
-
-            let r1 = Runner.runProgram transformed
-
-            if r1.TimedOut then
-                failtestf "transformed program HANGS:\n%s" (showProgram transformed)
-
-            if (r1.Rc, r1.Out, r1.Err) <> (r0.Rc, r0.Out, r0.Err) then
-                failtestf
+        if r1.TimedOut then
+            Error(sprintf "transformed program HANGS:\n%s" (showProgram transformed))
+        elif (r1.Rc, r1.Out, r1.Err) <> (r0.Rc, r0.Out, r0.Err) then
+            Error(
+                sprintf
                     "transform changed behavior\n--- base (rc=%d):\n%s\nout: %A\nerr: %A\n--- transformed (rc=%d):\n%s\nout: %A\nerr: %A"
                     r0.Rc
                     (showProgram baseLines)
@@ -90,25 +88,41 @@ let private metamorphic (name: string) (transform: Random -> Program -> string l
                     r1.Rc
                     (showProgram transformed)
                     r1.Out
-                    r1.Err)
+                    r1.Err
+            )
+        else
+            Ok()
+
+// run P once, require it clean, then require T(P) identical
+let private metamorphic (name: string) (transform: Random -> Program -> string list option) =
+    testPropertyWithConfig cfg name (fun (p: Program) (NonNegativeInt s) ->
+        let baseLines = renderPlain p
+
+        match transform (Random s) p with
+        | None -> () // no applicable site (e.g. no reindentable block)
+        | Some transformed ->
+            match compareRuns baseLines transformed with
+            | Ok() -> ()
+            | Error m -> failtest m)
+
+// invariant 2's detector CORE [D:walk-findings]: run `work` under a
+// hang bound; Error names throw-or-hang
+let private totalityCore (timeoutMs: int) (label: string) (work: unit -> unit) : Result<unit, string> =
+    let task = System.Threading.Tasks.Task.Run work
+
+    try
+        if task.Wait timeoutMs then
+            Ok()
+        else
+            Error(sprintf "%s exceeded %dms (possible hang)" label timeoutMs)
+    with :? AggregateException as ae ->
+        Error(sprintf "%s THREW %s: %s" label (ae.InnerException.GetType().Name) ae.InnerException.Message)
 
 // assembler/parser/checker totality on one input, with a hang bound
 let private totality (lines: string list) =
-    let work =
-        System.Threading.Tasks.Task.Run(fun () -> Weir.Script.analyzeLines "fuzz.weir" lines |> ignore)
-
-    let finished =
-        try
-            work.Wait 5000
-        with :? AggregateException as ae ->
-            failtestf
-                "check pipeline THREW %s: %s\non:\n%s"
-                (ae.InnerException.GetType().Name)
-                ae.InnerException.Message
-                (showProgram lines)
-
-    if not finished then
-        failtestf "check pipeline exceeded 5s (possible hang) on:\n%s" (showProgram lines)
+    match totalityCore 5000 "check pipeline" (fun () -> Weir.Script.analyzeLines "fuzz.weir" lines |> ignore) with
+    | Ok() -> ()
+    | Error m -> failtestf "%s\non:\n%s" m (showProgram lines)
 
 // the depth guard's acceptance [D:depth-guard]: a pathological-depth
 // input must DIAGNOSE (an error, not silent acceptance) within the
@@ -491,3 +505,48 @@ let tests =
                           r1.Out
                           r1.Err
                           (showProgram fmted) ]
+
+
+// ---- positive controls [D:walk-findings] ----------------------------
+// A control that ran once is not a control: the DECISIONS walk found
+// the equality detector's bring-up evidence gone from the tree, so
+// nothing distinguished "the detector works" from "the detector never
+// fires" — the vacuous-probe class at the harness's own root. Each
+// control below feeds its invariant's detector a case that MUST fail,
+// and asserts the failure carries the invariant's own words (a control
+// that passes because something threw is the disease it treats). These
+// are cheap (fixed inputs, two spawns) and run in the SMOKE, so they
+// cannot drift back to bring-up status.
+[<Tests>]
+let positiveControls =
+    testList
+        "Positive controls: the detectors themselves fire [D:walk-findings]"
+        [ test "invariant 1: an output-changing transform is DETECTED, named" {
+              match compareRuns [ "print \"control\"" ] [ "print \"control\""; "print \"EXTRA\"" ] with
+              | Error m -> Expect.stringContains m "transform changed behavior" "fails by NAME, not by throwing"
+              | Ok() -> failtest "the equality detector did not fire — invariant 1 is vacuous"
+          }
+          test "invariant 1: an rc-changing transform is detected too (all three channels)" {
+              match compareRuns [ "print \"ok\"" ] [ "fail \"boom\"" ] with
+              | Error m ->
+                  Expect.stringContains m "transform changed behavior" "rc + stderr changes fire the same detector"
+              | Ok() -> failtest "an rc change escaped the detector"
+          }
+          test "invariant 2: a throwing pipeline is DETECTED, named" {
+              match totalityCore 5000 "control pipeline" (fun () -> failwith "deliberate") with
+              | Error m -> Expect.stringContains m "control pipeline THREW" "the throw detector names itself"
+              | Ok() -> failtest "a throwing pipeline escaped the totality detector"
+          }
+          test "invariant 2: a hang is DETECTED within the bound, named" {
+              match totalityCore 50 "control pipeline" (fun () -> System.Threading.Thread.Sleep 500) with
+              | Error m -> Expect.stringContains m "exceeded 50ms" "the hang detector names the bound"
+              | Ok() -> failtest "a hang escaped the totality detector"
+          }
+          test "invariant 4's shape language DISTINGUISHES (equality is not vacuous)" {
+              // the fmt roundtrip compares per-statement sexpr shapes; if
+              // shapesOf collapsed everything to one value the comparison
+              // would pass vacuously
+              let a = shapesOf [ "print \"a\"" ]
+              let b = shapesOf [ "let x = 1" ]
+              Expect.isTrue (a.IsSome && b.IsSome && a <> b) "two different programs must have different shapes"
+          } ]

@@ -166,6 +166,50 @@ The one deliberate survivor: `git status --porcelain` as an ARGV
 WORD, in fixtures, the git signature, and the docs' replacement
 spellings — that is git's flag, not our adapter, and parsing its
 output with a Regex you can see is exactly the point.
+## the walk's two findings, closed (2026-08-07)
+
+The vanished control came back bigger than it left. The fuzz smoke
+now holds five positive controls — a deliberately output-changing
+transform, an rc-changing one, a throwing work item, a hanging one,
+and a shape-distinguishing program pair — each asserting that its
+invariant FAILS BY NAME ("transform changed behavior", "THREW",
+"exceeded"). The mechanism matters: the detectors were extracted into
+cores (compareRuns, totalityCore) that both the invariants and the
+controls call, so a control cannot pass against a copy while the real
+detector rots. The survey corrected the plan's premise: there are
+four invariants, not six; 1, 2, and 4 are controlled, and invariant
+3's control is sized (its span-soundness checker lives inline in two
+properties — extract first, then feed it a known-bad span).
+
+The cohort went from sixteen partials to one. Fifteen rows flipped to
+pinned with the citation added in the same motion — the finding was
+that citing rows stay pinned, so a pin without a citation reproduces
+the disease. env-sugar-layers recategorized as pinned-via-supersession
+rather than partial: its live half (sigils) was always pinned and its
+dead half (the line-end district) has a pinned retirement — "partial"
+was miscounting a supersession as a gap. The one survivor is
+dup-type-decl: the declare-after-import message is now unit-pinned,
+but the REPL replace-note needs a pty pin, sized and not written
+(drive the REPL under a pty, redeclare a type, assert the
+"redeclared; earlier values keep the old shape" note — one more
+repl-multiline.py-shaped case).
+
+New ratio over the walked 182: 174 pinned / 1 partial / 0 unpinned /
+7 unpinnable — from 159/16/0/7.
+
+The cohort theory held with one correction worth keeping. The era
+clustering was real (rows 2-46 carried seven of the sixteen) and the
+mid-era gaps were exactly the predicted class — the rejecting half of
+a symmetric rule, one cheap pin each (unparenthesized params, the
+destructuring pipe-hint site, the bracket range endpoint). But the
+early cohort's gaps were mostly harness-shaped, not message-shaped:
+consumer parity needed an LSP probe, the recheck license a latency
+bound, colored diagnostics a stream-splitting pty, the recovery cap a
+12-line fixture. The early rows predate not just the citing habit but
+the harness inventory itself — so their misses cost a probe each
+where the mid-era ones cost a grep each. The next audit should expect
+that split: old rows are expensive per pin, not just more often
+partial.
 
 ## the full DECISIONS-to-pins walk (2026-08-07)
 

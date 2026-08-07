@@ -70,6 +70,18 @@ $BIN -e 'Dir.copy "'"$pw2"'/src" "'"$pw2"'/dst"' || fail "Dir.copy failed"
 [ -f "$pw2/dst/a/b.txt" ] || fail "Dir.copy must be recursive (the positive half)"
 rm -rf "$pw2"
 echo "e2e ok: pins-walk candidates (exit codes exact, readSecret trio, Dir.copy recursive)"
+
+# walk cohort: the Args-side defaulted-Secret teaching [D:secret]
+pw3=$(mktemp -d)
+cat > "$pw3/sd.weir" <<'WEOF'
+type SC = { [<Default "x">] apiKey: Secret }
+let c = Args.load SC
+print "unreached"
+WEOF
+out=$($BIN check "$pw3/sd.weir" 2>&1) && fail "a defaulted Secret must refuse" || true
+echo "$out" | grep -qF "a Secret takes no [<Default>]" || fail "the Secret Default teaching: $out"
+rm -rf "$pw3"
+echo "e2e ok: walk cohort (defaulted-Secret teaching)"
 chmod 700 "$pwdir/locked.txt" 2>/dev/null; rm -rf "$pwdir"
 
 # BSD date has no %N — millisecond clock via python3 there (python3 is

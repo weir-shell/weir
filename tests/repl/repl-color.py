@@ -5,6 +5,7 @@
 import os
 import pty
 import re
+import select
 import sys
 import time
 
@@ -96,6 +97,41 @@ t6 = run({}, ['Log.info "ping"\r', "let z = 1\r"])
 if "INFO" not in t6 or "ping" not in t6:
     failures.append("Log.info must reach the REPL stream")
 
+# TERM=dumb suppresses color like NO_COLOR does [D:colored-diagnostics]
+# — the walk found only the NO_COLOR half pinned
+t8 = run({"TERM": "dumb"}, ["let s = 1\r"])
+if ANSI.search(t8):
+    failures.append("TERM=dumb must suppress every color span")
+
+# per-STREAM diagnostic color [D:colored-diagnostics]: `weir check` on a
+# bad file under a tty colors stderr; stdout stays plain (capture-safe)
+import tempfile as _tf
+_d = _tf.mkdtemp()
+open(_d + "/bad.weir", "w").write("let Foo = 1\n")
+def run_check(path, outfile):
+    # stderr stays on the pty; stdout goes to a FILE — per-stream
+    # detection, so a colored stdout cannot masquerade as the diagnostic
+    pid, fd = pty.fork()
+    if pid == 0:
+        o = os.open(outfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        os.dup2(o, 1)
+        os.execv(WEIR, ["weir", "check", path])
+    err = b""
+    for _ in range(30):
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if r:
+            try:
+                err += os.read(fd, 65536)
+            except OSError:
+                break
+    os.waitpid(pid, 0)
+    return err.decode(errors="replace"), open(outfile).read()
+t9err, t9out = run_check(_d + "/bad.weir", _d + "/out.txt")
+if "\x1b[" not in t9err:
+    failures.append(f"check under a tty must color its stderr diagnostic: {t9err[-200:]!r}")
+if "\x1b[" in t9out:
+    failures.append(f"check stdout must stay plain when stderr is the diagnostic stream: {t9out[-200:]!r}")
+
 t2 = run({"NO_COLOR": "1"}, ["let s = 1\r"])
 # the editor's own control sequences (\r, [K, cursor moves) are fine;
 # COLOR codes must be absent entirely
@@ -107,4 +143,4 @@ if failures:
         print("repl-color FAIL:", f)
     sys.exit(1)
 
-print("repl-color: lexical spans, head verdicts, NO_COLOR hold")
+print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check colors stderr only")
