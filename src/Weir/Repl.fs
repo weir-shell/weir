@@ -395,7 +395,15 @@ let private readLineTty () : string option =
     // wrap-PENDING, which the ceil and the \r\n emission agree about
     let dispRows (w: int) (len: int) = max 1 ((6 + len + w - 1) / w)
 
-    // (display-row offset from region top, display column) of the cursor
+    // (display-row offset from region top, display column) of the cursor.
+    // At an EXACT wrap boundary ((6+col) % w = 0) the logical column has
+    // two screen positions [D:windows-findings]: MID-line the true one is
+    // START of the next row (that row exists — more text is painted on
+    // it); at END of line it is the wrap-PENDING cell (the terminal never
+    // wrapped, so the next row does not exist) — the last column, named
+    // explicitly rather than emitted as an off-screen w that the terminal
+    // clamps (the clamp was the column-N ambiguity: two logical columns
+    // painted at one cell, then the crossing jumped two)
     let cursorDisplay (w: int) =
         let mutable above = 0
 
@@ -406,7 +414,10 @@ let private readLineTty () : string option =
         let dr = (6 + col) / w
 
         if dc = 0 && col > 0 then
-            above + dr - 1, w
+            if col < lines[row].Length then
+                above + dr, 0
+            else
+                above + dr - 1, w - 1
         else
             above + dr, dc
 
@@ -717,9 +728,19 @@ let private readLineTty () : string option =
                      col <- ws + prefix.Length
                      redraw ()
                  else
+                     // park at the region end so the list prints BELOW the
+                     // buffer — but the tracked (row, col) must survive:
+                     // toEnd() mutates it, and the repaint then put the real
+                     // cursor at end-of-buffer, past any text after the
+                     // cursor (one bug, no state — a second Tab completed
+                     // from where the cursor genuinely was)
+                     // [D:windows-findings]
+                     let keepRow, keepCol = row, col
                      toEnd ()
                      Console.WriteLine()
                      Console.WriteLine(String.concat "  " (many |> List.truncate 24))
+                     row <- keepRow
+                     col <- keepCol
                      lastCursorDisplay <- 0
                      redraw ())
         | _ when k.KeyChar >= ' ' ->

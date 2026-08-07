@@ -1,5 +1,62 @@
 # Spike Notes
 
+## the Windows hand-run's findings: banked, and four fixes (2026-08-06)
+
+The confirmations first, banked so nothing re-tests them: the 2D
+editor's whole surface held on metal (multiline buffer, blank-line
+escape, forced newlines, Ctrl+R's fzf-absent fallback, leading-space
+heads), RESIZE re-wraps correctly — SIGWINCH is guarded off on
+Windows, so this was a suspected gap and is not one: the redraw
+recomputes from the current width. All three within kinds ran,
+including the four-piece composition never before exercised together
+(within env → a cmd /c child → %GREETING% expands). retry's
+delay-before-retry-not-first arithmetic was visible in the timings (3
+attempts over ~305ms). Secret masked a containing record. And the
+whole contracts chain ran offline — the .weir walk, schema load,
+district validation, and the #sig git signature with no network. THE
+STANDING WINDOWS HAND-RUN ITEM the contracts and signatures sessions
+each left open is DISCHARGED. The only weir surface never yet run on
+Windows is HTTP.
+
+A1 was the plan's predicted shape exactly: one mapping function
+(cursorDisplay), one wrong arm. At an exact wrap boundary the arm
+always chose end-of-previous-row and emitted column W — which does
+not exist on a W-column terminal, so the emission clamped to W-1 and
+two logical columns painted at one cell; the crossing then jumped
+two. The fix splits the boundary by whether the next row EXISTS:
+mid-line it does (start of next row), end-of-line it does not (the
+wrap-pending cell, named explicitly as W-1). The pin class also
+needed correcting, and carefully: the harness's standing law says
+assertions ride values because DRIVERS lie about cursors — but A1 is
+invisible to values (the logical column was always right; only the
+paint was wrong). The new pins replay OUR OWN emitted positioning
+escapes — the tail after the final carriage return — which is
+deterministic and does not query the driver; the law's reason is
+intact, and the pins now assert cursor COLUMN at two widths in both
+directions plus the exact-fill pending case.
+
+A2 was one line: the candidate-list arm parks the cursor at the
+region end so the list prints below the buffer — via toEnd(), which
+MUTATES the tracked (row, col) and never restored it. Every symptom
+follows, including the "second Tab offers the namespace" one: the
+cursor genuinely was at end-of-line by then. Save/restore around the
+park; pinned by VALUE (type into the parens after a Tab-list — the
+tail lands inside).
+
+B2's diagnosis mattered more than its fix: the "specific diagnosis
+buried under the generic one" reading was WRONG. The line underneath
+the 12-item expecting list — "block-let command RHS is spine-only" —
+is the letCmdOk gate's internal label leaking into FParsec's
+backtrack pile; there was no specific diagnosis to demote, so the
+first-reached-owns-report policy was never inverted and the stop
+condition did not fire. The fix is a new first-reached arm: a bare
+`let x =` now says "this binding has no value — give 'x' a
+right-hand side", and the pin asserts the internal label never leaks.
+B1 is the name-the-repair principle once more: backslash+letter in a
+string is a Windows path in the person's first hour; the message now
+names @"C:\path" and forward slashes, while non-letter escapes keep
+the bare list (a hint on an ambiguous shape is worse than none).
+
 ## hover residue: three form words, one leaking type argument (2026-08-06)
 
 Applying the form-word rule to its remaining customers cost almost
