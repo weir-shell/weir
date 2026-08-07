@@ -26,6 +26,52 @@ if git -C "$(dirname "$0")/.." ls-files -z 2>/dev/null \
 fi
 echo "e2e ok: no conflict markers in tracked files"
 
+# ---- pins-walk: three runtime messages only e2e can see [D:pins-walk] ------
+pwdir=$(mktemp -d)
+# THE set-e analogue's WORDS were never asserted (the raise itself was)
+cat > "$pwdir/x.weir" <<'WEOF'
+sh -c "exit 3"
+print "unreached"
+WEOF
+out=$($BIN "$pwdir/x.weir" 2>&1) && fail "nonzero exit must raise" || true
+echo "$out" | grep -qF "command failed with exit code 3" || fail "the exit-raise names code+command: $out"
+# the '>' redirect WARNING names the File.write spelling
+cat > "$pwdir/r.weir" <<'WEOF'
+echo hi > out.txt
+WEOF
+out=$($BIN check "$pwdir/r.weir" 2>&1) || fail "a literal > is a warning, not an error: $out"
+echo "$out" | grep -qF "'>' does not redirect in weir" || fail "redirect warning: $out"
+echo "$out" | grep -qF 'File.write' || fail "redirect warning names the spelling: $out"
+# permission denied is weir-shaped (the read-guard's residual wrapper)
+printf 'locked\n' > "$pwdir/locked.txt" && chmod 000 "$pwdir/locked.txt"
+if [ ! -r "$pwdir/locked.txt" ]; then  # root ignores modes; skip there
+    out=$($BIN -e 'File.read "'"$pwdir"'/locked.txt" |> Seq.length' 2>&1) && fail "unreadable must raise" || true
+    echo "$out" | grep -qF "File.read: permission denied:" || fail "permission shape: $out"
+    echo "e2e ok: pins-walk messages (exit-raise words, redirect warning, permission shape)"
+else
+    echo "e2e ok: pins-walk messages (exit-raise words, redirect warning; permission skipped — running as root)"
+fi
+
+# walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
+pw2=$(mktemp -d)
+rc=0; $BIN -e 'exit 4' >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 4 ] || fail "exit 4 must propagate rc 4, got $rc"
+rc=0; $BIN -e 'fail "m"' >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "fail must exit exactly 1, got $rc"
+printf 'tok\n' > "$pw2/s.txt"
+out=$($BIN -e 'print (show (File.readSecret "'"$pw2"'/s.txt"))') || fail "readSecret failed"
+[ "$out" = "***" ] || fail "readSecret must show ***: $out"
+out=$($BIN -e 'print (Secret.reveal (File.readSecret "'"$pw2"'/s.txt"))') || fail "reveal failed"
+[ "$out" = "tok" ] || fail "readSecret must trim the trailing newline: '$out'"
+out=$($BIN -e 'File.readSecret "/nope/x"' 2>&1) && fail "readSecret must raise on missing" || true
+echo "$out" | grep -qF "File.readSecret: no such file: /nope/x" || fail "readSecret shape: $out"
+mkdir -p "$pw2/src/a" && printf 'deep\n' > "$pw2/src/a/b.txt"
+$BIN -e 'Dir.copy "'"$pw2"'/src" "'"$pw2"'/dst"' || fail "Dir.copy failed"
+[ -f "$pw2/dst/a/b.txt" ] || fail "Dir.copy must be recursive (the positive half)"
+rm -rf "$pw2"
+echo "e2e ok: pins-walk candidates (exit codes exact, readSecret trio, Dir.copy recursive)"
+chmod 700 "$pwdir/locked.txt" 2>/dev/null; rm -rf "$pwdir"
+
 # BSD date has no %N — millisecond clock via python3 there (python3 is
 # already a harness dependency via tests/lib). The overhead (~30ms) is
 # fine for e2e's generous wall-clock bounds; timing.sh's tight gates

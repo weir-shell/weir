@@ -9006,6 +9006,149 @@ let httpTests =
                   "an existing query gets & not ?"
           } ]
 
+let pinsWalkTests =
+    // the full DECISIONS-to-pins walk's cheap pins [D:pins-walk]: every
+    // test here asserts a teaching message that existed ONLY in the
+    // source (the grep pass's list) — fragments, not joined sentences
+    testList
+        "pins walk: source-only teaching messages [D:pins-walk]"
+        [ test "groupBy rejects non-scalar keys naming the set" {
+              let m =
+                  try
+                      run "[(fun x -> x)] |> Seq.groupBy (fun f -> f) |> Seq.force" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "groupBy: keys must be ints, strings or bools" ""
+          }
+          test "Float.toInt out of range names the value" {
+              let m =
+                  try
+                      run "Float.toInt 1e300" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "Float.toInt: out of int range" ""
+          }
+          test "print seq<unit> teaches Seq.iter" {
+              Expect.stringContains
+                  (checkErr "print ([1] |> Seq.map (fun x -> ()))").Message
+                  "a lazy effect sequence never runs; use Seq.iter"
+                  ""
+          }
+          test "a union's field access teaches match; a generic record refuses the loaders" {
+              let e = env |> declare "type U2 = A2 | B2"
+
+              let m =
+                  match Weir.Check.typecheck e (parse "A2.field") with
+                  | Error terr -> terr.Message
+                  | Ok _ -> failtest "field access on a union must error"
+
+              Expect.stringContains m "is a union; match on it instead of accessing fields" ""
+
+              let g = env |> declare "type G2<'g> = { gx: 'g }"
+
+              match Weir.Check.typecheck g (parse "Env.load G2") with
+              | Error terr -> Expect.stringContains terr.Message "needs a monomorphic record" ""
+              | Ok _ -> failtest "generic Env.load must refuse"
+
+              // Args.load is script-only in this env ("Self.args is not
+              // available here" fires first) — Env.load and from json
+              // carry the monomorphic-refusal class
+              match Weir.Check.typecheck g (parse "[\"x\"] |> from json G2") with
+              | Error terr -> Expect.stringContains terr.Message "needs a monomorphic record" ""
+              | Ok _ -> failtest "generic from json must refuse"
+          }
+          test "'to json' non-seq and unknown formats teach" {
+              Expect.stringContains (checkErr "5 |> to json").Message "'to json' needs a seq" ""
+
+              Expect.stringContains
+                  (checkErr "[1] |> to xml").Message
+                  "unknown output format 'xml'; available: json, yaml"
+                  ""
+          }
+          test "an else-less if with a non-unit then-branch teaches add-an-else" {
+              Expect.stringContains (checkErr "if true then 5").Message "an if without an else is unit-valued" ""
+          }
+          test "a union match missing a case NAMES it" {
+              let e = env |> declare "type U3 = A3 | B3"
+
+              match Weir.Check.typecheck e (parse "match A3 with | A3 -> 1") with
+              | Error terr -> Expect.stringContains terr.Message "missing: B3" "the missing-case list"
+              | Ok _ -> failtest "non-exhaustive union match must error"
+          }
+          test "File.move/File.size not-found shapes match the family" {
+              let m1 =
+                  try
+                      run "File.move \"/nope/a\" \"/nope/b\"" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m1 "File.move: no such file: /nope/a" ""
+
+              let m2 =
+                  try
+                      run "File.size \"/nope/a\"" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m2 "File.size: no such file: /nope/a" ""
+          }
+          test "walk candidates: parser reject sides (parens-required params, destructuring pipe-hint, range endpoints)" {
+              match Weir.Parser.parseExpr "let f x, y = x in f" with
+              | Error _ -> ()
+              | Ok _ -> failtest "unparenthesized pattern params must reject"
+
+              match Weir.Parser.parseStmt "let (a, b) = [1; 2] | Seq.head" with
+              | Error m -> Expect.stringContains m "pipe expressions with '|>'" "the destructuring-RHS pipe-hint site"
+              | Ok _ -> failtest "| before a function must error in the destructuring RHS"
+
+              match Weir.Parser.parseExpr "[[1]..[3]]" with
+              | Error _ -> ()
+              | Ok _ -> failtest "a bracket can never open a range endpoint"
+          }
+          test "the dropped command builtins are GONE — pure subtraction, no retirement hint [D:drop-command-builtins]" {
+              for name in [ "feed"; "feedEnv"; "cmdEnv"; "runEnv" ] do
+                  match Weir.Check.typecheck Weir.Builtins.typeEnvStrict (parse $"[\"x\"] |> {name} \"cat\"") with
+                  | Error terr ->
+                      Expect.stringContains terr.Message "unbound" $"{name} must not resolve"
+                      Expect.isFalse (terr.Message.Contains "retired") $"{name}: no retirement hint — pure subtraction"
+                  | Ok _ -> failtest $"'{name}' must not resolve"
+          }
+          test "renamed members are gone WITHOUT aliases or hints [D:duration-rename]" {
+              let m = (checkErr "Duration.toS 1s").Message
+              Expect.stringContains m "module Duration has no member 'toS'" "no alias survives"
+              Expect.isFalse (m.Contains "Did you mean") "and no hint resurrects it"
+
+              let m2 = (checkErr "Ok 1").Message
+              Expect.stringContains m2 "unbound variable 'Ok'" "the Result migration is an unbound constructor"
+          }
+          test "PascalCase field access teaches the lowercase rename (the free teaching [D:builtin-fields-lowercase])" {
+              // a builtin row's field, PascalCase typo (distance 1 — the
+              // did-you-mean pays for the lowercase field law)
+              let terr = checkErr "(ls |> Seq.head).Name"
+              Expect.stringContains terr.Message "Did you mean 'name'?" ""
+          }
+          test "File.append's missing-parent shape matches the family [D:sized-findings]" {
+              let m =
+                  try
+                      run "File.append \"/nope/deep/x.txt\" [\"a\"]" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "File.append: no such directory: /nope/deep" ""
+          }
+          test "the moved-into-a-module teaching carries its PREFIX (the suffix list was pinned, the prefix was not)" {
+              match Weir.Check.typecheck Weir.Builtins.typeEnvStrict (parse "[1] |> map (fun x -> x)") with
+              | Error terr -> Expect.stringContains terr.Message "is module-qualified here" "the prefix fragment"
+              | Ok _ -> failtest "bare map must not resolve in the strict env"
+          } ]
+
 let sizedFindingsTests =
     // the sized findings [D:sized-findings]: the read side's weir shapes
     // (fragments — FParsec never touches these but the fragment habit
@@ -10477,6 +10620,7 @@ let allTests =
           sizeTests
           windowsFindingsTests
           sizedFindingsTests
+          pinsWalkTests
           secretTests
           httpTests
           dupTypeTests
