@@ -782,6 +782,25 @@ let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: 
 /// DECLARES IT (an imported type re-analyzes its module); qualified
 /// module members; the import path itself; a signed command's head
 /// (the sig file) and flags (the field declaration) [D:lsp-cross-file].
+// cursor within the `schema=<name>` token of a district marker
+// [D:schema-hover]. The joined text's FIRST occurrence is the head's
+// (body data joins after it), so the span needs no sentinel walk.
+let private onSchemaToken (name: string) (text: string) (jcol: int) : bool =
+    let idx = text.IndexOf("schema=" + name)
+
+    idx >= 0 && jcol - 1 >= idx && jcol - 1 < idx + "schema=".Length + name.Length
+
+// the declared schema NAME when the cursor sits on its token: off the
+// TEYaml node itself — the name is a vendored FILE, not an env.Types
+// entry, so the type-argument arm cannot render it [D:schema-hover]
+let private schemaTokenAt (chk: Script.CheckedStatement) (text: string) (jcol: int) : string option =
+    teOf chk
+    |> Option.bind (fun te -> nodeAt te jcol)
+    |> Option.bind (fun nd ->
+        match nd.Kind with
+        | Check.TEYaml(_, Some name) when onSchemaToken name text jcol -> Some name
+        | _ -> None)
+
 let definitionTarget
     (path: string)
     (lines: string list)
@@ -974,6 +993,13 @@ let definitionTarget
 
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
+                    // the schema= NAME opens the vendored file [D:schema-hover]
+                    // — the checker's own resolution; a not-vendored name
+                    // stays quiet (the hover carries the teaching)
+                    | Check.TEYaml(_, Some sname) when onSchemaToken sname useLl.Text jcol ->
+                        (match Script.resolveSchemaFile path sname with
+                         | Ok(_, file) -> Some(Some file, 1, 1, 0)
+                         | Error _ -> None)
                     | _ -> None)
                 |> Option.orElseWith sigSite)
 
@@ -1149,6 +1175,67 @@ let private typeDefHover (env: TypeEnv) (tyName: string) : string option =
                 | None -> cn)
             |> String.concat " | ")
 
+// the schema= name's hover [D:schema-hover]: FILE facts, not type facts
+// — the resolved vendored path, the lock's provenance, and whether the
+// schema can catch unknown fields (the line validation working depends
+// on). Sources: the lockfile and the vendored file, read per hover — no
+// cache, the stateless discipline. A miss or an unusable file renders
+// the CHECKER's words for that state, never a second phrasing.
+let private schemaHover (path: string) (name: string) : string option =
+    match Script.resolveSchemaFile path name with
+    | Error e -> Some e
+    | Ok(weirDir, file) ->
+        match
+            (try
+                Ok(IO.File.ReadAllText file)
+             with ex ->
+                 Error $"schema '{name}': cannot read {file} — {ex.Message}")
+        with
+        | Error e -> Some e
+        | Ok txt ->
+            match Contracts.parseSchema name txt with
+            | Error e -> Some e
+            | Ok _ ->
+                use doc = Text.Json.JsonDocument.Parse txt
+
+                let strictness =
+                    if Contracts.anyClosedProps doc.RootElement then
+                        "strict (unknown fields are caught)"
+                    else
+                        "permissive: no `additionalProperties: false` anywhere, so unknown-field checking will NOT fire"
+
+                let source =
+                    match Contracts.readLock weirDir with
+                    | Ok entries ->
+                        entries
+                        |> List.tryPick (fun e ->
+                            if e.Kind = "schema" && e.Name = name then
+                                Some $"source: {e.Url}"
+                            else
+                                None)
+                    | Error _ -> None
+                    |> Option.defaultValue "source: not in the lock (hand-placed)"
+
+                let ann (key: string) =
+                    if doc.RootElement.ValueKind = Text.Json.JsonValueKind.Object then
+                        match doc.RootElement.TryGetProperty key with
+                        | true, v when v.ValueKind = Text.Json.JsonValueKind.String -> Some(v.GetString())
+                        | _ -> None
+                    else
+                        None
+
+                let what =
+                    match ann "title", ann "description" with
+                    | Some t, Some d -> [ $"{t} — {d}" ]
+                    | Some t, None -> [ t ]
+                    | None, Some d -> [ d ]
+                    | None, None -> []
+
+                Some(
+                    $"schema={name} — {strictness}\n\n"
+                    + String.concat "\n" ([ file; source ] @ what)
+                )
+
 /// hover text at (1-based physical line, col), or None. Pure. TYPE first,
 /// then the `///` doc. Silence guard first [D:hover-silence]; then the
 /// type from the binder/param/typed-node/scheme, with a field IN A LITERAL
@@ -1165,6 +1252,14 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         && (formWordHover chk.Env ll.Text jcol).IsSome
         ->
         formWordHover chk.Env ll.Text jcol
+    | Some(ll, chk, jcol) when
+        not (inStringOrComment lines line col)
+        && (schemaTokenAt chk ll.Text jcol).IsSome
+        ->
+        // the schema= name: file facts off the checker's resolution
+        // [D:schema-hover] — never the district's own type (the
+        // enclosing-node leak this arm retires)
+        schemaTokenAt chk ll.Text jcol |> Option.bind (schemaHover path)
     | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
         // an inner-let binder hovers as its ANNOTATED signature (names +
         // types), degrading to the arrow when it has no named params

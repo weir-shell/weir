@@ -29,7 +29,12 @@ predicate role, `from`/`to` their adapters — and none of them fires
 inside a string or comment. A type argument (`Config` in
 `from json Config`, and the `from yaml`/`Env.load`/`Args.load`
 positions) hovers the type's OWN shape and `///` doc, identical to
-hovering it at its declaration. Two
+hovering it at its declaration. A `schema=` name hovers its FILE's
+facts [D:schema-hover] — the resolved vendored path, the lock's
+source URL, and whether the schema is strict (without an
+`additionalProperties: false` it cannot catch unknown fields); a
+not-vendored name teaches `weir restore`/`weir add` in the checker's
+words, and definition opens the vendored file. Two
 facts every block encodes, matching `weir fmt`: comment token `//`,
 indent 4 spaces. The formatting request runs `weir fmt`'s canonical
 pipeline — editor options (tabSize etc.) are ignored by design, so a
