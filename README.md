@@ -1,9 +1,10 @@
 # weir
 
-A typed shell scripting language inspired by F#. Real commands, real
-expressions, and a type checker that runs over the whole file — PATH
-lookups included — before anything executes, so a broken script
-fails up front instead of halfway through its side effects.
+A typed shell scripting language inspired by F#. Shell commands and
+typed expressions share one syntax — no strings passed to a shell —
+and the type checker runs over the whole file, PATH lookups
+included, before anything executes: a broken script fails up front
+instead of halfway through its side effects.
 
 ```
 #!/usr/bin/env weir
