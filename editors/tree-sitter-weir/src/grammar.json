@@ -663,6 +663,10 @@
               "members": [
                 {
                   "type": "STRING",
+                  "value": "jsonl"
+                },
+                {
+                  "type": "STRING",
                   "value": "json"
                 },
                 {

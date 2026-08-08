@@ -2225,7 +2225,7 @@ type J = {
     /// the n
     N: int
 }
-let j = echo '{"N": 5}' |> from json J |> Seq.head
+let j = echo '{"N": 5}' |> from json J
 print j.N
 WEOF
 out=$($BIN "$adir/attrs-json.weir")
@@ -2236,7 +2236,7 @@ expect "from json loads a documented record identically (/// inert)" "5" "$out"
 cat > "$adir/json-option.weir" <<'WEOF'
 type R = { name: string; age: Option<int> }
 let rows = ["{\"name\":\"a\",\"age\":5}"; "{\"name\":\"b\"}"; "{\"name\":\"c\",\"age\":null}"]
-rows |> from json R |> to json |> Seq.iter print
+rows |> from jsonl R |> to json |> Seq.iter print
 WEOF
 out=$($BIN "$adir/json-option.weir")
 expect "json Option: Some writes, None (missing or null) omits the key" \

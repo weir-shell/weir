@@ -41,7 +41,7 @@ let stars =
     |> Seq.pmap (fun path ->
         let resp =
             Http.send { Http.get $"{api}/projects/{path}" with timeout = cli.timeout }
-        let p = resp.body |> from json Project |> Seq.head
+        let p = resp.body |> from json Project
         $"{p.name}: {p.star_count} stars")
 
 if cli.verbose then printerr $"fetched {stars |> Seq.length} projects"

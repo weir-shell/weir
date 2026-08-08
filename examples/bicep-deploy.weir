@@ -78,8 +78,8 @@ let azureLogin t =
     header "azure login"
     let tok = Env.load TokenEnv
     let oidc =
-        $(curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" |> from json Oidc)
-        |> Seq.head
+        $(curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange")
+        |> from json Oidc
     let e = targetEnv t
     within env e
         az login --output table --federated-token (oidc.value) --service-principal --username (envVal t "AZURE_CLIENT_ID") --tenant (envVal t "AZURE_TENANT_ID")

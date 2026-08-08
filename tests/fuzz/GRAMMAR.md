@@ -89,7 +89,7 @@ composition, not type complexity.
   [D:raw-strings]; multiline string VALUES exist via yaml block
   scalars, covered by the yaml-district entry above)
 - the RETIRED `!`/`!name` district markers (now a teaching error) and env sigils (`$e`/`!e`);
-  `sh -c` lines; `| from json` adapters; exit reifiers; a third of flat
+  `sh -c` lines; `| from jsonl` adapters; exit reifiers; a third of flat
 matches render as `(function | arms) scrut` [D:function-keyword]
   (`succeeds`/`complete`/`orFail`/`exitCode` — outside the MAIN
   grammar; reifier CHAINS are swept by invariant 6's dedicated

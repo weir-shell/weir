@@ -223,8 +223,8 @@ print word
 ## Coming from PowerShell
 
 The instinct to check first: weir does carry structured values
-through pipelines. `ls` yields typed rows, `from json T` yields
-records of your declared shape, and `_.name` is field access on a piped record —
+through pipelines. `ls` yields typed rows, `from json T` yields a
+record of your declared shape (`from jsonl T` a stream of them), and `_.name` is field access on a piped record —
 row-polymorphic, so it works on any record with the field, which is
 what a `Where-Object` hand expects and does not expect from a
 statically typed language.
@@ -298,7 +298,7 @@ splice is one word, and no shell ever re-parses your line.
 ```weir
 type Cfg = { name: string; port: int }
 let text = """{ "name": "api", "port": 8080 }"""
-let cfg = [text] |> from json Cfg |> Seq.head
+let cfg = [text] |> from json Cfg
 print $"{cfg.name}:{cfg.port}"
 ```
 

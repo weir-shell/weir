@@ -243,7 +243,7 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
         | Error _ -> []
     elif word = "" && Weir.Parser.isYamlMarkerPiece (before.TrimEnd()) then
         [ "schema=" ]
-    elif before.EndsWith "from json" then
+    elif before.EndsWith "from json" || before.EndsWith "from jsonl" then
         env.Types
         |> Map.toList
         |> List.choose (fun (n, def) ->

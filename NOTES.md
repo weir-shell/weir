@@ -1,5 +1,45 @@
 # Spike Notes
 
+## from json reads a document; from jsonl reads lines (2026-08-08)
+
+The rename fixed a backwards default. `from json` was an NDJSON
+adapter wearing the plain name, which made the HTTP docs' headline —
+"body pipes straight into from json T" — true only for servers that
+minify. Now the plain name carries the common case: `from json T`
+joins its elements internally and parses one document, so
+`resp.body |> from json Peer` is the entire spelling against a
+pretty-printed body. The join idiom this repo taught YESTERDAY
+(wrap, join, head — three taxes) lived one day and is retired; the
+GUIDE block that demonstrated it now demonstrates the two-adapter
+distinction instead. `from jsonl` took the old behavior under the
+name the format actually goes by, and since it is the shape
+`to json` writes, the roundtrip reads `to json |> from jsonl`.
+
+The array question got its honest answer: `type Peers = seq<Peer>`
+is not expressible (probed — weir has no type aliases), so a
+top-level array document has no typed spelling, and the located
+error says exactly that — an array where an object was expected,
+lines-users pointed at jsonl, nothing promised. The blocker is
+reported here rather than papered over with sniffing: neither
+adapter inspects its input to decide what it means.
+
+The raw-leak sweep closed with a count. Six sibling boundaries
+probed across the two sessions — from yaml, to json/to yaml, the
+schema validator, Env.fromFile, Env.load, Args.load — every one
+already wraps its parser's errors in weir's words. from json was
+the only leaker, the third historical instance of the class
+(floats' FormatException refusal, File's read side, this); zero
+remain. The class rule stands in [D:json-boundary]: a boundary
+loader that hands a value to a .NET parser owes its own error
+wrapper.
+
+Every migrated call site came out shorter or unchanged — none
+longer. The document-form sites dropped their `|> Seq.head`; the
+stream sites renamed to jsonl and kept their shape. The GUIDE's
+list-endpoint example became a single-item endpoint, because a list
+endpoint genuinely cannot be read yet — the docs now say the true
+thing instead of the aspirational thing.
+
 ## the json boundary: a class closed, an idiom written down (2026-08-08)
 
 The probe session's verdict was docs-not-member-not-type, and both
