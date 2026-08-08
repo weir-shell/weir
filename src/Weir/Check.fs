@@ -1750,9 +1750,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | EField({ Kind = EVar "Env" }, "load", _), [ arg ] when
                 not (Map.containsKey "Env" env.Values) && Map.containsKey "Env" env.Modules
                 ->
-                // Env.load T — the third typed-boundary instance (porcelain,
-                // from json, env). Imitates from-json's type-name-in-special-
-                // position resolution, relocated to expression position.
+                // Env.load T — a typed-boundary instance (from json, env).
+                // Imitates from-json's type-name-in-special-position
+                // resolution, relocated to expression position.
                 (match arg.Kind with
                  | EVar tyName ->
                      match Map.tryFind tyName env.Types with
@@ -2397,15 +2397,6 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EFrom(fmt, tyName) ->
         result {
             match fmt, tyName with
-            | "porcelain", None ->
-                match Map.tryFind "Change" env.Types with
-                | Some(Record def) ->
-                    return
-                        { Kind = TEFrom("porcelain", def)
-                          Ty = TFun(TSeq TStr, TSeq(TNamed("Change", [])))
-                          Span = expr.Span }
-                | _ -> return! err expr.Span "the porcelain adapter needs the builtin Change record"
-            | "porcelain", Some _ -> return! err expr.Span "'from porcelain' has a fixed row type (Change)"
             | "json", Some name ->
                 match Map.tryFind name env.Types with
                 | Some(Record def) when def.Params.IsEmpty ->
@@ -2434,7 +2425,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from yaml' needs a record"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
             | "yaml", None -> return! err expr.Span "'from yaml' needs a record name, e.g. from yaml Deployment"
-            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, porcelain, yaml"
+            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, yaml"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
     | EYaml(tpl, schema) ->

@@ -132,7 +132,7 @@
       }
     },
     "adapter-word": {
-      "match": "\\b(from|to)[ \\t]+(json|yaml|porcelain)\\b",
+      "match": "\\b(from|to)[ \\t]+(json|yaml)\\b",
       "captures": {
         "1": {
           "name": "keyword.control.weir"

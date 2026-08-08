@@ -863,64 +863,6 @@ let boundaryTests =
               skipOnWindows ()
               runReal "sh -c \"exit 3\"" |> ignore
           }
-          test "porcelain adapter parses status lines" {
-              let src =
-                  VSeq
-                      [ VStr " M a.txt"
-                        VStr "A  b.txt"
-                        VStr "?? c.txt"
-                        VStr "R  old.txt -> new.txt" ]
-
-              let result = runWith [ "src", src ] "src |> from porcelain" |> forceSeq
-
-              let change status staged unstaged path =
-                  VRecord(
-                      "Change",
-                      Map
-                          [ "status", VStr status
-                            "staged", VBool staged
-                            "unstaged", VBool unstaged
-                            "path", VStr path ]
-                  )
-
-              Expect.equal
-                  result
-                  [ change " M" false true "a.txt"
-                    change "A " true false "b.txt"
-                    change "??" false true "c.txt"
-                    change "R " true false "new.txt" ]
-                  ""
-          }
-          test "acceptance: git status |> from porcelain |> where staged on a real repo" {
-              skipOnWindows ()
-
-              let dir =
-                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-{System.Guid.NewGuid():N}"))
-
-              let setup =
-                  $"mkdir -p {dir} && cd {dir} && git init -q && echo a > staged.txt && echo b > untracked.txt && git add staged.txt"
-
-              let psi = System.Diagnostics.ProcessStartInfo("/bin/sh")
-              psi.ArgumentList.Add "-c"
-              psi.ArgumentList.Add setup
-              use p = System.Diagnostics.Process.Start psi
-              p.WaitForExit()
-              Expect.equal p.ExitCode 0 "repo setup"
-
-              try
-                  let result =
-                      runReal
-                          $"sh -c \"cd {dir} && git status --porcelain\" |> from porcelain |> where (fun c -> c.staged)"
-                      |> forceSeq
-
-                  match result with
-                  | [ VRecord("Change", fields) ] ->
-                      Expect.equal fields["path"] (VStr "staged.txt") "path"
-                      Expect.equal fields["staged"] (VBool true) "staged"
-                  | other -> failtest $"unexpected result: {other}"
-              finally
-                  Directory.Delete(dir, true)
-          }
           test "to json serializes records as ndjson" {
               Expect.equal
                   (run "ls |> first 1 |> to json" |> forceSeq)
@@ -1571,8 +1513,8 @@ let boundaryTests =
           }
           test "from can be let-bound" {
               expectValue
-                  "let p = from porcelain in [\"A  x.txt\"] |> p |> first 1 |> map (fun c -> c.path)"
-                  (VSeq [ VStr "x.txt" ])
+                  "let p = from json FileRow in [\"{\\\"name\\\": \\\"x\\\", \\\"bytes\\\": 1, \\\"readOnly\\\": false}\"] |> p |> first 1 |> map (fun f -> f.name)"
+                  (VSeq [ VStr "x" ])
           } ]
 
 let boundaryCheckTests =
@@ -1593,11 +1535,8 @@ let boundaryCheckTests =
           test "from yaml needs a record name [D:yaml-v1]" {
               Expect.stringContains (checkErr "[\"x\"] |> from yaml").Message "'from yaml' needs a record name" ""
           }
-          test "from porcelain takes no type name" {
-              Expect.stringContains (checkErr "[\"x\"] |> from porcelain Proc").Message "fixed row type" ""
-          }
           test "piping a non-string seq into from is rejected" {
-              Expect.stringContains (checkErr "nats |> from porcelain").Message "expected string, got int" ""
+              Expect.stringContains (checkErr "nats |> from json FileRow").Message "expected string, got int" ""
           }
           test "to json on a union seq is rejected" {
               let e = "let xs = nats |> map (fun n -> Running n) in xs |> to json"
@@ -1781,9 +1720,9 @@ let completionTests =
               Expect.equal (suggest "Args.lo" 0) [ "Args.load" ] "prefix narrows to the arm"
           }
           test "later pipeline stages track the element type" {
-              let text = "[\"A  x.txt\"] |> from porcelain |> where (fun c -> c."
+              let text = "[\"{}\"] |> from json FileRow |> where (fun c -> c."
 
-              Expect.equal (suggest text (text.Length - 2)) [ "c.path"; "c.staged"; "c.status"; "c.unstaged" ] ""
+              Expect.equal (suggest text (text.Length - 2)) [ "c.bytes"; "c.name"; "c.readOnly" ] ""
           }
           test "holes: unbound args in a known pipeline still type the element" {
               // n is an enclosing param (unbound here) - Seq.skip's result
@@ -1798,7 +1737,7 @@ let completionTests =
           test "from json completes record names" {
               let text = "[\"x\"] |> from json "
               Expect.contains (suggest text text.Length) "FileRow" ""
-              Expect.contains (suggest text text.Length) "Change" ""
+              Expect.contains (suggest text text.Length) "EnvVar" ""
           } ]
 
 let rowTests =
@@ -4261,7 +4200,7 @@ let adapterFormTests =
               match Weir.Lsp.hoverType lines 2 22 with
               | Some h ->
                   Expect.stringContains h "from <adapter>" "the form"
-                  Expect.stringContains h "json, porcelain, yaml" "every from-adapter, derived"
+                  Expect.stringContains h "json, yaml" "every from-adapter, derived"
               | None -> failtest "from must answer"
 
               let t = [ "let back = rows |> to yaml" ]
@@ -4270,7 +4209,6 @@ let adapterFormTests =
               | Some h ->
                   Expect.stringContains h "to <adapter>" "the form"
                   Expect.stringContains h "json, yaml" "the to-adapters"
-                  Expect.isFalse (h.Contains "porcelain") "to omits the read-only adapter"
               | None -> failtest "to must answer"
           }
           test "the adapter WORD's own hover is unchanged — signature + doc, not touched" {
@@ -4284,15 +4222,14 @@ let adapterFormTests =
               | None -> failtest "the adapter word must still hover"
           }
           test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
-              Expect.equal (sug "xs |> from ") [ "json"; "porcelain"; "yaml" ] "every from-adapter"
+              Expect.equal (sug "xs |> from ") [ "json"; "yaml" ] "every from-adapter"
               Expect.equal (sug "xs |> from j") [ "json" ] "prefix-filtered"
-              Expect.equal (sug "xs |> to ") [ "json"; "yaml" ] "to omits porcelain"
-              Expect.equal (sug "xs |> to por") [] "to never offers a read-only adapter"
-              Expect.isFalse (sug "xs |> into " = [ "json"; "porcelain"; "yaml" ]) "boundary: into is not from"
+              Expect.equal (sug "xs |> to ") [ "json"; "yaml" ] "every to-adapter"
+              Expect.isFalse (sug "xs |> into " = [ "json"; "yaml" ]) "boundary: into is not from"
           }
           test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
-              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "porcelain"; "yaml" ] "from"
-              Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "yaml" ] "to — read-only excluded"
+              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "yaml" ] "from"
+              Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "yaml" ] "to"
           }
           test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {
               Expect.equal (Weir.Lsp.hoverType [ "let m = \"read from json\""; "print m" ] 1 15) None "from in a string"
@@ -8586,24 +8523,6 @@ let adversarialTests =
               match (checkOk "fun f -> (f.A > 1) == (let f = \"s\" in f == \"s\")").Ty with
               | TFun(TRowVar(_, [ "A", TInt ]), TBool) -> ()
               | t -> failtest $"expected {{ A: int; .. }} -> bool, got {formatTy t}"
-          }
-          test "porcelain unquotes C-quoted paths" {
-              let src =
-                  VSeq
-                      [ VStr " M \"spaced name.txt\""
-                        VStr "?? \"qu\\\"ote.txt\""
-                        VStr "?? \"caf\\303\\251.txt\""
-                        VStr "R  \"old name.txt\" -> \"new name.txt\""
-                        VStr "R  plain.txt -> renamed.txt" ]
-
-              Expect.equal
-                  (runWith [ "src", src ] "src |> from porcelain |> map _.path" |> forceSeq)
-                  [ VStr "spaced name.txt"
-                    VStr "qu\"ote.txt"
-                    VStr "café.txt"
-                    VStr "new name.txt"
-                    VStr "renamed.txt" ]
-                  ""
           } ]
 
 // ---- Windows v1, session 1 [D:windows-v1] — both-ways platform pins:

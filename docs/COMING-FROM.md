@@ -222,8 +222,8 @@ print word
 ## Coming from PowerShell
 
 The instinct to check first: weir does carry structured values
-through pipelines. `ls` yields typed rows, `from porcelain` yields
-change records, and `_.staged` is field access on a piped record —
+through pipelines. `ls` yields typed rows, `from json T` yields
+records of your declared shape, and `_.name` is field access on a piped record —
 row-polymorphic, so it works on any record with the field, which is
 what a `Where-Object` hand expects and does not expect from a
 statically typed language.
@@ -237,7 +237,7 @@ statically typed language.
 | `$LASTEXITCODE` | `cmd \| exitCode` |
 
 ```weir
-git status --porcelain |> from porcelain |> Seq.where _.staged |> Seq.map _.path |> print
+git status --porcelain |> Seq.choose (fun l -> match l with | Regex @"^.. (.*)$" path -> Some path | _ -> None) |> print
 ```
 
 **The one thing that will catch you out:** the pipeline is TWO
@@ -247,7 +247,7 @@ to and from external programs; `|>` carries values between functions;
 the right-hand side decides, and a mismatch errors naming the other
 spelling. The conversion between them is yours to declare:
 PowerShell's cmdlets ARE its adapters, whereas weir orchestrates
-programs that emit text, and `from porcelain` / `from json T` /
+programs that emit text, and `from json T` /
 `from yaml T` are where text becomes structure — against your
 declared shape.
 

@@ -261,14 +261,16 @@ weir $probe --out assert-me | orFail "the probe broke"
 let loud = ["alpha"; "beta"] | weir $probe --upper |> Seq.head
 print $"stdin-piped upcase: {loud}"
 
-// typed command output: porcelain and json adapters
-// the #sig at the file head checks git's flags: `--porcelian` here
-// would WARN with a did-you-mean (partial signature — the e2e battery
-// carries the executable proof of the catch)
+// typed command output: the Regex pattern for line shapes, the json
+// adapter for structure. The #sig at the file head checks git's
+// flags: `--porcelian` here would WARN with a did-you-mean (partial
+// signature — the e2e battery carries the executable proof)
 let staged =
     git status --porcelain
-    |> from porcelain
-    |> Seq.where _.staged
+    |> Seq.choose (fun l ->
+        match l with
+        | Regex @"^[^ ?]. (.*)$" path -> Some path
+        | _ -> None)
     |> Seq.length
 
 print $"staged files here: {staged}"

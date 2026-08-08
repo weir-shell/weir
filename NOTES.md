@@ -1,5 +1,34 @@
 # Spike Notes
 
+## the porcelain adapter retired (2026-08-08)
+
+Pure subtraction, the drop-command-builtins shape. `from porcelain`
+was the adapter family's odd member on every axis: hardwired to the
+builtin Change record where json/yaml are generic over a shape the
+user declares; one external tool's one subcommand parsed inside the
+binary, in a language whose command knowledge otherwise lives in
+signature FILES; read-only where the others round-trip; and brittle
+against git's own surface — `--porcelain=v2`, a `--branch` header
+line, or `-z` termination all killed the pipeline at runtime. It read
+like the proof-of-concept the real adapters grew out of, because it
+was.
+
+Nothing replaced it because the replacements pre-existed: `from json
+T` / `from yaml T` where the output is structured, and the
+arity-typed Regex pattern with Seq.choose where it is line-shaped —
+that spelling now stands in every place the adapter used to
+(README's snippet, the showcase's typed-output section, repo-report
+declaring its OWN Change record, SKILL/GUIDE/COMING-FROM blocks, all
+checked by CI). The from/to inventories came out symmetric —
+{json, yaml} in both directions — which deleted the read-only
+asymmetry caveat from adapterNames and two pins that existed only to
+assert it.
+
+The one deliberate survivor: `git status --porcelain` as an ARGV
+WORD, in fixtures, the git signature, and the docs' replacement
+spellings — that is git's flag, not our adapter, and parsing its
+output with a Regex you can see is exactly the point.
+
 ## the full DECISIONS-to-pins walk (2026-08-07)
 
 All 182 rows categorized: 159 pinned, 16 partial, 0 unpinned, 7

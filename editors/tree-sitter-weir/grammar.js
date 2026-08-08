@@ -151,9 +151,8 @@ module.exports = grammar({
     // `yaml` this doubles as the district exclusion — longest-match at the
     // `to`/`from` boundary means the external scanner is never consulted at
     // the `yaml` position, so an adapter can never open a district
-    // [D:yaml-district]. Over-accepts `to porcelain` (a renderer bound; the
-    // checker rejects it — porcelain is read-only).
-    adapter: _ => token(prec(3, seq(choice('to', 'from'), /[ \t]+/, choice('json', 'yaml', 'porcelain')))),
+    // [D:yaml-district].
+    adapter: _ => token(prec(3, seq(choice('to', 'from'), /[ \t]+/, choice('json', 'yaml')))),
 
     number: _ => token(/\d+/),
 

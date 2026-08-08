@@ -775,7 +775,7 @@ quantity semantics now.
   flows external→external (`|`)→function (`|>`). A mismatch teaches both
   ways: `cmd | fn` → "'|' chains commands; pipe expressions with '|>'";
   `expr |> cmd` → "'|>' applies functions; feed a program with '|'", each
-  anchored on the glyph/program. Adapters (`from json`/`from porcelain`/`to
+  anchored on the glyph/program. Adapters (`from json`/`from yaml`/`to
   json`) are functions → `|>`.
 - **Arguments**: barewords run until whitespace, `|`, `(`, `)`, quotes, `$`, or
   end of line — `/`, `.`, `-`, `=`, `%` are ordinary characters. `"..."`
@@ -965,7 +965,7 @@ quantity semantics now.
   there is deliberately no `$NAME` expansion in command text
   (splices and interpolation are the typed spellings).
 - **`Env.load T`** (2026-07-20) — the third typed-boundary instance
-  (porcelain, from json, env): declare a monomorphic record whose
+  (from json, env; the porcelain adapter, since retired): declare a monomorphic record whose
   field names are env-var names VERBATIM (no case mapping —
   conventions guess at deployments; verbatim is inspectable), fields
   scalars or Option-of-scalar (bool is EXACTLY true/false — 1/yes
@@ -979,7 +979,7 @@ quantity semantics now.
   member ships. Line one `#!` is skipped by the runner; `#` at line head is
   reserved for directives.
 - **`Args.load T`** [D:typed-argv] — the sixth typed-boundary
-  instance (porcelain, from json, env, dotenv; http parked — the park's AOT leg resolved 2026-08-01 [HttpClient verified on the published binary, HTTPS included] and its trigger named: a typed REQUEST body cannot reach the wire through curl without silently-mangling flag arcana; draft at plans/PLAN-http-builtin.md): the
+  instance (from json, env, dotenv; the porcelain adapter, since retired; http parked — the park's AOT leg resolved 2026-08-01 [HttpClient verified on the published binary, HTTPS included] and its trigger named: a typed REQUEST body cannot reach the wire through curl without silently-mangling flag arcana; draft at plans/PLAN-http-builtin.md): the
   script's own front door was the last unchecked boundary in a
   fail-before-effects language. Two declared shapes: a monomorphic
   RECORD of flags, or a UNION of record-payload cases as
@@ -1537,7 +1537,7 @@ quantity semantics now.
   they were warnings, and `match failure` was a deliberate runtime
   class — both retired together, see the booleans bullet). The
   deliberate runtime failure classes: boundary validation
-  (`from json`/`from porcelain` reject malformed lines per line),
+  (`from json`/`from yaml` reject malformed input per line/document),
   arithmetic (division by zero), and **user-raised `fail "reason"`**
   (added 2026-07-18 from the agent-dogfooding ledger: `string -> unit`,
   halts with a located error and exit 1 — the checking-script idiom is

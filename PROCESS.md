@@ -144,7 +144,7 @@ friction entries deserve a re-read under it.
 - Claim-vs-behavior: features ship with pins that would fail if the
   claim drifts; doc examples are executed (skill-doc).
 - Reject-don't-guess at typed boundaries; every rejection names its
-  escape hatch (from porcelain/json, Env.load, Env.fromFile).
+  escape hatch (from json, Env.load, Env.fromFile).
 - Receipts before features: parked items reopen on recorded
   triggers; user fiat can override, and the override is recorded as
   such (env-sugar layers).
@@ -190,7 +190,7 @@ distinction that settled the operators question, stated once so the
 next form-keyword is not decided from scratch.
 
 **Colour.** A weir form-word is lexically an ordinary lowercase
-identifier — `cd`, `json`, `porcelain`, `configmap` — so a grammar
+identifier — `cd`, `json`, `configmap` — so a grammar
 colouring by lexical SHAPE cannot tell it from a binding. Only an
 explicit list can. That is structural, not per-feature: every future
 closed set of form-words arrives with the same colour gap, and the fix
