@@ -61,9 +61,7 @@ the only type annotation in the script: everything else is inferred.
   type that doesn't support them is a check error, not a runtime
   surprise.
 - **Fast.** ~7ms cold start, one AOT binary, shebang-friendly.
-- **Cross-platform.** Linux, macOS, and Windows, same argv law on
-  all three; on Windows bare commands resolve through PATHEXT and
-  `Path` members speak Windows spellings.
+- **Cross-platform.** Linux, macOS, and Windows.
 - **Tooling from the runner's own pipeline.** `weir check [--json]`,
   an LSP (diagnostics, hover, completion, semantic tokens), and a
   REPL with completion and history. Editor setup for Neovim, Helix,
