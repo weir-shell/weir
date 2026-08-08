@@ -14,6 +14,12 @@ type Cli = {
 }
 let cli = Args.load Cli
 
+// env vars load into a record too; Option is the honest type for a
+// var that may be absent
+type EnvCfg = { GITLAB_API: Option<string> }
+let env = Env.load EnvCfg
+let api = env.GITLAB_API |> Option.defaultValue "https://gitlab.com/api/v4"
+
 // the pattern has two capture groups, so the match binds two names —
 // the checker counts them before anything runs
 let commits =
@@ -26,25 +32,28 @@ let commits =
 print "latest commits:"
 commits |> print
 
-// probe every endpoint in parallel; a bad status is a value to
-// branch on, not an exception
-let endpoints = ["https://github.com"; "https://gitlab.com"]
+// JSON responses become records of a shape you declare; the fetches
+// fan out in parallel, each under the flag's timeout
+type Project = { name: string; star_count: int }
 
-let checks =
-    endpoints
-    |> Seq.pmap (fun url ->
-        let r = Http.send { Http.get url with timeout = cli.timeout }
-        $"{r.status}  {url}")
+let stars =
+    ["inkscape%2Finkscape"; "gitlab-org%2Fgitlab"]
+    |> Seq.pmap (fun path ->
+        let resp =
+            Http.send { Http.get $"{api}/projects/{path}" with timeout = cli.timeout }
+        let p = resp.body |> from json Project |> Seq.head
+        $"{p.name}: {p.star_count} stars")
 
-if cli.verbose then printerr $"probed {checks |> Seq.length} endpoints"
-checks |> print
+if cli.verbose then printerr $"fetched {stars |> Seq.length} projects"
+stars |> print
 ```
 
 `--verbose`, `--timeout 10s`, and `--help` all derive from the
-record. The `Regex` pattern binds one name per capture group — two
-groups here, two names — and a miscount is a check error, not a
-silent `None`. The `Cli` record is the only type annotation in the
-script: everything else is inferred.
+record; env vars load the same way. The `Regex` pattern binds one
+name per capture group — two groups here, two names — and a miscount
+is a check error, not a silent `None`. The three record declarations
+are the only types written anywhere: every other binding is
+inferred.
 
 ## What you get
 
