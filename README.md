@@ -53,8 +53,8 @@ binders is a type error, not a silent `None`.
   HTTP is a typed request/response pair; `Secret` renders as `***`
   in every renderer.
 - **Parallel fan-out.** `Seq.pmap`/`Seq.piter` with per-worker
-  session forks. No async machinery, ever — wanting it is the
-  signal to graduate to full F#.
+  session forks — asynchronous underneath (.NET tasks), synchronous
+  in your script: no async/await surface to thread through.
 - **Inferred constraints, zero runtime type checks.** `==`, `show`,
   and `Seq.sortBy` are generic; every check is static.
 - **Fast.** ~7ms cold start, one AOT binary, shebang-friendly.
