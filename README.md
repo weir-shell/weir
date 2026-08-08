@@ -72,7 +72,7 @@ script: everything else is inferred.
   on any type that supports them — no annotations to write, and a
   type that doesn't support them is a check error, not a runtime
   surprise.
-- **Fast.** ~7ms cold start, one AOT binary, shebang-friendly.
+- **Fast.** One static binary, millisecond start — fine for shebangs.
 - **Cross-platform.** Linux, macOS, and Windows.
 - **Editor and CLI tooling.** `weir check [--json]`, an LSP
   (diagnostics, hover, completion, semantic tokens), and a REPL with
