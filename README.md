@@ -31,7 +31,8 @@ match staged with
 
 `--verbose`, `--timeout 90s`, and `--help` all derive from the
 record. The `Regex` pattern is checked too — three groups against two
-binders is a type error, not a silent `None`.
+binders is a type error, not a silent `None`. And the `Cli` record is
+the only type annotation in the script: everything else is inferred.
 
 ## What you get
 
