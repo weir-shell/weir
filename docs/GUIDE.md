@@ -663,11 +663,12 @@ detour (map to `""`, filter empties later) never happens:
 
 ```weir
 ["cache=42"; "noise"; "hits=7"]
-    |> Seq.choose (fun l -> match l with | Regex @"(\w+)=(\d+)" (k, v) -> Some $"{k}: {v}" | _ -> None)
+    |> Seq.choose (function | Regex @"(\w+)=(\d+)" (k, v) -> Some $"{k}: {v}" | _ -> None)
     |> Seq.iter print
 ```
 
-Groups bind as strings (convert explicitly — `Str.tryToInt`). The
+`function` is the implicit-match lambda — `fun x -> match x with`
+in one word, F#'s own shorthand. Groups bind as strings (convert explicitly — `Str.tryToInt`). The
 `Regex` literal is RAW-ONLY — `@"..."`, or `"""..."""` for patterns
 containing quotes; an ordinary escaped string there is a check error,
 so the double-escape footgun cannot be written. Computed patterns

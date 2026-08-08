@@ -1093,10 +1093,23 @@ let private retryPollFormHover (env: TypeEnv) (text: string) (jcol: int) : strin
 /// by the ONE caller to CODE position (the same letters inside a string
 /// or comment are data) — a new form hover joins this union and the
 /// gate covers it; never a second path.
+// `function` answers as a FORM [D:function-keyword]: the implicit-match
+// lambda — the meaning plus the pointer to match, the fourth form word
+// under the stated rule
+let private functionFormHover (text: string) (jcol: int) : string option =
+    wordAt text jcol
+    |> Option.bind (fun w ->
+        match w with
+        | "function" ->
+            Some
+                "function | <pattern> -> <expr> | … — a one-parameter fun whose body matches that parameter (fun x -> match x with …); arms take guards exactly as match does"
+        | _ -> None)
+
 let private formWordHover (env: TypeEnv) (text: string) (jcol: int) : string option =
     withinFormHover text jcol
     |> Option.orElse (adapterFormHover text jcol)
     |> Option.orElse (retryPollFormHover env text jcol)
+    |> Option.orElse (functionFormHover text jcol)
 
 /// is the (1-based) physical column inside a string literal or a trailing
 /// comment on this physical line? [D:within-kinds] The form hovers run

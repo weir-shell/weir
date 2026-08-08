@@ -2699,9 +2699,13 @@ chmod +x "$bldir/bin/function"
 out=$(PATH="$bldir/bin:$PATH" $BIN -e '^function' 2>&1)
 expect "^function reaches a PATH binary (reservation does not block force)" "FN-BINARY" "$out"
 
-errout=$($BIN -e 'let function = 1' 2>&1) && fail "function must be reserved"
-echo "$errout" | grep -qF "fun x -> match x with" || fail "the reservation must teach: $errout"
-echo "e2e ok: function reserved with its teaching hint"
+# the reservation retired into the FEATURE [D:function-keyword]: the
+# form runs; a binder slot refuses with the generic keyword message
+out=$($BIN -e 'print ((function | 0 -> "z" | _ -> "n") 0)')
+[ "$out" = "z" ] || fail "function must evaluate: $out"
+errout=$($BIN -e 'let function = 1' 2>&1) && fail "function as a binder must reject"
+echo "$errout" | grep -qF "'function' is a keyword" || fail "the generic keyword refusal: $errout"
+echo "e2e ok: function lands; keyword slots still refuse"
 
 rm -rf "$bldir"
 

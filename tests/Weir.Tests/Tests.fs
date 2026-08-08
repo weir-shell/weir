@@ -3974,10 +3974,11 @@ let blockLetCmdTests =
                   "unbound variable 'git'"
                   "nested-paren let-in keeps the exclusion"
           }
-          test "function is reserved with its teaching hint" {
+          test "function in a binder slot refuses as a keyword" {
+              // the reservation retired into the FEATURE [D:function-keyword]
               match Weir.Parser.parseStmt "let function = 1" with
-              | Error msg -> Expect.stringContains msg "reserved" "the hint"
-              | Ok _ -> failtest "expected the reservation"
+              | Error msg -> Expect.stringContains msg "'function' is a keyword" "the generic refusal"
+              | Ok _ -> failtest "expected the keyword refusal"
           } ]
 
 let lspCrossFileTests =
@@ -5372,7 +5373,7 @@ let optionSweepTests =
               clean "a splat cannot head a command" "$@xs foo" 1
               clean "a splice cannot join a word" "echo --flag=$x" 13
               clean "a splat cannot join a word" "echo a$@x" 7
-              clean "'function' is reserved" "let function = 1" 5
+              clean "'function' is a keyword" "let function = 1" 5
               clean "'rec' is a keyword" "let rec = 1" 5
               clean "'mutable' is a keyword" "let mutable = 1" 5
               // B: keyword in the PARAM and record-DECL field slots
@@ -8925,6 +8926,84 @@ let httpTests =
                   "an existing query gets & not ?"
           } ]
 
+let functionKeywordTests =
+    // `function` — the implicit-match lambda [D:function-keyword]: every
+    // pin here holds the form to its own definition, `fun x -> match x
+    // with` — same values, same diagnostics, spelling preserved
+    testList
+        "function keyword [D:function-keyword]"
+        [ test "byte-identical to its desugar, value-level" {
+              let a = run "(function | 0 -> \"z\" | n when n > 0 -> \"p\" | _ -> \"n\") 5"
+
+              let b =
+                  run "(fun v -> match v with | 0 -> \"z\" | n when n > 0 -> \"p\" | _ -> \"n\") 5"
+
+              Expect.equal a b "guarded arms agree"
+              Expect.equal a (VStr "p") "and produce the guard's arm"
+          }
+          test "the choose idiom — the receipt's own shape" {
+              expectValue
+                  "[\"a1\"; \"nope\"; \"b2\"] |> Seq.choose (function | Regex @\"([a-z])(\\d)\" (l, d) -> Some $\"{l}{d}\" | _ -> None) |> force"
+                  (VSeq [ VStr "a1"; VStr "b2" ])
+          }
+          test "the first | is optional, as in F#" {
+              let a = run "(function 0 -> \"z\" | _ -> \"n\") 0"
+              Expect.equal a (VStr "z") ""
+          }
+          test "exhaustiveness is match's, message included" {
+              let a = (checkErr "(function | 0 -> \"a\") 1").Message
+              let b = (checkErr "(fun v -> match v with | 0 -> \"a\") 1").Message
+              Expect.equal a b "the two spellings share one diagnostic"
+              Expect.stringContains a "needs a catch-all pattern" ""
+          }
+          test "fmt round-trips the spelling — the trailing (function layout" {
+              let src =
+                  [ "let out ="
+                    "    [\"a1\"; \"b2\"]"
+                    "    |> Seq.choose (function"
+                    "        | Regex @\"([a-z])(\\d)\" (l, d) -> Some $\"{l}{d}\""
+                    "        | _ -> None)"
+                    ""
+                    "out |> print" ]
+
+              match Weir.Fmt.formatLines src with
+              | Ok lines -> Expect.equal lines src "the layout survives fmt"
+              | Error e -> failtest e
+          }
+          test "the reservation is retired: the form parses, the old teaching is gone" {
+              match Weir.Parser.parseExpr "(function | 0 -> 1 | _ -> 2) 3" with
+              | Ok _ -> ()
+              | Error m -> failtest $"the form must parse: {m}"
+
+              // a keyword position still refuses, with the GENERIC message —
+              // the reserved-teaching wording no longer exists anywhere
+              match Weir.Parser.parseStmt "let function = 1" with
+              | Error m ->
+                  Expect.stringContains m "'function' is a keyword" "the generic refusal"
+                  Expect.isFalse (m.Contains "reserved") "the reservation wording retired"
+              | Ok _ -> failtest "'function' as a binder must reject"
+          }
+          test "the form-word hover answers with the meaning and the pointer to match" {
+              let lines =
+                  [ "let f = function"; "    | 0 -> 1"; "    | _ -> 2"; ""; "print (f 0)" ]
+
+              match Weir.Lsp.hoverType lines 1 11 with
+              | Some h -> Expect.stringContains h "fun x -> match x with" "the pointer"
+              | None -> failtest "function must answer as a form"
+          }
+          test "`function` inside a string or comment is data — no discovery hover" {
+              let inStr = Weir.Lsp.hoverType [ "let m = \"a function word\""; "print m" ] 1 14
+
+              match inStr with
+              | Some h -> Expect.isFalse (h.Contains "fun x -> match x with") "a string is data"
+              | None -> ()
+
+              Expect.equal
+                  (Weir.Lsp.hoverType [ "let x = 1 // function | arms"; "print x" ] 1 15)
+                  None
+                  "a comment is data"
+          } ]
+
 let pinsWalkTests =
     // the full DECISIONS-to-pins walk's cheap pins [D:pins-walk]: every
     // test here asserts a teaching message that existed ONLY in the
@@ -10540,6 +10619,7 @@ let allTests =
           windowsFindingsTests
           sizedFindingsTests
           pinsWalkTests
+          functionKeywordTests
           secretTests
           httpTests
           dupTypeTests

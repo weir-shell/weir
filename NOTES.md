@@ -1,5 +1,46 @@
 # Spike Notes
 
+## function — the implicit-match lambda (2026-08-08)
+
+The reservation paid out smaller than the plan sized, twice over.
+
+The blessed plan's one design question — how fmt preserves the
+spelling, flag versus node — dissolved on contact: weir's fmt is
+token-level and has no lambda or match printer, so `function`
+survives formatting by construction (verified idempotent across all
+four layouts, plus a round-trip pin). And the flag itself shrank to
+nothing: the desugar binds the internal name `|function`, which no
+consumer can ever see — completion and did-you-mean pools filter on
+isUserName (first char letter/underscore), the LSP filters |-vars,
+and the name cannot be typed. Zero new AST nodes, zero new arms in
+Check/Eval/Lsp/fuzz printers. Every diagnostic is match's own,
+pinned byte-identical against the spelled-out form.
+
+The real work turned out to be one assembler rule: arms are
+PipeHead lines, and after another pipe line they must sibling-align
+— so `|> Seq.choose (function` followed by deeper arms died with
+"indented off its siblings". The fix is the dedent-join session's
+own vocabulary: line-end `function` joins dangleEnders
+(word-bounded, the `do` precedent), and a dangling pipe line now
+opens a deeper arm group. Unit suite unmoved; the fuzz alternation
+(a third of flat matches render as `(function | arms) scrut`,
+deterministic on Bid parity) holds every invariant across the
+spelling, and three fresh 10k seeds came back clean.
+
+One survey miss worth recording: the walk found three reservation
+sites; a fourth (the let-binder position) surfaced only when its pin
+failed — reservation retirements should grep the MESSAGE, not trust
+the site list. Two old pins asserted the retired teaching and were
+retargeted to the generic keyword refusal.
+
+Adoption followed the bless: SKILL, GUIDE, and repo-report speak
+`function` now; the showcase adopts it in the git-status section but
+its `hits` block deliberately keeps `fun l -> match l with` — the
+tour teaches both spellings side by side. The README stays explicit
+for the same reason stated at bless time: a reader who has never
+seen weir needs the lambda and the match visible to parse what is
+happening.
+
 ## the porcelain adapter retired (2026-08-08)
 
 Pure subtraction, the drop-command-builtins shape. `from porcelain`

@@ -143,7 +143,7 @@
       }
     },
     "keywords": {
-      "match": "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of|from|to|for|do|module|import|within|retry|poll|until)\\b",
+      "match": "\\b(let|in|if|then|elif|else|when|match|with|function|fun|type|of|from|to|for|do|module|import|within|retry|poll|until)\\b",
       "name": "keyword.control.weir"
     },
     "reserved": {
@@ -213,7 +213,7 @@
           "name": "meta.interpolation.weir",
           "patterns": [
             {
-              "match": "\\b(if|then|elif|else|when|match|with|fun|let|in)\\b",
+              "match": "\\b(if|then|elif|else|when|match|with|function|fun|let|in)\\b",
               "name": "keyword.control.weir"
             },
             {

@@ -513,7 +513,19 @@ let pins =
       pin
           "nested multiline lambdas pop innermost-first"
           "let v =\n    [[1]; [2]]\n    |> Seq.map (fun row ->\n        row\n        |> Seq.map (fun c ->\n            let u = c + 1\n            u)\n        |> Seq.sum\n    )\n    |> Seq.sum\n"
-          Same ]
+          Same
+
+      // --- function: the implicit-match lambda [D:function-keyword] ---
+      pin
+          "function is F#'s own desugar (arms, wildcard)"
+          "let f = function | 0 -> \"z\" | _ -> \"n\"\nlet r = f 5\n"
+          Same
+      pin "function: the first | is optional both sides" "let f = function 0 -> \"z\" | _ -> \"n\"\nlet r = f 0\n" Same
+      pin
+          "function: guards ride the arms both sides"
+          "let f = function | n when n > 0 -> 1 | _ -> 0\nlet r = f 2\n"
+          Same
+      pin "function with no arms rejects both sides" "let f = function -> 1\nlet r = 2\n" Same ]
 
 [<Tests>]
 let fidelityTests =

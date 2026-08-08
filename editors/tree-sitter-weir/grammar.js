@@ -82,6 +82,7 @@ module.exports = grammar({
     keyword: _ =>
       choice(
         'in',
+        'function',
         'fun',
         'match',
         'with',

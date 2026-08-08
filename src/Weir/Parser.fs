@@ -40,8 +40,7 @@ let keywords =
           // the general effect loop [D:for-do]
           "for"
           "do"
-          // reserved for the parked match-lambda sugar [D:block-let-cmd
-          // rider]: the future form breaks nothing
+          // the implicit-match lambda [D:function-keyword]
           "function" ]
 
 // the keyword set, exposed for tooling resolvers (weir check's
@@ -224,9 +223,7 @@ let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
 
 let private notKeyword (w: string) =
-    if w = "function" then
-        fail "'function' is reserved; write 'fun x -> match x with'"
-    elif keywords.Contains w then
+    if keywords.Contains w then
         fail $"'{w}' is a keyword"
     else
         preturn w
@@ -500,16 +497,12 @@ let private keywordFieldGuard: Parser<ExprKind, unit> =
     attempt (
         getPosition .>>. spanned rawWord .>> ws .>> followedBy (str_ws "=")
         >>= fun (at, (w, _)) ->
-            if w = "function" || keywords.Contains w then
+            if keywords.Contains w then
                 preturn (at, w)
             else
                 fail "real field"
     )
-    >>= fun (at, w) ->
-        if w = "function" then
-            failFatallyAt at "'function' is reserved; write 'fun x -> match x with'"
-        else
-            failFatallyAt at $"'{w}' is a keyword"
+    >>= fun (at, w) -> failFatallyAt at $"'{w}' is a keyword"
 
 let private recordLit =
     spanned (
@@ -1094,8 +1087,6 @@ let private patWord =
      >>= fun (w, span) ->
          if w = "true" || w = "false" then
              preturn (w, span)
-         elif w = "function" then
-             failFatallyAtCol span.Start.Col "'function' is reserved; write 'fun x -> match x with'"
          elif keywords.Contains w then
              failFatallyAtCol span.Start.Col $"'{w}' is a keyword"
          else
@@ -1419,6 +1410,43 @@ let private matchExpr =
               Span =
                 { Start = pos p
                   End = lastBody.Span.End } })
+
+// function — the implicit-match lambda [D:function-keyword]: F#'s
+// `function | arms` is `fun x -> match x with | arms` exactly. The
+// desugar binds the internal |-binder, so every consumer sees an
+// ordinary lambda over an ordinary match; fmt alone recognizes the
+// shape and prints the spelling back (the |-key discipline:
+// completion/hints filter on isUserName, so the binder cannot leak)
+let private functionExpr =
+    getPosition .>> keyword "function"
+    >>= fun p ->
+        (opt (str_ws "|") >>. matchArm .>>. many (str_ws "|" >>. matchArm))
+        |>> fun (arm0, rest) ->
+            let arms = arm0 :: rest
+            let lastBody = List.last arms |> fun (_, _, b) -> b
+
+            let kwSpan =
+                { Start = pos p
+                  End =
+                    { Line = (pos p).Line
+                      Col = (pos p).Col + 8 } }
+
+            let span =
+                { Start = pos p
+                  End = lastBody.Span.End }
+
+            let scrut =
+                { Kind = EVar "|function"
+                  Span = kwSpan }
+
+            { Kind =
+                ELambda(
+                    "|function",
+                    kwSpan,
+                    { Kind = EMatch(scrut, arms)
+                      Span = span }
+                )
+              Span = span }
 
 // the condition takes a COMMAND CHAIN too [D:if-succeeds]: the let-RHS
 // acceptance gate one position over — the command grammar is ATTEMPTED
@@ -1971,6 +1999,7 @@ let private yamlDistrict: Parser<Expr, unit> =
 opp.TermParser <-
     choice
         [ lambda
+          functionExpr
           letIn
           ifExpr
           matchExpr
@@ -1990,6 +2019,7 @@ updateSourceRef.Value <-
 segOpp.TermParser <-
     choice
         [ lambda
+          functionExpr
           letIn
           ifExpr
           matchExpr
@@ -2835,7 +2865,7 @@ let private letKeywordGuard: Parser<Stmt, unit> =
                 |> List.tryPick (fun (at, (w, _)) ->
                     // true/false are LITERAL patterns, not keyword names
                     // (patWord's rule) — a refutable binder, not a parse error
-                    if (w = "function" || keywords.Contains w) && w <> "true" && w <> "false" then
+                    if keywords.Contains w && w <> "true" && w <> "false" then
                         Some(at, w)
                     else
                         None)
@@ -2843,11 +2873,7 @@ let private letKeywordGuard: Parser<Stmt, unit> =
             | Some hit -> preturn hit
             | None -> fail "real binder(s)"
     )
-    >>= fun (at, w) ->
-        if w = "function" then
-            failFatallyAt at "'function' is reserved; write 'fun x -> match x with'"
-        else
-            failFatallyAt at $"'{w}' is a keyword"
+    >>= fun (at, w) -> failFatallyAt at $"'{w}' is a keyword"
 
 // module + import statements [D:modules-v1] — top-level, no `=`, no body.
 // A module/alias name is uppercase (the casing law: uppercase declares).
