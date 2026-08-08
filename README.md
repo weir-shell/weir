@@ -15,9 +15,10 @@ let cli = Args.load Cli
 
 let staged =
     git status --porcelain           // argv is data — nothing to quote, ever
-    |> from porcelain                // typed records, not string soup
-    |> Seq.where _.staged
-    |> Seq.map _.path
+    |> Seq.choose (fun l ->          // the Regex pattern is arity-typed:
+        match l with                 // one group, one binder
+        | Regex @"^[^ ?]. (.*)$" path -> Some path
+        | _ -> None)
     |> Seq.force
 
 match staged with
@@ -30,16 +31,17 @@ match staged with
 ```
 
 `--verbose`, `--timeout 90s`, and `--help` all derive from the
-record. Misspell `staged` and it is a type error at check time, not
-an empty string at runtime.
+record. The `Regex` pattern is checked too — three groups against two
+binders is a type error, not a silent `None`.
 
 ## What you get
 
 - **Check everything first.** Parse and typecheck the entire file —
   including that every bare command resolves — before any side
   effect. Command signatures (`#sig git`) extend the check to flags.
-- **Typed command output.** Porcelain, JSON, and YAML adapters turn
-  program output into records with fields.
+- **Typed command output.** JSON and YAML adapters turn program
+  output into records of a shape you declare; the arity-typed `Regex`
+  match pattern covers everything line-shaped.
 - **Exit codes are data.** `cmd | succeeds`, `| complete`,
   `| exitCode`, `| orFail "why"` — a failing command raises by
   default, so there is no `set -e` folklore to get wrong.

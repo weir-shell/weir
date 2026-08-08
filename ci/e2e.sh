@@ -166,8 +166,8 @@ dir=$(mktemp -d)
     echo n > untracked.txt
 )
 
-out=$(printf 'cd "%s"\ngit status --porcelain |> from porcelain |> where _.staged |> map _.path\n^ls\nlet pat = "a"\ngrep -l $pat staged.txt\n:q\n' "$dir" | $BIN)
-expect "cd + porcelain + staged filter" '["staged.txt"]' "$out"
+out=$(printf 'cd "%s"\ngit status --porcelain |> where (Str.startsWith "M ") |> map (Str.replace "M  " "")\n^ls\nlet pat = "a"\ngrep -l $pat staged.txt\n:q\n' "$dir" | $BIN)
+expect "cd + staged filter over git status lines" '["staged.txt"]' "$out"
 expect "^ls forces external" 'untracked.txt' "$out"
 expect "bound-variable splice into grep" '["staged.txt"]' "$out"
 rm -rf "$dir"
@@ -326,15 +326,14 @@ out=$($BIN "$scriptdir/comments.weir")
 expect "comment lines transparent inside blocks" "3" "$out"
 
 cat > "$scriptdir/show.weir" <<'WEOF'
-let staged =
-    git status --porcelain
-    |> from porcelain
+let rows =
+    ls
     |> Seq.first 1
 
-staged |> Seq.iter (fun c -> print (show c))
+rows |> Seq.iter (fun f -> print (show f))
 WEOF
-out=$(cd "$scriptdir" && git init -q 2>/dev/null; cd "$scriptdir" && $BIN show.weir)
-echo "$out" | grep -qF "staged = " || fail "show must render the porcelain row: $out"
+out=$(cd "$scriptdir" && $BIN show.weir)
+echo "$out" | grep -qF "bytes = " || fail "show must render the builtin row: $out"
 echo "e2e ok: show renders typed rows on the AOT binary"
 
 start=$(now_ms)
@@ -3222,7 +3221,7 @@ rm -rf "$sddir"
 spldir=$(mktemp -d)
 ( cd "$spldir" && git init -q . && touch a.txt b.txt c.md )
 
-# form 1: glob into git add, verified via porcelain
+# form 1: glob into git add, verified via git status output
 cat > "$spldir/add.weir" <<'WEOF'
 let files = Path.glob "*.txt" |> Seq.force
 git add $@files

@@ -104,13 +104,6 @@ let private notImpl: Value =
         | VBool b -> VBool(not b)
         | v -> unreachable $"the checker rejects 'not' on {formatValue v}")
 
-let changeDef: RecordDef =
-    { Name = "Change"
-      Params = []
-      Fields = [ "status", TStr; "staged", TBool; "unstaged", TBool; "path", TStr ]
-      Attrs = Map.empty
-      Docs = Map.empty }
-
 let private asString (v: Value) : string =
     match v with
     | VStr s -> s
@@ -2822,11 +2815,6 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Parse a JSON line stream into a declared record type. Fields are int/string/bool or Option of one; an Option field reads a missing key or null as None."
               None
               (Some "a pipe stage: xs |> from json Config.")
-          "from porcelain",
-          bd
-              "Parse `git status --porcelain` lines into Change records."
-              None
-              (Some "a pipe stage: xs |> from porcelain.")
           "to json",
           bd
               "Render a sequence of records or primitives to JSON lines. A None field omits its key (so from json reads it back as None)."
@@ -2864,8 +2852,6 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- types: a hover renders the structure; the value here is
           // WHEN you get one ----
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
-          "Change",
-          bd "One `git status --porcelain` line: status, staged, unstaged, path. From `from porcelain`." None None
           "FileRow", bd "A directory entry: name, bytes, readOnly. From `ls`." None None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
           "Group", bd "A key and its items, from `Seq.groupBy`." None None ]
@@ -2874,8 +2860,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
 /// (`from json` / `to yaml` …) [D:form-word-hover] — the one source the
 /// adapters' own hovers already read, so the `from`/`to` discovery hover,
 /// the completion, and the colorizer cannot drift from it. `dir` is
-/// "from" or "to"; `porcelain` is read-only, so `to` yields only what has
-/// a `to <x>` doc. Map is key-sorted, so the order is stable.
+/// "from" or "to". Map is key-sorted, so the order is stable.
 let adapterNames (dir: string) : string list =
     builtinDocs
     |> Map.toList
@@ -3157,7 +3142,6 @@ let typeEnv: TypeEnv =
       Types =
         Map
             [ fileRow.Name, Record fileRow
-              changeDef.Name, Record changeDef
               completedDef.Name, Record completedDef
               groupDef.Name, Record groupDef
               envVarDef.Name, Record envVarDef ]

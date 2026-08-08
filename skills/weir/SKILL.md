@@ -564,8 +564,7 @@ within tmp d
   of capturing; the ceiling is the box, and a single capture caps at
   ~2GB. `Seq.force` on decoded lines re-pays string overhead — force
   what you need, not the world.
-- Typed output: `git status --porcelain |> from porcelain` gives rows
-  with `path`/`staged`/`unstaged`/`status`; `... |> from json T` needs
+- Typed output: `... |> from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
   Fields are `int`/`string`/`bool` or `Option` of one. An `Option`
   field reads a missing key OR an explicit `null` as `None`; a
@@ -831,7 +830,7 @@ sh -c "echo via-posix && echo second"
 let r = sh -c "exit 3" | complete
 print $"exit was {r.exitCode}"
 
-git status --porcelain |> from porcelain |> Seq.map _.path
+git status --porcelain |> Seq.choose (fun l -> match l with | Regex @"^.. (.*)$" path -> Some path | _ -> None)
 ```
 
 ## Diagnostics and exiting

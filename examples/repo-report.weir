@@ -17,11 +17,17 @@ let workdir = cd target
 
 print $"=== repo report: {workdir} ==="
 
-// a command line on a let RHS binds its output; the porcelain adapter
-// turns it into typed rows
+// a command line on a let RHS binds its output; the Regex pattern
+// turns porcelain lines into rows of a shape WE declare
+type Change = { staged: bool; unstaged: bool; path: string }
+
 let changes =
     git status --porcelain
-    |> from porcelain
+    |> Seq.choose (fun l ->
+        match l with
+        | Regex @"^(.)(.) (.*)$" (x, y, path) ->
+            Some { staged = x <> " " && x <> "?"; unstaged = y <> " "; path = path }
+        | _ -> None)
     |> Seq.force
 
 // [] matches emptiness on the seq directly; cons is for when the

@@ -664,10 +664,6 @@
                 {
                   "type": "STRING",
                   "value": "yaml"
-                },
-                {
-                  "type": "STRING",
-                  "value": "porcelain"
                 }
               ]
             }

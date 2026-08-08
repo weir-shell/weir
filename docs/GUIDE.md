@@ -13,9 +13,10 @@ Three properties, in the order they matter:
    wrong field, a discarded value, a missing match case — all of them
    stop the script with `file:line:col` and a hint, before any side
    effect. Bash tells you about your mistake halfway through making it.
-2. **Command output is typed data.** `git status --porcelain |> from
-   porcelain` is a sequence of records with `path`/`staged` fields,
-   not a string soup.
+2. **Command output is typed data.** `kubectl get pods -o json` piped
+   through `|> from json Pod` is a sequence of records with the fields
+   YOU declared, not a string soup — and the `Regex` match pattern
+   covers everything line-shaped.
 3. **It starts in ~7ms** — a single AOT binary, fine for shebangs.
 
 ## Running weir
@@ -671,9 +672,9 @@ Groups bind as strings (convert explicitly — `Str.tryToInt`). The
 containing quotes; an ordinary escaped string there is a check error,
 so the double-escape footgun cannot be written. Computed patterns
 live on the expression side (`Str.isMatch`, `Str.rmatch` — any
-string expression). And before reaching for regex on command output,
-check the typed adapters: `|> from porcelain` beats a hand-rolled
-porcelain regex every time.
+string expression). And for structured command output,
+check the typed adapters first: `|> from json T` / `|> from yaml T`
+beat hand-rolled parsing every time.
 
 ## Commands and processes
 
