@@ -49,7 +49,7 @@ binders is a type error, not a silent `None`.
   `for`-generated entries, optional JSON-schema validation — and no
   YAML injection, for the same reason there is no argv injection.
 - **Typed boundaries everywhere.** Flags (`Args.load`) and env vars
-  (`Env.load`) load into records; time is a type (`30s`, `1m30s`);
+  (`Env.load`) load into records; `Duration` is a type (`30s`, `1m30s`), not a bare number;
   HTTP is a typed request/response pair; `Secret` renders as `***`
   in every renderer.
 - **Parallel fan-out.** `Seq.pmap`/`Seq.piter` with per-worker
