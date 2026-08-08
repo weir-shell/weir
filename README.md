@@ -55,8 +55,10 @@ binders is a type error, not a silent `None`.
 - **Parallel fan-out.** `Seq.pmap`/`Seq.piter` with per-worker
   session forks — asynchronous underneath (.NET tasks), synchronous
   in your script: no async/await surface to thread through.
-- **Inferred constraints, zero runtime type checks.** `==`, `show`,
-  and `Seq.sortBy` are generic; every check is static.
+- **Generics without ceremony.** `==`, `show`, and `Seq.sortBy` work
+  on any type that supports them — no annotations to write, and a
+  type that doesn't support them is a check error, not a runtime
+  surprise.
 - **Fast.** ~7ms cold start, one AOT binary, shebang-friendly.
 - **Cross-platform.** Linux, macOS, and Windows, same argv law on
   all three; on Windows bare commands resolve through PATHEXT and
