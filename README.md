@@ -62,10 +62,11 @@ the only type annotation in the script: everything else is inferred.
   surprise.
 - **Fast.** ~7ms cold start, one AOT binary, shebang-friendly.
 - **Cross-platform.** Linux, macOS, and Windows.
-- **Tooling from the runner's own pipeline.** `weir check [--json]`,
-  an LSP (diagnostics, hover, completion, semantic tokens), and a
-  REPL with completion and history. Editor setup for Neovim, Helix,
-  Emacs, and VS Code: [docs/editors.md](docs/editors.md).
+- **Editor and CLI tooling.** `weir check [--json]`, an LSP
+  (diagnostics, hover, completion, semantic tokens), and a REPL with
+  completion and history — the editor shows exactly the errors the
+  runner would raise. Setup for Neovim, Helix, Emacs, and VS Code:
+  [docs/editors.md](docs/editors.md).
 
 ## Install
 
