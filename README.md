@@ -101,3 +101,4 @@ machine-verified against the F# compiler) is
 [tests/fidelity/divergences.md](tests/fidelity/divergences.md); the
 project vocabulary ("receipt", "park", "pin") is
 [LEXICON.md](LEXICON.md).
+
