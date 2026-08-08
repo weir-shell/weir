@@ -277,8 +277,10 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   input order; empty raises). `Seq.pfirstWith n` sets the ceiling.
 - A `let` RHS takes command mode wherever lets go — top level AND
   inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
-  function); `$()` covers sub-expression positions. `function` is
-  reserved (write `fun x -> match x with`).
+  function); `$()` covers sub-expression positions. `function | pat -> e | …`
+  is the implicit-match lambda (`fun x -> match x with …` exactly;
+  first `|` optional, guards work) — the usual spelling for
+  `Seq.choose` over lines.
 - Bounded loops are `retry`/`poll` compound forms (no `while`):
   `retry attempts=5 delay=30s` + an indented body block, then
   optionally `until r` + an indented predicate block binding the
@@ -354,7 +356,7 @@ print first
 ```weir
 let refs = ["sha1 refs/a"; "junk"; "sha2 refs/b"]
 refs
-    |> Seq.choose (fun l -> match l with | Regex @"(\w+) refs" s -> Some s | _ -> None)
+    |> Seq.choose (function | Regex @"(\w+) refs" s -> Some s | _ -> None)
     |> Seq.iter print
 ```
 - Lambdas take multiple params: `fun acc x -> ...` desugars to nested
@@ -830,7 +832,7 @@ sh -c "echo via-posix && echo second"
 let r = sh -c "exit 3" | complete
 print $"exit was {r.exitCode}"
 
-git status --porcelain |> Seq.choose (fun l -> match l with | Regex @"^.. (.*)$" path -> Some path | _ -> None)
+git status --porcelain |> Seq.choose (function | Regex @"^.. (.*)$" path -> Some path | _ -> None)
 ```
 
 ## Diagnostics and exiting

@@ -411,6 +411,12 @@ let dangleOpensBlock (piece: string) : bool =
     // suffix behavior, zero movement)
     || t = "do"
     || t.EndsWith " do"
+    // a line-end `function` dangles its arm block open, the match-head
+    // shape one word shorter [D:function-keyword]; word-bounded like
+    // `do` (an identifier merely ending in the letters must not dangle)
+    || t = "function"
+    || t.EndsWith " function"
+    || t.EndsWith "(function"
     || isWithinHead t
     // retry/poll heads and the until binder line open their blocks
     // [D:retry-poll]
@@ -1273,11 +1279,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             if cls.Kind = PieceKind.ElseHead then
                                                                 // else/elif keep their standing rules
                                                                 Ok groups
-                                                            elif not p.LastWasPipe then
+                                                            elif not p.LastWasPipe || p.PrevDangles then
                                                                 // first pipe after a non-pipe line
                                                                 // opens a group — anchored at or
                                                                 // right of the innermost open
-                                                                // compound head (F#'s offside)
+                                                                // compound head (F#'s offside).
+                                                                // A DANGLING pipe line (ending
+                                                                // with/->/function) opens one too:
+                                                                // its arms sit deeper by design
+                                                                // [D:function-keyword]
                                                                 match p.Compounds with
                                                                 | (h, _, _) :: _ when indent < h ->
                                                                     Error

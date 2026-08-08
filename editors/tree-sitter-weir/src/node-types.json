@@ -397,6 +397,10 @@
     "named": false
   },
   {
+    "type": "function",
+    "named": false
+  },
+  {
     "type": "hash_line",
     "named": true
   },

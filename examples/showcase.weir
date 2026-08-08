@@ -267,8 +267,7 @@ print $"stdin-piped upcase: {loud}"
 // signature — the e2e battery carries the executable proof)
 let staged =
     git status --porcelain
-    |> Seq.choose (fun l ->
-        match l with
+    |> Seq.choose (function
         | Regex @"^[^ ?]. (.*)$" path -> Some path
         | _ -> None)
     |> Seq.length

@@ -34,7 +34,7 @@ rules:
 
     # ---- keywords (the parser's set, verified) ----
     # rule: keywords
-    - statement: "\\b(let|in|if|then|elif|else|when|match|with|fun|type|of)\\b"
+    - statement: "\\b(let|in|if|then|elif|else|when|match|with|function|fun|type|of)\\b"
     - statement: "\\b(from|to|for|do|module|import|within|retry|poll|until)\\b"
     # the within KIND is part of the form, not a name [D:within-kinds] —
     # micro paints the whole match, so within + kind share the statement
@@ -121,7 +121,7 @@ rules:
                 start: "\\{"
                 end: "\\}"
                 rules:
-                    - statement: "\\b(if|then|elif|else|when|match|with|fun|let|in)\\b"
+                    - statement: "\\b(if|then|elif|else|when|match|with|function|fun|let|in)\\b"
                     - constant.bool: "\\b(true|false)\\b"
                     - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
                     - type: "\\b(int|string|bool|unit)\\b"

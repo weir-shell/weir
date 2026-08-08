@@ -212,25 +212,61 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
 
     let rec emitMatch (ind: int) (m: MatchE) =
         // head at ind; arms at ind + extra (a group may sit deeper
-        // than its head uniformly)
-        emit ind $"match {renderExpr m.Scrut} with"
-        let armInd = ind + extra m.Bid
+        // than its head uniformly).
+        // A third of FLAT matches render as the `function` spelling
+        // [D:function-keyword] — `(function | arms) scrut` is the same
+        // match by definition, so every invariant must hold across the
+        // alternation; the coin is Bid parity (deterministic per seed)
+        let allFlat =
+            (match m.Catch with
+             | RExpr _ -> true
+             | RMatch _ -> false)
+            && m.Arms
+               |> List.forall (fun a ->
+                   match a with
+                   | ALit(_, RExpr _)
+                   | AGuard(_, _, RExpr _) -> true
+                   | _ -> false)
 
-        let emitArm (pat: string) (rhs: ArmRhs) =
-            match rhs with
-            | RExpr e -> emit armInd $"| {pat} -> {renderExpr e}"
-            | RMatch inner ->
-                emit armInd $"| {pat} ->"
-                emitMatch (armInd + 4) inner
+        if allFlat && m.Bid % 3 = 0 then
+            emit ind "(function"
+            let armInd = ind + extra m.Bid
 
-        for a in m.Arms do
-            emitArm
-                (renderPat a)
-                (match a with
-                 | ALit(_, r) -> r
-                 | AGuard(_, _, r) -> r)
+            let armLine (pat: string) (rhs: ArmRhs) =
+                match rhs with
+                | RExpr e -> $"| {pat} -> {renderExpr e}"
+                | RMatch _ -> failwith "unreachable: allFlat guarded"
 
-        emitArm "_" m.Catch
+            for a in m.Arms do
+                emit
+                    armInd
+                    (armLine
+                        (renderPat a)
+                        (match a with
+                         | ALit(_, r) -> r
+                         | AGuard(_, _, r) -> r))
+
+            emit armInd (armLine "_" m.Catch + $") ({renderExpr m.Scrut})")
+        else
+
+            emit ind $"match {renderExpr m.Scrut} with"
+            let armInd = ind + extra m.Bid
+
+            let emitArm (pat: string) (rhs: ArmRhs) =
+                match rhs with
+                | RExpr e -> emit armInd $"| {pat} -> {renderExpr e}"
+                | RMatch inner ->
+                    emit armInd $"| {pat} ->"
+                    emitMatch (armInd + 4) inner
+
+            for a in m.Arms do
+                emitArm
+                    (renderPat a)
+                    (match a with
+                     | ALit(_, r) -> r
+                     | AGuard(_, _, r) -> r)
+
+            emitArm "_" m.Catch
 
     let rec emitStmt (ind: int) (s: Stmt) =
         match s with

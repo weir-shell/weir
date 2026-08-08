@@ -580,6 +580,19 @@ quantity semantics now.
   `let mutable x = 1` silently parsing as a function named `mutable`
   minutes after the sugar landed — F#-binding forms must fail loudly,
   not bind strangely.
+- **`function` is the implicit-match lambda** (2026-08-08
+  [D:function-keyword], the 2026-07 reservation paying out):
+  `function | pat -> e | …` is `fun x -> match x with …` exactly —
+  one parameter, guards on arms, first `|` optional (F#'s grammar,
+  oracle-pinned). A pure parser desugar onto the ordinary lambda and
+  match nodes over an internal `|`-binder, so checking, evaluation,
+  exhaustiveness, and every diagnostic are match's own — pinned
+  byte-identical to the spelled-out form, and the binder is
+  unspellable/unlistable by the internal-name discipline. Line-end
+  `function` dangles its arm block open in the assembler (the
+  match-head shape); fmt preserves the spelling. In binder and
+  command-head slots the keyword refuses with the generic keyword
+  message.
 - **Expression-level `let` is F#-shaped** (decided 2026-07-18, replacing
   the earlier keep-`in` decision): in scripts, a continuation line
   beginning with `let` opens a binding closed implicitly by the next line

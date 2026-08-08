@@ -152,7 +152,8 @@ echo $nope
 
 ## Coming from F#
 
-Weir is F#-shaped on purpose — pipelines, records, unions, match,
+Weir is F#-shaped on purpose — pipelines, records, unions, match
+(`function` included),
 offside blocks — and it is not F#. The full border is machine-verified
 against the real F# compiler: every divergence is a row in
 [tests/fidelity/divergences.md](../tests/fidelity/divergences.md).

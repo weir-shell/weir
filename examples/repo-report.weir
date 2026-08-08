@@ -23,8 +23,7 @@ type Change = { staged: bool; unstaged: bool; path: string }
 
 let changes =
     git status --porcelain
-    |> Seq.choose (fun l ->
-        match l with
+    |> Seq.choose (function
         | Regex @"^(.)(.) (.*)$" (x, y, path) ->
             Some { staged = x <> " " && x <> "?"; unstaged = y <> " "; path = path }
         | _ -> None)
