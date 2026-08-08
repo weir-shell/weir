@@ -19,7 +19,6 @@ let staged =
         match l with                 // one group, one binder
         | Regex @"^[^ ?]. (.*)$" path -> Some path
         | _ -> None)
-    |> Seq.force
 
 match staged with
 | [] -> print "nothing staged"
