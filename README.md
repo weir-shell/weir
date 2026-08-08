@@ -1,9 +1,9 @@
 # weir
 
-A typed shell. F#-shaped expressions, real commands, and a type
-checker that runs over the whole file — PATH lookups included —
-before anything executes. A script with an error on line 40 runs
-none of lines 1–39.
+A typed shell scripting language inspired by F#. Real commands, real
+expressions, and a type checker that runs over the whole file — PATH
+lookups included — before anything executes. A script with an error
+on line 40 runs none of lines 1–39.
 
 ```
 #!/usr/bin/env weir
