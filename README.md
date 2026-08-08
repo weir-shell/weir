@@ -80,13 +80,14 @@ script: everything else is inferred.
   runner would raise. Setup for Neovim, Helix, Emacs, and VS Code:
   [docs/editors.md](docs/editors.md).
 
-## Install
+## Developing
 
-`./publish.sh` builds and installs `~/.local/bin/weir` (dotnet 10
-SDK + clang). On Windows: `./publish.ps1` (dotnet 10 SDK + VS Build
-Tools C++ workload) installs to `%LOCALAPPDATA%\Programs\weir`; in
-the REPL, `Ctrl+J` forces a newline. Tests: `dotnet test`; the full
-battery is `ci/local.sh`.
+Build from source: `./publish.sh` builds and installs
+`~/.local/bin/weir` (dotnet 10 SDK + clang). On Windows,
+`./publish.ps1` (dotnet 10 SDK + VS Build Tools C++ workload)
+installs to `%LOCALAPPDATA%\Programs\weir`. Tests: `dotnet test`;
+the full battery is `ci/local.sh`. In the Windows REPL, `Ctrl+J`
+forces a newline.
 
 ## Learn more
 
