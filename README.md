@@ -2,8 +2,8 @@
 
 A typed shell scripting language inspired by F#. Real commands, real
 expressions, and a type checker that runs over the whole file — PATH
-lookups included — before anything executes. A script with an error
-on line 40 runs none of lines 1–39.
+lookups included — before anything executes, so a broken script
+fails up front instead of halfway through its side effects.
 
 ```
 #!/usr/bin/env weir
