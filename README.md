@@ -90,15 +90,18 @@ battery is `ci/local.sh`.
 
 ## Learn more
 
-Start with [docs/GUIDE.md](docs/GUIDE.md) — every example in it runs
-in CI against the release binary, as does the full-language tour in
-[examples/showcase.weir](examples/showcase.weir). Arriving from bash,
-PowerShell, Python, fish, TypeScript, Make, or F#?
-[docs/COMING-FROM.md](docs/COMING-FROM.md) is the per-language diff.
-The rulebook with decision rationale is [SEMANTICS.md](SEMANTICS.md);
-the exact border with F# (different / rejected / pending,
-machine-verified against the F# compiler) is
-[tests/fidelity/divergences.md](tests/fidelity/divergences.md); the
-project vocabulary ("receipt", "park", "pin") is
-[LEXICON.md](LEXICON.md).
+- [docs/GUIDE.md](docs/GUIDE.md) — start here; every example runs in
+  CI against the release binary.
+- [examples/showcase.weir](examples/showcase.weir) — the
+  full-language tour, also CI-run.
+- [docs/COMING-FROM.md](docs/COMING-FROM.md) — the per-language diff
+  for arrivals from bash, PowerShell, Python, fish, TypeScript,
+  Make, or F#.
+- [SEMANTICS.md](SEMANTICS.md) — the rulebook, with decision
+  rationale.
+- [tests/fidelity/divergences.md](tests/fidelity/divergences.md) —
+  the exact border with F# (different / rejected / pending),
+  machine-verified against the F# compiler.
+- [LEXICON.md](LEXICON.md) — the project vocabulary ("receipt",
+  "park", "pin").
 
