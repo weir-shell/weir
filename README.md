@@ -10,30 +10,41 @@ instead of halfway through its side effects.
 #!/usr/bin/env weir
 type Cli = {
     [<Short "v">] verbose: bool
-    [<Default 30s>] timeout: Duration
+    [<Default 5s>] timeout: Duration
 }
 let cli = Args.load Cli
 
-let staged =
-    git status --porcelain           // argv is data — nothing to quote, ever
-    |> Seq.choose (fun l ->          // the Regex pattern is arity-typed:
-        match l with                 // one group, one binder
-        | Regex @"^[^ ?]. (.*)$" path -> Some path
+// the pattern has two capture groups, so the match binds two names —
+// the checker counts them before anything runs
+let commits =
+    git log -n 3 "--format=%h %s"
+    |> Seq.choose (fun l ->
+        match l with
+        | Regex @"^(\S+) (.+)$" (sha, subject) -> Some $"{sha}  {subject}"
         | _ -> None)
 
-match staged with
-| [] -> print "nothing staged"
-| files ->
-    if cli.verbose then printerr $"{files |> Seq.length} file(s)"
-    files
-    |> Seq.pmap (fun f -> $(git log -1 --format=%s -- $f) |> Seq.head)
-    |> print
+print "latest commits:"
+commits |> print
+
+// probe every endpoint in parallel; a bad status is a value to
+// branch on, not an exception
+let endpoints = ["https://github.com"; "https://gitlab.com"]
+
+let checks =
+    endpoints
+    |> Seq.pmap (fun url ->
+        let r = Http.send { Http.get url with timeout = cli.timeout }
+        $"{r.status}  {url}")
+
+if cli.verbose then printerr $"probed {checks |> Seq.length} endpoints"
+checks |> print
 ```
 
-`--verbose`, `--timeout 90s`, and `--help` all derive from the
-record. The `Regex` pattern is checked too — three groups against two
-binders is a type error, not a silent `None`. And the `Cli` record is
-the only type annotation in the script: everything else is inferred.
+`--verbose`, `--timeout 10s`, and `--help` all derive from the
+record. The `Regex` pattern binds one name per capture group — two
+groups here, two names — and a miscount is a check error, not a
+silent `None`. The `Cli` record is the only type annotation in the
+script: everything else is inferred.
 
 ## What you get
 
@@ -41,8 +52,8 @@ the only type annotation in the script: everything else is inferred.
   including that every bare command resolves — before any side
   effect. Command signatures (`#sig git`) extend the check to flags.
 - **Typed command output.** JSON and YAML adapters turn program
-  output into records of a shape you declare; the arity-typed `Regex`
-  match pattern covers everything line-shaped.
+  output into records of a shape you declare; the `Regex` match
+  pattern covers everything line-shaped.
 - **Exit codes are data.** `cmd | succeeds`, `| complete`,
   `| exitCode`, `| orFail "why"` — a failing command raises by
   default, so there is no `set -e` folklore to get wrong.
