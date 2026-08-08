@@ -336,6 +336,24 @@ same status as data.
 let items = Http.fetch $"{api}/items" |> from json Item
 ```
 
+`from json` reads one object per element — the NDJSON shape `to json`
+writes. A server that pretty-prints (GitHub's API, anything showing
+`curl` examples) sends ONE document across many lines; join it back
+before parsing:
+
+```weir
+type Peer = { host: string; port: int }
+
+let body = ["{"; "  \"host\": \"a.example\","; "  \"port\": 9000"; "}"]
+let peer = [body |> Str.join "\n"] |> from json Peer |> Seq.head
+print $"{peer.host}:{peer.port}"
+```
+
+The wrapping brackets are the tell: you are building a one-element
+seq, because `from json` takes a stream. Legible beats magic — the
+join says exactly what happened to the lines. (A top-level JSON
+*array* has no spelling either way; the error names it.)
+
 `Http.query` is the QUERY method (RFC 10008): it is IDEMPOTENT by
 definition, so `retry attempts=5` around an `Http.query` is safe by the
 method's own guarantee — where the same wrapper around a POST is a

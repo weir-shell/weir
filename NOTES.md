@@ -1,5 +1,32 @@
 # Spike Notes
 
+## the json boundary: a class closed, an idiom written down (2026-08-08)
+
+The probe session's verdict was docs-not-member-not-type, and both
+halves landed. The join idiom is now taught where from json and Http
+chaining are taught: `[body |> Str.join "\n"] |> from json T`, with
+the wrapping brackets called out as the tell — you are building a
+one-element seq because from json takes a stream. The GUIDE example
+runs in CI (the 95th block), so the claim has an executable twin.
+
+The real find was the third instance of a shape now worth stating as
+a rule: any boundary loader that hands a value to a .NET parser
+needs its own error wrapper. The floats session refused raw parses;
+the filesystem session wrapped File's read side; and from json
+turned out to leak System.Text.Json's own sentence for every
+non-object top level — the exact shape a GitLab-style list endpoint
+produces. The guard now names the kind in weir's words, all five of
+them, and repeats the one-object-per-element contract. The array
+case deliberately gives no advice: no spelling exists for a
+top-level array today, and the message must not promise one — the
+document mode stays a member-sized park with its own bless.
+
+The sweep is what made it a class closed rather than a defect fixed:
+the schema validator already conforms (weir prefix, .NET detail as
+tail — the ioGuarded shape), and from yaml is hand-rolled and speaks
+its own words at every probe (tags, overflow, flow syntax). from
+json was the last leaker at this boundary.
+
 ## function — the implicit-match lambda (2026-08-08)
 
 The reservation paid out smaller than the plan sized, twice over.

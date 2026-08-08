@@ -9004,6 +9004,51 @@ let functionKeywordTests =
                   "a comment is data"
           } ]
 
+let jsonBoundaryTests =
+    // boundary loaders never leak a .NET parser's words [D:json-boundary]
+    // — the third instance of the class (floats refused it, File's read
+    // side fixed it); from json's non-object top level was the leak
+    testList
+        "json boundary [D:json-boundary]"
+        [ test "a top-level array errors in weir's words, naming the kind" {
+              let m =
+                  try
+                      runWith [ "src", VSeq [ VStr "[{\"a\":1}]" ] ] "src |> from json FileRow"
+                      |> forceSeq
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "from json: this element is a JSON array, not an object" ""
+              Expect.isFalse (m.Contains "requested operation") "no System.Text.Json words"
+          }
+          test "every non-object kind is named (number, string, boolean, null)" {
+              for lit, kind in [ "42", "number"; "\"s\"", "string"; "true", "boolean"; "null", "null" ] do
+                  let m =
+                      try
+                          runWith [ "src", VSeq [ VStr lit ] ] "src |> from json FileRow"
+                          |> forceSeq
+                          |> ignore
+
+                          "no error"
+                      with e ->
+                          e.Message
+
+                  Expect.stringContains m $"a JSON {kind}, not an object" $"kind for {lit}"
+          }
+          test "the join idiom: one element carrying a whole multi-line document parses" {
+              let doc = "{\n  \"name\": \"x\",\n  \"bytes\": 1,\n  \"readOnly\": false\n}"
+
+              match
+                  runWith [ "src", VSeq [ VStr doc ] ] "src |> from json FileRow |> map _.name"
+                  |> forceSeq
+              with
+              | [ VStr "x" ] -> ()
+              | other -> failtest $"the docs' idiom must hold: {other}"
+          } ]
+
 let pinsWalkTests =
     // the full DECISIONS-to-pins walk's cheap pins [D:pins-walk]: every
     // test here asserts a teaching message that existed ONLY in the
@@ -10620,6 +10665,7 @@ let allTests =
           sizedFindingsTests
           pinsWalkTests
           functionKeywordTests
+          jsonBoundaryTests
           secretTests
           httpTests
           dupTypeTests

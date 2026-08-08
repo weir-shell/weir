@@ -255,8 +255,9 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   body is `NoBody`/`Json of seq<string>`/`Text of string` — `Json`
   carries the caller's `to json` lines, byte-exact to the wire (the
   curl `-d` mangling this exists to prevent). `resp.body |> from json
-  T` reads the response; for a plain GET, `curl url |> from json T` is
-  still the spelling. `secretHeaders` for credential headers; parallel
+  T` reads the response — via `[resp.body |> Str.join "\n"]` when the
+  server pretty-prints (one document across lines, not NDJSON); for a
+  plain GET, `curl url |> from json T` is still the spelling. `secretHeaders` for credential headers; parallel
   fetches are `urls |> Seq.pmap (fun u -> Http.send { Http.defaults with
   url = u })`.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
@@ -568,6 +569,12 @@ within tmp d
   what you need, not the world.
 - Typed output: `... |> from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
+  `from json` reads ONE OBJECT PER ELEMENT (NDJSON). A pretty-printed
+  document spanning lines — most REST bodies, `kubectl -o json` —
+  joins back first: `[body |> Str.join "\n"] |> from json T`. The
+  wrapping brackets are the tell: you are building a one-element seq
+  because `from json` takes a stream. A top-level ARRAY has no
+  spelling (the error names it).
   Fields are `int`/`string`/`bool` or `Option` of one. An `Option`
   field reads a missing key OR an explicit `null` as `None`; a
   required field that is `null` errors, naming the fix. `to json`

@@ -319,6 +319,22 @@ let private jsonRow (def: RecordDef) (line: string) : Value =
 
     let root = doc.RootElement
 
+    // a non-object top level is a MEANING mismatch, not bad JSON — named
+    // in weir's words, never System.Text.Json's [D:json-boundary]
+    if root.ValueKind <> System.Text.Json.JsonValueKind.Object then
+        let kind =
+            match root.ValueKind with
+            | System.Text.Json.JsonValueKind.Array -> "array"
+            | System.Text.Json.JsonValueKind.Number -> "number"
+            | System.Text.Json.JsonValueKind.String -> "string"
+            | System.Text.Json.JsonValueKind.True
+            | System.Text.Json.JsonValueKind.False -> "boolean"
+            | System.Text.Json.JsonValueKind.Null -> "null"
+            | _ -> "non-object"
+
+        failwith
+            $"from json: this element is a JSON {kind}, not an object — from json reads one object per element, in: {line}"
+
     // read a scalar of type `scalarTy` from an already-fetched, non-null
     // property [D:json-option]
     let readScalar (name: string) (scalarTy: Ty) (prop: System.Text.Json.JsonElement) =
