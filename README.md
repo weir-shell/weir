@@ -7,50 +7,21 @@ included, before anything executes: a broken script fails up front
 instead of halfway through its side effects.
 
 ```
-#!/usr/bin/env weir
-type Cli = {
-    [<Default ".">] root: string
-    [<Short "a">] all: bool
-}
-let cli = Args.load Cli
+weir> ls |> Seq.sortByDescending _.bytes |> first 2
+[{ bytes = 4200000; name = "core.dump"; readOnly = false };
+ { bytes = 91000; name = "build.log"; readOnly = false }] : seq<FileRow>
 
-// every clone under root, swept IN PARALLEL — the for-loop with
-// cd side effects, xargs -P quoting, and $? checked in the wrong
-// shell, replaced by a function over values
-let repos =
-    Path.glob $"{cli.root}/*/.git"
-    |> Seq.map Path.dir
-    |> Seq.force
-
-let swept =
-    repos
-    |> Seq.pmap (fun r ->
-        let changed = $(git -C $r status --porcelain) |> Seq.length
-        let branch =
-            $(git -C $r branch --show-current)
-            |> Seq.tryHead
-            |> Option.defaultValue "detached"
-        (Path.fileName r, branch, changed))
-    |> Seq.force
-
-swept
-    |> Seq.where (fun (_, _, n) -> cli.all || n > 0)
-    |> Seq.sortByDescending (fun (_, _, n) -> n)
-    |> Seq.iter (fun (name, branch, n) -> print $"{name} [{branch}]  {n} changed")
-
-let dirty = swept |> Seq.where (fun (_, _, n) -> n > 0) |> Seq.length
-print $"{repos |> Seq.length} repos, {dirty} dirty"
+weir> ls |> where (fun f -> f.bytse > 1000)
+type error: FileRow has no field 'bytse'. Did you mean 'bytes'?
 ```
 
-Every clone under a directory, checked in parallel. The bash
-version of this is a `for` loop with `cd` side effects, `xargs -P`
-quoting, and `$?` checked in the wrong shell; here the fan-out is
-`Seq.pmap` over a function, a command's output is a value
-(`$(git -C $r …)`), and a repo with no branch is an `Option` with a
-default, not a crash at 2am. `--root`, `-a`, and `--help` derive
-from the `Cli` record — the only type written anywhere; the rest,
-including everything flowing through the pipeline, is inferred and
-checked before line one runs.
+Two lines, the whole idea: rows are typed records, so the second
+line is refused before anything runs — in a script, before *any*
+line runs. External commands are first-class in the same pipelines
+(`git status --porcelain |> where (Str.startsWith "M ")`), scripts
+take real flags derived from a record, and everything is one static
+binary. The rest — parallel fan-out, retries with deadlines, typed
+HTTP and YAML — is in [docs/GUIDE.md](docs/GUIDE.md).
 
 ## What you get
 
