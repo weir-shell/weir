@@ -1,5 +1,55 @@
 # Spike Notes
 
+## releases: the binary someone can actually have (2026-08-09)
+
+The pitch said one binary and the repo could not hand you one. Now a
+v* tag produces a draft release with four platform binaries and a
+SHA256SUMS, behind the only gate that matters: the full battery,
+with check-fresh running strict — WEIR_REQUIRE_CLEAN=1's designed
+release arm gets its first real customer — and the conflict-marker
+gate riding e2e as everywhere. Draft-then-publish so a missing
+platform is caught by eyes before it is caught by a user.
+
+The stamp extension is one opt-in fsproj arm: WeirRelease=<tag>
+stamps `<tag>+<sha>`, verified locally, and every other build path
+stamps exactly as before so the freshness gates' stamp==HEAD
+contract never notices. The release job asserts --version starts
+with the tag and refuses the artifact otherwise.
+
+linux-arm64 made it in scope because public repos get the arm
+runners free and cross-OS AOT is unsupported — a native runner was
+the only route anyway. Intel macOS is the one stated gap. The
+signing posture is unsigned-with-explanations: the INSTALL page
+walks the quarantine xattr and the SmartScreen more-info path,
+because a scary dialog with no explanation reads as malware and
+loses exactly the reader the release exists to win.
+
+One install path got built (the curl|sh installer, which verifies
+checksums before installing and says so), two got parked with real
+triggers (brew on a macOS adoption receipt, winget/scoop on a
+Windows one), and one got declined with its reason on the record:
+dotnet tool install requires the SDK the target audience lacks —
+distributing the no-runtime shell through a runtime's package
+manager would argue against the product on its own install page.
+
+Windows joined both halves the same day: win-arm64 rides the free
+windows-11-arm runner (the same native-runner-only argument as
+linux), and install.ps1 is the curl|sh installer's twin — same
+policy (detect, download, VERIFY, install, PATH note), Windows
+spellings (Get-FileHash, %LOCALAPPDATA%), written 5.1-compatible
+and verified in-container the same day (the user dropped a pwsh
+7.6.4 into the workspace): an offline rig stubbed the two network
+calls and ran the real script end to end — arch detect, tag
+resolve, download, the cross-tool checksum handshake (a
+sha256sum-written SHA256SUMS read by the Get-FileHash side), the
+install, and the PATH note — then the negative control: a corrupted
+checksum refuses with both hashes named, exits 1, installs nothing.
+Only the live-release download path remains for the first tag.
+
+Awaiting the push and the first tag: the draft release flow end to
+end, the two arm64 runner labels' first contact with reality, and
+install.ps1's first live run.
+
 ## from yaml seq — and the stream retirement that came first (2026-08-09)
 
 The subtraction was the session's real content. `from yaml T` used

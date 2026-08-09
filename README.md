@@ -7,53 +7,21 @@ included, before anything executes: a broken script fails up front
 instead of halfway through its side effects.
 
 ```
-#!/usr/bin/env weir
-type Cli = {
-    [<Short "v">] verbose: bool
-    [<Default 5s>] timeout: Duration
-}
-let cli = Args.load Cli
+weir> ls |> Seq.sortByDescending _.bytes |> first 2
+[{ bytes = 4200000; name = "core.dump"; readOnly = false };
+ { bytes = 91000; name = "build.log"; readOnly = false }] : seq<FileRow>
 
-// env vars load into a record too; Option is the honest type for a
-// var that may be absent
-type EnvCfg = { GITLAB_API: Option<string> }
-let env = Env.load EnvCfg
-let api = env.GITLAB_API |> Option.defaultValue "https://gitlab.com/api/v4"
-
-// the pattern has two capture groups, so the match binds two names —
-// the checker counts them before anything runs
-let commits =
-    git log -n 3 "--format=%h %s"
-    |> Seq.choose (fun l ->
-        match l with
-        | Regex @"^(\S+) (.+)$" (sha, subject) -> Some $"{sha}  {subject}"
-        | _ -> None)
-
-print "latest commits:"
-commits |> print
-
-// JSON responses become records of a shape you declare; the fetches
-// fan out in parallel, each under the flag's timeout
-type Project = { name: string; star_count: int }
-
-let stars =
-    ["inkscape%2Finkscape"; "gitlab-org%2Fgitlab"]
-    |> Seq.pmap (fun path ->
-        let resp =
-            Http.send { Http.get $"{api}/projects/{path}" with timeout = cli.timeout }
-        let p = resp.body |> from json Project
-        $"{p.name}: {p.star_count} stars")
-
-if cli.verbose then printerr $"fetched {stars |> Seq.length} projects"
-stars |> print
+weir> ls |> where (fun f -> f.bytse > 1000)
+type error: FileRow has no field 'bytse'. Did you mean 'bytes'?
 ```
 
-`--verbose`, `--timeout 10s`, and `--help` all derive from the
-record; env vars load the same way. The `Regex` pattern binds one
-name per capture group — two groups here, two names — and a miscount
-is a check error, not a silent `None`. The three record declarations
-are the only types written anywhere: every other binding is
-inferred.
+Two lines, the whole idea: rows are typed records, so the second
+line is refused before anything runs — in a script, before *any*
+line runs. External commands are first-class in the same pipelines
+(`git status --porcelain |> where (Str.startsWith "M ")`), scripts
+take real flags derived from a record, and everything is one static
+binary. The rest — parallel fan-out, retries with deadlines, typed
+HTTP and YAML — is in [docs/GUIDE.md](docs/GUIDE.md).
 
 ## What you get
 
@@ -88,6 +56,22 @@ inferred.
   completion and history — the editor shows exactly the errors the
   runner would raise. Setup for Neovim, Helix, Emacs, and VS Code:
   [docs/editors.md](docs/editors.md).
+
+## Install
+
+```
+curl -fsSL https://raw.githubusercontent.com/weir-shell/weir/main/install.sh | sh
+```
+
+Windows: `irm https://raw.githubusercontent.com/weir-shell/weir/main/install.ps1 | iex`
+
+One binary, no runtime — both installers verify checksums before
+installing. Or download your platform's binary from
+[releases](https://github.com/weir-shell/weir/releases); Windows and
+the unsigned-binary first-run dialogs are covered in
+[docs/INSTALL.md](docs/INSTALL.md). weir is `0.x` in the semver
+sense: anything can break between releases, and the notes say what
+did.
 
 ## Developing
 

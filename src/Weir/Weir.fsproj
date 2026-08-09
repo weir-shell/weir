@@ -30,6 +30,10 @@
       <_WeirStamp Condition="'$(_WeirShaExit)' == '0'">$(_WeirSha)</_WeirStamp>
       <_WeirStamp Condition="'$(_WeirShaExit)' != '0'">nogit</_WeirStamp>
       <_WeirStamp Condition="'$(_WeirDirty)' != '' and '$(_WeirShaExit)' == '0'">$(_WeirStamp)-dirty</_WeirStamp>
+      <!-- release opt-in [D:releases]: the tag leads, the sha rides —
+           every non-release path stamps exactly as before, so the
+           freshness gates' stamp==HEAD contract is untouched -->
+      <_WeirStamp Condition="'$(WeirRelease)' != ''">$(WeirRelease)+$(_WeirSha)</_WeirStamp>
       <InformationalVersion>$(_WeirStamp)</InformationalVersion>
     </PropertyGroup>
   </Target>
