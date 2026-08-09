@@ -87,6 +87,15 @@ installs to `%LOCALAPPDATA%\Programs\weir`. Tests: `dotnet test`;
 the full battery is `ci/local.sh`. In the Windows REPL, `Ctrl+J`
 forces a newline.
 
+## Provenance
+
+weir is written almost entirely by an AI agent working from
+human-blessed plans, under an evidence discipline that trades unusual
+authorship for unusual verifiability — every claim is pinned against
+the compiled binary, doc examples execute in CI, and an F# compiler
+oracle referees the fidelity claims. The full account is in
+[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
 ## Learn more
 
 - [docs/GUIDE.md](docs/GUIDE.md) — start here; every example runs in
@@ -96,11 +105,11 @@ forces a newline.
 - [docs/COMING-FROM.md](docs/COMING-FROM.md) — the per-language diff
   for arrivals from bash, PowerShell, Python, fish, TypeScript,
   Make, or F#.
-- [SEMANTICS.md](SEMANTICS.md) — the rulebook, with decision
+- [docs/SEMANTICS.md](docs/SEMANTICS.md) — the rulebook, with decision
   rationale.
 - [tests/fidelity/divergences.md](tests/fidelity/divergences.md) —
   the exact border with F# (different / rejected / pending),
   machine-verified against the F# compiler.
-- [LEXICON.md](LEXICON.md) — the project vocabulary ("receipt",
+- [docs/LEXICON.md](docs/LEXICON.md) — the project vocabulary ("receipt",
   "park", "pin").
 

@@ -2,8 +2,11 @@
 
 Language support via `weir lsp` (diagnostics, hover, completion,
 formatting, go-to-definition) plus tree-sitter highlighting from
-[`editors/tree-sitter-weir`](../tree-sitter-weir/), pinned by commit
-in `extension.toml`.
+[weir-shell/tree-sitter-weir](https://github.com/weir-shell/tree-sitter-weir),
+pinned by commit in `extension.toml`. **Bumping that rev and
+refreshing `languages/weir/highlights.scm` are one motion** — copy
+the queries from the same grammar commit the rev pins (the drift
+guard that used to enforce this retired with the repo split).
 
 Verified on a real machine (macOS, dev-extension install,
 2026-07-26): highlighting, diagnostics, hover, and formatting all ✓.
@@ -22,9 +25,8 @@ edit `extension.toml`:
 
 ```toml
 [grammars.weir]
-repository = "file:///absolute/path/to/your/weir/clone"
-rev = "<any COMMITTED sha containing editors/tree-sitter-weir>"
-path = "editors/tree-sitter-weir"
+repository = "file:///absolute/path/to/your/tree-sitter-weir/clone"
+rev = "<any COMMITTED sha>"
 ```
 
 (Uncommitted changes are invisible to the clone — the rev must be a

@@ -318,7 +318,7 @@ is the point: most F# uses constructs weir bounds out.
 **The reject list.** The named substrings/regexes that bound a snippet
 out (`module`, `printfn`, `|>`, …). The filter DIFF reads as language
 growth — WAVE_REJECTS are shapes the feature waves later admitted (base
-mode rejects them, wide mode lifts them). (plans/PLAN-corpus-remine.md;
+mode rejects them, wide mode lifts them). (dev/plans/PLAN-corpus-remine.md;
 NOTES.)
 
 **Base vs wide mode.** BASE reproduces the first mine's world (waves
@@ -346,7 +346,7 @@ training distribution's idioms rather than a wall the script hit —
 distinguish a script that could not be written (demand) from one written
 in an unfamiliar idiom (acclimation). PROCESS: Receipt provenance.
 
-**Friction log / stranded log.** NOTES-agent.md ledgers from
+**Friction log / stranded log.** dev/NOTES-agent.md ledgers from
 dogfooding: FRICTION = agent-noticed awkwardness (roadmap input);
 STRANDED = a script abandoned after 3 failed check iterations (appended
 verbatim). (CLAUDE.md scripting policy.)

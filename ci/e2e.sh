@@ -899,10 +899,17 @@ print(f"inventories match ({len(micro)} rules, {len(exempt)} stated micro-exempt
 PYEOF
     echo "e2e ok: grammar inventories match (micro == tmLanguage)"
 
+    # the grammar MANIFEST [D:ts-split]: the generated contract the
+    # split tree-sitter repo checks itself against at its pinned ref —
+    # the currency gate here proves the committed file matches the
+    # source, so the cross-repo half can trust it
+    python3 "$(dirname "$0")/grammar-manifest.py" --check || fail "grammar manifest stale"
+
     # within-kind inventory [D:within-kinds]: the kinds are a CLOSED SET
-    # in ONE table (src/Weir/Ast.fs withinKinds); the three grammars
-    # hard-code the same set by necessity — this pins all four together
-    # so a new kind cannot land in the table and leave a grammar grey
+    # in ONE table (src/Weir/Ast.fs withinKinds); the IN-REPO grammars
+    # hard-code the same set by necessity — this pins them together
+    # (the tree-sitter third checks itself in ITS repo, against the
+    # manifest [D:ts-split])
     python3 - "$(dirname "$0")/.." <<'PYWK' || fail "within-kind inventories diverge from Ast.withinKinds"
 import re, sys
 root = sys.argv[1]
@@ -917,15 +924,14 @@ def alt(path, rx):
 grammars = {
     "micro": alt("editors/micro/weir.yaml", r"within\[ \\\\t\]\+\(([a-z|]+)\)"),
     "tmLanguage": alt("editors/vscode/syntaxes/weir.tmLanguage.json", r"within\)\[ \\\\t\]\+\(([a-z|]+)\)"),
-    "tree-sitter": alt("editors/tree-sitter-weir/grammar.js", r"within_kind: _ => choice\(([^)]+)\)"),
 }
 bad = {k: v for k, v in grammars.items() if v != table}
 if not table or bad:
     print(f"table={sorted(table)}  mismatches=" + str({k: sorted(v) if v else None for k, v in bad.items()}))
     sys.exit(1)
-print(f"within kinds match across the table + 3 grammars ({sorted(table)})")
+print(f"within kinds match across the table + in-repo grammars ({sorted(table)})")
 PYWK
-    echo "e2e ok: within-kind inventory (Ast.withinKinds == micro == tmLanguage == tree-sitter)"
+    echo "e2e ok: within-kind inventory (Ast.withinKinds == micro == tmLanguage; tree-sitter via the manifest)"
 
     # adapter inventory [D:form-word-hover]: the from/to adapters are a
     # CLOSED SET whose SOURCE is the builtinDocs keys (`from X`/`to X`) —
@@ -943,28 +949,23 @@ def alt(path, rx):
 grammars = {
     "micro": alt("editors/micro/weir.yaml", r"\(from\|to\)\[ \\\\t\]\+\(([a-z|]+)\)"),
     "tmLanguage": alt("editors/vscode/syntaxes/weir.tmLanguage.json", r"\(from\|to\)\[ \\\\t\]\+\(([a-z|]+)\)"),
-    "tree-sitter": alt("editors/tree-sitter-weir/grammar.js", r"choice\('to', 'from'\), [^,]+, choice\(([^)]+)\)"),
 }
 bad = {k: v for k, v in grammars.items() if v != source}
 if not source or bad:
     print(f"source={sorted(source)}  mismatches=" + str({k: sorted(v) if v else None for k, v in bad.items()}))
     sys.exit(1)
-print(f"adapters match across builtinDocs + 3 grammars ({sorted(source)})")
+print(f"adapters match across builtinDocs + in-repo grammars ({sorted(source)})")
 PYADP
-    echo "e2e ok: adapter inventory (builtinDocs == micro == tmLanguage == tree-sitter)"
+    echo "e2e ok: adapter inventory (builtinDocs == micro == tmLanguage; tree-sitter via the manifest)"
 
-    # tree-sitter highlight DRIFT guard: the Zed extension bundles its own
-    # copy of highlights.scm (Zed reads languages/<lang>/, not the grammar
-    # repo's queries), so the two MUST stay identical — six coloring fixes
-    # updated only the canonical copy and left Zed's stale (raw_verbatim
-    # uncoloured -> gray strings, missing member/field/type reclaims). Same
-    # grammar, same query engine, standard captures: identical is the invariant.
-    if ! diff -q "$(dirname "$0")/../editors/tree-sitter-weir/queries/highlights.scm" \
-        "$(dirname "$0")/../editors/zed/languages/weir/highlights.scm" >/dev/null; then
-        echo "FAIL: Zed highlights.scm has drifted from tree-sitter-weir/queries — copy the canonical over" >&2
-        exit 1
-    fi
-    echo "e2e ok: Zed highlights == the canonical tree-sitter-weir queries"
+    # the Zed highlight drift guard RETIRED with the split [D:ts-split]:
+    # the canonical queries live in weir-shell/tree-sitter-weir now, so
+    # this repo cannot diff against them. The replacement is a RITUAL,
+    # stated where the guard stood: bumping the Zed grammar rev and
+    # refreshing languages/weir/highlights.scm are ONE motion — the
+    # extension update copies the queries from the SAME grammar commit
+    # the rev pins. A CI re-join needs the extension in the grammar's
+    # repo or its own; deferred with the split's release-gate question.
 
     # --- REPL line editor under a pty (2026-07-21) ---------------------
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"

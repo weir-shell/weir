@@ -1028,7 +1028,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             // the separator goes BEFORE an entry-start line,
                                             // never before a value continuation — a field's
                                             // value may open on the next line (the
-                                            // fixture-diversity sweep's first catch — PROCESS.md).
+                                            // fixture-diversity sweep's first catch — dev/PROCESS.md).
                                             // Lists have no entry marker: every line starts an
                                             // element unless the previous line dangles an
                                             // opener/separator/operator [D:multiline-brackets]

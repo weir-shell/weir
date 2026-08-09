@@ -1,5 +1,73 @@
 # Spike Notes
 
+## launch hygiene: the files a visitor expects, and the shape (2026-08-09)
+
+The licence decision turned out to be already made — Apache-2.0 and
+a NOTICE sat at the root — so item 1's real work was the dependency
+verification the plan insisted on: FParsec's nuget package carries
+no LICENSE file at all (a licenseUrl pointing at a 403ing page),
+and the truth came from the project's own README — Simplified BSD
+for the code plus the Unicode data licence for the derived tables.
+Both compatible; the binary statically links FParsec, so the
+2-clause notice-reproduction condition is met by
+THIRD-PARTY-NOTICES.txt rather than by hoping.
+
+CONTRIBUTING leads with the unusual part because it is the part a
+drive-by contributor cannot guess: the agent authorship, the
+blessed plans, and the evidence discipline that makes a PR without
+a row or a pin half-landed. The README's Provenance section says
+the same thing in one paragraph — the disclosure decision was
+plain-over-buried, on the reasoning the plan gave: hiding it would
+be wrong and discovering it late would sour.
+
+The move put nine process artefacts under dev/ and the three
+reader-facing ledgers under docs/, and the citation sweep patched
+twelve consumer files — CLAUDE.md's three paths mattering most,
+since the agent instructions must be literally true. The canary
+the plan named (the doc-test battery) held at 96 blocks, and the
+full battery held behind it. The root now reads: README, LICENSE,
+NOTICE, THIRD-PARTY-NOTICES, SECURITY, CONTRIBUTING,
+CODE_OF_CONDUCT, and the build scripts — a language project.
+
+The site is deliberately not here: it is gated on the first tag,
+because its most valuable line is the install command and there is
+nothing to install yet. When v0.1.0 exists, the site sitting picks
+a markdown-in generator, wires Pages + the weir.sh CNAME, and
+renders the repo's own docs — the source of truth stays here.
+
+## the tree-sitter split (2026-08-09)
+
+The manifest earned its keep before the split even finished: the
+first run of the grammar repo's gate found rec and mutable missing
+from the keyword rule — reserved words since the let-sugar session,
+never colored, invisible to the old three-way gate because that gate
+only compared the sets the grammars DID carry. Fixed in the grammar,
+regenerated, and the corpus counter picked up the other old ghost on
+the way: tree-sitter's parse summary repeats the first ERROR node,
+the exact double-count the grammar README once recorded and
+corrected in prose — now corrected in the counter.
+
+The protection splits cleanly but asymmetrically, and the row says
+who catches what. The main repo cannot see a grammar repo whose CI
+is red or simply never runs — the release gate should probably
+assert the grammar's latest CI before shipping, and that question is
+deferred by name rather than silently dropped.
+
+The consumer sweep vindicated grep-over-memory again: the migration
+session's URL sweep had missed Zed's extension.toml entirely (both
+repository fields and the authors name), and vscode's package.json
+somehow still carried gitlab despite being on that sweep's list —
+squash-merge archaeology not worth doing; the grep is the truth.
+Zed's rev now points at the grammar repo's local root commit and
+must be refreshed after the user pushes — stated in the toml itself.
+
+The one-motion ritual (bump the rev, refresh the highlights copy)
+stands where the retired drift guard stood, in both the toml and the
+Zed README. A ritual is weaker than a gate; when the Zed extension
+gets its own home the gate can rejoin CI, and that is written next
+to the ritual so nobody mistakes the current state for the end
+state.
+
 ## the REPL tabulates record seqs (2026-08-09)
 
 The user's question was whether the pretty table needed a login

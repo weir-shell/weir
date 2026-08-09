@@ -164,7 +164,7 @@ it, by design):
 
 These are properties of the language, verified the way the rest of
 weir is verified — with pins, the fuzzer, and the F# oracle. See the
-verification report in `NOTES.md` (the "safe-by-design review" entry)
+verification report in `dev/NOTES.md` (the "safe-by-design review" entry)
 for the fixtures behind each claim.
 
 ### 1. Injection safety — a value is one argument, always
@@ -238,7 +238,7 @@ above-usual machine-checkable evidence: every boundary behavior is
 pinned against the compiled binary (`ci/e2e.sh`), fidelity to F# is
 refereed by the real F# compiler as an oracle (`tests/Weir.Fidelity`),
 and grammar totality/soundness is patrolled by a metamorphic fuzzer
-(`tests/Weir.Fuzz`). The development history is the `plans/` directory,
+(`tests/Weir.Fuzz`). The development history is the `dev/plans/` directory,
 one blessed plan per session. Read the evidence, not the byline.
 
 ## Signatures check your invocations, not your binaries

@@ -887,7 +887,7 @@ print "unreached"
 - Read the error: spans are `file:line:col`; hints name the fix
   ("Did you mean ...", module homes, `add an else`).
 - If weir structurally cannot do the task (interactive tools, missing
-  feature), write bash — and append one line to NOTES-agent.md:
+  feature), write bash — and append one line to dev/NOTES-agent.md:
   date | task shape | the gap that forced bash.
 - NEVER invent weir syntax. If unsure a feature exists, check this
   file; if absent here, assume absent, fall back, log. The full

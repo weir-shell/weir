@@ -1,6 +1,6 @@
 # The harness-truth library [D:masking-mechanized] — ONE helper, all
 # census/stamp checks inherit (the one-scanner pattern applied to
-# harnesses). PROCESS.md: harness assertions are claims too.
+# harnesses). dev/PROCESS.md: harness assertions are claims too.
 import os
 import subprocess
 import sys

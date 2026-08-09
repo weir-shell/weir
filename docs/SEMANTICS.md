@@ -293,7 +293,7 @@ algebra) from Spike 2 until 2026-07-18, when they were removed entirely.
 The arc — landed on a showcase claim, algebra cancelled for zero dogfood
 evidence, the `int<mb>` truncation causing the ls-Size-always-0
 wrong-answer incident, `Seq.sum`/ranges shipping bare-only because no
-measure-variable machinery existed — is recorded in full in NOTES.md
+measure-variable machinery existed — is recorded in full in dev/NOTES.md
 ("Remove measures — the evidence-standard case study"), which is the
 mandatory prior reading if quantities-with-conversion ever returns as an
 evidenced plan. Old scripts using `1<mb>` or `int<m>` get a transition
@@ -1040,7 +1040,7 @@ quantity semantics now.
   scope); the untyped floor (`args`, `Args.flag`, `Args.value`)
   remains, exactly Env.get under Env.load.
 - **Modules and imports** [D:modules-v1] (arc session 1; design in
-  plans/DESIGN-modules-and-imports.md) — the unit of sharing is a
+  dev/plans/DESIGN-modules-and-imports.md) — the unit of sharing is a
   FILE marked `module` (or `module Name`), top-level, no `=`/body;
   `module`/`import` are reserved words. A module is
   DECLARATION-ONLY (`type`/`let`; a `let` whose RHS runs a command is
@@ -1332,7 +1332,7 @@ quantity semantics now.
   (`strLen`, `substring`, `mapOption`, `tryIndexOf`) are plain unbound —
   accepted. Member-access-on-primitives (`s.Length`) stays a logged
   candidate. Strict/loose script modes and trial resolution:
-  plans/PLAN-modules-and-scripts.md (trial resolution deferred, design on file).
+  dev/plans/PLAN-modules-and-scripts.md (trial resolution deferred, design on file).
 - **The yaml boundary** [D:yaml-v1] — `from yaml T` / `to yaml`, the
   typed-boundary family's TREE member (json is a row stream; yaml is a
   document format, so its law is recursive): fields are scalars,
