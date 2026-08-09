@@ -1,5 +1,40 @@
 # Spike Notes
 
+## releases: the binary someone can actually have (2026-08-09)
+
+The pitch said one binary and the repo could not hand you one. Now a
+v* tag produces a draft release with four platform binaries and a
+SHA256SUMS, behind the only gate that matters: the full battery,
+with check-fresh running strict — WEIR_REQUIRE_CLEAN=1's designed
+release arm gets its first real customer — and the conflict-marker
+gate riding e2e as everywhere. Draft-then-publish so a missing
+platform is caught by eyes before it is caught by a user.
+
+The stamp extension is one opt-in fsproj arm: WeirRelease=<tag>
+stamps `<tag>+<sha>`, verified locally, and every other build path
+stamps exactly as before so the freshness gates' stamp==HEAD
+contract never notices. The release job asserts --version starts
+with the tag and refuses the artifact otherwise.
+
+linux-arm64 made it in scope because public repos get the arm
+runners free and cross-OS AOT is unsupported — a native runner was
+the only route anyway. Intel macOS is the one stated gap. The
+signing posture is unsigned-with-explanations: the INSTALL page
+walks the quarantine xattr and the SmartScreen more-info path,
+because a scary dialog with no explanation reads as malware and
+loses exactly the reader the release exists to win.
+
+One install path got built (the curl|sh installer, which verifies
+checksums before installing and says so), two got parked with real
+triggers (brew on a macOS adoption receipt, winget/scoop on a
+Windows one), and one got declined with its reason on the record:
+dotnet tool install requires the SDK the target audience lacks —
+distributing the no-runtime shell through a runtime's package
+manager would argue against the product on its own install page.
+
+Awaiting the push and the first tag: the draft release flow end to
+end, and the arm64 runner label's first contact with reality.
+
 ## from yaml seq — and the stream retirement that came first (2026-08-09)
 
 The subtraction was the session's real content. `from yaml T` used

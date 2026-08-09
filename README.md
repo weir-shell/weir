@@ -89,6 +89,20 @@ inferred.
   runner would raise. Setup for Neovim, Helix, Emacs, and VS Code:
   [docs/editors.md](docs/editors.md).
 
+## Install
+
+```
+curl -fsSL https://raw.githubusercontent.com/weir-shell/weir/main/install.sh | sh
+```
+
+One binary, no runtime — the installer verifies checksums and drops
+`weir` in `~/.local/bin`. Or download your platform's binary from
+[releases](https://github.com/weir-shell/weir/releases); Windows and
+the unsigned-binary first-run dialogs are covered in
+[docs/INSTALL.md](docs/INSTALL.md). weir is `0.x` in the semver
+sense: anything can break between releases, and the notes say what
+did.
+
 ## Developing
 
 Build from source: `./publish.sh` builds and installs
