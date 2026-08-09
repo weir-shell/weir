@@ -224,10 +224,10 @@ author's choice, not weir's default.
 
 ## Reporting a vulnerability
 
-Report privately via a **confidential issue** on the GitLab project
-(`gitlab.com/arquidevio/weir` → New issue → check "This issue is
-confidential"), or by email to the maintainer
-(`5586272-queil@users.noreply.gitlab.com`). Please do not open a
+Report privately via **GitHub private vulnerability reporting** on
+the repository (`github.com/weir-shell/weir` → Security → Report a
+vulnerability), or by email to the maintainer
+(`4584075+queil@users.noreply.github.com`). Please do not open a
 public issue for a security problem before it is addressed.
 
 ## Provenance

@@ -295,6 +295,44 @@ Awaiting the push and the first tag: the draft release flow end to
 end, the two arm64 runner labels' first contact with reality, and
 install.ps1's first live run.
 
+## the CI matrix at the new home (2026-08-09)
+
+The move itself was already done — the user migrated to
+github.com/weir-shell/weir on 2026-08-08 and seven squash PRs have
+landed since — so this session was the plan's actual deliverable:
+the matrix. Billing got verified against the live docs rather than
+trusted: public repositories run free on all three OSes, so the
+macOS and Windows arms cost nothing and the public-vs-private
+coupling the plan worried about is moot (had it been private, macOS
+meters at roughly ten times linux).
+
+The workflows encode the expectations, not just the steps. The
+macOS e2e step is labeled as what it is — the GNU-ism sweep finally
+running with a real signal, where first-run reds are findings — and
+the Windows unit step states that its Skipped count IS the stated
+skip list, so a new skip reads as a finding rather than noise.
+Windows runs the same bash gates under Git Bash: one freshness-gate
+implementation, the .ps1 twin refused as the same-policy-twice
+shape. Whether Git Bash actually carries the whole e2e battery is
+exactly what the first push will answer; the hand-run's evidence
+says the surface is viable, and HTTP is named in the step title as
+the one surface never run there.
+
+The URL sweep came out smaller than the plan guessed: four live
+surfaces (the SECURITY channel — now GitHub private vulnerability
+reporting plus the new noreply — the two Helix source pointers, and
+the VS Code repository field). Everything else that greps for
+gitlab is deliberate: the raw-URL teaching and its fixtures are
+product behavior about external hosts, and the plans/NOTES mentions
+are archives. The old .gitlab-ci.yml is deleted; ci/README says
+what replaced it and why the kaniko image's job dissolved into
+setup-dotnet.
+
+Awaiting the push, stated rather than pretended: the macOS triage,
+the Windows first run, the tree-sitter split (org repo creation is
+user-side, and it remains the Zed prerequisite), and the
+Codeberg/GitLab archive disposition.
+
 ## from yaml seq — and the stream retirement that came first (2026-08-09)
 
 The subtraction was the session's real content. `from yaml T` used
