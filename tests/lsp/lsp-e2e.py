@@ -568,6 +568,36 @@ _dt = _time.monotonic() - _t0
 expect(m["params"]["diagnostics"] == [], f"the fix must clear: {m['params']}")
 expect(_dt < 0.5, f"recheck must republish within 500ms, took {_dt:.3f}s")
 
+# ---- formatting: wired and answering [D:testing-residue] -------------
+# a misformatted doc gets ONE whole-document TextEdit whose newText is
+# fmt's output; a canonical doc gets an empty edit list
+send5({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": "file:///fmt.weir",
+                                   "text": "let deep =\n    match 1 with\n        | 1 -> 1\n        | _ -> 0\n"}}})
+send5({"jsonrpc": "2.0", "id": 71, "method": "textDocument/formatting",
+       "params": {"textDocument": {"uri": "file:///fmt.weir"},
+                  "options": {"tabSize": 4, "insertSpaces": True}}})
+m = read5()
+while m.get("id") != 71:
+    m = read5()
+edits = m.get("result")
+expect(isinstance(edits, list) and len(edits) == 1,
+       f"formatting must answer one whole-doc edit: {m}")
+expect("    | 1 -> 1" in edits[0]["newText"],
+       f"the edit carries fmt's arm re-alignment: {edits[0]['newText']!r}")
+
+send5({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": "file:///fmt.weir"},
+                  "contentChanges": [{"text": edits[0]["newText"]}]}})
+send5({"jsonrpc": "2.0", "id": 72, "method": "textDocument/formatting",
+       "params": {"textDocument": {"uri": "file:///fmt.weir"},
+                  "options": {"tabSize": 4, "insertSpaces": True}}})
+m = read5()
+while m.get("id") != 72:
+    m = read5()
+expect(m.get("result") == [] or m.get("result") is None,
+       f"a canonical doc needs no edits: {m}")
+
 send5({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}})
 m = read5()
 while m.get("id") != 2:

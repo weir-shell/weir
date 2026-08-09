@@ -45,6 +45,31 @@ type Arbs =
     static member Program() : Arbitrary<Program> =
         Arb.fromGenShrink (genProgram, shrinkProgram)
 
+// invariant 3's DETECTOR CORE [D:walk-findings]: both span properties
+// and the positive controls call THIS, so a control cannot pass against
+// a copy while the real detector rots (the compareRuns/totalityCore
+// mechanism, third instance)
+type SpanVerdict =
+    | SpanOk
+    | SpanNoDiag of string
+    | SpanMiss of string
+
+let spanSoundCore (injected: string list) (physLine: int) (extent: int) : SpanVerdict =
+    let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" injected
+
+    match diags |> List.filter (fun d -> d.Severity = "error") with
+    | [] -> SpanNoDiag $"no diagnostic for a bad token at line {physLine}"
+    | errs ->
+        let hit =
+            errs
+            |> List.exists (fun d -> d.Line = physLine && d.Col >= 1 && d.Col <= extent)
+
+        if hit then
+            SpanOk
+        else
+            SpanMiss
+                $"""the site at line {physLine} (extent {extent}) lost its report: {errs |> List.map (fun d -> d.Line, d.Col, d.Message)}"""
+
 let private cfg =
     { FsCheckConfig.defaultConfig with
         maxTest = count
@@ -304,30 +329,17 @@ let tests =
                   let physLine = idx + 1
                   let extent = line.Length + 5
 
-                  let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" injected
-
-                  match diags |> List.filter (fun d -> d.Severity = "error") with
-                  | [] ->
-                      failtestf "no diagnostic for a bad token injected at line %d:\n%s" physLine (showProgram injected)
-                  | errs ->
-                      // [D:diag-arbitration]: the PRIMARY error lands at the
-                      // true physical site — no backtrack-note escape hatch.
-                      // The hatch existed for the district-wrap class (the
-                      // true site survived only as a note); the consumed-
-                      // separator law [D:seq-commit][D:arm-commit] closed it,
-                      // so the note fallback retires and the assertion tightens
-                      // to the primary itself.
-                      let hit =
-                          errs
-                          |> List.exists (fun d -> d.Line = physLine && d.Col >= 1 && d.Col <= extent)
-
-                      if strictSpans && not hit then
-                          failtestf
-                              "bad token at line %d (extent %d) reported elsewhere: %A\n%s"
-                              physLine
-                              extent
-                              (errs |> List.map (fun d -> d.Line, d.Col, d.Message))
-                              (showProgram injected)
+                  // [D:diag-arbitration]: the PRIMARY error lands at the
+                  // true physical site — no backtrack-note escape hatch.
+                  // The hatch existed for the district-wrap class (the
+                  // consumed-separator law [D:seq-commit][D:arm-commit]
+                  // closed it), so the assertion holds the primary itself.
+                  match spanSoundCore injected physLine extent with
+                  | SpanOk -> ()
+                  | SpanNoDiag m -> failtestf "%s:\n%s" m (showProgram injected)
+                  | SpanMiss m ->
+                      if strictSpans then
+                          failtestf "%s\n%s" m (showProgram injected)
 
           testPropertyWithConfig cfg "arbitration: a deeper second junk does not steal the first-reached error's site"
           <| fun (p: Program) (NonNegativeInt s) ->
@@ -363,27 +375,13 @@ let tests =
 
                   let firstLine = lo + 1
                   let extent = (tagged[lo] |> fst).Length + 5
-                  let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" injected
 
-                  match diags |> List.filter (fun d -> d.Severity = "error") with
-                  | [] ->
-                      failtestf
-                          "no diagnostic for junk at lines %d and %d:\n%s"
-                          firstLine
-                          (hi + 1)
-                          (showProgram injected)
-                  | errs ->
-                      let hit =
-                          errs
-                          |> List.exists (fun d -> d.Line = firstLine && d.Col >= 1 && d.Col <= extent)
-
-                      if strictSpans && not hit then
-                          failtestf
-                              "first-reached junk at line %d (extent %d) lost its report: %A\n%s"
-                              firstLine
-                              extent
-                              (errs |> List.map (fun d -> d.Line, d.Col, d.Message))
-                              (showProgram injected)
+                  match spanSoundCore injected firstLine extent with
+                  | SpanOk -> ()
+                  | SpanNoDiag m -> failtestf "%s (second junk at line %d):\n%s" m (hi + 1) (showProgram injected)
+                  | SpanMiss m ->
+                      if strictSpans then
+                          failtestf "first-reached %s\n%s" m (showProgram injected)
 
           // check agrees with run [PLAN-refactor-followups 1]: the tree's
           // most-repeated failure shape is the assume-resolver (check)
@@ -541,6 +539,20 @@ let positiveControls =
               match totalityCore 50 "control pipeline" (fun () -> System.Threading.Thread.Sleep 500) with
               | Error m -> Expect.stringContains m "exceeded 50ms" "the hang detector names the bound"
               | Ok() -> failtest "a hang escaped the totality detector"
+          }
+          test "invariant 3: a claimed site the report is NOT at is DETECTED, named" {
+              // junk on line 1, site claimed at line 2 — the detector must
+              // refuse the claim, not hum along
+              match spanSoundCore [ "let a = 1 ?!?"; "print \"x\"" ] 2 20 with
+              | SpanMiss m -> Expect.stringContains m "lost its report" "the miss detector names itself"
+              | SpanOk -> failtest "a wrong-site claim escaped the span detector"
+              | SpanNoDiag m -> failtest $"expected a site miss, got no-diagnostic: {m}"
+          }
+          test "invariant 3: a clean program with a claimed bad site is DETECTED, named" {
+              match spanSoundCore [ "let a = 1"; "print \"x\"" ] 1 12 with
+              | SpanNoDiag m -> Expect.stringContains m "no diagnostic" "the no-diagnostic detector names itself"
+              | SpanOk -> failtest "a clean program cannot satisfy a bad-site claim"
+              | SpanMiss m -> failtest $"expected no-diagnostic, got a miss: {m}"
           }
           test "invariant 4's shape language DISTINGUISHES (equality is not vacuous)" {
               // the fmt roundtrip compares per-statement sexpr shapes; if
