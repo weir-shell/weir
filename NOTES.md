@@ -32,8 +32,17 @@ dotnet tool install requires the SDK the target audience lacks —
 distributing the no-runtime shell through a runtime's package
 manager would argue against the product on its own install page.
 
+Windows joined both halves the same day: win-arm64 rides the free
+windows-11-arm runner (the same native-runner-only argument as
+linux), and install.ps1 is the curl|sh installer's twin — same
+policy (detect, download, VERIFY, install, PATH note), Windows
+spellings (Get-FileHash, %LOCALAPPDATA%), written 5.1-compatible
+and honestly marked unverified: the container has no pwsh, so its
+first run is the push's job.
+
 Awaiting the push and the first tag: the draft release flow end to
-end, and the arm64 runner label's first contact with reality.
+end, the two arm64 runner labels' first contact with reality, and
+install.ps1's first live run.
 
 ## from yaml seq — and the stream retirement that came first (2026-08-09)
 

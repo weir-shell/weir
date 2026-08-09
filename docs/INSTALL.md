@@ -3,14 +3,23 @@
 One AOT binary, no runtime. Every release carries one binary per
 platform plus a `SHA256SUMS` file.
 
-## The quick way (Linux, macOS)
+## The quick way
+
+Linux, macOS:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/weir-shell/weir/main/install.sh | sh
 ```
 
-Detects your platform, downloads the latest release, **verifies the
-checksum**, and installs to `~/.local/bin/weir` (override with
+Windows (PowerShell):
+
+```
+irm https://raw.githubusercontent.com/weir-shell/weir/main/install.ps1 | iex
+```
+
+Both detect your platform, download the latest release, **verify the
+checksum**, and install — `~/.local/bin/weir` on POSIX,
+`%LOCALAPPDATA%\Programs\weir\weir.exe` on Windows (override with
 `WEIR_INSTALL_DIR`).
 
 ## Manual download
@@ -24,6 +33,7 @@ Grab the binary for your platform from
 | Linux arm64 | `weir-<tag>-linux-arm64` |
 | macOS (Apple silicon) | `weir-<tag>-osx-arm64` |
 | Windows x64 | `weir-<tag>-win-x64.exe` |
+| Windows arm64 | `weir-<tag>-win-arm64.exe` |
 
 Not published: `osx-x64` (Intel Macs) — a stated gap, not an
 accident; it joins when someone needs it.
@@ -35,6 +45,9 @@ sha256sum -c --ignore-missing SHA256SUMS     # macOS: shasum -a 256 -c
 chmod +x weir-<tag>-<rid>
 mv weir-<tag>-<rid> ~/.local/bin/weir
 ```
+
+Windows: `Get-FileHash -Algorithm SHA256 weir-<tag>-win-<arch>.exe`
+and compare against the `SHA256SUMS` line.
 
 `weir --version` reports the release tag (`v0.1.0+<sha>`).
 

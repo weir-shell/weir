@@ -82,8 +82,10 @@ anywhere, the rest is inferred.
 curl -fsSL https://raw.githubusercontent.com/weir-shell/weir/main/install.sh | sh
 ```
 
-One binary, no runtime — the installer verifies checksums and drops
-`weir` in `~/.local/bin`. Or download your platform's binary from
+Windows: `irm https://raw.githubusercontent.com/weir-shell/weir/main/install.ps1 | iex`
+
+One binary, no runtime — both installers verify checksums before
+installing. Or download your platform's binary from
 [releases](https://github.com/weir-shell/weir/releases); Windows and
 the unsigned-binary first-run dialogs are covered in
 [docs/INSTALL.md](docs/INSTALL.md). weir is `0.x` in the semver

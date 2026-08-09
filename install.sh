@@ -1,6 +1,6 @@
 #!/bin/sh
-# weir installer [D:releases] — POSIX only (Windows: download the .exe
-# from the releases page; see docs/INSTALL.md). Detects the platform,
+# weir installer [D:releases] — POSIX only (Windows: install.ps1, or
+# download the .exe from the releases page; see docs/INSTALL.md). Detects the platform,
 # downloads the latest release binary, VERIFIES its checksum against
 # the release's SHA256SUMS, and installs to ~/.local/bin/weir.
 #
