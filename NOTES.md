@@ -1,5 +1,47 @@
 # Spike Notes
 
+## the format-surface audit (2026-08-09)
+
+Denominators, per format: JSON 14 cells — 9 in, 3 out-with-teaching,
+2 accident-now-stated, 0 unexamined left (was ~7 before). YAML 8
+checked — statement matches code, 1 sized (top-level sequence
+documents). Schema: the catch-all makes the denominator moot — no
+unlisted keyword can pass silently, probed live twice. dotenv 12 —
+9 in, 3 out-with-teaching, 0 unexamined (was 12: the whole surface
+lived in one code comment). Platform + scrapers: written down where
+the work happened; pointer rows say where.
+
+The nine adversarial inputs, all recorded verbatim in the session:
+JSON — pretty object across CRLF lines reads (b=2); a top-level
+array reads via seq<Name>; null-field + big-integer: null handling
+pinned since json-option, 99999999999999999999 into float gives
+1e+20 (stated), into int gave the session's one real find. dotenv —
+quotes/escapes file reads with escapes LITERAL; export file teaches
+the sh escape; CRLF file reads clean. YAML — the GH-Actions shape
+splits: nested maps read, a top-level sequence teaches 'expected a
+mapping, got a sequence' (sized); docker-compose quoted scalars
+read; anchors and merge keys reject with the repeat-or-build
+teaching.
+
+The one mechanical fix: an integer-shaped overflow into an int field
+was called "a decimal number" — TryGetInt64 fails for both shapes
+and the message guessed. The raw token tells them apart; the
+overflow now says "number out of int range — declare it float",
+both arms pinned. Also pinned while here: the 64-deep parser cap
+rejects through the teaching, never leaking MaxDepth.
+
+Sized, not built: from yaml over a top-level sequence document (the
+from-json-seq question again, one adapter over); a dotenv unescaping
+mode for backslash sequences (dialects disagree; weir currently
+keeps them literal, which is at least honest); a strict
+duplicate-key mode for from json (last-wins is System.Text.Json's
+choice, now stated).
+
+The standing rule landed as its own row: a new adapter's row names
+the shape its receipt came from and what that leaves unexamined —
+the sentence that would have put the array gap in the ledger instead
+of in a user's error.
+
 ## from json seq<Name> — arrays declare themselves (2026-08-09)
 
 The probe's pricing held exactly. The parser cost was the two-token

@@ -9224,6 +9224,57 @@ let jsonBoundaryTests =
               Expect.stringContains empty "from json: empty input — expected one JSON document" ""
           } ]
 
+let formatSurfaceTests =
+    // the format-surface audit's probe pins [D:format-surface-json]: cells
+    // converted from unexamined to stated, each with its message half
+    testList
+        "format surface [D:format-surface-json]"
+        [ test "an integer-shaped overflow is not called a decimal" {
+              let m =
+                  try
+                      runWith
+                          [ "src",
+                            VSeq [ VStr "{\"name\": \"x\", \"bytes\": 99999999999999999999, \"readOnly\": false}" ] ]
+                          "(src |> from json FileRow).bytes"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "number out of int range — declare it float" ""
+              Expect.isFalse (m.Contains "decimal") "the overflow is named for what it is"
+          }
+          test "a decimal into int still teaches float" {
+              let m =
+                  try
+                      runWith
+                          [ "src", VSeq [ VStr "{\"name\": \"x\", \"bytes\": 1.5, \"readOnly\": false}" ] ]
+                          "(src |> from json FileRow).bytes"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "got a decimal number — declare it float" ""
+          }
+          test "over-deep nesting rejects with the teaching, never a raw parser word" {
+              let deep = String.replicate 100 "{\"a\":" + "1" + String.replicate 100 "}"
+
+              let m =
+                  try
+                      runWith [ "src", VSeq [ VStr deep ] ] "(src |> from json FileRow).name"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "from json: not valid JSON" ""
+              Expect.isFalse (m.Contains "MaxDepth") "no System.Text.Json words"
+          } ]
+
 let fromJsonSeqTests =
     // from json seq<Name> [D:from-json-seq]: the declared type decides
     // what the top level must be — never the input; only json admits
@@ -10997,6 +11048,7 @@ let allTests =
           functionKeywordTests
           jsonBoundaryTests
           fromJsonSeqTests
+          formatSurfaceTests
           secretTests
           httpTests
           dupTypeTests

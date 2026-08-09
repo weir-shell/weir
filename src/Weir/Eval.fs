@@ -345,7 +345,17 @@ let private jsonDoc (who: string) (wantSeq: bool) (def: RecordDef) (shown: strin
         | TInt, System.Text.Json.JsonValueKind.Number ->
             match prop.TryGetInt64() with
             | true, n -> VInt n
-            | _ -> failwith $"{who}: field '{name}' expected int, got a decimal number — declare it float"
+            | _ ->
+                // TryGetInt64 fails for BOTH decimals and integer-shaped
+                // overflow — the raw token tells them apart, so the message
+                // never calls 99999999999999999999 "a decimal"
+                // [D:format-surface-json]
+                let raw = prop.GetRawText()
+
+                if raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E' then
+                    failwith $"{who}: field '{name}' expected int, got a decimal number — declare it float"
+                else
+                    failwith $"{who}: field '{name}': number out of int range — declare it float"
         | TFloat, System.Text.Json.JsonValueKind.Number ->
             // integer-shaped numbers WIDEN here [D:floats-boundaries]:
             // JSON has one number type — this is a parse, not weir
