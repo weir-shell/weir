@@ -593,7 +593,22 @@ let private yamlFromImpl (shape: Yaml.Shape) : Value =
 
             match Yaml.parseDocs numbered with
             | Error msg -> failwith $"from yaml: {msg}"
-            | Ok docs -> VSeq(docs |> List.map (yamlConvert shape) |> List.toSeq)
+            | Ok [] -> failwith "from yaml: empty input — expected one document"
+            | Ok [ doc ] ->
+                // ONE document; the declared shape names the top level
+                // [D:yaml-seq] — pointers cross to the other spelling
+                match shape, doc with
+                | Yaml.SSeq _, Yaml.NMap _ ->
+                    failwith
+                        "from yaml: expected a sequence at the top level (the declared type is seq<…>); got a mapping — write from yaml T"
+                | Yaml.SRec(n, _), Yaml.NSeq _ ->
+                    failwith $"from yaml: the top level is a sequence, not a mapping — declare seq<{n}> to read it"
+                | _ -> yamlConvert shape doc
+            | Ok docs ->
+                // multi-document streams retired [D:yaml-seq]: weir cannot
+                // type a heterogeneous stream, and homogeneous ones are rare
+                failwith
+                    $"from yaml: reads one document; this input has {List.length docs} documents — split on '---' and parse each"
         | v -> unreachable $"the checker rejects 'from yaml' on {formatValue v}")
 
 // the renderer: VALUE-driven (records/seqs/scalars/Option/Yaml nodes).

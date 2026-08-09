@@ -353,9 +353,11 @@ ordered |> to yaml |> print
 
 type PeerDoc = { host: string; port: int }
 
+// a top-level SEQUENCE document reads through the seq form — the
+// declared type names the top level (streams are one-document-only)
 let peers =
-    ["host: a.example"; "port: 9000"; "---"; "host: b.example"; "port: 9001"]
-    |> from yaml PeerDoc
+    ["- host: a.example"; "  port: 9000"; "- host: b.example"; "  port: 9001"]
+    |> from yaml seq<PeerDoc>
 
 peers |> Seq.iter (fun p -> print $"peer {p.host}:{p.port}")
 

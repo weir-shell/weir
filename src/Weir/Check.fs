@@ -2396,13 +2396,14 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | EFrom(fmt, tyName, seqOf) ->
         result {
-            // per-adapter admitted set for seq<Name> [D:from-json-seq]:
-            // only json admits the wrap — jsonl/yaml already yield seq<T>,
-            // so the wrap there is a category error
+            // per-adapter admitted set for seq<Name> [D:from-json-seq]
+            // [D:yaml-seq]: json and yaml admit the wrap (one document,
+            // top level as declared); jsonl refuses — one object per line
+            // is already plural in the way the wrap means
             do!
-                if seqOf && fmt <> "json" then
+                if seqOf && fmt = "jsonl" then
                     let n = defaultArg tyName "T"
-                    err expr.Span $"'from {fmt} T' already yields seq<T> — write from {fmt} {n}"
+                    err expr.Span $"'from jsonl T' already yields seq<T> — write from jsonl {n}"
                 else
                     Ok()
 
@@ -2442,20 +2443,30 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 return! err expr.Span $"'from {fmt}' needs a record name, e.g. from {fmt} FileRow{seqHint}"
             | "yaml", Some name ->
-                // from yaml T [D:yaml-v1]: seq<string> lines in, seq<T>
-                // DOCUMENTS out (`---` separated; one doc = one element)
+                // from yaml T reads ONE DOCUMENT -> T (a mapping at the
+                // top); from yaml seq<T> reads one SEQUENCE document ->
+                // seq<T> [D:yaml-seq] — the declared type decides the top
+                // level, never the input. Multi-document streams are not
+                // supported: weir cannot type a heterogeneous stream, and
+                // homogeneous ones are rare (the retirement's reason).
                 match Map.tryFind name env.Types with
                 | Some(Record def) when def.Params.IsEmpty ->
-                    let! shape = yamlShape expr.Span env Set.empty (TNamed(name, []))
+                    let declared = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
+
+                    let! shape = yamlShape expr.Span env Set.empty declared
 
                     return
                         { Kind = TEFromYaml(name, shape)
-                          Ty = TFun(TSeq TStr, TSeq(TNamed(name, [])))
+                          Ty = TFun(TSeq TStr, declared)
                           Span = expr.Span }
                 | Some(Record _) -> return! err expr.Span $"'from yaml' needs a monomorphic record; '{name}' is generic"
                 | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from yaml' needs a record"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
-            | "yaml", None -> return! err expr.Span "'from yaml' needs a record name, e.g. from yaml Deployment"
+            | "yaml", None ->
+                return!
+                    err
+                        expr.Span
+                        "'from yaml' needs a record name, e.g. from yaml Deployment — or seq<Deployment> for a top-level sequence"
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"

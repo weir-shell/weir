@@ -579,11 +579,14 @@ within tmp d
   field reads a missing key OR an explicit `null` as `None`; a
   required field that is `null` errors, naming the fix. `to json`
   OMITS a `None` field's key (matching `gh`/`kubectl`), so the
-  roundtrip holds. YAML is the TREE boundary: `lines |> from yaml T`
-  (nested records, seqs, `seq<string * string>` for labels, `Option`;
-  one element per `---` doc; bool is EXACTLY true/false; anchors/flow
-  rejected) and `value |> to yaml` (a seq = multi-doc; `None` fields
-  omit; ambiguous strings like `"no"`/`"007"` auto-quote). `Yaml`
+  roundtrip holds. YAML is the TREE boundary: `from yaml T` reads
+  ONE document (a mapping) -> `T`; `from yaml seq<T>` reads one
+  top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
+  `seq<string * string>` for labels, `Option`; bool is EXACTLY
+  true/false; anchors/flow rejected). A `---` STREAM teaches — split
+  and parse each document (weir cannot type a heterogeneous stream).
+  `value |> to yaml` (a seq = multi-doc; `None` fields omit;
+  ambiguous strings like `"no"`/`"007"` auto-quote). `Yaml`
   nodes (`YMap [("k", YStr "v")]`, `YSeq`, `YInt`…) render directly —
   `YMap` keeps YOUR key order; record fields render alphabetically.
   Literal block scalars `|`/`|-` are in the subset (folded `>` and
