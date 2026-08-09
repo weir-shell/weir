@@ -4,7 +4,7 @@ The rules the project has learned, one place. Each rule cites its
 naming incident. Plans and sessions follow these unless a blessed
 plan explicitly overrides. The vocabulary these rules use — receipt,
 park, pin, harness-truth, graded positive control, stop-and-report —
-is defined in [LEXICON.md](LEXICON.md).
+is defined in [LEXICON.md](../docs/LEXICON.md).
 
 ## Messages speak the user's language
 

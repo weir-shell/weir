@@ -47,7 +47,7 @@ the triage protocol:
    PIN-PER-SITE (script/-e/REPL e2e), not helper unification — the
    three sites return different shapes (exec fold, int main arm,
    Result loop) and a shared protect() would obscure more than it
-   insures. The known-seam risk note stands in PROCESS.md's index.
+   insures. The known-seam risk note stands in dev/PROCESS.md's index.
 
 ## Axis 2: class constraints × existing machinery (Session C, 2026-07-21)
 

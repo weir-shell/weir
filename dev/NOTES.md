@@ -1,5 +1,40 @@
 # Spike Notes
 
+## launch hygiene: the files a visitor expects, and the shape (2026-08-09)
+
+The licence decision turned out to be already made — Apache-2.0 and
+a NOTICE sat at the root — so item 1's real work was the dependency
+verification the plan insisted on: FParsec's nuget package carries
+no LICENSE file at all (a licenseUrl pointing at a 403ing page),
+and the truth came from the project's own README — Simplified BSD
+for the code plus the Unicode data licence for the derived tables.
+Both compatible; the binary statically links FParsec, so the
+2-clause notice-reproduction condition is met by
+THIRD-PARTY-NOTICES.txt rather than by hoping.
+
+CONTRIBUTING leads with the unusual part because it is the part a
+drive-by contributor cannot guess: the agent authorship, the
+blessed plans, and the evidence discipline that makes a PR without
+a row or a pin half-landed. The README's Provenance section says
+the same thing in one paragraph — the disclosure decision was
+plain-over-buried, on the reasoning the plan gave: hiding it would
+be wrong and discovering it late would sour.
+
+The move put nine process artefacts under dev/ and the three
+reader-facing ledgers under docs/, and the citation sweep patched
+twelve consumer files — CLAUDE.md's three paths mattering most,
+since the agent instructions must be literally true. The canary
+the plan named (the doc-test battery) held at 96 blocks, and the
+full battery held behind it. The root now reads: README, LICENSE,
+NOTICE, THIRD-PARTY-NOTICES, SECURITY, CONTRIBUTING,
+CODE_OF_CONDUCT, and the build scripts — a language project.
+
+The site is deliberately not here: it is gated on the first tag,
+because its most valuable line is the install command and there is
+nothing to install yet. When v0.1.0 exists, the site sitting picks
+a markdown-in generator, wires Pages + the weir.sh CNAME, and
+renders the repo's own docs — the source of truth stays here.
+
 ## the tree-sitter split (2026-08-09)
 
 The manifest earned its keep before the split even finished: the
