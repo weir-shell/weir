@@ -1,5 +1,38 @@
 # Spike Notes
 
+## the tree-sitter split (2026-08-09)
+
+The manifest earned its keep before the split even finished: the
+first run of the grammar repo's gate found rec and mutable missing
+from the keyword rule — reserved words since the let-sugar session,
+never colored, invisible to the old three-way gate because that gate
+only compared the sets the grammars DID carry. Fixed in the grammar,
+regenerated, and the corpus counter picked up the other old ghost on
+the way: tree-sitter's parse summary repeats the first ERROR node,
+the exact double-count the grammar README once recorded and
+corrected in prose — now corrected in the counter.
+
+The protection splits cleanly but asymmetrically, and the row says
+who catches what. The main repo cannot see a grammar repo whose CI
+is red or simply never runs — the release gate should probably
+assert the grammar's latest CI before shipping, and that question is
+deferred by name rather than silently dropped.
+
+The consumer sweep vindicated grep-over-memory again: the migration
+session's URL sweep had missed Zed's extension.toml entirely (both
+repository fields and the authors name), and vscode's package.json
+somehow still carried gitlab despite being on that sweep's list —
+squash-merge archaeology not worth doing; the grep is the truth.
+Zed's rev now points at the grammar repo's local root commit and
+must be refreshed after the user pushes — stated in the toml itself.
+
+The one-motion ritual (bump the rev, refresh the highlights copy)
+stands where the retired drift guard stood, in both the toml and the
+Zed README. A ritual is weaker than a gate; when the Zed extension
+gets its own home the gate can rejoin CI, and that is written next
+to the ritual so nobody mistakes the current state for the end
+state.
+
 ## the REPL tabulates record seqs (2026-08-09)
 
 The user's question was whether the pretty table needed a login

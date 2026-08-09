@@ -127,18 +127,18 @@ language-servers = ["weir"]
 ```
 
 Colors come from the tree-sitter grammar
-([editors/tree-sitter-weir](../editors/tree-sitter-weir/)) — add its
+([weir-shell/tree-sitter-weir](https://github.com/weir-shell/tree-sitter-weir)) — add its
 source and build it:
 
 ```toml
 # languages.toml, alongside the blocks above
 [[grammar]]
 name = "weir"
-source = { git = "https://gitlab.com/arquidevio/weir", subpath = "editors/tree-sitter-weir" }
+source = { git = "https://github.com/weir-shell/tree-sitter-weir" }
 ```
 
 then `hx --grammar fetch && hx --grammar build`, and copy
-`editors/tree-sitter-weir/queries/highlights.scm` to
+the grammar repo's `queries/highlights.scm` to
 `~/.config/helix/runtime/queries/weir/highlights.scm`.
 `hx --health weir` should then show server, parser, and highlights
 all ✓.

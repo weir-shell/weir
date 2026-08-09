@@ -3,17 +3,19 @@ name = "Weir"
 description = "Weir language support: diagnostics, hover, completion, formatting, go-to-definition via `weir lsp`; tree-sitter highlighting"
 version = "0.1.0"
 schema_version = 1
-authors = ["arquidev"]
-repository = "https://gitlab.com/arquidevio/weir"
+authors = ["queil"]
+repository = "https://github.com/weir-shell/weir"
 
 [language_servers.weir]
 name = "weir"
 languages = ["Weir"]
 
-# If the installed Zed rejects the `path` key (grammar-in-subdirectory),
-# the dedicated tree-sitter-weir repo split is the prerequisite — see
-# editors/tree-sitter-weir/README.md.
+# The grammar lives in its own repo (Zed clones a grammar from a repo
+# ROOT). REV RITUAL: bumping this rev and refreshing
+# languages/weir/highlights.scm are ONE motion — copy the queries
+# from the SAME grammar commit the rev pins.
+# rev = the first push of weir-shell/tree-sitter-weir; REFRESH after
+# pushing (the sha below is the local root commit).
 [grammars.weir]
-repository = "https://gitlab.com/arquidevio/weir"
-rev = "b4a9ff8eee9673e394b2580ec740037ca646dd30"
-path = "editors/tree-sitter-weir"
+repository = "https://github.com/weir-shell/tree-sitter-weir"
+rev = "c333922"
