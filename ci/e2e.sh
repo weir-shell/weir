@@ -125,7 +125,7 @@ expect() {
 out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
 
-out=$($BIN -e 'ls |> where (fun f -> f.bytes > 1048576) |> first 5' 2>&1); rc=$?
+out=$($BIN -e 'ls |> where (fun f -> f.bytes > 1MiB) |> first 5' 2>&1); rc=$?
 [ $rc -eq 0 ] || fail "flagship pipeline must run measure-free: $out"
 echo "e2e ok: flagship pipeline, bare bytes"
 
@@ -647,7 +647,7 @@ rm -rf "$faildir"
 bigdir=$(mktemp -d)
 truncate -s 3G "$bigdir/sparse.bin"
 touch "$bigdir/empty.txt"
-out=$(printf 'cd "%s"\nls |> Seq.where (fun f -> f.bytes > 2147483647) |> Seq.map _.name\nls |> Seq.where (fun f -> f.bytes == 0) |> Seq.map _.name\n:q\n' "$bigdir" | $BIN)
+out=$(printf 'cd "%s"\nls |> Seq.where (fun f -> f.bytes > 2147483647B) |> Seq.map _.name\nls |> Seq.where (fun f -> f.bytes == 0B) |> Seq.map _.name\n:q\n' "$bigdir" | $BIN)
 expect ">2GB file survives int64 end to end" "sparse.bin" "$out"
 expect "0-byte file filters exactly" "empty.txt" "$out"
 rm -rf "$bigdir"

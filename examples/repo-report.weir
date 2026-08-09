@@ -61,7 +61,7 @@ print "largest files:"
 ls
     |> Seq.sortByDescending _.bytes
     |> Seq.first 3
-    |> Seq.map (fun f -> $"  {f.name} ({f.bytes} bytes)")
+    |> Seq.map (fun f -> $"  {f.name} ({f.bytes})")
     |> print
 
 print "recent commits:"

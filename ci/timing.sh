@@ -34,7 +34,7 @@ median() {
 
 $BIN -e '1 + 1' > /dev/null # warm the fs cache
 
-EXPR_SNIPPET='ls |> where (fun f -> f.bytes > 1048576) |> first 5'
+EXPR_SNIPPET='ls |> where (fun f -> f.bytes > 1MiB) |> first 5'
 CMD_SNIPPET='echo hi |> Seq.first 1'
 
 # pre-flight each snippet OUTSIDE the timing substitution

@@ -8,14 +8,15 @@ instead of halfway through its side effects.
 
 ```
 weir> ls |> Seq.sortByDescending _.bytes |> first 2
-[{ bytes = 4200000; name = "core.dump"; readOnly = false };
- { bytes = 91000; name = "build.log"; readOnly = false }] : seq<FileRow>
+[{ bytes = 4 MiB; name = "core.dump"; readOnly = false };
+ { bytes = 88.8 KiB; name = "build.log"; readOnly = false }] : seq<FileRow>
 
-weir> ls |> where (fun f -> f.bytse > 1000)
+weir> ls |> where (fun f -> f.bytse > 10MiB)
 type error: FileRow has no field 'bytse'. Did you mean 'bytes'?
 ```
 
-Two lines, the whole idea: rows are typed records, so the second
+Two lines, the whole idea: rows are typed records — `bytes` is a
+`Size`, so it shows as `4 MiB` and compares as one — and the second
 line is refused before anything runs — in a script, before *any*
 line runs. External commands are first-class in the same pipelines
 (`git status --porcelain |> where (Str.startsWith "M ")`), scripts
