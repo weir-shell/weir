@@ -37,8 +37,14 @@ windows-11-arm runner (the same native-runner-only argument as
 linux), and install.ps1 is the curl|sh installer's twin — same
 policy (detect, download, VERIFY, install, PATH note), Windows
 spellings (Get-FileHash, %LOCALAPPDATA%), written 5.1-compatible
-and honestly marked unverified: the container has no pwsh, so its
-first run is the push's job.
+and verified in-container the same day (the user dropped a pwsh
+7.6.4 into the workspace): an offline rig stubbed the two network
+calls and ran the real script end to end — arch detect, tag
+resolve, download, the cross-tool checksum handshake (a
+sha256sum-written SHA256SUMS read by the Get-FileHash side), the
+install, and the PATH note — then the negative control: a corrupted
+checksum refuses with both hashes named, exits 1, installs nothing.
+Only the live-release download path remains for the first tag.
 
 Awaiting the push and the first tag: the draft release flow end to
 end, the two arm64 runner labels' first contact with reality, and
