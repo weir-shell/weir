@@ -166,6 +166,43 @@ The one deliberate survivor: `git status --porcelain` as an ARGV
 WORD, in fixtures, the git signature, and the docs' replacement
 spellings — that is git's flag, not our adapter, and parsing its
 output with a Regex you can see is exactly the point.
+## hovering a schema= name (2026-08-07)
+
+The residue session's diagnosis held exactly: `schema=k8s-configmap`
+names a vendored FILE, not an env.Types entry, so the ty-chain arm had
+nothing to render and the district's `Yaml` type leaked. The fix is a
+node-gated arm (TEYaml with a declared name, cursor within the
+`schema=<name>` token) answering FILE facts: the resolved vendored
+path, the lock's source URL, and — the load-bearing line — whether the
+schema carries an `additionalProperties: false` anywhere, because a
+permissive schema's validation LOOKS like it works while unknown-field
+checking never fires.
+
+No new source of truth, mechanically enforced: the resolution was
+EXTRACTED from the checker (Script.resolveSchemaFile — the same walk,
+the same restore-vs-add teaching on a miss, so hover and check cannot
+diverge), and the strictness rule was extracted from `weir add`'s
+warning closure (Contracts.anyClosedProps — one rule, two renderers).
+A miss hovers the checker's exact message (locked-but-missing teaches
+`weir restore`, never-added teaches `weir add … --as`), an
+out-of-subset or corrupt file hovers parseSchema's own error — every
+state answers with words some other surface already emits. Definition
+on the name opens the vendored file (the sig-file precedent: path,
+1,1,0), including a corrupt one — the file existing is exactly when
+opening it helps. Not-vendored stays quiet; the hover carries the
+teaching.
+
+The lockfile question resolved cheap: read per hover, no cache — the
+completion arm already lists `.weir/schemas/*.json` per keystroke, so
+a per-request lock read is the same class of work, and the stateless
+discipline keeps holding. One divergence found and NOT fixed, rowed
+here: the schema-name COMPLETION arm anchors its upward walk at "."
+(the LSP process's cwd — right in the REPL, approximate in an editor
+launched elsewhere), while hover/definition/check anchor at the
+document's directory. Unifying means threading the document path
+through Complete.suggest's signature (2 real + 6 test call sites) —
+do it when suggest next changes shape.
+
 ## the walk's two findings, closed (2026-08-07)
 
 The vanished control came back bigger than it left. The fuzz smoke

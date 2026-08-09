@@ -360,6 +360,20 @@ let parseSchema (name: string) (text: string) : Result<Schema, string> =
     with ex ->
         Error $"schema {name}: not valid JSON — {ex.Message}"
 
+/// `additionalProperties: false` present ANYWHERE in the document — a
+/// schema without one cannot fire unknown-field checks [D:yaml-schemas];
+/// add warns off this fact, the schema= hover renders it [D:schema-hover]
+let rec anyClosedProps (el: Text.Json.JsonElement) : bool =
+    match el.ValueKind with
+    | Text.Json.JsonValueKind.Object ->
+        el.EnumerateObject()
+        |> Seq.exists (fun p ->
+            (p.Name = "additionalProperties"
+             && p.Value.ValueKind = Text.Json.JsonValueKind.False)
+            || anyClosedProps p.Value)
+    | Text.Json.JsonValueKind.Array -> el.EnumerateArray() |> Seq.exists anyClosedProps
+    | _ -> false
+
 // ---- add / restore / verify ------------------------------------------------
 // `add <kind>` is KIND-AWARE (acquiring differs per kind: a schema is
 // a url fetch; a signature will GENERATE from the installed tool; a
@@ -427,18 +441,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                         // class). Plain `-standalone` k8s variants have exactly this
                         // shape; `-standalone-strict` is the load-bearing variant.
                         if kind = "schema" then
-                            let rec anyClosed (el: Text.Json.JsonElement) =
-                                match el.ValueKind with
-                                | Text.Json.JsonValueKind.Object ->
-                                    el.EnumerateObject()
-                                    |> Seq.exists (fun p ->
-                                        (p.Name = "additionalProperties"
-                                         && p.Value.ValueKind = Text.Json.JsonValueKind.False)
-                                        || anyClosed p.Value)
-                                | Text.Json.JsonValueKind.Array -> el.EnumerateArray() |> Seq.exists anyClosed
-                                | _ -> false
-
-                            if not (anyClosed root) then
+                            if not (anyClosedProps root) then
                                 Console.Error.WriteLine
                                     $"weir add: warning: {name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
 

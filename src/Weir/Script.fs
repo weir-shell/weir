@@ -2791,6 +2791,41 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
 // always, VALUE checks where the splice's type permits. Check-time
 // only, and it reads VENDORED files exclusively — never the network
 // (the never-fetch-during-check pin).
+/// resolve a schema NAME from a script's path to Ok (weirDir, vendored
+/// file) — the walk the checker uses, with its restore-vs-add teaching
+/// on a miss; the schema= hover and definition resolve through THIS
+/// function so the editor and the checker cannot diverge [D:schema-hover]
+let resolveSchemaFile (path: string) (name: string) : Result<string * string, string> =
+    let fromDir =
+        try
+            let full = IO.Path.GetFullPath path
+            let d = IO.Path.GetDirectoryName full
+            if String.IsNullOrEmpty d then "." else d
+        with _ ->
+            "."
+
+    match Contracts.findWeirDir fromDir with
+    | Error e -> Error $"schema '{name}': {e}"
+    | Ok weirDir ->
+        let file = IO.Path.Combine(weirDir, "schemas", name + ".json")
+
+        if not (IO.File.Exists file) then
+            // the checker can tell restore from add: a lock
+            // entry means the artifact was declared (a fresh
+            // clone restores); no entry means it never was
+            let locked =
+                match Contracts.readLock weirDir with
+                | Ok entries -> entries |> List.exists (fun e -> e.Kind = "schema" && e.Name = name)
+                | Error _ -> false
+
+            if locked then
+                Error $"schema '{name}': no {file} (searched from {weirDir}) — the lock records it; run `weir restore`"
+            else
+                Error
+                    $"schema '{name}': no {file} (searched from {weirDir}) — add it: weir add schema <url> --as {name}"
+        else
+            Ok(weirDir, file)
+
 let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) list) : Diagnostic list =
     let cache =
         System.Collections.Generic.Dictionary<string, Result<Contracts.Schema, string>>()
@@ -2800,36 +2835,9 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
         | true, r -> r
         | _ ->
             let r =
-                let fromDir =
-                    try
-                        let full = IO.Path.GetFullPath path
-                        let d = IO.Path.GetDirectoryName full
-                        if String.IsNullOrEmpty d then "." else d
-                    with _ ->
-                        "."
-
-                match Contracts.findWeirDir fromDir with
-                | Error e -> Error $"schema '{name}': {e}"
-                | Ok weirDir ->
-                    let file = IO.Path.Combine(weirDir, "schemas", name + ".json")
-
-                    if not (IO.File.Exists file) then
-                        // the checker can tell restore from add: a lock
-                        // entry means the artifact was declared (a fresh
-                        // clone restores); no entry means it never was
-                        let locked =
-                            match Contracts.readLock weirDir with
-                            | Ok entries -> entries |> List.exists (fun e -> e.Kind = "schema" && e.Name = name)
-                            | Error _ -> false
-
-                        if locked then
-                            Error
-                                $"schema '{name}': no {file} (searched from {weirDir}) — the lock records it; run `weir restore`"
-                        else
-                            Error
-                                $"schema '{name}': no {file} (searched from {weirDir}) — add it: weir add schema <url> --as {name}"
-                    else
-                        Contracts.parseSchema name (IO.File.ReadAllText file)
+                match resolveSchemaFile path name with
+                | Error e -> Error e
+                | Ok(_, file) -> Contracts.parseSchema name (IO.File.ReadAllText file)
 
             cache[name] <- r
             r

@@ -4348,6 +4348,146 @@ let hoverResidueTests =
                   "Args.load T (union front door)"
           } ]
 
+let schemaHoverTests =
+    // the schema= name hovers its FILE facts [D:schema-hover] — a
+    // vendored file, not an env.Types entry, so the type-argument arm
+    // could not render it and the district's type used to leak
+    let withSchemas (f: string -> string list -> string -> unit) =
+        let td =
+            System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "weir-schema-hover-" + System.Guid.NewGuid().ToString "N"
+            )
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".weir", "schemas"))
+        |> ignore
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(td, ".weir", "schemas", "six.json"),
+            """{ "type": "object", "additionalProperties": false, "title": "Six", "description": "a test shape", "properties": { "kind": { "type": "string" } } }"""
+        )
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(td, ".weir", "schemas", "loose.json"),
+            """{ "type": "object", "properties": { "kind": { "type": "string" } } }"""
+        )
+
+        System.IO.File.WriteAllText(System.IO.Path.Combine(td, ".weir", "schemas", "bad.json"), "{ nope")
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(td, ".weir", "lock.json"),
+            """{ "artifacts": [ { "kind": "schema", "name": "six", "url": "https://example.com/six.json", "sha256": "abc", "path": "schemas/six.json" }, { "kind": "schema", "name": "ghost", "url": "https://example.com/ghost.json", "sha256": "def", "path": "schemas/ghost.json" } ] }"""
+        )
+
+        let entry = System.IO.Path.Combine(td, "main.weir")
+
+        let lines name =
+            [ $"let d = yaml schema={name}"
+              "    kind: Service"
+              ""
+              "d |> to yaml |> print" ]
+
+        let write name =
+            System.IO.File.WriteAllLines(entry, lines name)
+            lines name
+
+        try
+            f entry (write "six") td
+        finally
+            System.IO.Directory.Delete(td, true)
+
+    testList
+        "schema= hover: the vendored file's facts [D:schema-hover]"
+        [ test "a vendored strict schema hovers path + provenance + strictness + title, VALUE-pinned" {
+              withSchemas (fun entry lines td ->
+                  let file = System.IO.Path.Combine(td, ".weir", "schemas", "six.json")
+
+                  let expected =
+                      "schema=six — strict (unknown fields are caught)\n\n"
+                      + $"{file}\nsource: https://example.com/six.json\nSix — a test shape"
+
+                  // the name and the schema= piece answer alike; `yaml`
+                  // keeps the district's own hover — zero movement
+                  Expect.equal (Weir.Lsp.hoverAt entry lines 1 22) (Some expected) "on the name"
+                  Expect.equal (Weir.Lsp.hoverAt entry lines 1 15) (Some expected) "on the schema= piece"
+                  Expect.equal (Weir.Lsp.hoverAt entry lines 1 10) (Some "Yaml") "the marker word is untouched")
+          }
+          test "a permissive schema says unknown-field checking will NOT fire — the other way of the pair" {
+              withSchemas (fun entry lines td ->
+                  let ll =
+                      [ "let d = yaml schema=loose"
+                        "    kind: Service"
+                        ""
+                        "d |> to yaml |> print" ]
+
+                  System.IO.File.WriteAllLines(entry, ll)
+
+                  match Weir.Lsp.hoverAt entry ll 1 22 with
+                  | Some hv ->
+                      Expect.stringContains
+                          hv
+                          "permissive: no `additionalProperties: false` anywhere, so unknown-field checking will NOT fire"
+                          "the inert kind is named"
+
+                      Expect.stringContains hv "source: not in the lock (hand-placed)" "no lock entry, said plainly"
+                  | None -> failtest "the permissive schema must answer")
+          }
+          test "locked-but-missing teaches restore, never-added teaches add — the CHECKER's words" {
+              withSchemas (fun entry lines td ->
+                  let ll =
+                      [ "let d = yaml schema=ghost"
+                        "    kind: Service"
+                        ""
+                        "d |> to yaml |> print" ]
+
+                  System.IO.File.WriteAllLines(entry, ll)
+
+                  match Weir.Lsp.hoverAt entry ll 1 22 with
+                  | Some hv -> Expect.stringContains hv "the lock records it; run `weir restore`" "restore taught"
+                  | None -> failtest "a missing vendored file is exactly when a reader hovers"
+
+                  let ln =
+                      [ "let d = yaml schema=never"
+                        "    kind: Service"
+                        ""
+                        "d |> to yaml |> print" ]
+
+                  System.IO.File.WriteAllLines(entry, ln)
+
+                  match Weir.Lsp.hoverAt entry ln 1 22 with
+                  | Some hv -> Expect.stringContains hv "add it: weir add schema <url> --as never" "add taught"
+                  | None -> failtest "an undeclared schema must answer")
+          }
+          test "a corrupt vendored file says not valid JSON — never the district's type" {
+              withSchemas (fun entry lines td ->
+                  let lb =
+                      [ "let d = yaml schema=bad"; "    kind: Service"; ""; "d |> to yaml |> print" ]
+
+                  System.IO.File.WriteAllLines(entry, lb)
+
+                  match Weir.Lsp.hoverAt entry lb 1 22 with
+                  | Some hv ->
+                      Expect.stringContains hv "not valid JSON" "says why"
+                      Expect.isFalse (hv = "Yaml") "the leak stays retired"
+                  | None -> failtest "an unreadable schema says why, or nothing — it answered nothing")
+          }
+          test "definition on the name opens the vendored file; not-vendored stays quiet" {
+              withSchemas (fun entry lines td ->
+                  let file = System.IO.Path.Combine(td, ".weir", "schemas", "six.json")
+
+                  Expect.equal (Weir.Lsp.definitionTarget entry lines 1 22) (Some(Some file, 1, 1, 0)) "opens it"
+                  Expect.equal (Weir.Lsp.definitionTarget entry lines 1 10) None "the marker word: quiet as before"
+
+                  let ln =
+                      [ "let d = yaml schema=never"
+                        "    kind: Service"
+                        ""
+                        "d |> to yaml |> print" ]
+
+                  System.IO.File.WriteAllLines(entry, ln)
+                  Expect.equal (Weir.Lsp.definitionTarget entry ln 1 22) None "no file to open")
+          } ]
+
 let semanticTokenTests =
     testList
         "Semantic tokens"
@@ -10904,6 +11044,7 @@ let allTests =
           withinKindsTests
           adapterFormTests
           hoverResidueTests
+          schemaHoverTests
           pipeAlignTests
           optionSweepTests
           moduleTests
