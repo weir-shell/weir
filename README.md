@@ -18,7 +18,7 @@ let cli = Args.load Cli
 let hits =
     File.read cli.file
     |> Seq.choose (function
-        | Regex """^(\S+) .*"\S+ (\S+)""" (ip, path) -> Some (ip, path)
+        | Regex @"^(\S+) .*\] .\S+ (\S+)" (ip, path) -> Some (ip, path)
         | _ -> None)
     |> Seq.force
 
