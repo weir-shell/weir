@@ -9,51 +9,38 @@ instead of halfway through its side effects.
 ```
 #!/usr/bin/env weir
 type Cli = {
-    [<Default 8080>] port: int
-    tag: Option<string>
+    [<Default "access.log">] file: string
+    [<Default 10>] top: int
 }
 let cli = Args.load Cli
-let port = cli.port
-let tag = cli.tag
 
-// a yaml block is a CHECKED literal: structure errors at check time,
-// splices are typed values, and a None splice omits its entry — a
-// YAML injection cannot be written, same as argv
-let manifest name = yaml
-    apiVersion: v1
-    kind: Service
-    metadata:
-        name: $name
-        tag: $tag
-    spec:
-        selector:
-            app: $name
-        ports:
-            - port: $port
+// one parse, named fields — where the awk spelling has $1 and $7
+let hits =
+    File.read cli.file
+    |> Seq.choose (function
+        | Regex """^(\S+) .*"\S+ (\S+)""" (ip, path) -> Some (ip, path)
+        | _ -> None)
+    |> Seq.force
 
-manifest "web" |> to yaml |> File.write "svc.yaml"
+printerr $"{hits |> Seq.length} requests from {hits |> Seq.map fst |> Seq.distinct |> Seq.length} clients"
 
-// a failing command raises; | orFail names YOUR reason
-kubectl apply -f svc.yaml | orFail "apply failed"
-
-// the wait everyone hand-rolls — bounded, cancellable, typed
-let up = poll timeout=30s interval=1s
-    let r = curl -sf $"localhost:{port}/health" | complete
-    r
-until r
-    r.exitCode == 0
-
-print (up.stdout |> Seq.head)
+// sort | uniq -c | sort -rn | head, typed: groups have NAMED parts,
+// and there is no locale, field-drift, or off-by-one to get wrong
+hits
+    |> Seq.groupBy (fun (_, path) -> path)
+    |> Seq.sortByDescending (fun g -> g.items |> Seq.length)
+    |> Seq.first cli.top
+    |> Seq.iter (fun g -> print $"{g.items |> Seq.length}  {g.key}")
 ```
 
-`--port`, `--tag`, and `--help` all derive from the record. The
-`yaml` block is an expression the checker owns: misindent it and the
-script refuses to run, splice a value of the wrong shape and that is
-a type error — and because splices are typed values, not string
-pasting, a YAML injection cannot be written. `poll` is the retry
-loop everyone hand-rolls, with a deadline and a typed result. The
-`Cli` record is the only type written anywhere; the rest is
-inferred.
+This is `awk '{print $7}' | sort | uniq -c | sort -rn | head` —
+except the parse happens once and everything after it has a name.
+The pattern's two capture groups bind two names, counted by the
+checker before anything runs; a malformed line is a `None`, not a
+silently corrupted count; groups come back as records with `.key`
+and `.items` where awk hands you `$1`; and `--file`, `--top`, and
+`--help` all derive from the `Cli` record — the only type written
+anywhere, the rest is inferred.
 
 ## What you get
 
