@@ -9315,6 +9315,72 @@ let pinsWalkTests =
               | Ok _ -> failtest "bare map must not resolve in the strict env"
           } ]
 
+let walkCohortTests =
+    // the partial cohort's remaining pins [D:walk-findings] — each closes
+    // a PARTIAL row from the DECISIONS walk, citation added to its row
+    testList
+        "walk cohort: the partial rows' missing halves [D:walk-findings]"
+        [ test "Exit.code does not exist — the rename left no module behind [D:exit-rename]" {
+              // the hint points at the LIVE lowercase exit, not the
+              // retired spelling — a teaching, not a resurrection
+              let terr = checkErr "print (show Exit.code)"
+              Expect.stringContains terr.Message "unbound variable 'Exit'" ""
+              Expect.stringContains terr.Message "Did you mean 'exit'?" ""
+          }
+          test "[<Default>] on a Secret field refuses (a hardcoded default secret defeats the type) [D:secret]" {
+              let e = env |> declare "type SC = { [<Default \"x\">] apiKey: Secret }"
+
+              // Args.load is script-only in this env (its Secret-specific
+              // teaching is e2e-pinned); Env.load refuses with the
+              // literal-mismatch shape — a Secret has NO matching literal
+              match Weir.Check.typecheck e (parse "Env.load SC") with
+              | Error terr ->
+                  Expect.stringContains terr.Message "the Default literal does not match the field, which is Secret" ""
+              | Ok _ -> failtest "a defaulted Secret field must refuse"
+          }
+          test "declaring a type an import already provides is an error naming the import [D:dup-type-decl]" {
+              let td =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dupim-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory td |> ignore
+
+              System.IO.File.WriteAllLines(
+                  System.IO.Path.Combine(td, "m.weir"),
+                  [| "module M"; "type T = { a: int }" |]
+              )
+
+              try
+                  let entry = [ "import \"./m.weir\" as M"; "type T = { b: int }"; "print \"x\"" ]
+
+                  let diags, _, _, _ =
+                      Weir.Script.analyzeLines (System.IO.Path.Combine(td, "main.weir")) entry
+
+                  let hit =
+                      diags
+                      |> List.exists (fun d -> d.Message.Contains "already provided by the import at line")
+
+                  Expect.isTrue
+                      hit
+                      $"the declare-after-import half must name the import: {diags |> List.map (fun d -> d.Message)}"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
+          test "assembly recovery caps at 10 dropped lines and never throws [D:assembly-recovery]" {
+              // 12 independently-failing triples: each recovery drops one
+              // offender; the 11th and 12th are past the cap
+              let lines =
+                  [ for i in 1..12 do
+                        yield! [ $"let a{i} ="; "    1"; "  bad" ] ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "cap.weir" lines
+
+              let assemblyCount =
+                  diags |> List.filter (fun d -> d.Code = "assembly") |> List.length
+
+              Expect.isTrue (assemblyCount <= 10) $"the cap: got {assemblyCount} assembly diags"
+              Expect.isTrue (assemblyCount >= 9) $"the recovery ran to the cap: got {assemblyCount}"
+          } ]
+
 let sizedFindingsTests =
     // the sized findings [D:sized-findings]: the read side's weir shapes
     // (fragments — FParsec never touches these but the fragment habit
@@ -10786,6 +10852,7 @@ let allTests =
           sizeTests
           windowsFindingsTests
           sizedFindingsTests
+          walkCohortTests
           pinsWalkTests
           functionKeywordTests
           jsonBoundaryTests

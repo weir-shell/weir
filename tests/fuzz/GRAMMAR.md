@@ -127,6 +127,21 @@ fails.
 
 ## Invariants wired
 
+**Positive controls [D:walk-findings]** — what makes the invariant
+claims non-vacuous. Each detector below has a standing must-fail
+control in the SMOKE ("Positive controls" testList, Main.fs): an
+output-changing transform and an rc-changing one both fire invariant
+1's comparison and the control asserts the failure carries "transform
+changed behavior" (by name, not merely a throw); a throwing pipeline
+and a deliberate hang both fire invariant 2's totality detector by
+name; invariant 4's shape language is asserted to DISTINGUISH two
+different programs (its equality cannot pass vacuously). Invariant
+3's control is sized, not built: its expecting-a-diagnostic checker
+is inline in two properties and needs a small extraction first. A
+control that ran once at bring-up is not a control — the DECISIONS
+walk found exactly that gap here.
+
+
 1. Metamorphic equivalence on the AOT binary — (rc, stdout, stderr)
    byte-identical under: blank insertion (any gap), comment insertion
    (any gap, any indent 0–12), whole-block re-indent (+1..6 on one

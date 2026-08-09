@@ -499,4 +499,79 @@ while m.get("id") != 11:
     m = read4()
 send4({"jsonrpc": "2.0", "method": "exit", "params": {}}); p4.wait(timeout=5)
 
+# ---- one pipeline, three consumers [D:walk-findings] ----------------
+# the same two-error script through `check --json`, the runner, and an
+# LSP didOpen: one diagnostics pipeline means identical code/line/col
+# everywhere (LSP 0-based by protocol; the runner stops at the FIRST
+# error by design, so it vouches for that one)
+import re as _re, tempfile as _tf, time as _time
+_pd = _tf.mkdtemp()
+_pf = os.path.join(_pd, "parity.weir")
+_ptext = 'let x = 1 + "a"\nlet Foo = 2\nprint "hi"\n'
+open(_pf, "w").write(_ptext)
+
+cj = json.loads(subprocess.run([BIN, "check", "--json", _pf],
+                               capture_output=True, text=True).stdout)
+expect(len(cj) == 2, f"check --json must report both errors: {cj}")
+cj_rows = [(d["code"], d["line"], d["col"]) for d in cj]
+
+rout = subprocess.run([BIN, _pf], capture_output=True, text=True).stderr
+mr = _re.match(r"^" + _re.escape(_pf) + r":(\d+):(\d+): ", rout)
+expect(mr, f"runner diagnostic must carry file:line:col: {rout!r}")
+expect((int(mr.group(1)), int(mr.group(2))) == cj_rows[0][1:],
+       f"runner and check --json must agree on the first error: {rout!r} vs {cj_rows}")
+
+p5 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+def send5(obj):
+    body = json.dumps(obj).encode()
+    p5.stdin.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+    p5.stdin.flush()
+
+def read5():
+    length = None
+    while True:
+        line = p5.stdout.readline()
+        if not line:
+            sys.exit("parity server closed stream")
+        line = line.strip()
+        if line.startswith(b"Content-Length:"):
+            length = int(line.split(b":")[1])
+        elif line == b"":
+            break
+    return json.loads(p5.stdout.read(length))
+
+send5({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+read5()
+p5uri = "file://" + _pf
+send5({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": p5uri, "text": _ptext}}})
+m = read5()
+while m.get("method") != "textDocument/publishDiagnostics":
+    m = read5()
+lsp_rows = sorted((d["code"], d["range"]["start"]["line"] + 1,
+                   d["range"]["start"]["character"] + 1)
+                  for d in m["params"]["diagnostics"])
+expect(lsp_rows == sorted(cj_rows),
+       f"LSP and check --json must agree code/line/col: {lsp_rows} vs {sorted(cj_rows)}")
+
+# recheck latency: a didChange republishes within 500ms — the editor's
+# keystroke-to-squiggle budget, lenient over a 3-line file on AOT
+send5({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": p5uri},
+                  "contentChanges": [{"text": 'let x = 1\nprint "hi"\n'}]}})
+_t0 = _time.monotonic()
+m = read5()
+while m.get("method") != "textDocument/publishDiagnostics":
+    m = read5()
+_dt = _time.monotonic() - _t0
+expect(m["params"]["diagnostics"] == [], f"the fix must clear: {m['params']}")
+expect(_dt < 0.5, f"recheck must republish within 500ms, took {_dt:.3f}s")
+
+send5({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}})
+m = read5()
+while m.get("id") != 2:
+    m = read5()
+send5({"jsonrpc": "2.0", "method": "exit", "params": {}}); p5.wait(timeout=5)
+
 print("lsp-e2e: all probes green")
