@@ -1,5 +1,102 @@
 # Spike Notes
 
+## from json seq<Name> — arrays declare themselves (2026-08-09)
+
+The probe's pricing held exactly. The parser cost was the two-token
+case it predicted — "seq" "<" UpperName ">" in fromExpr's existing
+optional slot, tySyn untouched and unreachable — and the payload
+change (seqOf: bool on EFrom/TEFrom) was found by the compiler at
+every consumer, all of them one-underscore edits except the two that
+were the feature: the checker's unwrap and eval's dispatcher.
+
+The dispatcher is where the no-sniffing property lives now, stated
+as code: jsonDoc takes wantSeq and demands the top level the
+DECLARED type named — an array under seq<T>, an object under bare T
+— so the same input can never mean two things and the input is never
+consulted to decide. The five refusals all speak: the inner gate
+fails with a designed expectation ("a record name inside seq< >" —
+the leaked 'type name' label from the probe's ride-along is retired
+and pinned absent), yaml and jsonl gate the wrap as a category
+error, an object under seq names both shapes and the way back, and
+the array-under-bare error finally points at a spelling that exists.
+The "no typed spelling" caveat lived one day in three doc sites and
+is gone from all of them.
+
+Two decisions worth their sentences: completion after `from json `
+offers record names only — no synthetic "seq<" item — because the
+teaching and the hover carry the form and the one-source rule stays
+trivially true. And Args.load/Env.load needed nothing because the
+spelling cannot reach their bespoke EVar arms — refusal by
+construction, recorded so nobody adds a guard that has nothing to
+guard.
+
+## from json reads a document; from jsonl reads lines (2026-08-08)
+
+The rename fixed a backwards default. `from json` was an NDJSON
+adapter wearing the plain name, which made the HTTP docs' headline —
+"body pipes straight into from json T" — true only for servers that
+minify. Now the plain name carries the common case: `from json T`
+joins its elements internally and parses one document, so
+`resp.body |> from json Peer` is the entire spelling against a
+pretty-printed body. The join idiom this repo taught YESTERDAY
+(wrap, join, head — three taxes) lived one day and is retired; the
+GUIDE block that demonstrated it now demonstrates the two-adapter
+distinction instead. `from jsonl` took the old behavior under the
+name the format actually goes by, and since it is the shape
+`to json` writes, the roundtrip reads `to json |> from jsonl`.
+
+The array question got its honest answer: `type Peers = seq<Peer>`
+is not expressible (probed — weir has no type aliases), so a
+top-level array document has no typed spelling, and the located
+error says exactly that — an array where an object was expected,
+lines-users pointed at jsonl, nothing promised. The blocker is
+reported here rather than papered over with sniffing: neither
+adapter inspects its input to decide what it means.
+
+The raw-leak sweep closed with a count. Six sibling boundaries
+probed across the two sessions — from yaml, to json/to yaml, the
+schema validator, Env.fromFile, Env.load, Args.load — every one
+already wraps its parser's errors in weir's words. from json was
+the only leaker, the third historical instance of the class
+(floats' FormatException refusal, File's read side, this); zero
+remain. The class rule stands in [D:json-boundary]: a boundary
+loader that hands a value to a .NET parser owes its own error
+wrapper.
+
+Every migrated call site came out shorter or unchanged — none
+longer. The document-form sites dropped their `|> Seq.head`; the
+stream sites renamed to jsonl and kept their shape. The GUIDE's
+list-endpoint example became a single-item endpoint, because a list
+endpoint genuinely cannot be read yet — the docs now say the true
+thing instead of the aspirational thing.
+
+## the json boundary: a class closed, an idiom written down (2026-08-08)
+
+The probe session's verdict was docs-not-member-not-type, and both
+halves landed. The join idiom is now taught where from json and Http
+chaining are taught: `[body |> Str.join "\n"] |> from json T`, with
+the wrapping brackets called out as the tell — you are building a
+one-element seq because from json takes a stream. The GUIDE example
+runs in CI (the 95th block), so the claim has an executable twin.
+
+The real find was the third instance of a shape now worth stating as
+a rule: any boundary loader that hands a value to a .NET parser
+needs its own error wrapper. The floats session refused raw parses;
+the filesystem session wrapped File's read side; and from json
+turned out to leak System.Text.Json's own sentence for every
+non-object top level — the exact shape a GitLab-style list endpoint
+produces. The guard now names the kind in weir's words, all five of
+them, and repeats the one-object-per-element contract. The array
+case deliberately gives no advice: no spelling exists for a
+top-level array today, and the message must not promise one — the
+document mode stays a member-sized park with its own bless.
+
+The sweep is what made it a class closed rather than a defect fixed:
+the schema validator already conforms (weir prefix, .NET detail as
+tail — the ioGuarded shape), and from yaml is hand-rolled and speaks
+its own words at every probe (tags, overflow, flow syntax). from
+json was the last leaker at this boundary.
+
 ## function — the implicit-match lambda (2026-08-08)
 
 The reservation paid out smaller than the plan sized, twice over.

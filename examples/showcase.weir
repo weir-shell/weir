@@ -279,7 +279,6 @@ type Peer = { host: string; port: int; note: Option<string> }
 let peer =
     ["{\"host\": \"a.example\", \"port\": 9000}"]
     |> from json Peer
-    |> Seq.head
 
 print $"peer {peer.host}:{peer.port} (note {peer.note})"
 

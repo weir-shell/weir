@@ -1230,14 +1230,33 @@ let private fromExpr =
     spanned (
         keyword "from" >>. ident
         .>>. opt (
+            // the slot takes a record NAME, or the narrow seq<Name> case
+            // [D:from-json-seq] — never the general type grammar (tySyn
+            // stays unreachable from here; the admitted set is closed)
             attempt (
                 identSpanned
-                >>= fun (w, _) -> if Char.IsUpper w[0] then preturn w else fail "type name"
+                >>= fun (w, _) ->
+                    if w = "seq" then
+                        between (str_ws "<") (str_ws ">") identSpanned
+                        >>= fun (inner, _) ->
+                            if Char.IsUpper inner[0] then
+                                preturn (inner, true)
+                            else
+                                fail "a record name inside seq< >"
+                    elif Char.IsUpper w[0] then
+                        preturn (w, false)
+                    else
+                        fail "a record name"
             )
         )
     )
-    |>> fun ((fmt, tyName), span) ->
-        { Kind = EFrom(fmt, tyName)
+    |>> fun ((fmt, arg), span) ->
+        let tyName, seqOf =
+            match arg with
+            | Some(n, s) -> Some n, s
+            | None -> None, false
+
+        { Kind = EFrom(fmt, tyName, seqOf)
           Span = span }
 
 let private toExpr =

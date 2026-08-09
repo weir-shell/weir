@@ -593,6 +593,24 @@ quantity semantics now.
   match-head shape); fmt preserves the spelling. In binder and
   command-head slots the keyword refuses with the generic keyword
   message.
+- **`from json` reads a document; `from jsonl` reads lines**
+  (2026-08-08 [D:from-jsonl]): `from json T : seq<string> -> T` joins
+  its elements and parses ONE document — the plain name carries the
+  common case (pretty-printed REST bodies), so `resp.body |> from
+  json T` is the whole spelling, no join, no head. `from jsonl T :
+  seq<string> -> seq<T>` reads one document per element (NDJSON —
+  `jsonl` over `ndjson` because the extension won in practice; it is
+  the shape `to json` writes, so the roundtrip pairs them). NOTHING
+  SNIFFS: the adapter's name and the DECLARED type decide the
+  reading, never the input. A top-level array declares itself:
+  `from json seq<Name>` -> seq<T> [D:from-json-seq] — the narrow
+  two-token slot case (never the general type grammar; the admitted
+  set is record-name or seq-of-record-name, closed), only json
+  admits the wrap (jsonl/yaml already yield seq<T> and gate with the
+  category teaching). `to jsonl` is NOT in scope — emitting
+  NDJSON is rarer than reading it; it waits for a receipt. The
+  from/to inventory asymmetry (`from` has jsonl, `to` does not) is
+  deliberate and recorded.
 - **Expression-level `let` is F#-shaped** (decided 2026-07-18, replacing
   the earlier keep-`in` decision): in scripts, a continuation line
   beginning with `let` opens a binding closed implicitly by the next line
@@ -788,8 +806,8 @@ quantity semantics now.
   flows external→external (`|`)→function (`|>`). A mismatch teaches both
   ways: `cmd | fn` → "'|' chains commands; pipe expressions with '|>'";
   `expr |> cmd` → "'|>' applies functions; feed a program with '|'", each
-  anchored on the glyph/program. Adapters (`from json`/`from yaml`/`to
-  json`) are functions → `|>`.
+  anchored on the glyph/program. Adapters (`from json`/`from jsonl`/`from
+  yaml`/`to json`) are functions → `|>`.
 - **Arguments**: barewords run until whitespace, `|`, `(`, `)`, quotes, `$`, or
   end of line — `/`, `.`, `-`, `=`, `%` are ordinary characters. `"..."`
   (with escapes) and `'...'` (raw) produce single args. `$name` splices a
@@ -1550,7 +1568,8 @@ quantity semantics now.
   they were warnings, and `match failure` was a deliberate runtime
   class — both retired together, see the booleans bullet). The
   deliberate runtime failure classes: boundary validation
-  (`from json`/`from yaml` reject malformed input per line/document),
+  (`from json` rejects a malformed document, `from jsonl`/`from yaml`
+  per line/document),
   arithmetic (division by zero), and **user-raised `fail "reason"`**
   (added 2026-07-18 from the agent-dogfooding ledger: `string -> unit`,
   halts with a located error and exit 1 — the checking-script idiom is

@@ -92,7 +92,7 @@ and TypedKind =
     | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
-    | TEFrom of format: string * rowDef: RecordDef
+    | TEFrom of format: string * rowDef: RecordDef * seqOf: bool
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
     // the RESOLVED target tree (the [D:env-enums] precedent)
     | TEFromYaml of tyName: string * shape: Yaml.Shape
@@ -2394,22 +2394,53 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let nameList = many |> List.map (fun r -> r.Name) |> String.concat ", "
                     return! err expr.Span $"ambiguous record literal; it matches: {nameList}"
         }
-    | EFrom(fmt, tyName) ->
+    | EFrom(fmt, tyName, seqOf) ->
         result {
+            // per-adapter admitted set for seq<Name> [D:from-json-seq]:
+            // only json admits the wrap — jsonl/yaml already yield seq<T>,
+            // so the wrap there is a category error
+            do!
+                if seqOf && fmt <> "json" then
+                    let n = defaultArg tyName "T"
+                    err expr.Span $"'from {fmt} T' already yields seq<T> — write from {fmt} {n}"
+                else
+                    Ok()
+
             match fmt, tyName with
-            | "json", Some name ->
+            // from json T reads ONE DOCUMENT -> T (pretty-printed bodies
+            // pipe straight in); from json seq<T> reads one ARRAY
+            // document -> seq<T> — the declared type decides what the top
+            // level must be, never the input [D:from-json-seq]; from
+            // jsonl T reads one document per element -> seq<T>
+            // [D:from-jsonl]. The plain name carries the common case;
+            // nothing sniffs.
+            | ("json" | "jsonl"), Some name ->
                 match Map.tryFind name env.Types with
                 | Some(Record def) when def.Params.IsEmpty ->
                     do! jsonableRecord expr.Span def
 
+                    let resultTy =
+                        if fmt = "json" && not seqOf then
+                            TNamed(name, [])
+                        else
+                            TSeq(TNamed(name, []))
+
                     return
-                        { Kind = TEFrom("json", def)
-                          Ty = TFun(TSeq TStr, TSeq(TNamed(name, [])))
+                        { Kind = TEFrom(fmt, def, seqOf)
+                          Ty = TFun(TSeq TStr, resultTy)
                           Span = expr.Span }
-                | Some(Record _) -> return! err expr.Span $"'from json' needs a monomorphic record; '{name}' is generic"
-                | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from json' needs a record"
+                | Some(Record _) ->
+                    return! err expr.Span $"'from {fmt}' needs a monomorphic record; '{name}' is generic"
+                | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from {fmt}' needs a record"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
-            | "json", None -> return! err expr.Span "'from json' needs a record name, e.g. from json FileRow"
+            | ("json" | "jsonl"), None ->
+                let seqHint =
+                    if fmt = "json" then
+                        " — or seq<FileRow> for a top-level array"
+                    else
+                        ""
+
+                return! err expr.Span $"'from {fmt}' needs a record name, e.g. from {fmt} FileRow{seqHint}"
             | "yaml", Some name ->
                 // from yaml T [D:yaml-v1]: seq<string> lines in, seq<T>
                 // DOCUMENTS out (`---` separated; one doc = one element)
@@ -2425,7 +2456,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from yaml' needs a record"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
             | "yaml", None -> return! err expr.Span "'from yaml' needs a record name, e.g. from yaml Deployment"
-            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, yaml"
+            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
     | EYaml(tpl, schema) ->

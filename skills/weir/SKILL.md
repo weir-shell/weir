@@ -255,8 +255,9 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   body is `NoBody`/`Json of seq<string>`/`Text of string` — `Json`
   carries the caller's `to json` lines, byte-exact to the wire (the
   curl `-d` mangling this exists to prevent). `resp.body |> from json
-  T` reads the response; for a plain GET, `curl url |> from json T` is
-  still the spelling. `secretHeaders` for credential headers; parallel
+  T` reads the response — pretty-printed or minified, one document
+  either way; for a plain GET, `curl url |> from json T` is still the
+  spelling. `secretHeaders` for credential headers; parallel
   fetches are `urls |> Seq.pmap (fun u -> Http.send { Http.defaults with
   url = u })`.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
@@ -568,6 +569,12 @@ within tmp d
   what you need, not the world.
 - Typed output: `... |> from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
+  `from json T` reads ONE DOCUMENT -> `T` (any number of lines — a
+  pretty-printed body pipes straight in); `from json seq<T>` reads a
+  top-level ARRAY document -> `seq<T>` (the list-endpoint shape);
+  `from jsonl T` reads one document per element -> `seq<T>` (NDJSON,
+  the shape `to json` writes). The DECLARED type decides what the top
+  level must be — nothing sniffs the input.
   Fields are `int`/`string`/`bool` or `Option` of one. An `Option`
   field reads a missing key OR an explicit `null` as `None`; a
   required field that is `null` errors, naming the fix. `to json`

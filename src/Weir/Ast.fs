@@ -92,7 +92,7 @@ and ExprKind =
     | EMatch of scrutinee: Expr * arms: (Pattern * Expr option * Expr) list
     | EIf of cond: Expr * thn: Expr * els: Expr option
     | ESeq of first: Expr * rest: Expr
-    | EFrom of format: string * tyName: string option
+    | EFrom of format: string * tyName: string option * seqOf: bool
     | ETo of format: string
     | EList of items: Expr list
     | ETuple of items: Expr list
@@ -311,8 +311,9 @@ let rec sexpr (e: Expr) : string =
     | EIf(c, t, None) -> $"(if {sexpr c} {sexpr t})"
     | EIf(c, t, Some e) -> $"(if {sexpr c} {sexpr t} {sexpr e})"
     | ESeq(a, b) -> $"(seq {sexpr a} {sexpr b})"
-    | EFrom(fmt, None) -> $"(from {fmt})"
-    | EFrom(fmt, Some ty) -> $"(from {fmt} {ty})"
+    | EFrom(fmt, None, _) -> $"(from {fmt})"
+    | EFrom(fmt, Some ty, false) -> $"(from {fmt} {ty})"
+    | EFrom(fmt, Some ty, true) -> $"(from {fmt} seq<{ty}>)"
     | ETo fmt -> $"(to {fmt})"
     | EList items ->
         let body = items |> List.map sexpr |> String.concat "; "

@@ -13,10 +13,11 @@ Three properties, in the order they matter:
    wrong field, a discarded value, a missing match case — all of them
    stop the script with `file:line:col` and a hint, before any side
    effect. Bash tells you about your mistake halfway through making it.
-2. **Command output is typed data.** `kubectl get pods -o json` piped
-   through `|> from json Pod` is a sequence of records with the fields
-   YOU declared, not a string soup — and the `Regex` match pattern
-   covers everything line-shaped.
+2. **Command output is typed data.** A JSON document — pretty-printed
+   or not — pipes through `|> from json T` into a record with the
+   fields YOU declared, not string soup; `|> from jsonl T` reads
+   NDJSON streams, and the `Regex` match pattern covers everything
+   line-shaped.
 3. **It starts in ~7ms** — a single AOT binary, fine for shebangs.
 
 ## Running weir
@@ -333,7 +334,34 @@ and raises on a non-2xx naming the status, where `Http.send` binds the
 same status as data.
 
 ```
-let items = Http.fetch $"{api}/items" |> from json Item
+let item = Http.fetch $"{api}/items/1" |> from json Item
+```
+
+Two adapters, one distinction: `from json T` reads ONE document —
+across as many lines as the server felt like using — and gives you a
+`T`; `from jsonl T` reads one document per line (NDJSON, the shape
+`to json` writes) and gives you a `seq<T>`. Neither inspects its
+input to guess which it is.
+
+```weir
+type Peer = { host: string; port: int }
+
+let body = ["{"; "  \"host\": \"a.example\","; "  \"port\": 9000"; "}"]
+let peer = body |> from json Peer
+print $"{peer.host}:{peer.port}"
+
+let peers = ["{\"host\": \"a\", \"port\": 1}"; "{\"host\": \"b\", \"port\": 2}"] |> from jsonl Peer
+peers |> Seq.iter (fun p -> print $"{p.host}:{p.port}")
+```
+
+A top-level JSON *array* — the list-endpoint shape — declares
+itself: `from json seq<Peer>` reads it as one `Peer` per element.
+
+```weir
+type Peer2 = { host: string }
+
+let hosts = ["[{\"host\": \"a\"}, {\"host\": \"b\"}]"] |> from json seq<Peer2> |> Seq.map _.host
+hosts |> print
 ```
 
 `Http.query` is the QUERY method (RFC 10008): it is IDEMPOTENT by

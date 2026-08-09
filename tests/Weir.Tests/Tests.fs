@@ -870,28 +870,28 @@ let boundaryTests =
                   ""
           }
           test "json roundtrip preserves rows" {
-              Expect.equal (run "ls |> to json |> from json FileRow" |> forceSeq) fakeFiles ""
+              Expect.equal (run "ls |> to json |> from jsonl FileRow" |> forceSeq) fakeFiles ""
           }
-          test "from json validates field types" {
+          test "from jsonl validates field types" {
               let src = VSeq [ VStr """{"name":"x","bytes":"big","readOnly":false}""" ]
 
-              Expect.throws (fun () -> runWith [ "src", src ] "src |> from json FileRow" |> forceSeq |> ignore) ""
+              Expect.throws (fun () -> runWith [ "src", src ] "src |> from jsonl FileRow" |> forceSeq |> ignore) ""
           }
-          test "from json rejects missing fields" {
+          test "from jsonl rejects missing fields" {
               let src = VSeq [ VStr """{"name":"x"}""" ]
 
-              Expect.throws (fun () -> runWith [ "src", src ] "src |> from json FileRow" |> forceSeq |> ignore) ""
+              Expect.throws (fun () -> runWith [ "src", src ] "src |> from jsonl FileRow" |> forceSeq |> ignore) ""
           }
-          test "from json ignores extra fields" {
+          test "from jsonl ignores extra fields" {
               let src =
                   VSeq [ VStr """{"name":"x","Size":1,"bytes":1048576,"readOnly":true,"Extra":42}""" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from json FileRow" |> forceSeq)
+                  (runWith [ "src", src ] "src |> from jsonl FileRow" |> forceSeq)
                   [ Weir.Builtins.file "x" 1048576 true ]
                   ""
           }
-          test "from json: an Option field reads present as Some, missing AND null as None [D:json-option]" {
+          test "from jsonl: an Option field reads present as Some, missing AND null as None [D:json-option]" {
               let src =
                   VSeq
                       [ VStr """{"name":"a","age":5}"""
@@ -899,7 +899,7 @@ let boundaryTests =
                         VStr """{"name":"c","age":null}""" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from json JOpt |> Seq.map _.age" |> forceSeq)
+                  (runWith [ "src", src ] "src |> from jsonl JOpt |> Seq.map _.age" |> forceSeq)
                   [ VUnion("Some", Some(VInt 5L)); VUnion("None", None); VUnion("None", None) ]
                   "present -> Some; missing and null both -> None"
           }
@@ -907,17 +907,17 @@ let boundaryTests =
               let src = VSeq [ VStr """{"name":"a","age":5}"""; VStr """{"name":"b"}""" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from json JOpt |> to json" |> forceSeq)
+                  (runWith [ "src", src ] "src |> from jsonl JOpt |> to json" |> forceSeq)
                   [ VStr """{"age":5,"name":"a"}"""; VStr """{"name":"b"}""" ]
                   "Some writes the scalar; None OMITS its key (the fork)"
 
-              let once = runWith [ "src", src ] "src |> from json JOpt" |> forceSeq
+              let once = runWith [ "src", src ] "src |> from jsonl JOpt" |> forceSeq
 
               let twice =
-                  runWith [ "src", src ] "src |> from json JOpt |> to json |> from json JOpt"
+                  runWith [ "src", src ] "src |> from jsonl JOpt |> to json |> from jsonl JOpt"
                   |> forceSeq
 
-              Expect.equal twice once "to json |> from json is identity with a None field"
+              Expect.equal twice once "to json |> from jsonl is identity with a None field"
           }
           test
               "json boundary: null-in-required teaches Option; nested Option and Option-of-record reject [D:json-option]" {
@@ -926,7 +926,7 @@ let boundaryTests =
 
               let msg =
                   try
-                      runWith [ "src", srcNull ] "src |> from json JOpt" |> forceSeq |> ignore
+                      runWith [ "src", srcNull ] "src |> from jsonl JOpt" |> forceSeq |> ignore
                       ""
                   with e ->
                       e.Message
@@ -1513,7 +1513,7 @@ let boundaryTests =
           }
           test "from can be let-bound" {
               expectValue
-                  "let p = from json FileRow in [\"{\\\"name\\\": \\\"x\\\", \\\"bytes\\\": 1, \\\"readOnly\\\": false}\"] |> p |> first 1 |> map (fun f -> f.name)"
+                  "let p = from jsonl FileRow in [\"{\\\"name\\\": \\\"x\\\", \\\"bytes\\\": 1, \\\"readOnly\\\": false}\"] |> p |> first 1 |> map (fun f -> f.name)"
                   (VSeq [ VStr "x" ])
           } ]
 
@@ -1579,7 +1579,7 @@ let shorthandTests =
               let src = VSeq [ VStr """{"name":"a\"b","bytes":1048576,"readOnly":false}""" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from json FileRow |> map _.name" |> forceSeq)
+                  (runWith [ "src", src ] "src |> from jsonl FileRow |> map _.name" |> forceSeq)
                   [ VStr "a\"b" ]
                   ""
           } ]
@@ -1720,7 +1720,7 @@ let completionTests =
               Expect.equal (suggest "Args.lo" 0) [ "Args.load" ] "prefix narrows to the arm"
           }
           test "later pipeline stages track the element type" {
-              let text = "[\"{}\"] |> from json FileRow |> where (fun c -> c."
+              let text = "[\"{}\"] |> from jsonl FileRow |> where (fun c -> c."
 
               Expect.equal (suggest text (text.Length - 2)) [ "c.bytes"; "c.name"; "c.readOnly" ] ""
           }
@@ -4201,7 +4201,7 @@ let adapterFormTests =
               match Weir.Lsp.hoverType lines 2 22 with
               | Some h ->
                   Expect.stringContains h "from <adapter>" "the form"
-                  Expect.stringContains h "json, yaml" "every from-adapter, derived"
+                  Expect.stringContains h "json, jsonl, yaml" "every from-adapter, derived"
               | None -> failtest "from must answer"
 
               let t = [ "let back = rows |> to yaml" ]
@@ -4218,18 +4218,18 @@ let adapterFormTests =
 
               match Weir.Lsp.hoverType lines 2 27 with
               | Some h ->
-                  Expect.stringContains h "seq<string> -> seq<Config>" "the adapter's own type"
-                  Expect.stringContains h "Parse a JSON line stream" "the adapter's own doc"
+                  Expect.stringContains h "seq<string> -> Config" "the adapter's own type"
+                  Expect.stringContains h "Parse ONE JSON document" "the adapter's own doc"
               | None -> failtest "the adapter word must still hover"
           }
           test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
-              Expect.equal (sug "xs |> from ") [ "json"; "yaml" ] "every from-adapter"
-              Expect.equal (sug "xs |> from j") [ "json" ] "prefix-filtered"
+              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "yaml" ] "every from-adapter"
+              Expect.equal (sug "xs |> from j") [ "json"; "jsonl" ] "prefix-filtered"
               Expect.equal (sug "xs |> to ") [ "json"; "yaml" ] "every to-adapter"
-              Expect.isFalse (sug "xs |> into " = [ "json"; "yaml" ]) "boundary: into is not from"
+              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "yaml" ]) "boundary: into is not from"
           }
           test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
-              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "yaml" ] "from"
+              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "yaml" ] "from"
               Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "yaml" ] "to"
           }
           test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {
@@ -4433,7 +4433,7 @@ let semanticTokenTests =
           test "definitionFor: the from-json type name jumps to its declaration [PLAN-diagnostics-arc A3]" {
               let lines =
                   [ "type Oidc = { value: string }"
-                    "let toks = [\"{}\"] |> from json Oidc |> Seq.force"
+                    "let toks = [\"{}\"] |> from json Oidc"
                     "print \"x\"" ]
 
               Expect.equal (Weir.Lsp.definitionFor lines 2 33) (Some(1, 6, 4)) "Oidc use -> the type decl"
@@ -9004,6 +9004,174 @@ let functionKeywordTests =
                   "a comment is data"
           } ]
 
+let jsonBoundaryTests =
+    // the json boundary [D:from-jsonl] [D:json-boundary]: from json reads
+    // ONE document -> T (joins its elements internally); from jsonl reads
+    // one document per element -> seq<T>; every failure speaks weir's
+    // words, never System.Text.Json's
+    testList
+        "json boundary [D:from-jsonl]"
+        [ test "from json reads a pretty-printed document ACROSS elements — no join, no head" {
+              let doc =
+                  VSeq
+                      [ VStr "{"
+                        VStr "  \"name\": \"x\","
+                        VStr "  \"bytes\": 1,"
+                        VStr "  \"readOnly\": false"
+                        VStr "}" ]
+
+              match runWith [ "src", doc ] "(src |> from json FileRow).name" with
+              | VStr "x" -> ()
+              | other -> failtest $"the acceptance shape must hold: {other}"
+          }
+          test "a top-level array errors in weir's words and points at jsonl for lines" {
+              let m =
+                  try
+                      runWith [ "src", VSeq [ VStr "[{\"a\":1}]" ] ] "(src |> from json FileRow).name"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "from json: the top level is a JSON array, not an object" ""
+              Expect.stringContains m "declare seq<FileRow> to read it" "the pointer is real now [D:from-json-seq]"
+              Expect.isFalse (m.Contains "requested operation") "no System.Text.Json words"
+          }
+          test "every non-object top level is named (number, string, boolean, null) — both adapters" {
+              for lit, kind in [ "42", "number"; "\"s\"", "string"; "true", "boolean"; "null", "null" ] do
+                  let mJson =
+                      try
+                          runWith [ "src", VSeq [ VStr lit ] ] "(src |> from json FileRow).name" |> ignore
+                          "no error"
+                      with e ->
+                          e.Message
+
+                  Expect.stringContains mJson $"the top level is a JSON {kind}, not an object" $"json kind for {lit}"
+
+                  let mJsonl =
+                      try
+                          runWith [ "src", VSeq [ VStr lit ] ] "src |> from jsonl FileRow"
+                          |> forceSeq
+                          |> ignore
+
+                          "no error"
+                      with e ->
+                          e.Message
+
+                  Expect.stringContains mJsonl $"the top level is a JSON {kind}, not an object" $"jsonl kind for {lit}"
+                  Expect.stringContains mJsonl "one object per element" "jsonl names its contract"
+          }
+          test "invalid and empty documents error located, in weir's words" {
+              let bad =
+                  try
+                      runWith [ "src", VSeq [ VStr "not json" ] ] "(src |> from json FileRow).name"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains bad "from json: not valid JSON: not json" ""
+
+              let empty =
+                  try
+                      runWith [ "src", VSeq [ VStr "" ] ] "(src |> from json FileRow).name" |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains empty "from json: empty input — expected one JSON document" ""
+          } ]
+
+let fromJsonSeqTests =
+    // from json seq<Name> [D:from-json-seq]: the declared type decides
+    // what the top level must be — never the input; only json admits
+    // the wrap
+    testList
+        "from json seq<Name> [D:from-json-seq]"
+        [ test "reads a pretty-printed top-level array across elements — the acceptance" {
+              let doc =
+                  VSeq
+                      [ VStr "["
+                        VStr "  {\"name\": \"a\", \"bytes\": 1, \"readOnly\": false},"
+                        VStr "  {\"name\": \"b\", \"bytes\": 2, \"readOnly\": true}"
+                        VStr "]" ]
+
+              match runWith [ "src", doc ] "src |> from json seq<FileRow> |> map _.name" |> forceSeq with
+              | [ VStr "a"; VStr "b" ] -> ()
+              | other -> failtest $"two rows expected: {other}"
+          }
+          test "an object document under seq<T> refuses, naming both shapes" {
+              let m =
+                  try
+                      runWith [ "src", VSeq [ VStr "{\"a\":1}" ] ] "src |> from json seq<FileRow>"
+                      |> forceSeq
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "expected an array (the declared type is seq<FileRow>); got an object" ""
+              Expect.stringContains m "write from json FileRow" "the way back"
+          }
+          test "a non-object array element refuses naming kind and position" {
+              let m =
+                  try
+                      runWith
+                          [ "src", VSeq [ VStr "[{\"name\": \"a\", \"bytes\": 1, \"readOnly\": false}, 7]" ] ]
+                          "src |> from json seq<FileRow>"
+                      |> forceSeq
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "array element 2 is a JSON number, not an object" ""
+          }
+          test "the wrap is json-only: yaml and jsonl gate with the category teaching" {
+              Expect.stringContains
+                  (checkErr "[\"a: 1\"] |> from yaml seq<FileRow>").Message
+                  "'from yaml T' already yields seq<T> — write from yaml FileRow"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "[\"{}\"] |> from jsonl seq<FileRow>").Message
+                  "'from jsonl T' already yields seq<T> — write from jsonl FileRow"
+                  ""
+          }
+          test "the inner-name gate speaks in expectations, never an internal label" {
+              match Weir.Parser.parseExpr "[\"[]\"] |> from json seq<int>" with
+              | Error m ->
+                  Expect.stringContains m "a record name inside seq< >" "the designed expectation"
+                  Expect.isFalse (m.Contains "type name") "the old leaked label is retired"
+              | Ok _ -> failtest "seq<int> must not parse into the slot"
+          }
+          test "the bare teaching names the seq form for json only" {
+              Expect.stringContains (checkErr "[\"x\"] |> from json").Message "or seq<FileRow> for a top-level array" ""
+
+              Expect.isFalse
+                  ((checkErr "[\"x\"] |> from jsonl").Message.Contains "seq<FileRow>")
+                  "jsonl's teaching stays line-shaped"
+          }
+          test "hover on the inner name renders the record's own shape (the enclosing-leak class)" {
+              let lines =
+                  [ "type Peer = { host: string; port: int }"
+                    "let xs = [\"[]\"] |> from json seq<Peer>"
+                    "print (show (xs |> Seq.length))" ]
+
+              match Weir.Lsp.hoverType lines 2 34 with
+              | Some h -> Expect.stringContains h "host: string" "the record shape, not the district's or seq's"
+              | None -> failtest "the inner name must hover"
+          }
+          test "completion after `from json ` offers record names, not the seq form (decided: the hover teaches it)" {
+              let text = "[\"x\"] |> from json "
+              Expect.contains (suggest text text.Length) "FileRow" ""
+              Expect.isFalse (List.exists (fun (s: string) -> s.StartsWith "seq") (suggest text text.Length)) ""
+          } ]
+
 let pinsWalkTests =
     // the full DECISIONS-to-pins walk's cheap pins [D:pins-walk]: every
     // test here asserts a teaching message that existed ONLY in the
@@ -10020,7 +10188,7 @@ let floatBoundaryTests =
 
               let read line =
                   match
-                      Weir.Check.typecheck e (parse $"[\"{line}\"] |> from json FJ |> Seq.head")
+                      Weir.Check.typecheck e (parse $"[\"{line}\"] |> from json FJ")
                       |> Result.map (eval valueEnv)
                   with
                   | Ok(VRecord(_, fs)) -> fs["rate"]
@@ -10033,7 +10201,7 @@ let floatBoundaryTests =
               let e = env |> declare "type FI = { n: int }"
 
               let te =
-                  match Weir.Check.typecheck e (parse "[\"{\\\"n\\\": 1.5}\"] |> from json FI |> Seq.head") with
+                  match Weir.Check.typecheck e (parse "[\"{\\\"n\\\": 1.5}\"] |> from json FI") with
                   | Ok te -> te
                   | Error terr -> failtest terr.Message
 
@@ -10620,6 +10788,8 @@ let allTests =
           sizedFindingsTests
           pinsWalkTests
           functionKeywordTests
+          jsonBoundaryTests
+          fromJsonSeqTests
           secretTests
           httpTests
           dupTypeTests

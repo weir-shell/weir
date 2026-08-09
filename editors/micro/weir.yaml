@@ -44,7 +44,7 @@ rules:
     # the from/to ADAPTER word is form, not a name [D:form-word-hover] —
     # same whole-match paint (the richer engines scope the adapter apart)
     # rule: adapter-word
-    - statement: "\\b(from|to)[ \\t]+(json|yaml)\\b"
+    - statement: "\\b(from|to)[ \\t]+(jsonl|json|yaml)\\b"
     # reserved (rejected by the parser, but color them so muscle-memory
     # F# reads as "claimed", not "identifier")
     # rule: reserved
