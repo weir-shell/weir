@@ -324,7 +324,11 @@ let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
 /// adapter in every message ("from json" / "from jsonl") and `shown`
 /// is the input to cite — the line for jsonl, a snippet for a joined
 /// document [D:from-jsonl]
-let private jsonRow (who: string) (def: RecordDef) (shown: string) (text: string) : Value =
+/// parse one document and read it under the DECLARED shape: wantSeq
+/// demands a top-level array (one row per element), otherwise an object
+/// — the type decides what the top level must be, never the input
+/// [D:from-json-seq]
+let private jsonDoc (who: string) (wantSeq: bool) (def: RecordDef) (shown: string) (text: string) : Value =
     use doc =
         try
             System.Text.Json.JsonDocument.Parse text
@@ -333,17 +337,6 @@ let private jsonRow (who: string) (def: RecordDef) (shown: string) (text: string
             failwith $"{who}: not valid JSON: {shown}"
 
     let root = doc.RootElement
-
-    // a non-object top level is a MEANING mismatch, not bad JSON
-    if root.ValueKind <> System.Text.Json.JsonValueKind.Object then
-        let contract =
-            if who = "from json" then
-                "from json T reads one object document (an array has no typed spelling; for one object per line use from jsonl)"
-            else
-                "from jsonl T reads one object per element"
-
-        failwith
-            $"{who}: the top level is a JSON {jsonKindName root.ValueKind}, not an object — {contract}, in: {shown}"
 
     // read a scalar of type `scalarTy` from an already-fetched, non-null
     // property [D:json-option]
@@ -368,29 +361,65 @@ let private jsonRow (who: string) (def: RecordDef) (shown: string) (text: string
         | TBool, System.Text.Json.JsonValueKind.False -> VBool false
         | ty, kind -> failwith $"{who}: field '{name}' expected {formatTy ty}, got {kind} in: {shown}"
 
-    let readField (name: string, ty: Ty) =
-        let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
-        let present = root.TryGetProperty(name, &prop)
-        let isNull = present && prop.ValueKind = System.Text.Json.JsonValueKind.Null
+    // one OBJECT element -> one row (the param shadows the document root
+    // on purpose: the field readers below say `root` either way)
+    let objRow (root: System.Text.Json.JsonElement) =
+        let readField (name: string, ty: Ty) =
+            let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
+            let present = root.TryGetProperty(name, &prop)
+            let isNull = present && prop.ValueKind = System.Text.Json.JsonValueKind.Null
 
-        let value =
-            match ty with
-            // an Option<scalar> field: missing key OR explicit null -> None;
-            // a present scalar -> Some it
-            | TNamed("Option", [ inner ]) ->
-                if not present || isNull then
-                    VUnion("None", None)
-                else
-                    VUnion("Some", Some(readScalar name inner prop))
-            // a required field: missing or null both fail — null names the fix
-            | _ when not present -> failwith $"{who}: missing field '{name}' in: {shown}"
-            | _ when isNull ->
-                failwith $"{who}: field '{name}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"
-            | _ -> readScalar name ty prop
+            let value =
+                match ty with
+                // an Option<scalar> field: missing key OR explicit null -> None;
+                // a present scalar -> Some it
+                | TNamed("Option", [ inner ]) ->
+                    if not present || isNull then
+                        VUnion("None", None)
+                    else
+                        VUnion("Some", Some(readScalar name inner prop))
+                // a required field: missing or null both fail — null names the fix
+                | _ when not present -> failwith $"{who}: missing field '{name}' in: {shown}"
+                | _ when isNull ->
+                    failwith $"{who}: field '{name}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"
+                | _ -> readScalar name ty prop
 
-        name, value
+            name, value
 
-    VRecord(def.Name, def.Fields |> List.map readField |> Map.ofList)
+        VRecord(def.Name, def.Fields |> List.map readField |> Map.ofList)
+
+    match wantSeq, root.ValueKind with
+    | false, System.Text.Json.JsonValueKind.Object -> objRow root
+    | true, System.Text.Json.JsonValueKind.Array ->
+        root.EnumerateArray()
+        |> Seq.mapi (fun i el ->
+            if el.ValueKind <> System.Text.Json.JsonValueKind.Object then
+                failwith
+                    $"{who}: array element {i + 1} is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
+            else
+                objRow el)
+        // forced BEFORE the document disposes; then seq for the ctor
+        |> List.ofSeq
+        |> List.toSeq
+        |> VSeq
+    | true, System.Text.Json.JsonValueKind.Object ->
+        failwith
+            $"{who}: expected an array (the declared type is seq<{def.Name}>); got an object — write from json {def.Name}, in: {shown}"
+    | true, k ->
+        failwith
+            $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{def.Name}>, in: {shown}"
+    | false, System.Text.Json.JsonValueKind.Array when who = "from json" ->
+        // the pointer is REAL now: the spelling exists
+        failwith
+            $"{who}: the top level is a JSON array, not an object — declare seq<{def.Name}> to read it, in: {shown}"
+    | false, k ->
+        let contract =
+            if who = "from json" then
+                "from json T reads one object document"
+            else
+                "from jsonl T reads one object per element"
+
+        failwith $"{who}: the top level is a JSON {jsonKindName k}, not an object — {contract}, in: {shown}"
 
 // a document snippet for error messages: whole if short, elided middle
 // if not (a joined body can be megabytes; the message stays a message)
@@ -398,7 +427,7 @@ let private jsonSnippet (text: string) : string =
     let t = text.Trim()
     if t.Length <= 120 then t else t.Substring(0, 117) + "..."
 
-let private fromAdapter (fmt: string) (def: RecordDef) : Value =
+let private fromAdapter (fmt: string) (seqOf: bool) (def: RecordDef) : Value =
     match fmt with
     // ONE document -> T: join the elements back into the text they came
     // from (a pretty-printed body pipes straight in) [D:from-jsonl]
@@ -417,7 +446,7 @@ let private fromAdapter (fmt: string) (def: RecordDef) : Value =
                 if text.Trim() = "" then
                     failwith "from json: empty input — expected one JSON document"
 
-                jsonRow "from json" def (jsonSnippet text) text
+                jsonDoc "from json" seqOf def (jsonSnippet text) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // one document per element -> seq<T> (NDJSON, `to json`'s shape)
     | "jsonl" ->
@@ -428,7 +457,7 @@ let private fromAdapter (fmt: string) (def: RecordDef) : Value =
                     lines
                     |> Seq.map (fun l ->
                         match l with
-                        | VStr s -> jsonRow "from jsonl" def s s
+                        | VStr s -> jsonDoc "from jsonl" false def s s
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
@@ -1543,7 +1572,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 |> ignore
 
         VStr(sb.ToString())
-    | TEFrom(fmt, def) -> fromAdapter fmt def
+    | TEFrom(fmt, def, seqOf) -> fromAdapter fmt seqOf def
     | TEFromYaml(_, shape) -> yamlFromImpl shape
     | TEYaml(tpl, _) -> evalYamlTpl env tpl
     | TETo "yaml" -> yamlToImpl

@@ -354,8 +354,15 @@ let peers = ["{\"host\": \"a\", \"port\": 1}"; "{\"host\": \"b\", \"port\": 2}"]
 peers |> Seq.iter (fun p -> print $"{p.host}:{p.port}")
 ```
 
-(A top-level JSON *array* has no typed spelling; the error names
-what it found.)
+A top-level JSON *array* — the list-endpoint shape — declares
+itself: `from json seq<Peer>` reads it as one `Peer` per element.
+
+```weir
+type Peer2 = { host: string }
+
+let hosts = ["[{\"host\": \"a\"}, {\"host\": \"b\"}]"] |> from json seq<Peer2> |> Seq.map _.host
+hosts |> print
+```
 
 `Http.query` is the QUERY method (RFC 10008): it is IDEMPOTENT by
 definition, so `retry attempts=5` around an `Http.query` is safe by the

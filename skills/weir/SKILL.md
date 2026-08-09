@@ -570,10 +570,11 @@ within tmp d
 - Typed output: `... |> from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set).
   `from json T` reads ONE DOCUMENT -> `T` (any number of lines — a
-  pretty-printed body pipes straight in); `from jsonl T` reads one
-  document per element -> `seq<T>` (NDJSON, the shape `to json`
-  writes). Neither sniffs its input. A top-level ARRAY has no typed
-  spelling (the error names it).
+  pretty-printed body pipes straight in); `from json seq<T>` reads a
+  top-level ARRAY document -> `seq<T>` (the list-endpoint shape);
+  `from jsonl T` reads one document per element -> `seq<T>` (NDJSON,
+  the shape `to json` writes). The DECLARED type decides what the top
+  level must be — nothing sniffs the input.
   Fields are `int`/`string`/`bool` or `Option` of one. An `Option`
   field reads a missing key OR an explicit `null` as `None`; a
   required field that is `null` errors, naming the fix. `to json`

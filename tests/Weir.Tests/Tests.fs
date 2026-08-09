@@ -9035,7 +9035,7 @@ let jsonBoundaryTests =
                       e.Message
 
               Expect.stringContains m "from json: the top level is a JSON array, not an object" ""
-              Expect.stringContains m "an array has no typed spelling" "no promise, the fact"
+              Expect.stringContains m "declare seq<FileRow> to read it" "the pointer is real now [D:from-json-seq]"
               Expect.isFalse (m.Contains "requested operation") "no System.Text.Json words"
           }
           test "every non-object top level is named (number, string, boolean, null) — both adapters" {
@@ -9082,6 +9082,94 @@ let jsonBoundaryTests =
                       e.Message
 
               Expect.stringContains empty "from json: empty input — expected one JSON document" ""
+          } ]
+
+let fromJsonSeqTests =
+    // from json seq<Name> [D:from-json-seq]: the declared type decides
+    // what the top level must be — never the input; only json admits
+    // the wrap
+    testList
+        "from json seq<Name> [D:from-json-seq]"
+        [ test "reads a pretty-printed top-level array across elements — the acceptance" {
+              let doc =
+                  VSeq
+                      [ VStr "["
+                        VStr "  {\"name\": \"a\", \"bytes\": 1, \"readOnly\": false},"
+                        VStr "  {\"name\": \"b\", \"bytes\": 2, \"readOnly\": true}"
+                        VStr "]" ]
+
+              match runWith [ "src", doc ] "src |> from json seq<FileRow> |> map _.name" |> forceSeq with
+              | [ VStr "a"; VStr "b" ] -> ()
+              | other -> failtest $"two rows expected: {other}"
+          }
+          test "an object document under seq<T> refuses, naming both shapes" {
+              let m =
+                  try
+                      runWith [ "src", VSeq [ VStr "{\"a\":1}" ] ] "src |> from json seq<FileRow>"
+                      |> forceSeq
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "expected an array (the declared type is seq<FileRow>); got an object" ""
+              Expect.stringContains m "write from json FileRow" "the way back"
+          }
+          test "a non-object array element refuses naming kind and position" {
+              let m =
+                  try
+                      runWith
+                          [ "src", VSeq [ VStr "[{\"name\": \"a\", \"bytes\": 1, \"readOnly\": false}, 7]" ] ]
+                          "src |> from json seq<FileRow>"
+                      |> forceSeq
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "array element 2 is a JSON number, not an object" ""
+          }
+          test "the wrap is json-only: yaml and jsonl gate with the category teaching" {
+              Expect.stringContains
+                  (checkErr "[\"a: 1\"] |> from yaml seq<FileRow>").Message
+                  "'from yaml T' already yields seq<T> — write from yaml FileRow"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "[\"{}\"] |> from jsonl seq<FileRow>").Message
+                  "'from jsonl T' already yields seq<T> — write from jsonl FileRow"
+                  ""
+          }
+          test "the inner-name gate speaks in expectations, never an internal label" {
+              match Weir.Parser.parseExpr "[\"[]\"] |> from json seq<int>" with
+              | Error m ->
+                  Expect.stringContains m "a record name inside seq< >" "the designed expectation"
+                  Expect.isFalse (m.Contains "type name") "the old leaked label is retired"
+              | Ok _ -> failtest "seq<int> must not parse into the slot"
+          }
+          test "the bare teaching names the seq form for json only" {
+              Expect.stringContains (checkErr "[\"x\"] |> from json").Message "or seq<FileRow> for a top-level array" ""
+
+              Expect.isFalse
+                  ((checkErr "[\"x\"] |> from jsonl").Message.Contains "seq<FileRow>")
+                  "jsonl's teaching stays line-shaped"
+          }
+          test "hover on the inner name renders the record's own shape (the enclosing-leak class)" {
+              let lines =
+                  [ "type Peer = { host: string; port: int }"
+                    "let xs = [\"[]\"] |> from json seq<Peer>"
+                    "print (show (xs |> Seq.length))" ]
+
+              match Weir.Lsp.hoverType lines 2 34 with
+              | Some h -> Expect.stringContains h "host: string" "the record shape, not the district's or seq's"
+              | None -> failtest "the inner name must hover"
+          }
+          test "completion after `from json ` offers record names, not the seq form (decided: the hover teaches it)" {
+              let text = "[\"x\"] |> from json "
+              Expect.contains (suggest text text.Length) "FileRow" ""
+              Expect.isFalse (List.exists (fun (s: string) -> s.StartsWith "seq") (suggest text text.Length)) ""
           } ]
 
 let pinsWalkTests =
@@ -10701,6 +10789,7 @@ let allTests =
           pinsWalkTests
           functionKeywordTests
           jsonBoundaryTests
+          fromJsonSeqTests
           secretTests
           httpTests
           dupTypeTests

@@ -600,11 +600,14 @@ quantity semantics now.
   json T` is the whole spelling, no join, no head. `from jsonl T :
   seq<string> -> seq<T>` reads one document per element (NDJSON —
   `jsonl` over `ndjson` because the extension won in practice; it is
-  the shape `to json` writes, so the roundtrip pairs them). NEITHER
-  SNIFFS: the adapter's name decides the reading, never the input. A
-  top-level array has NO typed spelling (`type X = seq<Peer>` is not
-  expressible — aliases do not exist); the error states the fact
-  without promising a mode. `to jsonl` is NOT in scope — emitting
+  the shape `to json` writes, so the roundtrip pairs them). NOTHING
+  SNIFFS: the adapter's name and the DECLARED type decide the
+  reading, never the input. A top-level array declares itself:
+  `from json seq<Name>` -> seq<T> [D:from-json-seq] — the narrow
+  two-token slot case (never the general type grammar; the admitted
+  set is record-name or seq-of-record-name, closed), only json
+  admits the wrap (jsonl/yaml already yield seq<T> and gate with the
+  category teaching). `to jsonl` is NOT in scope — emitting
   NDJSON is rarer than reading it; it waits for a receipt. The
   from/to inventory asymmetry (`from` has jsonl, `to` does not) is
   deliberate and recorded.

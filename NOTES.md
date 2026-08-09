@@ -1,5 +1,35 @@
 # Spike Notes
 
+## from json seq<Name> — arrays declare themselves (2026-08-09)
+
+The probe's pricing held exactly. The parser cost was the two-token
+case it predicted — "seq" "<" UpperName ">" in fromExpr's existing
+optional slot, tySyn untouched and unreachable — and the payload
+change (seqOf: bool on EFrom/TEFrom) was found by the compiler at
+every consumer, all of them one-underscore edits except the two that
+were the feature: the checker's unwrap and eval's dispatcher.
+
+The dispatcher is where the no-sniffing property lives now, stated
+as code: jsonDoc takes wantSeq and demands the top level the
+DECLARED type named — an array under seq<T>, an object under bare T
+— so the same input can never mean two things and the input is never
+consulted to decide. The five refusals all speak: the inner gate
+fails with a designed expectation ("a record name inside seq< >" —
+the leaked 'type name' label from the probe's ride-along is retired
+and pinned absent), yaml and jsonl gate the wrap as a category
+error, an object under seq names both shapes and the way back, and
+the array-under-bare error finally points at a spelling that exists.
+The "no typed spelling" caveat lived one day in three doc sites and
+is gone from all of them.
+
+Two decisions worth their sentences: completion after `from json `
+offers record names only — no synthetic "seq<" item — because the
+teaching and the hover carry the form and the one-source rule stays
+trivially true. And Args.load/Env.load needed nothing because the
+spelling cannot reach their bespoke EVar arms — refusal by
+construction, recorded so nobody adds a guard that has nothing to
+guard.
+
 ## from json reads a document; from jsonl reads lines (2026-08-08)
 
 The rename fixed a backwards default. `from json` was an NDJSON
