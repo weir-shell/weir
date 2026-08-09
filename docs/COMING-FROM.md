@@ -231,7 +231,7 @@ statically typed language.
 
 | PowerShell | weir |
 |---|---|
-| `Get-ChildItem \| Where-Object Length -gt 1kb` | `ls \|> Seq.where (fun f -> f.bytes > 1024)` |
+| `Get-ChildItem \| Where-Object Length -gt 1kb` | `ls \|> Seq.where (fun f -> f.bytes > 1KiB)` |
 | `… \| ForEach-Object { $_.Name }` | `… \|> Seq.map _.name` |
 | `ConvertFrom-Json` | `\|> from json T` — against a shape you declared |
 | `"$($x.Name) ready"` | `$"{x.name} ready"` |

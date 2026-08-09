@@ -1,5 +1,54 @@
 # Spike Notes
 
+## the REPL tabulates record seqs (2026-08-09)
+
+The user's question was whether the pretty table needed a login
+shell; it needed forty lines in Eval and a gate. echoTable is a pure
+function — same-named records, scalar cells, alphabetical columns
+(show's own law), numeric right-alignment, the echo's existing
+10-row limit with the in-table ellipsis and counts hint — and the
+two REPL echo sites consult it only when stdout is a tty, so the
+piped REPL's pinned byte surface never moves (both halves hold in
+the pty harness). show is untouched; every renderer that matters to
+scripts is untouched; this is the REPL presenting, not the language
+changing.
+
+Cells reuse show's spellings except strings, which drop their
+quotes — a display, not a literal — and Secret's rendering marker
+holds in cells (pinned against the reveal). Widths are char counts,
+the same assumption the wrap math already makes; CJK cells will
+misalign and the row says so rather than hiding it.
+
+With FileRow.bytes as a Size underneath, the README's first
+exchange became the table this arc kept circling: aligned columns,
+4 MiB in the bytes column because the unit lives in the type, and
+the type footer naming the row. Regenerated from a live run, as
+always.
+
+## FileRow.bytes is a Size (2026-08-09)
+
+The change was one line and the truth of it was forty-five: the type
+flip in the row definition plus the conversion where ls builds rows,
+and then every fixture that had quietly depended on bytes being an
+int. The fixture migration told the feature's own story — byte
+literals became Size literals (1048576 turned into 1MiB, which is
+the point), and the json-cluster tests that had borrowed FileRow as
+a convenient three-field record now declare their own JRow, which
+is exactly what a user serializing ls output must now do.
+
+That wire boundary is the one real behaviour change beyond the
+type: `ls |> to json` used to work and now rejects, because Size is
+non-representable in JSON by the unit-type ruling. It is pinned as
+a named rejection rather than discovered by a user, and the
+stand-in spelling rides in the suite. The sibling audit came back
+zero — FileRow was the only builtin record carrying a byte count as
+an int — so the Size migration is complete rather than continued.
+
+The README got the payoff for free: the REPL echo now reads
+`bytes = 4 MiB` where it read `bytes = 4200000`, which answers the
+table-envy question better than a table would — the unit lives in
+the type, so every renderer everywhere shows it.
+
 ## releases: the binary someone can actually have (2026-08-09)
 
 The pitch said one binary and the repo could not hand you one. Now a

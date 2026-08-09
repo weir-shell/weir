@@ -105,7 +105,7 @@ lazy generators; `[a; b; c]` literals are eager values.
 ```weir
 let big =
     ls
-    |> Seq.where (fun f -> f.bytes > 1024)
+    |> Seq.where (fun f -> f.bytes > 1KiB)
     |> Seq.map (_.name >> Path.stem)
 
 big |> print

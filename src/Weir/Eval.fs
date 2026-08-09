@@ -182,6 +182,108 @@ let echoValue (v: Value) : string * string option =
         rendered, hint
     | _ -> formatWith echoLimits 0 v, None
 
+// the REPL's TABLE rendering [D:repl-table] — PRESENTATION ONLY: show
+// stays canonical and every other consumer is untouched; the REPL's
+// echo (tty-gated by the CALLER) renders a seq of same-shaped records
+// with scalar fields as aligned columns. Cells reuse show's spellings
+// except strings, which drop their quotes (a display, not a literal);
+// columns are alphabetical (show's own field law); numeric-ish columns
+// right-align. Widths are char counts (the wrap math's assumption).
+let rec private tableCell (v: Value) : (string * bool) option =
+    // (text, numericish) — numericish drives right-alignment
+    match v with
+    | VStr s ->
+        let clipped =
+            match echoLimits.MaxStr with
+            | Some m when s.Length > m -> s.Substring(0, m - 1) + "…"
+            | _ -> s
+
+        Some(clipped, false)
+    | VInt _
+    | VFloat _
+    | VSize _
+    | VDur _ -> Some(formatWith echoLimits 0 v, true)
+    | VBool b -> Some((if b then "true" else "false"), false)
+    | VSecret _ -> Some("***", false)
+    | VUnion("None", None) -> Some("", false)
+    | VUnion("Some", Some inner) -> tableCell inner
+    | VUnion(name, None) -> Some(name, false)
+    | _ -> None
+
+let echoTable (v: Value) : (string list * string option) option =
+    match v with
+    | VSeq items ->
+        let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
+
+        match shown with
+        | VRecord(n0, f0) :: _ when shown.Length > 1 || true ->
+            let visible = shown |> List.truncate echoLimits.MaxItems
+            let keys0 = f0 |> Map.toList |> List.map fst
+
+            let cellsOf (r: Value) =
+                match r with
+                | VRecord(n, f) when n = n0 && (f |> Map.toList |> List.map fst) = keys0 ->
+                    keys0
+                    |> List.map (fun k -> tableCell f[k])
+                    |> List.fold
+                        (fun acc c ->
+                            match acc, c with
+                            | Some rows, Some cell -> Some(cell :: rows)
+                            | _ -> None)
+                        (Some [])
+                    |> Option.map List.rev
+                | _ -> None
+
+            let rows = visible |> List.map cellsOf
+
+            if rows |> List.exists Option.isNone then
+                None
+            else
+                let rows = rows |> List.map Option.get
+                let truncated = shown.Length > echoLimits.MaxItems
+
+                let numeric =
+                    [ 0 .. keys0.Length - 1 ]
+                    |> List.map (fun i ->
+                        rows
+                        |> List.forall (fun r ->
+                            let t, num = r[i]
+                            num || t = ""))
+
+                let widths =
+                    [ 0 .. keys0.Length - 1 ]
+                    |> List.map (fun i -> rows |> List.fold (fun w r -> max w (fst r[i]).Length) keys0[i].Length)
+
+                let pad (i: int) (t: string) =
+                    if numeric[i] then
+                        t.PadLeft(widths[i])
+                    else
+                        t.PadRight(widths[i])
+
+                let line (cells: string list) =
+                    (cells |> List.mapi pad |> String.concat "  ").TrimEnd()
+
+                let header = line keys0
+                let rule = line (widths |> List.map (fun w -> System.String('\u2500', w)))
+                let body = rows |> List.map (fun r -> line (r |> List.map fst))
+                let ellipsisRow = if truncated then [ "…" ] else []
+
+                let hint =
+                    if truncated then
+                        let count =
+                            match items with
+                            | :? (Value list) as l -> string (List.length l)
+                            | :? System.Collections.Generic.ICollection<Value> as c -> string c.Count
+                            | _ -> "?"
+
+                        Some $"{echoLimits.MaxItems} of {count} shown"
+                    else
+                        None
+
+                Some(header :: rule :: (body @ ellipsisRow), hint)
+        | _ -> None
+    | _ -> None
+
 // the way-out spelling per element type [D:repl-echo]: the hint names
 // a spelling that TYPES — print takes seq<string> only
 let echoSpelling (elemIsString: bool) : string =

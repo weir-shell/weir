@@ -9,14 +9,14 @@ open Weir.Eval
 let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
-      Fields = [ "name", TStr; "bytes", TInt; "readOnly", TBool ]
+      Fields = [ "name", TStr; "bytes", TSize; "readOnly", TBool ]
       Attrs = Map.empty
       Docs = Map.empty }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
 let file (name: string) (bytes: int64) (readOnly: bool) : Value =
-    VRecord(fileRow.Name, Map [ "name", VStr name; "bytes", VInt bytes; "readOnly", VBool readOnly ])
+    VRecord(fileRow.Name, Map [ "name", VStr name; "bytes", VSize bytes; "readOnly", VBool readOnly ])
 
 let private realLs: Value =
     VSeq(

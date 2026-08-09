@@ -57,6 +57,9 @@ let private env =
         |> declare "type Either<'a, 'e> = Left of 'a | Right of 'e"
         // a record with an Option<scalar> field — the JSON-boundary fixture [D:json-option]
         |> declare "type JOpt = { name: string; age: Option<int> }"
+        // the json clusters' stand-in row: FileRow-shaped but jsonable —
+        // FileRow.bytes became a Size, which the wire refuses [D:size]
+        |> declare "type JRow = { name: string; bytes: int; readOnly: bool }"
         |> declare "type Point = { X: int; Y: int }"
         // record-update battery: two records sharing an int field N
         |> declare "type UpdP = { UpN: int; UpT: string }"
@@ -211,7 +214,7 @@ let private skipOnWindows () =
     if System.OperatingSystem.IsWindows() then
         skiptest "POSIX fixture (sh/coreutils/absolute POSIX path)"
 
-let acceptance = "ls |> where (fun f -> f.bytes > 1048576) |> first 5"
+let acceptance = "ls |> where (fun f -> f.bytes > 1MiB) |> first 5"
 
 let parserTests =
     testList
@@ -266,7 +269,7 @@ let checkerTests =
           }
           test "lambda body of wrong type reports expected vs actual" {
               let terr = checkErr "ls |> where (fun f -> f.bytes) |> first 5"
-              Expect.stringContains terr.Message "expected bool, got int" ""
+              Expect.stringContains terr.Message "expected bool, got Size" ""
           }
           test "unbound variable gets a hint" {
               Expect.stringContains (checkErr "doble 5").Message "Did you mean 'double'?" ""
@@ -680,7 +683,7 @@ let streamingTests =
               let infinite = Seq.initInfinite (fun i -> Weir.Builtins.file $"f{i}" i false)
 
               let result =
-                  runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.bytes > 1) |> first 5"
+                  runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.bytes > 1B) |> first 5"
                   |> forceSeq
 
               Expect.equal (List.length result) 5 "exactly five rows"
@@ -766,7 +769,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1) |> first 2"
+              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1B) |> first 2"
               |> forceSeq
               |> ignore
 
@@ -780,7 +783,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1) |> first 5"
+              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1B) |> first 5"
               |> ignore
 
               Expect.equal pulled.Value 0 "evaluation alone must not enumerate"
@@ -826,7 +829,7 @@ let polymorphismTests =
               Expect.equal (checkOk "ls |> where (fun f -> f.readOnly)").Ty Weir.Builtins.seqFileRow ""
           }
           test "map changes the element type" {
-              Expect.equal (checkOk "ls |> map (fun f -> f.bytes)").Ty (TSeq TInt) ""
+              Expect.equal (checkOk "ls |> map (fun f -> f.bytes)").Ty (TSeq TSize) ""
           }
           test "map over ints still works" {
               Expect.equal (run "nats |> map (fun x -> x * x) |> take 3" |> forceSeq) [ VInt 0; VInt 1; VInt 4 ] ""
@@ -864,31 +867,48 @@ let boundaryTests =
               runReal "sh -c \"exit 3\"" |> ignore
           }
           test "to json serializes records as ndjson" {
+              let src =
+                  VSeq [ VRecord("JRow", Map [ "name", VStr "a.txt"; "bytes", VInt 0L; "readOnly", VBool false ]) ]
+
               Expect.equal
-                  (run "ls |> first 1 |> to json" |> forceSeq)
+                  (runWith [ "src", src ] "src |> to json" |> forceSeq)
                   [ VStr """{"bytes":0,"name":"a.txt","readOnly":false}""" ]
                   ""
           }
-          test "json roundtrip preserves rows" {
-              Expect.equal (run "ls |> to json |> from jsonl FileRow" |> forceSeq) fakeFiles ""
+          test "ls rows no longer cross the wire: Size is non-representable there [D:size]" {
+              // this USED to roundtrip when bytes was an int — the type
+              // change is a wire-boundary change, stated and pinned
+              let m = (checkErr "ls |> to json").Message
+              Expect.stringContains m "Size" "the refusal names the type"
+          }
+          test "json roundtrip preserves rows (the jsonable stand-in)" {
+              let src =
+                  VSeq [ VRecord("JRow", Map [ "name", VStr "a"; "bytes", VInt 5L; "readOnly", VBool false ]) ]
+
+              Expect.equal
+                  (runWith [ "src", src ] "src |> to json |> from jsonl JRow"
+                   |> forceSeq
+                   |> List.length)
+                  1
+                  ""
           }
           test "from jsonl validates field types" {
               let src = VSeq [ VStr """{"name":"x","bytes":"big","readOnly":false}""" ]
 
-              Expect.throws (fun () -> runWith [ "src", src ] "src |> from jsonl FileRow" |> forceSeq |> ignore) ""
+              Expect.throws (fun () -> runWith [ "src", src ] "src |> from jsonl JRow" |> forceSeq |> ignore) ""
           }
           test "from jsonl rejects missing fields" {
               let src = VSeq [ VStr """{"name":"x"}""" ]
 
-              Expect.throws (fun () -> runWith [ "src", src ] "src |> from jsonl FileRow" |> forceSeq |> ignore) ""
+              Expect.throws (fun () -> runWith [ "src", src ] "src |> from jsonl JRow" |> forceSeq |> ignore) ""
           }
           test "from jsonl ignores extra fields" {
               let src =
                   VSeq [ VStr """{"name":"x","Size":1,"bytes":1048576,"readOnly":true,"Extra":42}""" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from jsonl FileRow" |> forceSeq)
-                  [ Weir.Builtins.file "x" 1048576 true ]
+                  (runWith [ "src", src ] "src |> from jsonl JRow" |> forceSeq)
+                  [ VRecord("JRow", Map [ "name", VStr "x"; "bytes", VInt 1048576L; "readOnly", VBool true ]) ]
                   ""
           }
           test "from jsonl: an Option field reads present as Some, missing AND null as None [D:json-option]" {
@@ -1519,7 +1539,7 @@ let boundaryTests =
           }
           test "from can be let-bound" {
               expectValue
-                  "let p = from jsonl FileRow in [\"{\\\"name\\\": \\\"x\\\", \\\"bytes\\\": 1, \\\"readOnly\\\": false}\"] |> p |> first 1 |> map (fun f -> f.name)"
+                  "let p = from jsonl JRow in [\"{\\\"name\\\": \\\"x\\\", \\\"bytes\\\": 1, \\\"readOnly\\\": false}\"] |> p |> first 1 |> map (fun f -> f.name)"
                   (VSeq [ VStr "x" ])
           } ]
 
@@ -1542,7 +1562,7 @@ let boundaryCheckTests =
               Expect.stringContains (checkErr "[\"x\"] |> from yaml").Message "'from yaml' needs a record name" ""
           }
           test "piping a non-string seq into from is rejected" {
-              Expect.stringContains (checkErr "nats |> from json FileRow").Message "expected string, got int" ""
+              Expect.stringContains (checkErr "nats |> from json JRow").Message "expected string, got int" ""
           }
           test "to json on a union seq is rejected" {
               let e = "let xs = nats |> map (fun n -> Running n) in xs |> to json"
@@ -1560,17 +1580,17 @@ let shorthandTests =
               expectValue "ls |> where _.readOnly" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "map with shorthand projects" {
-              Expect.equal (checkOk "ls |> map _.bytes").Ty (TSeq TInt) ""
+              Expect.equal (checkOk "ls |> map _.bytes").Ty (TSeq TSize) ""
 
               Expect.equal (run "ls |> map _.name |> first 2" |> forceSeq) [ VStr "a.txt"; VStr "b.bin" ] ""
           }
           test "shorthand chains through nested records" { expectParse "map _.A.B" "(map (fun _ _.A.B))" }
           test "shorthand in a larger expression gets the targeted hint" {
-              let terr = checkErr "ls |> where (_.bytes > 9) |> first \"x\""
+              let terr = checkErr "ls |> where (_.bytes > 9B) |> first \"x\""
               Expect.stringContains terr.Message "_.Field is a whole function" ""
           }
           test "byte literals filter correctly" {
-              expectValue "ls |> where (fun f -> f.bytes > 2097152) |> map _.name" (VSeq [ VStr "b.bin"; VStr "d.iso" ])
+              expectValue "ls |> where (fun f -> f.bytes > 2MiB) |> map _.name" (VSeq [ VStr "b.bin"; VStr "d.iso" ])
           }
           test "bare underscore is not an expression" {
               Expect.stringContains (checkErr "_ + 1").Message "unbound variable '_'" ""
@@ -1585,7 +1605,7 @@ let shorthandTests =
               let src = VSeq [ VStr """{"name":"a\"b","bytes":1048576,"readOnly":false}""" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from jsonl FileRow |> map _.name" |> forceSeq)
+                  (runWith [ "src", src ] "src |> from jsonl JRow |> map _.name" |> forceSeq)
                   [ VStr "a\"b" ]
                   ""
           } ]
@@ -1726,7 +1746,7 @@ let completionTests =
               Expect.equal (suggest "Args.lo" 0) [ "Args.load" ] "prefix narrows to the arm"
           }
           test "later pipeline stages track the element type" {
-              let text = "[\"{}\"] |> from jsonl FileRow |> where (fun c -> c."
+              let text = "[\"{}\"] |> from jsonl JRow |> where (fun c -> c."
 
               Expect.equal (suggest text (text.Length - 2)) [ "c.bytes"; "c.name"; "c.readOnly" ] ""
           }
@@ -1760,9 +1780,9 @@ let rowTests =
               (checkOk "fun r -> r.A == 1 && r == r").Ty |> ignore
           }
           test "field usage constrains the row" {
-              match (checkOk "fun f -> f.bytes > 1048576").Ty with
-              | TFun(TRowVar(_, [ "bytes", TInt ]), TBool) -> ()
-              | t -> failtest $"expected {{ bytes: int; .. }} -> bool, got {formatTy t}"
+              match (checkOk "fun f -> f.bytes > 1MiB").Ty with
+              | TFun(TRowVar(_, [ "bytes", TSize ]), TBool) -> ()
+              | t -> failtest $"expected {{ bytes: Size; .. }} -> bool, got {formatTy t}"
           }
           test "row-typed filter discharges against FileRow" {
               expectValue
@@ -2342,7 +2362,7 @@ let session3Tests =
               Expect.equal (checkOk "pwd |> head").Ty TStr "singleton extraction types to the element"
           }
           test "head on an empty sequence raises" {
-              Expect.throws (fun () -> run "ls |> where (fun f -> f.bytes > 999999999) |> head" |> ignore) ""
+              Expect.throws (fun () -> run "ls |> where (fun f -> f.bytes > 999999999B) |> head" |> ignore) ""
           }
           test "stderr passes through: stdout stream stays clean" {
               skipOnWindows ()
@@ -3364,7 +3384,7 @@ let chooseTests =
               match
                   runWith
                       [ "ls", VSeq infinite ]
-                      "ls |> Seq.choose (fun f -> if f.bytes > 2 then Some f.bytes else None) |> first 2 |> Seq.sum"
+                      "ls |> Seq.choose (fun f -> if f.bytes > 2B then Some (Size.toBytes f.bytes) else None) |> first 2 |> Seq.sum"
               with
               | VInt n -> Expect.equal n 7L "3 + 4"
               | v -> failtest $"unexpected {v}"
@@ -3760,7 +3780,7 @@ let replColorTests =
                   [ "let x = 1 + 2"
                     "within cd d"
                     "xs |> from json Config"
-                    "ls |> where (fun f -> f.bytes > 10)"
+                    "ls |> where (fun f -> f.bytes > 10B)"
                     "let s = @\"unclosed raw to eol"
                     "let t = \"\"\"triple \\ and \" inside\"\"\""
                     "git log --oneline // trailing comment"
@@ -3798,7 +3818,7 @@ let replColorTests =
           }
           test "redraw-cost ceiling: 1000 pathological 200-char lines" {
               let line =
-                  String.replicate 5 "let ZZig = $(git log) |> where (fun f -> f.bytes > 12) ; "
+                  String.replicate 5 "let ZZig = $(git log) |> where (fun f -> f.bytes > 12B) ; "
                   + "@\"tail"
 
               let sw = System.Diagnostics.Stopwatch.StartNew()
@@ -3900,7 +3920,7 @@ let seqPatternTests =
               match
                   runWith
                       [ "ls", VSeq counted ]
-                      "match ls with | [] -> 0 | [a] -> a.bytes | [p; q] -> p.bytes | x :: rest -> x.bytes + (rest |> Seq.map _.bytes |> Seq.sum)"
+                      "match ls with | [] -> 0 | [a] -> Size.toBytes a.bytes | [p; q] -> Size.toBytes p.bytes | x :: rest -> Size.toBytes x.bytes + (rest |> Seq.map (fun f -> Size.toBytes f.bytes) |> Seq.sum)"
               with
               | VInt n ->
                   Expect.equal n 15L "1 + 2+3+4+5"
@@ -5672,7 +5692,7 @@ let optionSweepTests =
                   (VStr "b.bin")
 
               expectValue
-                  "ls |> Seq.tryFind (fun f -> f.bytes > 999999999) |> Option.map _.name |> Option.defaultValue \"none\""
+                  "ls |> Seq.tryFind (fun f -> f.bytes > 999999999B) |> Option.map _.name |> Option.defaultValue \"none\""
                   (VStr "none")
           }
           test "Str.tryIndexOf and Str.sub compose" {
@@ -6303,16 +6323,16 @@ let boolBranchTests =
               Expect.stringContains (formatError terr) "add an else" "names the fix"
           }
           test "row constraints merge across branches" {
-              let te = checkOk "fun f -> if f.readOnly then f.bytes else 0"
+              let te = checkOk "fun f -> if f.readOnly then f.bytes else 0B"
 
               Expect.equal
-                  (Weir.Check.typecheck env (parse "ls |> Seq.map (fun f -> if f.readOnly then f.bytes else 0)")
+                  (Weir.Check.typecheck env (parse "ls |> Seq.map (fun f -> if f.readOnly then f.bytes else 0B)")
                    |> Result.isOk)
                   true
                   "discharges against FileRow"
 
               match te.Ty with
-              | TFun(TRowVar _, TInt) -> ()
+              | TFun(TRowVar _, TSize) -> ()
               | t -> failtest $"expected a row-constrained function, got {formatTy t}"
           }
           test "branch-merged row constraints conflict at discharge, not before" {
@@ -6926,7 +6946,7 @@ let showTests =
     testList
         "show"
         [ test "records render REPL-shaped" {
-              expectValue "show (ls |> Seq.head)" (VStr "{ bytes = 0; name = \"a.txt\"; readOnly = false }")
+              expectValue "show (ls |> Seq.head)" (VStr "{ bytes = 0 B; name = \"a.txt\"; readOnly = false }")
           }
           test "unions, seqs, scalars" {
               expectValue "show (Some 3)" (VStr "Some 3")
@@ -8559,7 +8579,7 @@ let operatorTests =
           }
           test "common filter shape works" {
               expectValue
-                  "ls |> where (fun f -> f.name <> \"a.txt\" && f.bytes <= 3145728)"
+                  "ls |> where (fun f -> f.name <> \"a.txt\" && f.bytes <= 3MiB)"
                   (VSeq
                       [ Weir.Builtins.file "c.log" 1048576 false
                         Weir.Builtins.file "d.iso" 3145728 false ])
@@ -8639,7 +8659,7 @@ let adversarialTests =
           }
           test "1.4 row is closed after nominal discharge" {
               Expect.stringContains
-                  (checkErr "ls |> where (fun f -> f.bytes > 1) |> where (fun f -> f.Nonexistent == 1)").Message
+                  (checkErr "ls |> where (fun f -> f.bytes > 1B) |> where (fun f -> f.Nonexistent == 1)").Message
                   "FileRow has no field 'Nonexistent'"
                   ""
           }
@@ -9166,14 +9186,14 @@ let jsonBoundaryTests =
                         VStr "  \"readOnly\": false"
                         VStr "}" ]
 
-              match runWith [ "src", doc ] "(src |> from json FileRow).name" with
+              match runWith [ "src", doc ] "(src |> from json JRow).name" with
               | VStr "x" -> ()
               | other -> failtest $"the acceptance shape must hold: {other}"
           }
           test "a top-level array errors in weir's words and points at jsonl for lines" {
               let m =
                   try
-                      runWith [ "src", VSeq [ VStr "[{\"a\":1}]" ] ] "(src |> from json FileRow).name"
+                      runWith [ "src", VSeq [ VStr "[{\"a\":1}]" ] ] "(src |> from json JRow).name"
                       |> ignore
 
                       "no error"
@@ -9181,14 +9201,14 @@ let jsonBoundaryTests =
                       e.Message
 
               Expect.stringContains m "from json: the top level is a JSON array, not an object" ""
-              Expect.stringContains m "declare seq<FileRow> to read it" "the pointer is real now [D:from-json-seq]"
+              Expect.stringContains m "declare seq<JRow> to read it" "the pointer is real now [D:from-json-seq]"
               Expect.isFalse (m.Contains "requested operation") "no System.Text.Json words"
           }
           test "every non-object top level is named (number, string, boolean, null) — both adapters" {
               for lit, kind in [ "42", "number"; "\"s\"", "string"; "true", "boolean"; "null", "null" ] do
                   let mJson =
                       try
-                          runWith [ "src", VSeq [ VStr lit ] ] "(src |> from json FileRow).name" |> ignore
+                          runWith [ "src", VSeq [ VStr lit ] ] "(src |> from json JRow).name" |> ignore
                           "no error"
                       with e ->
                           e.Message
@@ -9197,7 +9217,7 @@ let jsonBoundaryTests =
 
                   let mJsonl =
                       try
-                          runWith [ "src", VSeq [ VStr lit ] ] "src |> from jsonl FileRow"
+                          runWith [ "src", VSeq [ VStr lit ] ] "src |> from jsonl JRow"
                           |> forceSeq
                           |> ignore
 
@@ -9211,7 +9231,7 @@ let jsonBoundaryTests =
           test "invalid and empty documents error located, in weir's words" {
               let bad =
                   try
-                      runWith [ "src", VSeq [ VStr "not json" ] ] "(src |> from json FileRow).name"
+                      runWith [ "src", VSeq [ VStr "not json" ] ] "(src |> from json JRow).name"
                       |> ignore
 
                       "no error"
@@ -9222,7 +9242,7 @@ let jsonBoundaryTests =
 
               let empty =
                   try
-                      runWith [ "src", VSeq [ VStr "" ] ] "(src |> from json FileRow).name" |> ignore
+                      runWith [ "src", VSeq [ VStr "" ] ] "(src |> from json JRow).name" |> ignore
                       "no error"
                   with e ->
                       e.Message
@@ -9241,7 +9261,7 @@ let formatSurfaceTests =
                       runWith
                           [ "src",
                             VSeq [ VStr "{\"name\": \"x\", \"bytes\": 99999999999999999999, \"readOnly\": false}" ] ]
-                          "(src |> from json FileRow).bytes"
+                          "(src |> from json JRow).bytes"
                       |> ignore
 
                       "no error"
@@ -9256,7 +9276,7 @@ let formatSurfaceTests =
                   try
                       runWith
                           [ "src", VSeq [ VStr "{\"name\": \"x\", \"bytes\": 1.5, \"readOnly\": false}" ] ]
-                          "(src |> from json FileRow).bytes"
+                          "(src |> from json JRow).bytes"
                       |> ignore
 
                       "no error"
@@ -9270,8 +9290,7 @@ let formatSurfaceTests =
 
               let m =
                   try
-                      runWith [ "src", VSeq [ VStr deep ] ] "(src |> from json FileRow).name"
-                      |> ignore
+                      runWith [ "src", VSeq [ VStr deep ] ] "(src |> from json JRow).name" |> ignore
 
                       "no error"
                   with e ->
@@ -9295,14 +9314,14 @@ let fromJsonSeqTests =
                         VStr "  {\"name\": \"b\", \"bytes\": 2, \"readOnly\": true}"
                         VStr "]" ]
 
-              match runWith [ "src", doc ] "src |> from json seq<FileRow> |> map _.name" |> forceSeq with
+              match runWith [ "src", doc ] "src |> from json seq<JRow> |> map _.name" |> forceSeq with
               | [ VStr "a"; VStr "b" ] -> ()
               | other -> failtest $"two rows expected: {other}"
           }
           test "an object document under seq<T> refuses, naming both shapes" {
               let m =
                   try
-                      runWith [ "src", VSeq [ VStr "{\"a\":1}" ] ] "src |> from json seq<FileRow>"
+                      runWith [ "src", VSeq [ VStr "{\"a\":1}" ] ] "src |> from json seq<JRow>"
                       |> forceSeq
                       |> ignore
 
@@ -9310,15 +9329,15 @@ let fromJsonSeqTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m "expected an array (the declared type is seq<FileRow>); got an object" ""
-              Expect.stringContains m "write from json FileRow" "the way back"
+              Expect.stringContains m "expected an array (the declared type is seq<JRow>); got an object" ""
+              Expect.stringContains m "write from json JRow" "the way back"
           }
           test "a non-object array element refuses naming kind and position" {
               let m =
                   try
                       runWith
                           [ "src", VSeq [ VStr "[{\"name\": \"a\", \"bytes\": 1, \"readOnly\": false}, 7]" ] ]
-                          "src |> from json seq<FileRow>"
+                          "src |> from json seq<JRow>"
                       |> forceSeq
                       |> ignore
 
@@ -9441,6 +9460,85 @@ let yamlSeqTests =
               match Weir.Lsp.hoverType lines 2 41 with
               | Some h -> Expect.stringContains h "host: string" "the record shape at the inner name"
               | None -> failtest "the inner name must hover"
+          } ]
+
+let fileRowSizeTests =
+    // FileRow.bytes : Size — the Size session's own argument applied to
+    // the member it missed [D:size]; File.size and ls now agree on the
+    // quantity's TYPE
+    testList
+        "FileRow.bytes is a Size [D:size]"
+        [ test "the acceptance: f.bytes > 10MiB typechecks and filters" {
+              expectValue "ls |> where (fun f -> f.bytes > 4MiB) |> map _.name" (VSeq [ VStr "b.bin" ])
+          }
+          test "show of a row renders the size in binary units" {
+              expectValue
+                  "show (ls |> where (fun f -> f.name == \"b.bin\") |> Seq.head)"
+                  (VStr "{ bytes = 5 MiB; name = \"b.bin\"; readOnly = true }")
+          }
+          test "sortBy crosses the class boundary: Ord admits Size" {
+              expectValue "ls |> Seq.sortByDescending _.bytes |> first 1 |> map _.name" (VSeq [ VStr "b.bin" ])
+          } ]
+
+let replTableTests =
+    // the REPL's table echo [D:repl-table]: presentation only — a pure
+    // function over values, tty-gated at the call site (the piped REPL
+    // keeps the line rendering, pinned in the pty harness)
+    testList
+        "repl table [D:repl-table]"
+        [ test "same-shaped scalar records tabulate: header, rule, aligned rows" {
+              let rows =
+                  VSeq
+                      [ VRecord(
+                            "FileRow",
+                            Map [ "name", VStr "core.dump"; "bytes", VSize 4194304L; "readOnly", VBool false ]
+                        )
+                        VRecord("FileRow", Map [ "name", VStr "n.txt"; "bytes", VSize 7L; "readOnly", VBool true ]) ]
+
+              match Weir.Eval.echoTable rows with
+              | Some(lines, None) ->
+                  Expect.equal lines[0] "bytes  name       readOnly" "alphabetical headers"
+                  Expect.stringContains lines[1] "─" "the rule line"
+                  Expect.equal lines[2] "4 MiB  core.dump  false" "unquoted strings, show's scalar spellings"
+                  Expect.equal lines[3] "  7 B  n.txt      true" "numeric right-aligned"
+              | other -> failtest $"expected a table, got {other}"
+          }
+          test "a long seq truncates with the ellipsis row and the counts hint" {
+              let row i =
+                  VRecord("R", Map [ "n", VInt(int64 i) ])
+
+              let rows = VSeq [ for i in 1..15 -> row i ]
+
+              match Weir.Eval.echoTable rows with
+              | Some(lines, Some hint) ->
+                  Expect.stringContains hint "10 of 15 shown" ""
+                  Expect.equal (List.last lines) "…" "the in-table signal"
+              | other -> failtest $"expected a truncated table, got {other}"
+          }
+          test "non-uniform and non-scalar shapes decline — the line rendering stands" {
+              let mixed =
+                  VSeq [ VRecord("A", Map [ "x", VInt 1L ]); VRecord("B", Map [ "y", VInt 2L ]) ]
+
+              Expect.isTrue (Weir.Eval.echoTable mixed |> Option.isNone) "different shapes"
+
+              let nested = VSeq [ VRecord("N", Map [ "inner", VSeq [ VInt 1L ] ]) ]
+
+              Expect.isTrue (Weir.Eval.echoTable nested |> Option.isNone) "a seq cell is not a scalar"
+              Expect.isTrue (Weir.Eval.echoTable (VSeq [ VInt 1L ]) |> Option.isNone) "scalars keep the list echo"
+              Expect.isTrue (Weir.Eval.echoTable (VSeq []) |> Option.isNone) "empty keeps [] : seq<T>"
+          }
+          test "Option cells: Some inlines, None is blank; a Secret cell masks" {
+              let rows =
+                  VSeq
+                      [ VRecord("P", Map [ "note", VUnion("Some", Some(VStr "hi")); "tok", VSecret "s3cr3t" ])
+                        VRecord("P", Map [ "note", VUnion("None", None); "tok", VSecret "x" ]) ]
+
+              match Weir.Eval.echoTable rows with
+              | Some(lines, None) ->
+                  Expect.stringContains lines[2] "hi" ""
+                  Expect.stringContains lines[2] "***" "the rendering marker holds in cells"
+                  Expect.isFalse (lines |> List.exists (fun l -> l.Contains "s3cr3t")) "never the reveal"
+              | other -> failtest $"expected a table, got {other}"
           } ]
 
 let pinsWalkTests =
@@ -11124,6 +11222,8 @@ let allTests =
           functionKeywordTests
           jsonBoundaryTests
           fromJsonSeqTests
+          fileRowSizeTests
+          replTableTests
           yamlSeqTests
           formatSurfaceTests
           secretTests
