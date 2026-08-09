@@ -9,50 +9,50 @@ instead of halfway through its side effects.
 ```
 #!/usr/bin/env weir
 type Cli = {
-    [<Short "v">] verbose: bool
-    [<Default 5s>] timeout: Duration
+    [<Default 8080>] port: int
+    tag: Option<string>
 }
 let cli = Args.load Cli
+let port = cli.port
+let tag = cli.tag
 
-// env vars load into a record too; Option is the honest type for a
-// var that may be absent
-type EnvCfg = { GITLAB_API: Option<string> }
-let env = Env.load EnvCfg
-let api = env.GITLAB_API |> Option.defaultValue "https://gitlab.com/api/v4"
+// a yaml block is a CHECKED literal: structure errors at check time,
+// splices are typed values, and a None splice omits its entry — a
+// YAML injection cannot be written, same as argv
+let manifest name = yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+        name: $name
+        tag: $tag
+    spec:
+        selector:
+            app: $name
+        ports:
+            - port: $port
 
-// the pattern has two capture groups, so the match binds two names —
-// the checker counts them before anything runs
-let commits =
-    git log -n 3 "--format=%h %s"
-    |> Seq.choose (fun l ->
-        match l with
-        | Regex @"^(\S+) (.+)$" (sha, subject) -> Some $"{sha}  {subject}"
-        | _ -> None)
+manifest "web" |> to yaml |> File.write "svc.yaml"
 
-print "latest commits:"
-commits |> print
+// a failing command raises; | orFail names YOUR reason
+kubectl apply -f svc.yaml | orFail "apply failed"
 
-// JSON responses become records of a shape you declare; the fetches
-// fan out in parallel, each under the flag's timeout
-type Project = { name: string; star_count: int }
+// the wait everyone hand-rolls — bounded, cancellable, typed
+let up = poll timeout=30s interval=1s
+    let r = curl -sf $"localhost:{port}/health" | complete
+    r
+until r
+    r.exitCode == 0
 
-let stars =
-    ["inkscape%2Finkscape"; "gitlab-org%2Fgitlab"]
-    |> Seq.pmap (fun path ->
-        let resp =
-            Http.send { Http.get $"{api}/projects/{path}" with timeout = cli.timeout }
-        let p = resp.body |> from json Project
-        $"{p.name}: {p.star_count} stars")
-
-if cli.verbose then printerr $"fetched {stars |> Seq.length} projects"
-stars |> print
+print (up.stdout |> Seq.head)
 ```
 
-`--verbose`, `--timeout 10s`, and `--help` all derive from the
-record; env vars load the same way. The `Regex` pattern binds one
-name per capture group — two groups here, two names — and a miscount
-is a check error, not a silent `None`. The three record declarations
-are the only types written anywhere: every other binding is
+`--port`, `--tag`, and `--help` all derive from the record. The
+`yaml` block is an expression the checker owns: misindent it and the
+script refuses to run, splice a value of the wrong shape and that is
+a type error — and because splices are typed values, not string
+pasting, a YAML injection cannot be written. `poll` is the retry
+loop everyone hand-rolls, with a deadline and a typed result. The
+`Cli` record is the only type written anywhere; the rest is
 inferred.
 
 ## What you get
