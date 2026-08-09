@@ -1,5 +1,32 @@
 # Spike Notes
 
+## the testing residue cleared (2026-08-09)
+
+Two headlines. Every invariant's detector is now evidenced: the
+span-soundness checker came out of its two inline homes into
+spanSoundCore with a three-way verdict, both properties call the
+core, and two positive controls in the smoke fail by name — a
+wrong-site claim trips "lost its report", a clean-program claim
+trips "no diagnostic". That closes the vanished-control class the
+walk opened: four invariants, four controlled, all on extracted
+cores.
+
+And the ratio reads 175 / 0 / 0 / 7. The last partial — the
+dup-type REPL replace-note — got its pty pin in the
+repl-multiline shape (declare a type, bind a value through it,
+redeclare, assert the note) with the citation added in the same
+motion. Zero partials is now a statement, not an aspiration.
+
+The plan's checklist was written before the walk-findings merge
+landed, so four of its five items already existed with citations —
+verified by content rather than re-written. The one real gap was
+textDocument/formatting: wired since the lsp-requests session,
+never once exercised over the protocol. It answers correctly both
+ways (one whole-document edit carrying fmt's output; no edits for
+a canonical doc), and no behavior defect surfaced anywhere — the
+plan budgeted for at least one across five never-tested surfaces,
+and the surfaces held.
+
 ## the format-surface audit (2026-08-09)
 
 Denominators, per format: JSON 14 cells — 9 in, 3 out-with-teaching,

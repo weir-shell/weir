@@ -221,6 +221,16 @@ t, _ = run([("match 1 with", 0.3), ("\n", 0.2), ("\n", 0.2), ("| _ -> 6\r", 0.6)
 if "6 : int" not in t:
     failures.append(f"a Ctrl+J blank inside composition must not submit: {t[-300:]!r}")
 
+# --- dup-type in the REPL: redeclaration REPLACES with the note; earlier
+# values keep the old shape [D:dup-type-decl] — the walk's last partial
+keys = [("type T = { a: int }\r", 0.4),
+        ("let v = [\"{\\\"a\\\":1}\"] |> from json T\r", 0.6),
+        ("type T = { b: string }\r", 0.4),
+        (":q\r", 0.3)]
+t, _ = run(keys)
+if "type T redeclared; earlier values keep the old shape" not in t:
+    failures.append(f"the REPL redeclare note must state the replace semantics: {t[-300:]!r}")
+
 # --- 9. piped input never enters the editor (untouched)
 p = subprocess.run([WEIR], input="1 + 1\n:q\n", capture_output=True, text=True)
 if "2 : int" not in p.stdout:
