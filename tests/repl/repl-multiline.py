@@ -231,6 +231,25 @@ t, _ = run(keys)
 if "type T redeclared; earlier values keep the old shape" not in t:
     failures.append(f"the REPL redeclare note must state the replace semantics: {t[-300:]!r}")
 
+# --- the table echo [D:repl-table]: a seq of same-shaped records
+# tabulates under a tty; PIPED output keeps the line rendering (the
+# pinned surface) — the gate is per-stream, so both halves assert
+d = tempfile.mkdtemp()
+open(d + "/a.txt", "w").write("x" * 70000)
+open(d + "/b.txt", "w").write("y")
+keys = [("cd \"%s\"\r" % d, 0.5), ("ls |> Seq.sortByDescending _.bytes\r", 0.7)]
+t, _ = run(keys)
+if "\u2500" not in t or "bytes" not in t:
+    failures.append(f"a record seq must tabulate under a tty: {t[-300:]!r}")
+if "[{" in t:
+    failures.append(f"the tty echo must not fall back to the line rendering: {t[-300:]!r}")
+
+p = subprocess.run([WEIR], input='ls |> Seq.first 1\n:q\n', capture_output=True, text=True, cwd=d)
+if "\u2500" in p.stdout:
+    failures.append(f"piped output must keep the line rendering: {p.stdout!r}")
+if "bytes =" not in p.stdout:
+    failures.append(f"piped output must render records inline: {p.stdout!r}")
+
 # --- 9. piped input never enters the editor (untouched)
 p = subprocess.run([WEIR], input="1 + 1\n:q\n", capture_output=True, text=True)
 if "2 : int" not in p.stdout:

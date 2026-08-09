@@ -1,5 +1,30 @@
 # Spike Notes
 
+## the REPL tabulates record seqs (2026-08-09)
+
+The user's question was whether the pretty table needed a login
+shell; it needed forty lines in Eval and a gate. echoTable is a pure
+function — same-named records, scalar cells, alphabetical columns
+(show's own law), numeric right-alignment, the echo's existing
+10-row limit with the in-table ellipsis and counts hint — and the
+two REPL echo sites consult it only when stdout is a tty, so the
+piped REPL's pinned byte surface never moves (both halves hold in
+the pty harness). show is untouched; every renderer that matters to
+scripts is untouched; this is the REPL presenting, not the language
+changing.
+
+Cells reuse show's spellings except strings, which drop their
+quotes — a display, not a literal — and Secret's rendering marker
+holds in cells (pinned against the reveal). Widths are char counts,
+the same assumption the wrap math already makes; CJK cells will
+misalign and the row says so rather than hiding it.
+
+With FileRow.bytes as a Size underneath, the README's first
+exchange became the table this arc kept circling: aligned columns,
+4 MiB in the bytes column because the unit lives in the type, and
+the type footer naming the row. Regenerated from a live run, as
+always.
+
 ## FileRow.bytes is a Size (2026-08-09)
 
 The change was one line and the truth of it was forty-five: the type

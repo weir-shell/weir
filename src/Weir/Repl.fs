@@ -849,11 +849,22 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
             let v = Eval.eval state.Values te
 
             if v <> Eval.VUnit then
-                let rendered, hint = Eval.echoValue v
-
-                let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
-
-                Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
+                // the table echo [D:repl-table]: tty-only (piped REPL
+                // output is pinned surface and keeps the line rendering)
+                match
+                    (if Console.IsOutputRedirected then
+                         None
+                     else
+                         Eval.echoTable v)
+                with
+                | Some(lines, hint) ->
+                    let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+                    Console.WriteLine $"{name} : {formatTy te.Ty} ={tail}"
+                    lines |> List.iter Console.WriteLine
+                | None ->
+                    let rendered, hint = Eval.echoValue v
+                    let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+                    Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
 
             { TypeEnv = chk.Env
               Values = Map.add name v state.Values }
@@ -870,11 +881,19 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
             let v = Eval.eval state.Values te
 
             if v <> Eval.VUnit then
-                let rendered, hint = Eval.echoValue v
-
-                let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
-
-                Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
+                match
+                    (if Console.IsOutputRedirected then
+                         None
+                     else
+                         Eval.echoTable v)
+                with
+                | Some(lines, hint) ->
+                    lines |> List.iter Console.WriteLine
+                    Console.WriteLine $": {formatTy te.Ty}{Eval.echoTail (te.Ty = TSeq TStr) hint}"
+                | None ->
+                    let rendered, hint = Eval.echoValue v
+                    let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+                    Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
             state
          with

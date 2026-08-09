@@ -9480,6 +9480,67 @@ let fileRowSizeTests =
               expectValue "ls |> Seq.sortByDescending _.bytes |> first 1 |> map _.name" (VSeq [ VStr "b.bin" ])
           } ]
 
+let replTableTests =
+    // the REPL's table echo [D:repl-table]: presentation only — a pure
+    // function over values, tty-gated at the call site (the piped REPL
+    // keeps the line rendering, pinned in the pty harness)
+    testList
+        "repl table [D:repl-table]"
+        [ test "same-shaped scalar records tabulate: header, rule, aligned rows" {
+              let rows =
+                  VSeq
+                      [ VRecord(
+                            "FileRow",
+                            Map [ "name", VStr "core.dump"; "bytes", VSize 4194304L; "readOnly", VBool false ]
+                        )
+                        VRecord("FileRow", Map [ "name", VStr "n.txt"; "bytes", VSize 7L; "readOnly", VBool true ]) ]
+
+              match Weir.Eval.echoTable rows with
+              | Some(lines, None) ->
+                  Expect.equal lines[0] "bytes  name       readOnly" "alphabetical headers"
+                  Expect.stringContains lines[1] "─" "the rule line"
+                  Expect.equal lines[2] "4 MiB  core.dump  false" "unquoted strings, show's scalar spellings"
+                  Expect.equal lines[3] "  7 B  n.txt      true" "numeric right-aligned"
+              | other -> failtest $"expected a table, got {other}"
+          }
+          test "a long seq truncates with the ellipsis row and the counts hint" {
+              let row i =
+                  VRecord("R", Map [ "n", VInt(int64 i) ])
+
+              let rows = VSeq [ for i in 1..15 -> row i ]
+
+              match Weir.Eval.echoTable rows with
+              | Some(lines, Some hint) ->
+                  Expect.stringContains hint "10 of 15 shown" ""
+                  Expect.equal (List.last lines) "…" "the in-table signal"
+              | other -> failtest $"expected a truncated table, got {other}"
+          }
+          test "non-uniform and non-scalar shapes decline — the line rendering stands" {
+              let mixed =
+                  VSeq [ VRecord("A", Map [ "x", VInt 1L ]); VRecord("B", Map [ "y", VInt 2L ]) ]
+
+              Expect.isTrue (Weir.Eval.echoTable mixed |> Option.isNone) "different shapes"
+
+              let nested = VSeq [ VRecord("N", Map [ "inner", VSeq [ VInt 1L ] ]) ]
+
+              Expect.isTrue (Weir.Eval.echoTable nested |> Option.isNone) "a seq cell is not a scalar"
+              Expect.isTrue (Weir.Eval.echoTable (VSeq [ VInt 1L ]) |> Option.isNone) "scalars keep the list echo"
+              Expect.isTrue (Weir.Eval.echoTable (VSeq []) |> Option.isNone) "empty keeps [] : seq<T>"
+          }
+          test "Option cells: Some inlines, None is blank; a Secret cell masks" {
+              let rows =
+                  VSeq
+                      [ VRecord("P", Map [ "note", VUnion("Some", Some(VStr "hi")); "tok", VSecret "s3cr3t" ])
+                        VRecord("P", Map [ "note", VUnion("None", None); "tok", VSecret "x" ]) ]
+
+              match Weir.Eval.echoTable rows with
+              | Some(lines, None) ->
+                  Expect.stringContains lines[2] "hi" ""
+                  Expect.stringContains lines[2] "***" "the rendering marker holds in cells"
+                  Expect.isFalse (lines |> List.exists (fun l -> l.Contains "s3cr3t")) "never the reveal"
+              | other -> failtest $"expected a table, got {other}"
+          } ]
+
 let pinsWalkTests =
     // the full DECISIONS-to-pins walk's cheap pins [D:pins-walk]: every
     // test here asserts a teaching message that existed ONLY in the
@@ -11162,6 +11223,7 @@ let allTests =
           jsonBoundaryTests
           fromJsonSeqTests
           fileRowSizeTests
+          replTableTests
           yamlSeqTests
           formatSurfaceTests
           secretTests
