@@ -9,38 +9,48 @@ instead of halfway through its side effects.
 ```
 #!/usr/bin/env weir
 type Cli = {
-    [<Default "access.log">] file: string
-    [<Default 10>] top: int
+    [<Default ".">] root: string
+    [<Short "a">] all: bool
 }
 let cli = Args.load Cli
 
-// one parse, named fields — where the awk spelling has $1 and $7
-let hits =
-    File.read cli.file
-    |> Seq.choose (function
-        | Regex @"^(\S+) .*\] .\S+ (\S+)" (ip, path) -> Some (ip, path)
-        | _ -> None)
+// every clone under root, swept IN PARALLEL — the for-loop with
+// cd side effects, xargs -P quoting, and $? checked in the wrong
+// shell, replaced by a function over values
+let repos =
+    Path.glob $"{cli.root}/*/.git"
+    |> Seq.map Path.dir
     |> Seq.force
 
-printerr $"{hits |> Seq.length} requests from {hits |> Seq.map fst |> Seq.distinct |> Seq.length} clients"
+let swept =
+    repos
+    |> Seq.pmap (fun r ->
+        let changed = $(git -C $r status --porcelain) |> Seq.length
+        let branch =
+            $(git -C $r branch --show-current)
+            |> Seq.tryHead
+            |> Option.defaultValue "detached"
+        (Path.fileName r, branch, changed))
+    |> Seq.force
 
-// sort | uniq -c | sort -rn | head, typed: groups have NAMED parts,
-// and there is no locale, field-drift, or off-by-one to get wrong
-hits
-    |> Seq.groupBy (fun (_, path) -> path)
-    |> Seq.sortByDescending (fun g -> g.items |> Seq.length)
-    |> Seq.first cli.top
-    |> Seq.iter (fun g -> print $"{g.items |> Seq.length}  {g.key}")
+swept
+    |> Seq.where (fun (_, _, n) -> cli.all || n > 0)
+    |> Seq.sortByDescending (fun (_, _, n) -> n)
+    |> Seq.iter (fun (name, branch, n) -> print $"{name} [{branch}]  {n} changed")
+
+let dirty = swept |> Seq.where (fun (_, _, n) -> n > 0) |> Seq.length
+print $"{repos |> Seq.length} repos, {dirty} dirty"
 ```
 
-This is `awk '{print $7}' | sort | uniq -c | sort -rn | head` —
-except the parse happens once and everything after it has a name.
-The pattern's two capture groups bind two names, counted by the
-checker before anything runs; a malformed line is a `None`, not a
-silently corrupted count; groups come back as records with `.key`
-and `.items` where awk hands you `$1`; and `--file`, `--top`, and
-`--help` all derive from the `Cli` record — the only type written
-anywhere, the rest is inferred.
+Every clone under a directory, checked in parallel. The bash
+version of this is a `for` loop with `cd` side effects, `xargs -P`
+quoting, and `$?` checked in the wrong shell; here the fan-out is
+`Seq.pmap` over a function, a command's output is a value
+(`$(git -C $r …)`), and a repo with no branch is an `Option` with a
+default, not a crash at 2am. `--root`, `-a`, and `--help` derive
+from the `Cli` record — the only type written anywhere; the rest,
+including everything flowing through the pipeline, is inferred and
+checked before line one runs.
 
 ## What you get
 
