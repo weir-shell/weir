@@ -1,5 +1,41 @@
 # Spike Notes
 
+## from yaml seq — and the stream retirement that came first (2026-08-09)
+
+The subtraction was the session's real content. `from yaml T` used
+to map every document in a `---` stream onto the same T, which is a
+homogeneity assumption the format itself argues against — multi-
+document YAML exists to carry a Deployment AND a Service AND a
+ConfigMap, and weir deliberately refused the kind-discrimination
+that typing such a stream would need. So stream support claimed
+what the type system cannot back, the same class as NDJSON living
+under the plain `from json` name. With streams gone the two plural
+readings collapse into one and `seq<T>` is unambiguous: bare T is a
+mapping document, seq<T> is a sequence document, a stream teaches
+with its count and the split-and-parse route.
+
+The feature itself cost almost nothing, as the plan predicted: the
+slot, the seqOf payload, and the checker unwrap were all built by
+the from-json-seq session, and yamlShape already knew how to build
+SSeq — the yaml arm now just shapes the DECLARED type instead of
+always the record. TEFromYaml carries the same payload as before,
+so the LSP needed zero movement (the inner-name hover pin
+confirms). The parser was not touched at all; no fresh seeds owed.
+
+The probe settled the bare-`from yaml` question honestly: the
+optional type argument is the error path (a located "needs a record
+name" teaching), not a vestigial porcelain leftover — and no
+Yaml-node read direction exists. The heterogeneous bundle therefore
+still has no spelling; the typeless `from yaml` producing Yaml
+nodes is parked with a real trigger, and the audit's YAML row now
+answers "can I read arbitrary YAML?" with a plain no and the
+reasons.
+
+Every migrated site is named in the row. The showcase's PeerDoc
+example came out better than it went in: it used to demonstrate the
+stream reading that no real bundle could use, and now it
+demonstrates the sequence form that real documents actually have.
+
 ## the testing residue cleared (2026-08-09)
 
 Two headlines. Every invariant's detector is now evidenced: the

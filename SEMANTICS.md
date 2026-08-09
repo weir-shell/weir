@@ -1339,9 +1339,13 @@ quantity semantics now.
   nested monomorphic records, `seq<elem>`, `seq<string * elem>` (an
   open mapping — labels), and `Option` anywhere (missing/null reads
   `None`; a `None` FIELD omits its key on write, a `None` ELEMENT
-  renders `null` — the json-option split). `from yaml` takes
-  `seq<string>` lines and yields `seq<T>`, one element per `---`
-  document; a null where a collection sits is the EMPTY collection.
+  renders `null` — the json-option split). `from yaml T` takes
+  `seq<string>` lines and yields ONE `T` (a mapping document);
+  `from yaml seq<T>` yields `seq<T>` from one top-level SEQUENCE
+  document [D:yaml-seq] — the declared type names the top level.
+  Multi-document `---` streams TEACH (split and parse each): weir
+  cannot type a heterogeneous stream, and homogeneous ones are rare.
+  A null where a collection sits is the EMPTY collection.
   Reading is STRICT: bool is exactly `true`/`false` (the Env.load law
   — the Norway problem cannot fire), a quoted scalar is a STRING even
   where int/bool is expected, extra keys are ignored (the from-json
@@ -1568,8 +1572,8 @@ quantity semantics now.
   they were warnings, and `match failure` was a deliberate runtime
   class — both retired together, see the booleans bullet). The
   deliberate runtime failure classes: boundary validation
-  (`from json` rejects a malformed document, `from jsonl`/`from yaml`
-  per line/document),
+  (`from json`/`from yaml` reject a malformed document, `from jsonl`
+  per line),
   arithmetic (division by zero), and **user-raised `fail "reason"`**
   (added 2026-07-18 from the agent-dogfooding ledger: `string -> unit`,
   halts with a located error and exit 1 — the checking-script idiom is

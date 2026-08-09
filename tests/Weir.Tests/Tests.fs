@@ -1078,13 +1078,13 @@ let boundaryTests =
 
               let prog =
                   "let d = YDep { kind = \"D\"; metadata = YMeta { name = \"app\"; labels = [(\"app\", \"web\")] }; spec = YSpec { replicas = 3; paused = None } } in "
-                  + "(d |> to yaml |> from yaml YDep |> Seq.head) == d"
+                  + "(d |> to yaml |> from yaml YDep) == d"
 
               // Eq on records of scalars+pair-seqs? pair-seq is a seq — Eq
               // refuses; compare FIELDS instead
               let prog2 =
                   "let d = YDep { kind = \"D\"; metadata = YMeta { name = \"app\"; labels = [(\"app\", \"web\")] }; spec = YSpec { replicas = 3; paused = None } } in "
-                  + "let back = d |> to yaml |> from yaml YDep |> Seq.head in "
+                  + "let back = d |> to yaml |> from yaml YDep in "
                   + "show (back.metadata.name, back.spec.replicas, back.spec.paused)"
 
               match Weir.Parser.parseStmt prog2 with
@@ -1094,14 +1094,20 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
-          test "from yaml: multi-doc --- yields one element per document [D:yaml-v1]" {
+          test "from yaml: a --- stream TEACHES — one document only [D:yaml-seq]" {
               let env2 = env |> declare "type YD = { kind: string }"
-              let src = "[\"kind: A\"; \"---\"; \"kind: B\"] |> from yaml YD |> Seq.map _.kind"
+              let src = "[\"kind: A\"; \"---\"; \"kind: B\"] |> from yaml YD"
 
               match Weir.Parser.parseStmt src with
               | Ok(SExpr e) ->
                   match Weir.Check.typecheck env2 e with
-                  | Ok te -> Expect.equal (Weir.Eval.eval valueEnv te |> forceSeq) [ VStr "A"; VStr "B" ] ""
+                  | Ok te ->
+                      let ex = Expect.throwsC (fun () -> Weir.Eval.eval valueEnv te |> ignore) id
+
+                      Expect.stringContains
+                          ex.Message
+                          "from yaml: reads one document; this input has 2 documents — split on '---' and parse each"
+                          "the retirement teaches, names the count and the route"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
@@ -9322,11 +9328,7 @@ let fromJsonSeqTests =
 
               Expect.stringContains m "array element 2 is a JSON number, not an object" ""
           }
-          test "the wrap is json-only: yaml and jsonl gate with the category teaching" {
-              Expect.stringContains
-                  (checkErr "[\"a: 1\"] |> from yaml seq<FileRow>").Message
-                  "'from yaml T' already yields seq<T> — write from yaml FileRow"
-                  ""
+          test "the wrap is json+yaml: jsonl alone gates with the category teaching [D:yaml-seq]" {
 
               Expect.stringContains
                   (checkErr "[\"{}\"] |> from jsonl seq<FileRow>").Message
@@ -9361,6 +9363,84 @@ let fromJsonSeqTests =
               let text = "[\"x\"] |> from json "
               Expect.contains (suggest text text.Length) "FileRow" ""
               Expect.isFalse (List.exists (fun (s: string) -> s.StartsWith "seq") (suggest text text.Length)) ""
+          } ]
+
+let yamlSeqTests =
+    // from yaml seq<Name> + the stream retirement [D:yaml-seq]: one
+    // document, the declared type names the top level, streams teach
+    testList
+        "from yaml seq<Name> [D:yaml-seq]"
+        [ test "reads a top-level sequence document — the acceptance" {
+              let e2 = env |> declare "type YH = { host: string }"
+
+              let src = "[\"- host: a\"; \"- host: b\"] |> from yaml seq<YH> |> Seq.map _.host"
+
+              match Weir.Parser.parseStmt src with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e2 expr with
+                  | Ok te -> Expect.equal (Weir.Eval.eval valueEnv te |> forceSeq) [ VStr "a"; VStr "b" ] ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a mapping under seq<T> points at the bare form" {
+              let e2 = env |> declare "type YH = { host: string }"
+
+              match Weir.Parser.parseStmt "[\"host: a\"] |> from yaml seq<YH>" with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e2 expr with
+                  | Ok te ->
+                      let ex =
+                          Expect.throwsC (fun () -> Weir.Eval.eval valueEnv te |> forceSeq |> ignore) id
+
+                      Expect.stringContains
+                          ex.Message
+                          "expected a sequence at the top level (the declared type is seq<…>); got a mapping — write from yaml T"
+                          ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a sequence under bare T points at seq<T> — the audit's message trued" {
+              let e2 = env |> declare "type YH = { host: string }"
+
+              match Weir.Parser.parseStmt "([\"- host: a\"] |> from yaml YH).host" with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e2 expr with
+                  | Ok te ->
+                      let ex = Expect.throwsC (fun () -> Weir.Eval.eval valueEnv te |> ignore) id
+
+                      Expect.stringContains
+                          ex.Message
+                          "the top level is a sequence, not a mapping — declare seq<YH> to read it"
+                          ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "the bare teaching names the seq form; empty input errors located" {
+              Expect.stringContains
+                  (checkErr "[\"x\"] |> from yaml").Message
+                  "or seq<Deployment> for a top-level sequence"
+                  ""
+
+              let e2 = env |> declare "type YH = { host: string }"
+
+              match Weir.Parser.parseStmt "([] |> from yaml YH).host" with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e2 expr with
+                  | Ok te ->
+                      let ex = Expect.throwsC (fun () -> Weir.Eval.eval valueEnv te |> ignore) id
+                      Expect.stringContains ex.Message "from yaml: empty input — expected one document" ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "hover on the inner name renders the record's shape — the LSP lift holds" {
+              let lines =
+                  [ "type YH = { host: string }"
+                    "let xs = [\"- host: a\"] |> from yaml seq<YH>"
+                    "print (show (xs |> Seq.length))" ]
+
+              match Weir.Lsp.hoverType lines 2 41 with
+              | Some h -> Expect.stringContains h "host: string" "the record shape at the inner name"
+              | None -> failtest "the inner name must hover"
           } ]
 
 let pinsWalkTests =
@@ -10495,11 +10575,7 @@ let floatBoundaryTests =
 
               // and back: the reader honors the same quotedness split
               let read =
-                  match
-                      Weir.Check.typecheck
-                          e
-                          (parse "[\"rate: 1.5\"; \"label: \\\"1.5\\\"\"] |> from yaml FY |> Seq.head")
-                  with
+                  match Weir.Check.typecheck e (parse "[\"rate: 1.5\"; \"label: \\\"1.5\\\"\"] |> from yaml FY") with
                   | Ok te -> eval valueEnv te
                   | Error terr -> failtest terr.Message
 
@@ -10513,7 +10589,7 @@ let floatBoundaryTests =
               let e = env |> declare "type FN = { r: float }"
 
               let readErr line =
-                  match Weir.Check.typecheck e (parse $"[\"{line}\"] |> from yaml FN |> Seq.head") with
+                  match Weir.Check.typecheck e (parse $"[\"{line}\"] |> from yaml FN") with
                   | Ok te -> (Expect.throwsC (fun () -> eval valueEnv te |> ignore) id).Message
                   | Error terr -> failtest terr.Message
 
@@ -11048,6 +11124,7 @@ let allTests =
           functionKeywordTests
           jsonBoundaryTests
           fromJsonSeqTests
+          yamlSeqTests
           formatSurfaceTests
           secretTests
           httpTests

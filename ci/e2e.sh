@@ -3596,7 +3596,7 @@ let d = Deploy {
     }
 }
 d |> to yaml |> print
-let back = d |> to yaml |> from yaml Deploy |> Seq.head
+let back = d |> to yaml |> from yaml Deploy
 print $"back: {back.metadata.name} {show back.spec.replicas}"
 WEOF
 out=$($BIN "$ydir/k8s.weir")
@@ -3605,20 +3605,24 @@ expect "to yaml renders nested sequences of records" "- containerPort: 80" "$out
 expect "the yaml roundtrip holds on the AOT binary" "back: app 3" "$out"
 
 # anchors reject with a position and the subset's teaching
-printf 'type D = { a: string; b: string }\nlet d = ["a: &x one"; "b: *x"] |> from yaml D |> Seq.head\nprint d.a\n' > "$ydir/anchor.weir"
+printf 'type D = { a: string; b: string }\nlet d = ["a: &x one"; "b: *x"] |> from yaml D\nprint d.a\n' > "$ydir/anchor.weir"
 out=$($BIN "$ydir/anchor.weir" 2>&1 || true)
 expect "anchors are rejected with a line and the subset teaching" "line 1: anchors/aliases are outside the yaml subset" "$out"
 
 # the Norway problem cannot fire on read: bool is exactly true/false
-printf 'type D = { flag: bool }\nlet d = ["flag: no"] |> from yaml D |> Seq.head\nprint (show d.flag)\n' > "$ydir/no.weir"
+printf 'type D = { flag: bool }\nlet d = ["flag: no"] |> from yaml D\nprint (show d.flag)\n' > "$ydir/no.weir"
 out=$($BIN "$ydir/no.weir" 2>&1 || true)
 expect "the Norway problem never fires on read (bool is exactly true/false)" "expected bool (exactly true/false), got 'no'" "$out"
 
-# multi-doc in and out
-printf 'type D = { kind: string }\n["kind: A"; "---"; "kind: B"] |> from yaml D |> Seq.map _.kind |> print\n' > "$ydir/md.weir"
-out=$($BIN "$ydir/md.weir")
-expect "multi-doc --- reads one element per document" "A
-B" "$out"
+# streams retired [D:yaml-seq]: one document only, the route named;
+# and the seq form reads a top-level sequence document
+printf 'type D = { kind: string }\nlet d = ["kind: A"; "---"; "kind: B"] |> from yaml D\nprint d.kind\n' > "$ydir/md.weir"
+out=$($BIN "$ydir/md.weir" 2>&1 || true)
+expect "a --- stream teaches: one document, the count, the route" "from yaml: reads one document; this input has 2 documents — split on '---' and parse each" "$out"
+printf 'type H = { host: string }\nlet hs = ["- host: a"; "- host: b"] |> from yaml seq<H>\nhs |> Seq.iter (fun h -> print h.host)\n' > "$ydir/seqdoc.weir"
+out=$($BIN "$ydir/seqdoc.weir")
+expect "from yaml seq<T> reads a top-level sequence document" "a
+b" "$out"
 rm -rf "$ydir"
 
 # ---- the yaml district [D:yaml-district] ----------------------------------
@@ -3653,7 +3657,7 @@ let d = yaml
     kind: Pod
     metadata:
         name: app
-let back = d |> to yaml |> from yaml D |> Seq.head
+let back = d |> to yaml |> from yaml D
 print back.metadata.name
 WEOF
 out=$($BIN "$yddir/rt.weir")
@@ -3680,7 +3684,7 @@ let cm = yaml
         note: |-
             no trailing newline
 
-let back = cm |> to yaml |> from yaml Cm |> Seq.head
+let back = cm |> to yaml |> from yaml Cm
 let get k = back.data |> Seq.choose (fun p -> match p with | (k2, v) when k2 == k -> Some v | _ -> None) |> Seq.head
 print (show (get "run.sh"))
 print (show (get "note"))
