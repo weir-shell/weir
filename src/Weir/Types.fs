@@ -257,6 +257,64 @@ module Color =
     let yellow on s = wrap on "33" s
     let bold on s = wrap on "1" s
 
+// the waiting indicator [D:waiting-indicator]: whoever owns the terminal
+// and is working draws the progress — so it wraps ONLY weir's own
+// blocking operations (Http.send, Duration.sleep, retry/poll waits) and
+// NEVER a spawned child (the child owns the terminal; drawing over its
+// output is the corruption shells avoid). Stderr, tty-only, a 500ms
+// grace so fast calls stay silent, erased before anything else prints —
+// stdout is never touched, so the piped byte surface cannot move.
+module Waiting =
+    open System
+
+    let mutable private depth = 0
+
+    let private active () =
+        not Console.IsErrorRedirected
+        && Environment.GetEnvironmentVariable "TERM" <> "dumb"
+
+    let private frames = [| "⠋"; "⠙"; "⠹"; "⠸"; "⠼"; "⠴"; "⠦"; "⠧"; "⠇"; "⠏" |]
+
+    let during (label: string) (f: unit -> 'a) : 'a =
+        if not (active ()) then
+            f ()
+        elif Threading.Interlocked.Increment(&depth) > 1 then
+            // an indicator is already up — never stack a second line
+            try
+                f ()
+            finally
+                Threading.Interlocked.Decrement(&depth) |> ignore
+        else
+            use gone = new Threading.ManualResetEventSlim(false)
+            let drew = ref false
+
+            let spinner =
+                Threading.Thread(
+                    (fun () ->
+                        let mutable i = 0
+                        let mutable go = not (gone.Wait 500)
+
+                        while go do
+                            drew.Value <- true
+                            Console.Error.Write $"\r{frames[i % frames.Length]} {label}"
+                            i <- i + 1
+                            go <- not (gone.Wait 80)),
+                    IsBackground = true
+                )
+
+            spinner.Start()
+
+            try
+                f ()
+            finally
+                gone.Set()
+                spinner.Join()
+
+                if drew.Value then
+                    Console.Error.Write "\r\u001b[2K"
+
+                Threading.Interlocked.Decrement(&depth) |> ignore
+
 // ---- Duration text [D:duration] — the boundary where decimals live.
 // Storage is integer ms; these two are the ONLY places decimal text
 // exists, and no float appears in either direction.
@@ -346,24 +404,30 @@ let parseSize (text: string) : Result<int64, string> =
             Error
                 $"not a size: '{text}' — unknown unit '{m.Groups[3].Value}' (binary KiB/MiB/GiB/TiB, SI KB/MB/GB/TB, or B)"
         | Some(_, unit) ->
-            let whole = int64 m.Groups[1].Value
+            // CHECKED arithmetic — the parser obeys the same no-silent-wrap
+            // law as int arithmetic, and overflow gets its own words
+            // (never Int64.Parse's) [D:transport-words]
+            try
+                let whole = int64 m.Groups[1].Value
 
-            let bytes =
-                if m.Groups[2].Success then
-                    let frac = m.Groups[2].Value
-                    let fracVal = int64 frac
-                    let pow10 = pown 10L frac.Length
+                let bytes =
+                    if m.Groups[2].Success then
+                        let frac = m.Groups[2].Value
+                        let fracVal = int64 frac
+                        let pow10 = pown 10L frac.Length
 
-                    if (fracVal * unit) % pow10 <> 0L then
-                        Error $"not a size: '{text}' — sub-byte precision (bytes are the unit)"
+                        if (Checked.(*) fracVal unit) % pow10 <> 0L then
+                            Error $"not a size: '{text}' — sub-byte precision (bytes are the unit)"
+                        else
+                            Ok(Checked.(+) (Checked.(*) whole unit) (Checked.(*) fracVal unit / pow10))
                     else
-                        Ok(whole * unit + fracVal * unit / pow10)
-                else
-                    Ok(whole * unit)
+                        Ok(Checked.(*) whole unit)
 
-            match bytes with
-            | Error e -> Error e
-            | Ok b -> Ok(if neg then -b else b)
+                match bytes with
+                | Error e -> Error e
+                | Ok b -> Ok(if neg then -b else b)
+            with :? System.OverflowException ->
+                Error $"not a size: '{text}' — beyond the 64-bit byte range"
 
 let formatDuration (totalMs: int64) : string =
     if totalMs = 0L then
@@ -449,9 +513,18 @@ let parseDurationMs (text: string) : Result<int64, string> =
                         let pow10 = pown 10L frac.Length
                         let fracVal = if frac = "" then 0L else System.Int64.Parse frac
 
-                        if (fracVal * unit) % pow10 <> 0L then
+                        if (Checked.(*) fracVal unit) % pow10 <> 0L then
                             Error $"not a duration: '{text}' — sub-millisecond precision (ms is the base unit)"
                         else
-                            go k (acc + whole * unit + (fracVal * unit) / pow10)
+                            go
+                                k
+                                (Checked.(+)
+                                    acc
+                                    (Checked.(+) (Checked.(*) whole unit) ((Checked.(*) fracVal unit) / pow10)))
 
-    go 0 0L |> Result.map (fun v -> if neg then -v else v)
+    // CHECKED like the size parser — overflow in its own words, never
+    // Int64.Parse's [D:transport-words]
+    try
+        go 0 0L |> Result.map (fun v -> if neg then -v else v)
+    with :? System.OverflowException ->
+        Error $"not a duration: '{text}' — beyond the 64-bit millisecond range"

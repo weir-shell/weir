@@ -329,9 +329,12 @@ record. All eight methods have one (`get`/`post`/`put`/`delete`/
 `patch`/`head`/`options`/`query`).
 
 For the simplest read — a GET whose body is all you want — `Http.fetch`
-is the raising shorthand (the `curl -sf` analogue): it returns the body
-and raises on a non-2xx naming the status, where `Http.send` binds the
-same status as data.
+is the raising shorthand (the `curl -sf` / JS `fetch(url)` analogue):
+it takes a **bare URL** — never a request; `Http.get url |> Http.fetch`
+reads like a pipeline and is a type error that names the repair (a
+built request runs through `Http.send`). It returns the body and raises
+on a non-2xx naming the status, where `Http.send` binds the same
+status as data.
 
 ```
 let item = Http.fetch $"{api}/items/1" |> from json Item

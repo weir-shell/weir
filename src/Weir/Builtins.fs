@@ -80,8 +80,16 @@ let private realLs: Value =
             // silently halved the listing for a month) [D:ls-truth];
             // age snapshots once per enumeration pass
             let now = System.DateTime.UtcNow
+            let cwd = Session.Cwd()
 
-            DirectoryInfo(Session.Cwd()).GetFileSystemInfos() |> Seq.map (lsRow now))
+            let infos =
+                try
+                    DirectoryInfo(cwd).GetFileSystemInfos()
+                with
+                | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {cwd}"
+                | :? System.IO.IOException as e -> failwith $"ls: cannot access {cwd} — {e.Message}"
+
+            infos |> Seq.map (lsRow now))
     )
 
 let private whereImpl: Value =
@@ -1477,7 +1485,25 @@ let private envFromFileImpl: Value =
                 Seq.delay (fun () ->
                     let resolved = Session.resolve path
 
-                    File.ReadLines resolved
+                    // the File-family guards, in Env.fromFile's own words —
+                    // a missing .env leaked FileNotFoundException's text
+                    // until the wider sweep [D:transport-words]
+                    if Directory.Exists resolved then
+                        failwith $"Env.fromFile: {resolved} is a directory"
+
+                    if not (File.Exists resolved) then
+                        failwith $"Env.fromFile: no such file: {resolved}"
+
+                    let lines =
+                        try
+                            File.ReadAllLines resolved
+                        with
+                        | :? System.UnauthorizedAccessException ->
+                            failwith $"Env.fromFile: permission denied: {resolved}"
+                        | :? System.IO.IOException as e ->
+                            failwith $"Env.fromFile: cannot access {resolved} — {e.Message}"
+
+                    lines
                     |> Seq.indexed
                     |> Seq.choose (fun (i, raw) -> parseDotenvLine path (i + 1) raw)
                     |> Seq.map (fun (k, value) -> recordOf envVarDef [ VStr k; VStr value ]))
@@ -1705,7 +1731,8 @@ let private fsStr2 (name: string) (f: string -> string -> unit) : Value =
         VBuiltin(fun b ->
             match a, b with
             | VStr src, VStr dst ->
-                f (Session.resolve src) (Session.resolve dst)
+                let s, d = Session.resolve src, Session.resolve dst
+                ioGuarded name s (fun () -> f s d)
                 VUnit
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
@@ -1720,7 +1747,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               if not (System.IO.File.Exists r) then
                   failwith $"File.delete: no such file: {r}"
 
-              System.IO.File.Delete r
+              ioGuarded "File.delete" r (fun () -> System.IO.File.Delete r)
               VUnit
           | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
       "copy",
@@ -1764,8 +1791,9 @@ let private dirMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
+              let r = Session.resolve p
               // mkdir -p: parents created, existing = the post-condition
-              System.IO.Directory.CreateDirectory(Session.resolve p) |> ignore
+              ioGuarded "Dir.create" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.create' on {formatValue v}")
       "exists",
@@ -1784,10 +1812,12 @@ let private dirMembers: (string * Ty * Value) list =
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.delete: no such directory: {r}"
 
-              if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
-                  failwith $"Dir.delete: not empty: {r} — Dir.deleteAll removes a tree"
+              ioGuarded "Dir.delete" r (fun () ->
+                  if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
+                      failwith $"Dir.delete: not empty: {r} — Dir.deleteAll removes a tree"
 
-              System.IO.Directory.Delete r
+                  System.IO.Directory.Delete r)
+
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.delete' on {formatValue v}")
       "deleteAll",
@@ -1800,7 +1830,7 @@ let private dirMembers: (string * Ty * Value) list =
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.deleteAll: no such directory: {r}"
 
-              System.IO.Directory.Delete(r, true)
+              ioGuarded "Dir.deleteAll" r (fun () -> System.IO.Directory.Delete(r, true))
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.deleteAll' on {formatValue v}")
       "list",
@@ -1817,10 +1847,9 @@ let private dirMembers: (string * Ty * Value) list =
               // precedent), EAGER (a listing is bounded); ** recursion
               // is Path.glob's job
               VSeq(
-                  System.IO.Directory.EnumerateFileSystemEntries r
-                  |> Seq.sort
+                  ioGuarded "Dir.list" r (fun () ->
+                      System.IO.Directory.EnumerateFileSystemEntries r |> Seq.sort |> List.ofSeq)
                   |> Seq.map VStr
-                  |> Seq.cache
               )
           | v -> unreachable $"the checker rejects 'Dir.list' on {formatValue v}")
       "move",
@@ -1988,7 +2017,10 @@ let private durationMembers: (string * Ty * Value) list =
                   failwith $"Duration.sleep: negative duration ({formatDuration n})"
               elif n > 0L then
                   // integer ticks — no float anywhere [D:duration]
-                  System.Threading.Thread.Sleep(System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond))
+                  Waiting.during $"sleeping {formatDuration n}" (fun () ->
+                      System.Threading.Thread.Sleep(
+                          System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond)
+                      ))
 
               VUnit
           | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
@@ -2101,9 +2133,17 @@ let private runRequest (reqV: Value) : Http.Resp =
                  | VBool b -> b
                  | v -> unreachable $"insecure {formatValue v}") }
 
-        match Http.send req with
+        let host =
+            try
+                System.Uri(req.Url).Host
+            with _ ->
+                req.Url
+
+        match Waiting.during $"{req.Method} {host}" (fun () -> Http.send req) with
         | Ok resp -> resp
-        | Error msg -> failwith msg
+        // the TLS case names its per-request repair [D:http-s2]
+        | Error(msg, Http.TlsUntrusted) -> failwith $"{msg} (a self-signed endpoint can opt out: insecure = true)"
+        | Error(msg, _) -> failwith msg
     | v -> unreachable $"the checker rejects a request on {formatValue v}"
 
 // split the response bytes back into lines, byte-exact with the join at
@@ -2738,7 +2778,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Poll.defaults", bd "The poll template: timeout = 1m, interval = 1s." None None
           "Http.defaults",
           bd
-              "The request template: method = Get, empty url, NoAuth, no body, 30s timeout. `Http.send { Http.defaults with url = u }`."
+              "The request template RECORD: method = Get, empty url, NoAuth, no body, 30s timeout. `Http.send { Http.defaults with url = u }`. Sibling that reads alike: `Http.get url` is a CONSTRUCTOR returning one of these."
               None
               None
           "Http.send",
@@ -2749,7 +2789,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "request" ])
           "Http.get",
           (bd
-              "A request CONSTRUCTOR: `Http.get u` = `{ Http.defaults with method = Get; url = u }`. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`."
+              "A request CONSTRUCTOR — returns an HttpRequest, makes NO request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`. The URL-in-body-out shorthand is Http.fetch."
               (Some "Http.get \"http://x/y\"")
               None
            |> named [ "url" ])
@@ -2769,7 +2809,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "url" ])
           "Http.fetch",
           (bd
-              "The raising GET shorthand: body only, RAISES on non-2xx naming the status (the `curl -sf` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
+              "The raising GET shorthand: takes a BARE URL (never a request — a built request runs through Http.send), returns body only, RAISES on non-2xx naming the status (the `curl -sf` / JS `fetch(url)` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
               None
               None
            |> named [ "url" ])

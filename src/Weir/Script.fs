@@ -2058,7 +2058,41 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
                 go false acc' (dropSnippet tail)
             | None -> go first (l :: acc) tail
 
-    go true [] lines |> List.filter (fun l -> l.Trim() <> "") |> String.concat "\n"
+    // internal backtrack labels never surface [D:label-leaks]: drop any
+    // line carrying the marker (raw or FParsec-escaped), then a heading
+    // whose whole section emptied
+    // openers (header/position lines ending with ':') whose section
+    // emptied are dropped too — bottom-up: an opener survives only if
+    // the next SURVIVING line is its content (>= indent, non-opener) or
+    // a nested opener (> indent)
+    let isOpener (l: string) = l.TrimEnd().EndsWith ":"
+
+    let indentOf (l: string) =
+        l |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+    let rec dropEmptyOpeners (ls: string list) =
+        match ls with
+        | [] -> []
+        | h :: tail ->
+            let kept = dropEmptyOpeners tail
+
+            if isOpener h then
+                match kept with
+                | next :: _ when
+                    (isOpener next && indentOf next > indentOf h)
+                    || (not (isOpener next) && indentOf next >= indentOf h)
+                    ->
+                    h :: kept
+                | _ -> kept
+            else
+                h :: kept
+
+    go true [] lines
+    |> List.filter (fun l ->
+        not (l.Contains Parser.internalLabelMarker || l.Contains "\\u0006")
+        && l.Trim() <> "")
+    |> dropEmptyOpeners
+    |> String.concat "\n"
 
 // merge a loaded module into the importer's env [D:modules-v1]: values
 // (and union ctors) under Modules[Alias], types flat under their plain

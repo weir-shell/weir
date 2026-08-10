@@ -142,7 +142,15 @@ let private err (span: Span) (msg: string) : Result<'a, TypeError> =
           Origin = None }
 
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
-    err span $"expected {formatTy expected}, got {formatTy actual}"
+    // a built request where a URL string is expected is the fetch/send
+    // misreading exactly (`Http.get u |> Http.fetch`) — name the pair's
+    // split instead of leaving a bare type mismatch [D:fetch-naming]
+    let hint =
+        match expected, actual with
+        | TStr, TNamed("HttpRequest", _) -> " — a built request runs through Http.send; Http.fetch takes a bare URL"
+        | _ -> ""
+
+    err span $"expected {formatTy expected}, got {formatTy actual}{hint}"
 
 let private allOk (items: 'a list) (f: 'a -> Result<unit, TypeError>) : Result<unit, TypeError> =
     items |> List.fold (fun acc x -> Result.bind (fun () -> f x) acc) (Ok())
@@ -2286,7 +2294,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | Some dup -> return! err expr.Span $"duplicate update of field '{dup}'"
             | None ->
 
-                let rec updOne (ty: Ty) (path: (string * Span) list) (value: Expr) : Result<TypedExpr, TypeError> =
+                // subjectSpan = the expression whose type must be a record:
+                // the SOURCE at the first hop, the previous field at deeper
+                // ones — the non-record error blames the non-record, never
+                // the field being assigned [D:update-span]
+                let rec updOne
+                    (subjectSpan: Span)
+                    (ty: Ty)
+                    (path: (string * Span) list)
+                    (value: Expr)
+                    : Result<TypedExpr, TypeError> =
                     match path with
                     | [] -> infer ctx env value
                     | (field, fieldSpan) :: rest ->
@@ -2301,19 +2318,19 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                     if List.isEmpty rest then
                                         check ctx env value fieldTy
                                     else
-                                        updOne fieldTy rest value
+                                        updOne fieldSpan fieldTy rest value
                                 | None ->
                                     let hint = didYouMean field (List.map fst def.Fields)
 
                                     err
                                         fieldSpan
                                         $"record update cannot add fields: {typeName} has no field '{field}'{hint}"
-                            | Some(Union _) -> err fieldSpan $"{typeName} is a union; only records update"
-                            | None -> err fieldSpan $"unknown type '{typeName}'"
+                            | Some(Union _) -> err subjectSpan $"{typeName} is a union; only records update"
+                            | None -> err subjectSpan $"unknown type '{typeName}'"
                         | TVar v ->
                             let r = freshName ctx "r"
                             ctx.Subst <- Map.add v (TRowVar(r, [])) ctx.Subst
-                            updOne (TRowVar(r, [])) path value
+                            updOne subjectSpan (TRowVar(r, [])) path value
                         | TRowVar(r, _) ->
                             let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
 
@@ -2328,9 +2345,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             if List.isEmpty rest then
                                 check ctx env value fieldTy
                             else
-                                updOne fieldTy rest value
+                                updOne fieldSpan fieldTy rest value
+                        | TFun _ as fty ->
+                            // a partially-applied constructor in update
+                            // position is unambiguous — name the repair
+                            err
+                                subjectSpan
+                                $"only records have updatable fields; this expression is a function ({formatTy fty}) — apply it first"
                         | ty ->
-                            err fieldSpan $"only records have updatable fields; this expression has type {formatTy ty}"
+                            err
+                                subjectSpan
+                                $"only records have updatable fields; this expression has type {formatTy ty}"
 
                 let! tupdates =
                     updates
@@ -2338,7 +2363,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         (fun acc (path, value) ->
                             acc
                             |> Result.bind (fun ts ->
-                                updOne tsource.Ty path value
+                                updOne source.Span tsource.Ty path value
                                 |> Result.map (fun tv -> (path |> List.map fst, tv) :: ts)))
                         (Ok [])
 

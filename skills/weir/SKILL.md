@@ -241,8 +241,10 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   tok; body = Json (payload |> to json) }` — one per method
   (get/post/put/delete/patch/head/options/query), each equal to `{
   Http.defaults with method = M; url = u }`. `Http.fetch u : seq<string>`
-  is the raising GET shorthand (body only, raises on non-2xx — the pair
-  to send, which binds it). `url |> Http.withQuery [(k, v)]` percent-encodes
+  is the raising GET shorthand — a BARE URL in, body out (never a
+  request: `Http.get u |> Http.fetch` is a type error naming the repair;
+  a built request runs through `Http.send`); raises on non-2xx — the
+  pair to send, which binds it. `url |> Http.withQuery [(k, v)]` percent-encodes
   a query string. `Http.query` is the QUERY method (idempotent, so
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud

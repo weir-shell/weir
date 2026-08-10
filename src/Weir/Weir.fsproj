@@ -55,6 +55,7 @@
     <Compile Include="Check.fs" />
     <!-- after Check: the schema validator walks the TYPED template;
          before Script: check-time schema resolution [D:contracts-spine] -->
+    <Compile Include="Http.fs" />
     <Compile Include="Contracts.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Session.fs" />
@@ -62,7 +63,6 @@
     <Compile Include="Diagnose.fs" />
     <Compile Include="Proc.fs" />
     <Compile Include="Eval.fs" />
-    <Compile Include="Http.fs" />
     <Compile Include="Builtins.fs" />
     <!-- after Extern + Builtins: completion reuses the PATH cache and
          command-callable set for command-head suggestions [D:repl-quality] -->
