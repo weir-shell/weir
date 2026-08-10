@@ -148,31 +148,38 @@ def last_col_move(raw):
     m = re.fullmatch(rb"\x1b\[(\d+)C", tail)
     return int(m.group(1)) if m else (0 if tail == b"" else tail)
 
+# each probe sends dozens of separate ESC[C sequences; .NET's ReadKey
+# decodes escapes under an inter-byte timeout, and a loaded runner
+# (macOS) can split one — a lone ESC decodes wrong and the cursor
+# drifts by a few columns (cols that fit NEITHER width's math were the
+# tell). 0.15s pacing triples the margin, and ONE retry re-runs the
+# whole probe: the pin is weir's column MATH, which is deterministic —
+# only the byte-delivery timing is not. Assertions stay exact; the raw
+# tail rides the failure so a split escape is visible in the report.
+def colpin(desc, keys, want, cols):
+    raw = b""
+    for _attempt in (1, 2):
+        raw = runraw(keys, cols=cols)
+        got = last_col_move(raw)
+        if got == want:
+            return
+    failures.append(f"w={cols}: {desc} col {want}, got {got!r} (raw tail: {raw[-120:]!r})")
+
 for cols, boundary in ((30, 24), (40, 34)):  # (6+col) % cols == 0
+    body = [("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
     # mid-line boundary: Right onto it must paint START of the next row (col 0)
-    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
-                 + [("\x1b[C", 0.05)] * boundary, cols=cols)
-    got = last_col_move(raw)
-    if got != 0:
-        failures.append(f"w={cols}: mid-line wrap boundary must paint col 0 of the next row, got {got!r}")
+    colpin("mid-line wrap boundary must paint (next row)",
+           body + [("\x1b[C", 0.15)] * boundary, 0, cols)
     # one more Right: column 1 (adjacent positions differ by exactly one)
-    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
-                 + [("\x1b[C", 0.05)] * (boundary + 1), cols=cols)
-    got = last_col_move(raw)
-    if got != 1:
-        failures.append(f"w={cols}: one past the boundary must paint col 1, got {got!r}")
+    colpin("one past the boundary must paint",
+           body + [("\x1b[C", 0.15)] * (boundary + 1), 1, cols)
     # Left back across: the mirror returns to col 0
-    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
-                 + [("\x1b[C", 0.05)] * (boundary + 1) + [("\x1b[D", 0.2)], cols=cols)
-    got = last_col_move(raw)
-    if got != 0:
-        failures.append(f"w={cols}: Left across the boundary must mirror to col 0, got {got!r}")
+    colpin("Left across the boundary must mirror to",
+           body + [("\x1b[C", 0.15)] * (boundary + 1) + [("\x1b[D", 0.3)], 0, cols)
     # END of line exactly at the boundary: wrap-PENDING — the last column,
     # named explicitly (cols-1), never an off-screen col the terminal clamps
-    raw = runraw([("x" * boundary, 0.5)], cols=cols)
-    got = last_col_move(raw)
-    if got != cols - 1:
-        failures.append(f"w={cols}: exact-fill end-of-line must paint the pending col {cols-1}, got {got!r}")
+    colpin("exact-fill end-of-line must paint the pending",
+           [("x" * boundary, 0.5)], cols - 1, cols)
 
 # --- 7c. completion keeps the tracked cursor [D:windows-findings]: Tab
 # with text AFTER the cursor shows the list, then typing continues at the
