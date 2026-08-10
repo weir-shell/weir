@@ -121,7 +121,9 @@ def run_check(path, outfile):
     # cold CI runner (the child outlived the window; the loop returned
     # empty and waitpid then blocked until the real output was orphaned)
     err = b""
-    deadline = time.time() + 30
+    started = time.time()
+    deadline = started + 30
+    status = None
     while time.time() < deadline:
         r, _, _ = select.select([fd], [], [], 0.25)
         if r:
@@ -129,15 +131,28 @@ def run_check(path, outfile):
                 chunk = os.read(fd, 65536)
             except OSError:
                 break  # EIO: child exited and the pty buffer is drained
-            if not chunk:
-                break
+            # a 0-byte read without EIO is NOT end-of-stream on every
+            # kernel — keep draining until EIO or the deadline
             err += chunk
+        done, st = os.waitpid(pid, os.WNOHANG)
+        if done and not r:
+            status = st
+            break
     os.close(fd)
-    os.waitpid(pid, 0)
+
+    if status is None:
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
     return err.decode(errors="replace"), open(outfile).read()
 t9err, t9out = run_check(_d + "/bad.weir", _d + "/out.txt")
 if "\x1b[" not in t9err:
-    failures.append(f"check under a tty must color its stderr diagnostic: {t9err[-200:]!r}")
+    failures.append(
+        "check under a tty must color its stderr diagnostic: "
+        f"captured={t9err[-200:]!r} stdout-file={t9out[-200:]!r} "
+        f"TERM={os.environ.get('TERM')!r} CI={os.environ.get('CI')!r}")
 if "\x1b[" in t9out:
     failures.append(f"check stdout must stay plain when stderr is the diagnostic stream: {t9out[-200:]!r}")
 

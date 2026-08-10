@@ -31,6 +31,8 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    # a hang must FAIL visibly, not sit until the 6h default
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -64,6 +66,8 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    # a hang must FAIL visibly, not sit until the 6h default
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -90,6 +94,8 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    # a hang must FAIL visibly, not sit until the 6h default
+    timeout-minutes: 30
     defaults:
       run:
         # Git Bash: the one gate implementation runs unchanged — a .ps1
