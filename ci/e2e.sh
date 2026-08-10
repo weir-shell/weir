@@ -21,6 +21,14 @@ set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
+# a PATH ENTRY must be POSIX-form: mkweirtmp's mixed (C:/...) spelling
+# and a Windows-form dirname both carry a drive colon that reads as a
+# PATH separator — round 5's class, every prefix site (identity on POSIX)
+pathEntry() {
+    if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; else printf '%s\n' "$1"; fi
+}
+BINDIR=$(pathEntry "$(dirname "$BIN")")
+
 # HARD stale-binary gate [D:masking-mechanized] — the ONE shared gate
 # (stamp == HEAD, no .fs newer than the binary), so stale results are
 # impossible rather than catchable.
@@ -166,12 +174,7 @@ echo "e2e ok: measure transition error"
 # convicting the witness, not weir
 awdir=$(mkweirtmp)
 printf 'Self.args |> print\n' > "$awdir/args.weir"
-# the PATH prefix must be POSIX-form: a Windows-form dirname carries a
-# drive colon that reads as a PATH separator (the separator class, on
-# the PATH axis)
-awbindir=$(dirname "$BIN")
-command -v cygpath >/dev/null 2>&1 && awbindir=$(cygpath -u "$awbindir")
-out=$(PATH="$awbindir:$PATH" $BIN -e "\$(weir \"$awdir/args.weir\" \"*\")")
+out=$(PATH="$BINDIR:$PATH" $BIN -e "\$(weir \"$awdir/args.weir\" \"*\")")
 expect "argv stays literal" '["*"]' "$out"
 
 out=$($BIN -e 'echo hi (40 + 2) |> first 1')
@@ -227,7 +230,7 @@ expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
 out=$($BIN -e 'grep nomatch /etc/hosts | complete |> _.exitCode')
 expect "complete reifies nonzero exit as data" "1 : int" "$out"
 
-out=$(timeout 10 $BIN -e 'bash -c "yes e | head -c 100000 1>&2; echo done" | complete |> _.exitCode') \
+out=$(timeout 10 $BIN -e 'bash -c "seq 1 4000 | sed s/^/eeeeeeeeeeeeeeeeeeeeeeee/ 1>&2; echo done" | complete |> _.exitCode') \
     || fail "chatty-stderr deadlock under complete (timeout)"
 expect "concurrent stderr drain under complete" "0 : int" "$out"
 
@@ -570,7 +573,7 @@ cat > "$envdir/outer.weir" <<'WEOF'
 let e = Env.fromFile "lvl.env"
 !e(weir enum.weir)
 WEOF
-out=$(cd "$envdir" && PATH="$(dirname $BIN):$PATH" $BIN outer.weir)
+out=$(cd "$envdir" && PATH="$BINDIR:$PATH" $BIN outer.weir)
 expect "enum resolves after the dotenv overlay (same as any field)" "lvl=Info opt=None" "$out"
 rm -rf "$envdir"
 
@@ -1429,7 +1432,7 @@ echo "e2e ok: all repo scripts check clean"
 # that can be invalid without failing a build is not that (the schema
 # live-check found three real errors in it, unprompted [D:add-validates]).
 # Child weirs resolve via PATH: the $BIN dir prefix, as everywhere.
-scout=$(PATH="$(dirname $BIN):$PATH" $BIN "$(dirname "$0")/../examples/showcase.weir" --tag ci 2>/dev/null) || fail "the showcase must RUN green"
+scout=$(PATH="$BINDIR:$PATH" $BIN "$(dirname "$0")/../examples/showcase.weir" --tag ci 2>/dev/null) || fail "the showcase must RUN green"
 echo "$scout" | grep -qF "showcase complete" || fail "the showcase completes: ${scout: -200}"
 echo "$scout" | grep -qF 'weir.dev/switch: "on"' || fail "the district auto-quote demo holds"
 echo "e2e ok: the showcase runs end to end (the tour is a build gate now)"
@@ -1449,10 +1452,10 @@ cat > "$shdir/shadow.weir" <<'WEOF'
 let f x = x
 print (f "value")
 WEOF
-out=$(PATH="$shdir:$PATH" $BIN "$shdir/shadow.weir")
+out=$(PATH="$(pathEntry "$shdir"):$PATH" $BIN "$shdir/shadow.weir")
 expect "params shadow PATH in their own RHS (identity stays identity)" "value" "$out"
 printf '^x\n' > "$shdir/force.weir"
-out=$(PATH="$shdir:$PATH" $BIN "$shdir/force.weir")
+out=$(PATH="$(pathEntry "$shdir"):$PATH" $BIN "$shdir/force.weir")
 expect "^x still reaches the PATH binary (no capability lost)" "SPAWNED" "$out"
 rm -rf "$shdir"
 
@@ -2739,7 +2742,7 @@ let f y =
 
 print (f ["safe"])
 WEOF
-out=$(PATH="$bldir/bin:$PATH" $BIN "$bldir/shadow.weir")
+out=$(PATH="$(pathEntry "$bldir/bin"):$PATH" $BIN "$bldir/shadow.weir")
 expect "block names shadow PATH at depth (the failing-first pin)" "safe" "$out"
 
 cat > "$bldir/force.weir" <<'WEOF'
@@ -2750,12 +2753,12 @@ let f y =
 
 print (f "x")
 WEOF
-out=$(PATH="$bldir/bin:$PATH" $BIN "$bldir/force.weir")
+out=$(PATH="$(pathEntry "$bldir/bin"):$PATH" $BIN "$bldir/force.weir")
 expect "^ still reaches the PATH binary from a block RHS" "SPAWNED" "$out"
 
 printf '#!/bin/sh\necho FN-BINARY\n' > "$bldir/bin/function"
 chmod +x "$bldir/bin/function"
-out=$(PATH="$bldir/bin:$PATH" $BIN -e '^function' 2>&1)
+out=$(PATH="$(pathEntry "$bldir/bin"):$PATH" $BIN -e '^function' 2>&1)
 expect "^function reaches a PATH binary (reservation does not block force)" "FN-BINARY" "$out"
 
 # the reservation retired into the FEATURE [D:function-keyword]: the
@@ -3125,7 +3128,7 @@ out=$(cd "$endir" && $BIN child.weir)
 expect "neither layer sets it: the attribute fills (both types)" "port=8080 debug=false" "$out"
 out=$(cd "$endir" && PORT_ZQ=7000 $BIN child.weir)
 expect "process env beats the attribute" "port=7000" "$out"
-out=$(cd "$endir" && PATH="$(dirname $BIN):$PATH" $BIN parent.weir)
+out=$(cd "$endir" && PATH="$BINDIR:$PATH" $BIN parent.weir)
 expect "the file overlay (via the env sigil) beats the attribute in the child" "port=9090" "$out"
 out=$(cd "$endir" && PORT_ZQ=7000 DEBUG_ZQ=true $BIN child.weir)
 expect "Default false on an env bool is a real resting point (set wins)" "debug=true" "$out"
@@ -3157,7 +3160,7 @@ out=$($BIN "$spdir/sub/where.weir" | tail -1)
 [ "$out" = "$want" ] || fail "absolute invocation: got $out"
 echo "e2e ok: scriptPath — one absolute answer three ways, resolved BEFORE the cd"
 
-out=$(cd "$spdir" && PATH="$spdir/pbin:$(dirname $BIN):$PATH" where.weir | tail -1)
+out=$(cd "$spdir" && PATH="$(pathEntry "$spdir/pbin"):$BINDIR:$PATH" where.weir | tail -1)
 [ "$out" = "$spdir/pbin" ] || fail "shebang-on-PATH gets the SCRIPT's path: got $out"
 echo "e2e ok: shebang-on-PATH resolves to the script, not the interpreter"
 
@@ -4042,7 +4045,7 @@ echo "e2e ok: Log — stderr always, WEIR_LOG selects, stdout byte-identical (TH
 
 # NO_COLOR / non-tty: the harness reads PLAIN level labels (this pipe is
 # not a tty, so tint must be absent even without NO_COLOR)
-grep -qP "\x1b" "$lgdir/err" && fail "no escapes when stderr is not a tty"
+grep -q "$(printf '\033')" "$lgdir/err" && fail "no escapes when stderr is not a tty"
 echo "e2e ok: Log plain form when stderr is piped"
 
 # the thunk is NOT evaluated below threshold (side-effect proof)
@@ -4069,7 +4072,7 @@ let out = $e(weir child.weir)
 out |> print
 WEOF
 printf 'WEIR_LOG=debug\n' > "$lgdir/log.env"
-( cd "$lgdir" && PATH="$(dirname $BIN):$PATH" $BIN parent.weir 2>"$lgdir/cerr" ) \
+( cd "$lgdir" && PATH="$BINDIR:$PATH" $BIN parent.weir 2>"$lgdir/cerr" ) \
     || fail "parent.weir failed (child weir needs \$BIN's dir on PATH — CI has no ~/.local/bin): $(cat "$lgdir/cerr")"
 grep -qF "DEBUG child sees debug" "$lgdir/cerr" || fail "the env sigil carries WEIR_LOG to a child weir: $(cat "$lgdir/cerr")"
 echo "e2e ok: Log level rides the env sigil to child weir processes"
@@ -4174,7 +4177,7 @@ let sub =
     post
 print (sub)
 WEOF
-out=$(PATH="$(dirname $BIN):$PATH" $BIN "$djdir/dj.weir")
+out=$(PATH="$BINDIR:$PATH" $BIN "$djdir/dj.weir")
 [ "$out" = '10
 not-an-argv-word' ] || fail "the git-subrepo shape joins on AOT: $out"
 cat > "$djdir/floor.weir" <<'WEOF'
@@ -4209,7 +4212,7 @@ print (outs |> Seq.last)
 print $"{outs |> Seq.length}"
 WEOF
 start_ms=$(now_ms)
-out=$(PATH="$(dirname $BIN):$PATH" $BIN "$tudir/tu.weir")
+out=$(PATH="$BINDIR:$PATH" $BIN "$tudir/tu.weir")
 took=$(( $(now_ms) - start_ms ))
 [ "$(echo "$out" | sed -n 1p)" = "cwd-held" ] || fail "cwd scope at ceiling: $out"
 [ "$(echo "$out" | sed -n 2p)" = "1" ] || fail "order head: $out"
@@ -4231,7 +4234,7 @@ let fast = { Retry.defaults with attempts = 2; delay = 0ms }
 retry fast (1 == 1)
 print "computed-options-ok"
 WEOF
-out=$(PATH="$(dirname $BIN):$PATH" $BIN "$rpdir/rp.weir")
+out=$(PATH="$BINDIR:$PATH" $BIN "$rpdir/rp.weir")
 [ "$out" = '42
 computed-options-ok' ] || fail "retry on AOT: $out"
 out=$($BIN -e 'retry attempts=2 delay=0ms (1 == 2)' 2>&1) && fail "exhaustion must raise" || true
@@ -4249,14 +4252,14 @@ echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, c
 # over; `then` stops the chain's argv ONLY inside a condition
 isdir=$(mkweirtmp)
 cat > "$isdir/is.weir" <<'WEOF'
-if test -f /etc/hostname | succeeds then
+if test -f /etc/hosts | succeeds then
     print "inline-if"
 let r =
     if test -f /nonexistent-weir-e2e | succeeds then "a"
-    elif test -f /etc/hostname | succeeds then "elif-inline"
+    elif test -f /etc/hosts | succeeds then "elif-inline"
     else "c"
 print r
-let ok = test -f /etc/hostname | succeeds
+let ok = test -f /etc/hosts | succeeds
 if ok then
     print "bind-first-still"
 echo then one
@@ -4394,26 +4397,26 @@ WEOF
 chmod +x "$sgdir/proj/bin/sigtool"
 cd "$sgdir/proj"
 # generation: probes the tool, validates, writes sig + lock
-SIGTOOL_MARK="$sgdir/gen-mark" PATH="$sgdir/proj/bin:$PATH" $BIN add sig sigtool | grep -qF "added sig sigtool (2 flag(s), source: help" || fail "add sig generates"
+SIGTOOL_MARK="$sgdir/gen-mark" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig sigtool | grep -qF "added sig sigtool (2 flag(s), source: help" || fail "add sig generates"
 test -f .weir/sigs/sigtool.weir || fail "sig file written"
 grep -qF '"version": "sigtool 3.1.4"' .weir/lock.json || fail "lock carries the verbatim version"
 # checking: typo caught, and CHECK SPAWNS NOTHING (the marker pin)
 printf '#sig sigtool\nsigtool --dry-run --nmae x\nprint "done"\n' > use.weir
 rm -f "$sgdir/gen-mark"
-out=$(SIGTOOL_MARK="$sgdir/gen-mark" PATH="$sgdir/proj/bin:$PATH" $BIN check use.weir 2>&1)
+out=$(SIGTOOL_MARK="$sgdir/gen-mark" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check use.weir 2>&1)
 echo "$out" | grep -qF "unknown flag '--nmae' for sigtool. Did you mean '--name'?" || fail "sig typo catch: $out"
 test -f "$sgdir/gen-mark" && fail "weir check SPAWNED the tool" || true
 # property 3: output byte-identical with and without the contract
 printf 'sigtool run-arg\nprint "p3"\n' > p3.weir
-PATH="$sgdir/proj/bin:$PATH" $BIN p3.weir > with.out 2>/dev/null
+PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN p3.weir > with.out 2>/dev/null
 rm -rf .weir
-PATH="$sgdir/proj/bin:$PATH" $BIN p3.weir > without.out 2>/dev/null
+PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN p3.weir > without.out 2>/dev/null
 cmp -s with.out without.out || fail "property 3: contracts changed run output"
 # verify: version arm both ways; restore: the ruled generated behaviour
-SIGTOOL_MARK="$sgdir/gen-mark2" PATH="$sgdir/proj/bin:$PATH" $BIN add sig sigtool >/dev/null
-PATH="$sgdir/proj/bin:$PATH" $BIN verify | grep -qF "ok (hash + version)" || fail "verify version arm (match)"
+SIGTOOL_MARK="$sgdir/gen-mark2" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig sigtool >/dev/null
+PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN verify | grep -qF "ok (hash + version)" || fail "verify version arm (match)"
 sed -i 's/3.1.4/9.0.0/' bin/sigtool
-out=$(PATH="$sgdir/proj/bin:$PATH" $BIN verify 2>/dev/null) && fail "verify must FAIL on a mismatch" || true
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN verify 2>/dev/null) && fail "verify must FAIL on a mismatch" || true
 echo "$out" | grep -qF "VERSION MISMATCH" || fail "verify version arm (mismatch): $out"
 rm .weir/sigs/sigtool.weir
 out=$($BIN restore 2>&1) && fail "restore of an absent generated sig must fail" || true
