@@ -25,14 +25,9 @@ let fileRow: RecordDef =
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
-/// build a builtin record FROM its declaration [D:record-keys]: values
-/// arrive in DECLARATION ORDER and the keys come from the def, so a
-/// wrong or missing key cannot be written — an arity slip is loud HERE
-/// at the construction site, where before it surfaced as a LYING
-/// unreachable at field access ("the checker rejects unknown field" —
-/// the checker had approved it; the value was short). Chosen over a
-/// per-record typed helper because the defect class is the KEY strings;
-/// positional values keep each site one honest list.
+/// values in DECLARATION ORDER; the keys come from the def, so a key
+/// mismatch cannot be written and an arity slip throws here at the
+/// construction site [D:record-keys]
 let recordOf (def: RecordDef) (values: Value list) : Value =
     if List.length values <> List.length def.Fields then
         unreachable
