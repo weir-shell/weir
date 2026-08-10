@@ -7,6 +7,15 @@ mkweirtmp() {
     d=$(mktemp -d)
     if command -v cygpath >/dev/null 2>&1; then cygpath -m "$d"; else printf '%s\n' "$d"; fi
 }
+# poll until a local endpoint answers (bounded) — a fixed sleep raced
+# slow runners: macOS timed out reaching a server that was not up yet
+awaitHttp() {
+    for _ in $(seq 1 50); do
+        curl -sf -o /dev/null "$1" 2>/dev/null && return 0
+        sleep 0.2
+    done
+    return 1
+}
 # End-to-end battery against the AOT binary (command-mode Session 4 set).
 set -euo pipefail
 
@@ -157,7 +166,12 @@ echo "e2e ok: measure transition error"
 # convicting the witness, not weir
 awdir=$(mkweirtmp)
 printf 'Self.args |> print\n' > "$awdir/args.weir"
-out=$(PATH="$(dirname "$BIN"):$PATH" $BIN -e "\$(weir \"$awdir/args.weir\" \"*\")")
+# the PATH prefix must be POSIX-form: a Windows-form dirname carries a
+# drive colon that reads as a PATH separator (the separator class, on
+# the PATH axis)
+awbindir=$(dirname "$BIN")
+command -v cygpath >/dev/null 2>&1 && awbindir=$(cygpath -u "$awbindir")
+out=$(PATH="$awbindir:$PATH" $BIN -e "\$(weir \"$awdir/args.weir\" \"*\")")
 expect "argv stays literal" '["*"]' "$out"
 
 out=$($BIN -e 'echo hi (40 + 2) |> first 1')
@@ -3782,9 +3796,11 @@ ctdir=$(mkweirtmp)
 mkdir -p "$ctdir/serve"
 cp "$(dirname "$0")/../tests/fixtures/configmap-v1.json" "$ctdir/serve/"
 ctport=$((18930 + RANDOM % 2000))
-( cd "$ctdir/serve" && python3 -m http.server $ctport >/dev/null 2>&1 ) &
+# loopback bind: macOS's firewall drops SYNs to an unsigned listener on
+# 0.0.0.0 ('Operation timed out' on the very first fetch)
+( cd "$ctdir/serve" && python3 -m http.server $ctport --bind 127.0.0.1 >/dev/null 2>&1 ) &
 ctsrv=$!
-sleep 1
+awaitHttp "http://127.0.0.1:$ctport/configmap-v1.json" || { kill $ctsrv 2>/dev/null; fail "the schema server never came up"; }
 
 mkdir -p "$ctdir/proj/sub"
 ( cd "$ctdir/proj" && git init -q . )
@@ -3941,9 +3957,9 @@ echo "e2e ok: the six schema messages re-pinned verbatim — fields named, paths
 # a schema with NO additionalProperties:false warns at ADD time — the
 # silently-inert-contract guard [schema-polish item 3]
 printf '{ "type": "object", "properties": { "a": { "type": "string" } } }' > "$ctdir/serve/loose.json"
-( cd "$ctdir/serve" && python3 -m http.server $ctport >/dev/null 2>&1 ) &
+( cd "$ctdir/serve" && python3 -m http.server $ctport --bind 127.0.0.1 >/dev/null 2>&1 ) &
 ctsrv2=$!
-sleep 1
+awaitHttp "http://127.0.0.1:$ctport/loose.json" || { kill $ctsrv2 2>/dev/null; fail "the schema server (2) never came up"; }
 out=$( cd "$ctdir/proj" && $BIN add schema http://127.0.0.1:$ctport/loose.json --as loose 2>&1 )
 echo "$out" | grep -qF "unknown-field checking will NOT fire" || fail "the inert-schema warning: $out"
 echo "$out" | grep -qF "standalone-strict" || fail "the warning names the strict variant: $out"
