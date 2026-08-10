@@ -90,6 +90,44 @@ surface-filerow row records the generalization so the third
 receipt-built surface — which will be neither a format nor a
 record — inherits the pass by rule rather than by rediscovery.
 
+## the builtin-surface audit (2026-08-10)
+
+The method generalized, and mostly it found statements to write
+rather than defects to fix — zero code changed, which is itself the
+result: the earlier sessions (fs-members, sized-findings, the format
+audit, encoding-law) had already swept the class's worst corners.
+
+Per-target denominators: glob 13 cells (11 unexamined -> 0), capture
+4 (2 -> 0), regex 9 (6 -> 0), Path edges 6 (4 -> 0), env fields 2
+(1 -> 0), Dir.list-vs-ls stated, shape grep 203/36/26 with no eighth
+suspect.
+
+The verbatim probes worth keeping. Glob: bare `*` lists files AND
+directories (a.txt, b.txt, c.md, linkdir, lit*eral, sub); `{a,b}`
+and backslash-escape match nothing silently ([*] matches the literal
+star file); `.*` yields dotfiles; `linkdir/*.txt` FOLLOWS the
+symlink while `**` refuses to descend it. Capture: a 0xFF byte
+becomes EF BF BD through both $() and complete — lenient, like
+File.read, unlike fromBase64, and that three-way split is the
+encoding law's actual shape. Regex: `(?<x>a)(b)` against binders
+(p, q) gives p="b", q="a" — .NET renumbers positional groups first,
+named after, and Str.rmatch returns the same order; nothing stated
+it until now, and whether named groups should instead reject is the
+audit's one real sized decision. The env teaching enumerates its
+whole admitted set in the message — the best surface statement in
+the codebase, written before anyone asked for one.
+
+Two premise corrections against the plan as blessed: glob returning
+directories disconfirmed the same-defect-twice suspicion (the
+parent's README-sweep counter-evidence held at source), and the
+parked Path.combine doc already existed in SKILL, thorough — the
+park had been discharged and nobody had marked it so.
+
+Sized (2): the named-group ruling (reject with a teaching, or
+document the order — behaviour either way); glob brace expansion
+(waits for a receipt). The ls half of the inversion is [D:ls-truth],
+in flight beside this audit.
+
 ## launch hygiene: the files a visitor expects, and the shape (2026-08-09)
 
 The licence decision turned out to be already made — Apache-2.0 and
