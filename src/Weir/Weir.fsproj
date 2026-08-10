@@ -42,7 +42,7 @@
     <PackageReference Include="FParsec" Version="1.1.1" />
     <!-- pinned [D:aot-warnings]: implicit FSharp.Core floats — CI restored
          10.1.302 while local built 10.1.301, two silently different binaries -->
-    <PackageReference Include="FSharp.Core" Version="10.1.302" />
+    <PackageReference Update="FSharp.Core" Version="10.1.302" />
   </ItemGroup>
 
   <ItemGroup>
