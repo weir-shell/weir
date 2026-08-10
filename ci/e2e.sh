@@ -16,6 +16,17 @@ awaitHttp() {
     done
     return 1
 }
+# the TLS twin polls TCP-ACCEPT only (curl's TLS stack disagrees with
+# the python server on some platforms; readiness needs the LISTENER,
+# and the server survives the aborted handshake — verified): bash's
+# /dev/tcp, present on macOS 3.2 and Git Bash alike
+awaitTcp() {
+    for _ in $(seq 1 50); do
+        (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && return 0
+        sleep 0.2
+    done
+    return 1
+}
 # End-to-end battery against the AOT binary (command-mode Session 4 set).
 set -euo pipefail
 
@@ -395,23 +406,30 @@ elapsed_ms=$(($(now_ms) - start))
 [ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
 echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
 
+# temp-dir fixture, leaf pins: /tmp and /etc are POSIX-isms a NATIVE
+# weir resolves drive-relative on Windows (D:\tmp), and pwd's separator
+# is the platform's — assert the LEAF, never the path
 forkdir=$(mkweirtmp)
+mkdir -p "$forkdir/home" "$forkdir/wa" "$forkdir/wb"
 cat > "$forkdir/fork.weir" <<'WEOF'
-let a = cd "/tmp"
+let a = cd "FORKMARK/home"
 
 let workers =
-    ["/"; "/etc"]
+    ["FORKMARK/wa"; "FORKMARK/wb"]
     |> Seq.pmap (fun d ->
         let x = cd d
         pwd |> Seq.head)
 
-workers |> Seq.iter print
-print $"after: {pwd |> Seq.head}"
+let ws = workers |> Seq.force
+print (if ws |> Seq.head |> Str.endsWith "wa" then "w1-ok" else "w1-wrong")
+print (if ws |> Seq.last |> Str.endsWith "wb" then "w2-ok" else "w2-wrong")
+print (if pwd |> Seq.head |> Str.endsWith "home" then "parent-held" else "parent-moved")
 WEOF
+sed "s|FORKMARK|$forkdir|g" "$forkdir/fork.weir" > "$forkdir/fork.weir.tmp" && mv "$forkdir/fork.weir.tmp" "$forkdir/fork.weir"
 out=$($BIN "$forkdir/fork.weir")
-expect "worker sessions fork: worker one" "/" "$out"
-expect "worker sessions fork: worker two" "/etc" "$out"
-expect "worker sessions fork: parent untouched" "after: /tmp" "$out"
+expect "worker sessions fork: worker one" "w1-ok" "$out"
+expect "worker sessions fork: worker two" "w2-ok" "$out"
+expect "worker sessions fork: parent untouched" "parent-held" "$out"
 rm -rf "$forkdir"
 
 # run/cmd|>print byte-identity retired [D:drop-command-builtins] (both dropped)
@@ -4199,12 +4217,13 @@ echo "e2e ok: dedent correct-join (post-scope statements join, the floor stays)"
 # 100 arms each SPAWNING a child weir — the domain's real arm shape,
 # at the raised ceiling; order preserved, parent cwd untouched
 tudir=$(mkweirtmp)
+mkdir -p "$tudir/work"
 cat > "$tudir/tu.weir" <<'WEOF'
 let before = pwd |> Seq.head
 let outs =
     [1..100]
     |> Seq.pmap (fun i ->
-        within cd "/tmp"
+        within cd "TUMARK/work"
             $(weir -e $"print {show i}") |> Seq.head
     )
     |> Seq.force
@@ -4214,6 +4233,7 @@ print (outs |> Seq.head)
 print (outs |> Seq.last)
 print $"{outs |> Seq.length}"
 WEOF
+sed "s|TUMARK|$tudir|g" "$tudir/tu.weir" > "$tudir/tu.weir.tmp" && mv "$tudir/tu.weir.tmp" "$tudir/tu.weir"
 start_ms=$(now_ms)
 out=$(PATH="$BINDIR:$PATH" $BIN "$tudir/tu.weir")
 took=$(( $(now_ms) - start_ms ))
@@ -4610,7 +4630,7 @@ srv.serve_forever()
 TLSEOF
         python3 "$hdir/tls.py" "$tport" 2>/dev/null &
         tsrv=$!
-        sleep 0.8
+        awaitTcp "$tport" || { kill $tsrv 2>/dev/null; fail "the TLS server never came up"; }
         # default REJECTS the self-signed cert (verification on)
         out=$($BIN -e 'Http.send (Http.get "https://127.0.0.1:'"$tport"'/")' 2>&1) && { kill $tsrv 2>/dev/null; fail "default must reject a self-signed cert"; } || true
         echo "$out" | grep -qF "certificate is not trusted" || { kill $tsrv 2>/dev/null; fail "TLS rejection message: $out"; }
