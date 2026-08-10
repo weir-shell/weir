@@ -199,6 +199,10 @@ let private expectValue input expected =
 // weirPath: a NATIVE path made safe to interpolate into weir SOURCE —
 // weir strings treat `\` as an escape, so a Windows temp path must ride
 // as forward slashes (liberal input: Windows APIs accept them)
+// EVERY platform path interpolated into weir SOURCE routes through
+// this (a raw C:\ path in a plain string trips the \U escape teaching
+// — the Windows first-run's whole fixture class); and expected
+// MESSAGES pin the shape + the name, never the platform's rendering
 let private weirPath (p: string) = p.Replace('\\', '/')
 
 // platformPath: a POSIX-spelled EXPECTED value converted to the
@@ -8742,7 +8746,7 @@ let fsMemberTests =
         [ test "the four error shapes, each naming its path" {
               let d =
                   match run "Path.newTempDir ()" with
-                  | VStr s -> s
+                  | VStr s -> weirPath s
                   | v -> failtest $"unexpected {v}"
 
               // missing source
@@ -8776,7 +8780,7 @@ let fsMemberTests =
           test "Dir.create is the idempotent exception; Dir.list is full-path sorted both-kinds" {
               let d =
                   match run "Path.newTempDir ()" with
-                  | VStr s -> s
+                  | VStr s -> weirPath s
                   | v -> failtest $"unexpected {v}"
 
               run $"Dir.create \"{d}/sub\"" |> ignore
@@ -9764,7 +9768,8 @@ let pinsWalkTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m1 "File.move: no such file: /nope/a" ""
+              Expect.stringContains m1 "File.move: no such file:" "the shape"
+              Expect.stringContains m1 "nope" "the path named"
 
               let m2 =
                   try
@@ -9773,7 +9778,8 @@ let pinsWalkTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m2 "File.size: no such file: /nope/a" ""
+              Expect.stringContains m2 "File.size: no such file:" "the shape"
+              Expect.stringContains m2 "nope" "the path named"
           }
           test "walk candidates: parser reject sides (parens-required params, destructuring pipe-hint, range endpoints)" {
               match Weir.Parser.parseExpr "let f x, y = x in f" with
@@ -9818,7 +9824,8 @@ let pinsWalkTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m "File.append: no such directory: /nope/deep" ""
+              Expect.stringContains m "File.append: no such directory:" "the shape"
+              Expect.stringContains m "deep" "the directory named"
           }
           test "the moved-into-a-module teaching carries its PREFIX (the suffix list was pinned, the prefix was not)" {
               match Weir.Check.typecheck Weir.Builtins.typeEnvStrict (parse "[1] |> map (fun x -> x)") with
@@ -9906,17 +9913,24 @@ let sizedFindingsTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m1 "File.read: no such file: /nope/missing.txt" "not-found"
+              Expect.stringContains m1 "File.read: no such file:" "not-found shape"
+              Expect.stringContains m1 "missing.txt" "the path named (platform's own spelling)"
               Expect.isFalse (m1.Contains "Could not find") "no raw .NET words"
+
+              let dd =
+                  match run "Path.newTempDir ()" with
+                  | VStr s -> weirPath s
+                  | v -> failtest $"unexpected {v}"
 
               let m2 =
                   try
-                      run "File.read \"/tmp\" |> Seq.length" |> ignore
+                      run $"File.read \"{dd}\" |> Seq.length" |> ignore
                       ""
                   with e ->
                       e.Message
 
-              Expect.stringContains m2 "File.read: /tmp is a directory" "is-a-directory"
+              Expect.stringContains m2 "File.read:" "the member named"
+              Expect.stringContains m2 "is a directory" "is-a-directory"
           }
           test "File.write to a missing parent names the directory (the delete side's shape)" {
               let m =
@@ -9926,7 +9940,8 @@ let sizedFindingsTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m "File.write: no such directory: /nope/deep" ""
+              Expect.stringContains m "File.write: no such directory:" "the shape"
+              Expect.stringContains m "deep" "the directory named"
           }
           test "Dir.copy refuses per the family rule; recursive by nature" {
               let m1 =
@@ -9936,16 +9951,27 @@ let sizedFindingsTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m1 "Dir.copy: no such directory: /nope" ""
+              Expect.stringContains m1 "Dir.copy: no such directory:" "the shape"
+              Expect.stringContains m1 "nope" "the source named"
+
+              let src =
+                  match run "Path.newTempDir ()" with
+                  | VStr s -> weirPath s
+                  | v -> failtest $"unexpected {v}"
+
+              let dst =
+                  match run "Path.newTempDir ()" with
+                  | VStr s -> weirPath s
+                  | v -> failtest $"unexpected {v}"
 
               let m2 =
                   try
-                      run "Dir.copy \"/tmp\" \"/etc\"" |> ignore
+                      run $"Dir.copy \"{src}\" \"{dst}\"" |> ignore
                       ""
                   with e ->
                       e.Message
 
-              Expect.stringContains m2 "Dir.copy: destination exists: /etc" ""
+              Expect.stringContains m2 "Dir.copy: destination exists:" "the family overwrite rule"
           }
           test "Http.withQuery is data-last: the url pipes in" {
               Expect.equal
@@ -10063,7 +10089,7 @@ let sizeTests =
           test "File.size returns Size — the one intended break, and it compares" {
               let d =
                   match run "Path.newTempDir ()" with
-                  | VStr s -> s
+                  | VStr s -> weirPath s
                   | v -> failtest $"unexpected {v}"
 
               run $"[\"12345\"] |> File.write \"{d}/f.txt\"" |> ignore
@@ -10356,6 +10382,7 @@ let ifSucceedsTests =
     testList
         "if cmd | succeeds then [D:if-succeeds]"
         [ test "the inline form parses and evaluates, both branches" {
+              skipOnWindows ()
               Expect.equal (runReal "if test -f /etc/hostname | succeeds then \"yes\" else \"no\"") (VStr "yes") ""
 
               Expect.equal
@@ -10364,6 +10391,8 @@ let ifSucceedsTests =
                   ""
           }
           test "elif takes the inline form too (the asymmetry would be worse than neither)" {
+              skipOnWindows ()
+
               Expect.equal
                   (runReal
                       "if test -f /nonexistent-weir-xyz | succeeds then \"a\" elif test -f /etc/hostname | succeeds then \"b\" else \"c\"")
@@ -10377,6 +10406,9 @@ let ifSucceedsTests =
               Expect.equal (runReal "if true then \"t\" else \"f\"") (VStr "t") ""
           }
           test "a quoted \"then\" is ordinary argv inside a condition; the STOP is the bareword only" {
+              // POSIX tools drive the condition — the parse shims make
+              // these resolve on Windows but not run [D:windows-v1]
+              skipOnWindows ()
               // grep for the literal word then in a file that contains it
               Expect.equal
                   (runReal "if grep -q \"then\" /etc/hostname | succeeds then \"found\" else \"absent\"")
@@ -10591,7 +10623,12 @@ let tasksUnderneathTests =
                   | VStr s -> s
                   | v -> failtest $"unexpected {v}"
 
-              run "[1..100] |> Seq.piter (fun i -> within cd \"/tmp\" Log.debug (pwd |> Seq.head) ; ())"
+              let scope =
+                  match run "Path.newTempDir ()" with
+                  | VStr s -> weirPath s
+                  | v -> failtest $"unexpected {v}"
+
+              run $"[1..100] |> Seq.piter (fun i -> within cd \"{scope}\" Log.debug (pwd |> Seq.head) ; ())"
               |> ignore
 
               let after =
@@ -11146,7 +11183,7 @@ let gapATests =
 
               let d =
                   match run "Path.newTempDir ()" with
-                  | VStr s -> s
+                  | VStr s -> weirPath s
                   | v -> failtest $"unexpected: {v}"
 
               Expect.isTrue (System.IO.Directory.Exists d) "created"

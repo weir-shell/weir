@@ -26,6 +26,25 @@ maintenance surface without a reader. Its fold receipt outlives it
 as its own fixture, and the grammar-drift canary role passed to the
 showcase's verbatim and triple-quote lines.
 
+## the Windows column's first run (2026-08-10)
+
+Twelve reds and none of them the product: every failure was a
+fixture Linux-ism in pins written after the hand-run, and two of
+the twelve were features firing correctly — the backslash-escape
+teaching catching a raw C:\ interpolation, and the fs guards
+naming Windows paths in weir's own words. The stated skip list
+rendered exactly as designed at 43.
+
+The four classes and their lesson: temp paths spliced into weir
+source now route through weirPath (the rule stated at the helper,
+because five of the twelve were the same mistake written twice);
+expected messages pin the shape and the name, never the platform's
+path rendering — the same pin-the-class lesson the ls-truth wire
+pin taught, now applied across the fs family; existence-dependent
+fixtures stopped assuming /tmp and /etc; and the three if-succeeds
+pins that drive POSIX tools joined the stated skips visibly rather
+than failing mysteriously.
+
 ## builtin record keys: one source, checked (2026-08-10)
 
 The probe made the case better than the plan did: a missing key did
