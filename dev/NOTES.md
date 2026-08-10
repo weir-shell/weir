@@ -1,5 +1,38 @@
 # Spike Notes
 
+## the matrix's first-green triage (2026-08-10)
+
+Round one guessed and was wrong; round two instrumented, and round
+three read the instrument. The Linux failure's text — plain
+diagnostic in the stdout file, empty stderr, TERM unset — convicted
+the PIN, not the product: weir check has reported on stdout since
+birth, and the walk-findings-era pin asserting colored STDERR had
+passed locally by matching .NET's terminfo init noise on the pty.
+A pin that asserts an accident is the vacuous-control class with a
+green checkmark on it; the citation on the colored-diagnostics row
+is corrected, and instrument-before-guessing goes in the round's
+ledger as the transferable lesson.
+
+Windows was a class, and closing it as a class bit back once: the
+mkweirtmp sweep (Git Bash mktemp yields virtual /tmp paths no
+native exe can resolve; cygpath -m at one choke point, 84 sites)
+also rewrote the helper's own body into self-recursion — a fork
+bomb that left 1571 stray bashes in the container and, at
+exhaustion, the empty-variable /x.weir symptom that briefly looked
+like a filesystem problem. The sweep-hits-its-own-definition
+failure mode joins the batched-edit lessons.
+
+macOS remains the one lane without a named culprit: the hang is
+real, Expecto's silence hid it, and the detailed logger plus step
+timeout turn the next hang into a name. The /etc/hostname fixture
+was the cheap half — a Linux-ism, not the GNU-ism the sweep
+expected.
+
+And the warnings question closed as a posture: library-level trim
+warnings we cannot fix, mitigated by the battery-against-artifact
+discipline that already exists, with the one real find being
+FSharp.Core floating between CI and local — now pinned.
+
 ## example maintenance (2026-08-10)
 
 The sweep's one real finding: not every sigil was redundant. Bicep's
