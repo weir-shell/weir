@@ -336,7 +336,8 @@ proc.wait(timeout=5)
 # relative-path command head must resolve the SAME regardless of where
 # the editor launched the server (the Zed-vs-VSCode discrepancy).
 repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-p2 = subprocess.Popen([BIN, "lsp"], cwd="/tmp",  # deliberately the WRONG cwd
+import tempfile
+p2 = subprocess.Popen([BIN, "lsp"], cwd=tempfile.gettempdir(),  # deliberately the WRONG cwd
                       stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 def send2(obj):
     b = json.dumps(obj).encode()
