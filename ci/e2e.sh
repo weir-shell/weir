@@ -1441,7 +1441,7 @@ cat > "$folddir/receipt.weir" <<'WEOF'
 // encode-subdir's escape loop, as a fold over replacement pairs
 let escaped =
     [("~", "%7e"); ("^", "%5e"); (":", "%3a"); (" ", "%20")]
-    |> Seq.fold (fun s (from0, to0) -> Str.replace from0 to0 s) "a b~c:d"
+    |> Seq.fold (fun s (pat, repl) -> Str.replace pat repl s) "a b~c:d"
 
 print escaped
 

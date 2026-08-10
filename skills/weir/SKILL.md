@@ -481,8 +481,8 @@ print (if found then "?" else $"no match is false; code {detail.exitCode}")
 ```weir
 // copy-and-update: derive, don't re-literal
 type Cfg = { Host: string; Port: int }
-let base0 = { Host = "h"; Port = 80 }
-let tls = { base0 with Port = 443 }
+let defaults = { Host = "h"; Port = 80 }
+let tls = { defaults with Port = 443 }
 print $"{tls.Host}:{tls.Port}"
 ```
 

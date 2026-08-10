@@ -568,7 +568,7 @@ print $"{double 21} and {id "strings too"} and {quad 10}"
 
 Running totals fold: `xs |> Seq.fold (fun state x -> state + x) 0` —
 the folder takes the STATE first, and multi-accumulator loops carry a
-record (`Seq.fold (fun c x -> { c with Total = c.Total + x }) c0` —
+record (`Seq.fold (fun c x -> { c with Total = c.Total + x }) initial` —
 derive, don't mutate). Lambdas take several params (`fun acc x ->`),
 desugaring exactly like `let f a b =`.
 

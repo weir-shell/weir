@@ -24,13 +24,13 @@ type ProbeCli = {
 type ProbeEnv = { GREETING: Option<string> }
 
 let cli = Args.load ProbeCli
-let env0 = Env.load ProbeEnv
+let env = Env.load ProbeEnv
 
 cli.out |> Option.iter print
 cli.err |> Option.iter printerr
 
 if cli.greet then
-    print $"env says {env0.GREETING |> Option.defaultValue "unset"}"
+    print $"env says {env.GREETING |> Option.defaultValue "unset"}"
 
 if cli.upper then
     Self.stdin |> Seq.map Str.toUpper |> Seq.iter print
