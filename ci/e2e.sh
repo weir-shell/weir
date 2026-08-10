@@ -32,6 +32,11 @@ set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
+# POSIX-only harnesses (os.fork, pty, zombies) get STATED skips on
+# Windows — a skip echoes its reason, never silence
+IS_WINDOWS=0
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) IS_WINDOWS=1 ;; esac
+
 # a PATH ENTRY must be POSIX-form: mkweirtmp's mixed (C:/...) spelling
 # and a Windows-form dirname both carry a drive colon that reads as a
 # PATH separator — round 5's class, every prefix site (identity on POSIX)
@@ -908,8 +913,12 @@ echo "e2e ok: deep-run lock acquires, refuses double, clears when stale"
 # --- weir lsp v1 (2026-07-21, LSP chain 3/3) ---------------------------
 
 if command -v python3 >/dev/null 2>&1; then
-    python3 "$(dirname "$0")/../tests/lib/harness-selftest.py" || fail "harness selftest (zombie truth / stamp gate)"
-    echo "e2e ok: harness library selftest (waitpid-truth + stamp gate)"
+    if [ "$IS_WINDOWS" = "1" ]; then
+        echo "e2e SKIP: harness selftest — POSIX-only (os.fork zombie truth, sh-stub stamp gate)"
+    else
+        python3 "$(dirname "$0")/../tests/lib/harness-selftest.py" || fail "harness selftest (zombie truth / stamp gate)"
+        echo "e2e ok: harness library selftest (waitpid-truth + stamp gate)"
+    fi
 
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-e2e.py" || fail "lsp integration probes"
     echo "e2e ok: lsp diagnostics/hover/completion over stdio"
@@ -1030,6 +1039,9 @@ PYADP
     # repo or its own; deferred with the split's release-gate question.
 
     # --- REPL line editor under a pty (2026-07-21) ---------------------
+    if [ "$IS_WINDOWS" = "1" ]; then
+        echo "e2e SKIP: the six pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
+    else
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
     echo "e2e ok: repl Ctrl+Left/Right word navigation"
 
@@ -1049,6 +1061,7 @@ PYADP
     echo "e2e ok: repl directives (#help x3, #quit, :q teaches, comments no-op)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
+    fi
     echo "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
 else
     # no silent caps: name what was skipped
