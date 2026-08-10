@@ -25,20 +25,28 @@ let fileRow: RecordDef =
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
+/// values in DECLARATION ORDER; the keys come from the def, so a key
+/// mismatch cannot be written and an arity slip throws here at the
+/// construction site [D:record-keys]
+let recordOf (def: RecordDef) (values: Value list) : Value =
+    if List.length values <> List.length def.Fields then
+        unreachable
+            $"builtin record {def.Name}: {List.length values} values for {List.length def.Fields} declared fields"
+
+    VRecord(def.Name, Map(List.map2 (fun (name, _) v -> name, v) def.Fields values))
+
 let file (name: string) (bytes: int64) (readOnly: bool) : Value =
     // the fixture-friendly constructor: test rows are plain files at
     // the cwd with zero age — real rows come from lsRow below
-    VRecord(
-        fileRow.Name,
-        Map
-            [ "age", VDur 0L
-              "bytes", VSize bytes
-              "hidden", VBool(name.StartsWith ".")
-              "isDirectory", VBool false
-              "name", VStr name
-              "path", VStr name
-              "readOnly", VBool readOnly ]
-    )
+    recordOf
+        fileRow
+        [ VDur 0L
+          VSize bytes
+          VBool(name.StartsWith ".")
+          VBool false
+          VStr name
+          VStr name
+          VBool readOnly ]
 
 let private lsRow (now: System.DateTime) (info: FileSystemInfo) : Value =
     let isDir = info.Attributes.HasFlag FileAttributes.Directory
@@ -55,17 +63,15 @@ let private lsRow (now: System.DateTime) (info: FileSystemInfo) : Value =
         // convention) OR the attribute (Windows's real bit)
         info.Name.StartsWith "." || info.Attributes.HasFlag FileAttributes.Hidden
 
-    VRecord(
-        fileRow.Name,
-        Map
-            [ "age", VDur(int64 (now - info.LastWriteTimeUtc).TotalMilliseconds)
-              "bytes", VSize bytes
-              "hidden", VBool hidden
-              "isDirectory", VBool isDir
-              "name", VStr info.Name
-              "path", VStr info.FullName
-              "readOnly", VBool(info.Attributes.HasFlag FileAttributes.ReadOnly) ]
-    )
+    recordOf
+        fileRow
+        [ VDur(int64 (now - info.LastWriteTimeUtc).TotalMilliseconds)
+          VSize bytes
+          VBool hidden
+          VBool isDir
+          VStr info.Name
+          VStr info.FullName
+          VBool(info.Attributes.HasFlag FileAttributes.ReadOnly) ]
 
 let private realLs: Value =
     VSeq(
@@ -293,16 +299,9 @@ let private completedWith (overlay: (string * string) list) : Value =
                 let code, stdout, stderr =
                     Proc.completeWith overlay (Proc.resolveProg prog) argv None
 
-                VRecord(
-                    completedDef.Name,
-                    Map
-                        [ "exitCode", VInt(int64 code)
-                          // lazy views over the capture buffer
-                          // [D:capture-buffer] — decode per pull, stable
-                          // on re-enumeration (the buffer is fixed)
-                          "stdout", VSeq(stdout |> Seq.map VStr)
-                          "stderr", VSeq(stderr |> Seq.map VStr) ]
-                )
+                // lazy views over the capture buffer [D:capture-buffer]
+                // — decode per pull, stable on re-enumeration
+                recordOf completedDef [ VInt(int64 code); VSeq(stdout |> Seq.map VStr); VSeq(stderr |> Seq.map VStr) ]
             | _ -> unreachable "the checker rejects 'completed' on these arguments"))
 
 let private completedImpl: Value = completedWith []
@@ -386,13 +385,7 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                     let code, out, err =
                         Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
 
-                    VRecord(
-                        completedDef.Name,
-                        Map
-                            [ "exitCode", VInt(int64 code)
-                              "stdout", VSeq(out |> Seq.map VStr)
-                              "stderr", VSeq(err |> Seq.map VStr) ]
-                    )
+                    recordOf completedDef [ VInt(int64 code); VSeq(out |> Seq.map VStr); VSeq(err |> Seq.map VStr) ]
                 | _ -> unreachable "the checker rejects 'completedIn' on these arguments")))
 
 let private succeededWithIn (overlay: (string * string) list) : Value =
@@ -872,10 +865,7 @@ let private groupByImpl: Value =
                                 | :? bool as b -> VBool b
                                 | _ -> unreachable "groupBy key box"
 
-                            VRecord(
-                                groupDef.Name,
-                                Map [ "key", keyValue; "items", VSeq(List.ofSeq group :> seq<Value>) ]
-                            )))
+                            recordOf groupDef [ keyValue; VSeq(List.ofSeq group :> seq<Value>) ]))
                 )
             | v -> unreachable $"the checker rejects 'groupBy' on {formatValue v}"))
 
@@ -1490,8 +1480,7 @@ let private envFromFileImpl: Value =
                     File.ReadLines resolved
                     |> Seq.indexed
                     |> Seq.choose (fun (i, raw) -> parseDotenvLine path (i + 1) raw)
-                    |> Seq.map (fun (k, value) ->
-                        VRecord(envVarDef.Name, Map [ "name", VStr k; "value", VStr value ])))
+                    |> Seq.map (fun (k, value) -> recordOf envVarDef [ VStr k; VStr value ]))
             )
         | v -> unreachable $"the checker rejects 'Env.fromFile' on {formatValue v}")
 
@@ -1501,7 +1490,7 @@ let private envPairImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun v ->
             match n, v with
-            | VStr n, VStr v -> VRecord("EnvVar", Map [ "name", VStr n; "value", VStr v ])
+            | VStr n, VStr v -> recordOf envVarDef [ VStr n; VStr v ]
             | _ -> unreachable "the checker rejects 'Env.pair' on these arguments"))
 
 let private envOfPairsImpl: Value =
@@ -1512,7 +1501,7 @@ let private envOfPairsImpl: Value =
                 items
                 |> Seq.map (fun p ->
                     match p with
-                    | VTuple [ VStr n; VStr v ] -> VRecord("EnvVar", Map [ "name", VStr n; "value", VStr v ])
+                    | VTuple [ VStr n; VStr v ] -> recordOf envVarDef [ VStr n; VStr v ]
                     | v -> unreachable $"the checker rejects 'Env.ofPairs' elements: {formatValue v}")
             )
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
@@ -1536,8 +1525,7 @@ let private envMembers: (string * Ty * Value) list =
           Seq.delay (fun () ->
               System.Environment.GetEnvironmentVariables()
               |> Seq.cast<System.Collections.DictionaryEntry>
-              |> Seq.map (fun e ->
-                  VRecord(envVarDef.Name, Map [ "name", VStr(string e.Key); "value", VStr(string e.Value) ])))
+              |> Seq.map (fun e -> recordOf envVarDef [ VStr(string e.Key); VStr(string e.Value) ]))
       )
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 

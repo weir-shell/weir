@@ -9639,6 +9639,50 @@ let lsTruthTests =
                   System.IO.Directory.Delete(d, true)
           } ]
 
+let recordKeysTests =
+    // builtin record keys derive from the declaration [D:record-keys]:
+    // a mismatch is impossible to write and an arity slip is loud at
+    // the construction site
+    testList
+        "builtin record keys [D:record-keys]"
+        [ test "the deliberate wrong-arity attempt fails loud, naming the record" {
+              let ex =
+                  Expect.throwsC (fun () -> Weir.Builtins.recordOf Weir.Builtins.fileRow [ VInt 1L ] |> ignore) id
+
+              Expect.stringContains ex.Message "FileRow" "names the record"
+              Expect.stringContains ex.Message "1 values for 7 declared fields" "names the slip"
+          }
+          test "prelude-declared records: the hand-built defaults agree with the parsed defs" {
+              // HttpRequest/Retry/Poll declare in Prelude.fs as weir
+              // source — the helper cannot reach their defs, so the
+              // agreement is PINNED instead (HttpResponse is covered by
+              // the e2e pins that access every field on a live response)
+              let keysOf (v: Value) =
+                  match v with
+                  | VRecord(_, fs) -> fs |> Map.toList |> List.map fst
+                  | v -> failtest $"expected a record, got {v}"
+
+              let declared name =
+                  match Map.tryFind name env.Types with
+                  | Some(Record d) -> d.Fields |> List.map fst |> List.sort
+                  | _ -> failtest $"{name} must be declared"
+
+              for path, tyName in
+                  [ "Http.defaults", "HttpRequest"
+                    "Retry.defaults", "Retry"
+                    "Poll.defaults", "Poll" ] do
+                  Expect.equal (keysOf (run path) |> List.sort) (declared tyName) $"{path} vs the {tyName} declaration"
+          }
+          test "the FileRow doc names every declared field (the one accepted copy, drift-pinned)" {
+              let doc =
+                  match Map.tryFind "FileRow" Weir.Builtins.builtinDocs with
+                  | Some d -> string d
+                  | None -> failtest "FileRow must be documented"
+
+              for name, _ in Weir.Builtins.fileRow.Fields do
+                  Expect.stringContains doc name $"the doc must mention '{name}'"
+          } ]
+
 let pinsWalkTests =
     // the full DECISIONS-to-pins walk's cheap pins [D:pins-walk]: every
     // test here asserts a teaching message that existed ONLY in the
@@ -11323,6 +11367,7 @@ let allTests =
           fileRowSizeTests
           replTableTests
           lsTruthTests
+          recordKeysTests
           yamlSeqTests
           formatSurfaceTests
           secretTests

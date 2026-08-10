@@ -1,5 +1,35 @@
 # Spike Notes
 
+## builtin record keys: one source, checked (2026-08-10)
+
+The probe made the case better than the plan did: a missing key did
+not error at access, or silently nothing — it hit an unreachable
+that BLAMED THE CHECKER for a field the checker had approved. A
+lying diagnostic is the worst loudness class, so the guard moved to
+the construction site.
+
+recordOf takes values in declaration order and takes the keys from
+the declaration itself, which is stronger than sharing constants:
+omission is an arity error at the build site and a wrong key cannot
+be spelled at all. The census found nine hand-keyed sites across
+four locally-declared records — one EnvVar site even spelled the
+record name as a string literal rather than the def's — and all
+nine converted with the full suite green before any new pin landed,
+which is the zero-value-change bar demonstrated rather than
+claimed.
+
+The prelude-declared four (HttpRequest, HttpResponse, Retry, Poll)
+live as weir source, out of the helper's reach, so their hand-built
+defaults are agreement-pinned against the parsed defs — and
+HttpResponse is excused by the e2e battery that reads every field
+off a live response. The consumer sweep came back derive-everywhere
+except two stated items: the table's column order reads the value's
+sorted map (alphabetical — show's law) rather than declaration
+order, accepted because every renderer already agreed on
+alphabetical; and the FileRow doc string is the one copy that
+cannot derive without losing its teaching, so it carries a
+drift-pin instead: every declared field name must appear in it.
+
 ## the echo rule (2026-08-10)
 
 The audit found exactly the two defects the bless filed and one
