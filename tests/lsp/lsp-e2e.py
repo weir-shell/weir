@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LSP integration test: speaks the protocol over stdio against the AOT
 binary. Invoked by ci/e2e.sh; exits nonzero with a reason on failure."""
-import json, os, subprocess, sys
+import json, os, pathlib, subprocess, sys, threading
 
 BIN = os.environ.get("WEIR_BIN", os.path.expanduser("~/.local/bin/weir"))
 import sys as _sys
@@ -16,6 +16,33 @@ def send(obj):
     proc.stdin.flush()
 
 RAW_FRAMES = []
+PROCS = [proc]
+
+# a REAL file's URI, portably: "file://" + path is fine on POSIX and
+# garbage on Windows (backslashes, bare drive colon) — as_uri() yields
+# the well-formed spelling on both
+def furi(p):
+    return pathlib.Path(p).as_uri()
+
+# compare against a SERVER-derived URI: the wire form lowercases the
+# drive (the VS Code convention) where as_uri uppercases it
+def nuri(u):
+    return u.lower() if os.name == "nt" else u
+
+# a response that never arrives must FAIL loudly, not sit until the job
+# timeout — every read loop here blocks on readline with no deadline
+def _deadline():
+    sys.stderr.write("LSP FAIL: harness deadline (180s) — a response never arrived\n")
+    for p in PROCS:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    os._exit(1)
+
+_wd = threading.Timer(180, _deadline)
+_wd.daemon = True
+_wd.start()
 
 def read_msg():
     length = None
@@ -339,6 +366,7 @@ repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 import tempfile
 p2 = subprocess.Popen([BIN, "lsp"], cwd=tempfile.gettempdir(),  # deliberately the WRONG cwd
                       stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+PROCS.append(p2)
 def send2(obj):
     b = json.dumps(obj).encode()
     p2.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p2.stdin.flush()
@@ -350,12 +378,12 @@ def read2():
         elif line == b"": break
     return json.loads(p2.stdout.read(length))
 send2({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-       "params": {"rootUri": "file://" + repo}})
+       "params": {"rootUri": furi(repo)}})
 read2()
 send2({"jsonrpc": "2.0", "method": "initialized", "params": {}})
 # a script referencing a repo-relative command that EXISTS at the root
 send2({"jsonrpc": "2.0", "method": "textDocument/didOpen",
-       "params": {"textDocument": {"uri": "file://" + repo + "/tools/fuzz.weir",
+       "params": {"textDocument": {"uri": furi(repo) + "/tools/fuzz.weir",
                                     "text": open(os.path.join(repo, "tools/fuzz.weir")).read()}}})
 for _ in range(5):
     m = read2()
@@ -375,6 +403,7 @@ modp = os.path.join(td, "mod.weir"); entryp = os.path.join(td, "main.weir")
 open(modp, "w").write("module Mod\nlet base = 10\n")               # clean on disk
 open(entryp, "w").write('import "./mod.weir"\nprint (show Mod.base)\n')
 p3 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+PROCS.append(p3)
 def send3(o):
     b = json.dumps(o).encode()
     p3.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p3.stdin.flush()
@@ -386,7 +415,7 @@ def read3():
         elif line == b"": break
     return json.loads(p3.stdout.read(length))
 send3({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}); read3()
-entry_uri = "file://" + entryp; mod_uri = "file://" + modp
+entry_uri = furi(entryp); mod_uri = furi(modp)
 send3({"jsonrpc": "2.0", "method": "textDocument/didOpen",
        "params": {"textDocument": {"uri": entry_uri, "text": open(entryp).read()}}})
 got = {}
@@ -423,6 +452,7 @@ entp = os.path.join(td2, "main.weir")
 ENTRY = '#sig mytool\nimport "./lib.weir" as Lib\n\nlet x = Lib.double 21\nlet st = mytool --dry-run\nprint (show x)\n'
 open(entp, "w").write(ENTRY)
 p4 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+PROCS.append(p4)
 def send4(o):
     b = json.dumps(o).encode()
     p4.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p4.stdin.flush()
@@ -441,7 +471,7 @@ def req4(i, method, uri, line, char):
         m = read4()
     return m
 send4({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}); read4()
-ent_uri = "file://" + entp
+ent_uri = furi(entp)
 send4({"jsonrpc": "2.0", "method": "textDocument/didOpen",
        "params": {"textDocument": {"uri": ent_uri, "text": ENTRY}}})
 
@@ -453,13 +483,13 @@ expect(v == "Lib.double (n: int) : int\n\ndoubles a number",
 
 # definition crosses to the UNOPENED module file — pathToUri spelling
 d = req4(3, "textDocument/definition", ent_uri, 3, 13)["result"]
-expect(d and d["uri"] == "file://" + libp
+expect(d and nuri(d["uri"]) == nuri(furi(libp))
        and d["range"]["start"] == {"line": 3, "character": 4},
        f"cross-file definition to the unopened module: {d}")
 
 # definition on the import path opens the module file at 0:0
 d = req4(4, "textDocument/definition", ent_uri, 1, 12)["result"]
-expect(d and d["uri"] == "file://" + libp and d["range"]["start"]["line"] == 0,
+expect(d and nuri(d["uri"]) == nuri(furi(libp)) and d["range"]["start"]["line"] == 0,
        f"import-path definition: {d}")
 
 # a signed head hovers identity + the RECORDED version (mytool is NOT on
@@ -480,7 +510,7 @@ expect(d and d["uri"].endswith("/mytool.weir") and d["range"]["start"] == {"line
 
 # once the target is OPEN under the client's own spelling, Locations ride
 # THAT string [D:lsp-uri-spelling] — never a re-derived one
-lib_spelled = "file://" + os.path.dirname(libp) + "/%6Cib.weir"
+lib_spelled = furi(os.path.dirname(libp)) + "/%6Cib.weir"
 send4({"jsonrpc": "2.0", "method": "textDocument/didOpen",
        "params": {"textDocument": {"uri": lib_spelled, "text": open(libp).read()}}})
 d = req4(9, "textDocument/definition", ent_uri, 3, 13)["result"]
@@ -523,6 +553,7 @@ expect((int(mr.group(1)), int(mr.group(2))) == cj_rows[0][1:],
        f"runner and check --json must agree on the first error: {rout!r} vs {cj_rows}")
 
 p5 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+PROCS.append(p5)
 
 def send5(obj):
     body = json.dumps(obj).encode()
@@ -544,7 +575,7 @@ def read5():
 
 send5({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
 read5()
-p5uri = "file://" + _pf
+p5uri = furi(_pf)
 send5({"jsonrpc": "2.0", "method": "textDocument/didOpen",
        "params": {"textDocument": {"uri": p5uri, "text": _ptext}}})
 m = read5()
