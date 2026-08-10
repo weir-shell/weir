@@ -36,6 +36,13 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 # Windows — a skip echoes its reason, never silence
 IS_WINDOWS=0
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) IS_WINDOWS=1 ;; esac
+# python subprocess must NOT resolve `bash` itself on Windows — the
+# native PATH finds System32's WSL stub first (the sh-never-bash class,
+# python axis): hand the harnesses THIS bash, native-form
+if [ "$IS_WINDOWS" = "1" ]; then
+    WEIR_BASH=$(cygpath -m "$(command -v bash)")
+    export WEIR_BASH
+fi
 
 # a PATH ENTRY must be POSIX-form: mkweirtmp's mixed (C:/...) spelling
 # and a Windows-form dirname both carry a drive colon that reads as a
