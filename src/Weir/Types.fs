@@ -257,6 +257,64 @@ module Color =
     let yellow on s = wrap on "33" s
     let bold on s = wrap on "1" s
 
+// the waiting indicator [D:waiting-indicator]: whoever owns the terminal
+// and is working draws the progress — so it wraps ONLY weir's own
+// blocking operations (Http.send, Duration.sleep, retry/poll waits) and
+// NEVER a spawned child (the child owns the terminal; drawing over its
+// output is the corruption shells avoid). Stderr, tty-only, a 500ms
+// grace so fast calls stay silent, erased before anything else prints —
+// stdout is never touched, so the piped byte surface cannot move.
+module Waiting =
+    open System
+
+    let mutable private depth = 0
+
+    let private active () =
+        not Console.IsErrorRedirected
+        && Environment.GetEnvironmentVariable "TERM" <> "dumb"
+
+    let private frames = [| "⠋"; "⠙"; "⠹"; "⠸"; "⠼"; "⠴"; "⠦"; "⠧"; "⠇"; "⠏" |]
+
+    let during (label: string) (f: unit -> 'a) : 'a =
+        if not (active ()) then
+            f ()
+        elif Threading.Interlocked.Increment(&depth) > 1 then
+            // an indicator is already up — never stack a second line
+            try
+                f ()
+            finally
+                Threading.Interlocked.Decrement(&depth) |> ignore
+        else
+            use gone = new Threading.ManualResetEventSlim(false)
+            let drew = ref false
+
+            let spinner =
+                Threading.Thread(
+                    (fun () ->
+                        let mutable i = 0
+                        let mutable go = not (gone.Wait 500)
+
+                        while go do
+                            drew.Value <- true
+                            Console.Error.Write $"\r{frames[i % frames.Length]} {label}"
+                            i <- i + 1
+                            go <- not (gone.Wait 80)),
+                    IsBackground = true
+                )
+
+            spinner.Start()
+
+            try
+                f ()
+            finally
+                gone.Set()
+                spinner.Join()
+
+                if drew.Value then
+                    Console.Error.Write "\r\u001b[2K"
+
+                Threading.Interlocked.Decrement(&depth) |> ignore
+
 // ---- Duration text [D:duration] — the boundary where decimals live.
 // Storage is integer ms; these two are the ONLY places decimal text
 // exists, and no float appears in either direction.

@@ -3761,6 +3761,29 @@ let replEchoTests =
               Expect.stringContains rendered "; …]" "truncation spelled"
               Expect.equal hint (Some Weir.Eval.unforcedHint) "the honest lever, not a rendering-changing pipe"
           }
+          test "the WHOLE echo enumerates its source once [D:echo-once]" {
+              // echoTable's probe + echoValue's rendering used to pull the
+              // lazy source twice — a bare command's child ran TWICE per
+              // echo (and its second cooked-tty window ate the next Enter)
+              let pulls = ref 0
+
+              let counted =
+                  Seq.init 3 (fun i ->
+                      System.Threading.Interlocked.Increment pulls |> ignore
+                      VInt(int64 i))
+
+              let prepped = Weir.Eval.echoPrep (VSeq counted)
+              // the tty echo path: table probe first, line rendering second
+              Weir.Eval.echoTable prepped |> ignore
+              Weir.Eval.echoValue prepped |> ignore
+              Expect.equal pulls.Value 3 "one enumeration of the source across probe + render"
+
+              // and the hint contract survives the cache (still unforced)
+              let many = Weir.Eval.echoPrep (VSeq(Seq.init 12 (fun i -> VInt(int64 i))))
+              Weir.Eval.echoTable many |> ignore
+              let _, hint = Weir.Eval.echoValue many
+              Expect.equal hint (Some Weir.Eval.unforcedHint) "a cached seq is still an unforced seq to the echo"
+          }
           test "a FORCED seq echoes in full, no hint [D:echo-rule]" {
               let v = VSeq([ for i in 1..12 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
               let rendered, hint = Weir.Eval.echoValue v

@@ -2017,7 +2017,10 @@ let private durationMembers: (string * Ty * Value) list =
                   failwith $"Duration.sleep: negative duration ({formatDuration n})"
               elif n > 0L then
                   // integer ticks — no float anywhere [D:duration]
-                  System.Threading.Thread.Sleep(System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond))
+                  Waiting.during $"sleeping {formatDuration n}" (fun () ->
+                      System.Threading.Thread.Sleep(
+                          System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond)
+                      ))
 
               VUnit
           | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
@@ -2130,7 +2133,13 @@ let private runRequest (reqV: Value) : Http.Resp =
                  | VBool b -> b
                  | v -> unreachable $"insecure {formatValue v}") }
 
-        match Http.send req with
+        let host =
+            try
+                System.Uri(req.Url).Host
+            with _ ->
+                req.Url
+
+        match Waiting.during $"{req.Method} {host}" (fun () -> Http.send req) with
         | Ok resp -> resp
         // the TLS case names its per-request repair [D:http-s2]
         | Error(msg, Http.TlsUntrusted) -> failwith $"{msg} (a self-signed endpoint can opt out: insecure = true)"

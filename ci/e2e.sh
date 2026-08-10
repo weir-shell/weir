@@ -998,6 +998,12 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/repl-quality.py" "$BIN" || fail "repl quality (history/Ctrl+R)"
     echo "e2e ok: repl history (XDG/dedup/0600), Ctrl+R fzf-stub + fallback"
 
+    python3 "$(dirname "$0")/../tests/repl/waiting-indicator.py" "$BIN" || fail "waiting indicator"
+    echo "e2e ok: repl waiting indicator (grace, erase, fast/piped/child-owned silent)"
+
+    python3 "$(dirname "$0")/../tests/repl/cooked-trap.py" "$BIN" || fail "cooked trap / echo-once"
+    echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
+
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     echo "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
 else

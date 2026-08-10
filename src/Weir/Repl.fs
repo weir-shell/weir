@@ -7,6 +7,76 @@ open Weir.Types
 
 let private prompt = "weir> "
 
+// the cooked-terminal trap [D:repl-cooked-trap]: when a child that shares
+// the terminal runs long enough, .NET restores cooked mode for it and can
+// fail to re-apply its raw config afterwards (the managed surface offers
+// no way to force it — ReadKey latches whatever mode it entered with).
+// So weir snapshots the raw termios .NET itself established and
+// re-asserts it at each editor entry. POSIX-only; Windows has no termios
+// and no such restore path.
+module private Term =
+    open System.Runtime.InteropServices
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private tcgetattr(int fd, byte[] termios)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private tcsetattr(int fd, int optionalActions, byte[] termios)
+
+    // 128 bytes covers struct termios on linux (~60) and macOS (~72)
+    let mutable private raw: byte[] option = None
+
+    /// capture once, right after a ReadKey — the one moment raw mode is
+    /// known to be .NET's own configuration
+    let snapshot () =
+        if not (System.OperatingSystem.IsWindows()) && raw.IsNone then
+            let buf = Array.zeroCreate<byte> 128
+
+            if tcgetattr (0, buf) = 0 then
+                raw <- Some buf
+
+    /// re-apply the captured raw mode (TCSANOW = 0); a no-op before the
+    /// first snapshot and on Windows
+    let reassert () =
+        if not (System.OperatingSystem.IsWindows()) then
+            match raw with
+            | Some buf -> tcsetattr (0, 0, buf) |> ignore
+            | None -> ()
+
+    /// the editor-active gate for the watchdog below — children run
+    /// during EVAL, when this is false, so the watchdog never fights an
+    /// interactive child (fzf, an editor) for the terminal
+    let editorActive = ref false
+
+    let mutable private watchdogStarted = false
+
+    /// .NET's restore lands ASYNC after the child's reap — later than any
+    /// single re-assert at editor entry can outwait. A watchdog re-applies
+    /// the raw config whenever the live termios drifts while the editor
+    /// owns the prompt.
+    let startWatchdog () =
+        if not (System.OperatingSystem.IsWindows()) && not watchdogStarted then
+            watchdogStarted <- true
+
+            let t =
+                System.Threading.Thread(
+                    (fun () ->
+                        while true do
+                            System.Threading.Thread.Sleep 50
+
+                            if editorActive.Value then
+                                match raw with
+                                | Some good ->
+                                    let cur = Array.zeroCreate<byte> 128
+
+                                    if tcgetattr (0, cur) = 0 && cur <> good then
+                                        tcsetattr (0, 0, good) |> ignore
+                                | None -> ()),
+                    IsBackground = true
+                )
+
+            t.Start()
+
 type private State = { TypeEnv: TypeEnv; Values: Eval.Env }
 
 let private initial =
@@ -520,8 +590,17 @@ let private readLineTty () : string option =
 
     let mutable result: string option option = None
 
+    // a slow child's exit can leave the terminal COOKED (ICRNL on) behind
+    // .NET's cached config — every later Enter then arrives as '\n', the
+    // force-newline key, and the buffer can never submit again. Re-assert
+    // the known-good raw mode at editor entry; the caller flags the
+    // editor active so the watchdog holds it [D:repl-cooked-trap].
+    Term.reassert ()
+    Term.startWatchdog ()
+
     while result.IsNone do
         let k = Console.ReadKey(intercept = true)
+        Term.snapshot ()
         let ctrl = k.Modifiers.HasFlag ConsoleModifiers.Control
         let alt = k.Modifiers.HasFlag ConsoleModifiers.Alt
 
@@ -772,7 +851,15 @@ let private readInput () =
         Console.Write prompt
         Console.ReadLine()
     else
-        match readLineTty () with
+        Term.editorActive.Value <- true
+
+        let entry =
+            try
+                readLineTty ()
+            finally
+                Term.editorActive.Value <- false
+
+        match entry with
         | None -> null // EOF: the loop's exit condition
         | Some line ->
             if line.Trim() <> "" then
@@ -849,20 +936,26 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
             let v = Eval.eval state.Values te
 
             if v <> Eval.VUnit then
+                // ONE enumeration for the whole echo [D:echo-once] — the
+                // table probe and the line rendering share a cached
+                // prefix; the STORED value keeps the original seq (the
+                // lazy re-run law is the binding's, not the echo's)
+                let ev = Eval.echoPrep v
+
                 // the table echo [D:repl-table]: tty-only (piped REPL
                 // output is pinned surface and keeps the line rendering)
                 match
                     (if Console.IsOutputRedirected then
                          None
                      else
-                         Eval.echoTable v)
+                         Eval.echoTable ev)
                 with
                 | Some(lines, hint) ->
                     let tail = Eval.echoTail hint
                     Console.WriteLine $"{name} : {formatTy te.Ty} ={tail}"
                     lines |> List.iter Console.WriteLine
                 | None ->
-                    let rendered, hint = Eval.echoValue v
+                    let rendered, hint = Eval.echoValue ev
                     let tail = Eval.echoTail hint
                     Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
 
@@ -881,6 +974,9 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
             let v = Eval.eval state.Values te
 
             if v <> Eval.VUnit then
+                // ONE enumeration for the whole echo [D:echo-once]
+                let v = Eval.echoPrep v
+
                 match
                     (if Console.IsOutputRedirected then
                          None
