@@ -111,6 +111,65 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
 
     let before = text.Substring(0, min wordStart text.Length).TrimEnd()
 
+    // the record-update WITH slot [D:with-slot]: after `{ source with `,
+    // the closed candidate set is the SOURCE's record fields — never the
+    // general pool (typing `h` there completed to `within`, a keyword
+    // that cannot appear in an expression fragment). The source is found
+    // by slicing back to each `{` and letting the PARSER validate the
+    // slice (no second quote machine [D:one-scanner]); `match x with`
+    // has no parsing brace-slice, so it falls through untouched.
+    let withSlotFields: string list option =
+        let endsWithWord (kw: string) (b: string) =
+            b.EndsWith kw
+            && (b.Length = kw.Length
+                || not (
+                    System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
+                    || b[b.Length - kw.Length - 1] = '_'
+                ))
+
+        if not (endsWithWord "with" before) then
+            None
+        else
+            let uptoWith = before.Substring(0, before.Length - 4)
+
+            [ for i in 0 .. uptoWith.Length - 1 do
+                  if uptoWith[i] = '{' then
+                      yield i ]
+            |> List.rev
+            |> List.tryPick (fun bi ->
+                let slice = uptoWith.Substring(bi + 1).Trim()
+
+                if slice = "" then
+                    None
+                else
+                    match Weir.Parser.parseExpr slice with
+                    | Error _ -> None
+                    | Ok e ->
+                        match Weir.Check.typecheck (withHoles env e) e with
+                        | Error _ -> None
+                        | Ok te ->
+                            match te.Ty with
+                            | TVar _ ->
+                                // unresolved source — the declared-fields
+                                // fallback, the dotted arm's precedent
+                                // [D:declared-fields-fallback]
+                                env.Types
+                                |> Map.toList
+                                |> List.collect (fun (_, def) ->
+                                    match def with
+                                    | Record d -> d.Fields |> List.map fst
+                                    | Union _ -> [])
+                                |> List.distinct
+                                |> Some
+                            | ty ->
+                                match recordFields env ty with
+                                | Some fields -> Some(fields |> List.map fst)
+                                // a known NON-record has no updatable
+                                // fields — a closed set with no members
+                                // beats the general pool (the nats pin's
+                                // reasoning)
+                                | None -> Some [])
+
     if word.StartsWith "~" || word.Contains '/' then
         // an explicit path word — filesystem entries [D:repl-quality]
         filesystemComplete word
@@ -187,6 +246,10 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                     | Union _ -> [])
                 |> List.distinct
                 |> render
+    elif withSlotFields.IsSome then
+        withSlotFields.Value
+        |> List.filter (fun f -> f.StartsWith word && f <> word)
+        |> List.sort
     elif
         (let b = before.TrimEnd() in
 

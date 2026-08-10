@@ -222,6 +222,14 @@ let private attrsRejectHere: Parser<unit, unit> =
 let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
 
+// internal backtrack labels [D:label-leaks]: bookkeeping for the
+// combinators, NEVER a user-facing repair — the marker lets the dump
+// cleaner drop them from FParsec's 'Other error messages' pile, closing
+// the leak as a class (deliberate teaching stays on failFatally)
+let internalLabelMarker = "\u0006"
+
+let private ifail (label: string) : Parser<'a, unit> = fail (internalLabelMarker + label)
+
 let private notKeyword (w: string) =
     if keywords.Contains w then
         fail $"'{w}' is a keyword"
@@ -500,7 +508,7 @@ let private keywordFieldGuard: Parser<ExprKind, unit> =
             if keywords.Contains w then
                 preturn (at, w)
             else
-                fail "real field"
+                ifail "real field"
     )
     >>= fun (at, w) -> failFatallyAt at $"'{w}' is a keyword"
 
@@ -518,7 +526,17 @@ let private recordLit =
                        attempt (lookAhead (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=')))
                        >>. (sepBy1 fieldAssign (str_ws ";") .>> pchar '}')
                        |>> ERecord
-                       (updateSource .>> keyword "with") .>>. sepBy1 updateAssign (str_ws ";")
+                       // `{ expr }` with no `with` is an unambiguous shape
+                       // with a nameable repair — first-reached teaching
+                       // beats the expecting-list [D:label-leaks]
+                       (updateSource
+                        .>> (keyword "with"
+                             <|> (getPosition .>> followedBy (pchar '}')
+                                  >>= fun p ->
+                                      failFatallyAt
+                                          p
+                                          "a record update needs 'with' — { r with field = v }; to group an expression, use parentheses")))
+                       .>>. sepBy1 updateAssign (str_ws ";")
                        .>> pchar '}'
                        |>> EUpdate ])
     )
@@ -622,7 +640,7 @@ let private interpLit =
 // at construction). The ident must be GLUED to both glyph and paren;
 // with a space the parse falls back ($name splice, plain paren).
 let mutable private sigilChainImpl: Expr option -> Parser<Expr, unit> =
-    fun _ -> fail "sigilChain not initialized"
+    fun _ -> ifail "sigilChain not initialized"
 
 let private sigilChain (envO: Expr option) : Parser<Expr, unit> =
     fun stream -> (sigilChainImpl envO) stream
@@ -633,7 +651,7 @@ let private sigilChain (envO: Expr option) : Parser<Expr, unit> =
 // head keeps the barePipeHint teaching. Forward-declared (needs the
 // command grammar below); set after cmdLineWith.
 let mutable private valueHeadedTailImpl: Expr -> Parser<Expr, unit> =
-    fun _ -> fail "valueHeadedTail not initialized"
+    fun _ -> ifail "valueHeadedTail not initialized"
 
 let private valueHeadedTail (lhs: Expr) : Parser<Expr, unit> =
     fun stream -> (valueHeadedTailImpl lhs) stream
@@ -855,7 +873,7 @@ let private postfixAtom =
                         pchar '[' >>. ws >>. expr .>> pchar ']' .>>. getPosition .>> ws
                         |>> fun (idx, endP) -> indexDesugar target idx (pos endP)
                     else
-                        fail "whitespace before [ means application"
+                        ifail "whitespace before [ means application"
             )
             >>= suffixes
 
@@ -996,7 +1014,7 @@ let private letIn =
             >>= fun b ->
                 match b.PKind with
                 | PVar _
-                | PCase(_, None) -> fail "plain binder takes the ident path"
+                | PCase(_, None) -> ifail "plain binder takes the ident path"
                 | _ -> preturn b
         )
 
@@ -1022,7 +1040,7 @@ let private letIn =
                           if letCmdOk.Value then
                               letRhsCmd stream
                           else
-                              fail "block-let command RHS is spine-only" stream
+                              ifail "block-let command RHS is spine-only" stream
 
                   // a bare `let name =` with NOTHING after it gets its own
                   // first-reached diagnosis [D:windows-findings] — without
@@ -2097,7 +2115,7 @@ let private stmtElem: Parser<Choice<Expr, Expr>, unit> =
     let cmdTry: Parser<Expr, unit> =
         fun stream ->
             if exprParen.Value then
-                fail "plain parens are expression territory" stream
+                ifail "plain parens are expression territory" stream
             else
                 letRhsCmd stream
 
@@ -2314,11 +2332,11 @@ let private commandSegment
             elif builtinHeads && isIdentLike w && r.IsCommandCallable w then
                 preturn (BuiltinHead, w, span)
             elif isIdentLike w && (keywords.Contains w || r.IsKnown w) then
-                fail "known name; expression mode"
+                ifail "known name; expression mode"
             elif r.IsExternal w then
                 preturn (ExternalHead, w, span)
             else
-                fail "not an external command"
+                ifail "not an external command"
 
     // consume the trigger, then anchor back [D:anchor-before-read]: a
     // non-consuming fatal here merges the head alternative's expected-set
@@ -2384,7 +2402,7 @@ let private reifierEnd =
             if letCmdOk.Value then
                 (attempt (pstring "in" .>> notFollowedBy (satisfy cmdWordChar)) |>> ignore) stream
             else
-                fail "no in-stop here" stream
+                ifail "no in-stop here" stream
 
     // an if/elif condition's chain ends at `then` [D:if-succeeds] — the
     // in-stop shape one keyword over, gated so `then` is ordinary argv
@@ -2394,7 +2412,7 @@ let private reifierEnd =
             if ifCondOk.Value then
                 (attempt (pstring "then" .>> notFollowedBy (satisfy cmdWordChar)) |>> ignore) stream
             else
-                fail "no then-stop here" stream
+                ifail "no then-stop here" stream
 
     // a reifier also ends at a STATEMENT boundary [D:interior-arming] —
     // without this, `| orFail "m"` as an interior statement demoted the
@@ -2642,7 +2660,7 @@ valueHeadedTailImpl <-
                 >>= fun seg ->
                     match seg.Kind with
                     | ECmd _ -> preturn ()
-                    | _ -> fail "value-headed pipe needs an external command head"
+                    | _ -> ifail "value-headed pipe needs an external command head"
 
             let p =
                 lookAhead (singlePipe >>. externalHeaded) >>. pipedStages true cmdArg None r
@@ -2890,7 +2908,7 @@ let private letKeywordGuard: Parser<Stmt, unit> =
                         None)
             with
             | Some hit -> preturn hit
-            | None -> fail "real binder(s)"
+            | None -> ifail "real binder(s)"
     )
     >>= fun (at, w) -> failFatallyAt at $"'{w}' is a keyword"
 
@@ -2934,7 +2952,7 @@ let private stmtWith (r: Resolver) =
                    >>= fun b ->
                        match b.PKind with
                        | PVar _
-                       | PCase(_, None) -> fail "plain binder takes the ident path"
+                       | PCase(_, None) -> ifail "plain binder takes the ident path"
                        | _ -> preturn b)
                   .>>. ((seqExpr >>= pipeOrHint))
                   .>> eof

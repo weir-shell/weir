@@ -262,6 +262,31 @@ let checkerTests =
         [ test "acceptance pipeline type-checks to seq<FileRow>" {
               Expect.equal (checkOk acceptance).Ty Weir.Builtins.seqFileRow ""
           }
+          test "update of a non-record blames the SOURCE, not the field [D:update-span]" {
+              let input = "{ Http.get with url = \"y\" }"
+              let terr = checkErr input
+              Expect.equal terr.Span.Start.Col 3 "the caret sits on Http.get"
+              Expect.equal terr.Span.End.Col 11 "…and covers it"
+              Expect.stringContains terr.Message "only records have updatable fields" "the diagnosis"
+              Expect.stringContains terr.Message "apply it first" "a function in update position names the repair"
+
+              let terr2 = checkErr "{ 5 with url = \"y\" }"
+              Expect.equal terr2.Span.Start.Col 3 "the non-record literal is blamed"
+              Expect.isFalse (terr2.Message.Contains "apply it first") "the repair hint is the function case's own"
+          }
+          test "a DEEP non-record hop blames the previous field, not the assignment [D:update-span]" {
+              // r.answered is int — updating r.answered.x must blame
+              // 'answered' (the thing that is not a record)
+              let te = env |> declare "type R = { answered: int }"
+              let input = "let r = R { answered = 1 } in { r with answered.x = 2 }"
+
+              match Weir.Check.typecheck te (parse input) with
+              | Error terr ->
+                  let expectedStart = input.IndexOf "answered.x" + 1
+                  Expect.equal terr.Span.Start.Col expectedStart "the caret sits on the non-record hop"
+                  Expect.stringContains terr.Message "only records have updatable fields" ""
+              | Ok _ -> failtest "expected a type error"
+          }
           test "typo in field is rejected with exact span and a hint" {
               let input = "ls |> where (fun f -> f.bytse > 1048576) |> first 5"
               let terr = checkErr input
@@ -1628,6 +1653,31 @@ let completionTests =
               // gained "when" when keyword suggestions began deriving
               // from the full parser set [D:keyword-completion]
               Expect.equal (suggest "ls |> whe" 6) [ "when"; "where" ] ""
+          }
+          test "the `with ` slot offers the source record's fields [D:with-slot]" {
+              let text = "{ Http.defaults with "
+              let got = suggest text text.Length
+              Expect.contains got "url" "a field of the source's record"
+              Expect.contains got "timeout" "…and another"
+              Expect.isFalse (List.contains "within" got) "never a keyword in the slot"
+
+              // a typed prefix narrows to fields — the keyword-in-fragment
+              // fix: `h` used to complete to `within`
+              let text2 = "{ Http.get \"u\" with h"
+              let got2 = suggest text2 (text2.Length - 1)
+              Expect.contains got2 "headers" "the h-field"
+              Expect.isFalse (List.contains "within" got2) "no keyword can enter an expression fragment"
+          }
+          test "the `with ` slot on a NON-record source is a closed EMPTY set [D:with-slot]" {
+              // Http.get unapplied is a function — no updatable fields, so
+              // nothing completes (the nats pin's reasoning; the general
+              // pool would offer keywords that cannot appear there)
+              let text = "{ Http.get with "
+              Expect.equal (suggest text text.Length) [] "no members, no pool"
+          }
+          test "`match x with ` is untouched by the with-slot (no brace-slice parses)" {
+              let text = "match x with "
+              Expect.isNonEmpty (suggest text text.Length) "the general pool still serves match"
           }
           test "keyword completion" { Expect.contains (suggest "ma" 0) "match" "" }
           test "command heads: a command-callable builtin completes at a statement head [D:repl-quality]" {
@@ -3760,6 +3810,29 @@ let replEchoTests =
               Expect.isTrue (pulls.Value <= 11) $"forced {pulls.Value} pulls (bound is 11)"
               Expect.stringContains rendered "; …]" "truncation spelled"
               Expect.equal hint (Some Weir.Eval.unforcedHint) "the honest lever, not a rendering-changing pipe"
+          }
+          test "the WHOLE echo enumerates its source once [D:echo-once]" {
+              // echoTable's probe + echoValue's rendering used to pull the
+              // lazy source twice — a bare command's child ran TWICE per
+              // echo (and its second cooked-tty window ate the next Enter)
+              let pulls = ref 0
+
+              let counted =
+                  Seq.init 3 (fun i ->
+                      System.Threading.Interlocked.Increment pulls |> ignore
+                      VInt(int64 i))
+
+              let prepped = Weir.Eval.echoPrep (VSeq counted)
+              // the tty echo path: table probe first, line rendering second
+              Weir.Eval.echoTable prepped |> ignore
+              Weir.Eval.echoValue prepped |> ignore
+              Expect.equal pulls.Value 3 "one enumeration of the source across probe + render"
+
+              // and the hint contract survives the cache (still unforced)
+              let many = Weir.Eval.echoPrep (VSeq(Seq.init 12 (fun i -> VInt(int64 i))))
+              Weir.Eval.echoTable many |> ignore
+              let _, hint = Weir.Eval.echoValue many
+              Expect.equal hint (Some Weir.Eval.unforcedHint) "a cached seq is still an unforced seq to the echo"
           }
           test "a FORCED seq echoes in full, no hint [D:echo-rule]" {
               let v = VSeq([ for i in 1..12 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
@@ -8368,6 +8441,47 @@ let siblingSentinelTests =
               noLeak [ "let f t ="; "    git status"; "    print a b )" ] // lists ';' in expected-set
               noLeak [ "let f t ="; "    git status"; "    let e = ("; "    print e" ]
           }
+          test "no-leak: internal backtrack labels never surface [D:label-leaks]" {
+              // the record-brace sitting carried 'whitespace before [
+              // means application' in its Other-error-messages tail with
+              // no '[' in the input — 3rd instance of the class; every
+              // ifail label is marker-filtered from the cleaned dump
+              let noLabelLeak (lines: string list) =
+                  for d in diags lines do
+                      Expect.isFalse (d.Message.Contains Weir.Parser.internalLabelMarker) $"marker leaked: {d.Message}"
+                      Expect.isFalse (d.Message.Contains "\\u0006") $"escaped marker leaked: {d.Message}"
+                      Expect.isFalse (d.Message.Contains "whitespace before [") $"internal label leaked: {d.Message}"
+                      Expect.isFalse (d.Message.Contains "spine-only") $"internal label leaked: {d.Message}"
+
+                      Expect.isFalse (d.Message.Contains "expression territory") $"internal label leaked: {d.Message}"
+
+              noLabelLeak [ "let r = { Http.get \"u\" } |> Http.send" ]
+              noLabelLeak [ "let e = ((" ]
+              noLabelLeak [ "let q = x." ]
+          }
+          test "{ expr } without `with` names the repair [D:label-leaks]" {
+              let ds = diags [ "let r = { Http.get \"u\" } |> Http.send" ]
+              let d = ds |> List.find (fun d -> d.Severity = "error")
+              Expect.stringContains d.Message "a record update needs 'with'" "the diagnosis"
+              Expect.stringContains d.Message "use parentheses" "the grouping repair"
+              Expect.isFalse (d.Message.Contains "Expecting:") "no expecting-list burial"
+          }
+          test "DESIGNED expectations survive the label filter [D:label-leaks]" {
+              // the filter drops only MARKED labels — the seq< > slot's
+              // designed expectation (and the escape teaching) still reach
+              // the user through the cleaned dump
+              let ds = diags [ "let x = [\"[]\"] |> from json seq<int>" ]
+
+              Expect.isTrue
+                  (ds |> List.exists (fun d -> d.Message.Contains "a record name inside seq< >"))
+                  $"the designed expectation must survive: {ds}"
+
+              let ds2 = diags [ "let p = \"C:\\Users\\x\"" ]
+
+              Expect.isTrue
+                  (ds2 |> List.exists (fun d -> d.Message.Contains "verbatim string"))
+                  $"the escape teaching must survive: {ds2}"
+          }
           test "fmt output never carries the sentinel (assemble->check artifact only)" {
               match Weir.Fmt.formatLines [ "let f t ="; "    git status"; "    let e = \"x\""; "    print e" ] with
               | Ok lines ->
@@ -9093,6 +9207,95 @@ let httpTests =
           }
           test "Basic auth is base64(user:pass) — an ENCODING the runner does, not a caller" {
               Expect.equal (Weir.Http.basicToken "alice" "s3cr3t") "YWxpY2U6czNjcjN0" ""
+          }
+          test "transport classifier: type-driven, all four probed shapes [D:transport-words]" {
+              let classify ms ex = Weir.Http.classifyTransport ms 443 ex
+
+              // the shapes as HttpClient nests them (probed): Aggregate →
+              // HttpRequestException → the discriminating leaf
+              let nested (leaf: exn) =
+                  System.AggregateException(System.Net.Http.HttpRequestException("outer", leaf)) :> exn
+
+              Expect.equal
+                  (classify 30000 (nested (System.Threading.Tasks.TaskCanceledException())))
+                  (Weir.Http.Timeout 30000)
+                  "cancellation IS timeout — weir passes no tokens"
+
+              Expect.equal
+                  (classify
+                      30000
+                      (nested (System.Net.Sockets.SocketException(int System.Net.Sockets.SocketError.HostNotFound))))
+                  Weir.Http.NoSuchHost
+                  "DNS by SocketErrorCode, not message text"
+
+              Expect.equal
+                  (classify
+                      30000
+                      (nested (System.Net.Sockets.SocketException(int System.Net.Sockets.SocketError.ConnectionRefused))))
+                  (Weir.Http.Refused 443)
+                  "refused carries the port"
+
+              Expect.equal
+                  (classify 30000 (nested (System.Security.Authentication.AuthenticationException "chain")))
+                  Weir.Http.TlsUntrusted
+                  "TLS by AuthenticationException"
+
+              match classify 30000 (nested (IOException "wire dropped")) with
+              | Weir.Http.OtherTransport root -> Expect.equal root "wire dropped" "the residual keeps the ROOT message"
+              | e -> failtest $"unclassified shape must fall to OtherTransport, got {e}"
+          }
+          test "transport messages: each case its own words, the repair nameable" {
+              let msg = Weir.Http.transportMessage "weir.sh"
+              Expect.equal (msg (Weir.Http.Timeout 30000)) "timed out after 30s reaching weir.sh" "whole seconds"
+
+              Expect.equal
+                  (msg (Weir.Http.Timeout 1500))
+                  "timed out after 1500ms reaching weir.sh"
+                  "sub-second stays ms"
+
+              Expect.equal (msg Weir.Http.NoSuchHost) "cannot resolve weir.sh — no such host" ""
+
+              Expect.equal
+                  (msg (Weir.Http.Refused 8443))
+                  "weir.sh:8443 refused the connection — nothing is listening there"
+                  ""
+
+              Expect.stringContains (msg Weir.Http.TlsUntrusted) "certificate is not trusted" ""
+
+              Expect.equal
+                  (msg (Weir.Http.OtherTransport "boom"))
+                  "cannot reach weir.sh — boom"
+                  "the umbrella survives for the residual"
+          }
+          test "the wider raw-leak sweep's finds stay closed [D:transport-words]" {
+              // each of these leaked a NAKED .NET message before the sweep
+              let msgOf (src: string) =
+                  (Expect.throwsC (fun () -> run src |> ignore) id).Message
+
+              let durOver = msgOf "Duration.parse \"99999999999999999999999s\""
+              Expect.stringContains durOver "beyond the 64-bit millisecond range" "overflow in weir's words"
+              Expect.isFalse (durOver.Contains "Int64") "never Int64.Parse's text"
+
+              // 9999999999GiB fits Int64.Parse but WRAPS the multiply —
+              // the silent-wrap case the checked ops now catch
+              let sizeWrap = msgOf "Size.parse \"9999999999GiB\""
+              Expect.stringContains sizeWrap "beyond the 64-bit byte range" "checked multiply, own words"
+
+              let envMissing =
+                  msgOf "Env.fromFile \"/definitely/not/here.env\" |> Seq.iter (fun v -> print v.name)"
+
+              Expect.stringContains envMissing "Env.fromFile: no such file:" "the File-family guard wording"
+              Expect.isFalse (envMissing.Contains "Could not find") "never FileNotFoundException's text"
+          }
+          test "the fetch/send misreading names its repair [D:fetch-naming]" {
+              // `Http.get u |> Http.fetch` reads as a pipeline and is the
+              // ruled-not-renamed pair: the type error carries the split
+              let m = (checkErr "Http.get \"u\" |> Http.fetch").Message
+              Expect.stringContains m "expected string, got HttpRequest" "the mismatch"
+              Expect.stringContains m "runs through Http.send" "the repair"
+
+              // the correct pipeline spelling stays silent
+              checkOk "Http.get \"u\" |> Http.send" |> ignore
           }
           test "a Secret does not interpolate into a url — the draft's Bearer spelling is now illegal" {
               let m = (checkErr "let t = Secret.of \"x\" in $\"Bearer {t}\"").Message

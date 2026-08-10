@@ -52,13 +52,19 @@ echo "$out" | grep -qF "'>' does not redirect in weir" || fail "redirect warning
 echo "$out" | grep -qF 'File.write' || fail "redirect warning names the spelling: $out"
 # permission denied is weir-shaped (the read-guard's residual wrapper)
 printf 'locked\n' > "$pwdir/locked.txt" && chmod 000 "$pwdir/locked.txt"
+mkdir -p "$pwdir/lockdir" && chmod 000 "$pwdir/lockdir"
 if [ ! -r "$pwdir/locked.txt" ]; then  # root ignores modes; skip there
     out=$($BIN -e 'File.read "'"$pwdir"'/locked.txt" |> Seq.length' 2>&1) && fail "unreadable must raise" || true
     echo "$out" | grep -qF "File.read: permission denied:" || fail "permission shape: $out"
-    echo "e2e ok: pins-walk messages (exit-raise words, redirect warning, permission shape)"
+    # the Dir family wraps too [D:transport-words] — a denied listing
+    # leaked UnauthorizedAccessException's text until the wider sweep
+    out=$($BIN -e 'Dir.list "'"$pwdir"'/lockdir"' 2>&1) && fail "denied listing must raise" || true
+    echo "$out" | grep -qF "Dir.list: permission denied:" || fail "Dir.list permission shape: $out"
+    echo "e2e ok: pins-walk messages (exit-raise words, redirect warning, permission shape files+dirs)"
 else
     echo "e2e ok: pins-walk messages (exit-raise words, redirect warning; permission skipped — running as root)"
 fi
+chmod 755 "$pwdir/lockdir"
 
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
@@ -991,6 +997,12 @@ PYADP
 
     python3 "$(dirname "$0")/../tests/repl/repl-quality.py" "$BIN" || fail "repl quality (history/Ctrl+R)"
     echo "e2e ok: repl history (XDG/dedup/0600), Ctrl+R fzf-stub + fallback"
+
+    python3 "$(dirname "$0")/../tests/repl/waiting-indicator.py" "$BIN" || fail "waiting indicator"
+    echo "e2e ok: repl waiting indicator (grace, erase, fast/piped/child-owned silent)"
+
+    python3 "$(dirname "$0")/../tests/repl/cooked-trap.py" "$BIN" || fail "cooked trap / echo-once"
+    echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     echo "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
@@ -4469,7 +4481,7 @@ WEOF
 
     kill $hsrv 2>/dev/null
 
-    # TRANSPORT failure raises (nothing listening) — contracts-shaped message;
+    # TRANSPORT failure raises, in its OWN words per case [D:transport-words];
     # and CHECK makes NO request (a bogus URL checks clean, no network)
     cat > "$hdir/dead.weir" <<'WEOF'
 let resp = Http.send { Http.defaults with url = "http://127.0.0.1:1/never" }
@@ -4477,7 +4489,24 @@ print "unreached"
 WEOF
     $BIN check "$hdir/dead.weir" >/dev/null 2>&1 || fail "check must not make a request (should pass clean)"
     out=$($BIN "$hdir/dead.weir" 2>&1) && fail "transport failure must raise" || true
-    echo "$out" | grep -qF "cannot reach" || fail "transport message not contracts-shaped: $out"
+    echo "$out" | grep -qF "refused the connection" || fail "refused case must say so: $out"
+
+    # a TIMEOUT names itself and the duration that fired — never the .NET
+    # cancellation text (the raw-leak class's 4th instance, closed)
+    cat > "$hdir/hang.py" <<'HANGEOF'
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(1)
+c, _ = s.accept(); time.sleep(30)
+HANGEOF
+    hangport=$((23100 + RANDOM % 200))
+    python3 "$hdir/hang.py" "$hangport" 2>/dev/null &
+    hangsrv=$!
+    sleep 0.3
+    out=$($BIN -e 'Http.send { Http.get "http://127.0.0.1:'"$hangport"'/" with timeout = 1s }' 2>&1) && { kill $hangsrv 2>/dev/null; fail "timeout must raise"; } || true
+    kill $hangsrv 2>/dev/null
+    echo "$out" | grep -qF "timed out after 1s reaching 127.0.0.1" || fail "timeout must name itself and the duration: $out"
+    echo "$out" | grep -qF "canceled" && fail "the .NET cancellation text must not reach a user: $out" || true
 
     # insecure: TLS verification is ON by default and OFF per-request when
     # asked [D:http-s2] — a self-signed server the default REJECTS and
@@ -4502,7 +4531,8 @@ TLSEOF
         sleep 0.8
         # default REJECTS the self-signed cert (verification on)
         out=$($BIN -e 'Http.send (Http.get "https://127.0.0.1:'"$tport"'/")' 2>&1) && { kill $tsrv 2>/dev/null; fail "default must reject a self-signed cert"; } || true
-        echo "$out" | grep -qiE "certificate|cannot reach" || { kill $tsrv 2>/dev/null; fail "TLS rejection message: $out"; }
+        echo "$out" | grep -qF "certificate is not trusted" || { kill $tsrv 2>/dev/null; fail "TLS rejection message: $out"; }
+        echo "$out" | grep -qF "insecure = true" || { kill $tsrv 2>/dev/null; fail "TLS rejection must name its repair: $out"; }
         # insecure = true ACCEPTS it
         cat > "$hdir/ins.weir" <<WEOF
 let r = Http.send { Http.get "https://127.0.0.1:$tport/" with insecure = true }

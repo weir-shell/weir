@@ -169,6 +169,15 @@ let private forcedItems (items: seq<Value>) : Value list option =
 
 let unforcedHint = "first 10 of an unforced seq — Seq.force to echo everything"
 
+/// echo preparation [D:echo-once]: cache an unforced seq so the table
+/// probe and the line rendering enumerate the SOURCE once — the
+/// echoTable-then-echoValue composition re-enumerated, and a bare
+/// command's child ran TWICE per echo
+let echoPrep (v: Value) : Value =
+    match v with
+    | VSeq items when (forcedItems items).IsNone -> VSeq(Seq.cache items)
+    | v -> v
+
 let echoValue (v: Value) : string * string option =
     match v with
     | VSeq items ->
@@ -1585,17 +1594,21 @@ and eval (env: Env) (te: TypedExpr) : Value =
             else
                 let timedOut =
                     if delayMs > 0L then
-                        try
-                            System.Threading.Tasks.Task
-                                .Delay(
-                                    System.TimeSpan.FromTicks(delayMs * System.TimeSpan.TicksPerMillisecond),
-                                    cts.Token
-                                )
-                                .Wait()
+                        // the indicator wraps ONLY the wait between
+                        // attempts — the body may own the terminal
+                        // [D:waiting-indicator]
+                        Waiting.during $"{head}: waiting {formatDuration delayMs}" (fun () ->
+                            try
+                                System.Threading.Tasks.Task
+                                    .Delay(
+                                        System.TimeSpan.FromTicks(delayMs * System.TimeSpan.TicksPerMillisecond),
+                                        cts.Token
+                                    )
+                                    .Wait()
 
-                            false
-                        with _ ->
-                            true
+                                false
+                            with _ ->
+                                true)
                     else
                         cts.IsCancellationRequested
 

@@ -144,21 +144,16 @@ let fetchBytes (url: string) : Result<byte[] * string option, string> =
 
             Ok(resp.Content.ReadAsByteArrayAsync().Result, ct)
     with ex ->
-        let root =
-            let rec inner (e: exn) =
-                match e.InnerException with
-                | null -> e
-                | i -> inner i
-
-            inner ex
-
-        let host =
+        let host, port =
             try
-                Uri(url).Host
+                let u = Uri(url)
+                u.Host, u.Port
             with _ ->
-                url
+                url, 0
 
-        Error $"cannot reach {host} — {root.Message}"
+        // the shared transport classifier [D:transport-words] — 60s is
+        // this fetch's own client timeout above
+        Error(Http.transportMessage host (Http.classifyTransport 60000 port ex))
 
 /// the single most likely user error for `add schema <url>` is a
 /// GitHub/GitLab FILE PAGE where the raw URL was meant — recognize the

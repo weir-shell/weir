@@ -29,6 +29,16 @@ type Resp =
       Headers: (string * string) list
       Body: string }
 
+// a transport failure in its own words [D:transport-words]: the four
+// probed shapes each carry what the caller needs to word a repair;
+// Other keeps the root message under the cannot-reach umbrella
+type TransportError =
+    | Timeout of ms: int
+    | NoSuchHost
+    | Refused of port: int
+    | TlsUntrusted
+    | OtherTransport of root: string
+
 let private rootMessage (ex: exn) : string =
     let rec inner (e: exn) =
         match e.InnerException with
@@ -37,10 +47,43 @@ let private rootMessage (ex: exn) : string =
 
     (inner ex).Message
 
+/// classify by exception TYPE down the chain, never by message text:
+/// timeout is the TaskCanceledException HttpClient.Timeout throws (weir
+/// passes no cancellation tokens, so cancellation IS timeout), TLS is
+/// AuthenticationException, DNS/refused are SocketErrorCode
+let classifyTransport (timeoutMs: int) (port: int) (ex: exn) : TransportError =
+    let rec walk (e: exn) =
+        match e with
+        | null -> OtherTransport(rootMessage ex)
+        | :? OperationCanceledException -> Timeout timeoutMs
+        | :? Security.Authentication.AuthenticationException -> TlsUntrusted
+        | :? Net.Sockets.SocketException as se ->
+            match se.SocketErrorCode with
+            | Net.Sockets.SocketError.HostNotFound
+            | Net.Sockets.SocketError.TryAgain
+            | Net.Sockets.SocketError.NoData -> NoSuchHost
+            | Net.Sockets.SocketError.ConnectionRefused -> Refused port
+            | _ -> OtherTransport(rootMessage ex)
+        | e -> walk e.InnerException
+
+    walk ex
+
+let private fmtMs (ms: int) : string =
+    if ms % 1000 = 0 then $"{ms / 1000}s" else $"{ms}ms"
+
+let transportMessage (host: string) (err: TransportError) : string =
+    match err with
+    | Timeout ms -> $"timed out after {fmtMs ms} reaching {host}"
+    | NoSuchHost -> $"cannot resolve {host} — no such host"
+    | Refused port -> $"{host}:{port} refused the connection — nothing is listening there"
+    | TlsUntrusted -> $"cannot establish TLS with {host} — the certificate is not trusted"
+    | OtherTransport root -> $"cannot reach {host} — {root}"
+
 /// send the request. Status is DATA — a 4xx/5xx is Ok with that status,
-/// never an Error [D:http]. Error is TRANSPORT failure only (unreachable,
-/// TLS, timeout), shaped like the contracts fetch's message.
-let send (req: Req) : Result<Resp, string> =
+/// never an Error [D:http]. Error is TRANSPORT failure only, classified
+/// [D:transport-words] — the worded message plus the case, so the caller
+/// can append a case-specific repair (Builtins: insecure on TlsUntrusted).
+let send (req: Req) : Result<Resp, string * TransportError> =
     try
         // a per-request handler only when insecure — the default path keeps
         // the plain HttpClient (TLS verification ON) [D:http-s2]
@@ -96,13 +139,15 @@ let send (req: Req) : Result<Resp, string> =
               Headers = headers
               Body = body }
     with ex ->
-        let host =
+        let host, port =
             try
-                Uri(req.Url).Host
+                let u = Uri(req.Url)
+                u.Host, u.Port
             with _ ->
-                req.Url
+                req.Url, 0
 
-        Error $"cannot reach {host} — {rootMessage ex}"
+        let err = classifyTransport req.TimeoutMs port ex
+        Error(transportMessage host err, err)
 
 /// Basic auth is an ENCODING, not a prefix: base64(user:pass) [D:http] —
 /// which is why it is a union case the runner encodes, not a header a
