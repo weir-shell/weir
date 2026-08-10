@@ -156,30 +156,42 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 // The REPL/-e echo [D:repl-echo]: bounded render + the way-out hint.
 // The count shows only when already known (a materialized list) —
 // counting a lazy seq would force it.
+// the echo RULE [D:echo-rule]: a FORCED seq echoes in full (the user
+// forced it; the ceiling is scrollback, which is theirs); an UNFORCED
+// one shows the first N and names the lever that WORKS and renders
+// identically — Seq.force. Forced-ness is the materialized-collection
+// probe (the same one that used to print real counts).
+let private forcedItems (items: seq<Value>) : Value list option =
+    match items with
+    | :? (Value list) as l -> Some l
+    | :? System.Collections.Generic.ICollection<Value> as c -> Some(List.ofSeq c)
+    | _ -> None
+
+let unforcedHint = "first 10 of an unforced seq — Seq.force to echo everything"
+
 let echoValue (v: Value) : string * string option =
     match v with
     | VSeq items ->
-        // ONE forcing pass — the echo must not enumerate its source
-        // twice: materialize limit+1, render and hint from that list
-        let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
-        let rendered = formatWith echoLimits 0 (VSeq(shown :> seq<Value>))
+        match forcedItems items with
+        | Some all ->
+            // full at the TOP level; each ELEMENT keeps the echo's inner
+            // clips (a forced outer may hold a lazy inner — [nats] is
+            // forcible and must not hang the echo)
+            let body = all |> List.map (formatWith echoLimits 1) |> String.concat "; "
+            $"[{body}]", None
+        | None ->
+            // ONE forcing pass — the echo must not enumerate its source
+            // twice: materialize limit+1, render from that list
+            let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
+            let rendered = formatWith echoLimits 0 (VSeq(shown :> seq<Value>))
 
-        // the counts phrase only — the SPELLING is composed at the echo
-        // sites, which know the element type (pipe-to-print is a lie for
-        // record seqs; the hint must name a spelling that types)
-        let hint =
-            if shown.Length > echoLimits.MaxItems then
-                let count =
-                    match items with
-                    | :? (Value list) as l -> string (List.length l)
-                    | :? System.Collections.Generic.ICollection<Value> as c -> string c.Count
-                    | _ -> "?"
+            let hint =
+                if shown.Length > echoLimits.MaxItems then
+                    Some unforcedHint
+                else
+                    None
 
-                Some $"{echoLimits.MaxItems} of {count} shown"
-            else
-                None
-
-        rendered, hint
+            rendered, hint
     | _ -> formatWith echoLimits 0 v, None
 
 // the REPL's TABLE rendering [D:repl-table] — PRESENTATION ONLY: show
@@ -213,11 +225,20 @@ let rec private tableCell (v: Value) : (string * bool) option =
 let echoTable (v: Value) : (string list * string option) option =
     match v with
     | VSeq items ->
-        let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
+        let forced = forcedItems items
+
+        let shown =
+            match forced with
+            | Some all -> all
+            | None -> items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
 
         match shown with
         | VRecord(n0, f0) :: _ when shown.Length > 1 || true ->
-            let visible = shown |> List.truncate echoLimits.MaxItems
+            let visible =
+                match forced with
+                | Some all -> all
+                | None -> shown |> List.truncate echoLimits.MaxItems
+
             let keys0 = f0 |> Map.toList |> List.map fst
 
             let cellsOf (r: Value) =
@@ -240,7 +261,7 @@ let echoTable (v: Value) : (string list * string option) option =
                 None
             else
                 let rows = rows |> List.map Option.get
-                let truncated = shown.Length > echoLimits.MaxItems
+                let truncated = forced.IsNone && shown.Length > echoLimits.MaxItems
 
                 let numeric =
                     [ 0 .. keys0.Length - 1 ]
@@ -268,35 +289,19 @@ let echoTable (v: Value) : (string list * string option) option =
                 let body = rows |> List.map (fun r -> line (r |> List.map fst))
                 let ellipsisRow = if truncated then [ "…" ] else []
 
-                let hint =
-                    if truncated then
-                        let count =
-                            match items with
-                            | :? (Value list) as l -> string (List.length l)
-                            | :? System.Collections.Generic.ICollection<Value> as c -> string c.Count
-                            | _ -> "?"
-
-                        Some $"{echoLimits.MaxItems} of {count} shown"
-                    else
-                        None
+                let hint = if truncated then Some unforcedHint else None
 
                 Some(header :: rule :: (body @ ellipsisRow), hint)
         | _ -> None
     | _ -> None
 
-// the way-out spelling per element type [D:repl-echo]: the hint names
-// a spelling that TYPES — print takes seq<string> only
-let echoSpelling (elemIsString: bool) : string =
-    if elemIsString then
-        "pipe to print for all"
-    else
-        "pipe to Seq.map show |> print for all"
-
-// the clipped-echo tail (" (N of M — spelling)") — one spelling for the
-// three echo consumers (REPL let/expr arms, -e)
-let echoTail (elemIsString: bool) (hint: string option) : string =
+// the clipped-echo tail — one spelling for the three echo consumers
+// (REPL let/expr arms, -e). The old pipe-to-print suggestion RETIRED
+// [D:echo-rule]: it promised continuation and delivered a different
+// rendering; the hint now names the lever that reproduces this one.
+let echoTail (hint: string option) : string =
     match hint with
-    | Some counts -> $" ({counts} — {echoSpelling elemIsString})"
+    | Some h -> $" ({h})"
     | None -> ""
 
 // The line-per-element renderer. Both consumers — the print builtin and the

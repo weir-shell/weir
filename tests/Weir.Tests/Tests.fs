@@ -3752,12 +3752,13 @@ let replEchoTests =
               let rendered, hint = Weir.Eval.echoValue (VSeq counted)
               Expect.isTrue (pulls.Value <= 11) $"forced {pulls.Value} pulls (bound is 11)"
               Expect.stringContains rendered "; …]" "truncation spelled"
-              Expect.equal hint (Some "10 of ? shown") "lazy count stays ?"
+              Expect.equal hint (Some Weir.Eval.unforcedHint) "the honest lever, not a rendering-changing pipe"
           }
-          test "materialized lists show the real count" {
+          test "a FORCED seq echoes in full, no hint [D:echo-rule]" {
               let v = VSeq([ for i in 1..12 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
-              let _, hint = Weir.Eval.echoValue v
-              Expect.equal hint (Some "10 of 12 shown") ""
+              let rendered, hint = Weir.Eval.echoValue v
+              Expect.stringContains rendered "11; 12]" "all twelve"
+              Expect.equal hint None "forcing IS the lever; nothing left to hint"
           }
           test "short seqs echo whole, no hint" {
               let v = VSeq([ VInt 1L; VInt 2L ] :> seq<Weir.Eval.Value>)
@@ -3770,11 +3771,13 @@ let replEchoTests =
               Expect.stringContains rendered "…\"" "clip marker inside the quotes"
               Expect.isTrue (rendered.Length < 140) $"clipped ({rendered.Length} chars)"
           }
-          test "nesting truncates at each level" {
+          test "a forced outer renders every element; INNER seqs keep the clip" {
+              // [nats]-is-forcible: full-at-top must not force the depths
               let inner = VSeq([ for i in 1..15 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
               let outer = VSeq([ for _ in 1..15 -> inner ] :> seq<Weir.Eval.Value>)
-              let rendered, _ = Weir.Eval.echoValue outer
-              Expect.equal (rendered.Split("; …").Length - 1) 11 "10 inner truncations + the outer"
+              let rendered, hint = Weir.Eval.echoValue outer
+              Expect.equal hint None "the outer is forced"
+              Expect.equal (rendered.Split("; …").Length - 1) 15 "all 15 outers, each inner clipped"
           }
           test "show is byte-identical to its shipped contract (NOT the echo)" {
               let long = VSeq(seq { for i in 1..100 -> VInt(int64 i) })
@@ -9542,17 +9545,23 @@ let replTableTests =
                   Expect.equal lines[3] "  7 B  n.txt      true" "numeric right-aligned"
               | other -> failtest $"expected a table, got {other}"
           }
-          test "a long seq truncates with the ellipsis row and the counts hint" {
+          test "an UNFORCED seq's table caps with the honest hint; a FORCED one shows every row [D:echo-rule]" {
               let row i =
                   VRecord("R", Map [ "n", VInt(int64 i) ])
 
-              let rows = VSeq [ for i in 1..15 -> row i ]
+              let lazyRows = VSeq(Seq.initInfinite (fun i -> row i))
 
-              match Weir.Eval.echoTable rows with
+              match Weir.Eval.echoTable lazyRows with
               | Some(lines, Some hint) ->
-                  Expect.stringContains hint "10 of 15 shown" ""
+                  Expect.equal hint Weir.Eval.unforcedHint "the lever that works"
                   Expect.equal (List.last lines) "…" "the in-table signal"
-              | other -> failtest $"expected a truncated table, got {other}"
+              | other -> failtest $"expected a capped table, got {other}"
+
+              let forcedRows = VSeq [ for i in 1..15 -> row i ]
+
+              match Weir.Eval.echoTable forcedRows with
+              | Some(lines, None) -> Expect.equal (List.length lines) 17 "header + rule + all 15 rows"
+              | other -> failtest $"a forced table shows every row: {other}"
           }
           test "non-uniform and non-scalar shapes decline — the line rendering stands" {
               let mixed =

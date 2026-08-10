@@ -2594,18 +2594,19 @@ echo "e2e ok: the orphan error survives where it is true (no pending statement)"
 
 rm -rf "$bbdir"
 
-# bounded REPL echo (mini-plan): glance vs read
+# the echo rule [D:echo-rule]: unforced caps with the lever that works;
+# forced echoes in full — Seq.force means something at the prompt now
 out=$(printf 'let xs = [1..100]\nxs\n' | $BIN 2>&1)
-echo "$out" | grep -qF "10; …] : seq<int> (10 of ? shown — pipe to Seq.map show |> print for all)" || fail "REPL echo must bound and hint a spelling that TYPES: $out"
-echo "e2e ok: REPL echo truncates at 10; non-string seqs hint the show spelling"
-
+echo "$out" | grep -qF "10; …] : seq<int> (first 10 of an unforced seq — Seq.force to echo everything)" || fail "the unforced echo names the honest lever: $out"
+out=$(printf '[1..12] |> Seq.force\n' | $BIN 2>&1)
+echo "$out" | grep -qF "11; 12] : seq<int>" || fail "a forced seq echoes in full: $out"
 out=$($BIN -e '["a"; "b"; "c"; "d"; "e"; "f"; "g"; "h"; "i"; "j"; "k"]')
-echo "$out" | grep -qF "(10 of 11 shown — pipe to print for all)" || fail "string seqs hint plain print: $out"
-echo "e2e ok: string seqs hint |> print (it types); counts real when known"
+echo "$out" | grep -qF "\"k\"] : seq<string>" || fail "a literal list is forced — full echo, no hint: $out"
+echo "e2e ok: the echo rule — unforced caps honestly, forced echoes whole"
 
 out=$($BIN -e '[1..50]')
-echo "$out" | grep -qF "(10 of ? shown" || fail "-e echoes like the REPL (decided): $out"
-echo "e2e ok: -e shares the echo bound"
+echo "$out" | grep -qF "(first 10 of an unforced seq" || fail "-e echoes like the REPL (decided): $out"
+echo "e2e ok: -e shares the echo rule"
 
 out=$(printf 'print (show [1..100])\n' | $BIN 2>&1)
 echo "$out" | grep -qF "; 20; ...]" || fail "show byte-identical (20 + dots): $out"

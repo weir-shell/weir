@@ -84,7 +84,7 @@ let private evalOnce (input: string) : int =
                 if v <> Eval.VUnit then
                     let rendered, hint = Eval.echoValue v
 
-                    let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+                    let tail = Eval.echoTail hint
 
                     Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
