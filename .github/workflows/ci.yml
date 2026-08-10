@@ -1,0 +1,120 @@
+# The CI matrix [D:github-ci] — the battery ci/local.sh mirrors, grown
+# to three platforms. The conflict-marker and freshness gates ride
+# ci/e2e.sh and ci/check-fresh.sh on EVERY runner (the uneven-gate
+# lesson, per-platform): Windows runs the same bash via Git Bash — one
+# gate implementation, never a .ps1 twin.
+#
+# Expectations, stated so red reads as signal:
+# - macos e2e: the GNU-ism sweep finally running with a real signal —
+#   first-run reds there are FINDINGS to triage, not flakes.
+# - windows unit: STATED SKIPS (POSIX-tool fixtures, the into gap, the
+#   shim set) — the Skipped count is the visible list; a NEW skip is a
+#   finding. HTTP e2e is the one surface never run on Windows.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-linux-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-linux-
+      - name: AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: unit suite (twice — flake detection, the GitLab-parity ritual)
+        run: |
+          dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+          dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+      - name: publish (AOT) + freshness gate
+        run: |
+          ./publish.sh
+          ./ci/check-fresh.sh
+      - name: e2e battery (conflict-marker gate at its top)
+        run: ./ci/e2e.sh
+      - name: fuzz smoke (pinned seed)
+        run: dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
+      - name: doc-tests
+        run: ./ci/skill-doc.sh
+      - name: F# oracle
+        run: ./ci/fsharp-oracle.sh
+      - name: timing
+        run: ./ci/timing.sh
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-macos-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-macos-
+      - name: unit suite
+        run: dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+      - name: publish (AOT) + freshness gate
+        run: |
+          ./publish.sh
+          ./ci/check-fresh.sh
+      - name: e2e battery — the GNU-ism sweep's real signal (reds are findings)
+        run: ./ci/e2e.sh
+      - name: doc-tests
+        run: ./ci/skill-doc.sh
+      - name: timing (note the medians; advisory off-linux)
+        continue-on-error: true
+        run: ./ci/timing.sh
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # Git Bash: the one gate implementation runs unchanged — a .ps1
+        # twin would be the same-policy-twice shape
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v4
+        with:
+          path: ~\.nuget\packages
+          key: nuget-windows-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-windows-
+      - name: unit suite (stated skips expected — the Skipped count is the list)
+        run: dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+      - name: publish (AOT, MSVC link) + freshness gate
+        run: |
+          pwsh -File ./publish.ps1
+          WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/check-fresh.sh
+      - name: e2e battery (HTTP is the one never-run-here surface — watch it)
+        run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/e2e.sh
+      - name: doc-tests
+        run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/skill-doc.sh
+      - name: timing (note the medians; advisory off-linux)
+        continue-on-error: true
+        run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/timing.sh

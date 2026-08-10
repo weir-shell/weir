@@ -1,0 +1,44 @@
+# The deep fuzz run [D:github-ci] — scheduled, linux-only (the matrix's
+# stated shape). The driver (tools/fuzz.weir) holds the deep-lock for
+# its run and publish.sh refuses to install while a live holder exists —
+# the lock semantics ride unchanged; on a fresh runner the race it
+# guards cannot arise, and keeping the same entrypoint keeps that true
+# if this ever runs against a shared cache.
+name: fuzz-deep
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  deep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-linux-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-linux-
+      - name: AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: publish (AOT) + freshness gate
+        run: |
+          ./publish.sh
+          ./ci/check-fresh.sh
+      - name: deep run (three seeds, 10k each)
+        run: |
+          ~/.local/bin/weir tools/fuzz.weir --seed 1789001 --count 10000
+          ~/.local/bin/weir tools/fuzz.weir --seed $(( GITHUB_RUN_NUMBER * 7919 )) --count 10000
+          ~/.local/bin/weir tools/fuzz.weir --seed $(( GITHUB_RUN_NUMBER * 104729 + 13 )) --count 10000
