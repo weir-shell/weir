@@ -8391,6 +8391,47 @@ let siblingSentinelTests =
               noLeak [ "let f t ="; "    git status"; "    print a b )" ] // lists ';' in expected-set
               noLeak [ "let f t ="; "    git status"; "    let e = ("; "    print e" ]
           }
+          test "no-leak: internal backtrack labels never surface [D:label-leaks]" {
+              // the record-brace sitting carried 'whitespace before [
+              // means application' in its Other-error-messages tail with
+              // no '[' in the input — 3rd instance of the class; every
+              // ifail label is marker-filtered from the cleaned dump
+              let noLabelLeak (lines: string list) =
+                  for d in diags lines do
+                      Expect.isFalse (d.Message.Contains Weir.Parser.internalLabelMarker) $"marker leaked: {d.Message}"
+                      Expect.isFalse (d.Message.Contains "\\u0006") $"escaped marker leaked: {d.Message}"
+                      Expect.isFalse (d.Message.Contains "whitespace before [") $"internal label leaked: {d.Message}"
+                      Expect.isFalse (d.Message.Contains "spine-only") $"internal label leaked: {d.Message}"
+
+                      Expect.isFalse (d.Message.Contains "expression territory") $"internal label leaked: {d.Message}"
+
+              noLabelLeak [ "let r = { Http.get \"u\" } |> Http.send" ]
+              noLabelLeak [ "let e = ((" ]
+              noLabelLeak [ "let q = x." ]
+          }
+          test "{ expr } without `with` names the repair [D:label-leaks]" {
+              let ds = diags [ "let r = { Http.get \"u\" } |> Http.send" ]
+              let d = ds |> List.find (fun d -> d.Severity = "error")
+              Expect.stringContains d.Message "a record update needs 'with'" "the diagnosis"
+              Expect.stringContains d.Message "use parentheses" "the grouping repair"
+              Expect.isFalse (d.Message.Contains "Expecting:") "no expecting-list burial"
+          }
+          test "DESIGNED expectations survive the label filter [D:label-leaks]" {
+              // the filter drops only MARKED labels — the seq< > slot's
+              // designed expectation (and the escape teaching) still reach
+              // the user through the cleaned dump
+              let ds = diags [ "let x = [\"[]\"] |> from json seq<int>" ]
+
+              Expect.isTrue
+                  (ds |> List.exists (fun d -> d.Message.Contains "a record name inside seq< >"))
+                  $"the designed expectation must survive: {ds}"
+
+              let ds2 = diags [ "let p = \"C:\\Users\\x\"" ]
+
+              Expect.isTrue
+                  (ds2 |> List.exists (fun d -> d.Message.Contains "verbatim string"))
+                  $"the escape teaching must survive: {ds2}"
+          }
           test "fmt output never carries the sentinel (assemble->check artifact only)" {
               match Weir.Fmt.formatLines [ "let f t ="; "    git status"; "    let e = \"x\""; "    print e" ] with
               | Ok lines ->
