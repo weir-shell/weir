@@ -6,11 +6,8 @@ type Health =
     | Clean
     | Dirty of int
 
-// first arg, or the current directory — a seq pattern on argv
-let target =
-    match Self.args with
-    | [] -> "."
-    | t :: _ -> t
+// first arg, or the current directory
+let target = Self.args |> Seq.tryHead |> Option.defaultValue "."
 
 // cd returns the new cwd — bind it once, interpolate it everywhere
 let workdir = cd target

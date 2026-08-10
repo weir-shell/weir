@@ -49,7 +49,7 @@ decision from the grammar session.
 2. Zed → Extensions → **Install Dev Extension** → select this
    directory (`editors/zed/`). Requires a Rust toolchain
    (`rustup target add wasm32-wasip1`).
-3. Open `examples/git-subrepo.weir` — highlighting should render
+3. Open `examples/showcase.weir` — highlighting should render
    (keywords/strings/types/sigils distinct), proving the grammar
    fetched and built.
 4. Add `print undefinedName` anywhere — a diagnostic should appear;

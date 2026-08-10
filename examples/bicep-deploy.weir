@@ -2,8 +2,8 @@
 // bicep deploy/snapshot/quality — translated from the F#/dbt script.
 // Reshapes: subcommands via the typed front door [D:typed-argv];
 // App-of-(stack, env) tuple -> --stack/--env flags; dbt plan{} discovery NOT translated (pass the
-// target explicitly); per-target env via Env.fromFile with the sigil
-// env slot !e(...) and the !e district header (the shEnv shape);
+// target explicitly); per-target env via Env.fromFile under
+// within env scopes;
 // use!-disposal -> logout on the success path (see GUIDE's cleanup
 // idiom for the complete-ization pattern).
 
@@ -65,34 +65,37 @@ let quality t =
 
 let snapshot t =
     header $"bicep snapshot: {t.Name}"
-    let e = targetEnv t
-    !e(bicep snapshot (t.BicepPath) --subscription-id (envVal t "AZURE_SUBSCRIPTION_ID") --resource-group (envVal t "AZURE_DEFAULTS_GROUP"))
-    printerr "OK"
+    within env (targetEnv t)
+        bicep snapshot (t.BicepPath) --subscription-id (envVal t "AZURE_SUBSCRIPTION_ID") --resource-group (envVal t "AZURE_DEFAULTS_GROUP")
+        printerr "OK"
 
 let deployStack t =
     header $"bicep deploy: {t.Name}"
-    let e = targetEnv t
-    !e(az stack group create --yes "--output=table" --name (t.Name) --parameters (t.BicepPath) --action-on-unmanage (onUnmanage) --deny-settings-mode none)
+    within env (targetEnv t)
+        az stack group create --yes "--output=table" --name (t.Name) --parameters (t.BicepPath) --action-on-unmanage (onUnmanage) --deny-settings-mode none | orFail "stack deploy failed"
 
 let azureLogin t =
     header "azure login"
     let tok = Env.load TokenEnv
     let oidc =
-        $(curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange")
+        curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange"
         |> from json Oidc
     let e = targetEnv t
     within env e
         az login --output table --federated-token (oidc.value) --service-principal --username (envVal t "AZURE_CLIENT_ID") --tenant (envVal t "AZURE_TENANT_ID")
-        !(az account set --subscription (envVal t "AZURE_SUBSCRIPTION_ID"))
+        az account set --subscription (envVal t "AZURE_SUBSCRIPTION_ID") | orFail "az account set failed"
 
 let deploy t =
     quality t
-    let e = targetEnv t
+
     if env.AZURE_GITHUB_AUTH == 1 then
         azureLogin t
         deployStack t
-        !e(az logout)
-    else deployStack t
+
+        within env (targetEnv t)
+            az logout | orFail "az logout failed"
+    else
+        deployStack t
 
 let toTarget a = {
     BicepPath = $"bicep/apps/stacks/{a.stack}/{a.env}.bicepparam"

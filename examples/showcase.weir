@@ -65,20 +65,19 @@ type EnvCfg = {
     WEIR_SHOWCASE_LEVEL: Option<Level>
 }
 
-let env0 = Env.load EnvCfg
-let level = env0.WEIR_SHOWCASE_LEVEL |> Option.defaultValue Info
-let home = env0.HOME |> Option.defaultValue "(no HOME)"
+let env = Env.load EnvCfg
+let level = env.WEIR_SHOWCASE_LEVEL |> Option.defaultValue Info
+let home = env.HOME |> Option.defaultValue "(no HOME)"
 
 printerr $"starting under {home} (level {level}, pid {Self.pid})"
 
 if cli.verbose then printerr (show cli)
 
-// the platform's own temp root, one match expression
+// the platform's own temp root — Option combinators over a match
 let tmpBase =
-    match env0.TMPDIR, env0.TEMP with
-    | Some d, _ -> d
-    | _, Some d -> d
-    | _ -> "/tmp"
+    env.TMPDIR
+    |> Option.orElse env.TEMP
+    |> Option.defaultValue "/tmp"
 
 // the showcase's helper scripts live beside this file — Self.scriptPath
 // is absolute and cd-proof, so the tour runs from any cwd
@@ -219,9 +218,9 @@ let jumps =
 jumps |> print
 
 // the scrape idiom: every match's groups, lazily, deduped
-let text0 = "see https://weir.dev/a then https://weir.dev/b then https://weir.dev/a"
+let page = "see https://weir.dev/a then https://weir.dev/b then https://weir.dev/a"
 
-Str.rmatchAll @"(https://\S+)" text0
+Str.rmatchAll @"(https://\S+)" page
     |> Seq.map Seq.head
     |> Seq.distinct
     |> Seq.iter print
@@ -240,7 +239,7 @@ weir $echoArgs empty splat drops $@extras zero words
 let words = ["alpha"; "beta"; "gamma"]
 weir $echoArgs three words: $@words
 
-let caught = $(weir -e "[\"one\"; \"two\"] |> Seq.iter print") |> Seq.length
+let caught = weir -e "[\"one\"; \"two\"] |> Seq.iter print" |> Seq.length
 print $"captured {caught} lines"
 
 !(weir $probe --out "effect streams")
@@ -387,8 +386,8 @@ let manifest name port tag pairs = yaml
         ports:
             - port: $port
 
-let doc0 = manifest "web" 8080 cli.tag ["app", "web"; "tier", "edge"]
-doc0 |> to yaml |> print
+let svc = manifest "web" 8080 cli.tag ["app", "web"; "tier", "edge"]
+svc |> to yaml |> print
 
 // a district validated against a VENDORED schema (examples/.weir/
 // schemas/, committed + locked): structure errors become CHECK errors
