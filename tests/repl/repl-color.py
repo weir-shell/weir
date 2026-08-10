@@ -116,14 +116,23 @@ def run_check(path, outfile):
         o = os.open(outfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
         os.dup2(o, 1)
         os.execv(WEIR, ["weir", "check", path])
+    # drain until EIO (slave closed AND buffer empty) under a wall-clock
+    # deadline — a fixed 3s select window lost the whole capture on a
+    # cold CI runner (the child outlived the window; the loop returned
+    # empty and waitpid then blocked until the real output was orphaned)
     err = b""
-    for _ in range(30):
-        r, _, _ = select.select([fd], [], [], 0.1)
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        r, _, _ = select.select([fd], [], [], 0.25)
         if r:
             try:
-                err += os.read(fd, 65536)
+                chunk = os.read(fd, 65536)
             except OSError:
+                break  # EIO: child exited and the pty buffer is drained
+            if not chunk:
                 break
+            err += chunk
+    os.close(fd)
     os.waitpid(pid, 0)
     return err.decode(errors="replace"), open(outfile).read()
 t9err, t9out = run_check(_d + "/bad.weir", _d + "/out.txt")
