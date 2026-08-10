@@ -9094,6 +9094,85 @@ let httpTests =
           test "Basic auth is base64(user:pass) — an ENCODING the runner does, not a caller" {
               Expect.equal (Weir.Http.basicToken "alice" "s3cr3t") "YWxpY2U6czNjcjN0" ""
           }
+          test "transport classifier: type-driven, all four probed shapes [D:transport-words]" {
+              let classify ms ex = Weir.Http.classifyTransport ms 443 ex
+
+              // the shapes as HttpClient nests them (probed): Aggregate →
+              // HttpRequestException → the discriminating leaf
+              let nested (leaf: exn) =
+                  System.AggregateException(System.Net.Http.HttpRequestException("outer", leaf)) :> exn
+
+              Expect.equal
+                  (classify 30000 (nested (System.Threading.Tasks.TaskCanceledException())))
+                  (Weir.Http.Timeout 30000)
+                  "cancellation IS timeout — weir passes no tokens"
+
+              Expect.equal
+                  (classify
+                      30000
+                      (nested (System.Net.Sockets.SocketException(int System.Net.Sockets.SocketError.HostNotFound))))
+                  Weir.Http.NoSuchHost
+                  "DNS by SocketErrorCode, not message text"
+
+              Expect.equal
+                  (classify
+                      30000
+                      (nested (System.Net.Sockets.SocketException(int System.Net.Sockets.SocketError.ConnectionRefused))))
+                  (Weir.Http.Refused 443)
+                  "refused carries the port"
+
+              Expect.equal
+                  (classify 30000 (nested (System.Security.Authentication.AuthenticationException "chain")))
+                  Weir.Http.TlsUntrusted
+                  "TLS by AuthenticationException"
+
+              match classify 30000 (nested (IOException "wire dropped")) with
+              | Weir.Http.OtherTransport root -> Expect.equal root "wire dropped" "the residual keeps the ROOT message"
+              | e -> failtest $"unclassified shape must fall to OtherTransport, got {e}"
+          }
+          test "transport messages: each case its own words, the repair nameable" {
+              let msg = Weir.Http.transportMessage "weir.sh"
+              Expect.equal (msg (Weir.Http.Timeout 30000)) "timed out after 30s reaching weir.sh" "whole seconds"
+
+              Expect.equal
+                  (msg (Weir.Http.Timeout 1500))
+                  "timed out after 1500ms reaching weir.sh"
+                  "sub-second stays ms"
+
+              Expect.equal (msg Weir.Http.NoSuchHost) "cannot resolve weir.sh — no such host" ""
+
+              Expect.equal
+                  (msg (Weir.Http.Refused 8443))
+                  "weir.sh:8443 refused the connection — nothing is listening there"
+                  ""
+
+              Expect.stringContains (msg Weir.Http.TlsUntrusted) "certificate is not trusted" ""
+
+              Expect.equal
+                  (msg (Weir.Http.OtherTransport "boom"))
+                  "cannot reach weir.sh — boom"
+                  "the umbrella survives for the residual"
+          }
+          test "the wider raw-leak sweep's finds stay closed [D:transport-words]" {
+              // each of these leaked a NAKED .NET message before the sweep
+              let msgOf (src: string) =
+                  (Expect.throwsC (fun () -> run src |> ignore) id).Message
+
+              let durOver = msgOf "Duration.parse \"99999999999999999999999s\""
+              Expect.stringContains durOver "beyond the 64-bit millisecond range" "overflow in weir's words"
+              Expect.isFalse (durOver.Contains "Int64") "never Int64.Parse's text"
+
+              // 9999999999GiB fits Int64.Parse but WRAPS the multiply —
+              // the silent-wrap case the checked ops now catch
+              let sizeWrap = msgOf "Size.parse \"9999999999GiB\""
+              Expect.stringContains sizeWrap "beyond the 64-bit byte range" "checked multiply, own words"
+
+              let envMissing =
+                  msgOf "Env.fromFile \"/definitely/not/here.env\" |> Seq.iter (fun v -> print v.name)"
+
+              Expect.stringContains envMissing "Env.fromFile: no such file:" "the File-family guard wording"
+              Expect.isFalse (envMissing.Contains "Could not find") "never FileNotFoundException's text"
+          }
           test "a Secret does not interpolate into a url — the draft's Bearer spelling is now illegal" {
               let m = (checkErr "let t = Secret.of \"x\" in $\"Bearer {t}\"").Message
               Expect.stringContains m "does not interpolate" "the auth union carries the Secret whole instead"
