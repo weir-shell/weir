@@ -1654,6 +1654,31 @@ let completionTests =
               // from the full parser set [D:keyword-completion]
               Expect.equal (suggest "ls |> whe" 6) [ "when"; "where" ] ""
           }
+          test "the `with ` slot offers the source record's fields [D:with-slot]" {
+              let text = "{ Http.defaults with "
+              let got = suggest text text.Length
+              Expect.contains got "url" "a field of the source's record"
+              Expect.contains got "timeout" "…and another"
+              Expect.isFalse (List.contains "within" got) "never a keyword in the slot"
+
+              // a typed prefix narrows to fields — the keyword-in-fragment
+              // fix: `h` used to complete to `within`
+              let text2 = "{ Http.get \"u\" with h"
+              let got2 = suggest text2 (text2.Length - 1)
+              Expect.contains got2 "headers" "the h-field"
+              Expect.isFalse (List.contains "within" got2) "no keyword can enter an expression fragment"
+          }
+          test "the `with ` slot on a NON-record source is a closed EMPTY set [D:with-slot]" {
+              // Http.get unapplied is a function — no updatable fields, so
+              // nothing completes (the nats pin's reasoning; the general
+              // pool would offer keywords that cannot appear there)
+              let text = "{ Http.get with "
+              Expect.equal (suggest text text.Length) [] "no members, no pool"
+          }
+          test "`match x with ` is untouched by the with-slot (no brace-slice parses)" {
+              let text = "match x with "
+              Expect.isNonEmpty (suggest text text.Length) "the general pool still serves match"
+          }
           test "keyword completion" { Expect.contains (suggest "ma" 0) "match" "" }
           test "command heads: a command-callable builtin completes at a statement head [D:repl-quality]" {
               // at a head (before empty) the command-callable set joins the pool
