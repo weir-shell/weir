@@ -2216,6 +2216,20 @@ WEOF
 out=$($BIN "$adir/attrs-json.weir")
 expect "from json loads a documented record identically (/// inert)" "5" "$out"
 
+# anonymous record types [D:anon-records]: the shape inline in the
+# adapter slot — `_.field` checks, seq<> composes, the shape persists
+# across statements, and a declared record stays a DIFFERENT type
+cat > "$adir/anon.weir" <<'WEOF'
+let one = echo '{"ip": "1.2.3.4"}' |> from json {| ip: string |}
+print one.ip
+echo '[{"a": 1}, {"a": 2}]' |> from json seq<{| a: int |}> |> Seq.iter (fun r -> print (show r.a))
+WEOF
+out=$($BIN "$adir/anon.weir")
+expect "anonymous shape: _.field checks, seq<> composes, persists" '1.2.3.4
+1
+2' "$out"
+out=$($BIN check "$adir/anon.weir" 2>&1) || fail "anon.weir must check clean: $out"
+
 # Option<scalar> at the JSON boundary [D:json-option]: present -> Some,
 # missing/null -> None, and to json OMITS the None key so it roundtrips.
 cat > "$adir/json-option.weir" <<'WEOF'

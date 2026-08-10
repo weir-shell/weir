@@ -100,6 +100,9 @@
       "include": "#attribute"
     },
     {
+      "include": "#anon-record"
+    },
+    {
       "include": "#operators"
     }
   ],
@@ -185,6 +188,10 @@
     "attribute": {
       "match": "\\[<|>\\]",
       "name": "keyword.operator.attribute.weir"
+    },
+    "anon-record": {
+      "match": "\\{\\||\\|\\}",
+      "name": "punctuation.section.record.weir"
     },
     "operators": {
       "match": "\\|>|>>|<<|==|<>|<=|>=|->|\\.\\.|::|&&|\\|\\||[+\\-*/<>=;,]|\\|",

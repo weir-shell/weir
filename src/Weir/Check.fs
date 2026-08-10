@@ -2438,8 +2438,22 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let nameList = many |> List.map (fun r -> r.Name) |> String.concat ", "
                     return! err expr.Span $"ambiguous record literal; it matches: {nameList}"
         }
-    | EFrom(fmt, tyName, seqOf) ->
+    | EFrom(fmt, shape, seqOf) ->
         result {
+            // resolve the slot's payload to a NAME [D:anon-records]: a
+            // declared name passes through; an anonymous shape resolves
+            // to its canonical name, whose def withAnonDefs registered
+            // at typecheck entry — one lookup path serves both, so the
+            // anonymous form validates EXACTLY as a declared record does
+            let! tyName =
+                match shape with
+                | None -> Ok None
+                | Some(FromName n) -> Ok(Some n)
+                | Some(FromAnon fields) ->
+                    match firstDup (fields |> List.map fst) with
+                    | Some d -> err expr.Span $"duplicate field '{d}' in the anonymous record"
+                    | None -> Ok(Some(anonRecordName fields))
+
             // per-adapter admitted set for seq<Name> [D:from-json-seq]
             // [D:yaml-seq]: json and yaml admit the wrap (one document,
             // top level as declared); jsonl refuses — one object per line
@@ -2481,7 +2495,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | ("json" | "jsonl"), None ->
                 let seqHint =
                     if fmt = "json" then
-                        " — or seq<FileRow> for a top-level array"
+                        " — or seq<FileRow> for a top-level array, or an inline shape {| ip: string |}"
                     else
                         ""
 
@@ -3256,7 +3270,42 @@ and private finalizeYamlItem (ctx: Ctx) (item: TypedYamlTplItem) : TypedYamlTplI
     | TYtItem t -> TYtItem(finalizeYamlTpl ctx t)
     | TYtForItems(b, src, body) -> TYtForItems(b, finalizeExpr ctx src, body |> List.map (finalizeYamlItem ctx))
 
+/// anonymous shapes in the adapter slot register their canonical defs
+/// [D:anon-records] — collected up front so field access on the result
+/// type resolves anywhere in the statement; Script.checkStatement uses
+/// the same extension to persist them into the outgoing env
+let anonDefs (expr: Expr) : (string * TypeDef) list =
+    let acc = System.Collections.Generic.Dictionary<string, TypeDef>()
+
+    let rec walk (e: Expr) =
+        (match e.Kind with
+         | EFrom(_, Some(FromAnon fields), _) ->
+             let name = anonRecordName fields
+
+             if not (acc.ContainsKey name) then
+                 acc[name] <-
+                     Record
+                         { Name = name
+                           Params = []
+                           Fields = List.sortBy fst fields
+                           Attrs = Map.empty
+                           Docs = Map.empty }
+         | _ -> ())
+
+        exprChildren e |> List.iter walk
+
+    walk expr
+    acc |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
+
+let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
+    match anonDefs expr with
+    | [] -> env
+    | defs ->
+        { env with
+            Types = defs |> List.fold (fun ts (n, d) -> Map.add n d ts) env.Types }
+
 let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExpr * (string * Scheme) list, TypeError> =
+    let env = withAnonDefs env expr
     let ctx = newCtx ()
 
     match binderShape ctx env pat with
@@ -3298,6 +3347,7 @@ let typecheckWith
     (env: TypeEnv)
     (expr: Expr)
     : Result<TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list>, TypeError> =
+    let env = withAnonDefs env expr
     let ctx = newCtx ()
 
     match infer ctx env expr with

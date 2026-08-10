@@ -576,7 +576,14 @@ within tmp d
   ~2GB. `Seq.force` on decoded lines re-pays string overhead — force
   what you need, not the world.
 - Typed output: `... |> from json T` needs
-  `type T = { field: ty; ... }` declared first (exact field set).
+  `type T = { field: ty; ... }` declared first (exact field set) — OR
+  the shape written inline: `from json {| ip: string |}` (and
+  `seq<{| ... |}>` for a top-level array). Reach for the anonymous
+  form to read a FOREIGN shape once; declare a type for your own data
+  and anything reused. Same-shape anonymous types are one type; a
+  declared record with the same fields stays a different (nominal)
+  type. Adapter slot only — no anonymous literals, no nesting (a
+  nested object needs a declared record).
   `from json T` reads ONE DOCUMENT -> `T` (any number of lines — a
   pretty-printed body pipes straight in); `from json seq<T>` reads a
   top-level ARRAY document -> `seq<T>` (the list-endpoint shape);
