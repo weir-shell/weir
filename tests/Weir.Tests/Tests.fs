@@ -262,6 +262,31 @@ let checkerTests =
         [ test "acceptance pipeline type-checks to seq<FileRow>" {
               Expect.equal (checkOk acceptance).Ty Weir.Builtins.seqFileRow ""
           }
+          test "update of a non-record blames the SOURCE, not the field [D:update-span]" {
+              let input = "{ Http.get with url = \"y\" }"
+              let terr = checkErr input
+              Expect.equal terr.Span.Start.Col 3 "the caret sits on Http.get"
+              Expect.equal terr.Span.End.Col 11 "…and covers it"
+              Expect.stringContains terr.Message "only records have updatable fields" "the diagnosis"
+              Expect.stringContains terr.Message "apply it first" "a function in update position names the repair"
+
+              let terr2 = checkErr "{ 5 with url = \"y\" }"
+              Expect.equal terr2.Span.Start.Col 3 "the non-record literal is blamed"
+              Expect.isFalse (terr2.Message.Contains "apply it first") "the repair hint is the function case's own"
+          }
+          test "a DEEP non-record hop blames the previous field, not the assignment [D:update-span]" {
+              // r.answered is int — updating r.answered.x must blame
+              // 'answered' (the thing that is not a record)
+              let te = env |> declare "type R = { answered: int }"
+              let input = "let r = R { answered = 1 } in { r with answered.x = 2 }"
+
+              match Weir.Check.typecheck te (parse input) with
+              | Error terr ->
+                  let expectedStart = input.IndexOf "answered.x" + 1
+                  Expect.equal terr.Span.Start.Col expectedStart "the caret sits on the non-record hop"
+                  Expect.stringContains terr.Message "only records have updatable fields" ""
+              | Ok _ -> failtest "expected a type error"
+          }
           test "typo in field is rejected with exact span and a hint" {
               let input = "ls |> where (fun f -> f.bytse > 1048576) |> first 5"
               let terr = checkErr input
