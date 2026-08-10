@@ -74,6 +74,22 @@ let rec formatTy (ty: Ty) : string =
         let argStr = args |> List.map formatTy |> String.concat ", "
         $"{name}<{argStr}>"
 
+/// an anonymous record's CANONICAL name [D:anon-records]: fields
+/// sorted by name, rendered as the type's own spelling — the name IS
+/// the display form, so formatTy/type errors render it with no extra
+/// arm, '{' keeps it un-typeable (no collision with declared names,
+/// excluded from suggestion pools by isUserName), and two same-shape
+/// anonymous types get the same name and so unify; a declared record
+/// with the same shape stays a DIFFERENT type (nominal law untouched)
+let anonRecordName (fields: (string * Ty) list) : string =
+    let body =
+        fields
+        |> List.sortBy fst
+        |> List.map (fun (n, t) -> $"{n}: {formatTy t}")
+        |> String.concat "; "
+
+    "{| " + body + " |}"
+
 /// the annotated DECLARATION form for hover [D:annotated-signature]:
 /// `name (p1: t1) (p2: t2) : result`, decomposing `ty` by the given
 /// parameter names (the arrow tail beyond the named params is the

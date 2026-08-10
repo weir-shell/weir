@@ -340,6 +340,20 @@ status as data.
 let item = Http.fetch $"{api}/items/1" |> from json Item
 ```
 
+When the shape is a foreign API's and read once, write it inline —
+an **anonymous record type**, the adapter slot's third form:
+
+```
+let ip = Http.fetch "https://api.ipify.org?format=json" |> from json {| ip: string |} |> _.ip
+```
+
+`seq<{| ... |}>` covers the top-level-array case. The rule of reach:
+an anonymous shape is for *reading a foreign shape once*; declare a
+record for *your own data and anything reused*. Two anonymous shapes
+with the same fields are the same type (field order canonicalizes);
+a declared record with the same fields is deliberately a different
+type — weir's records stay nominal.
+
 Two adapters, one distinction: `from json T` reads ONE document —
 across as many lines as the server felt like using — and gives you a
 `T`; `from jsonl T` reads one document per line (NDJSON, the shape

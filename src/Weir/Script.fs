@@ -2226,6 +2226,9 @@ let checkStatement
                       Env = tenv'
                       Warnings = [] }
         | Ok(SLetPat(pat, e)) ->
+            // anonymous adapter shapes persist their defs [D:anon-records]
+            let tenv = Check.withAnonDefs tenv e
+
             match Check.typecheckBinder tenv pat e with
             | Error terr -> Error(typed StmtTag.LetPat terr)
             | Ok(te, schemes) ->
@@ -2250,6 +2253,8 @@ let checkStatement
                 else
                     e.Span
 
+            let tenv = Check.withAnonDefs tenv e
+
             match
                 Check.checkBinderName nameSpan name
                 |> Result.bind (fun () -> Check.typecheckWith tenv e)
@@ -2265,6 +2270,8 @@ let checkStatement
                             Values = Map.add name scheme tenv.Values }
                       Warnings = warningsOf te }
         | Ok(SCmd e) ->
+            let tenv = Check.withAnonDefs tenv e
+
             match Check.typecheck tenv e with
             | Error terr -> Error(typed StmtTag.Cmd terr)
             | Ok te ->
@@ -2322,6 +2329,7 @@ let checkStatement
             // [D:within-scopes] — reaching through scopes and let-ins;
             // the REPL (gateExprs=false) keeps its echo instead
             let e = if gateExprs then Check.armTail e else e
+            let tenv = Check.withAnonDefs tenv e
 
             match Check.typecheck tenv e with
             | Error terr -> Error(typed StmtTag.Expr terr)

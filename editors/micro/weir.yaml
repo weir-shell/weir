@@ -89,6 +89,11 @@ rules:
     # rule: attribute
     - special: "\\[<|>\\]"
 
+    # ---- anonymous record braces [D:anon-records]: one token each, so
+    # the interior pipe never paints as an operator ----
+    # rule: anon-record
+    - symbol.brackets: "\\{\\||\\|\\}"
+
     # ---- operators ----
     # rule: operators
     - symbol.operator: "\\|>"

@@ -10460,7 +10460,7 @@ let sigTests =
                   fixSig
                   |> List.map (fun l ->
                       if l.StartsWith "let version" then
-                          l + "\nlet exhaustive = true"
+                          l + "\n\nlet exhaustive = true"
                       else
                           l)
 
@@ -11341,6 +11341,116 @@ let interpShowTests =
               | Ok _ -> failtest "expected the splice rejection"
           } ]
 
+let anonRecordTests =
+    // anonymous record types in the adapter slot [D:anon-records]:
+    // synthetic-nominal — the canonical name IS the rendered shape, so
+    // same-shape anons unify and a declared record stays distinct
+    testList
+        "anonymous record types [D:anon-records]"
+        [ test "the acceptance: _.field on an anonymous shape resolves at check time" {
+              let v =
+                  runWith [ "src", VSeq [ VStr "{\"ip\": \"1.2.3.4\"}" ] ] "src |> from json {| ip: string |} |> _.ip"
+
+              Expect.equal v (VStr "1.2.3.4") "typechecks and runs"
+
+              Expect.equal
+                  (checkOk "[\"{}\"]  |> from json {| ip: string |} |> _.ip").Ty
+                  TStr
+                  "the field's type, at check time"
+          }
+          test "validation IS the declared-record validation — same messages, the shape as the name" {
+              let declaredEnv = env |> declare "type P = { ip: string; port: int }"
+
+              let msgOf (te) (src: string) =
+                  match Weir.Parser.parseStmt src with
+                  | Ok(SExpr e) ->
+                      match Weir.Check.typecheck te e with
+                      | Ok t ->
+                          (try
+                              Weir.Eval.eval valueEnv t |> Weir.Eval.formatValue |> ignore
+                              None
+                           with ex ->
+                               Some ex.Message)
+                      | Error terr -> Some terr.Message
+                  | other -> failtest $"unexpected: {other}"
+
+              // missing field in the DATA: byte-identical modulo the name
+              let declared =
+                  msgOf declaredEnv "[\"{\\\"ip\\\": \\\"x\\\"}\"] |> from json P |> _.ip"
+
+              let anon =
+                  msgOf env "[\"{\\\"ip\\\": \\\"x\\\"}\"] |> from json {| ip: string; port: int |} |> _.ip"
+
+              Expect.equal anon declared "the anonymous shape validates exactly as a declared record"
+
+              // wrong field at CHECK time: the declared-record wording with
+              // the shape standing where the name stands
+              let m = (checkErr "[\"{}\"]  |> from json {| ip: string |} |> _.nope").Message
+              Expect.stringContains m "{| ip: string |} has no field 'nope'" "the declared-record message shape"
+          }
+          test "seq<{| … |}> composes — the array-of-anonymous-objects case" {
+              let v =
+                  runWith
+                      [ "src", VSeq [ VStr "[{\"a\": 1}, {\"a\": 2}]" ] ]
+                      "src |> from json seq<{| a: int |}> |> Seq.map _.a"
+
+              Expect.equal (forceSeq v) [ VInt 1L; VInt 2L ] ""
+          }
+          test "same shape unifies; field order canonicalizes; a declared record stays DISTINCT" {
+              // two spellings, one type — order is canonical
+              let te =
+                  checkOk "[[\"{}\"]  |> from json {| b: int; a: int |}; [\"{}\"]  |> from json {| a: int; b: int |}]"
+
+              Expect.equal te.Ty (TSeq(TNamed("{| a: int; b: int |}", []))) "one canonical name"
+
+              // a declared record with the same shape is a different type
+              let declaredEnv = env |> declare "type T = { ip: string }"
+
+              match Weir.Parser.parseStmt "[[\"{}\"]  |> from json T; [\"{}\"]  |> from json {| ip: string |}]" with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck declaredEnv e with
+                  | Error terr ->
+                      Expect.stringContains terr.Message "expected T, got {| ip: string |}" "nominal law untouched"
+                  | Ok _ -> failtest "a declared record must not unify with an anonymous shape"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "jsonl takes the shape; its seq<> refusal renders it" {
+              let v =
+                  runWith
+                      [ "src", VSeq [ VStr "{\"a\": 1}"; VStr "{\"a\": 2}" ] ]
+                      "src |> from jsonl {| a: int |} |> Seq.map _.a"
+
+              Expect.equal (forceSeq v) [ VInt 1L; VInt 2L ] ""
+
+              let m = (checkErr "[\"x\"] |> from jsonl seq<{| a: int |}>").Message
+              Expect.stringContains m "write from jsonl {| a: int |}" "the refusal names the bare form"
+          }
+          test "yaml takes the shape" {
+              let v =
+                  runWith [ "src", VSeq [ VStr "ip: 9.9.9.9" ] ] "src |> from yaml {| ip: string |} |> _.ip"
+
+              Expect.equal v (VStr "9.9.9.9") ""
+          }
+          test "duplicate fields reject; the echo renders the nameless record with the shape type" {
+              let m = (checkErr "[\"x\"] |> from json {| a: int; a: string |}").Message
+              Expect.stringContains m "duplicate field 'a'" ""
+
+              let v =
+                  runWith [ "src", VSeq [ VStr "{\"ip\": \"x\"}" ] ] "src |> from json {| ip: string |}"
+
+              Expect.equal (Weir.Eval.formatValue v) "{ ip = \"x\" }" "nameless, exactly as a declared record renders"
+          }
+          test "the shape persists across statements (script + REPL share checkStatement)" {
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "anon.weir"
+                      [ "let x = [\"{}\"]  |> from json {| ip: string |}"; "let y = x.ip" ]
+
+              Expect.isEmpty
+                  (ds |> List.filter (fun d -> d.Severity = "error"))
+                  "the later statement resolves the field"
+          } ]
+
 let gapATests =
     testList
         "Gap audit session A remainder"
@@ -11639,6 +11749,7 @@ let allTests =
           lsTruthTests
           recordKeysTests
           yamlSeqTests
+          anonRecordTests
           formatSurfaceTests
           secretTests
           httpTests

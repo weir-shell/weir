@@ -1244,37 +1244,51 @@ binderParamRef.Value <-
 
 binderPatRef.Value <- commaPats
 
+// the anonymous shape's field-list parser is SET after tySyn and
+// fieldNameDecl exist (forward ref, the sigilChain precedent)
+// [D:anon-records]
+let private anonShape, private anonShapeRef =
+    createParserForwardedToRef<(string * Ty) list, unit> ()
+
 let private fromExpr =
     spanned (
         keyword "from" >>. ident
         .>>. opt (
-            // the slot takes a record NAME, or the narrow seq<Name> case
-            // [D:from-json-seq] — never the general type grammar (tySyn
-            // stays unreachable from here; the admitted set is closed)
-            attempt (
+            // the slot takes a record NAME, the narrow seq<…> wrap
+            // [D:from-json-seq], or an anonymous shape `{| f: ty |}`
+            // [D:anon-records] — never the general type grammar (tySyn
+            // is reachable only INSIDE the shape's fields; the admitted
+            // set stays closed)
+            (anonShape |>> fun fs -> FromAnon fs, false)
+            <|> attempt (
                 identSpanned
                 >>= fun (w, _) ->
                     if w = "seq" then
-                        between (str_ws "<") (str_ws ">") identSpanned
-                        >>= fun (inner, _) ->
-                            if Char.IsUpper inner[0] then
-                                preturn (inner, true)
-                            else
-                                fail "a record name inside seq< >"
+                        between
+                            (str_ws "<")
+                            (str_ws ">")
+                            ((anonShape |>> FromAnon)
+                             <|> (identSpanned
+                                  >>= fun (inner, _) ->
+                                      if Char.IsUpper inner[0] then
+                                          preturn (FromName inner)
+                                      else
+                                          fail "a record name inside seq< >"))
+                        |>> fun sh -> sh, true
                     elif Char.IsUpper w[0] then
-                        preturn (w, false)
+                        preturn (FromName w, false)
                     else
                         fail "a record name"
             )
         )
     )
     |>> fun ((fmt, arg), span) ->
-        let tyName, seqOf =
+        let shape, seqOf =
             match arg with
-            | Some(n, s) -> Some n, s
+            | Some(sh, s) -> Some sh, s
             | None -> None, false
 
-        { Kind = EFrom(fmt, tyName, seqOf)
+        { Kind = EFrom(fmt, shape, seqOf)
           Span = span }
 
 let private toExpr =
@@ -2783,6 +2797,18 @@ let private fieldDecl =
 
 let private recordBody =
     str_ws "{" >>. sepBy1 fieldDecl (str_ws ";") .>> str_ws "}" |>> DRecord
+
+// `{| f: ty; … |}` — the adapter slot's anonymous shape
+// [D:anon-records]: field names follow the declared-record law
+// (fieldNameDecl), field types are the ONE type grammar (tySyn); no
+// attrs, no docs — a foreign shape read once. `{|` is unambiguous in
+// the slot (a record literal/update cannot sit there), and tySyn does
+// not nest the form (a nested object needs a declared record).
+anonShapeRef.Value <-
+    between
+        (attempt (pstring "{|") .>> ws)
+        (str_ws "|}")
+        (sepBy1 (fieldNameDecl .>> str_ws ":" .>>. tySyn) (str_ws ";"))
 
 let private caseDecl =
     // peek-validate-then-consume: a post-consumption fail reports past
