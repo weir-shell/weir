@@ -9287,6 +9287,16 @@ let httpTests =
               Expect.stringContains envMissing "Env.fromFile: no such file:" "the File-family guard wording"
               Expect.isFalse (envMissing.Contains "Could not find") "never FileNotFoundException's text"
           }
+          test "the fetch/send misreading names its repair [D:fetch-naming]" {
+              // `Http.get u |> Http.fetch` reads as a pipeline and is the
+              // ruled-not-renamed pair: the type error carries the split
+              let m = (checkErr "Http.get \"u\" |> Http.fetch").Message
+              Expect.stringContains m "expected string, got HttpRequest" "the mismatch"
+              Expect.stringContains m "runs through Http.send" "the repair"
+
+              // the correct pipeline spelling stays silent
+              checkOk "Http.get \"u\" |> Http.send" |> ignore
+          }
           test "a Secret does not interpolate into a url — the draft's Bearer spelling is now illegal" {
               let m = (checkErr "let t = Secret.of \"x\" in $\"Bearer {t}\"").Message
               Expect.stringContains m "does not interpolate" "the auth union carries the Secret whole instead"

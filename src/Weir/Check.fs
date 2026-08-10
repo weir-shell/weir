@@ -142,7 +142,15 @@ let private err (span: Span) (msg: string) : Result<'a, TypeError> =
           Origin = None }
 
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
-    err span $"expected {formatTy expected}, got {formatTy actual}"
+    // a built request where a URL string is expected is the fetch/send
+    // misreading exactly (`Http.get u |> Http.fetch`) — name the pair's
+    // split instead of leaving a bare type mismatch [D:fetch-naming]
+    let hint =
+        match expected, actual with
+        | TStr, TNamed("HttpRequest", _) -> " — a built request runs through Http.send; Http.fetch takes a bare URL"
+        | _ -> ""
+
+    err span $"expected {formatTy expected}, got {formatTy actual}{hint}"
 
 let private allOk (items: 'a list) (f: 'a -> Result<unit, TypeError>) : Result<unit, TypeError> =
     items |> List.fold (fun acc x -> Result.bind (fun () -> f x) acc) (Ok())
@@ -2344,7 +2352,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             err
                                 subjectSpan
                                 $"only records have updatable fields; this expression is a function ({formatTy fty}) — apply it first"
-                        | ty -> err subjectSpan $"only records have updatable fields; this expression has type {formatTy ty}"
+                        | ty ->
+                            err
+                                subjectSpan
+                                $"only records have updatable fields; this expression has type {formatTy ty}"
 
                 let! tupdates =
                     updates

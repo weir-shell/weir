@@ -2778,7 +2778,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Poll.defaults", bd "The poll template: timeout = 1m, interval = 1s." None None
           "Http.defaults",
           bd
-              "The request template: method = Get, empty url, NoAuth, no body, 30s timeout. `Http.send { Http.defaults with url = u }`."
+              "The request template RECORD: method = Get, empty url, NoAuth, no body, 30s timeout. `Http.send { Http.defaults with url = u }`. Sibling that reads alike: `Http.get url` is a CONSTRUCTOR returning one of these."
               None
               None
           "Http.send",
@@ -2789,7 +2789,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "request" ])
           "Http.get",
           (bd
-              "A request CONSTRUCTOR: `Http.get u` = `{ Http.defaults with method = Get; url = u }`. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`."
+              "A request CONSTRUCTOR — returns an HttpRequest, makes NO request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`. The URL-in-body-out shorthand is Http.fetch."
               (Some "Http.get \"http://x/y\"")
               None
            |> named [ "url" ])
@@ -2809,7 +2809,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "url" ])
           "Http.fetch",
           (bd
-              "The raising GET shorthand: body only, RAISES on non-2xx naming the status (the `curl -sf` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
+              "The raising GET shorthand: takes a BARE URL (never a request — a built request runs through Http.send), returns body only, RAISES on non-2xx naming the status (the `curl -sf` / JS `fetch(url)` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
               None
               None
            |> named [ "url" ])
