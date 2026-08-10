@@ -7,22 +7,75 @@ open Weir.Types
 open Weir.Eval
 
 let fileRow: RecordDef =
+    // the STATED surface [D:ls-truth] — what FileSystemInfo offers and
+    // which parts are in lives in the DECISIONS row; symlink is OUT
+    // with its reason (Windows semantics unverifiable off-matrix)
     { Name = "FileRow"
       Params = []
-      Fields = [ "name", TStr; "bytes", TSize; "readOnly", TBool ]
+      Fields =
+        [ "age", TDur
+          "bytes", TSize
+          "hidden", TBool
+          "isDirectory", TBool
+          "name", TStr
+          "path", TStr
+          "readOnly", TBool ]
       Attrs = Map.empty
       Docs = Map.empty }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
 let file (name: string) (bytes: int64) (readOnly: bool) : Value =
-    VRecord(fileRow.Name, Map [ "name", VStr name; "bytes", VSize bytes; "readOnly", VBool readOnly ])
+    // the fixture-friendly constructor: test rows are plain files at
+    // the cwd with zero age — real rows come from lsRow below
+    VRecord(
+        fileRow.Name,
+        Map
+            [ "age", VDur 0L
+              "bytes", VSize bytes
+              "hidden", VBool(name.StartsWith ".")
+              "isDirectory", VBool false
+              "name", VStr name
+              "path", VStr name
+              "readOnly", VBool readOnly ]
+    )
+
+let private lsRow (now: System.DateTime) (info: FileSystemInfo) : Value =
+    let isDir = info.Attributes.HasFlag FileAttributes.Directory
+
+    let bytes =
+        // a directory's "size" is a lie on every platform — 0 with the
+        // flag is honest [D:ls-truth]
+        match info with
+        | :? FileInfo as f when not isDir -> f.Length
+        | _ -> 0L
+
+    let hidden =
+        // one meaning across platforms: the dot-name (POSIX's whole
+        // convention) OR the attribute (Windows's real bit)
+        info.Name.StartsWith "." || info.Attributes.HasFlag FileAttributes.Hidden
+
+    VRecord(
+        fileRow.Name,
+        Map
+            [ "age", VDur(int64 (now - info.LastWriteTimeUtc).TotalMilliseconds)
+              "bytes", VSize bytes
+              "hidden", VBool hidden
+              "isDirectory", VBool isDir
+              "name", VStr info.Name
+              "path", VStr info.FullName
+              "readOnly", VBool(info.Attributes.HasFlag FileAttributes.ReadOnly) ]
+    )
 
 let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
-            DirectoryInfo(Session.Cwd()).GetFiles()
-            |> Seq.map (fun f -> file f.Name f.Length f.IsReadOnly))
+            // the WHOLE directory — files AND subdirectories (GetFiles
+            // silently halved the listing for a month) [D:ls-truth];
+            // age snapshots once per enumeration pass
+            let now = System.DateTime.UtcNow
+
+            DirectoryInfo(Session.Cwd()).GetFileSystemInfos() |> Seq.map (lsRow now))
     )
 
 let private whereImpl: Value =
@@ -2857,7 +2910,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- types: a hover renders the structure; the value here is
           // WHEN you get one ----
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
-          "FileRow", bd "A directory entry: name, bytes, readOnly. From `ls`." None None
+          "FileRow",
+          bd
+              "A directory entry: name, path, bytes (0 B for a directory), isDirectory, hidden, readOnly, age (Duration since last write, snapshotted per `ls` pull). From `ls` — files AND subdirectories."
+              None
+              None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
           "Group", bd "A key and its items, from `Seq.groupBy`." None None ]
 

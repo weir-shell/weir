@@ -879,7 +879,11 @@ let boundaryTests =
               // this USED to roundtrip when bytes was an int — the type
               // change is a wire-boundary change, stated and pinned
               let m = (checkErr "ls |> to json").Message
-              Expect.stringContains m "Size" "the refusal names the type"
+
+              Expect.stringContains
+                  m
+                  "is not representable in JSON"
+                  "the refusal names a unit type (age precedes bytes alphabetically)"
           }
           test "json roundtrip preserves rows (the jsonable stand-in)" {
               let src =
@@ -1703,11 +1707,31 @@ let completionTests =
           }
           test "lambda parameter completes from the pipeline element type" {
               let text = "ls |> where (fun f -> f."
-              Expect.equal (suggest text (text.Length - 2)) [ "f.bytes"; "f.name"; "f.readOnly" ] ""
+
+              Expect.equal
+                  (suggest text (text.Length - 2))
+                  [ "f.age"
+                    "f.bytes"
+                    "f.hidden"
+                    "f.isDirectory"
+                    "f.name"
+                    "f.path"
+                    "f.readOnly" ]
+                  ""
           }
           test "lambda param completes inside a record literal (the user receipt)" {
               let text = "ls |> Seq.map (fun x -> { Line = x."
-              Expect.equal (suggest text (text.Length - 2)) [ "x.bytes"; "x.name"; "x.readOnly" ] ""
+
+              Expect.equal
+                  (suggest text (text.Length - 2))
+                  [ "x.age"
+                    "x.bytes"
+                    "x.hidden"
+                    "x.isDirectory"
+                    "x.name"
+                    "x.path"
+                    "x.readOnly" ]
+                  ""
           }
           test "mid-line cursor: callers truncate at the cursor (the contract)" {
               // the receipt: `{ Line = x. })` with the cursor after the
@@ -1718,7 +1742,18 @@ let completionTests =
               let full = "ls |> Seq.map (fun x -> { Line = x. })"
               let upto = full.Substring(0, full.Length - 3)
               let ws = full.Length - 5
-              Expect.equal (suggest upto ws) [ "x.bytes"; "x.name"; "x.readOnly" ] "truncated: fields"
+
+              Expect.equal
+                  (suggest upto ws)
+                  [ "x.age"
+                    "x.bytes"
+                    "x.hidden"
+                    "x.isDirectory"
+                    "x.name"
+                    "x.path"
+                    "x.readOnly" ]
+                  "truncated: fields"
+
               Expect.equal (suggest full ws) [] "untruncated would kill every match"
           }
           test "field prefix narrows the suggestions" {
@@ -6946,7 +6981,10 @@ let showTests =
     testList
         "show"
         [ test "records render REPL-shaped" {
-              expectValue "show (ls |> Seq.head)" (VStr "{ bytes = 0 B; name = \"a.txt\"; readOnly = false }")
+              expectValue
+                  "show (ls |> Seq.head)"
+                  (VStr
+                      "{ age = 0s; bytes = 0 B; hidden = false; isDirectory = false; name = \"a.txt\"; path = \"a.txt\"; readOnly = false }")
           }
           test "unions, seqs, scalars" {
               expectValue "show (Some 3)" (VStr "Some 3")
@@ -9474,7 +9512,8 @@ let fileRowSizeTests =
           test "show of a row renders the size in binary units" {
               expectValue
                   "show (ls |> where (fun f -> f.name == \"b.bin\") |> Seq.head)"
-                  (VStr "{ bytes = 5 MiB; name = \"b.bin\"; readOnly = true }")
+                  (VStr
+                      "{ age = 0s; bytes = 5 MiB; hidden = false; isDirectory = false; name = \"b.bin\"; path = \"b.bin\"; readOnly = true }")
           }
           test "sortBy crosses the class boundary: Ord admits Size" {
               expectValue "ls |> Seq.sortByDescending _.bytes |> first 1 |> map _.name" (VSeq [ VStr "b.bin" ])
@@ -9539,6 +9578,56 @@ let replTableTests =
                   Expect.stringContains lines[2] "***" "the rendering marker holds in cells"
                   Expect.isFalse (lines |> List.exists (fun l -> l.Contains "s3cr3t")) "never the reveal"
               | other -> failtest $"expected a table, got {other}"
+          } ]
+
+let lsTruthTests =
+    // ls tells the whole truth [D:ls-truth]: files AND directories, the
+    // stated seven-field surface
+    testList
+        "ls tells the whole truth [D:ls-truth]"
+        [ test "directories join the rows: isDirectory filters, bytes is 0 B there" {
+              let d =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-ls-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub")) |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".dot"), "")
+
+              try
+                  let saved = Weir.Session.Cwd()
+                  Weir.Session.setCwd d
+
+                  // the shared valueEnv shadows ls with fakeFiles — this
+                  // pin needs the REAL prelude ls
+                  let runLive input =
+                      match typecheck env (parse input) with
+                      | Ok te -> eval Weir.Builtins.valueEnv te
+                      | Error terr -> failtest (formatError terr)
+
+                  try
+                      match runLive "ls |> Seq.where _.isDirectory |> Seq.map _.name" |> forceSeq with
+                      | [ VStr "sub" ] -> ()
+                      | other -> failtest $"the subdirectory must list: {other}"
+
+                      match runLive "(ls |> Seq.where _.isDirectory |> Seq.head).bytes" with
+                      | VSize 0L -> ()
+                      | other -> failtest $"a directory's bytes is 0 B, honestly: {other}"
+
+                      match runLive "ls |> Seq.where _.hidden |> Seq.map _.name" |> forceSeq with
+                      | [ VStr ".dot" ] -> ()
+                      | other -> failtest $"the dot-name is hidden: {other}"
+
+                      match runLive "ls |> Seq.where (fun f -> f.age < 1h) |> Seq.length" with
+                      | VInt 3L -> ()
+                      | other -> failtest $"fresh files filter by age: {other}"
+
+                      match runLive "(ls |> Seq.head).path" with
+                      | VStr p when p.StartsWith d -> ()
+                      | other -> failtest $"path is absolute: {other}"
+                  finally
+                      Weir.Session.setCwd saved
+              finally
+                  System.IO.Directory.Delete(d, true)
           } ]
 
 let pinsWalkTests =
@@ -11224,6 +11313,7 @@ let allTests =
           fromJsonSeqTests
           fileRowSizeTests
           replTableTests
+          lsTruthTests
           yamlSeqTests
           formatSurfaceTests
           secretTests

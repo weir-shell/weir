@@ -7,11 +7,12 @@ included, before anything executes: a broken script fails up front
 instead of halfway through its side effects.
 
 ```
-weir> ls |> Seq.sortByDescending _.bytes |> first 2
-   bytes  name       readOnly
-────────  ─────────  ────────
-   4 MiB  core.dump  false
-88.8 KiB  build.log  false
+weir> ls |> Seq.sortByDescending _.bytes
+   age     bytes  hidden  isDirectory  name       path              readOnly
+──────  ────────  ──────  ───────────  ─────────  ────────────────  ────────
+ 956ms     4 MiB  false   false        core.dump  /tmp/w/core.dump  false
+ 827ms  88.8 KiB  false   false        build.log  /tmp/w/build.log  false
+2.131s       0 B  false   true         logs       /tmp/w/logs       false
 : seq<FileRow>
 
 weir> ls |> where (fun f -> f.bytse > 10MiB)
@@ -19,9 +20,9 @@ type error: FileRow has no field 'bytse'. Did you mean 'bytes'?
 ```
 
 Two lines, the whole idea: rows are typed records — `bytes` is a
-`Size`, so it renders as `4 MiB` and compares as one
-(`f.bytes > 10MiB`), and the REPL tabulates any seq of records — and
-the second line is refused before anything runs — in a script, before *any*
+`Size` (`f.bytes > 10MiB`), `age` is a `Duration`
+(`f.age < 1h`), directories are rows too — the REPL tabulates any
+seq of records, and the second line is refused before anything runs — in a script, before *any*
 line runs. External commands are first-class in the same pipelines
 (`git status --porcelain |> where (Str.startsWith "M ")`), scripts
 take real flags derived from a record, and everything is one static
