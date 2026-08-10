@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+
+# temp dirs weir can SEE on every platform: Git Bash's /tmp is
+# MSYS-virtual — a native weir.exe cannot resolve it, so hand weir the
+# mixed (C:/...) spelling; POSIX passes through untouched
+mkweirtmp() {
+    d=$(mktemp -d)
+    if command -v cygpath >/dev/null 2>&1; then cygpath -m "$d"; else printf '%s\n' "$d"; fi
+}
 # End-to-end battery against the AOT binary (command-mode Session 4 set).
 set -euo pipefail
 
@@ -27,7 +35,7 @@ fi
 echo "e2e ok: no conflict markers in tracked files"
 
 # ---- pins-walk: three runtime messages only e2e can see [D:pins-walk] ------
-pwdir=$(mktemp -d)
+pwdir=$(mkweirtmp)
 # THE set-e analogue's WORDS were never asserted (the raise itself was)
 cat > "$pwdir/x.weir" <<'WEOF'
 sh -c "exit 3"
@@ -53,7 +61,7 @@ else
 fi
 
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
-pw2=$(mktemp -d)
+pw2=$(mkweirtmp)
 rc=0; $BIN -e 'exit 4' >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 4 ] || fail "exit 4 must propagate rc 4, got $rc"
 rc=0; $BIN -e 'fail "m"' >/dev/null 2>&1 || rc=$?
@@ -72,7 +80,7 @@ rm -rf "$pw2"
 echo "e2e ok: pins-walk candidates (exit codes exact, readSecret trio, Dir.copy recursive)"
 
 # walk cohort: the Args-side defaulted-Secret teaching [D:secret]
-pw3=$(mktemp -d)
+pw3=$(mkweirtmp)
 cat > "$pw3/sd.weir" <<'WEOF'
 type SC = { [<Default "x">] apiKey: Secret }
 let c = Args.load SC
@@ -148,7 +156,7 @@ expect "range literal on the AOT binary" "5 : int" "$out"
 out=$(timeout 5 $BIN -e '[1..1000000] |> first 3') || fail "huge range under first must terminate (laziness)"
 expect "ranges are lazy generators" '[1; 2; 3]' "$out"
 
-rangedir=$(mktemp -d)
+rangedir=$(mkweirtmp)
 mkdir -p "$rangedir/sub"
 cat > "$rangedir/sub/updot.weir" <<'WEOF'
 cd ..
@@ -164,7 +172,7 @@ expect "string interpolation with brace escapes" '"answer: 42 {ok}"' "$out"
 out=$($BIN -e 'echo $"n={40 + 2}" |> first 1')
 expect "interpolated string is one argv entry" '["n=42"]' "$out"
 
-dir=$(mktemp -d)
+dir=$(mkweirtmp)
 (
     cd "$dir"
     git init -q
@@ -208,7 +216,7 @@ expect "sh lines can complete now (old builtin boundary gone)" "7 : int" "$out"
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)
-eitherdir=$(mktemp -d)
+eitherdir=$(mkweirtmp)
 cat > "$eitherdir/either.weir" <<'WEOF'
 type Either<'a, 'e> = Left of 'a | Right of 'e
 print (match Left 3 with | Left v -> v | Right e -> Str.length e)
@@ -225,7 +233,7 @@ expect "Option sweep idiom on the AOT binary" "9 : int" "$out"
 out=$($BIN -e 'Some 3')
 expect "prelude Option types generically" "Some 3 : Option<int>" "$out"
 
-branchdir=$(mktemp -d)
+branchdir=$(mkweirtmp)
 (
     cd "$branchdir"
     git init -q
@@ -238,7 +246,7 @@ out=$(printf 'cd "%s"\ngit branch |> map trim |> where (startsWith "feature") |>
 expect "git-branch-cleanup dogfood task" '"feature/a,feature/b"' "$out"
 rm -rf "$branchdir"
 
-scriptdir=$(mktemp -d)
+scriptdir=$(mkweirtmp)
 cat > "$scriptdir/task.weir" <<'WEOF'
 #!/usr/bin/env weir
 // strict by default
@@ -354,7 +362,7 @@ elapsed_ms=$(($(now_ms) - start))
 [ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
 echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
 
-forkdir=$(mktemp -d)
+forkdir=$(mkweirtmp)
 cat > "$forkdir/fork.weir" <<'WEOF'
 let a = cd "/tmp"
 
@@ -379,7 +387,7 @@ if $BIN -e 'sh -c "exit 4"' 2>/dev/null; then
 fi
 echo "e2e ok: bare command raises on nonzero exit"
 
-seqdir=$(mktemp -d)
+seqdir=$(mkweirtmp)
 cat > "$seqdir/seq.weir" <<'WEOF'
 let go = 1 > 0
 
@@ -408,7 +416,7 @@ echo "$errout" | grep -qF "does not chain" || fail "semicolon boundary warning m
 echo "e2e ok: bash-semicolon prior-bleed warned"
 rm -rf "$seqdir"
 
-sigdir=$(mktemp -d)
+sigdir=$(mkweirtmp)
 cat > "$sigdir/sig.weir" <<'WEOF'
 let go = 1 > 0
 
@@ -439,7 +447,7 @@ fi
 echo "e2e ok: sigil heads resolve at check time"
 rm -rf "$sigdir"
 
-distdir=$(mktemp -d)
+distdir=$(mkweirtmp)
 cat > "$distdir/d.weir" <<'WEOF'
 let go = 1 > 0
 
@@ -481,7 +489,7 @@ echo "$errout" | grep -qE "span.weir:5:" || fail "district splice error must poi
 echo "e2e ok: command-group span translation points at the offending line"
 rm -rf "$distdir"
 
-envdir=$(mktemp -d)
+envdir=$(mkweirtmp)
 cat > "$envdir/cfg.weir" <<'WEOF'
 type Config = { WEIR_E2E_PORT: int; WEIR_E2E_DEBUG: bool; WEIR_E2E_OPT: Option<string> }
 
@@ -627,7 +635,7 @@ if $BIN -e 'match 1 == 1 with | true -> 1' 2>/dev/null; then
 fi
 echo "e2e ok: -e rejects non-exhaustive matches"
 
-faildir=$(mktemp -d)
+faildir=$(mkweirtmp)
 cat > "$faildir/f.weir" <<'WEOF'
 printerr "diag"
 print "data"
@@ -644,7 +652,7 @@ echo "$errout" | grep -qF "error: stop here" || fail "fail must be located on st
 echo "e2e ok: fail exits located; printerr separates streams"
 rm -rf "$faildir"
 
-bigdir=$(mktemp -d)
+bigdir=$(mkweirtmp)
 truncate -s 3G "$bigdir/sparse.bin"
 touch "$bigdir/empty.txt"
 out=$(printf 'cd "%s"\nls |> Seq.where (fun f -> f.bytes > 2147483647B) |> Seq.map _.name\nls |> Seq.where (fun f -> f.bytes == 0B) |> Seq.map _.name\n:q\n' "$bigdir" | $BIN)
@@ -662,7 +670,7 @@ errout=$($BIN -e '9223372036854775807 + 1' 2>&1 || true)
 echo "$errout" | grep -qF "integer overflow" || fail "overflow error text missing: $errout"
 echo "e2e ok: checked arithmetic raises on the AOT binary"
 
-fmtdir=$(mktemp -d)
+fmtdir=$(mkweirtmp)
 printf 'let x =\n      let a = 1\n      a + 1\n\nprint $"{x}"\n' > "$fmtdir/ugly.weir"
 if $BIN fmt --check "$fmtdir/ugly.weir" 2>/dev/null; then
     fail "fmt --check must flag an unformatted file"
@@ -718,7 +726,7 @@ echo "$out" | grep -qF "hi" || fail "REPL print lost its output"
 if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into REPL display"; fi
 echo "e2e ok: unit is invisible in the REPL"
 
-stmtdir=$(mktemp -d)
+stmtdir=$(mkweirtmp)
 cat > "$stmtdir/discard.weir" <<'WEOF'
 sh -c "touch discard-proof"
 "polluting output"
@@ -786,7 +794,7 @@ echo "e2e ok: forced unknown command rejected"
 
 # --- check-vs-run on missing commands + binding-shadows-PATH (2026-07-21)
 
-svdir=$(mktemp -d)
+svdir=$(mkweirtmp)
 
 cat > "$svdir/missing.weir" <<'WEOF'
 definitely-not-a-real-tool --flag arg
@@ -986,7 +994,7 @@ fi
 
 # --- weir check [--json] (2026-07-21, LSP chain 2/3) -------------------
 
-ckdir=$(mktemp -d)
+ckdir=$(mkweirtmp)
 
 cat > "$ckdir/multi.weir" <<'WEOF'
 let Foo = 1
@@ -1053,7 +1061,7 @@ echo "e2e ok: command-first body ARMS (flipped); non-command seq-unit still at t
 # the interior-arming battery [D:interior-arming]: the four-row rule on
 # the AOT binary — if bodies, lambda bodies, blocks, the reifier gap,
 # the two raise timings, and the script carve-out
-iadir=$(mktemp -d)
+iadir=$(mkweirtmp)
 cat > "$iadir/ia.weir" <<'WEOF'
 let force = true
 if force then
@@ -1105,7 +1113,7 @@ echo "e2e ok: multi-line for bodies arm without a district"
 rm -rf "$iadir"
 
 # ---- within tmp [D:within-scopes] ------------------------------------------
-widir=$(mktemp -d)
+widir=$(mkweirtmp)
 cat > "$widir/receipt.weir" <<'WEOF'
 let digest = within tmp dir
     ["payload"] |> File.write $"{dir}/f.txt"
@@ -1231,7 +1239,7 @@ vout=$( cd "$widir" && $BIN envval.weir )
 echo "e2e ok: within env expression position yields a captured value"
 
 # ---- filesystem members [D:fs-members] -------------------------------------
-fsdir=$(mktemp -d)
+fsdir=$(mkweirtmp)
 cat > "$fsdir/glob.weir" <<'WEOF'
 let d = Path.newTempDir ()
 Dir.create $"{d}/sub"
@@ -1329,7 +1337,7 @@ rm -rf "$ckdir"
 # --- runner missing-command diagnosis (2026-07-21: FParsec's primary
 # error buried the real cause and showed assembler-joined text) ---
 
-mdir=$(mktemp -d)
+mdir=$(mkweirtmp)
 printf 'not-a-real-tool-xyz --flag\n' > "$mdir/m.weir"
 rc=0; errout=$($BIN "$mdir/m.weir" 2>&1) || rc=$?
 [ $rc -eq 1 ] || fail "missing command must fail the runner (rc=$rc)"
@@ -1399,7 +1407,7 @@ echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 # param-ful command RHS (PLAN-paramful-rhs): the shadowing law —
 # this pin was written FAILING against the guard-dropped prototype
 # (`let f x = x` printed SPAWNED with an executable x on PATH)
-shdir=$(mktemp -d)
+shdir=$(mkweirtmp)
 printf '#!/bin/sh\necho SPAWNED\n' > "$shdir/x" && chmod +x "$shdir/x"
 cat > "$shdir/shadow.weir" <<'WEOF'
 let f x = x
@@ -1413,7 +1421,7 @@ expect "^x still reaches the PATH binary (no capability lost)" "SPAWNED" "$out"
 rm -rf "$shdir"
 
 # param-ful RHS: forms, sigil equivalence, splice-typo hint
-pfdir=$(mktemp -d)
+pfdir=$(mkweirtmp)
 (cd "$pfdir" && git init -q . && git -c user.email=a@a -c user.name=a commit -q --allow-empty -m x)
 cat > "$pfdir/forms.weir" <<'WEOF'
 let revParse r = git rev-parse $r |> Seq.head
@@ -1436,7 +1444,7 @@ rm -rf "$pfdir"
 
 # Seq.fold + fun-sugar (PLAN-fold): the git-subrepo receipt folds
 # verbatim — the port's blocker provably unblocked
-folddir=$(mktemp -d)
+folddir=$(mkweirtmp)
 cat > "$folddir/receipt.weir" <<'WEOF'
 // encode-subdir's escape loop, as a fold over replacement pairs
 let escaped =
@@ -1470,7 +1478,7 @@ expect "Env.ofPairs into the env sigil (the inline-env receipt)" "n/e" "$out"
 rm -rf "$folddir"
 
 # fmt v2 respace under the parse-shape guard (user receipt, 2026-07-22)
-fdir=$(mktemp -d)
+fdir=$(mkweirtmp)
 cat > "$fdir/ugly.weir" <<'WEOF'
 type Great = {Lomo: int; Bimbo: string}
 
@@ -1499,7 +1507,7 @@ echo "e2e ok: the shape guard keeps command argv braces literal"
 rm -rf "$fdir"
 
 # record update (PLAN-record-update): the corpus snippets ARE the e2e
-upd=$(mktemp -d)
+upd=$(mkweirtmp)
 cat > "$upd/corpus1.weir" <<'WEOF'
 type Model = { V: string; I: int }
 let m = { V = ""; I = 0 }
@@ -1537,7 +1545,7 @@ expect "multi-line update rides the brace-continuation rule" "30" "$out"
 rm -rf "$upd"
 
 # raw strings (PLAN-raw-strings): both kinds on the AOT binary
-rawdir=$(mktemp -d)
+rawdir=$(mkweirtmp)
 cat > "$rawdir/raw.weir" <<'WEOF'
 let path = @"a\raw\path"
 let quoted = """say "hi" ok"""
@@ -1570,7 +1578,7 @@ expect "verbatim splice is one literal argv entry" '\n' "$out"
 rm -rf "$rawdir"
 
 # the Regex pattern + Str match family (regex plan, 2026-07-22)
-redir=$(mktemp -d)
+redir=$(mkweirtmp)
 cat > "$redir/logs.weir" <<'WEOF'
 let lines = ["INFO 200 ok"; "WARN 500 boom"; "INFO 404 miss"; "garbage"]
 
@@ -1621,7 +1629,7 @@ errout=$($BIN -e 'ls >> x' 2>&1 || true)
 echo "$errout" | grep -qF "File.append" || fail "the loc.weir line must hint File.append: $errout"
 echo "e2e ok: composition works; the two >> mistakes get targeted hints"
 
-rdir=$(mktemp -d)
+rdir=$(mkweirtmp)
 cat > "$rdir/redir.weir" <<'WEOF'
 echo hi > out.txt
 echo hi >> out.txt
@@ -1657,7 +1665,7 @@ echo "e2e ok: casing squiggle points at the binder"
 
 # --- pattern binders + bare comma (2026-07-21) -------------------------
 
-pbdir=$(mktemp -d)
+pbdir=$(mkweirtmp)
 
 cat > "$pbdir/binders.weir" <<'WEOF'
 let hosts = ["alpha"; "beta"]
@@ -1696,7 +1704,7 @@ rm -rf "$pbdir"
 
 # --- tuples (2026-07-21): the reversal, end to end ---------------------
 
-tudir=$(mktemp -d)
+tudir=$(mkweirtmp)
 
 cat > "$tudir/tup.weir" <<'WEOF'
 type Route = | Hop of string * int | Stay
@@ -1733,7 +1741,7 @@ rm -rf "$tudir"
 
 # --- literal patterns + () thunks (2026-07-21) ------------------------
 
-ldir=$(mktemp -d)
+ldir=$(mkweirtmp)
 
 cat > "$ldir/lit.weir" <<'WEOF'
 let cleanup () = printerr "cleaning up"
@@ -1765,7 +1773,7 @@ rm -rf "$ldir"
 
 # --- type classes Session C (2026-07-21): hardening products
 
-cdir=$(mktemp -d)
+cdir=$(mkweirtmp)
 
 cat > "$cdir/prod.weir" <<'WEOF'
 let same x y = x == y
@@ -1786,7 +1794,7 @@ rm -rf "$cdir"
 
 # --- type classes Session B (2026-07-21): Show + Ord — the runtime check dies
 
-bdir=$(mktemp -d)
+bdir=$(mkweirtmp)
 
 # THE HEADLINE: sortBy-on-record-key is rejected at CHECK time — the
 # effect before it must NOT run (check-first proves the runtime check
@@ -1818,7 +1826,7 @@ rm -rf "$bdir"
 
 # --- type classes Session A (2026-07-20): Eq — sentinels retired
 
-tdir=$(mktemp -d)
+tdir=$(mkweirtmp)
 
 cat > "$tdir/eq.weir" <<'WEOF'
 type Pair = { A: int; B: int }
@@ -1846,7 +1854,7 @@ rm -rf "$tdir"
 # --- hardening sweep (2026-07-20): product-matrix effect counts,
 # fixture backfill, ExitRequest entry-point insurance
 
-hdir=$(mktemp -d)
+hdir=$(mkweirtmp)
 
 # A x E: a blank line ends a compound body — the tail runs UNCONDITIONALLY
 cat > "$hdir/axe.weir" <<'WEOF'
@@ -1934,7 +1942,7 @@ rm -rf "$hdir"
 
 # --- env sugar layers 1+2 (2026-07-20): $e(...) / !e(...) and the !e district
 
-sdir=$(mktemp -d)
+sdir=$(mkweirtmp)
 printf 'MARK=layered\n' > "$sdir/s.env"
 
 cat > "$sdir/sigil.weir" <<'WEOF'
@@ -1979,7 +1987,7 @@ rm -rf "$sdir"
 
 # --- child-env injection (2026-07-20): the shEnv receipt ------------
 
-edir=$(mktemp -d)
+edir=$(mkweirtmp)
 
 cat > "$edir/target.env" <<'EOF'
 AZURE_SUBSCRIPTION_ID=sub-web
@@ -2036,7 +2044,7 @@ rm -rf "$edir"
 # --- grammar consolidation (2026-07-20): offside close, record
 # continuations, exit — the bicep translation's shapes verbatim
 
-gdir=$(mktemp -d)
+gdir=$(mkweirtmp)
 
 cat > "$gdir/guard.weir" <<'WEOF'
 type T = { Name: string }
@@ -2168,7 +2176,7 @@ echo "e2e ok: fmt accepts the bicep origin script"
 rm -rf "$gdir"
 
 # attributes (PLAN-attributes): check-time, erased, registered names
-adir=$(mktemp -d)
+adir=$(mkweirtmp)
 cat > "$adir/attrs.weir" <<'WEOF'
 type Cfg = { [<Short "c">] Count: int; Name: string; [<NoShort>] Loud: bool }
 let c = { Count = 1; Name = "x"; Loud = false }
@@ -2233,7 +2241,7 @@ rm -rf "$adir"
 
 # typed argv (PLAN-typed-argv): Args.load over records and unions;
 # the attributes plan's carried done-when clauses discharge here
-tadir=$(mktemp -d)
+tadir=$(mkweirtmp)
 cat > "$tadir/cli.weir" <<'WEOF'
 type Cli = {
     /// clean first
@@ -2262,7 +2270,7 @@ echo "e2e ok: a four-problem invocation reports all four, collected"
 # DECLARATION order (shared tier before payload). Exact-string pins,
 # written against the pre-extraction binary; the twins' shared rules
 # must keep this byte-identical.
-odir=$(mktemp -d)
+odir=$(mkweirtmp)
 cat > "$odir/rec.weir" <<'WEOF'
 type Cli = { retries: int; target: string }
 let cli = Args.load Cli
@@ -2435,7 +2443,7 @@ $BIN check tools/jira-branch.weir >/dev/null 2>&1 || fail "jira-branch must chec
 echo "e2e ok: jira-branch checks with the typed Cli"
 
 # multiline brackets (PLAN-multiline-brackets): type decls + lists
-mldir=$(mktemp -d)
+mldir=$(mkweirtmp)
 cat > "$mldir/forms.weir" <<'WEOF'
 type Ctx =
     { Subdir: string
@@ -2475,7 +2483,7 @@ rm -rf "$mldir"
 
 # body blanks (PLAN-body-blanks): the core reversal — blanks transparent
 # while a statement pends; the col-0 law is the sole boundary
-bbdir=$(mktemp -d)
+bbdir=$(mkweirtmp)
 cat > "$bbdir/status.weir" <<'WEOF'
 let status name =
     print $"name: {name}"
@@ -2567,7 +2575,7 @@ echo "e2e ok: piped REPL output is byte-clean (the harness guard)"
 
 # seq patterns (PLAN-seq-force-patterns Part 2): F#'s spelling, seq
 # semantics, bounded force + memoize-once
-spdir=$(mktemp -d)
+spdir=$(mkweirtmp)
 cat > "$spdir/status.weir" <<'WEOF'
 let verdict =
     match $(printf 'M a.txt\nA b.txt') with
@@ -2614,7 +2622,7 @@ echo "e2e ok: '|' after an expression names the |> spelling"
 # block-let command RHS (PLAN-block-let-cmd): the uniformity fix
 # (ROOT resolved BEFORE any cd: $0 is relative to the invocation dir)
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-bldir=$(mktemp -d)
+bldir=$(mkweirtmp)
 cat > "$bldir/forms.weir" <<'WEOF'
 let graft c =
     let tree = git rev-parse $"{c}^{{tree}}" |> Seq.head
@@ -2670,7 +2678,7 @@ rm -rf "$bldir"
 
 # ---- multiline lambdas [D:multiline-lambda]: the form-block shapes ----
 
-mldir=$(mktemp -d)
+mldir=$(mkweirtmp)
 cat > "$mldir/iter.weir" <<'WEOF'
 let repos = [("alpha", "r1"); ("beta", "r2")]
 
@@ -2747,7 +2755,7 @@ rm -rf "$mldir"
 
 # ---- shared flags by containment [D:shared-flags] ----
 
-sfdir=$(mktemp -d)
+sfdir=$(mkweirtmp)
 cat > "$sfdir/cli.weir" <<'WEOF'
 type SearchArgs = { query: string }
 type RunArgs = { name: Option<string> }
@@ -2823,7 +2831,7 @@ rm -rf "$sfdir"
 # ---- the reifier family completes [D:exit-reifiers]: output goes
 # ---- where the meaning goes ----
 
-rfdir=$(mktemp -d)
+rfdir=$(mkweirtmp)
 
 # orFail STREAMS (behavioral pin: the child's stdout reaches the user)
 cat > "$rfdir/of.weir" <<'WEOF'
@@ -2901,7 +2909,7 @@ rm -rf "$rfdir"
 
 # ---- value-headed pipe into a child's stdin [D:value-headed-pipe] ----
 
-fddir=$(mktemp -d)
+fddir=$(mkweirtmp)
 # macOS has no sha256sum; shasum -a 256 emits the identical digest and
 # the fixture only reads the first field
 HASHTOOL="sha256sum"
@@ -2972,7 +2980,7 @@ rm -rf "$fddir"
 
 # ---- [<Default>]: the resting point moves [D:default-attr] ----
 
-dadir=$(mktemp -d)
+dadir=$(mkweirtmp)
 cat > "$dadir/cli.weir" <<'WEOF'
 type Cli = {
     [<Default 10000>]
@@ -3007,7 +3015,7 @@ rm -rf "$dadir"
 # ---- Env.load consumes Default [D:default-attr]: the resting point
 # ---- sits below the whole overlay stack ----
 
-endir=$(mktemp -d)
+endir=$(mkweirtmp)
 cat > "$endir/child.weir" <<'WEOF'
 type Cfg = { [<Default 8080>] PORT_ZQ: int; [<Default false>] DEBUG_ZQ: bool }
 let c = Env.load Cfg
@@ -3034,7 +3042,7 @@ echo "e2e ok: the Default resting point sits below the whole env stack"
 
 # ---- scriptPath: the $0 gap closes [D:script-path] ----
 
-spdir=$(mktemp -d)
+spdir=$(mkweirtmp)
 # macOS: mktemp lives under the /var symlink and weir absolutizes a
 # relative script path against the PHYSICAL cwd (getcwd) — compare
 # physical to physical (pwd -P is POSIX; a no-op on Linux)
@@ -3085,7 +3093,7 @@ rm -rf "$spdir"
 
 # ---- Path.glob [D:path-glob]: typed discovery, nothing expands ----
 
-pgdir=$(mktemp -d)
+pgdir=$(mkweirtmp)
 mkdir -p "$pgdir/src/a/b" "$pgdir/fixtures/x" "$pgdir/deny" "$pgdir/loop"
 touch "$pgdir/top.json" "$pgdir/other.json" "$pgdir/.hidden.json" \
       "$pgdir/src/one.fs" "$pgdir/src/a/two.fs" "$pgdir/src/a/b/three.fs" \
@@ -3144,7 +3152,7 @@ expect "glob | child: discovery into a child's stdin" "top.json
 other.json" "$out"
 
 # the timing ceiling: 10k files enumerate under 2s on the AOT binary
-big=$(mktemp -d)
+big=$(mkweirtmp)
 mkdir -p "$big/d"
 (cd "$big/d" && seq 1 10000 | xargs touch)
 cat > "$big/t.weir" <<'WEOF'
@@ -3161,7 +3169,7 @@ rm -rf "$pgdir" "$big"
 
 # ---- Seq.distinct [D:seq-distinct]: dedupe as a pipeline stage ----
 
-sddir=$(mktemp -d)
+sddir=$(mkweirtmp)
 mkdir -p "$sddir"; touch "$sddir/a.txt" "$sddir/b.txt" "$sddir/ab.md"
 cat > "$sddir/d.weir" <<'WEOF'
 // the deferred glob product cell: overlapping patterns dedupe
@@ -3181,7 +3189,7 @@ rm -rf "$sddir"
 
 # ---- argv splat $@xs [D:argv-splat]: N things, N words ----
 
-spldir=$(mktemp -d)
+spldir=$(mkweirtmp)
 ( cd "$spldir" && git init -q . && touch a.txt b.txt c.md )
 
 # form 1: glob into git add, verified via git status output
@@ -3313,7 +3321,7 @@ echo "e2e ok: deep-lock refuses to guess on a garbage lock (exit 3, lock preserv
 # the depth guard's stack probe on the AOT binary [D:depth-stack-probe]:
 # a small stack must produce the located diagnostic, never a SIGSEGV
 # (the macOS finding — test hosts there run smaller stacks than Linux)
-ddir=$(mktemp -d)
+ddir=$(mkweirtmp)
 python3 -c "print('let x = ' + '('*499 + '1' + ')'*499)" > "$ddir/deep.weir" 2>/dev/null \
     || awk 'BEGIN{s="let x = "; for(i=0;i<499;i++)s=s"("; s=s"1"; for(i=0;i<499;i++)s=s")"; print s}' > "$ddir/deep.weir"
 $BIN check "$ddir/deep.weir" >/dev/null 2>&1 || fail "depth 499 must parse on a full-size stack"
@@ -3325,7 +3333,7 @@ echo "e2e ok: depth probe diagnoses on a 512KB stack (no SIGSEGV), full stack st
 rm -rf "$ddir"
 
 # ---- user modules and imports, session 1 [D:modules-v1] -------------------
-mdir=$(mktemp -d)
+mdir=$(mkweirtmp)
 cat > "$mdir/paths.weir" <<'WEOF'
 module Paths
 type Ctx = { root: string; name: string }
@@ -3483,7 +3491,7 @@ rm -rf "$mdir"
 
 # ---- REPL config [D:repl-quality]: inert keys, reject unknown, and the
 # load-bearing property that SCRIPTS never read it -----------------------
-cfgdir=$(mktemp -d)
+cfgdir=$(mkweirtmp)
 mkdir -p "$cfgdir/weir"
 printf '{"historySizee": 10}\n' > "$cfgdir/weir/config.json"
 out=$(printf ':q\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
@@ -3498,7 +3506,7 @@ expect "a script ignores the REPL config entirely (even a broken one)" "scripts-
 rm -rf "$cfgdir"
 
 # ---- for/do: the general effect loop [D:for-do] ---------------------------
-fdir=$(mktemp -d)
+fdir=$(mkweirtmp)
 # the natural shell shape: a bare command body over a real external
 cat > "$fdir/loop.weir" <<'WEOF'
 for w in ["one"; "two"] do sh -c $"echo got-{w}"
@@ -3526,7 +3534,7 @@ expect "a non-unit for body errors in the statement-rule family" "expected unit,
 rm -rf "$fdir"
 
 # ---- the yaml boundary [D:yaml-v1] ----------------------------------------
-ydir=$(mktemp -d)
+ydir=$(mkweirtmp)
 cat > "$ydir/k8s.weir" <<'WEOF'
 type Port = { containerPort: int }
 type Container = { name: string; image: string; ports: seq<Port> }
@@ -3573,7 +3581,7 @@ b" "$out"
 rm -rf "$ydir"
 
 # ---- the yaml district [D:yaml-district] ----------------------------------
-yddir=$(mktemp -d)
+yddir=$(mkweirtmp)
 cat > "$yddir/deploy.weir" <<'WEOF'
 let deployment name replicas pairs = yaml
     apiVersion: apps/v1
@@ -3660,7 +3668,7 @@ rm -rf "$yddir"
 
 # mid-line # on district structure lines is a comment [D:district-hash] —
 # the two paths agree; the acceptance: the pasted line emits UNQUOTED
-mhdir=$(mktemp -d)
+mhdir=$(mkweirtmp)
 cat > "$mhdir/mh.weir" <<'WEOF'
 let d = yaml
     image: nginx:latest # pinned by ops
@@ -3679,7 +3687,7 @@ rm -rf "$mhdir"
 # byte-exact through check AND run. The fixture is GENERATED (printf) because
 # a checked-in literal with trailing spaces / tabs / CRLF invites editor and
 # git mangling — the generator IS the fixture.
-hbdir=$(mktemp -d)
+hbdir=$(mkweirtmp)
 {
     printf 'let d = yaml\n'
     printf '    data:\n'
@@ -3737,7 +3745,7 @@ rm -rf "$hbdir"
 # against a LOCAL server (CI is offline) serving the committed REAL
 # k8s configmap schema — the published-schema fetch ran in-session
 # and is recorded in the plan's report
-ctdir=$(mktemp -d)
+ctdir=$(mkweirtmp)
 mkdir -p "$ctdir/serve"
 cp "$(dirname "$0")/../tests/fixtures/configmap-v1.json" "$ctdir/serve/"
 ctport=$((18930 + RANDOM % 2000))
@@ -3913,7 +3921,7 @@ rm -rf "$ctdir"
 # ---- the Log module [D:log-module] -----------------------------------------
 # stderr always; WEIR_LOG selects; stdout is BYTE-IDENTICAL at every
 # level (THE pin — stdout is data); invalid level = loud startup error
-lgdir=$(mktemp -d)
+lgdir=$(mkweirtmp)
 cat > "$lgdir/lg.weir" <<'WEOF'
 Log.trace "t"
 Log.debug "d"
@@ -3989,7 +3997,7 @@ $BIN --help | grep -qF "usage: weir" || fail "--help prints usage on stdout, exi
 echo "e2e ok: CLI teaching arms (--e did-you-mean, -e arity, --help)"
 
 # ---- Duration [D:duration]: the Args/Env spine on the real binary ----------
-ddir=$(mktemp -d)
+ddir=$(mkweirtmp)
 cat > "$ddir/dur.weir" <<'WEOF'
 type DurCli = {
     [<Default 30s>]
@@ -4038,7 +4046,7 @@ out=$($BIN -e 'Float.near (Float.parse (show 1.5e-3)) 1.5e-3 0.0')
 echo "e2e ok: floats (finite-only raises, teachings name spellings, toSeconds lossless, round-trip)"
 
 # ---- trailing comments [D:trailing-comments] -------------------------------
-tcdir=$(mktemp -d)
+tcdir=$(mkweirtmp)
 cat > "$tcdir/tc.weir" <<'WEOF'
 let x = 5 // a trailing comment parses now
 let url = "http://a" // glued // inside strings is data
@@ -4063,7 +4071,7 @@ rm -rf "$tcdir"
 echo "e2e ok: trailing comments (script + -e strip, strings stay data, fmt preserves + idempotent)"
 
 # ---- the dedent correct-join [D:dedent-join] -------------------------------
-djdir=$(mktemp -d)
+djdir=$(mkweirtmp)
 cat > "$djdir/dj.weir" <<'WEOF'
 let sub =
     within tmp d
@@ -4090,7 +4098,7 @@ echo "e2e ok: dedent correct-join (post-scope statements join, the floor stays)"
 # ---- tasks underneath [D:tasks-underneath]: I/O-bound fan-out --------------
 # 100 arms each SPAWNING a child weir — the domain's real arm shape,
 # at the raised ceiling; order preserved, parent cwd untouched
-tudir=$(mktemp -d)
+tudir=$(mkweirtmp)
 cat > "$tudir/tu.weir" <<'WEOF'
 let before = pwd |> Seq.head
 let outs =
@@ -4117,7 +4125,7 @@ echo "e2e ok: tasks underneath (100 spawning arms at the ceiling in ${took}ms, o
 rm -rf "$tudir"
 
 # ---- retry / poll [D:retry-poll] -------------------------------------------
-rpdir=$(mktemp -d)
+rpdir=$(mkweirtmp)
 cat > "$rpdir/rp.weir" <<'WEOF'
 let out = retry attempts=5 delay=10ms
     let r = weir -e "print 42" | complete
@@ -4145,7 +4153,7 @@ echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, c
 # ---- if cmd | succeeds then [D:if-succeeds] --------------------------------
 # the inline command condition: the let-RHS acceptance gate one position
 # over; `then` stops the chain's argv ONLY inside a condition
-isdir=$(mktemp -d)
+isdir=$(mkweirtmp)
 cat > "$isdir/is.weir" <<'WEOF'
 if test -f /etc/hostname | succeeds then
     print "inline-if"
@@ -4175,7 +4183,7 @@ echo "e2e ok: if cmd | succeeds then (inline if/elif, bind-first kept, argv-then
 # the winner returns without joining the losers, and a loser's spawned
 # TREE dies: its `sleep 2 && touch marker` orphan would fire at ~2s if
 # the kill missed, so the absence check waits past that
-pfdir=$(mktemp -d)
+pfdir=$(mkweirtmp)
 cat > "$pfdir/pf.weir" <<'WEOF'
 let racer n =
     if n == 1 then sh -c "sleep 2 && touch marker"
@@ -4206,7 +4214,7 @@ echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed, first-by-order
 # process OUTLIVES the loser (a 1s wait after the winner), so cleanup
 # completes and the dir is gone. The exit-race leak [D:seq-pfirst] is the
 # OTHER case (process exits immediately) — parked, not pinned.
-pfdir2=$(mktemp -d)
+pfdir2=$(mkweirtmp)
 cat > "$pfdir2/pf2.weir" <<WEOF
 let racer n =
     within tmp d
@@ -4227,7 +4235,7 @@ rm -rf "$pfdir2"
 echo "e2e ok: Seq.pfirst loser within-tmp cleanup runs (finally on the un-aborted thread)"
 
 # ---- the exit hook [D:exit-hook]: temp dirs survive a hard exit no more ----
-ehdir=$(mktemp -d)
+ehdir=$(mkweirtmp)
 
 # PROBE B REGRESSION: a pfirst whose script exits immediately after the
 # winner used to leak the loser's within-tmp dir (a background thread
@@ -4279,7 +4287,7 @@ rm -rf "$ehdir"
 echo "e2e ok: exit hook (pfirst exit-race fixed, signal sweep via TERM, registration per-process)"
 
 # ---- command signatures [D:command-signatures] -----------------------------
-sgdir=$(mktemp -d)
+sgdir=$(mkweirtmp)
 mkdir -p "$sgdir/proj/bin" "$sgdir/proj/.git"
 cat > "$sgdir/proj/bin/sigtool" <<'WEOF'
 #!/bin/sh
@@ -4321,7 +4329,7 @@ rm -rf "$sgdir"
 echo "e2e ok: command signatures (generate, typo+did-you-mean, check spawns nothing, property 3, verify arms, restore never regenerates)"
 
 # ---- Size [D:size] ---------------------------------------------------------
-szdir=$(mktemp -d)
+szdir=$(mkweirtmp)
 cat > "$szdir/sz.weir" <<'WEOF'
 type Cli = {
     [<Default 10MiB>]
@@ -4346,7 +4354,7 @@ rm -rf "$szdir"
 echo "e2e ok: Size (defaults + File.size compare, flag parse, SI teaching, argv word)"
 
 # ---- Secret [D:secret]: the renderers refuse; reveal/argv are the exits ----
-scdir=$(mktemp -d)
+scdir=$(mkweirtmp)
 cat > "$scdir/sec.weir" <<'WEOF'
 type Cfg = { user: string; token: Secret }
 let cfg = Env.load Cfg
@@ -4368,7 +4376,7 @@ echo "e2e ok: Secret (show ***, reveal + argv splice reveal, the shown record do
 # ---- Http [D:http]: the typed request boundary (OFFLINE local server) ------
 if command -v python3 >/dev/null 2>&1; then
     hport=$((21000 + RANDOM % 2000))
-    hdir=$(mktemp -d)
+    hdir=$(mkweirtmp)
     # an echo server: returns the request body byte-exact, status from a
     # header, and the Authorization header on /auth
     cat > "$hdir/echo.py" <<'PYEOF2'
@@ -4511,7 +4519,7 @@ fi
 # the tour imports a module, validates a district against the COMMITTED
 # schema, and declares the hand-written git signature — check needs no
 # restore and no network (the fresh-tree copy proves it)
-sctdir=$(mktemp -d)
+sctdir=$(mkweirtmp)
 mkdir -p "$sctdir/root/.git"
 cp -r "$(dirname "$0")/../examples" "$sctdir/root/examples"
 ( cd "$sctdir/root" && $BIN check examples/showcase.weir >/dev/null 2>&1 ) || fail "the showcase checks in a fresh tree, offline, no restore"

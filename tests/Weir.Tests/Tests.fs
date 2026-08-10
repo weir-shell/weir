@@ -8754,7 +8754,7 @@ let fsMemberTests =
                   Expect.throwsC (fun () -> run $"File.copy \"{d}/absent\" \"{d}/x\"" |> ignore) id
 
               Expect.stringContains ex.Message "File.copy: no such file:" "missing source"
-              Expect.stringContains ex.Message "/absent" "path named"
+              Expect.stringContains ex.Message "absent" "path named (separator-agnostic)"
 
               // existing destination refuses
               run $"[\"a\"] |> File.write \"{d}/a.txt\"" |> ignore
@@ -8797,7 +8797,7 @@ let fsMemberTests =
                       |> List.ofSeq
 
                   Expect.equal got (List.sort got) "sorted"
-                  Expect.isTrue (got |> List.forall (fun p -> p.StartsWith d)) "full paths"
+                  Expect.isTrue (got |> List.forall (fun p -> (weirPath p).StartsWith d)) "full paths"
                   Expect.equal got.Length 2 "files and dirs both"
               | v -> failtest $"unexpected {v}"
 
@@ -10383,7 +10383,7 @@ let ifSucceedsTests =
         "if cmd | succeeds then [D:if-succeeds]"
         [ test "the inline form parses and evaluates, both branches" {
               skipOnWindows ()
-              Expect.equal (runReal "if test -f /etc/hostname | succeeds then \"yes\" else \"no\"") (VStr "yes") ""
+              Expect.equal (runReal "if test -f /etc/hosts | succeeds then \"yes\" else \"no\"") (VStr "yes") ""
 
               Expect.equal
                   (runReal "if test -f /nonexistent-weir-xyz | succeeds then \"yes\" else \"no\"")
@@ -10395,7 +10395,7 @@ let ifSucceedsTests =
 
               Expect.equal
                   (runReal
-                      "if test -f /nonexistent-weir-xyz | succeeds then \"a\" elif test -f /etc/hostname | succeeds then \"b\" else \"c\"")
+                      "if test -f /nonexistent-weir-xyz | succeeds then \"a\" elif test -f /etc/hosts | succeeds then \"b\" else \"c\"")
                   (VStr "b")
                   ""
           }

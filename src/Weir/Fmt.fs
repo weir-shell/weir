@@ -409,7 +409,9 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                             | Some a, Some b when a = b -> []
                             | sa, sb ->
                                 if System.Environment.GetEnvironmentVariable "WEIR_FMT_DEBUG" <> null then
-                                    eprintfn "REVERT %A vs %A for %s ||| %s" sa sb o.Text n.Text
+                                    // %A is reflection printing — FSharp.Core's AOT-flagged
+                                    // corner [D:aot-warnings]; interpolation stays AOT-safe
+                                    eprintfn $"REVERT {sa} vs {sb} for {o.Text} ||| {n.Text}"
 
                                 n.Segments |> List.map (fun (_, pl, _) -> pl))
                         |> Set.ofList

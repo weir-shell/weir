@@ -31,6 +31,7 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -64,6 +65,7 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -74,8 +76,9 @@ jobs:
           path: ~/.nuget/packages
           key: nuget-macos-${{ hashFiles('**/*.fsproj') }}
           restore-keys: nuget-macos-
-      - name: unit suite
-        run: dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+      - name: unit suite (detailed logger — a hang localizes to the last printed test)
+        timeout-minutes: 20
+        run: dotnet test tests/Weir.Tests/Weir.Tests.fsproj --logger "console;verbosity=detailed"
       - name: publish (AOT) + freshness gate
         run: |
           ./publish.sh
@@ -90,6 +93,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         # Git Bash: the one gate implementation runs unchanged — a .ps1
