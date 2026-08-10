@@ -1,5 +1,35 @@
 # Spike Notes
 
+## ls tells the whole truth (2026-08-10)
+
+The question arrived as "why only three columns" and the probe made
+it worse before it made it better: ls did not just lack an
+isDirectory column — it omitted directories entirely, GetFiles()
+doing exactly what its name says while nothing stated the
+restriction. A month of scripts saw half of every directory.
+
+The seven-field ruling's interesting corner is age. The obvious
+answer was "weir needs a date type"; the actual use cases said
+otherwise — changed-in-the-last-hour and newest-first are both
+DURATION questions, so age: Duration since last write covers them
+with a type weir already has, snapshotted once per enumeration
+pass like Env.load. The DateTime gap remains real and remains its
+own question; this row deliberately does not answer it.
+
+The wire pin taught a small lesson about pinning on classes: with
+age alphabetically first, the to-json refusal now names Duration
+where it named Size — the pin that asserted "Size" broke, and the
+fix was to assert the CLASS (is-not-representable) rather than
+whichever field happens to trip first. A fragment pin on an
+incidental detail is a pin on field ordering.
+
+And the method note the bless added: this was the format-surface
+audit's enumerate/classify/state pass pointed at a builtin record
+for the first time, and it held without modification. The
+surface-filerow row records the generalization so the third
+receipt-built surface — which will be neither a format nor a
+record — inherits the pass by rule rather than by rediscovery.
+
 ## launch hygiene: the files a visitor expects, and the shape (2026-08-09)
 
 The licence decision turned out to be already made — Apache-2.0 and

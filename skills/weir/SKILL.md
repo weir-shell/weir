@@ -507,7 +507,11 @@ print x
   draw on /dev/tty while stdio pipes; a user cancel (exit 130) RAISES
   like any nonzero exit, aborting the script at the fault.
 - Bareword heads run externals: `git status` works at a statement head.
-  Builtins shadow PATH (`ls` is typed rows); `^ls` forces the external.
+  Builtins shadow PATH (`ls` is typed rows — files AND
+  subdirectories: name, path, bytes (`0 B` for a directory),
+  isDirectory, hidden, readOnly, age (Duration since last write) —
+  so `where _.isDirectory` and `where (fun f -> f.age < 1h)` are the
+  spellings); `^ls` forces the external.
 - Splice values into commands: `$x` is ONE word; `$@xs` (and
   `$@(expr)`) is N words — the argv splat, each `seq<string>` element
   one word, never re-split, never re-joined (no injection either
