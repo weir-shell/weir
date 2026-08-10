@@ -997,8 +997,27 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
     | _ ->
         try
             let rx = System.Text.RegularExpressions.Regex pat
-            regexCache[pat] <- rx
-            Ok rx
+
+            // named groups REJECT [D:no-named-groups]: .NET numbers
+            // positional groups FIRST and named ones after — the outlier
+            // among engines, so binders would follow neither the pattern's
+            // reading order nor the user's Perl/Python experience. Weir
+            // names captures at the BINDER instead. Detection by the
+            // ENGINE'S OWN group table — lookbehind (?<= (?<! and
+            // non-capturing (?: create no groups, so they can never
+            // false-positive here (the one place a hand-rolled scan could
+            // go wrong).
+            let named =
+                rx.GetGroupNames()
+                |> Array.tryFind (fun n -> not (n |> Seq.forall System.Char.IsDigit))
+
+            match named with
+            | Some n ->
+                Error
+                    $"named group '(?<{n}>' — weir names captures at the binder, not in the pattern: use a plain (…) group and name it in the binder list"
+            | None ->
+                regexCache[pat] <- rx
+                Ok rx
         with ex ->
             Error ex.Message
 
