@@ -72,7 +72,9 @@ out=$($BIN -e 'print (show (File.readSecret "'"$pw2"'/s.txt"))') || fail "readSe
 out=$($BIN -e 'print (Secret.reveal (File.readSecret "'"$pw2"'/s.txt"))') || fail "reveal failed"
 [ "$out" = "tok" ] || fail "readSecret must trim the trailing newline: '$out'"
 out=$($BIN -e 'File.readSecret "/nope/x"' 2>&1) && fail "readSecret must raise on missing" || true
-echo "$out" | grep -qF "File.readSecret: no such file: /nope/x" || fail "readSecret shape: $out"
+# shape + name, never the separator (Windows renders D:\nope\x)
+echo "$out" | grep -qF "File.readSecret: no such file:" || fail "readSecret shape: $out"
+echo "$out" | grep -qF "nope" || fail "readSecret names the path: $out"
 mkdir -p "$pw2/src/a" && printf 'deep\n' > "$pw2/src/a/b.txt"
 $BIN -e 'Dir.copy "'"$pw2"'/src" "'"$pw2"'/dst"' || fail "Dir.copy failed"
 [ -f "$pw2/dst/a/b.txt" ] || fail "Dir.copy must be recursive (the positive half)"
