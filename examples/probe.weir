@@ -26,13 +26,8 @@ type ProbeEnv = { GREETING: Option<string> }
 let cli = Args.load ProbeCli
 let env0 = Env.load ProbeEnv
 
-match cli.out with
-| Some s -> print s
-| None -> ()
-
-match cli.err with
-| Some s -> printerr s
-| None -> ()
+cli.out |> Option.iter print
+cli.err |> Option.iter printerr
 
 if cli.greet then
     print $"env says {env0.GREETING |> Option.defaultValue "unset"}"

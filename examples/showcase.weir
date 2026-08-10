@@ -73,12 +73,11 @@ printerr $"starting under {home} (level {level}, pid {Self.pid})"
 
 if cli.verbose then printerr (show cli)
 
-// the platform's own temp root, one match expression
+// the platform's own temp root — Option combinators over a match
 let tmpBase =
-    match env0.TMPDIR, env0.TEMP with
-    | Some d, _ -> d
-    | _, Some d -> d
-    | _ -> "/tmp"
+    env0.TMPDIR
+    |> Option.orElse env0.TEMP
+    |> Option.defaultValue "/tmp"
 
 // the showcase's helper scripts live beside this file — Self.scriptPath
 // is absolute and cd-proof, so the tour runs from any cwd
@@ -240,7 +239,7 @@ weir $echoArgs empty splat drops $@extras zero words
 let words = ["alpha"; "beta"; "gamma"]
 weir $echoArgs three words: $@words
 
-let caught = $(weir -e "[\"one\"; \"two\"] |> Seq.iter print") |> Seq.length
+let caught = weir -e "[\"one\"; \"two\"] |> Seq.iter print" |> Seq.length
 print $"captured {caught} lines"
 
 !(weir $probe --out "effect streams")

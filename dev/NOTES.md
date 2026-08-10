@@ -1,5 +1,31 @@
 # Spike Notes
 
+## example maintenance (2026-08-10)
+
+The sweep's one real finding: not every sigil was redundant. Bicep's
+!e(...) wrappers looked like pre-within-env leftovers, and two of
+them were — but dropping the effect sigils naively tripped the
+seq-unit checker, because a final command in a block is the block's
+VALUE. The sigil had been doing unit-coercion work. The idiomatic
+replacement turned out better than the original on both axes:
+`| orFail "stack deploy failed"` is unit-typed AND names the
+failure, where !() raised anonymously.
+
+The rest was the expected modernization: Option.iter for the
+match-Some-effect-None-unit shape (probe, twice), tryHead with a
+default for first-argv-or-dot (repo-report), orElse chains for the
+two-Option fallback (showcase's temp root), and one genuinely
+redundant capture dropped. The showcase keeps its sigil pair on
+purpose — it is the teaching site, and within env demos two lines
+below it — and the for-source and pmap captures stay because $()
+is required in expression positions, not style.
+
+git-subrepo leaves as the flagship it was: 555 lines that proved
+the translation story when the story needed proving, now
+maintenance surface without a reader. Its fold receipt outlives it
+as its own fixture, and the grammar-drift canary role passed to the
+showcase's verbatim and triple-quote lines.
+
 ## builtin record keys: one source, checked (2026-08-10)
 
 The probe made the case better than the plan did: a missing key did
