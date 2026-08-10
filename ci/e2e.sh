@@ -4418,7 +4418,8 @@ cmp -s with.out without.out || fail "property 3: contracts changed run output"
 # verify: version arm both ways; restore: the ruled generated behaviour
 SIGTOOL_MARK="$sgdir/gen-mark2" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig sigtool >/dev/null
 PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN verify | grep -qF "ok (hash + version)" || fail "verify version arm (match)"
-sed -i 's/3.1.4/9.0.0/' bin/sigtool
+# no `sed -i` (the BSD-suffix law stated at the once.weir block)
+sed 's/3.1.4/9.0.0/' bin/sigtool > bin/sigtool.tmp && mv bin/sigtool.tmp bin/sigtool && chmod +x bin/sigtool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN verify 2>/dev/null) && fail "verify must FAIL on a mismatch" || true
 echo "$out" | grep -qF "VERSION MISMATCH" || fail "verify version arm (mismatch): $out"
 rm .weir/sigs/sigtool.weir
