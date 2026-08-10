@@ -2230,6 +2230,48 @@ WEOF
 out=$($BIN "$adir/attrs-json.weir")
 expect "from json loads a documented record identically (/// inert)" "5" "$out"
 
+# the recursive field law [D:recursive-fields]: nested records and seq
+# fields read from REAL response shapes — the World Bank receipt
+# (verbatim from the live sitting that forced the law; its Map-keyed
+# `documents` stays untypable pending Map and is IGNORED as an
+# undeclared field), and kubectl's List/items shape for arrays-inside-
+# objects. Round-trip pinned.
+rfdir=$(mkweirtmp)
+cat > "$rfdir/wb.json" <<'JEOF'
+{ "rows": 10, "total": 593,
+  "documents": {
+    "D11831032": { "id": "11831032",
+                   "entityids": { "entityid": "000334955300064" } } } }
+JEOF
+cat > "$rfdir/doc.json" <<'JEOF'
+{ "id": "11831032", "entityids": { "entityid": "000334955300064" } }
+JEOF
+cat > "$rfdir/items.json" <<'JEOF'
+{"kind":"List","items":[{"name":"kube-dns","ready":true},{"name":"metrics","ready":false}]}
+JEOF
+cat > "$rfdir/rf.weir" <<'WEOF'
+type Meta = { rows: int; total: int }
+let m = File.read "wb.json" |> from json Meta
+print $"{m.rows}/{m.total}"
+type Entity = { entityid: string }
+type Doc = { id: string; entityids: Entity }
+let d = File.read "doc.json" |> from json Doc
+print d.entityids.entityid
+type Pod = { name: string; ready: bool }
+type L = { kind: string; items: seq<Pod> }
+let l = File.read "items.json" |> from json L
+l.items |> Seq.iter (fun p -> print p.name)
+let rt = [l] |> to json |> Seq.head
+let l2 = [rt] |> from json L
+print (if (l2.items |> Seq.length) == 2 && l2.kind == l.kind then "round-trip-ok" else "ROUND-TRIP-BROKE")
+WEOF
+out=$(cd "$rfdir" && $BIN rf.weir)
+expect "recursive fields: the receipt's non-Map parts read" "10/593" "$out"
+expect "recursive fields: three deep (the entityid)" "000334955300064" "$out"
+expect "recursive fields: seq of records inside an object" "kube-dns" "$out"
+expect "recursive fields: to json round-trips the nesting" "round-trip-ok" "$out"
+rm -rf "$rfdir"
+
 # anonymous record types [D:anon-records]: the shape inline in the
 # adapter slot — `_.field` checks, seq<> composes, the shape persists
 # across statements, and a declared record stays a DIFFERENT type

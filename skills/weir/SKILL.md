@@ -590,11 +590,21 @@ within tmp d
   `from jsonl T` reads one document per element -> `seq<T>` (NDJSON,
   the shape `to json` writes). The DECLARED type decides what the top
   level must be — nothing sniffs the input.
-  Fields are `int`/`string`/`bool` or `Option` of one. An `Option`
-  field reads a missing key OR an explicit `null` as `None`; a
-  required field that is `null` errors, naming the fix. `to json`
-  OMITS a `None` field's key (matching `gh`/`kubectl`), so the
-  roundtrip holds. YAML is the TREE boundary: `from yaml T` reads
+  The field law is RECURSIVE: a field is a scalar (`int`, `float`,
+  `string`, `bool`), an `Option` of an admitted type, a record whose
+  fields are all admitted, or a `seq` of an admitted type — so
+  `{ entityids: Entity }` and `{ items: seq<Item> }` read (no `Map`
+  yet: an ID-keyed object has no typing). A self-referential record
+  refuses at check, naming its cycle. An `Option` field reads a
+  missing key OR an explicit `null` as `None` — at EVERY depth (a
+  `null` element under `seq<Option<int>>` is `None`); a required
+  field that is missing or `null` errors, naming the fix — a missing
+  ARRAY too: absence is `Option`'s job, `[]` is not guessed. `to json`
+  OMITS a `None` field's key (matching `gh`/`kubectl`) but writes
+  `null` for a `None` array ELEMENT (a slot cannot be omitted), so
+  the roundtrip holds for nested shapes too. `Args.load`/`Env.load`
+  stay FLAT — a CLI flag or env var is a string; nesting has no
+  spelling there. YAML is the TREE boundary: `from yaml T` reads
   ONE document (a mapping) -> `T`; `from yaml seq<T>` reads one
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
