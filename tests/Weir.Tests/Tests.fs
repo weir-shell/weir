@@ -9308,6 +9308,21 @@ let httpTests =
 
               Expect.equal (run "(Http.get \"u\").insecure") (VBool false) "a constructor is secure by default"
           }
+          test "File.write/append emit LF bytes on every platform [D:lf-output]" {
+              // a written file is DATA (hashes, sigs, diffs) — the
+              // content-bytes input ruling's dual
+              let p =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-lf-{System.Environment.ProcessId}.txt")
+
+              try
+                  run $"[\"a\"; \"b\"] |> File.write \"{p.Replace('\\', '/')}\"" |> ignore
+                  run $"[\"c\"] |> File.append \"{p.Replace('\\', '/')}\"" |> ignore
+                  let bytes = System.IO.File.ReadAllBytes p
+                  Expect.isFalse (bytes |> Array.contains 13uy) "no CR byte anywhere"
+                  Expect.equal (System.IO.File.ReadAllText p) "a\nb\nc\n" "LF-joined, trailing newline"
+              finally
+                  System.IO.File.Delete p
+          }
           test "Basic auth is base64(user:pass) — an ENCODING the runner does, not a caller" {
               Expect.equal (Weir.Http.basicToken "alice" "s3cr3t") "YWxpY2U6czNjcjN0" ""
           }

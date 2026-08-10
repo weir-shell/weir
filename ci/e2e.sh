@@ -815,7 +815,10 @@ WEOF
 out=$($BIN "$stmtdir/adv.weir")
 expected=$(printf 'a\n\nline1\nline2\nb')
 [ "$out" = "$expected" ] || fail "renderer adversarial case diverged from line-per-element: $(printf '%q' "$out")"
-echo "e2e ok: renderer byte-identical on empties and embedded newlines"
+# captured output is LF on EVERY platform [D:lf-output] — Windows
+# WriteLine's \r\n reached redirected streams until the ruling
+case "$out" in *$'\r'*) fail "captured output must carry no CR byte: $(printf '%q' "$out")";; esac
+echo "e2e ok: renderer byte-identical on empties and embedded newlines (LF everywhere)"
 
 cat > "$stmtdir/stream.weir" <<'WEOF'
 ["alpha"; "staged: yes"; "omega"] |> print
