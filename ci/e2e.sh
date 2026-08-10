@@ -146,7 +146,12 @@ errout=$($BIN -e '1<mb>' 2>&1 || true)
 echo "$errout" | grep -qF "units of measure are not supported" || fail "transition message missing: $errout"
 echo "e2e ok: measure transition error"
 
-out=$($BIN -e '$(echo "*")')
+# the witness is a WEIR child: native on every platform, so it cannot
+# glob for us — an MSYS echo.exe expands args from a native parent,
+# convicting the witness, not weir
+awdir=$(mkweirtmp)
+printf 'Self.args |> print\n' > "$awdir/args.weir"
+out=$(PATH="$(dirname "$BIN"):$PATH" $BIN -e "\$(weir \"$awdir/args.weir\" \"*\")")
 expect "argv stays literal" '["*"]' "$out"
 
 out=$($BIN -e 'echo hi (40 + 2) |> first 1')

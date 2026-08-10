@@ -1947,8 +1947,11 @@ let lifecycleTests =
               skipOnWindows ()
               let psi = ProcessStartInfo("/bin/sh")
               psi.ArgumentList.Add "-c"
-              // the marker lives in the sh's OWN argv (no exec)
-              psi.ArgumentList.Add "sleep 30 # weir-probe-ctl"
+              // the marker rides $0 and the compound suffix keeps sh from
+              // EXEC-ing the sleep — macOS bash-as-sh replaces a lone
+              // simple command, vaporizing a comment-borne marker
+              psi.ArgumentList.Add "sleep 30; :"
+              psi.ArgumentList.Add "weir-probe-ctl"
               use p = Process.Start psi
 
               try
