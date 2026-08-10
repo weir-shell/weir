@@ -7,7 +7,7 @@
 # abandon, and wrap math at TWO terminal widths. Assertions ride evaluated
 # OUTPUT, never cursor positions (the driver lesson — drivers lie about
 # cursors; values do not).
-import os, pty, sys, time, select, re, tempfile, fcntl, struct, termios
+import os, pty, signal, sys, time, select, re, tempfile, fcntl, struct, termios
 
 WEIR = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.local/bin/weir")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
@@ -28,6 +28,10 @@ def run(keys, cols=80, seed=None, path=None):
     if pid == 0:
         os.execve(WEIR, ["weir"], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, cols, 0, 0))
+    # SIGWINCH after the ioctl: .NET may have cached the width at console
+    # init (a per-run race — macOS lost it where Linux never did); the
+    # signal invalidates the cache so the pty size ALWAYS wins
+    os.kill(pid, signal.SIGWINCH)
     time.sleep(0.8)
     for s, dl in keys:
         os.write(fd, s.encode()); time.sleep(dl)
@@ -121,6 +125,10 @@ def runraw(keys, cols=80):
     if pid == 0:
         os.execve(WEIR, ["weir"], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, cols, 0, 0))
+    # SIGWINCH after the ioctl: .NET may have cached the width at console
+    # init (a per-run race — macOS lost it where Linux never did); the
+    # signal invalidates the cache so the pty size ALWAYS wins
+    os.kill(pid, signal.SIGWINCH)
     time.sleep(0.8)
     for s, dl in keys:
         os.write(fd, s.encode()); time.sleep(dl)
