@@ -167,7 +167,9 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   error; the double-escape footgun is unrepresentable). Compiled at
   CHECK time (invalid regex = check error) and the binder arity must
   equal the capture count — `()` for 0, one name for 1, a tuple for n
-  (non-capturing `(?:...)` does not count). Groups bind as STRINGS;
+  (non-capturing `(?:...)` does not count). NAMED groups `(?<x>...)`
+  REJECT: weir names captures at the BINDER, not in the pattern
+  (lookbehind `(?<=`/`(?<!` is fine). Groups bind as STRINGS;
   convert in the arm. Regex arms never complete a match. Computed
   hashing/encoding: `Str.sha256` (lowercase hex of UTF-8 bytes),
   `Str.toBase64` (one unwrapped line), `Str.fromBase64` /

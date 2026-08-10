@@ -2564,7 +2564,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd "True when a regex matches anywhere in the string." (Some "Str.isMatch \"[0-9]+\" \"x42\"") None
           |> named [ "pattern"; "subject" ]
           "Str.rmatch",
-          bd "The first regex match's groups as an Option of a sequence." (Some "Str.rmatch \"([0-9]+)\" \"x42\"") None
+          bd
+              "The first regex match's groups as an Option of a sequence (positional groups; named `(?<x>...)` rejects — weir names captures at the binder)."
+              (Some "Str.rmatch \"([0-9]+)\" \"x42\"")
+              None
           |> named [ "pattern"; "s" ]
           "Str.rmatchAll",
           bd

@@ -607,6 +607,33 @@ let warningTests =
           test "Regex pattern: non-capturing groups do not count" {
               expectValue "match \"a-1\" with | Regex @\"(?:\\w+)-(\\d+)\" n -> n | _ -> \"?\"" (VStr "1")
           }
+          test "named groups REJECT with the binder teaching [D:no-named-groups]" {
+              // .NET numbers positionals first, named after — the outlier
+              // among engines; weir names captures at the BINDER
+              let terr =
+                  checkErr "match \"ab\" with | Regex @\"(?<x>a)(b)\" (p, q) -> p | _ -> \"?\""
+
+              Expect.stringContains terr.Message "named group '(?<x>'" "names the group"
+              Expect.stringContains terr.Message "names captures at the binder" "the design statement"
+
+              // the (?'name') spelling rejects through the same table
+              let m2 =
+                  (checkErr "match \"a\" with | Regex @\"(?'y'a)\" p -> p | _ -> \"?\"").Message
+
+              Expect.stringContains m2 "named group '(?<y>'" "the quote spelling, same refusal"
+          }
+          test "the detection's ONLY risk, pinned: lookbehinds and (?: still work [D:no-named-groups]" {
+              // (?<= and (?<! share three characters with (?<name> — the
+              // engine's own group table is the detector, so zero-width
+              // constructs cannot false-positive
+              expectValue "match \"ab\" with | Regex @\"(?<=a)(b)\" b -> b | _ -> \"?\"" (VStr "b")
+              expectValue "match \"cb\" with | Regex @\"(?<!a)(b)\" b -> b | _ -> \"?\"" (VStr "b")
+              expectValue "match \"ababc\" with | Regex @\"((?:ab)+)c\" g -> g | _ -> \"?\"" (VStr "abab")
+
+              // zero movement on backreferences and inline flags
+              expectValue "match \"aa\" with | Regex @\"(a)\\1\" a -> a | _ -> \"?\"" (VStr "a")
+              expectValue "match \"AB\" with | Regex @\"(?i)(ab)\" g -> g | _ -> \"?\"" (VStr "AB")
+          }
           test "Regex pattern: arity mismatch is a check error naming the count" {
               let terr =
                   checkErr "match \"x\" with | Regex @\"(\\d+)-(\\d+)\" a -> a | _ -> \"?\""

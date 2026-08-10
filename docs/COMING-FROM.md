@@ -500,7 +500,9 @@ print $"version {ver}"
 
 `Str.rmatch` is the Option form, `Str.rmatchAll` the every-match
 plural (lazy; absence is the empty seq); `(?s)`/`(?m)` inline flags
-cover DOTALL/MULTILINE.
+cover DOTALL/MULTILINE. **Named groups `(?<name>…)` reject** — weir
+names captures at the binder (`(k, v)` above), so the name sits next
+to the pattern instead of inside it; lookbehind `(?<=`/`(?<!` works.
 
 **The one thing that will catch you out:** sigils. Perl's `$`/`@`/`%`
 denote a variable's TYPE; weir's `$` is a splice — a value entering a
