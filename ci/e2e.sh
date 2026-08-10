@@ -230,7 +230,10 @@ expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
 out=$($BIN -e 'grep nomatch /etc/hosts | complete |> _.exitCode')
 expect "complete reifies nonzero exit as data" "1 : int" "$out"
 
-out=$(timeout 10 $BIN -e 'bash -c "seq 1 4000 | sed s/^/eeeeeeeeeeeeeeeeeeeeeeee/ 1>&2; echo done" | complete |> _.exitCode') \
+# sh, NEVER bash: a native weir resolving `bash` on a Windows runner
+# finds System32's WSL bash.exe first (no distro installed — exit 1);
+# sh has no System32 shadow, which is why every sh -c block passes.
+out=$(timeout 10 $BIN -e 'sh -c "seq 1 4000 | sed s/^/eeeeeeeeeeeeeeeeeeeeeeee/ 1>&2; echo done" | complete |> _.exitCode') \
     || fail "chatty-stderr deadlock under complete (timeout)"
 expect "concurrent stderr drain under complete" "0 : int" "$out"
 
