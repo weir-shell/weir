@@ -858,12 +858,12 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                          Eval.echoTable v)
                 with
                 | Some(lines, hint) ->
-                    let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+                    let tail = Eval.echoTail hint
                     Console.WriteLine $"{name} : {formatTy te.Ty} ={tail}"
                     lines |> List.iter Console.WriteLine
                 | None ->
                     let rendered, hint = Eval.echoValue v
-                    let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+                    let tail = Eval.echoTail hint
                     Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
 
             { TypeEnv = chk.Env
@@ -889,10 +889,10 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                 with
                 | Some(lines, hint) ->
                     lines |> List.iter Console.WriteLine
-                    Console.WriteLine $": {formatTy te.Ty}{Eval.echoTail (te.Ty = TSeq TStr) hint}"
+                    Console.WriteLine $": {formatTy te.Ty}{Eval.echoTail hint}"
                 | None ->
                     let rendered, hint = Eval.echoValue v
-                    let tail = Eval.echoTail (te.Ty = TSeq TStr) hint
+                    let tail = Eval.echoTail hint
                     Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
             state

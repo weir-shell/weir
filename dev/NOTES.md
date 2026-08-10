@@ -1,5 +1,35 @@
 # Spike Notes
 
+## the echo rule (2026-08-10)
+
+The audit found exactly the two defects the bless filed and one
+non-defect worth recording: a function echoes <fun> with its type
+rather than refusing — the echo is presentation and show still
+refuses, so the class rule holds where it matters and the prompt
+stays useful.
+
+The forcing probe was the session's hinge, and it answered cleanly:
+both renderers pull MaxItems+1 and nothing more — nats echoes
+instantly as a bracketed seq and falls through the table detector
+untouched. That meant uncapping unconditionally would turn every
+big lazy seq into a hang, and it meant the candidate rule was
+implementable, because forced-ness was already detectable: the
+materialized-collection probe that used to print "10 of 12" is the
+forced test.
+
+So Seq.force means something at the prompt now. Forced echoes
+whole — at the top level, with each element keeping the inner
+clips, because [nats] |> Seq.force is a forcible value holding an
+infinite inner and the echo must not be the thing that hangs on
+it (pinned). Unforced shows ten and says the honest sentence. The
+old hint — a pipe that produced a different rendering than the one
+it promised to continue — is deleted outright, and the pty pin
+asserts its absence by fragment so it cannot resurface.
+
+No ceiling on the forced side, ruled: the user forced the value,
+print already streams everything, and the scrollback belongs to
+whoever asked for a million rows.
+
 ## ls tells the whole truth (2026-08-10)
 
 The question arrived as "why only three columns" and the probe made

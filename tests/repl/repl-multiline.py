@@ -250,6 +250,16 @@ if "\u2500" in p.stdout:
 if "bytes =" not in p.stdout:
     failures.append(f"piped output must render records inline: {p.stdout!r}")
 
+# --- the echo rule [D:echo-rule]: forced tables render every row on a
+# tty; the unforced hint names Seq.force (never a rendering-changing
+# pipe) — the pty half of the rule's pins
+keys = [("cd \"%s\"\r" % d, 0.5), ("ls |> Seq.force\r", 0.9)]
+t2, _ = run(keys)
+if "unforced" in t2:
+    failures.append(f"a forced table must not carry the unforced hint: {t2[-300:]!r}")
+if "pipe to" in t2:
+    failures.append(f"the retired pipe-to hint resurfaced: {t2[-300:]!r}")
+
 # --- 9. piped input never enters the editor (untouched)
 p = subprocess.run([WEIR], input="1 + 1\n:q\n", capture_output=True, text=True)
 if "2 : int" not in p.stdout:
