@@ -801,8 +801,13 @@ let streamingTests =
               Expect.isLessThan pulled.Value 500000 "the input was not drained"
           }
           test "feed closes stdin on input exhaustion: EOF-needing children finish [D:spawn-spec]" {
+              // sh -c sort, never bare `sort`: System32's sort.exe
+              // IsTextUnicode-misdetects a short even-length LF-only
+              // stdin as UTF-16 (the Bush-hid-the-facts class) and
+              // emits '?' substitutions — GNU sort via sh is uniform
               let out =
-                  Weir.Proc.linesWith [] "sort" [] (Some(seq [ "b"; "a"; "c" ])) |> List.ofSeq
+                  Weir.Proc.linesWith [] "sh" [ "-c"; "sort" ] (Some(seq [ "b"; "a"; "c" ]))
+                  |> List.ofSeq
 
               Expect.equal out [ "a"; "b"; "c" ] "sort saw EOF and emitted"
           }
