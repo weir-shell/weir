@@ -16,7 +16,7 @@ assert_fresh(WEIR, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 failures = []
 
-def run(keys, cols=80, seed=None, path=None):
+def run(keys, cols=80, seed=None, path=None, until=None, deadline=20.0):
     d = tempfile.mkdtemp()
     if seed is not None:
         os.makedirs(d + "/state/weir", exist_ok=True)
@@ -36,12 +36,32 @@ def run(keys, cols=80, seed=None, path=None):
     for s, dl in keys:
         os.write(fd, s.encode()); time.sleep(dl)
     out = b""
-    for _ in range(50):
-        r, _, _ = select.select([fd], [], [], 0.1)
-        if r:
-            try:
-                out += os.read(fd, 4096)
-            except OSError:
+
+    if until is None:
+        for _ in range(50):
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if r:
+                try:
+                    out += os.read(fd, 4096)
+                except OSError:
+                    break
+    else:
+        # marker-driven drain: fixed settles keep losing to loaded
+        # runners — read until the marker appears (plus a short quiet
+        # tail) or the deadline names the failure
+        want = until.encode()
+        end = time.time() + deadline
+        seen_at = None
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if r:
+                try:
+                    out += os.read(fd, 4096)
+                except OSError:
+                    break
+            if seen_at is None and want in out:
+                seen_at = time.time()
+            if seen_at is not None and time.time() - seen_at > 0.5:
                 break
     return re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", out.decode(errors="replace")), d
 
@@ -252,13 +272,13 @@ if "type T redeclared; earlier values keep the old shape" not in t:
 d = tempfile.mkdtemp()
 open(d + "/a.txt", "w").write("x" * 70000)
 open(d + "/b.txt", "w").write("y")
-# a loaded runner can outlive a fixed post-Enter drain (the round-12
-# jitter class): a generous settle plus one whole-probe retry — the
-# pinned property (tabulation) is deterministic, only timing is not
-keys = [("cd \"%s\"\r" % d, 0.8), ("ls |> Seq.sortByDescending _.bytes\r", 2.5)]
-t, _ = run(keys)
+# marker-driven: drain until the table rule (U+2500) arrives or a 20s
+# deadline — fixed settles lost to loaded runners twice; one
+# whole-probe retry stays (tabulation is deterministic, timing is not)
+keys = [("cd \"%s\"\r" % d, 0.8), ("ls |> Seq.sortByDescending _.bytes\r", 0.3)]
+t, _ = run(keys, until="\u2500")
 if "\u2500" not in t or "bytes" not in t:
-    t, _ = run(keys)
+    t, _ = run(keys, until="\u2500")
 if "\u2500" not in t or "bytes" not in t:
     failures.append(f"a record seq must tabulate under a tty: {t[-300:]!r}")
 if "[{" in t:

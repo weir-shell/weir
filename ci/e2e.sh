@@ -1748,7 +1748,12 @@ echo "e2e ok: composed function rejected as a command splice"
 out=$($BIN -e '[(1, "b"); (2, "a")] |> Seq.sortBy snd |> Seq.map fst |> Seq.head')
 expect "fst/snd project pairs point-free" "2 : int" "$out"
 out=$($BIN -e 'Path.combine (Path.dir "a/b/c.fs") (Path.stem "a/b/c.fs")')
-expect "Path members compose" '"a/b/c"' "$out"
+# weir's path outputs are the PLATFORM'S (the platformPath law) — the
+# unit pin went platform-aware in windows-s2; this one never had
+case "$out" in
+    *'"a/b/c"'* | *'"a\\b\\c"'*) echo "e2e ok: Path members compose (platform separators)" ;;
+    *) fail "Path members compose: $out" ;;
+esac
 
 # prefix minus + sortByDescending (2026-07-21, loc.weir friction)
 out=$($BIN -e '2 * -3')
