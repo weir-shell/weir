@@ -370,3 +370,25 @@ source shape, enumerate every rewrite that transforms that shape
 pin each one — the pin battery is the enumeration, and a new desugar
 joins it on arrival.
 
+
+## A change that makes a spelling redundant sweeps for that spelling
+
+Not merely "update the docs you touched": grep the superseded form
+across every surface, INCLUDING prose, at the moment it is superseded.
+The archaeology, two instances of the same disease:
+
+- The `cmd | File.write` bullet recurred verbatim twice in unexecuted
+  prose before anyone caught it — the prescription then was *a
+  spelling that fails twice in prose gets a fenced twin*.
+- The interp-show rider made `print (show r)` redundant and left THREE
+  stale sites behind (the showcase's pair, `show` calls inside
+  interpolation holes, and the docs framing show as the primary
+  rendering path) — found one live sitting later.
+
+This rule is the same prescription one step earlier: the sweep happens
+in the session that supersedes, not the session that trips over it.
+And the sweep REPORTS what it deliberately keeps — this one kept the
+Secret renders (interpolation refuses; show masks) and a row-typed
+hole (`$"{show c.port}"` — a bare hole defaults an unresolved type to
+string), both now documented as show's niche rather than left to look
+like misses.

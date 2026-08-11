@@ -50,12 +50,14 @@ stops being true fails the build.
 - `;` does NOT chain commands: in a command line it is a literal argv
   word (you get a warning). One command per line.
 - `print` takes string, int, bool, or `seq<string>`. For records,
-  unions, options and debugging: `show x` renders ANY value (except
-  functions) as a REPL-shaped string — `print (show row)`. An
-  interpolation hole renders the same way without the call
-  (`$"got: {r}"` — holes consult Show; only functions reject; a bare
-  string hole stays raw/unquoted). Command-argument splices stay
-  string/int/bool. Lossy debug format (strings come quoted, long
+  unions, options: AN INTERPOLATION HOLE renders any Show value —
+  `print $"{row}"` (only functions reject; a bare string hole stays
+  raw/unquoted). `show x` produces the same text as a plain string;
+  its niche is the places a hole cannot go — point-free positions
+  (`Seq.map show`), Secrets (`show` masks where interpolation
+  refuses), and a ROW-TYPED field in a hole (`$"{show c.port}"` keeps
+  port polymorphic; a bare hole defaults an unresolved type to
+  string). Command-argument splices stay string/int/bool. Lossy debug format (strings come quoted, long
   seqs truncate); `print` remains the raw data channel. The REPL's
   echo is tighter still (10 elements, clipped strings, a hint naming
   the way out): echo = glance, `|> print` = read.
@@ -789,7 +791,7 @@ type Cli = {
     port: Option<int>
 }
 let cli = Args.load Cli
-print $"{show cli.clean} {show cli.port}"
+print $"{cli.clean} {cli.port}"
 ```
 
 ```weir-error
@@ -913,7 +915,7 @@ print (if ([1; 2] |> Seq.length) == 2 then "ok" else "wrong")
 type HomeCfg = { HOME: string; WEIR_ABSENT_ZZ: Option<string> }
 
 let cfg = Env.load HomeCfg
-print $"home={cfg.HOME} extra={show cfg.WEIR_ABSENT_ZZ}"
+print $"home={cfg.HOME} extra={cfg.WEIR_ABSENT_ZZ}"
 ```
 
 ```weir-error
