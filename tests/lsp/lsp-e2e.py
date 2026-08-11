@@ -22,7 +22,14 @@ PROCS = [proc]
 # garbage on Windows (backslashes, bare drive colon) — as_uri() yields
 # the well-formed spelling on both
 def furi(p):
-    return pathlib.Path(p).as_uri()
+    q = pathlib.Path(p)
+    # Windows only: expand 8.3 short names — the runner's TEMP is
+    # RUNNER~1 while the server answers with the long form (resolve()
+    # walks the real filesystem); POSIX stays byte-untouched (resolve()
+    # would rewrite macOS's /tmp symlink out from under the server)
+    if os.name == "nt":
+        q = q.resolve()
+    return q.as_uri()
 
 # compare against a SERVER-derived URI: the wire form lowercases the
 # drive (the VS Code convention) where as_uri uppercases it
