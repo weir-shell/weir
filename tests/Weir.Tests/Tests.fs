@@ -801,15 +801,17 @@ let streamingTests =
               Expect.isLessThan pulled.Value 500000 "the input was not drained"
           }
           test "feed closes stdin on input exhaustion: EOF-needing children finish [D:spawn-spec]" {
-              // sh -c sort, never bare `sort`: System32's sort.exe
-              // IsTextUnicode-misdetects a short even-length LF-only
-              // stdin as UTF-16 (the Bush-hid-the-facts class) and
-              // emits '?' substitutions — GNU sort via sh is uniform
+              // bare `sort` (sh does not resolve in the Windows unit
+              // context — every sh-spawning unit test is skipped there),
+              // with an ODD total byte count: System32's sort.exe runs
+              // IsTextUnicode on stdin, and a short even-length LF-only
+              // buffer misdetects as UTF-16 (the Bush-hid-the-facts
+              // class, '?' output); an odd length cannot
               let out =
-                  Weir.Proc.linesWith [] "sh" [ "-c"; "sort" ] (Some(seq [ "b"; "a"; "c" ]))
+                  Weir.Proc.linesWith [] "sort" [] (Some(seq [ "banana"; "apples"; "kiwi" ]))
                   |> List.ofSeq
 
-              Expect.equal out [ "a"; "b"; "c" ] "sort saw EOF and emitted"
+              Expect.equal out [ "apples"; "banana"; "kiwi" ] "sort saw EOF and emitted"
           }
           test "acceptance: first 5 pulls exactly 5 elements from the source" {
               let pulled = ref 0

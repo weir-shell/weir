@@ -152,14 +152,23 @@ def runraw(keys, cols=80):
     time.sleep(0.8)
     for s, dl in keys:
         os.write(fd, s.encode()); time.sleep(dl)
+    # QUIESCENCE-driven drain: the old 50-iteration budget counted READS,
+    # so a loaded runner's steady repaint stream exhausted it with keys
+    # still queued (the raw tail showed the 32nd of 35 repaints). Read
+    # until 1.5s of silence — the editor idle means every repaint flushed.
     out = b""
-    for _ in range(50):
+    end = time.time() + 25
+    last = time.time()
+    while time.time() < end:
         r, _, _ = select.select([fd], [], [], 0.1)
         if r:
             try:
                 out += os.read(fd, 4096)
+                last = time.time()
             except OSError:
                 break
+        elif time.time() - last > 1.5:
+            break
     os.write(fd, b"\x03"); os.write(fd, b"#quit\r"); time.sleep(0.2)
     return out
 
