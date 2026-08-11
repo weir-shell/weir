@@ -55,6 +55,20 @@ pathEntry() {
 # extensionless name and CreateProcess fails on it rather than falling
 # through to the .bat (noted as a possible product divergence from
 # cmd's PATHEXT-only search; the fixture must not depend on it)
+# /dev/stdin is a Linux-shaped spelling MSYS resolves through its
+# virtual /proc (/proc/self/fd/0) — a native weir cannot open it. Land
+# a piped script in a real file first; contract (exit code + output)
+# unchanged.
+checkPiped() {
+    _cp="$(mkweirtmp)/stdin.weir"
+    cat > "$_cp"
+    $BIN check "$_cp"
+}
+runPiped() {
+    _rp="$(mkweirtmp)/stdin.weir"
+    cat > "$_rp"
+    $BIN "$_rp"
+}
 mkFakeBin() {
     if [ "$IS_WINDOWS" = "1" ]; then
         printf '@echo off\r\necho %s\r\n' "$3" > "$1/$2.bat"
@@ -2547,7 +2561,7 @@ WEOF
 out=$($BIN "$tadir/kebab.weir" --dry-run --no-ff --use-https-now)
 expect "kebab derivation (dryRun/noFF/useHTTPSNow)" "true true true" "$out"
 
-errout=$(printf 'type Cli = { dryRun: bool; DryRun: bool }\nlet c = Args.load Cli\n' | $BIN check /dev/stdin 2>&1) && fail "duplicate derived flag must reject"
+errout=$(printf 'type Cli = { dryRun: bool; DryRun: bool }\nlet c = Args.load Cli\n' | checkPiped 2>&1) && fail "duplicate derived flag must reject"
 echo "$errout" | grep -qF "derive the same flag '--dry-run'" || fail "duplicate kebab at check: $errout"
 echo "e2e ok: hump-style variance collapses to one flag, duplicate rejected at check"
 
@@ -2564,12 +2578,12 @@ echo "e2e ok: -h is help; h-initial fields never derive"
 # [<Positional>] DROPPED [D:drop-positional] — now an unknown attribute
 # Positional RETURNED for signatures [D:command-signatures] — registered
 # and inert on weir's own records; its no-argument law still checks
-printf 'type P = { [<Positional>] t: string }\nprint "ok"\n' | $BIN check /dev/stdin >/dev/null 2>&1 || fail "Positional declares clean (inert)"
-errout=$(printf 'type P = { [<Positional 3>] t: string }\n' | $BIN check /dev/stdin 2>&1) && fail "Positional takes no argument" || true
+printf 'type P = { [<Positional>] t: string }\nprint "ok"\n' | checkPiped >/dev/null 2>&1 || fail "Positional declares clean (inert)"
+errout=$(printf 'type P = { [<Positional 3>] t: string }\n' | checkPiped 2>&1) && fail "Positional takes no argument" || true
 echo "$errout" | grep -qF "takes no argument" || fail "the arg law: $errout"
 echo "e2e ok: [<Positional>] returned for signatures, inert elsewhere"
 
-errout=$(printf 'type C = { b: Option<bool> }\nlet c = Args.load C\n' | $BIN check /dev/stdin 2>&1) && fail "Option<bool> field must reject"
+errout=$(printf 'type C = { b: Option<bool> }\nlet c = Args.load C\n' | checkPiped 2>&1) && fail "Option<bool> field must reject"
 echo "$errout" | grep -qF "a presence flag is already optional" || fail "Option<bool> message: $errout"
 echo "e2e ok: Option<bool> rejects with the presence explanation"
 
@@ -2591,7 +2605,7 @@ printf 'print (Self.args |> Str.join ",")\n' > "$tadir/slice.weir"
 out=$($BIN "$tadir/slice.weir" --a b c)
 expect "script args start AFTER the script path" "--a,b,c" "$out"
 
-errout=$(printf 'type C = { env: string }\nArgs.load C\n' | $BIN check /dev/stdin 2>&1) && fail "bare Args.load statement must reject"
+errout=$(printf 'type C = { env: string }\nArgs.load C\n' | checkPiped 2>&1) && fail "bare Args.load statement must reject"
 echo "$errout" | grep -qF "discards it" || fail "statement rule covers Args.load: $errout"
 echo "e2e ok: Args.load joins the discard family as a value"
 
@@ -2975,11 +2989,11 @@ echo "$out" | grep -qF -- "-q, --quiet" || fail "scoped help shows the scope-der
 echo "e2e ok: two-tier and case-scoped help"
 
 # declaration collisions reject at CHECK (both routes)
-errout=$(printf 'type CA = { quiet: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | $BIN check /dev/stdin 2>&1) && fail "kebab collision must reject"
+errout=$(printf 'type CA = { quiet: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | checkPiped 2>&1) && fail "kebab collision must reject"
 echo "$errout" | grep -qF "shared flags are declared once" || fail "kebab collision route: $errout"
-errout=$(printf 'type CA = { [<Short "q">] query: string }\ntype Cmd = Go of CA | Stop\ntype Cli = { [<Short "q">] quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | $BIN check /dev/stdin 2>&1) && fail "explicit-short collision must reject"
+errout=$(printf 'type CA = { [<Short "q">] query: string }\ntype Cmd = Go of CA | Stop\ntype Cli = { [<Short "q">] quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | checkPiped 2>&1) && fail "explicit-short collision must reject"
 echo "$errout" | grep -qF "claimed by [<Short>] in both" || fail "explicit-short collision route: $errout"
-errout=$(printf 'type CA = { r: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { a: Cmd; b: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | $BIN check /dev/stdin 2>&1) && fail "two union fields must reject"
+errout=$(printf 'type CA = { r: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { a: Cmd; b: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | checkPiped 2>&1) && fail "two union fields must reject"
 echo "$errout" | grep -qF "one subcommand slot" || fail "one-slot law: $errout"
 echo "e2e ok: declaration collisions reject at check (both routes + one slot)"
 
@@ -3047,18 +3061,18 @@ expect "env-sigil reifier binds the code" "env code 3" "$out"
 # conflict cells reject with the teaching text
 errout=$(printf 'let x = $(git push | exitCode)
 print "u"
-' | $BIN check /dev/stdin 2>&1) && fail "capture conflict must reject"
+' | checkPiped 2>&1) && fail "capture conflict must reject"
 echo "$errout" | grep -qF "use '| complete' inside" || fail "capture-conflict teaching: $errout"
 errout=$(printf '!(git push | exitCode)
-' | $BIN check /dev/stdin 2>&1) && fail "discard conflict must reject"
+' | checkPiped 2>&1) && fail "discard conflict must reject"
 echo "$errout" | grep -qF "bind it (let rc = <command> | exitCode)" || fail "discard-conflict teaching: $errout"
 errout=$(printf 'git push | exitCode
-' | $BIN check /dev/stdin 2>&1) && fail "statement discard must reject"
+' | checkPiped 2>&1) && fail "statement discard must reject"
 echo "$errout" | grep -qF "drop '| exitCode' if you don't need the code" || fail "statement hint: $errout"
 # an interior command line inherits the ruling (the arming desugar)
 errout=$(printf 'if 1 > 0 then
     git push | exitCode
-' | $BIN check /dev/stdin 2>&1) && fail "interior exitCode line must reject"
+' | checkPiped 2>&1) && fail "interior exitCode line must reject"
 echo "$errout" | grep -qF "bind it (let rc = <command> | exitCode)" || fail "interior cell keeps the tailored teaching: $errout"
 echo "e2e ok: exitCode conflict cells teach (sigil, bang, statement, interior line)"
 
@@ -3103,13 +3117,13 @@ expect "value-headed multi-external chain" '["2"]' "$out"
 errout=$($BIN -e '[1; 2] | Seq.length' 2>&1) && fail "library head must keep the pipe hint"
 echo "$errout" | grep -qF "'|' chains commands" || fail "library-head hint: $errout"
 # type demand: scalar and seq<int> each get their teaching
-errout=$(printf '"x" | tr a b\n' | $BIN check /dev/stdin 2>&1) && fail "scalar LHS must reject"
+errout=$(printf '"x" | tr a b\n' | checkPiped 2>&1) && fail "scalar LHS must reject"
 echo "$errout" | grep -qF "one line wraps as \`[x]\`" || fail "scalar teaching: $errout"
-errout=$(printf '[1; 2] | cat\n' | $BIN check /dev/stdin 2>&1) && fail "seq<int> LHS must reject"
+errout=$(printf '[1; 2] | cat\n' | checkPiped 2>&1) && fail "seq<int> LHS must reject"
 echo "$errout" | grep -qF "map show or interpolate per element" || fail "seq<int> teaching: $errout"
 # a value-headed single external segment now reifies (session 2) — bound,
 # it type-checks (bare, it is a discard like any non-unit expression)
-out=$(printf 'let r = ["x"] | grep x | complete\nprint (show r.exitCode)\n' | $BIN /dev/stdin)
+out=$(printf 'let r = ["x"] | grep x | complete\nprint (show r.exitCode)\n' | runPiped)
 expect "value-headed | complete now reifies (bind it)" "0" "$out"
 echo "e2e ok: value-headed pipe — resolution boundary, type teachings"
 # reifier-with-stdin [D:value-headed-pipe] (session 2): a value-headed
@@ -3126,11 +3140,11 @@ expect "value-headed | exitCode" "1" "$out"
 out=$($BIN -e 'let r = $(echo hi | complete) in r.stdout')
 expect "expression-position reification via \$(... | complete)" '["hi"]' "$out"
 # multi-external reifier still rejects (no new law)
-errout=$(printf 'echo hi | grep h | complete\n' | $BIN check /dev/stdin 2>&1) && fail "multi-external reifier must reject"
+errout=$(printf 'echo hi | grep h | complete\n' | checkPiped 2>&1) && fail "multi-external reifier must reject"
 echo "$errout" | grep -qF "single external command segment" || fail "multi-external rule changed: $errout"
 # the sigil-interior teaching names the value-headed spelling
 # (retargeted from the retired district [D:district-retirement])
-errout=$(printf '!(["x"] | cat)\n' | $BIN check /dev/stdin 2>&1) && fail "value-headed in a sigil interior must reject"
+errout=$(printf '!(["x"] | cat)\n' | checkPiped 2>&1) && fail "value-headed in a sigil interior must reject"
 echo "$errout" | grep -qF "value-headed pipeline bound outside" || fail "sigil-interior teaching: $errout"
 echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings, sigil-interior teaching"
 rm -rf "$fddir"
@@ -3421,20 +3435,20 @@ d=sigil" "$out"
 # the head and mid-word teachings
 errout=$(printf 'let xs = ["ls"]
 $@xs -la
-' | $BIN check /dev/stdin 2>&1) && fail "head splat must reject"
+' | checkPiped 2>&1) && fail "head splat must reject"
 echo "$errout" | grep -qF "N words would be N heads" || fail "head teaching: $errout"
 errout=$(printf 'let fs = ["a"]
 echo --flag=$@fs
-' | $BIN check /dev/stdin 2>&1) && fail "mid-word splat must reject"
+' | checkPiped 2>&1) && fail "mid-word splat must reject"
 echo "$errout" | grep -qF "cannot join a word under construction" || fail "mid-word teaching: $errout"
 # the type teachings, both directions
 errout=$(printf 'let ns = [1; 2]
 echo $@ns
-' | $BIN check /dev/stdin 2>&1) && fail "seq<int> splat must reject"
+' | checkPiped 2>&1) && fail "seq<int> splat must reject"
 echo "$errout" | grep -qF "map show or interpolate" || fail "seq<int> teaching: $errout"
 errout=$(printf 'let s = "x"
 echo $@s
-' | $BIN check /dev/stdin 2>&1) && fail "scalar splat must reject"
+' | checkPiped 2>&1) && fail "scalar splat must reject"
 echo "$errout" | grep -qF "one value? use \$x" || fail "scalar teaching: $errout"
 echo "e2e ok: splat teaches head, mid-word, and both type directions"
 
@@ -3442,12 +3456,12 @@ echo "e2e ok: splat teaches head, mid-word, and both type directions"
 # glued prefix would silently drop, so name the space/interp spellings
 errout=$(printf 'let f = "x"
 echo --file=$f
-' | $BIN check /dev/stdin 2>&1) && fail "mid-word scalar splice must reject"
+' | checkPiped 2>&1) && fail "mid-word scalar splice must reject"
 echo "$errout" | grep -qF "cannot join a word under construction" || fail "mid-word scalar teaching: $errout"
 # the spaced spelling stays legal (one argv word each)
 out=$(printf 'let f = "x.txt"
 echo --file $f
-' | $BIN /dev/stdin 2>&1)
+' | runPiped 2>&1)
 echo "$out" | grep -qF -- "--file x.txt" || fail "spaced splice must pass: $out"
 echo "e2e ok: scalar mid-word splice rejects, spaced spelling passes"
 
