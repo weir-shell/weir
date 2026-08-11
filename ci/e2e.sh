@@ -1275,7 +1275,9 @@ within cd "definitely-absent"
 WEOF
 mout=$( cd "$widir" && $BIN cdmiss.weir 2>&1 ) && fail "missing path must error" || true
 echo "$mout" | grep -qF "within cd: no such directory:" || fail "missing-path message: $mout"
-echo "$mout" | grep -q "/definitely-absent" || fail "resolved absolute path named: $mout"
+# resolved-ness = the PARENT rode into the message; the leaf pair with
+# a dot, never the slash (the separator-brittle path-pin class)
+echo "$mout" | grep -q "$(basename "$widir").definitely-absent" || fail "resolved absolute path named: $mout"
 test ! -e "$widir/marker.txt" || fail "the block must NOT run on a missing path"
 echo "e2e ok: within cd missing path — resolved abs path named, block never ran"
 
