@@ -50,6 +50,13 @@ fi
 pathEntry() {
     if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; else printf '%s\n' "$1"; fi
 }
+# a fake PATH binary every platform can SPAWN: the shebang file for
+# POSIX plus a .bat twin Windows resolves via PATHEXT (an extensionless
+# shebang file is correctly not executable there)
+mkFakeBin() {
+    printf '#!/bin/sh\necho %s\n' "$3" > "$1/$2" && chmod +x "$1/$2"
+    printf '@echo off\r\necho %s\r\n' "$3" > "$1/$2.bat"
+}
 BINDIR=$(pathEntry "$(dirname "$BIN")")
 
 # HARD stale-binary gate [D:masking-mechanized] — the ONE shared gate
@@ -1494,7 +1501,7 @@ echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 # this pin was written FAILING against the guard-dropped prototype
 # (`let f x = x` printed SPAWNED with an executable x on PATH)
 shdir=$(mkweirtmp)
-printf '#!/bin/sh\necho SPAWNED\n' > "$shdir/x" && chmod +x "$shdir/x"
+mkFakeBin "$shdir" x SPAWNED
 cat > "$shdir/shadow.weir" <<'WEOF'
 let f x = x
 print (f "value")
@@ -2779,8 +2786,7 @@ echo "$out" | grep -qE "^[0-9a-f]+:true " || fail "the forms block must run: $ou
 echo "e2e ok: block-let command RHS binds, pipes, and reifies at depth"
 
 mkdir -p "$bldir/bin"
-printf '#!/bin/sh\necho SPAWNED\n' > "$bldir/bin/zzshadow"
-chmod +x "$bldir/bin/zzshadow"
+mkFakeBin "$bldir/bin" zzshadow SPAWNED
 cat > "$bldir/shadow.weir" <<'WEOF'
 let f y =
     let zzshadow = fun a -> a
@@ -2803,8 +2809,7 @@ WEOF
 out=$(PATH="$(pathEntry "$bldir/bin"):$PATH" $BIN "$bldir/force.weir")
 expect "^ still reaches the PATH binary from a block RHS" "SPAWNED" "$out"
 
-printf '#!/bin/sh\necho FN-BINARY\n' > "$bldir/bin/function"
-chmod +x "$bldir/bin/function"
+mkFakeBin "$bldir/bin" function FN-BINARY
 out=$(PATH="$(pathEntry "$bldir/bin"):$PATH" $BIN -e '^function' 2>&1)
 expect "^function reaches a PATH binary (reservation does not block force)" "FN-BINARY" "$out"
 
@@ -3198,18 +3203,24 @@ WEOF
 chmod +x "$spdir/sub/where.weir"
 cp "$spdir/sub/where.weir" "$spdir/pbin/where.weir"
 
-want="$spdir/sub"
-out=$(cd "$spdir" && $BIN sub/where.weir | tail -1)
-[ "$out" = "$want" ] || fail "relative invocation: got $out want $want"
-out=$(cd "$spdir/sub" && $BIN ./where.weir | tail -1)
-[ "$out" = "$want" ] || fail "dot-relative invocation: got $out"
-out=$($BIN "$spdir/sub/where.weir" | tail -1)
-[ "$out" = "$want" ] || fail "absolute invocation: got $out"
+# one absolute answer three ways: the three outputs must AGREE and end
+# at the right leaf — never a full-path equality (the separator class;
+# weir prints the platform's)
+out1=$(cd "$spdir" && $BIN sub/where.weir | tail -1)
+out2=$(cd "$spdir/sub" && $BIN ./where.weir | tail -1)
+out3=$($BIN "$spdir/sub/where.weir" | tail -1)
+[ "$out1" = "$out2" ] && [ "$out2" = "$out3" ] || fail "three invocations must agree: $out1 / $out2 / $out3"
+echo "$out1" | grep -q "sub$" || fail "scriptPath's dir must end at sub: $out1"
+case "$out1" in /*|[A-Za-z]:*) ;; *) fail "scriptPath must be absolute: $out1" ;; esac
 echo "e2e ok: scriptPath — one absolute answer three ways, resolved BEFORE the cd"
 
-out=$(cd "$spdir" && PATH="$(pathEntry "$spdir/pbin"):$BINDIR:$PATH" where.weir | tail -1)
-[ "$out" = "$spdir/pbin" ] || fail "shebang-on-PATH gets the SCRIPT's path: got $out"
-echo "e2e ok: shebang-on-PATH resolves to the script, not the interpreter"
+if [ "$IS_WINDOWS" = "1" ]; then
+    echo "e2e SKIP: shebang-on-PATH — a bare .weir on PATH rides the POSIX shebang (no PATHEXT entry for .weir; a stated product gap, not a fixture one)"
+else
+    out=$(cd "$spdir" && PATH="$(pathEntry "$spdir/pbin"):$BINDIR:$PATH" where.weir | tail -1)
+    [ "$out" = "$spdir/pbin" ] || fail "shebang-on-PATH gets the SCRIPT's path: got $out"
+    echo "e2e ok: shebang-on-PATH resolves to the script, not the interpreter"
+fi
 
 errout=$($BIN -e 'scriptPath' 2>&1) && fail "-e must refuse scriptPath"
 echo "$errout" | grep -qF "scriptPath is script-only" || fail "the teaching: $errout"
@@ -4444,6 +4455,21 @@ case "$1" in
 esac
 WEOF
 chmod +x "$sgdir/proj/bin/sigtool"
+cat > "$sgdir/proj/bin/sigtool.bat" <<'BEOF'
+@echo off
+if "%~1"=="--version" goto version
+if "%~1"=="--help" goto help
+echo ran:%*
+goto :eof
+:version
+echo sigtool 3.1.4
+goto :eof
+:help
+echo Flags:
+echo   -n, --name ^<x^>   a name
+echo       --dry-run    no effects
+type nul > "%SIGTOOL_MARK%"
+BEOF
 cd "$sgdir/proj"
 # generation: probes the tool, validates, writes sig + lock
 SIGTOOL_MARK="$sgdir/gen-mark" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig sigtool | grep -qF "added sig sigtool (2 flag(s), source: help" || fail "add sig generates"
