@@ -50,12 +50,17 @@ fi
 pathEntry() {
     if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; else printf '%s\n' "$1"; fi
 }
-# a fake PATH binary every platform can SPAWN: the shebang file for
-# POSIX plus a .bat twin Windows resolves via PATHEXT (an extensionless
-# shebang file is correctly not executable there)
+# a fake PATH binary every platform can SPAWN — PER-PLATFORM, never
+# both: with both present, weir's Windows resolver prefers the exact
+# extensionless name and CreateProcess fails on it rather than falling
+# through to the .bat (noted as a possible product divergence from
+# cmd's PATHEXT-only search; the fixture must not depend on it)
 mkFakeBin() {
-    printf '#!/bin/sh\necho %s\n' "$3" > "$1/$2" && chmod +x "$1/$2"
-    printf '@echo off\r\necho %s\r\n' "$3" > "$1/$2.bat"
+    if [ "$IS_WINDOWS" = "1" ]; then
+        printf '@echo off\r\necho %s\r\n' "$3" > "$1/$2.bat"
+    else
+        printf '#!/bin/sh\necho %s\n' "$3" > "$1/$2" && chmod +x "$1/$2"
+    fi
 }
 BINDIR=$(pathEntry "$(dirname "$BIN")")
 
@@ -4446,6 +4451,7 @@ echo "e2e ok: exit hook (pfirst exit-race fixed, signal sweep via TERM, registra
 # ---- command signatures [D:command-signatures] -----------------------------
 sgdir=$(mkweirtmp)
 mkdir -p "$sgdir/proj/bin" "$sgdir/proj/.git"
+if [ "$IS_WINDOWS" != "1" ]; then
 cat > "$sgdir/proj/bin/sigtool" <<'WEOF'
 #!/bin/sh
 case "$1" in
@@ -4455,6 +4461,8 @@ case "$1" in
 esac
 WEOF
 chmod +x "$sgdir/proj/bin/sigtool"
+fi
+if [ "$IS_WINDOWS" = "1" ]; then
 cat > "$sgdir/proj/bin/sigtool.bat" <<'BEOF'
 @echo off
 if "%~1"=="--version" goto version
@@ -4470,6 +4478,7 @@ echo   -n, --name ^<x^>   a name
 echo       --dry-run    no effects
 type nul > "%SIGTOOL_MARK%"
 BEOF
+fi
 cd "$sgdir/proj"
 # generation: probes the tool, validates, writes sig + lock
 SIGTOOL_MARK="$sgdir/gen-mark" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig sigtool | grep -qF "added sig sigtool (2 flag(s), source: help" || fail "add sig generates"
