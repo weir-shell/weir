@@ -3514,11 +3514,18 @@ ddir=$(mkweirtmp)
 python3 -c "print('let x = ' + '('*499 + '1' + ')'*499)" > "$ddir/deep.weir" 2>/dev/null \
     || awk 'BEGIN{s="let x = "; for(i=0;i<499;i++)s=s"("; s=s"1"; for(i=0;i<499;i++)s=s")"; print s}' > "$ddir/deep.weir"
 $BIN check "$ddir/deep.weir" >/dev/null 2>&1 || fail "depth 499 must parse on a full-size stack"
-errout=$( (ulimit -s 512; $BIN check "$ddir/deep.weir") 2>&1 ) && fail "small-stack deep parse must diagnose"
-rc=$?
-[ "$rc" -lt 128 ] || fail "small-stack deep parse crashed (rc=$rc) — the probe must fire first"
-echo "$errout" | grep -qF "nested too deeply" || fail "probe diagnostic missing: $errout"
-echo "e2e ok: depth probe diagnoses on a 512KB stack (no SIGSEGV), full stack still parses 499"
+if [ "$IS_WINDOWS" = "1" ]; then
+    # ulimit -s cannot constrain a native Windows process (the stack
+    # reserve is baked at link time) — the small-stack PREMISE does not
+    # exist there; the depth guard itself ran above at full stack
+    echo "e2e SKIP: the small-stack probe cell — no POSIX stack limit on Windows (depth 499 parsed above)"
+else
+    errout=$( (ulimit -s 512; $BIN check "$ddir/deep.weir") 2>&1 ) && fail "small-stack deep parse must diagnose"
+    rc=$?
+    [ "$rc" -lt 128 ] || fail "small-stack deep parse crashed (rc=$rc) — the probe must fire first"
+    echo "$errout" | grep -qF "nested too deeply" || fail "probe diagnostic missing: $errout"
+    echo "e2e ok: depth probe diagnoses on a 512KB stack (no SIGSEGV), full stack still parses 499"
+fi
 rm -rf "$ddir"
 
 # ---- user modules and imports, session 1 [D:modules-v1] -------------------
