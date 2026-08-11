@@ -252,8 +252,13 @@ if "type T redeclared; earlier values keep the old shape" not in t:
 d = tempfile.mkdtemp()
 open(d + "/a.txt", "w").write("x" * 70000)
 open(d + "/b.txt", "w").write("y")
-keys = [("cd \"%s\"\r" % d, 0.5), ("ls |> Seq.sortByDescending _.bytes\r", 0.7)]
+# a loaded runner can outlive a fixed post-Enter drain (the round-12
+# jitter class): a generous settle plus one whole-probe retry — the
+# pinned property (tabulation) is deterministic, only timing is not
+keys = [("cd \"%s\"\r" % d, 0.8), ("ls |> Seq.sortByDescending _.bytes\r", 2.5)]
 t, _ = run(keys)
+if "\u2500" not in t or "bytes" not in t:
+    t, _ = run(keys)
 if "\u2500" not in t or "bytes" not in t:
     failures.append(f"a record seq must tabulate under a tty: {t[-300:]!r}")
 if "[{" in t:

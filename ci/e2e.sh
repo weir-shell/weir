@@ -1264,7 +1264,8 @@ within cd "build"
 print (pwd |> Seq.head)
 WEOF
 out=$( cd "$widir" && $BIN cd.weir )
-echo "$out" | head -1 | grep -q "build/sub$" || fail "nested relative cd composes: $out"
+# separator-agnostic (pwd prints the platform's): the leaf pair, not the slash
+echo "$out" | head -1 | grep -q "build.sub$" || fail "nested relative cd composes: $out"
 echo "$out" | tail -1 | grep -qv "build" || fail "cwd restored after the scope: $out"
 echo "e2e ok: within cd — nested relative paths compose, restore on exit"
 
