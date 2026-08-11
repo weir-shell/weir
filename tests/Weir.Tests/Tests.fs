@@ -1013,19 +1013,22 @@ let boundaryTests =
 
               Expect.stringContains msg "declare it Option" "null-in-required names the remedy"
 
-              // nested Option<Option<int>> rejects at check, naming the set
+              // nested Option<Option<int>> rejects at check, naming the flatten
               let eNested = env |> declare "type JN = { z: Option<Option<int>> }"
 
               match typecheck eNested (parse "src |> from json JN") with
-              | Error terr -> Expect.stringContains terr.Message "json rows support" "nested Option rejected"
+              | Error terr ->
+                  Expect.stringContains terr.Message "Option<Option<" "nested Option rejected"
+                  Expect.stringContains terr.Message "flatten" "the repair"
               | Ok _ -> failtest "nested Option should reject"
 
-              // Option of a record rejects (the boundary needs a flat row)
+              // Option of a record is ADMITTED under the recursive law
+              // [D:recursive-fields] (the flat-row refusal retired)
               let eRec = env |> declare "type JR = { r: Option<Point> }"
 
               match typecheck eRec (parse "src |> from json JR") with
-              | Error _ -> ()
-              | Ok _ -> failtest "Option of a record should reject"
+              | Ok _ -> ()
+              | Error terr -> failtest $"Option of a record must be admitted now: {terr.Message}"
           }
           test "module marker parses: bare and named [D:modules-v1]" {
               match Weir.Parser.parseLine cmdResolver "module Git" with
@@ -1626,7 +1629,7 @@ let boundaryCheckTests =
           }
           test "to json on a union seq is rejected" {
               let e = "let xs = nats |> map (fun n -> Running n) in xs |> to json"
-              Expect.stringContains (checkErr e).Message "primitive or record elements" ""
+              Expect.stringContains (checkErr e).Message "is a union, which is not admitted" ""
           }
           test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" } ]
 
@@ -9448,6 +9451,174 @@ let functionKeywordTests =
                   "a comment is data"
           } ]
 
+let recursiveFieldTests =
+    // the field law goes recursive [D:recursive-fields]: nested records
+    // and seq fields; cycles refuse naming their path; flat boundaries
+    // (Args.load / Env.load) deliberately unmoved
+    testList
+        "recursive field law [D:recursive-fields]"
+        [ test "the acceptance: a nested record and a seq of records read" {
+              let e =
+                  env
+                  |> declare "type Entity = { entityid: string }"
+                  |> declare "type Doc = { id: string; entityids: Entity; tags: seq<string> }"
+
+              let src =
+                  "{\"id\":\"11831032\",\"entityids\":{\"entityid\":\"0033x\"},\"tags\":[\"a\",\"b\"]}"
+
+              match Weir.Parser.parseStmt "src |> from json Doc |> _.entityids.entityid" with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e expr with
+                  | Ok te ->
+                      let venv = Map.add "src" (VSeq [ VStr src ]) valueEnv
+                      Expect.equal (Weir.Eval.eval venv te) (VStr "0033x") "three deep"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "to json round-trips nested records and seq fields" {
+              let e =
+                  env
+                  |> declare "type Inner = { v: int }"
+                  |> declare "type Outer = { name: string; inner: Inner; xs: seq<int> }"
+
+              let src = "{\"inner\":{\"v\":5},\"name\":\"a\",\"xs\":[1,2]}"
+
+              match Weir.Parser.parseStmt "[src |> from json Outer] |> to json" with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e expr with
+                  | Ok te ->
+                      let venv = Map.add "src" (VSeq [ VStr src ]) valueEnv
+
+                      Expect.equal
+                          (Weir.Eval.eval venv te |> forceSeq)
+                          [ VStr src ]
+                          "byte-identical round-trip (alphabetical fields)"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a direct cycle refuses NAMING ITS PATH; a mutual one is undeclarable" {
+              let e = env |> declare "type T = { next: T }"
+
+              match Weir.Check.typecheck e (parse "[\"{}\"] |> from json T") with
+              | Error terr ->
+                  Expect.stringContains terr.Message "the type cycle T → T" "the path, not just 'recursive'"
+                  Expect.stringContains terr.Message "finite trees" "the reason"
+              | Ok _ -> failtest "a self-referential record must refuse the boundary"
+
+              // the MUTUAL pair A → B → A cannot even be DECLARED (no
+              // forward type references) — unrepresentable by
+              // construction, stated here so no audit reads it as a gap
+              Expect.throws (fun () -> env |> declare "type A = { b: BNotYet }" |> ignore) "no forward refs"
+          }
+          test "the offending field is named BY PATH, category and why" {
+              let e =
+                  env
+                  |> declare "type U = Red | Green"
+                  |> declare "type Mid = { u: U }"
+                  |> declare "type Top = { mid: Mid }"
+
+              match Weir.Check.typecheck e (parse "[\"{}\"] |> from json Top") with
+              | Error terr ->
+                  Expect.stringContains terr.Message "field 'mid.u'" "the dotted path locates the failure"
+                  Expect.stringContains terr.Message "is a union, which is not admitted" "the why"
+                  Expect.stringContains terr.Message "record of admitted fields, or seq of an admitted" "the categories"
+              | Ok _ -> failtest "a union field must refuse"
+          }
+          test "Option<Rec> and seq<Option<int>> work; null means None at EVERY depth" {
+              let e =
+                  env
+                  |> declare "type R = { v: int }"
+                  |> declare "type H = { r: Option<R>; xs: seq<Option<int>> }"
+
+              let read (src: string) (access: string) =
+                  match Weir.Parser.parseStmt $"src |> from json H |> {access}" with
+                  | Ok(SExpr expr) ->
+                      match Weir.Check.typecheck e expr with
+                      | Ok te -> Weir.Eval.eval (Map.add "src" (VSeq [ VStr src ]) valueEnv) te
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              Expect.equal
+                  (read "{\"r\":{\"v\":5},\"xs\":[1,null,3]}" "_.xs" |> forceSeq)
+                  [ VUnion("Some", Some(VInt 1L))
+                    VUnion("None", None)
+                    VUnion("Some", Some(VInt 3L)) ]
+                  "null array elements are None"
+
+              Expect.equal (read "{\"r\":null,\"xs\":[]}" "_.r") (VUnion("None", None)) "a null record is None"
+          }
+          test "a MISSING array is an error, not a silent [] — absence is Option's job" {
+              let e = env |> declare "type W = { tags: seq<string> }"
+
+              match Weir.Parser.parseStmt "src |> from json W |> _.tags" with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e expr with
+                  | Ok te ->
+                      let venv = Map.add "src" (VSeq [ VStr "{}" ]) valueEnv
+                      let ex = Expect.throwsC (fun () -> Weir.Eval.eval venv te |> ignore) id
+                      Expect.stringContains ex.Message "missing field 'tags'" "the required-field rule, unchanged"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "deep-but-legal reads (8 levels); the 64-deep parser cap is the only limit" {
+              let e =
+                  [ 1..8 ]
+                  |> List.fold
+                      (fun te i ->
+                          te
+                          |> declare (
+                              if i = 1 then
+                                  "type L1 = { v: int }"
+                              else
+                                  $"type L{i} = {{ n: L{i - 1} }}"
+                          ))
+                      env
+
+              let json = (String.replicate 7 "{\"n\":") + "{\"v\":9}" + String.replicate 7 "}"
+              let access = "_." + (String.concat "." (List.replicate 7 "n")) + ".v"
+
+              match Weir.Parser.parseStmt $"src |> from json L8 |> {access}" with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e expr with
+                  | Ok te -> Expect.equal (Weir.Eval.eval (Map.add "src" (VSeq [ VStr json ]) valueEnv) te) (VInt 9L) ""
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "an anonymous shape composes with a nested DECLARED record [D:anon-records]" {
+              let e = env |> declare "type Entity = { entityid: string }"
+
+              match Weir.Parser.parseStmt "src |> from json {| entityids: Entity |} |> _.entityids.entityid" with
+              | Ok(SExpr expr) ->
+                  match Weir.Check.typecheck e expr with
+                  | Ok te ->
+                      let venv =
+                          Map.add "src" (VSeq [ VStr "{\"entityids\":{\"entityid\":\"z9\"}}" ]) valueEnv
+
+                      Expect.equal (Weir.Eval.eval venv te) (VStr "z9") "the top can be anonymous, the nesting declared"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "Args.load and Env.load STAY FLAT — a nested field refuses with the old messages" {
+              let e =
+                  env
+                  |> declare "type Inner = { v: int }"
+                  |> declare "type Cfg = { inner: Inner }"
+
+              match Weir.Check.typecheck e (parse "Env.load Cfg") with
+              | Error terr ->
+                  Expect.stringContains terr.Message "Env.load fields must be" "the flat enumeration, intact"
+              | Ok _ -> failtest "Env.load must refuse a nested record"
+
+              // Args.load's law lives in Argv.fieldProblems (its own
+              // module — the boundaries never shared a law); pin it there
+              match Map.tryFind "Cfg" e.Types with
+              | Some(Record cfgDef) ->
+                  match Weir.Argv.fieldProblems "" cfgDef with
+                  | Some msg -> Expect.stringContains msg "Args.load fields must be" "the flat enumeration, intact"
+                  | None -> failtest "Args.load must refuse a nested record"
+              | _ -> failtest "Cfg must be declared"
+          } ]
+
 let jsonBoundaryTests =
     // the json boundary [D:from-jsonl] [D:json-boundary]: from json reads
     // ONE document -> T (joins its elements internally); from jsonl reads
@@ -11742,6 +11913,7 @@ let allTests =
           walkCohortTests
           pinsWalkTests
           functionKeywordTests
+          recursiveFieldTests
           jsonBoundaryTests
           fromJsonSeqTests
           fileRowSizeTests

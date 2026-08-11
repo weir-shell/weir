@@ -405,6 +405,13 @@ let private jsonLine (v: Value) : string =
         // element level is a null line (a None FIELD is OMITTED, below)
         | VUnion("Some", Some inner) -> write inner
         | VUnion("None", None) -> writer.WriteNullValue()
+        | VSeq items ->
+            // a nested array [D:recursive-fields] — elements recurse;
+            // an Option element writes null for None (an array slot
+            // cannot be omitted; null reads back as None)
+            writer.WriteStartArray()
+            items |> Seq.iter write
+            writer.WriteEndArray()
         | VRecord(_, fields) ->
             writer.WriteStartObject()
 
@@ -444,7 +451,14 @@ let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
 /// demands a top-level array (one row per element), otherwise an object
 /// — the type decides what the top level must be, never the input
 /// [D:from-json-seq]
-let private jsonDoc (who: string) (wantSeq: bool) (def: RecordDef) (shown: string) (text: string) : Value =
+let private jsonDoc
+    (who: string)
+    (wantSeq: bool)
+    (def: RecordDef)
+    (defs: Map<string, RecordDef>)
+    (shown: string)
+    (text: string)
+    : Value =
     use doc =
         try
             System.Text.Json.JsonDocument.Parse text
@@ -487,35 +501,70 @@ let private jsonDoc (who: string) (wantSeq: bool) (def: RecordDef) (shown: strin
         | TBool, System.Text.Json.JsonValueKind.False -> VBool false
         | ty, kind -> failwith $"{who}: field '{name}' expected {formatTy ty}, got {kind} in: {shown}"
 
+    // the RECURSIVE reader [D:recursive-fields]: nested objects convert
+    // through `defs` (the check-time closure — eval has no env), arrays
+    // through the element type; Option means the SAME thing at every
+    // depth (null -> None), and paths name the location
+    let rec readValue (name: string) (ty: Ty) (prop: System.Text.Json.JsonElement) : Value =
+        match ty with
+        | TNamed("Option", [ inner ]) ->
+            if prop.ValueKind = System.Text.Json.JsonValueKind.Null then
+                VUnion("None", None)
+            else
+                VUnion("Some", Some(readValue name inner prop))
+        | TSeq elem ->
+            if prop.ValueKind <> System.Text.Json.JsonValueKind.Array then
+                failwith
+                    $"{who}: field '{name}' expected an array ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
+
+            // forced before the document disposes
+            prop.EnumerateArray()
+            |> Seq.mapi (fun i el -> readValue $"{name}[{i + 1}]" elem el)
+            |> List.ofSeq
+            |> List.toSeq
+            |> VSeq
+        | TNamed(n, []) when defs.ContainsKey n ->
+            if prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
+                failwith
+                    $"{who}: field '{name}' expected an object ({n}), got {jsonKindName prop.ValueKind} in: {shown}"
+
+            objRow $"{name}." defs[n] prop
+        | scalarTy -> readScalar name scalarTy prop
+
     // one OBJECT element -> one row (the param shadows the document root
-    // on purpose: the field readers below say `root` either way)
-    let objRow (root: System.Text.Json.JsonElement) =
+    // on purpose: the field readers below say `root` either way);
+    // `prefix` is the dotted path above this object ("" at the top)
+    and objRow (prefix: string) (rdef: RecordDef) (root: System.Text.Json.JsonElement) =
         let readField (name: string, ty: Ty) =
+            let shownName = prefix + name
             let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
             let present = root.TryGetProperty(name, &prop)
             let isNull = present && prop.ValueKind = System.Text.Json.JsonValueKind.Null
 
             let value =
                 match ty with
-                // an Option<scalar> field: missing key OR explicit null -> None;
-                // a present scalar -> Some it
+                // an Option field: missing key OR explicit null -> None;
+                // present -> Some (readValue keeps the rule at depth)
                 | TNamed("Option", [ inner ]) ->
                     if not present || isNull then
                         VUnion("None", None)
                     else
-                        VUnion("Some", Some(readScalar name inner prop))
-                // a required field: missing or null both fail — null names the fix
-                | _ when not present -> failwith $"{who}: missing field '{name}' in: {shown}"
+                        VUnion("Some", Some(readValue shownName inner prop))
+                // a required field: missing or null both fail — null names
+                // the fix (a missing ARRAY is an error too: absence is
+                // Option's job, [] is not guessed)
+                | _ when not present -> failwith $"{who}: missing field '{shownName}' in: {shown}"
                 | _ when isNull ->
-                    failwith $"{who}: field '{name}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"
-                | _ -> readScalar name ty prop
+                    failwith
+                        $"{who}: field '{shownName}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"
+                | _ -> readValue shownName ty prop
 
             name, value
 
-        VRecord(def.Name, def.Fields |> List.map readField |> Map.ofList)
+        VRecord(rdef.Name, rdef.Fields |> List.map readField |> Map.ofList)
 
     match wantSeq, root.ValueKind with
-    | false, System.Text.Json.JsonValueKind.Object -> objRow root
+    | false, System.Text.Json.JsonValueKind.Object -> objRow "" def root
     | true, System.Text.Json.JsonValueKind.Array ->
         root.EnumerateArray()
         |> Seq.mapi (fun i el ->
@@ -523,7 +572,7 @@ let private jsonDoc (who: string) (wantSeq: bool) (def: RecordDef) (shown: strin
                 failwith
                     $"{who}: array element {i + 1} is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
             else
-                objRow el)
+                objRow "" def el)
         // forced BEFORE the document disposes; then seq for the ctor
         |> List.ofSeq
         |> List.toSeq
@@ -553,7 +602,7 @@ let private jsonSnippet (text: string) : string =
     let t = text.Trim()
     if t.Length <= 120 then t else t.Substring(0, 117) + "..."
 
-let private fromAdapter (fmt: string) (seqOf: bool) (def: RecordDef) : Value =
+let private fromAdapter (fmt: string) (seqOf: bool) (def: RecordDef) (defs: Map<string, RecordDef>) : Value =
     match fmt with
     // ONE document -> T: join the elements back into the text they came
     // from (a pretty-printed body pipes straight in) [D:from-jsonl]
@@ -572,7 +621,7 @@ let private fromAdapter (fmt: string) (seqOf: bool) (def: RecordDef) : Value =
                 if text.Trim() = "" then
                     failwith "from json: empty input — expected one JSON document"
 
-                jsonDoc "from json" seqOf def (jsonSnippet text) text
+                jsonDoc "from json" seqOf def defs (jsonSnippet text) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // one document per element -> seq<T> (NDJSON, `to json`'s shape)
     | "jsonl" ->
@@ -583,7 +632,7 @@ let private fromAdapter (fmt: string) (seqOf: bool) (def: RecordDef) : Value =
                     lines
                     |> Seq.map (fun l ->
                         match l with
-                        | VStr s -> jsonDoc "from jsonl" false def s s
+                        | VStr s -> jsonDoc "from jsonl" false def defs s s
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
@@ -1717,7 +1766,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 |> ignore
 
         VStr(sb.ToString())
-    | TEFrom(fmt, def, seqOf) -> fromAdapter fmt seqOf def
+    | TEFrom(fmt, def, defs, seqOf) -> fromAdapter fmt seqOf def defs
     | TEFromYaml(_, shape) -> yamlFromImpl shape
     | TEYaml(tpl, _) -> evalYamlTpl env tpl
     | TETo "yaml" -> yamlToImpl

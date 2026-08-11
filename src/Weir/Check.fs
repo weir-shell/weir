@@ -92,7 +92,7 @@ and TypedKind =
     | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
-    | TEFrom of format: string * rowDef: RecordDef * seqOf: bool
+    | TEFrom of format: string * rowDef: RecordDef * defs: Map<string, RecordDef> * seqOf: bool
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
     // the RESOLVED target tree (the [D:env-enums] precedent)
     | TEFromYaml of tyName: string * shape: Yaml.Shape
@@ -840,54 +840,90 @@ let private jsonScalar (ty: Ty) : bool =
     | TBool -> true
     | _ -> false
 
-let private jsonFieldOk (ty: Ty) : bool =
-    jsonScalar ty
-    || (match ty with
-        | TNamed("Option", [ inner ]) -> jsonScalar inner
-        | _ -> false)
+// the RECURSIVE json field law [D:recursive-fields]: a field is
+// admitted if it is a scalar (int, float, string, bool), an Option of
+// an admitted type, a record whose fields are all admitted, or a seq
+// of an admitted type. `seen` is the ORDERED declaration path (the
+// yaml guard's job, but a cycle names its path); `path` locates the
+// offending field from the top — a recursive law's failures are deep
+// and a category list alone will not find them.
+let private jsonAdmittedSet =
+    "json fields are int, float, string, bool, Option of an admitted type, a record of admitted fields, or seq of an admitted type"
 
-let private jsonableRecord (span: Span) (def: RecordDef) : Result<unit, TypeError> =
-    allOk def.Fields (fun (name, ty) ->
-        if jsonFieldOk ty then
-            Ok()
-        elif ty = TSize then
-            // parked [D:size]: JSON has no size convention (bytes-int
-            // and a string both defensible; the choice wants a receipt)
-            err
-                span
-                $"field '{name}': Size is not representable in JSON — convert explicitly (Size.toBytes into an int field, or show for a string)"
-        elif ty = TDur then
-            // parked [D:duration]: JSON has no duration convention
-            // (ms-int vs ISO-8601 both defensible; the choice wants a
-            // receipt) — an honest rejection beats a guess
-            err
-                span
-                $"field '{name}': Duration is not representable in JSON — convert explicitly (Duration.toMillis into an int field, or show for a string)"
-        elif ty = TSecret then
-            // a Secret crossing to a wire format is almost certainly a
-            // mistake [D:secret]; Secret.reveal is the deliberate spelling
-            err
-                span
-                $"field '{name}': a Secret must not cross to JSON — Secret.reveal it into a string field if you truly mean to write it"
-        else
-            err
-                span
-                $"field '{name}' has type {formatTy ty}; json rows support int, float, string, bool, and Option of those")
+let rec private jsonAdmitted
+    (span: Span)
+    (env: TypeEnv)
+    (seen: string list)
+    (path: string)
+    (ty: Ty)
+    : Result<unit, TypeError> =
+    let at = if path = "" then "" else $"field '{path}': "
+
+    match ty with
+    | TInt
+    | TFloat
+    | TStr
+    | TBool -> Ok()
+    | TSize ->
+        // parked [D:size]: JSON has no size convention (bytes-int and a
+        // string both defensible; the choice wants a receipt)
+        err
+            span
+            $"{at}Size is not representable in JSON — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TDur ->
+        // parked [D:duration]: no duration convention (ms-int vs
+        // ISO-8601 both defensible) — an honest rejection beats a guess
+        err
+            span
+            $"{at}Duration is not representable in JSON — convert explicitly (Duration.toMillis into an int field, or show for a string)"
+    | TSecret ->
+        // a Secret crossing to a wire format is almost certainly a
+        // mistake [D:secret]; Secret.reveal is the deliberate spelling
+        err
+            span
+            $"{at}a Secret must not cross to JSON — Secret.reveal it into a string field if you truly mean to write it"
+    | TNamed("Option", [ TNamed("Option", _) ]) ->
+        err span $"{at}Option<Option<…>> has no JSON reading; flatten the type"
+    | TNamed("Option", [ inner ]) -> jsonAdmitted span env seen path inner
+    | TSeq elem -> jsonAdmitted span env seen path elem
+    | TNamed(n, []) when seen |> List.contains n ->
+        let cycle =
+            ((seen |> List.rev |> List.skipWhile ((<>) n)) @ [ n ]) |> String.concat " → "
+
+        err span $"{at}the type cycle {cycle} cannot cross the JSON boundary — it needs finite trees"
+    | TNamed(n, []) ->
+        match Map.tryFind n env.Types with
+        | Some(Record def) when def.Params.IsEmpty ->
+            allOk def.Fields (fun (fn, fty) ->
+                jsonAdmitted span env (n :: seen) (if path = "" then fn else $"{path}.{fn}") fty)
+        | Some(Record _) -> err span $"{at}'{n}' is generic; the JSON boundary needs monomorphic records"
+        | Some(Union _) -> err span $"{at}'{n}' is a union, which is not admitted; {jsonAdmittedSet}"
+        | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+    | ty -> err span $"{at}type {formatTy ty} is not admitted; {jsonAdmittedSet}"
+
+let private jsonableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
+    allOk def.Fields (fun (name, ty) -> jsonAdmitted span env [ def.Name ] name ty)
 
 let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
-    if jsonFieldOk elem then
-        Ok()
-    else
-        match elem with
-        | TSecret ->
-            err
-                span
-                "a Secret must not cross to JSON — Secret.reveal it into a string first if you truly mean to write it"
-        | TNamed(n, []) ->
-            match Map.tryFind n env.Types with
-            | Some(Record def) -> jsonableRecord span def
-            | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
-        | _ -> err span $"'to json' needs primitive or record elements, got {formatTy elem}"
+    match elem with
+    | TSecret ->
+        err span "a Secret must not cross to JSON — Secret.reveal it into a string first if you truly mean to write it"
+    | elem -> jsonAdmitted span env [] "" elem
+
+// the defs a shape reaches, for the reader [D:recursive-fields]: eval
+// converts nested objects without an env, so the closure rides the
+// typed node (the yamlShape pattern, by table instead of by tree)
+let rec private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty) : Map<string, RecordDef> =
+    match ty with
+    | TNamed("Option", [ inner ]) -> jsonDefsClosure env acc inner
+    | TSeq elem -> jsonDefsClosure env acc elem
+    | TNamed(n, []) when not (acc.ContainsKey n) ->
+        match Map.tryFind n env.Types with
+        | Some(Record def) ->
+            def.Fields
+            |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.add n def acc)
+        | _ -> acc
+    | _ -> acc
 
 // ---- the yaml TREE law [D:yaml-v1] — richer than json's flat-row law
 // because YAML is a DOCUMENT format, not a row stream: scalars, nested
@@ -2476,7 +2512,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | ("json" | "jsonl"), Some name ->
                 match Map.tryFind name env.Types with
                 | Some(Record def) when def.Params.IsEmpty ->
-                    do! jsonableRecord expr.Span def
+                    do! jsonableRecord expr.Span env def
+
+                    let defs =
+                        def.Fields
+                        |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.ofList [ def.Name, def ])
 
                     let resultTy =
                         if fmt = "json" && not seqOf then
@@ -2485,7 +2525,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             TSeq(TNamed(name, []))
 
                     return
-                        { Kind = TEFrom(fmt, def, seqOf)
+                        { Kind = TEFrom(fmt, def, defs, seqOf)
                           Ty = TFun(TSeq TStr, resultTy)
                           Span = expr.Span }
                 | Some(Record _) ->

@@ -381,6 +381,24 @@ let hosts = ["[{\"host\": \"a\"}, {\"host\": \"b\"}]"] |> from json seq<Peer2> |
 hosts |> print
 ```
 
+Fields nest: the law is recursive. A field is a scalar (`int`,
+`float`, `string`, `bool`), an `Option` of an admitted type, a record
+whose fields are all admitted, or a `seq` of an admitted type — so a
+real API response types directly:
+
+```weir
+type Entity = { entityid: string }
+type Doc = { id: string; entityids: Entity; tags: seq<string> }
+
+let doc = ["{\"id\": \"11831032\", \"entityids\": {\"entityid\": \"0033x\"}, \"tags\": []}"] |> from json Doc
+print doc.entityids.entityid
+```
+
+A self-referential record refuses at check, naming its cycle — the
+boundary needs finite trees. A missing array is an error, not a
+silent `[]`: absence is `Option`'s job. (ID-keyed objects — a `Map`
+— are not typable yet.)
+
 `Http.query` is the QUERY method (RFC 10008): it is IDEMPOTENT by
 definition, so `retry attempts=5` around an `Http.query` is safe by the
 method's own guarantee — where the same wrapper around a POST is a
