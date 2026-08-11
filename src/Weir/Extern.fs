@@ -56,6 +56,26 @@ let private isPathy (prog: string) =
     prog.Contains '/'
     || (OperatingSystem.IsWindows() && (prog.Contains '\\' || prog.Contains ':'))
 
+/// the SPAWN-side resolution [D:windows-s2]: CreateProcess appends only
+/// .exe to a bare name — a .bat/.cmd (any PATHEXT) implementation needs
+/// its REAL file name handed over. Walks PATH per-dir: the name
+/// as-given first (the stated rule), then each PATHEXT in order.
+/// POSIX callers never need it (resolveProg passes bare names through).
+let resolveFile (prog: string) : string option =
+    pathDirs ()
+    |> Seq.tryPick (fun dir ->
+        let candidate = Path.Combine(dir, prog)
+
+        if File.Exists candidate then
+            Some candidate
+        else
+            pathExts ()
+            |> List.tryPick (fun e ->
+                if File.Exists(candidate + e) then
+                    Some(candidate + e)
+                else
+                    None))
+
 let exists (prog: string) : bool =
     if isPathy prog then
         let resolved = Session.resolve prog
