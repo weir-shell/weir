@@ -1,5 +1,27 @@
 # Spike Notes
 
+## session directives, and two papercuts that shared the surface (2026-08-11)
+
+The '#' worry dissolved into the feature's best sentence: a hash line
+is addressed to the tooling, not the language — check-time file
+directives and run-now session directives are one family, and the
+statement retroactively explains #sig and #schema. The discovery the
+plan insisted on came back almost empty: :q was the only non-#
+spelling in the entire surface, one literal match arm, and the feared
+migration was 25 mechanical fixture sites. FSI parity brought one
+genuine better: #help Seq works because weir's module tables are
+enumerable where FSI resolves value paths.
+
+The papercut probe found something the plan only suspected: the
+trailing-comment session's REPL half never covered the SINGLE-LINE
+path — `let x = 5 // note` was a parse error at the prompt since
+birth, hidden because the multiline arm rides the assembler and most
+sittings type short lines. One stripComment at the right seam closed
+it, and comment-only lines became silent no-ops in the same arm. The
+typed value slot is the with-slot session's machinery reused one slot
+deeper: the field's declared type was always known and simply unused
+— unions complete their cases now, which is the case a user cannot
+guess without reading source.
 ## the matrix's first-green triage (2026-08-10)
 
 Round one guessed and was wrong; round two instrumented, and round

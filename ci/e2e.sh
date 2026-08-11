@@ -213,7 +213,7 @@ dir=$(mkweirtmp)
     echo n > untracked.txt
 )
 
-out=$(printf 'cd "%s"\ngit status --porcelain |> where (Str.startsWith "M ") |> map (Str.replace "M  " "")\n^ls\nlet pat = "a"\ngrep -l $pat staged.txt\n:q\n' "$dir" | $BIN)
+out=$(printf 'cd "%s"\ngit status --porcelain |> where (Str.startsWith "M ") |> map (Str.replace "M  " "")\n^ls\nlet pat = "a"\ngrep -l $pat staged.txt\n#quit\n' "$dir" | $BIN)
 expect "cd + staged filter over git status lines" '["staged.txt"]' "$out"
 expect "^ls forces external" 'untracked.txt' "$out"
 expect "bound-variable splice into grep" '["staged.txt"]' "$out"
@@ -269,7 +269,7 @@ branchdir=$(mkweirtmp)
     git branch feature/b
     git branch keep-me
 )
-out=$(printf 'cd "%s"\ngit branch |> map trim |> where (startsWith "feature") |> join ","\n:q\n' "$branchdir" | $BIN)
+out=$(printf 'cd "%s"\ngit branch |> map trim |> where (startsWith "feature") |> join ","\n#quit\n' "$branchdir" | $BIN)
 expect "git-branch-cleanup dogfood task" '"feature/a,feature/b"' "$out"
 rm -rf "$branchdir"
 
@@ -682,7 +682,7 @@ rm -rf "$faildir"
 bigdir=$(mkweirtmp)
 truncate -s 3G "$bigdir/sparse.bin"
 touch "$bigdir/empty.txt"
-out=$(printf 'cd "%s"\nls |> Seq.where (fun f -> f.bytes > 2147483647B) |> Seq.map _.name\nls |> Seq.where (fun f -> f.bytes == 0B) |> Seq.map _.name\n:q\n' "$bigdir" | $BIN)
+out=$(printf 'cd "%s"\nls |> Seq.where (fun f -> f.bytes > 2147483647B) |> Seq.map _.name\nls |> Seq.where (fun f -> f.bytes == 0B) |> Seq.map _.name\n#quit\n' "$bigdir" | $BIN)
 expect ">2GB file survives int64 end to end" "sparse.bin" "$out"
 expect "0-byte file filters exactly" "empty.txt" "$out"
 rm -rf "$bigdir"
@@ -748,7 +748,7 @@ out=$($BIN -e 'print "visible"')
 [ "$out" = "visible" ] || fail "print in -e must emit exactly the line, no unit trailer (got: $out)"
 echo "e2e ok: unit is invisible in -e"
 
-out=$(printf 'print "hi"\nlet u = ()\nu\n:q\n' | $BIN)
+out=$(printf 'print "hi"\nlet u = ()\nu\n#quit\n' | $BIN)
 echo "$out" | grep -qF "hi" || fail "REPL print lost its output"
 if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into REPL display"; fi
 echo "e2e ok: unit is invisible in the REPL"
@@ -1017,6 +1017,9 @@ PYADP
 
     python3 "$(dirname "$0")/../tests/repl/cooked-trap.py" "$BIN" || fail "cooked trap / echo-once"
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
+    echo "e2e ok: repl directives (#help x3, #quit, :q teaches, comments no-op)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     echo "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
@@ -3583,7 +3586,7 @@ rm -rf "$mdir"
 cfgdir=$(mkweirtmp)
 mkdir -p "$cfgdir/weir"
 printf '{"historySizee": 10}\n' > "$cfgdir/weir/config.json"
-out=$(printf ':q\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
+out=$(printf '#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
 expect "the REPL config rejects an unknown key with did-you-mean" "unknown key 'historySizee'. Did you mean 'historySize'?" "$out"
 
 # a MALFORMED config must not affect a SCRIPT — scripts never read it, so the
