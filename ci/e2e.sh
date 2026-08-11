@@ -3275,7 +3275,12 @@ mkdir -p "$pgdir/src/a/b" "$pgdir/fixtures/x" "$pgdir/deny" "$pgdir/loop"
 touch "$pgdir/top.json" "$pgdir/other.json" "$pgdir/.hidden.json" \
       "$pgdir/src/one.fs" "$pgdir/src/a/two.fs" "$pgdir/src/a/b/three.fs" \
       "$pgdir/fixtures/x/f.txt" "$pgdir/deny/secret.fs"
-ln -s .. "$pgdir/loop/up"
+# a REAL symlink or none: Git Bash's ln copy-emulates by default (a
+# self-referential loop cannot be copied); nativestrict asks for the
+# real thing (runners hold the privilege) and failure gates the
+# symlink CELL as a stated skip rather than a broken fixture
+HAVE_LOOP=1
+MSYS=winsymlinks:nativestrict ln -s .. "$pgdir/loop/up" 2>/dev/null || HAVE_LOOP=0
 # permission-denial fixtures are inexpressible under root (uid 0
 # ignores modes) — the skip assertion below gates on the euid
 chmod 000 "$pgdir/deny"
@@ -3306,7 +3311,11 @@ if [ "$(id -u)" = "0" ]; then
 else
     echo "$out" | grep -qF "secret.fs" && fail "unreadable dir must skip"
 fi
-echo "$out" | grep -qF "loop/up" && fail "globstar must not traverse symlinks"
+if [ "$HAVE_LOOP" = "1" ]; then
+    echo "$out" | grep -qF "loop/up" && fail "globstar must not traverse symlinks"
+else
+    echo "e2e SKIP: the symlink-loop cell — no real symlink on this runner (Git Bash ln copy-emulates without nativestrict support)"
+fi
 expect "glob: no matches is the empty seq (the match-[] idiom)" "no matches" "$out"
 expect "glob: the cd seam — lazy sees the new cwd" "lazy-sees-new-cwd: 0" "$out"
 expect "glob: Seq.force pins the answer before cd" "forced-pinned: 2" "$out"
