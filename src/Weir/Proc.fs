@@ -47,6 +47,11 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
         System.Threading.Tasks.Task.Run(fun () ->
             try
                 try
+                    // a child's stdin is DATA: LF on every platform
+                    // [D:lf-output] — WriteLine's Environment.NewLine
+                    // fed \r\n into child hashes on Windows
+                    p.StandardInput.NewLine <- "\n"
+
                     for l in lines do
                         p.StandardInput.WriteLine l
                 with _ ->
