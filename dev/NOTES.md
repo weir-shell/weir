@@ -130,6 +130,125 @@ typed value slot is the with-slot session's machinery reused one slot
 deeper: the field's declared type was always known and simply unused
 — unions complete their cases now, which is the case a user cannot
 guess without reading source.
+## the matrix campaign, rounds 5-21 (2026-08-10..11)
+
+Eighteen more rounds of platform triage, and the ledger's real
+content is the CLASS CATALOG. The separator class alone showed five
+faces: MSYS /tmp, drive colons in PATH entries (round 5 fixed one
+site; round 6's sweep found mkweirtmp's own mixed-form output
+poisoning all 22 prefix sites — one pathEntry helper closed it),
+drive case on the LSP wire, 8.3 short names (TEMP is RUNNER~1;
+.NET answers long-form), and path-separator greps in pins (the
+leaf-pair-with-a-dot spelling is now the law). The shell class:
+`sh, never bash` — System32's WSL stub shadows Git Bash for any
+NATIVE process resolving `bash`, and it bit weir's spawns and
+python's subprocess separately. The stdin class: /dev/stdin rides
+MSYS's virtual /proc into a native binary that has no /proc.
+
+Two product findings earned their keep. Captured output is LF on
+every platform now ([D:lf-output]) — found by the battery's ONE
+byte-equality pin, then extended twice as the law met its surfaces
+(File.write; a child's stdin, where the miner-hash pin's failure
+hash was literally the CRLF twin of the expected one). And the
+PATHEXT spawn arm: the checker resolved bare `x` to x.bat for
+EXISTENCE while the spawn handed CreateProcess the bare name — the
+gap windows-viability sized and nobody built, found because a
+fixture finally put a .bat-backed command in weir's path.
+
+The harness lessons compound: fixed time budgets lose to loaded
+runners (three pins fell to it; marker-driven and quiescence-driven
+drains replace guessed settles), a drain budget that counts READS
+exhausts under a steady stream with input still queued, and
+System32's sort.exe IsTextUnicode-misdetects short even-length
+LF-only stdin as UTF-16 — the Bush-hid-the-facts bug, reachable
+from a test fixture in 2026. Round 12's raw-tail diagnostic paid
+for itself by naming round 21's cause verbatim.
+
+## show names its niche (2026-08-11)
+
+The rider that dissolved a naming debate: interpolation is the
+rendering path, and `show` turned out to be a thin convenience
+behind the load-bearing Show class — barely reachable, so barely
+worth renaming. The sweep migrated ten-ish sites and then the
+corpus-as-build-gate did its exact job: migrating showcase-lib's
+`$"{show c.port}"` BROKE the check, because a bare hole defaults an
+unresolved row field to string while `show` keeps it polymorphic.
+The niche came out three places wide (point-free, Secrets, row-typed
+holes) instead of one, and the PROCESS rule landed: a change that
+makes a spelling redundant sweeps for that spelling — in the
+superseding session, prose included, reporting what it deliberately
+keeps.
+
+## the Seq gaps, diffed and closed (2026-08-11)
+
+Twenty-five members in one pass, but the session's real design
+content was three rulings. The sum ruling: no numeric class means no
+generic sum, so each type owns its own, module-qualified — and
+`Seq.average` alone crosses types because the mean of ints IS a
+float. The synonym ruling: first/take stay, documented as one
+implementation with two readings. The one-name law, enforced both
+directions: filter teaches where, flatMap teaches collect. The
+reservation audit found the collect teaching had promised a member
+that did not exist — and zero other reservations do. nats answered
+its own mystery: BCL initInfinite inside a builtin, no recursion
+involved, so init/unfold stay out on no-receipt grounds rather than
+the false impossibility the plan assumed.
+
+## the field law goes recursive (2026-08-10)
+
+The session that unblocked real JSON, and both of the plan's risk
+assumptions inverted under investigation: the boundaries never
+shared a field law (Args/Env were structurally safe from the
+widening), and from yaml was ALREADY the recursive tree boundary —
+json was the one behind. The cycle guard names its path; the mutual
+cycle turned out unrepresentable (no forward type refs). Null means
+None at every depth; a missing array is an error because absence is
+Option's job. The World Bank fixture is the plan's captured receipt
+— the egress proxy blocked a fresh pull, stated rather than papered.
+
+## named groups reject (2026-08-10)
+
+The audit's in-by-accident feature, ruled out on a stronger fact
+than the plan opened with: every other engine numbers groups
+left-to-right; .NET numbers positionals first — so weir's binder
+order would betray exactly the users named groups serve. The
+implementation collapsed to one site (compileRegex) and the sharp
+edge dissolved: detection reads the ENGINE'S own group table, and
+lookbehinds create no groups, so (?<= cannot false-positive by
+construction. The declined renumbering option is on the record so
+it stops being re-proposed.
+
+## anonymous record types (2026-08-10)
+
+`from json {| ip: string |}` — the twice-receipted ergonomic, and
+the design fork priced itself: synthetic-nominal, where the
+canonical name IS the rendered shape. One trick bought three
+behaviors — same-shape anons unify (deterministic name), declared
+records stay distinct (the nominal law untouched), and formatTy/
+errors/echo render the shape with zero new arms. Everything
+downstream (validation, field access, tables, hover) rode existing
+paths because the hidden name is just a name. The session's cost
+came in under the plan's fear precisely because the mechanism was
+one mangling function.
+
+## the papercuts sitting (2026-08-10)
+
+Six planned items off a live REPL sitting, and the headline was the
+seventh nobody planned: the waiting indicator's own pty pin WEDGED,
+and the trail led through .NET's cooked-terminal restore to the real
+root — the tty echo path enumerated a lazy seq TWICE (echoTable's
+probe, then echoValue's render), so a bare command's child ran twice
+per echo, and the second run's cooked window ate the user's next
+Enter as a phantom continuation. Three fixes: one-enumeration echo
+(Seq.cache), a termios snapshot + watchdog, and the pins that hold
+both. The planned items landed too — transport errors in weir's own
+words with the classifier keyed on exception TYPES, the wider
+raw-leak sweep that corrected a prior "zero remain" claim (9 more
+sites), the label-leak class closed with a marker, the record-update
+span blaming the non-record, the with-slot completion, and the
+fetch/get ruling that made the misreading self-correcting instead
+of renaming anything.
+
 ## the matrix's first-green triage (2026-08-10)
 
 Round one guessed and was wrong; round two instrumented, and round

@@ -407,3 +407,14 @@ that discovers it. Naming incidents: bare `contains` resolving
 silently to Str's while Seq's hot path errored "expected string", and
 `Secret.map`/`Http.head` each stealing a bare slot for 22 unrelated
 test failures before the allowlist inversion.
+## A session ends with a NOTES entry
+
+The done-ritual gains a step: before the closing commit, the session
+writes its NOTES story — the narrative, the lessons, the things the
+DECISIONS row compresses away. Found by archaeology: ten consecutive
+sessions (the papercuts sitting through the Seq gaps, plus the whole
+matrix campaign past round 3) shipped rows and no stories; the rows
+had quietly absorbed the narration, against the ledger's own
+no-history-narration rule. Backfilled 2026-08-11. The check is
+mechanical: `git show --stat` of a session's commit should touch
+dev/NOTES.md or say why not.
