@@ -330,9 +330,11 @@ let first =
 print first
 ```
 - `Seq.last`/`Seq.tryLast` FORCE the whole source by necessity (an
-  infinite source does not return) — the forcing family's fifth
-  member; `Seq.windowed n` is lazy (short source = empty seq, no
-  partial window; n <= 0 raises). `Option.iter` runs a Some-only
+  infinite source does not return); `Seq.rev`, `Seq.sort`/
+  `Seq.sortDescending` (key-less, Ord on the elements), and
+  `Seq.countBy` join the forcing family — reversal, ordering, and
+  counting need the whole input. `Seq.windowed n` is lazy (short
+  source = empty seq, no partial window; n <= 0 raises). `Option.iter` runs a Some-only
   effect; `Option.orElse fallback opt` stays in Option
   (`defaultValue` is the one that unwraps). `Path.tempRoot ()` is the
   pure query; `Path.newTempDir ()` CREATES (cleanup is yours —
@@ -354,6 +356,19 @@ print first
   explicit force needed at the splice.
 - Concatenation is `Seq.append` (lazy; piped spelling puts the TAIL
   in the pipe: `tail |> Seq.append head`).
+- The wider Seq surface [D:seq-gaps], all lazy unless said otherwise:
+  `collect` (map-and-flatten — F#'s name; there is no flatMap) and
+  `concat`; `find` (raises; `tryFind` asks) and `pick`/`tryPick`
+  (choose-then-head in one pass); `indexed` (position pairs — mapi is
+  `indexed |> map`); `takeWhile`/`skipWhile`; `distinctBy`/`countBy`
+  (Eq on the key); `reduce` (fold without a seed, raises on empty) and
+  `scan` (fold with intermediates, seed first); `chunkBySize` (the
+  batching member); `except` (set difference, exclusions first);
+  `replicate`; `max`/`min`/`maxBy`/`minBy` (Ord; raise on empty; one
+  pass, no sort); `first`/`take` are RULED synonyms. Sums: `Seq.sum`
+  is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
+  `average`s) own the other types — `Seq.average` alone crosses types
+  (the mean of ints is a float). `Seq.filter` teaches `where`.
 - Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
   the arm returns `Some out` or `None`, never a sentinel `""` to
   filter later. The natural pair with the `Regex` pattern:
