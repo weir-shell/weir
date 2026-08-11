@@ -5817,9 +5817,11 @@ let optionSweepTests =
           test "retired names teach their replacements [D:seq-force]" {
               Expect.stringContains (checkErr "[1] |> Seq.toList").Message "'Seq.force' is the materializer" ""
               Expect.stringContains (checkErr "[1] |> toList").Message "'force' is the materializer" ""
-              Expect.stringContains (checkErr "[1] |> Seq.collect").Message "reserved" "the flatMap reservation"
-              Expect.stringContains (checkErr "[1] |> collect").Message "force" ""
               Expect.stringContains (checkErr "None |> Option.defaultTo 1").Message "Option.defaultValue" ""
+
+              // the collect reservation PAID OUT [D:seq-gaps]: the member
+              // exists with F#'s semantics and no retirement text remains
+              Expect.isFalse ((checkOk "[1] |> Seq.collect (fun x -> [x])").Ty = TUnit) "Seq.collect is a live member"
           }
           test "Option.defaultWith: the thunk runs only on None" {
               expectValue "Some 3 |> Option.defaultWith (fun () -> 9)" (VInt 3L)
@@ -11622,6 +11624,128 @@ let anonRecordTests =
                   "the later statement resolves the field"
           } ]
 
+let seqGapsTests =
+    // the Seq-gaps cohort [D:seq-gaps] — every lazy member gets a
+    // pull-count pin (the standing rule); every asserting member's
+    // message follows Seq.head's shape
+    let counted () =
+        let pulled = ref 0
+
+        let src =
+            Seq.initInfinite (fun i ->
+                System.Threading.Interlocked.Increment pulled |> ignore
+                VInt(int64 i))
+
+        pulled, VSeq src
+
+    // the counting source rides the REAL nats builtin (typed seq<int>);
+    // runWith swaps only its VALUE — the windowed pin's pattern
+    let pullPin (label: string) (bound: int) (expr: string) =
+        test $"{label} is LAZY (pull-count pin)" {
+            let pulled, src = counted ()
+            runWith [ "nats", src ] expr |> forceSeq |> ignore
+            Expect.isTrue (pulled.Value <= bound) $"{label}: pulled {pulled.Value} (bound {bound})"
+        }
+
+    testList
+        "the Seq-gaps cohort [D:seq-gaps]"
+        [ pullPin "collect" 3 "nats |> Seq.collect (fun x -> [x; x]) |> Seq.first 3"
+          pullPin "concat" 3 "[nats] |> Seq.concat |> Seq.first 2"
+          pullPin "indexed" 3 "nats |> Seq.indexed |> Seq.map (fun (i, x) -> i) |> Seq.first 2"
+          pullPin "chunkBySize" 4 "nats |> Seq.chunkBySize 3 |> Seq.first 1 |> Seq.map Seq.force"
+          pullPin "takeWhile" 4 "nats |> Seq.takeWhile (fun x -> x < 2)"
+          pullPin "skipWhile" 4 "nats |> Seq.skipWhile (fun x -> x < 2) |> Seq.first 1"
+          pullPin "scan" 3 "nats |> Seq.scan (fun acc x -> acc + x) 0 |> Seq.first 2"
+          pullPin "distinctBy" 3 "nats |> Seq.distinctBy (fun x -> x) |> Seq.first 2"
+          pullPin "except" 3 "nats |> Seq.except [999] |> Seq.first 2"
+          test "the receipt pipeline: collect over split, F# semantics" {
+              Expect.equal
+                  (run "[\"a<b\"; \"\"; \"c\"] |> Seq.collect (Str.split \"<\")" |> forceSeq)
+                  [ VStr "a"; VStr "b"; VStr ""; VStr "c" ]
+                  "empty inners contribute their (single empty-string) splits; empty OUTER handled below"
+
+              Expect.equal (run "[] |> Seq.collect (fun x -> [x])" |> forceSeq) [] "empty outer is empty"
+
+              Expect.equal
+                  (run "[[1]; []; [2]] |> Seq.concat" |> forceSeq)
+                  [ VInt 1L; VInt 2L ]
+                  "empty inner seqs skipped"
+          }
+          test "asserting members follow the head message shape; try twins ask" {
+              let msgOf src =
+                  (Expect.throwsC (fun () -> run src |> ignore) id).Message
+
+              Expect.equal
+                  (msgOf "[1] |> Seq.where (fun _ -> false) |> Seq.find (fun _ -> true)")
+                  "find: no matching element"
+                  ""
+
+              Expect.equal
+                  (msgOf "[1] |> Seq.where (fun _ -> false) |> Seq.reduce (fun a b -> a)")
+                  "reduce: empty sequence"
+                  ""
+
+              Expect.equal (msgOf "[\"a\"] |> Seq.pick Str.tryToInt") "pick: no matching element" ""
+              Expect.equal (msgOf "[1] |> Seq.where (fun _ -> false) |> Seq.max") "max: empty sequence" ""
+              Expect.equal (msgOf "[1] |> Seq.where (fun _ -> false) |> Seq.average") "average: empty sequence" ""
+
+              Expect.equal
+                  (msgOf "[1.0] |> Seq.where (fun _ -> false) |> Float.average")
+                  "Float.average: empty sequence"
+                  ""
+
+              Expect.equal (msgOf "[1] |> Seq.chunkBySize 0") "chunkBySize: the chunk size must be positive; got 0" ""
+
+              Expect.equal
+                  (msgOf "Seq.replicate (0 - 1) \"x\" |> Seq.force")
+                  "replicate: the count must be non-negative; got -1"
+                  ""
+          }
+          test "the sum ruling: Seq.sum stays seq<int>; each numeric type owns its own [D:seq-gaps]" {
+              Expect.equal (checkOk "[1; 2] |> Seq.average").Ty TFloat "the mean of ints IS a float"
+              Expect.equal (run "[1.5; 2.5] |> Float.sum") (VFloat 4.0) ""
+              Expect.equal (run "[1KiB; 1KiB; 1KiB] |> Size.average") (VSize 1024L) ""
+              Expect.equal (run "[90s; 30s] |> Duration.sum") (VDur 120000L) ""
+
+              let m =
+                  (Expect.throwsC (fun () -> run "[1e308; 1e308] |> Float.sum" |> ignore) id).Message
+
+              Expect.stringContains m "not finite" "the floats law reaches the sum"
+          }
+          test "extrema and key-less sorts are Ord-constrained (records refuse)" {
+              let m = (checkErr "ls |> Seq.sort").Message
+              Expect.stringContains m "cannot be ordered" "the Ord teaching"
+              Expect.stringContains (checkErr "ls |> Seq.max").Message "cannot be ordered" ""
+              checkOk "ls |> Seq.maxBy (fun r -> r.bytes)" |> ignore
+          }
+          test "first/take RULED synonyms; filter and flatMap teach their one name [D:seq-gaps]" {
+              Expect.equal
+                  (run "[1; 2; 3] |> Seq.take 2" |> forceSeq)
+                  (run "[1; 2; 3] |> Seq.first 2" |> forceSeq)
+                  "one implementation, two names — deliberate"
+
+              Expect.stringContains
+                  (checkErr "[1] |> Seq.filter (fun _ -> true)").Message
+                  "'Seq.where'"
+                  "one name per operation"
+
+              Expect.stringContains
+                  (checkErr "[1] |> Seq.flatMap (fun x -> [x])").Message
+                  "'Seq.collect'"
+                  "the F# spelling wins"
+          }
+          test "scan emits the seed first; countBy counts in first-seen key order" {
+              Expect.equal
+                  (run "[1; 2] |> Seq.scan (fun acc x -> acc + x) 10" |> forceSeq)
+                  [ VInt 10L; VInt 11L; VInt 13L ]
+                  ""
+
+              Expect.equal
+                  (run "[\"b\"; \"a\"; \"b\"] |> Seq.countBy (fun x -> x)" |> forceSeq)
+                  [ VTuple [ VStr "b"; VInt 2L ]; VTuple [ VStr "a"; VInt 1L ] ]
+                  ""
+          } ]
+
 let gapATests =
     testList
         "Gap audit session A remainder"
@@ -11929,6 +12053,7 @@ let allTests =
           trailingCommentTests
           interpShowTests
           gapATests
+          seqGapsTests
           withinTests
           windowsV1Tests
           checkerTests

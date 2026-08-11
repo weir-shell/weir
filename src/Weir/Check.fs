@@ -41,15 +41,16 @@ type ArgsTarget =
 let private retiredMember (m: string) (field: string) : string option =
     match m, field with
     | "Seq", "toList" -> Some "weir has no list type; 'Seq.force' is the materializer"
-    | "Seq", "collect" ->
-        Some "F#'s Seq.collect is flatMap — the name stays reserved for it; the materializer is Seq.force"
     | "Option", "defaultTo" -> Some "renamed 'Option.defaultValue' (F# parity); a lazy default is 'Option.defaultWith'"
+    // one operation, one name [D:seq-gaps]: the F# spelling wins where
+    // one exists (collect), and the weir spelling keeps its seat (where)
+    | "Seq", "flatMap" -> Some "F# parity names it 'Seq.collect'"
+    | "Seq", "filter" -> Some "weir's filter is 'Seq.where' — one name per operation"
     | _ -> None
 
 let private retiredBare (name: string) : string option =
     match name with
     | "toList" -> Some "weir has no list type; 'force' is the materializer"
-    | "collect" -> Some "'force' materializes (F#'s collect is flatMap, reserved)"
     | "defaultTo" -> Some "renamed: use 'Option.defaultValue' (or 'Option.defaultWith' for a thunk)"
     | _ -> None
 

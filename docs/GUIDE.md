@@ -117,6 +117,14 @@ big |> print
 helper (`extension`, `fileName`, `stem`, `dir`, `combine`) is the
 house spelling for filename surgery in a pipeline.
 
+The `Seq` surface is the F# core you'd expect — `map`/`where`/
+`collect`/`fold`/`reduce`/`scan`, `sort`/`sortBy`, `max`/`minBy`,
+`groupBy`/`countBy`/`distinctBy`, `indexed`, `chunkBySize`,
+`takeWhile`/`find`/`pick` and their `try` twins — lazy by default,
+with the forcing members named in the skill file. One deliberate
+split: `Seq.sum` is for ints, and `Float`/`Size`/`Duration` each own
+their `sum` and `average` (`ls |> Seq.map _.bytes |> Size.sum`).
+
 Tuples cover transient pairs — `(a, b)` literals (bare `a, b` works
 at F#'s precedence), `int * string` types, `| (x, y) ->` patterns,
 destructuring binders (`let host, port = target`,

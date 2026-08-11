@@ -1159,6 +1159,318 @@ let private skipImpl: Value =
             | VInt i, VSeq items -> VSeq(items |> Seq.skip (int i))
             | _ -> unreachable "the checker rejects 'skip' on these arguments"))
 
+
+// ---- the Seq-gaps cohort [D:seq-gaps] ------------------------------
+
+// lazy, F#'s collect (flatMap elsewhere): the reservation paying out
+let private collectImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                VSeq(
+                    items
+                    |> Seq.collect (fun x ->
+                        match apply f x with
+                        | VSeq inner -> inner
+                        | v -> unreachable $"the checker guarantees a seq-yielding mapper, got {formatValue v}")
+                )
+            | v -> unreachable $"the checker rejects 'collect' on {formatValue v}"))
+
+let private concatImpl: Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            VSeq(
+                items
+                |> Seq.collect (fun x ->
+                    match x with
+                    | VSeq inner -> inner
+                    | v -> unreachable $"the checker rejects concatenating {formatValue v}")
+            )
+        | v -> unreachable $"the checker rejects 'concat' on {formatValue v}")
+
+// find/tryFind: the X/tryX pair completed — X asserts, tryX asks
+let private findImpl: Value =
+    VBuiltin(fun pred ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                match items |> Seq.tryFind (fun x -> apply pred x = VBool true) with
+                | Some x -> x
+                | None -> failwith "find: no matching element"
+            | v -> unreachable $"the checker rejects 'find' on {formatValue v}"))
+
+let private indexedImpl: Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items -> VSeq(items |> Seq.mapi (fun i x -> VTuple [ VInt(int64 i); x ]))
+        | v -> unreachable $"the checker rejects 'indexed' on {formatValue v}")
+
+// FORCING: reversal needs the whole input (named in when-do-I-force)
+let private revImpl: Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items -> VSeq(Seq.delay (fun () -> items |> List.ofSeq |> List.rev :> seq<Value>))
+        | v -> unreachable $"the checker rejects 'rev' on {formatValue v}")
+
+let private chunkImpl: Value =
+    VBuiltin(fun nV ->
+        VBuiltin(fun s ->
+            match nV, s with
+            | VInt n, VSeq items ->
+                if n <= 0L then
+                    failwith $"chunkBySize: the chunk size must be positive; got {n}"
+                else
+                    VSeq(items |> Seq.chunkBySize (int n) |> Seq.map (fun arr -> VSeq(arr :> seq<Value>)))
+            | v, _ -> unreachable $"the checker rejects 'chunkBySize' on {formatValue v}"))
+
+let private takeWhileImpl: Value =
+    VBuiltin(fun pred ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items -> VSeq(items |> Seq.takeWhile (fun x -> apply pred x = VBool true))
+            | v -> unreachable $"the checker rejects 'takeWhile' on {formatValue v}"))
+
+let private skipWhileImpl: Value =
+    VBuiltin(fun pred ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items -> VSeq(items |> Seq.skipWhile (fun x -> apply pred x = VBool true))
+            | v -> unreachable $"the checker rejects 'skipWhile' on {formatValue v}"))
+
+// counts by projected key, first-seen key order; forces on first pull
+let private countByImpl: Value =
+    VBuiltin(fun keyf ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                VSeq(
+                    Seq.delay (fun () ->
+                        items
+                        |> Seq.countBy (apply keyf)
+                        |> Seq.map (fun (k, n) -> VTuple [ k; VInt(int64 n) ]))
+                )
+            | v -> unreachable $"the checker rejects 'countBy' on {formatValue v}"))
+
+let private distinctByImpl: Value =
+    VBuiltin(fun keyf ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items -> VSeq(items |> Seq.distinctBy (apply keyf))
+            | v -> unreachable $"the checker rejects 'distinctBy' on {formatValue v}"))
+
+// fold without a seed: the first element is the accumulator (raises on
+// empty — the head message shape)
+let private reduceImpl: Value =
+    VBuiltin(fun folder ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                let mutable acc = ValueNone
+
+                for x in items do
+                    acc <-
+                        match acc with
+                        | ValueNone -> ValueSome x
+                        | ValueSome a -> ValueSome(apply (apply folder a) x)
+
+                match acc with
+                | ValueSome a -> a
+                | ValueNone -> failwith "reduce: empty sequence"
+            | v -> unreachable $"the checker rejects 'reduce' on {formatValue v}"))
+
+// fold with intermediates, INITIAL STATE FIRST (F# semantics); lazy
+let private scanImpl: Value =
+    VBuiltin(fun folder ->
+        VBuiltin(fun init ->
+            VBuiltin(fun s ->
+                match s with
+                | VSeq items -> VSeq(items |> Seq.scan (fun acc x -> apply (apply folder acc) x) init)
+                | v -> unreachable $"the checker rejects 'scan' on {formatValue v}")))
+
+let private tryPickImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                items
+                |> Seq.tryPick (fun x ->
+                    match apply f x with
+                    | VUnion("Some", Some v) -> Some v
+                    | VUnion("None", None) -> None
+                    | v -> unreachable $"the checker guarantees an Option picker, got {formatValue v}")
+                |> function
+                    | Some v -> VUnion("Some", Some v)
+                    | None -> VUnion("None", None)
+            | v -> unreachable $"the checker rejects 'tryPick' on {formatValue v}"))
+
+let private pickImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                items
+                |> Seq.tryPick (fun x ->
+                    match apply f x with
+                    | VUnion("Some", Some v) -> Some v
+                    | VUnion("None", None) -> None
+                    | v -> unreachable $"the checker guarantees an Option picker, got {formatValue v}")
+                |> function
+                    | Some v -> v
+                    | None -> failwith "pick: no matching element"
+            | v -> unreachable $"the checker rejects 'pick' on {formatValue v}"))
+
+// set difference, F#'s argument order: the EXCLUSIONS first, the
+// source last (data-last holds) — the exclusion set materializes on
+// the first pull, the source streams
+let private exceptImpl: Value =
+    VBuiltin(fun excl ->
+        VBuiltin(fun s ->
+            match excl, s with
+            | VSeq ex, VSeq items -> VSeq(items |> Seq.except ex)
+            | v, _ -> unreachable $"the checker rejects 'except' on {formatValue v}"))
+
+let private replicateImpl: Value =
+    VBuiltin(fun nV ->
+        VBuiltin(fun x ->
+            match nV with
+            | VInt n ->
+                if n < 0L then
+                    failwith $"replicate: the count must be non-negative; got {n}"
+                else
+                    VSeq(Seq.replicate (int n) x)
+            | v -> unreachable $"the checker rejects 'replicate' on {formatValue v}"))
+
+// max/min and the By twins: Ord-constrained, raise on empty (the head
+// message shape); one strict pass, no sort
+let private extremumImpl (name: string) (better: int -> bool) : Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            let mutable best = ValueNone
+
+            for x in items do
+                best <-
+                    match best with
+                    | ValueNone -> ValueSome x
+                    | ValueSome b ->
+                        if better (scalarCompare name x b) then
+                            ValueSome x
+                        else
+                            ValueSome b
+
+            match best with
+            | ValueSome b -> b
+            | ValueNone -> failwith $"{name}: empty sequence"
+        | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
+
+let private extremumByImpl (name: string) (better: int -> bool) : Value =
+    VBuiltin(fun keyf ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                let mutable best = ValueNone
+
+                for x in items do
+                    let k = apply keyf x
+
+                    best <-
+                        match best with
+                        | ValueNone -> ValueSome(x, k)
+                        | ValueSome(bx, bk) ->
+                            if better (scalarCompare name k bk) then
+                                ValueSome(x, k)
+                            else
+                                ValueSome(bx, bk)
+
+                match best with
+                | ValueSome(bx, _) -> bx
+                | ValueNone -> failwith $"{name}: empty sequence"
+            | v -> unreachable $"the checker rejects '{name}' on {formatValue v}"))
+
+// key-less sort: Ord on the elements themselves; forces on first pull
+let private sortPlainImpl (name: string) (flip: bool) : Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            VSeq(
+                Seq.delay (fun () ->
+                    items
+                    |> Seq.sortWith (fun a b ->
+                        if flip then
+                            scalarCompare name b a
+                        else
+                            scalarCompare name a b))
+            )
+        | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
+
+// the mean of ints IS a float — what floats were added for; empty
+// raises (absence is Option's job, and 0 would be a guess)
+let private averageImpl: Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            let mutable total = 0L
+            let mutable count = 0L
+
+            for x in items do
+                match x with
+                | VInt n ->
+                    (try
+                        total <- Checked.(+) total n
+                     with :? System.OverflowException ->
+                         failwith "integer overflow in average")
+
+                    count <- count + 1L
+                | v -> unreachable $"the checker rejects averaging {formatValue v}"
+
+            if count = 0L then
+                failwith "average: empty sequence"
+            else
+                VFloat(float total / float count)
+        | v -> unreachable $"the checker rejects 'average' on {formatValue v}")
+
+// the per-type sums and means [D:seq-gaps]: Seq.sum stays seq<int> ->
+// int; Float/Size/Duration own theirs (module-qualified, the
+// Duration.sleep precedent) — a general numeric sum needs a class weir
+// does not have
+let private typedSumImpl (name: string) (get: Value -> int64) (mk: int64 -> Value) : Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            let mutable total = 0L
+
+            for x in items do
+                try
+                    total <- Checked.(+) total (get x)
+                with :? System.OverflowException ->
+                    failwith $"{name}: overflow"
+
+            mk total
+        | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
+
+let private typedAverageImpl (name: string) (get: Value -> int64) (mk: int64 -> Value) : Value =
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            let mutable total = 0L
+            let mutable count = 0L
+
+            for x in items do
+                (try
+                    total <- Checked.(+) total (get x)
+                 with :? System.OverflowException ->
+                     failwith $"{name}: overflow")
+
+                count <- count + 1L
+
+            if count = 0L then
+                failwith $"{name}: empty sequence"
+            else
+                mk (total / count)
+        | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
+
 let private seqMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
@@ -1198,7 +1510,31 @@ let private seqMembers: (string * Ty * Value) list =
       "skip", TFun(TInt, TFun(TSeq tA, TSeq tA)), skipImpl
       "contains", TFun(tA, TFun(TSeq tA, TBool)), containsImpl
       "distinct", TFun(TSeq tA, TSeq tA), distinctImpl
-      "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl ]
+      "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl
+      // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
+      "collect", TFun(TFun(tA, TSeq tB), TFun(TSeq tA, TSeq tB)), collectImpl
+      "concat", TFun(TSeq(TSeq tA), TSeq tA), concatImpl
+      "find", TFun(TFun(tA, TBool), TFun(TSeq tA, tA)), findImpl
+      "indexed", TFun(TSeq tA, TSeq(TTuple [ TInt; tA ])), indexedImpl
+      "rev", TFun(TSeq tA, TSeq tA), revImpl
+      "chunkBySize", TFun(TInt, TFun(TSeq tA, TSeq(TSeq tA))), chunkImpl
+      "takeWhile", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), takeWhileImpl
+      "skipWhile", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), skipWhileImpl
+      "countBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TTuple [ tB; TInt ]))), countByImpl
+      "distinctBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), distinctByImpl
+      "reduce", TFun(TFun(tA, TFun(tA, tA)), TFun(TSeq tA, tA)), reduceImpl
+      "scan", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, TSeq tA))), scanImpl
+      "tryPick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TNamed("Option", [ tB ]))), tryPickImpl
+      "pick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, tB)), pickImpl
+      "except", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), exceptImpl
+      "replicate", TFun(TInt, TFun(tA, TSeq tA)), replicateImpl
+      "max", TFun(TSeq tA, tA), extremumImpl "max" (fun c -> c > 0)
+      "min", TFun(TSeq tA, tA), extremumImpl "min" (fun c -> c < 0)
+      "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "maxBy" (fun c -> c > 0)
+      "minBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "minBy" (fun c -> c < 0)
+      "sort", TFun(TSeq tA, TSeq tA), sortPlainImpl "sort" false
+      "sortDescending", TFun(TSeq tA, TSeq tA), sortPlainImpl "sortDescending" true
+      "average", TFun(seqInt, TFloat), averageImpl ]
 
 // the encoding law [D:encoding-law]: weir encodes and decodes UTF-8 at
 // every boundary — what gets read, written, hashed, and base64'd is
@@ -1954,7 +2290,50 @@ let private floatMembers: (string * Ty * Value) list =
                       | v2 -> unreachable $"the checker rejects 'Float.near' on {formatValue v2}")
               | v -> unreachable $"the checker rejects 'Float.near' on {formatValue v}"))
       "parse", TFun(TStr, TFloat), fst (parsePairImpl "Float" parseFloat VFloat)
-      "tryParse", TFun(TStr, TNamed("Option", [ TFloat ])), snd (parsePairImpl "Float" parseFloat VFloat) ]
+      "tryParse", TFun(TStr, TNamed("Option", [ TFloat ])), snd (parsePairImpl "Float" parseFloat VFloat)
+      // the per-type sum/mean [D:seq-gaps] — Seq.sum stays seq<int>;
+      // each numeric type owns its own (no numeric class in weir)
+      "sum",
+      TFun(TSeq TFloat, TFloat),
+      VBuiltin(fun s ->
+          match s with
+          | VSeq items ->
+              let total =
+                  items
+                  |> Seq.fold
+                      (fun acc v ->
+                          match v with
+                          | VFloat f -> acc + f
+                          | v -> unreachable $"the checker rejects summing {formatValue v}")
+                      0.0
+
+              if System.Double.IsFinite total then
+                  VFloat total
+              else
+                  failwith "Float.sum: the sum is not finite"
+          | v -> unreachable $"the checker rejects 'Float.sum' on {formatValue v}")
+      "average",
+      TFun(TSeq TFloat, TFloat),
+      VBuiltin(fun s ->
+          match s with
+          | VSeq items ->
+              let mutable total = 0.0
+              let mutable count = 0L
+
+              for x in items do
+                  match x with
+                  | VFloat f ->
+                      total <- total + f
+                      count <- count + 1L
+                  | v -> unreachable $"the checker rejects averaging {formatValue v}"
+
+              if count = 0L then
+                  failwith "Float.average: empty sequence"
+              elif System.Double.IsFinite(total / float count) then
+                  VFloat(total / float count)
+              else
+                  failwith "Float.average: the mean is not finite"
+          | v -> unreachable $"the checker rejects 'Float.average' on {formatValue v}") ]
 
 // ---- Size [D:size]: integer bytes; decimals only in text -----------
 let private sizeMembers: (string * Ty * Value) list =
@@ -1971,7 +2350,25 @@ let private sizeMembers: (string * Ty * Value) list =
           | VSize b -> VInt b
           | v -> unreachable $"the checker rejects 'Size.toBytes' on {formatValue v}")
       "parse", TFun(TStr, TSize), fst (parsePairImpl "Size" parseSize VSize)
-      "tryParse", TFun(TStr, TNamed("Option", [ TSize ])), snd (parsePairImpl "Size" parseSize VSize) ]
+      "tryParse", TFun(TStr, TNamed("Option", [ TSize ])), snd (parsePairImpl "Size" parseSize VSize)
+      // the per-type sum/mean [D:seq-gaps]; the mean truncates to whole
+      // bytes (integer division — bytes are the unit)
+      "sum",
+      TFun(TSeq TSize, TSize),
+      typedSumImpl
+          "Size.sum"
+          (function
+          | VSize b -> b
+          | v -> unreachable $"the checker rejects summing {formatValue v}")
+          VSize
+      "average",
+      TFun(TSeq TSize, TSize),
+      typedAverageImpl
+          "Size.average"
+          (function
+          | VSize b -> b
+          | v -> unreachable $"the checker rejects averaging {formatValue v}")
+          VSize ]
 
 // ---- Duration [D:duration]: integer ms; decimals only in text ------
 let private durCtor (name: string) (mult: int64) : Value =
@@ -2002,6 +2399,24 @@ let private durationMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'Duration.toSeconds' on {formatValue v}")
       "parse", TFun(TStr, TDur), fst (parsePairImpl "Duration" parseDurationMs VDur)
       "tryParse", TFun(TStr, TNamed("Option", [ TDur ])), snd (parsePairImpl "Duration" parseDurationMs VDur)
+      // the per-type sum/mean [D:seq-gaps]; the mean truncates to whole
+      // milliseconds (ms is the base unit)
+      "sum",
+      TFun(TSeq TDur, TDur),
+      typedSumImpl
+          "Duration.sum"
+          (function
+          | VDur d -> d
+          | v -> unreachable $"the checker rejects summing {formatValue v}")
+          VDur
+      "average",
+      TFun(TSeq TDur, TDur),
+      typedAverageImpl
+          "Duration.average"
+          (function
+          | VDur d -> d
+          | v -> unreachable $"the checker rejects averaging {formatValue v}")
+          VDur
       // the one consumer worth landing with the type — module-qualified
       // so the coreutils sleep is NEVER shadowed (bindings-beat-PATH
       // would flip `sleep 5`'s meaning)
@@ -2342,10 +2757,16 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "The element at an index as an Option." (Some "[1; 2; 3] |> Seq.tryItem 0") None
            |> named [ "i"; "xs" ])
           "Seq.take",
-          (bd "The first n elements, lazily." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.force") None
+          (bd
+              "The first n elements, lazily. SYNONYM of Seq.first (one implementation, two names — F# parity and the pipeline reading, ruled deliberate)."
+              (Some "[1; 2; 3] |> Seq.take 2 |> Seq.force")
+              None
            |> named [ "n"; "xs" ])
           "Seq.first",
-          (bd "The first n elements." (Some "[1; 2; 3] |> Seq.first 2 |> Seq.force") None
+          (bd
+              "The first n elements, lazily. SYNONYM of Seq.take (this spelling reads best mid-pipeline)."
+              (Some "[1; 2; 3] |> Seq.first 2 |> Seq.force")
+              None
            |> named [ "n"; "xs" ])
           "Seq.skip",
           (bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.force") None
@@ -2422,6 +2843,161 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.force")
               None
           |> named [ "key"; "xs" ]
+          // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
+          "Seq.collect",
+          bd
+              "Map each element to a sequence and flatten, lazily (F#'s collect; flatMap elsewhere)."
+              (Some "[\"a<b\"; \"c\"] |> Seq.collect (Str.split \"<\") |> Seq.force")
+              None
+          |> named [ "f"; "xs" ]
+          "Seq.concat",
+          bd
+              "Flatten a sequence of sequences, lazily (collect with the identity)."
+              (Some "[[1; 2]; [3]] |> Seq.concat |> Seq.force")
+              None
+          |> named [ "xss" ]
+          "Seq.find",
+          bd
+              "The first element a predicate accepts (raises when none match — tryFind asks)."
+              (Some "[1; 5; 3] |> Seq.find (fun x -> x > 2)")
+              None
+          |> named [ "pred"; "xs" ]
+          "Seq.indexed",
+          bd
+              "Pair every element with its zero-based position, lazily — mapi/iteri are `indexed |> map`/`iter` over the tuple."
+              (Some "[\"a\"; \"b\"] |> Seq.indexed |> Seq.force")
+              None
+          |> named [ "xs" ]
+          "Seq.rev",
+          bd
+              "Reverse. FORCES the whole input on the first pull (never an infinite seq)."
+              (Some "[1; 2; 3] |> Seq.rev |> Seq.force")
+              None
+          |> named [ "xs" ]
+          "Seq.chunkBySize",
+          bd
+              "Split into consecutive chunks of at most n, lazily — the batching member (the last chunk may be short)."
+              (Some "[1; 2; 3; 4; 5] |> Seq.chunkBySize 2 |> Seq.map Seq.force |> Seq.force")
+              None
+          |> named [ "n"; "xs" ]
+          "Seq.takeWhile",
+          bd
+              "Elements while the predicate holds, lazily; stops at the first refusal."
+              (Some "[1; 2; 9; 1] |> Seq.takeWhile (fun x -> x < 5) |> Seq.force")
+              None
+          |> named [ "pred"; "xs" ]
+          "Seq.skipWhile",
+          bd
+              "Drop the leading run the predicate accepts, lazily; the rest streams whole."
+              (Some "[1; 2; 9; 1] |> Seq.skipWhile (fun x -> x < 5) |> Seq.force")
+              None
+          |> named [ "pred"; "xs" ]
+          "Seq.countBy",
+          bd
+              "Count elements per projected key as (key, count) pairs, first-seen key order; forces on the first pull."
+              (Some "[\"a\"; \"bb\"; \"c\"] |> Seq.countBy Str.length |> Seq.force")
+              None
+          |> named [ "key"; "xs" ]
+          "Seq.distinctBy",
+          bd
+              "Keep the first element per projected key, lazily — distinct's projection twin."
+              (Some "[\"a\"; \"bb\"; \"cc\"] |> Seq.distinctBy Str.length |> Seq.force")
+              None
+          |> named [ "key"; "xs" ]
+          "Seq.reduce",
+          bd
+              "Fold without a seed: the first element starts the accumulator (raises on empty — fold takes the seed)."
+              (Some "[1; 2; 3] |> Seq.reduce (fun a b -> a + b)")
+              None
+          |> named [ "f"; "xs" ]
+          "Seq.scan",
+          bd
+              "Fold emitting every intermediate state, the seed first, lazily."
+              (Some "[1; 2; 3] |> Seq.scan (fun acc x -> acc + x) 0 |> Seq.force")
+              None
+          |> named [ "f"; "init"; "xs" ]
+          "Seq.tryPick",
+          bd
+              "The first Some a chooser yields, as an Option — choose-then-head in one pass."
+              (Some "[\"a\"; \"12\"] |> Seq.tryPick Str.tryToInt")
+              None
+          |> named [ "f"; "xs" ]
+          "Seq.pick",
+          bd
+              "The first Some a chooser yields (raises when none — tryPick asks)."
+              (Some "[\"a\"; \"12\"] |> Seq.pick Str.tryToInt")
+              None
+          |> named [ "f"; "xs" ]
+          "Seq.except",
+          bd
+              "Set difference: the source without the excluded values (exclusions first, source last; the exclusion set materializes on the first pull, the source streams)."
+              (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.force")
+              None
+          |> named [ "excluded"; "xs" ]
+          "Seq.replicate",
+          bd
+              "n copies of one value, lazily (raises on a negative count)."
+              (Some "Seq.replicate 3 \"x\" |> Seq.force")
+              None
+          |> named [ "n"; "x" ]
+          "Seq.max",
+          bd "The largest element (Ord; raises on empty). One pass — no sort." (Some "Seq.max [3; 1; 2]") None
+          |> named [ "xs" ]
+          "Seq.min",
+          bd "The smallest element (Ord; raises on empty). One pass — no sort." (Some "Seq.min [3; 1; 2]") None
+          |> named [ "xs" ]
+          "Seq.maxBy",
+          bd
+              "The element whose projected key is largest (Ord on the key; raises on empty)."
+              (Some "[\"a\"; \"ccc\"] |> Seq.maxBy Str.length")
+              None
+          |> named [ "key"; "xs" ]
+          "Seq.minBy",
+          bd
+              "The element whose projected key is smallest (Ord on the key; raises on empty)."
+              (Some "[\"a\"; \"ccc\"] |> Seq.minBy Str.length")
+              None
+          |> named [ "key"; "xs" ]
+          "Seq.sort",
+          bd
+              "Sort ascending by the elements themselves (Ord); forces on the first pull."
+              (Some "[\"pear\"; \"apple\"] |> Seq.sort |> Seq.force")
+              None
+          |> named [ "xs" ]
+          "Seq.sortDescending",
+          bd
+              "Sort descending by the elements themselves (Ord); forces on the first pull."
+              (Some "[1; 3; 2] |> Seq.sortDescending |> Seq.force")
+              None
+          |> named [ "xs" ]
+          "Seq.average",
+          bd
+              "The mean of ints AS A FLOAT (raises on empty — absence is Option's job). Float/Size/Duration own their means (Float.average …)."
+              (Some "[1; 2] |> Seq.average")
+              None
+          |> named [ "xs" ]
+          "Float.sum",
+          bd
+              "Sum floats (the sum must stay finite — the floats law). Seq.sum stays seq<int>; each numeric type owns its sum."
+              (Some "[1.5; 2.5] |> Float.sum")
+              None
+          |> named [ "xs" ]
+          "Float.average",
+          bd "The mean of floats (raises on empty; finite-only)." (Some "[1.0; 2.0] |> Float.average") None
+          |> named [ "xs" ]
+          "Size.sum",
+          bd "Sum sizes — total bytes as a Size." (Some "[1KiB; 512B] |> Size.sum") None
+          |> named [ "xs" ]
+          "Size.average",
+          bd "The mean size, truncated to whole bytes (raises on empty)." (Some "[1KiB; 3KiB] |> Size.average") None
+          |> named [ "xs" ]
+          "Duration.sum", bd "Sum durations." (Some "[90s; 30s] |> Duration.sum") None |> named [ "xs" ]
+          "Duration.average",
+          bd
+              "The mean duration, truncated to whole milliseconds (raises on empty)."
+              (Some "[90s; 30s] |> Duration.average")
+              None
+          |> named [ "xs" ]
           "Seq.pmap",
           bd
               "Map in parallel across worker threads."
@@ -3214,6 +3790,46 @@ let private sortByScheme: Scheme =
       Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
       RowOrigins = Map.empty }
 
+// the cohort's constrained schemes [D:seq-gaps]: Ord on the ELEMENT for
+// the key-less sorts and extrema, Ord on the KEY for the By twins
+// (sortBy's shape), Eq on the KEY for the projection twins, Eq on the
+// element for set difference
+let private ordSeqToElem: Scheme =
+    { Forall = Set.singleton "a"
+      Cs = Map [ "a", Set [ Cls.Ord ] ]
+      Ty = TFun(TSeq(TVar "a"), TVar "a")
+      RowOrigins = Map.empty }
+
+let private ordSeqToSeq: Scheme =
+    { Forall = Set.singleton "a"
+      Cs = Map [ "a", Set [ Cls.Ord ] ]
+      Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a"))
+      RowOrigins = Map.empty }
+
+let private ordByToElem: Scheme =
+    { Forall = Set [ "a"; "b" ]
+      Cs = Map [ "b", Set [ Cls.Ord ] ]
+      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TVar "a"))
+      RowOrigins = Map.empty }
+
+let private eqKeyCountBy: Scheme =
+    { Forall = Set [ "a"; "b" ]
+      Cs = Map [ "b", Set [ Cls.Eq ] ]
+      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TTuple [ TVar "b"; TInt ])))
+      RowOrigins = Map.empty }
+
+let private eqKeyDistinctBy: Scheme =
+    { Forall = Set [ "a"; "b" ]
+      Cs = Map [ "b", Set [ Cls.Eq ] ]
+      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
+      RowOrigins = Map.empty }
+
+let private eqExcept: Scheme =
+    { Forall = Set.singleton "a"
+      Cs = Map [ "a", Set [ Cls.Eq ] ]
+      Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
+      RowOrigins = Map.empty }
+
 let typeEnv: TypeEnv =
     { Values =
         entries @ internalAliases
@@ -3232,6 +3848,15 @@ let typeEnv: TypeEnv =
         |> Map.change "Seq" (Option.map (Map.add "distinct" Check.distinctScheme))
         |> Map.change "Seq" (Option.map (Map.add "sortBy" sortByScheme))
         |> Map.change "Seq" (Option.map (Map.add "sortByDescending" sortByScheme))
+        |> Map.change "Seq" (Option.map (Map.add "max" ordSeqToElem))
+        |> Map.change "Seq" (Option.map (Map.add "min" ordSeqToElem))
+        |> Map.change "Seq" (Option.map (Map.add "sort" ordSeqToSeq))
+        |> Map.change "Seq" (Option.map (Map.add "sortDescending" ordSeqToSeq))
+        |> Map.change "Seq" (Option.map (Map.add "maxBy" ordByToElem))
+        |> Map.change "Seq" (Option.map (Map.add "minBy" ordByToElem))
+        |> Map.change "Seq" (Option.map (Map.add "countBy" eqKeyCountBy))
+        |> Map.change "Seq" (Option.map (Map.add "distinctBy" eqKeyDistinctBy))
+        |> Map.change "Seq" (Option.map (Map.add "except" eqExcept))
       Types =
         Map
             [ fileRow.Name, Record fileRow
