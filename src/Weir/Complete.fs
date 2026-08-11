@@ -118,6 +118,94 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
     // by slicing back to each `{` and letting the PARSER validate the
     // slice (no second quote machine [D:one-scanner]); `match x with`
     // has no parsing brace-slice, so it falls through untouched.
+    // resolve `{ <source> ...` back to its record def: slice at each
+    // '{' and let the PARSER validate (the with-slot machinery, shared)
+    let sourceDefOf (upto: string) : RecordDef option =
+        [ for i in 0 .. upto.Length - 1 do
+              if upto[i] = '{' then
+                  yield i ]
+        |> List.rev
+        |> List.tryPick (fun bi ->
+            let slice = upto.Substring(bi + 1).Trim()
+
+            if slice = "" then
+                None
+            else
+                match Weir.Parser.parseExpr slice with
+                | Error _ -> None
+                | Ok e ->
+                    match Weir.Check.typecheck (withHoles env e) e with
+                    | Error _ -> None
+                    | Ok te ->
+                        match te.Ty with
+                        | TNamed(n, _) ->
+                            match Map.tryFind n env.Types with
+                            | Some(Record d) -> Some d
+                            | _ -> None
+                        | _ -> None)
+
+    // the typed VALUE slot [D:typed-value-slot]: `{ src with field =
+    // <prefix>` — the field's DECLARED type is known, so the candidate
+    // set is CLOSED where the type is: a union's cases, bool's two
+    // values (plus bool bindings), a unit type's module and bindings.
+    // Other types fall through to the general pool.
+    let valueSlotCandidates: string list option =
+        let b = before.TrimEnd()
+
+        if not (b.EndsWith "=") || b.EndsWith "==" then
+            None
+        else
+            let beforeEq = b.Substring(0, b.Length - 1).TrimEnd()
+
+            let fieldStart =
+                let mutable i = beforeEq.Length
+
+                while i > 0 && (System.Char.IsLetterOrDigit beforeEq[i - 1] || beforeEq[i - 1] = '_') do
+                    i <- i - 1
+
+                i
+
+            let field = beforeEq.Substring fieldStart
+
+            if field = "" then
+                None
+            else
+                // the nearest preceding `with` keyword bounds the source
+                let head = beforeEq.Substring(0, fieldStart)
+                let wi = head.LastIndexOf "with"
+
+                let isWordBounded =
+                    wi >= 0
+                    && (wi = 0 || not (System.Char.IsLetterOrDigit head[wi - 1] || head[wi - 1] = '_'))
+                    && (wi + 4 >= head.Length
+                        || not (System.Char.IsLetterOrDigit head[wi + 4] || head[wi + 4] = '_'))
+
+                if not isWordBounded then
+                    None
+                else
+                    sourceDefOf (head.Substring(0, wi))
+                    |> Option.bind (fun def -> def.Fields |> List.tryFind (fst >> (=) field))
+                    |> Option.bind (fun (_, fty) ->
+                        let typedBindings (t: Ty) =
+                            env.Values
+                            |> Map.toList
+                            |> List.choose (fun (n, sch) ->
+                                if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = t then
+                                    Some n
+                                else
+                                    None)
+
+                        match fty with
+                        | TBool -> Some([ "false"; "true" ] @ typedBindings TBool)
+                        | TNamed(n, []) ->
+                            match Map.tryFind n env.Types with
+                            | Some(Union u) -> Some(u.Cases |> List.map fst)
+                            | _ -> None
+                        | TDur -> Some("Duration" :: typedBindings TDur)
+                        | TSize -> Some("Size" :: typedBindings TSize)
+                        | TSecret -> Some("Secret" :: typedBindings TSecret)
+                        | _ -> None)
+
     let withSlotFields: string list option =
         let endsWithWord (kw: string) (b: string) =
             b.EndsWith kw
@@ -246,6 +334,11 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                     | Union _ -> [])
                 |> List.distinct
                 |> render
+    elif valueSlotCandidates.IsSome then
+        valueSlotCandidates.Value
+        |> List.filter (fun c -> c.StartsWith word && c <> word)
+        |> List.distinct
+        |> List.sort
     elif withSlotFields.IsSome then
         withSlotFields.Value
         |> List.filter (fun f -> f.StartsWith word && f <> word)

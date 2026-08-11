@@ -23,7 +23,14 @@ Three properties, in the order they matter:
 ## Running weir
 
 - `weir` — the REPL: bare names allowed, values echo back, tab
-  completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits.
+  completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits
+  (`#quit` is the typed spelling). `#help` lists the directives and
+  the modules; `#help Seq` lists a module's members — the form FSI
+  cannot answer — and `#help Seq.collect` shows one member's doc,
+  rendered from the same source hover uses. The `#` prefix means "a
+  line addressed to the tooling rather than the language": file
+  directives (`#sig`, `#schema`) are read at check time, session
+  directives (`#help`, `#quit`) run now — one glyph, two lifetimes.
   Input colors as you type (lexical: keywords, strings, comments,
   numbers, sigils) and the HEAD word colors by live resolution —
   bold = known binding/builtin, blue = found on PATH, red = would

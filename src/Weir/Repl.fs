@@ -1005,13 +1005,141 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
         // unreachable: scriptOnlyImport rejects imports at check
         state
 
+
+// ---- session directives [D:repl-directives] -------------------------
+// '#' is the prefix for everything addressed to the TOOLING: file
+// directives (#sig, #schema) read at check time, session directives
+// (#help, #quit) executed now — one glyph, two lifetimes.
+
+// simple flow-wrap for name lists
+let private flowNames (indent: string) (width: int) (words: string list) : string =
+    let sb = Text.StringBuilder()
+    let mutable col = indent.Length
+
+    for w in words do
+        if col > indent.Length && col + 1 + w.Length > width then
+            sb.Append('\n').Append(indent) |> ignore
+            col <- indent.Length
+        elif col > indent.Length then
+            sb.Append ' ' |> ignore
+            col <- col + 1
+
+        sb.Append w |> ignore
+        col <- col + w.Length
+
+    sb.ToString()
+
+/// ONE SOURCE [D:repl-directives]: the hover's own composition — the
+/// annotated signature (formatSignature over the builtinDocs params)
+/// plus renderBuiltinDoc. A hover improvement lifts #help for free.
+let private memberHelp (te: TypeEnv) (name: string) : string option =
+    let schemeOf (n: string) =
+        match n.Split '.' with
+        | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
+        | _ -> Map.tryFind n te.Values
+
+    match Map.tryFind name Builtins.builtinDocs, schemeOf name with
+    | Some d, sch ->
+        let sigLine =
+            sch
+            |> Option.map (fun s -> formatSignature name d.Params s.Ty + "\n\n")
+            |> Option.defaultValue ""
+
+        Some(sigLine + Builtins.renderBuiltinDoc d)
+    | None, Some sch -> Some(formatSignature name [] sch.Ty)
+    | None, None -> None
+
+let private helpDirective (te: TypeEnv) (arg: string) : string =
+    match arg.Trim() with
+    | "" ->
+        let mods = te.Modules |> Map.keys |> Seq.sort |> List.ofSeq
+
+        "Directives:\n"
+        + "  #help                 // this list\n"
+        + "  #help <name>          // documentation for a module or member\n"
+        + "  #quit                 // leave the REPL (Ctrl+D works too)\n\n"
+        + "Modules: "
+        + flowNames "         " 72 mods
+    | name when Map.containsKey name te.Modules ->
+        // members from COMPLETION'S source — the module map plus the
+        // bespoke checker arms — never a copy
+        let members =
+            Seq.append
+                (te.Modules[name] |> Map.keys)
+                (Check.specialModuleMembers |> Map.tryFind name |> Option.defaultValue [])
+            |> Seq.distinct
+            |> Seq.sort
+            |> List.ofSeq
+
+        $"{name} ({List.length members} members):\n  "
+        + flowNames "  " 72 members
+        + $"\n\n#help {name}.<member> shows one member's doc"
+    | name ->
+        match memberHelp te name with
+        | Some h -> h
+        | None ->
+            match Map.tryFind name te.Types with
+            | Some(Record d) ->
+                let fields =
+                    d.Fields |> List.map (fun (f, t) -> $"{f}: {formatTy t}") |> String.concat "; "
+
+                $"type {name} = {{ {fields} }}"
+            | Some(Union u) ->
+                let cases =
+                    u.Cases
+                    |> List.map (fun (c, p) ->
+                        match p with
+                        | Some t -> $"{c} of {formatTy t}"
+                        | None -> c)
+                    |> String.concat " | "
+
+                $"type {name} = {cases}"
+            | None ->
+                // a dotted typo did-you-means within its MODULE's members
+                match name.Split '.' with
+                | [| m; mem |] when Map.containsKey m te.Modules ->
+                    $"#help: {m} has no member '{mem}'{didYouMean mem (te.Modules[m] |> Map.keys)}"
+                | _ ->
+                    let pool =
+                        Seq.concat
+                            [ te.Modules |> Map.keys |> Seq.cast<string>
+                              te.Values |> Map.keys |> Seq.filter Types.isUserName
+                              te.Types |> Map.keys |> Seq.cast<string> ]
+
+                    $"#help: unknown name '{name}'{didYouMean name pool}"
+
 let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
 
     match readInput () with
-    | null
-    | ":q" -> ()
-    | line when String.IsNullOrWhiteSpace line -> loop state
+    | null -> ()
+    | line when
+        line.Split '\n'
+        |> Array.forall (fun l -> Script.classifyLine l <> Script.LineKind.Code)
+        ->
+        // blank AND comment-only entries are a NO-OP at the prompt
+        // [D:repl-directives]: nothing follows for a comment to be
+        // transparent to — no message is the right answer
+        loop state
+    | line when line.TrimStart().StartsWith "#" ->
+        let t = line.Trim()
+
+        if t = "#quit" then
+            ()
+        elif t = "#help" || t.StartsWith "#help " then
+            Console.WriteLine(helpDirective state.TypeEnv (t.Substring 5))
+            loop state
+        else
+            let word = t.Split(' ').[0]
+
+            Console.WriteLine
+                $"unknown directive '{word}' — #help lists them (#sig and #schema are file directives, read at check time)"
+
+            loop state
+    | ":q" ->
+        // the one retired vim-ism teaches its replacement
+        Console.WriteLine "`:q` is now `#quit` (Ctrl+D also leaves)"
+        loop state
     | entry when entry.Contains '\n' ->
         // a MULTILINE entry [D:repl-multiline]: the same assembler the
         // script runner uses turns the buffer into logical lines — the
@@ -1067,8 +1195,12 @@ let rec private loop (state: State) =
 
         let next =
             // [D:one-pipeline]: a single-line LogicalLine feeds
-            // checkStatement; the REPL only renders
-            let ll = Script.singleLine line
+            // checkStatement; the REPL only renders. Comment-STRIPPED
+            // first, like scripts (the assembler) and -e do — the
+            // multiline arm rides the assembler, this arm never did
+            // [D:repl-directives]; a district cannot occur here (marker
+            // lines open the multiline buffer)
+            let ll = Script.singleLine (Script.stripComment line)
 
             match Script.checkStatement false (fun _ -> resolver state) Script.scriptOnlyImport state.TypeEnv ll with
             | Error d when d.Parse ->

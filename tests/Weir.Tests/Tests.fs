@@ -1705,6 +1705,26 @@ let completionTests =
               let text = "{ Http.get with "
               Expect.equal (suggest text text.Length) [] "no members, no pool"
           }
+          test "the typed VALUE slot: a known field type closes the candidate set [D:typed-value-slot]" {
+              // bool: true/false, never the general pool's Str members
+              let t1 = "{ Http.get \"u\" with insecure = tr"
+              Expect.equal (suggest t1 (t1.Length - 2)) [ "true" ] "tr narrows to true alone"
+
+              let t2 = "{ Http.get \"u\" with insecure = "
+              Expect.equal (suggest t2 t2.Length) [ "false"; "true" ] "the whole closed set, empty prefix"
+
+              // a union field offers its CASES
+              let t3 = "{ Http.get \"u\" with method = G"
+              Expect.equal (suggest t3 (t3.Length - 1)) [ "Get" ] "the enum-shaped case"
+
+              // a later field (after ';') still resolves
+              let t4 = "{ Http.get \"u\" with url = \"x\"; insecure = "
+              Expect.equal (suggest t4 t4.Length) [ "false"; "true" ] "second field, same slot"
+
+              // a unit-typed field points at its module
+              let t5 = "{ Http.get \"u\" with timeout = "
+              Expect.contains (suggest t5 t5.Length) "Duration" "the Duration field's module"
+          }
           test "`match x with ` is untouched by the with-slot (no brace-slice parses)" {
               let text = "match x with "
               Expect.isNonEmpty (suggest text text.Length) "the general pool still serves match"
