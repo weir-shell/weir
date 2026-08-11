@@ -3306,8 +3306,11 @@ expect "glob: * excludes dotfiles, sorted" "other.json
 top.json" "$out"
 expect "glob: a dot segment matches them" ".hidden.json" "$out"
 expect "glob: ** crosses segments, skips unreadable dirs and symlinks" "src/a/b/three.fs" "$out"
-if [ "$(id -u)" = "0" ]; then
-    echo "e2e note: unreadable-dir cell skipped (root ignores permission modes)"
+# EFFECTIVENESS gate, not an euid gate (the locked.txt precedent):
+# root ignores modes AND Windows chmod is inert — test whether the
+# denial actually took
+if [ -r "$pgdir/deny/secret.fs" ]; then
+    echo "e2e SKIP: unreadable-dir cell — chmod 000 did not deny here (root, or Windows where modes are inert)"
 else
     echo "$out" | grep -qF "secret.fs" && fail "unreadable dir must skip"
 fi
