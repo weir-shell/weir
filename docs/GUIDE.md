@@ -75,12 +75,16 @@ print $"tracked: {files |> Seq.length}"
 
 `print` takes strings, ints, bools, or `seq<string>` (one line per
 element — `weir script | grep x` composes). For anything else there is
-`show`:
+a hole — interpolation renders any `Show` value, records included:
 
 ```weir
 let row = ls |> Seq.head
-print (show row)
+print $"{row}"
 ```
+
+`show` produces the same text as a plain string; reach for it in the
+two places a hole cannot go — point-free positions (`Seq.map show`)
+and Secrets (`show` masks where interpolation refuses).
 
 ## Comments
 
@@ -150,7 +154,7 @@ let s2 = { s with Points = 13 }
 
 let v = if s2.Points > 10 then Pass s2.Points else Fail
 
-print (show v)
+print $"{v}"
 ```
 
 Derive, don't re-literal: `{ s with Points = 13 }` copies with the
@@ -266,7 +270,7 @@ type Cli = {
 }
 
 let cli = Args.load Cli
-print $"count={cli.count} seed={show cli.seed}"
+print $"count={cli.count} seed={cli.seed}"
 ```
 
 ## Secrets: the token-from-env idiom
@@ -1016,7 +1020,7 @@ type Cli = {
 }
 
 let cli = Args.load Cli
-print $"{show cli.clean} {show cli.port}"
+print $"{cli.clean} {cli.port}"
 ```
 
 ## Scraping text

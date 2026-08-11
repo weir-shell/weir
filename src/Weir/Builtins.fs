@@ -3054,7 +3054,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "Write a value and a newline to stderr." (Some "printerr \"oops\"") None
            |> named [ "value" ])
           "show",
-          (bd "Render a value to its string form (total; functions show opaquely)." (Some "show [1; 2; 3]") None
+          (bd
+              "Render a value to its string form — the SAME text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely."
+              (Some "[1; 2; 3] |> Seq.map show |> Seq.force")
+              None
            |> named [ "value" ])
           "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
           "force",

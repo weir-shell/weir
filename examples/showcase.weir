@@ -112,9 +112,9 @@ type Endpoint = { Host: string; Port: int }
 let dev = { Host = "localhost"; Port = 8080 }
 let prod = { dev with Port = 443 }
 print $"{prod.Host}:{prod.Port}"
-// print takes scalars/seq<string>, so a whole record goes through
-// show — the SAME rendering a hole gives inline ($"{prod}")
-print (show prod)
+// a hole renders any Show value — records included; `show` itself is
+// for point-free positions (Seq.map show) and Secrets (masked)
+print $"{prod}"
 
 // ---- unions, match, guards --------------------------------------------
 
@@ -203,7 +203,7 @@ let step t n =
     else { t with Small = t.Small + 1 }
 
 let tally = [1..9] |> Seq.fold step { Big = 0; Small = 0 }
-print (show tally)
+print $"{tally}"
 
 let normalize = Str.trim >> Str.toLower
 print (normalize "  MiXeD Case  ")

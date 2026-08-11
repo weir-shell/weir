@@ -8,4 +8,6 @@ type Ctx = { name: string; port: int }
 
 /// derive a display label from any record carrying name and port
 /// (row-typed: the function generalizes past Ctx)
+// `show` here is LOAD-BEARING, not ceremony: a bare hole defaults an
+// unresolved row field to string — show keeps port polymorphic (Show)
 let label c = $"{c.name}:{show c.port}"
