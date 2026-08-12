@@ -3971,7 +3971,10 @@ cp "$(dirname "$0")/../tests/fixtures/configmap-v1.json" "$ctdir/serve/"
 ctport=$((18930 + RANDOM % 2000))
 # loopback bind: macOS's firewall drops SYNs to an unsigned listener on
 # 0.0.0.0 ('Operation timed out' on the very first fetch)
-( cd "$ctdir/serve" && python3 -m http.server $ctport --bind 127.0.0.1 >/dev/null 2>&1 ) &
+# --directory, never a cd-subshell: MSYS bash does not exec-optimize
+# `( cd .. && python ) &`, so $! was the SUBSHELL and the kill left
+# python alive holding the dir as its cwd (rm: Device or resource busy)
+python3 -m http.server $ctport --bind 127.0.0.1 --directory "$ctdir/serve" >/dev/null 2>&1 &
 ctsrv=$!
 awaitHttp "http://127.0.0.1:$ctport/configmap-v1.json" || { kill $ctsrv 2>/dev/null; fail "the schema server never came up"; }
 
@@ -4130,13 +4133,19 @@ echo "e2e ok: the six schema messages re-pinned verbatim — fields named, paths
 # a schema with NO additionalProperties:false warns at ADD time — the
 # silently-inert-contract guard [schema-polish item 3]
 printf '{ "type": "object", "properties": { "a": { "type": "string" } } }' > "$ctdir/serve/loose.json"
-( cd "$ctdir/serve" && python3 -m http.server $ctport --bind 127.0.0.1 >/dev/null 2>&1 ) &
+# --directory, never a cd-subshell: MSYS bash does not exec-optimize
+# `( cd .. && python ) &`, so $! was the SUBSHELL and the kill left
+# python alive holding the dir as its cwd (rm: Device or resource busy)
+python3 -m http.server $ctport --bind 127.0.0.1 --directory "$ctdir/serve" >/dev/null 2>&1 &
 ctsrv2=$!
 awaitHttp "http://127.0.0.1:$ctport/loose.json" || { kill $ctsrv2 2>/dev/null; fail "the schema server (2) never came up"; }
 out=$( cd "$ctdir/proj" && $BIN add schema http://127.0.0.1:$ctport/loose.json --as loose 2>&1 )
 echo "$out" | grep -qF "unknown-field checking will NOT fire" || fail "the inert-schema warning: $out"
 echo "$out" | grep -qF "standalone-strict" || fail "the warning names the strict variant: $out"
 kill $ctsrv2 2>/dev/null || true
+# reap before rm: the kill is async, and Windows refuses to remove a
+# dir while a live process holds anything in it
+wait $ctsrv $ctsrv2 2>/dev/null || true
 echo "e2e ok: a no-strict schema warns at add time, naming the variant"
 rm -rf "$ctdir"
 
