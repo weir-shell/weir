@@ -3570,114 +3570,32 @@ let renderBuiltinDoc (d: BuiltinDoc) : string =
 // never a side effect of adding a module.
 let bareAliasModules: Set<string> = Set [ "Seq"; "Str" ]
 
-// THE BARE-MEMBER RULE [D:bare-rule]: a CURATED hot-path set — bare-ness
-// is a per-member DECISION, never a derivation (the same posture as the
-// bare command namespace: http was declined a slot there on identical
-// grounds). Two laws the gate enforces: every Seq/Str member is either
-// HERE or in bareDeclined (a new member fails the partition test until
-// someone decides), and a bare name has exactly ONE home — `contains`
-// lived in both modules and Map.ofList silently resolved it to Str's,
-// so the Seq hot-path errored with "expected string" (the accident this
-// rule replaces; contains is now qualified on both sides).
-let bareAliases: Set<string> =
-    Set
-        [ "map"
-          "where"
-          "first"
-          "take"
-          "head"
-          "sum"
-          "force"
-          "collect"
-          "startsWith"
-          "endsWith"
-          "trim"
-          "trimStart"
-          "trimEnd"
-          "toLower"
-          "toUpper"
-          "split"
-          "join"
-          "replace"
-          "toInt"
-          "tryToInt" ]
+// THE BARE-MEMBER RULE [D:bare-partition]: unambiguous means bare — a
+// member is bare iff its name has exactly ONE home among the
+// allowlisted modules; a two-home name is qualified-only on both sides
+// (a bare slot holds ONE value: Map.ofList silently resolved `contains`
+// to Str's and the Seq hot path errored with "expected string" — the
+// derivation makes that accident structurally unrepeatable). The
+// curation is bareAliasModules plus the PINNED collision set: a new
+// collision DEMOTES a bare name, so the gate fails until someone
+// decides.
+// The derivation is factored over the table so the PROPERTY is
+// pinnable: a non-allowlisted module with a `map`/`head` member must
+// contribute nothing, and a colliding name must vanish from the set.
+let private singleHomed (table: (string * (string * Ty * Value) list) list) =
+    let allowed = table |> List.filter (fun (m, _) -> bareAliasModules.Contains m)
 
-// declined-or-not-yet-earned, EXPLICITLY — the other half of the
-// partition. Moving a name across is a deliberate act with a receipt
-// (collect crossed on a live sitting's reach; nothing else has one).
-let bareDeclined: Set<string> =
-    Set
-        [ // Seq: the qualified-only majority
-          "append"
-          "average"
-          "choose"
-          "chunkBySize"
-          "concat"
-          "contains" // TWO homes — a bare slot holds one value; qualified both sides
-          "countBy"
-          "distinct"
-          "distinctBy"
-          "except"
-          "exists"
-          "find"
-          "fold"
-          "forall"
-          "groupBy"
-          "indexed"
-          "isEmpty"
-          "item"
-          "iter"
-          "last"
-          "length" // both homes; also the historical exclusion
-          "max"
-          "maxBy"
-          "min"
-          "minBy"
-          "pairwise"
-          "pfirst"
-          "pfirstWith"
-          "pick"
-          "piter"
-          "piterWith"
-          "pmap"
-          "pmapWith"
-          "range"
-          "reduce"
-          "replicate"
-          "rev"
-          "scan"
-          "skip"
-          "skipWhile"
-          "sort"
-          "sortBy"
-          "sortByDescending"
-          "sortDescending"
-          "takeWhile"
-          "tryFind"
-          "tryHead"
-          "tryItem"
-          "tryLast"
-          "tryPick"
-          "windowed"
-          "zip"
-          // Str: the qualified-only remainder
-          "fromBase64"
-          "isMatch"
-          "rmatch"
-          "rmatchAll"
-          "sha256"
-          "sub"
-          "toBase64"
-          "tryFromBase64"
-          "tryIndexOf" ]
+    let count =
+        allowed
+        |> List.collect (fun (_, members) -> members |> List.map (fun (n, _, _) -> n))
+        |> List.countBy id
+        |> Map.ofList
 
-// factored over the table so the PROPERTY is pinnable: a hypothetical
-// module with a `map`/`head` member must contribute nothing
+    allowed, (fun n -> count[n] = 1)
+
 let bareEntriesOf (table: (string * (string * Ty * Value) list) list) : (string * Ty * Value) list =
-    table
-    |> List.filter (fun (m, _) -> bareAliasModules.Contains m)
-    |> List.collect snd
-    |> List.filter (fun (n, _, _) -> bareAliases.Contains n && n <> "length")
+    let allowed, isSingle = singleHomed table
+    allowed |> List.collect snd |> List.filter (fun (n, _, _) -> isSingle n)
 
 let private bareEntries: (string * Ty * Value) list = bareEntriesOf moduleTable
 
@@ -3847,18 +3765,29 @@ let internalAliases: (string * Ty * Value) list =
           key, ty, v ]
 
 let bareAliasHomesOf (table: (string * (string * Ty * Value) list) list) : Map<string, string> =
-    table
-    |> List.filter (fun (m, _) -> bareAliasModules.Contains m)
+    let allowed, isSingle = singleHomed table
+
+    allowed
     |> List.collect (fun (m, members) ->
         members
-        |> List.choose (fun (n, _, _) ->
-            if bareAliases.Contains n && n <> "length" then
-                Some(n, m)
-            else
-                None))
+        |> List.choose (fun (n, _, _) -> if isSingle n then Some(n, m) else None))
     |> Map.ofList
 
 let bareAliasHomes: Map<string, string> = bareAliasHomesOf moduleTable
+
+let bareAliases: Set<string> =
+    bareAliasHomes |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+
+// the collision set, derived — every name here is qualified-only on
+// both sides. The GATE pins its exact contents [D:bare-partition]: a
+// new collision silently demotes a bare name, which must be decided.
+let bareTwoHome: Set<string> =
+    moduleTable
+    |> List.filter (fun (m, _) -> bareAliasModules.Contains m)
+    |> List.collect (fun (_, members) -> members |> List.map (fun (n, _, _) -> n))
+    |> List.countBy id
+    |> List.choose (fun (n, c) -> if c > 1 then Some n else None)
+    |> Set.ofList
 
 // sortBy : Ord b => (a -> b) -> seq<a> -> seq<a> — the constraint that
 // killed the runtime scalar-key rule (sentinel-ledger customer four).
@@ -3908,11 +3837,33 @@ let private eqExcept: Scheme =
       Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
       RowOrigins = Map.empty }
 
+// members whose signature is a CONSTRAINED scheme, not a plain
+// generalization — applied at the module map AND at the bare slot
+// [D:bare-partition]: a bare `sortBy` must keep its Ord key, or the
+// bare spelling would be laxer than the qualified one
+let private seqSchemeOverrides: (string * Scheme) list =
+    [ "contains", Check.containsScheme
+      "distinct", Check.distinctScheme
+      "sortBy", sortByScheme
+      "sortByDescending", sortByScheme
+      "max", ordSeqToElem
+      "min", ordSeqToElem
+      "sort", ordSeqToSeq
+      "sortDescending", ordSeqToSeq
+      "maxBy", ordByToElem
+      "minBy", ordByToElem
+      "countBy", eqKeyCountBy
+      "distinctBy", eqKeyDistinctBy
+      "except", eqExcept ]
+
 let typeEnv: TypeEnv =
     { Values =
         entries @ internalAliases
         |> List.map (fun (n, ty, _) -> n, generalize ty)
         |> Map.ofList
+        |> fun vs ->
+            seqSchemeOverrides
+            |> List.fold (fun acc (n, sch) -> (if bareAliases.Contains n then Map.add n sch acc else acc)) vs
         |> Map.add "print" Check.printScheme
         |> Map.add "printerr" Check.printScheme
         // the arming desugar's un-shadowable print [D:desugar-capture]
@@ -3922,19 +3873,9 @@ let typeEnv: TypeEnv =
         moduleTable
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
         |> Map.ofList
-        |> Map.change "Seq" (Option.map (Map.add "contains" Check.containsScheme))
-        |> Map.change "Seq" (Option.map (Map.add "distinct" Check.distinctScheme))
-        |> Map.change "Seq" (Option.map (Map.add "sortBy" sortByScheme))
-        |> Map.change "Seq" (Option.map (Map.add "sortByDescending" sortByScheme))
-        |> Map.change "Seq" (Option.map (Map.add "max" ordSeqToElem))
-        |> Map.change "Seq" (Option.map (Map.add "min" ordSeqToElem))
-        |> Map.change "Seq" (Option.map (Map.add "sort" ordSeqToSeq))
-        |> Map.change "Seq" (Option.map (Map.add "sortDescending" ordSeqToSeq))
-        |> Map.change "Seq" (Option.map (Map.add "maxBy" ordByToElem))
-        |> Map.change "Seq" (Option.map (Map.add "minBy" ordByToElem))
-        |> Map.change "Seq" (Option.map (Map.add "countBy" eqKeyCountBy))
-        |> Map.change "Seq" (Option.map (Map.add "distinctBy" eqKeyDistinctBy))
-        |> Map.change "Seq" (Option.map (Map.add "except" eqExcept))
+        |> Map.change
+            "Seq"
+            (Option.map (fun ms -> seqSchemeOverrides |> List.fold (fun acc (n, sch) -> Map.add n sch acc) ms))
       Types =
         Map
             [ fileRow.Name, Record fileRow
