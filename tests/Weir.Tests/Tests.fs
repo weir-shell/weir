@@ -2714,14 +2714,17 @@ let stringTests =
               expectValue "Str.tryFromBase64 \"//79\"" (VUnion("None", None))
           }
           test "contains, startsWith, endsWith are data-last" {
-              expectValue "contains \"err\" \"stderr\"" (VBool true)
+              // bare `contains` retired [D:bare-rule]: two homes, one
+              // slot — qualified both sides; the data-last law is the
+              // member's, unchanged
+              expectValue "Str.contains \"err\" \"stderr\"" (VBool true)
               expectValue "startsWith \"fix:\" \"fix: bug\"" (VBool true)
               expectValue "endsWith \".txt\" \"a.txt\"" (VBool true)
-              expectValue "contains \"zzz\" \"stderr\"" (VBool false)
+              expectValue "Str.contains \"zzz\" \"stderr\"" (VBool false)
           }
           test "point-free pipeline predicate is the payoff" {
               expectValue
-                  "[\"an error here\"; \"fine\"; \"error again\"] |> where (contains \"error\") |> head"
+                  "[\"an error here\"; \"fine\"; \"error again\"] |> where (Str.contains \"error\") |> head"
                   (VStr "an error here")
           }
           test "trim family" {
@@ -6029,10 +6032,10 @@ let scriptTests =
           }
           test "fmt qualifies bare uses span-precisely" {
               let line, n =
-                  Weir.Fmt.qualifyLine realResolver "ls |> map _.name |> where (contains \"x\")"
+                  Weir.Fmt.qualifyLine realResolver "ls |> map _.name |> where (startsWith \"x\")"
 
               Expect.equal n 3 "three rewrites"
-              Expect.equal line "ls |> Seq.map _.name |> Seq.where (Str.contains \"x\")" ""
+              Expect.equal line "ls |> Seq.map _.name |> Seq.where (Str.startsWith \"x\")" ""
           }
           test "fmt leaves splices and fields alone" {
               let line, n = Weir.Fmt.qualifyLine realResolver "git checkout $map"
@@ -11861,6 +11864,58 @@ let operatorValueTests =
               Expect.equal (run "(0 - 5)") (VInt -5L) "a parenthesized subtraction is not (-)"
           } ]
 
+let bareRuleTests =
+    // the bare-member rule [D:bare-rule]: a curated set with a GATE —
+    // the keyword-completion tripwire's shape applied to a namespace
+    testList
+        "the bare-member rule [D:bare-rule]"
+        [ test "THE GATE: every Seq/Str member is decided — bare or declined, never neither" {
+              let members =
+                  [ "Seq"; "Str" ]
+                  |> List.collect (fun m -> Weir.Builtins.typeEnv.Modules[m] |> Map.keys |> List.ofSeq)
+                  |> Set.ofList
+
+              let undecided = members - Weir.Builtins.bareAliases - Weir.Builtins.bareDeclined
+
+              Expect.isTrue
+                  undecided.IsEmpty
+                  $"undecided members (add to bareAliases WITH a receipt, or to bareDeclined): {undecided}"
+
+              let both = Set.intersect Weir.Builtins.bareAliases Weir.Builtins.bareDeclined
+              Expect.isTrue both.IsEmpty $"a name cannot be both bare and declined: {both}"
+          }
+          test "THE GATE: a bare name has exactly ONE home (the contains accident, mechanized)" {
+              let multiHome =
+                  Weir.Builtins.bareAliases
+                  |> Set.filter (fun n ->
+                      [ "Seq"; "Str" ]
+                      |> List.filter (fun m -> Weir.Builtins.typeEnv.Modules[m] |> Map.containsKey n)
+                      |> List.length > 1)
+
+              Expect.isTrue
+                  multiHome.IsEmpty
+                  $"a bare slot holds one value — Map.ofList silently shadows the rest: {multiHome}"
+          }
+          test "collect is bare (the receipt); contains is qualified BOTH sides (the accident closed)" {
+              Expect.equal
+                  (run "[\"a<b\"; \"c\"] |> collect (Str.split \"<\") |> Seq.length")
+                  (VInt 3L)
+                  "the live sitting's reach, now legal"
+
+              let m = (checkErr "[1; 2] |> contains 1").Message
+              Expect.stringContains m "module-qualified" "contains is a decision away, not a silent Str"
+              Expect.stringContains m "Seq.contains" "…and both homes are named"
+              Expect.stringContains m "Str.contains" ""
+
+              Expect.equal (run "[1; 2] |> Seq.contains 1") (VBool true) "the qualified spellings work"
+              Expect.equal (run "\"abc\" |> Str.contains \"b\"") (VBool true) ""
+          }
+          test "no message claims a member moved when it did not" {
+              let m = (checkErr "[1] |> rev").Message
+              Expect.stringContains m "module-qualified; use 'Seq.rev'" "the truthful wording"
+              Expect.isFalse (m.Contains "moved") "no false history"
+          } ]
+
 let gapATests =
     testList
         "Gap audit session A remainder"
@@ -12170,6 +12225,7 @@ let allTests =
           gapATests
           seqGapsTests
           operatorValueTests
+          bareRuleTests
           withinTests
           windowsV1Tests
           checkerTests

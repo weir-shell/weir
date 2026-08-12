@@ -1655,7 +1655,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             None)
 
                 match homes with
-                | [ one ] -> err expr.Span $"'{name}' moved into a module; use '{one}'"
+                // no history claim [D:bare-rule]: most of these were
+                // never bare — the wording matches the multi-home arm's
+                | [ one ] -> err expr.Span $"'{name}' is module-qualified; use '{one}'"
                 | _ :: _ ->
                     let all = String.concat " or " homes
                     err expr.Span $"'{name}' is module-qualified here; use {all}"

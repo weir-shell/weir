@@ -1,5 +1,22 @@
 # Spike Notes
 
+## the bare-member rule, discovered then stated (2026-08-12)
+
+The frozen-list session: twenty bare names nobody could explain, and
+the discovery found the explanation was "someone chose them once and
+the choosing was never written down" — plus one accident hiding
+inside the choice. `contains` lives in both Seq and Str, and
+Map.ofList's last-write-wins had silently made bare contains Str's
+since the list froze: the Seq hot-path spelling errored with
+"expected string" and its only users were string-flavored tests that
+never noticed. Candidate rule C (bare iff unambiguous) was refuted by
+the data in both directions, which settled the choice on curation
+with a gate: the partition test makes an undecided member a failing
+test, and single-home-ness makes the contains accident unrepeatable.
+collect joined on its receipt; contains left with its homes named;
+and the "moved into a module" message — which asserted a history most
+of its subjects never had — was retired rather than split, because no
+message that claims nothing needs its claims reconstructed.
 ## the echo presents string seqs as lines (2026-08-12)
 
 The smallest session of the arc and the one a newcomer meets first:
