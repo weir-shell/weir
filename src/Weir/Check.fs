@@ -697,6 +697,27 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
         err span "print will not render a Secret — show s prints ***, or Secret.reveal s to print its value"
     | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy t}"
 
+// the (op) desugar target [D:operator-values]: `fun a b -> a op b`
+// verbatim — params carry the un-typeable '|' prefix so nothing can
+// capture them; both the infer and check arms delegate here
+let private opValueLambda (op: string) (sp: Span) : Expr =
+    let v n = { Kind = EVar n; Span = sp }
+
+    { Kind =
+        ELambda(
+            "|opL",
+            sp,
+            { Kind =
+                ELambda(
+                    "|opR",
+                    sp,
+                    { Kind = EBinOp(op, v "|opL", v "|opR")
+                      Span = sp }
+                )
+              Span = sp }
+        )
+      Span = sp }
+
 let rec private typeBinOp
     (ctx: Ctx)
     (env: TypeEnv)
@@ -1714,403 +1735,425 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EApp _ ->
         let head, args = spine expr
 
-        // the WRAP-IT hint [D:district-retirement]: a bare command in an
-        // expression FRAGMENT reads as an application of its unbound head
-        // word — the repair is the wrapper, so the rejection names it
-        // (did-you-mean coexists; the specific teachings — module homes,
-        // retirements, scriptPath — keep their own arms via fall-through)
-        let wrapItHint =
-            match head.Kind with
-            | EVar n when
-                not (Map.containsKey n env.Values)
-                && n.Length > 0
-                && System.Char.IsLower n[0]
-                && not (env.Modules |> Map.exists (fun _ members -> Map.containsKey n members))
-                && (retiredBare n).IsNone
-                && n <> "scriptPath"
-                ->
-                let hint = didYouMean n (Map.keys env.Values |> Seq.filter Types.isUserName)
+        // unapplied ONLY [D:operator-values]: a partially applied infix
+        // operator reads backwards — (>) 10 would mean fun x -> 10 > x,
+        // which is exactly the direction authors get wrong (the
+        // field-predicates exploration's evidence). The teaching shows
+        // both spellings so the direction is chosen, not guessed.
+        match head.Kind with
+        | EOpValue op ->
+            err
+                head.Span
+                ($"an operator cannot be partially applied — ({op}) v would mean fun x -> v {op} x, "
+                 + $"which reads backwards; write the lambda with its direction explicit: fun x -> x {op} v (or fun x -> v {op} x)")
+        | _ ->
 
-                err head.Span $"unbound variable '{n}'{hint} — if you meant to run a command here, wrap it: $({n} …)"
-            | _ -> Ok()
+            // the WRAP-IT hint [D:district-retirement]: a bare command in an
+            // expression FRAGMENT reads as an application of its unbound head
+            // word — the repair is the wrapper, so the rejection names it
+            // (did-you-mean coexists; the specific teachings — module homes,
+            // retirements, scriptPath — keep their own arms via fall-through)
+            let wrapItHint =
+                match head.Kind with
+                | EVar n when
+                    not (Map.containsKey n env.Values)
+                    && n.Length > 0
+                    && System.Char.IsLower n[0]
+                    && not (env.Modules |> Map.exists (fun _ members -> Map.containsKey n members))
+                    && (retiredBare n).IsNone
+                    && n <> "scriptPath"
+                    ->
+                    let hint = didYouMean n (Map.keys env.Values |> Seq.filter Types.isUserName)
 
-        match wrapItHint with
-        | Error e -> Error e
-        | Ok() ->
+                    err
+                        head.Span
+                        $"unbound variable '{n}'{hint} — if you meant to run a command here, wrap it: $({n} …)"
+                | _ -> Ok()
 
-            // the named / qualified record literal [D:modules-v1]: `Ctx { .. }`
-            // parses as EApp(EVar Ctx, ERecord) and `Git.Ctx { .. }` as
-            // EApp(EField(Git, Ctx), ERecord). A record TYPE name is never a
-            // value, so this only fires where a bare application would ERROR —
-            // zero movement on `Some { .. }` (Some is a ctor, not a type).
-            let namedRecord (typeName: string) (fields: (string * Span * Expr) list) =
-                result {
-                    let def =
-                        match Map.tryFind typeName env.Types with
-                        | Some(Record d) -> d
-                        | _ -> failwith "named record target is not a record"
+            match wrapItHint with
+            | Error e -> Error e
+            | Ok() ->
 
-                    match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
-                    | Some dup ->
-                        let _, dupSpan, _ = fields |> List.findBack (fun (n, _, _) -> n = dup)
-                        return! err dupSpan $"duplicate field '{dup}'"
-                    | None ->
-                        let litNames = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
-                        let defNames = def.Fields |> List.map fst |> Set.ofList
+                // the named / qualified record literal [D:modules-v1]: `Ctx { .. }`
+                // parses as EApp(EVar Ctx, ERecord) and `Git.Ctx { .. }` as
+                // EApp(EField(Git, Ctx), ERecord). A record TYPE name is never a
+                // value, so this only fires where a bare application would ERROR —
+                // zero movement on `Some { .. }` (Some is a ctor, not a type).
+                let namedRecord (typeName: string) (fields: (string * Span * Expr) list) =
+                    result {
+                        let def =
+                            match Map.tryFind typeName env.Types with
+                            | Some(Record d) -> d
+                            | _ -> failwith "named record target is not a record"
 
-                        if litNames <> defNames then
-                            let show s = String.concat ", " (Set.toList s)
+                        match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
+                        | Some dup ->
+                            let _, dupSpan, _ = fields |> List.findBack (fun (n, _, _) -> n = dup)
+                            return! err dupSpan $"duplicate field '{dup}'"
+                        | None ->
+                            let litNames = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
+                            let defNames = def.Fields |> List.map fst |> Set.ofList
 
-                            let detail =
-                                [ if not (Set.isEmpty (Set.difference defNames litNames)) then
-                                      $"missing {show (Set.difference defNames litNames)}"
-                                  if not (Set.isEmpty (Set.difference litNames defNames)) then
-                                      $"unknown {show (Set.difference litNames defNames)}" ]
-                                |> String.concat "; "
+                            if litNames <> defNames then
+                                let show s = String.concat ", " (Set.toList s)
 
-                            return! err expr.Span $"record '{typeName}' has fields {show defNames} ({detail})"
-                        else
-                            let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
+                                let detail =
+                                    [ if not (Set.isEmpty (Set.difference defNames litNames)) then
+                                          $"missing {show (Set.difference defNames litNames)}"
+                                      if not (Set.isEmpty (Set.difference litNames defNames)) then
+                                          $"unknown {show (Set.difference litNames defNames)}" ]
+                                    |> String.concat "; "
 
-                            let checkField (name: string, _: Span, value: Expr) =
-                                let declaredTy =
-                                    def.Fields
-                                    |> List.find (fun (f, _) -> f = name)
-                                    |> snd
-                                    |> substParams def.Params targs
+                                return! err expr.Span $"record '{typeName}' has fields {show defNames} ({detail})"
+                            else
+                                let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
 
-                                check ctx env value declaredTy |> Result.map (fun tv -> name, tv)
+                                let checkField (name: string, _: Span, value: Expr) =
+                                    let declaredTy =
+                                        def.Fields
+                                        |> List.find (fun (f, _) -> f = name)
+                                        |> snd
+                                        |> substParams def.Params targs
 
-                            let! tfields =
-                                fields
-                                |> List.fold
-                                    (fun acc f ->
-                                        acc |> Result.bind (fun ts -> checkField f |> Result.map (fun t -> t :: ts)))
-                                    (Ok [])
+                                    check ctx env value declaredTy |> Result.map (fun tv -> name, tv)
 
-                            return
-                                { Kind = TERecord(def.Name, List.rev tfields)
-                                  Ty = TNamed(def.Name, targs)
-                                  Span = expr.Span }
-                }
+                                let! tfields =
+                                    fields
+                                    |> List.fold
+                                        (fun acc f ->
+                                            acc
+                                            |> Result.bind (fun ts -> checkField f |> Result.map (fun t -> t :: ts)))
+                                        (Ok [])
 
-            match head.Kind, args with
-            | EVar tyName, [ { Kind = ERecord fields } ] when
-                (match Map.tryFind tyName env.Types with
-                 | Some(Record _) -> true
-                 | _ -> false)
-                && not (Map.containsKey tyName env.Values)
-                ->
-                namedRecord tyName fields
-            | EField({ Kind = EVar m }, tyName, _), [ { Kind = ERecord fields } ] when
-                (match Map.tryFind m env.ModuleTypes with
-                 | Some ts -> Set.contains tyName ts
-                 | None -> false)
-                && (match Map.tryFind tyName env.Types with
-                    | Some(Record _) -> true
-                    | _ -> false)
-                ->
-                namedRecord tyName fields
-            | EField({ Kind = EVar "Env" }, "load", _), [ arg ] when
-                not (Map.containsKey "Env" env.Values) && Map.containsKey "Env" env.Modules
-                ->
-                // Env.load T — a typed-boundary instance (from json, env).
-                // Imitates from-json's type-name-in-special-position
-                // resolution, relocated to expression position.
-                (match arg.Kind with
-                 | EVar tyName ->
-                     match Map.tryFind tyName env.Types with
-                     | Some(Record def) when def.Params.IsEmpty ->
-                         // an ENUM field [D:env-enums]: a monomorphic union,
-                         // every case 0-arity — the declared set becomes a
-                         // boundary conversion exactly like int/bool
-                         let unionOf ft =
-                             match ft with
-                             | TNamed(n, [])
-                             | TNamed("Option", [ TNamed(n, []) ]) ->
-                                 match Map.tryFind n env.Types with
-                                 | Some(Union u) when u.Params.IsEmpty -> Some(n, u)
-                                 | _ -> None
-                             | _ -> None
+                                return
+                                    { Kind = TERecord(def.Name, List.rev tfields)
+                                      Ty = TNamed(def.Name, targs)
+                                      Span = expr.Span }
+                    }
 
-                         let isEnum ft =
-                             match unionOf ft with
-                             | Some(_, u) -> u.Cases |> List.forall (fun (_, p) -> p.IsNone)
-                             | None -> false
-
-                         let loadable ty =
-                             match ty with
-                             | TStr
-                             | TInt
-                             | TFloat
-                             | TBool
-                             | TDur
-                             | TSize
-                             // env is THE secret channel in CI [D:secret]:
-                             // secrets.GITHUB_TOKEN becomes an env var, so a
-                             // Secret field is the main producer, not a
-                             // compromise (the non-claim is in SECURITY.md)
-                             | TSecret
-                             | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur | TSize | TSecret ]) -> true
-                             | ty -> isEnum ty
-
-                         // a payload-carrying case is a SCHEMA error, named at
-                         // check time — env values are single tokens
-                         let payloadCase =
-                             def.Fields
-                             |> List.tryPick (fun (f, ft) ->
-                                 unionOf ft
-                                 |> Option.bind (fun (n, u) ->
-                                     u.Cases
-                                     |> List.tryFind (fun (_, p) -> p.IsSome)
-                                     |> Option.map (fun (c, _) -> f, n, c)))
-
-                         // case-insensitive matching makes same-cased pairs
-                         // ambiguous — the Args subcommand collision's env
-                         // sibling (two rules, two conventions [D:env-enums])
-                         let caseCollision =
-                             def.Fields
-                             |> List.tryPick (fun (_, ft) ->
-                                 unionOf ft
-                                 |> Option.bind (fun (_, u) ->
-                                     u.Cases
-                                     |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
-                                     |> List.groupBy snd
-                                     |> List.tryPick (fun (w, g) ->
-                                         match g with
-                                         | (a, _) :: (b, _) :: _ -> Some(a, b, w)
-                                         | _ -> None)))
-
-                         // Default on an enum field: attribute literals are
-                         // string/int/bool [D:default-attr] — the resting
-                         // point spells Option + defaultValue
-                         let enumDefault =
-                             def.Fields
-                             |> List.tryPick (fun (f, ft) ->
-                                 match ft, Argv.defaultOf def f with
-                                 | TNamed(n, []), Some _ when isEnum ft -> Some(f, n)
-                                 | _ -> None)
-
-                         match payloadCase with
-                         | Some(f, n, c) ->
-                             err
-                                 arg.Span
-                                 $"'{f}': env values are single tokens, so enum fields need 0-arity cases; case '{c}' of {n} carries a payload"
-                         | None ->
-
-                             match def.Fields |> List.tryFind (fun (_, ft) -> not (loadable ft)) with
-                             | Some(bad, badTy) ->
-                                 err
-                                     arg.Span
-                                     $"Env.load fields must be string, int, float, bool, Duration, Size, Secret, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
-                             | None ->
-
-                                 match caseCollision with
-                                 | Some(a, b, word) ->
-                                     err arg.Span $"cases '{a}' and '{b}' collide as env value '{word}'"
-                                 | None ->
-
-                                     match enumDefault with
-                                     | Some(f, n) ->
-                                         err
-                                             arg.Span
-                                             $"'{f}': an enum field takes no Default (attribute literals are string/int/bool) — spell the resting point Option<{n}> with Option.defaultValue"
-                                     | None ->
-                                         // the resting-point cells under ENV's field law
-                                         // [D:default-attr]: text bools carry no presence
-                                         // semantics, so BOTH Default literals are legal
-                                         // here (the Args-side false-is-redundant cell
-                                         // flips — validation is the consumer's arm)
-                                         // [D:default-attr]: bool-false is LEGAL here — the
-                                         // flip cell; both Default rules sit adjacent in Argv
-                                         match Argv.badEnvDefault def with
-                                         | Some msg -> err arg.Span msg
-                                         | None ->
-                                             let enums =
-                                                 def.Fields
-                                                 |> List.choose (fun (_, ft) ->
-                                                     unionOf ft
-                                                     |> Option.map (fun (n, u) -> n, u.Cases |> List.map fst))
-                                                 |> Map.ofList
-
-                                             Ok
-                                                 { Kind = TEEnvLoad(def, enums)
-                                                   Ty = TNamed(tyName, [])
-                                                   Span = expr.Span }
-                     | Some(Record def) -> err arg.Span $"Env.load needs a monomorphic record; '{tyName}' is generic"
-                     | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
-                     | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
-                 | _ -> err arg.Span "Env.load takes a record type name, e.g. Env.load Config")
-            | EField({ Kind = EVar "Args" }, "load", _), [ arg ] when
-                not (Map.containsKey "Args" env.Values) && Map.containsKey "Args" env.Modules
-                ->
-                // Args.load T — the sixth typed-boundary instance [D:typed-argv]:
-                // Env.load's sibling; the union acceptance is the delta
-                // script-mode signal = the Self module [D:self-module] (injected
-                // per-run by baseEnvs; absent in the REPL and -e). Args.load reads
-                // Session.ScriptArgs at eval, so this is purely the availability gate.
-                (if not (Map.containsKey "Self" env.Modules) then
-                     err expr.Span "Args.load is script-only (Self.args is not available here)"
-                 else
-                     let validateFields span (label: string) (def: RecordDef) =
-                         // Default cells / field shapes / flag collisions —
-                         // the policy lives in Argv [D:typed-argv]; the arm
-                         // keeps the span plumbing
-                         match Argv.fieldProblems label def with
-                         | Some msg -> err span msg
-                         | None -> Ok()
-
-                     // case collisions + payload validation, shared by the bare-union
-                     // and shared-flags shapes [D:shared-flags]
-                     let unionPayloads span (udef: UnionDef) =
-                         let lowered = udef.Cases |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
-
-                         match lowered |> List.groupBy snd |> List.tryFind (fun (_, g) -> g.Length > 1) with
-                         | Some(word, (a, _) :: (b, _) :: _) ->
-                             err span $"cases '{a}' and '{b}' collide as subcommand '{word}'"
-                         | _ ->
-                             let payloadErr c =
-                                 err span $"case '{c}' must carry a single record payload; spell it as a record type"
-
-                             let rec buildPayloads acc cases =
-                                 match cases with
-                                 | [] -> Ok acc
-                                 | (_, None) :: rest -> buildPayloads acc rest
-                                 | (c, Some(TNamed(rn, []))) :: rest ->
-                                     match Map.tryFind rn env.Types with
-                                     | Some(Record rdef) when rdef.Params.IsEmpty ->
-                                         validateFields span $"case '{c}': " rdef
-                                         |> Result.bind (fun () -> buildPayloads (Map.add c rdef acc) rest)
-                                     | _ -> payloadErr c
-                                 | (c, Some _) :: _ -> payloadErr c
-
-                             buildPayloads Map.empty udef.Cases
-
-                     match arg.Kind with
+                match head.Kind, args with
+                | EVar tyName, [ { Kind = ERecord fields } ] when
+                    (match Map.tryFind tyName env.Types with
+                     | Some(Record _) -> true
+                     | _ -> false)
+                    && not (Map.containsKey tyName env.Values)
+                    ->
+                    namedRecord tyName fields
+                | EField({ Kind = EVar m }, tyName, _), [ { Kind = ERecord fields } ] when
+                    (match Map.tryFind m env.ModuleTypes with
+                     | Some ts -> Set.contains tyName ts
+                     | None -> false)
+                    && (match Map.tryFind tyName env.Types with
+                        | Some(Record _) -> true
+                        | _ -> false)
+                    ->
+                    namedRecord tyName fields
+                | EField({ Kind = EVar "Env" }, "load", _), [ arg ] when
+                    not (Map.containsKey "Env" env.Values) && Map.containsKey "Env" env.Modules
+                    ->
+                    // Env.load T — a typed-boundary instance (from json, env).
+                    // Imitates from-json's type-name-in-special-position
+                    // resolution, relocated to expression position.
+                    (match arg.Kind with
                      | EVar tyName ->
                          match Map.tryFind tyName env.Types with
                          | Some(Record def) when def.Params.IsEmpty ->
-                             // the field law [D:shared-flags]: at most ONE
-                             // union-typed field — the subcommand slot; its
-                             // scalar siblings are shared flags
-                             let unionFields =
+                             // an ENUM field [D:env-enums]: a monomorphic union,
+                             // every case 0-arity — the declared set becomes a
+                             // boundary conversion exactly like int/bool
+                             let unionOf ft =
+                                 match ft with
+                                 | TNamed(n, [])
+                                 | TNamed("Option", [ TNamed(n, []) ]) ->
+                                     match Map.tryFind n env.Types with
+                                     | Some(Union u) when u.Params.IsEmpty -> Some(n, u)
+                                     | _ -> None
+                                 | _ -> None
+
+                             let isEnum ft =
+                                 match unionOf ft with
+                                 | Some(_, u) -> u.Cases |> List.forall (fun (_, p) -> p.IsNone)
+                                 | None -> false
+
+                             let loadable ty =
+                                 match ty with
+                                 | TStr
+                                 | TInt
+                                 | TFloat
+                                 | TBool
+                                 | TDur
+                                 | TSize
+                                 // env is THE secret channel in CI [D:secret]:
+                                 // secrets.GITHUB_TOKEN becomes an env var, so a
+                                 // Secret field is the main producer, not a
+                                 // compromise (the non-claim is in SECURITY.md)
+                                 | TSecret
+                                 | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur | TSize | TSecret ]) -> true
+                                 | ty -> isEnum ty
+
+                             // a payload-carrying case is a SCHEMA error, named at
+                             // check time — env values are single tokens
+                             let payloadCase =
                                  def.Fields
-                                 |> List.choose (fun (f, ft) ->
-                                     match ft with
-                                     | TNamed(n, []) ->
-                                         match Map.tryFind n env.Types with
-                                         | Some(Union u) when u.Params.IsEmpty -> Some(f, u)
-                                         | _ -> None
+                                 |> List.tryPick (fun (f, ft) ->
+                                     unionOf ft
+                                     |> Option.bind (fun (n, u) ->
+                                         u.Cases
+                                         |> List.tryFind (fun (_, p) -> p.IsSome)
+                                         |> Option.map (fun (c, _) -> f, n, c)))
+
+                             // case-insensitive matching makes same-cased pairs
+                             // ambiguous — the Args subcommand collision's env
+                             // sibling (two rules, two conventions [D:env-enums])
+                             let caseCollision =
+                                 def.Fields
+                                 |> List.tryPick (fun (_, ft) ->
+                                     unionOf ft
+                                     |> Option.bind (fun (_, u) ->
+                                         u.Cases
+                                         |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
+                                         |> List.groupBy snd
+                                         |> List.tryPick (fun (w, g) ->
+                                             match g with
+                                             | (a, _) :: (b, _) :: _ -> Some(a, b, w)
+                                             | _ -> None)))
+
+                             // Default on an enum field: attribute literals are
+                             // string/int/bool [D:default-attr] — the resting
+                             // point spells Option + defaultValue
+                             let enumDefault =
+                                 def.Fields
+                                 |> List.tryPick (fun (f, ft) ->
+                                     match ft, Argv.defaultOf def f with
+                                     | TNamed(n, []), Some _ when isEnum ft -> Some(f, n)
                                      | _ -> None)
 
-                             match unionFields with
-                             | [] ->
-                                 result {
-                                     do! validateFields arg.Span "" def
+                             match payloadCase with
+                             | Some(f, n, c) ->
+                                 err
+                                     arg.Span
+                                     $"'{f}': env values are single tokens, so enum fields need 0-arity cases; case '{c}' of {n} carries a payload"
+                             | None ->
 
-                                     return
-                                         { Kind = TEArgsLoad(ArgsRecord def)
-                                           Ty = TNamed(tyName, [])
-                                           Span = expr.Span }
-                                 }
-                             | [ (uf, udef) ] ->
-                                 result {
-                                     let sharedDef = Argv.sharedOf def uf
+                                 match def.Fields |> List.tryFind (fun (_, ft) -> not (loadable ft)) with
+                                 | Some(bad, badTy) ->
+                                     err
+                                         arg.Span
+                                         $"Env.load fields must be string, int, float, bool, Duration, Size, Secret, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
+                                 | None ->
 
-                                     // the subcommand slot derives no flag —
-                                     // Default has nothing to rest [D:default-attr]
-                                     do!
-                                         (match
-                                             def.Attrs
-                                             |> Map.tryFind uf
-                                             |> Option.bind (List.tryFind (fun (n, _) -> n = "Default"))
-                                          with
-                                          | Some _ ->
-                                              err
-                                                  arg.Span
-                                                  $"'{uf}' is the subcommand slot: no flag derives there, so Default has no meaning"
-                                          | None -> Ok())
+                                     match caseCollision with
+                                     | Some(a, b, word) ->
+                                         err arg.Span $"cases '{a}' and '{b}' collide as env value '{word}'"
+                                     | None ->
 
-                                     do! validateFields arg.Span "" sharedDef
-                                     let! payloads = unionPayloads arg.Span udef
+                                         match enumDefault with
+                                         | Some(f, n) ->
+                                             err
+                                                 arg.Span
+                                                 $"'{f}': an enum field takes no Default (attribute literals are string/int/bool) — spell the resting point Option<{n}> with Option.defaultValue"
+                                         | None ->
+                                             // the resting-point cells under ENV's field law
+                                             // [D:default-attr]: text bools carry no presence
+                                             // semantics, so BOTH Default literals are legal
+                                             // here (the Args-side false-is-redundant cell
+                                             // flips — validation is the consumer's arm)
+                                             // [D:default-attr]: bool-false is LEGAL here — the
+                                             // flip cell; both Default rules sit adjacent in Argv
+                                             match Argv.badEnvDefault def with
+                                             | Some msg -> err arg.Span msg
+                                             | None ->
+                                                 let enums =
+                                                     def.Fields
+                                                     |> List.choose (fun (_, ft) ->
+                                                         unionOf ft
+                                                         |> Option.map (fun (n, u) -> n, u.Cases |> List.map fst))
+                                                     |> Map.ofList
 
-                                     // a name declared in BOTH tiers is a schema
-                                     // error — reject-don't-guess; the runtime
-                                     // scanner never faces the question
-                                     // minted --no-X twins ride in both tiers'
-                                     // namespaces [D:default-attr]
-                                     let sharedFlags =
-                                         (sharedDef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
-                                         @ (Argv.mintedFlags sharedDef |> List.map snd)
-                                         |> Set.ofList
+                                                 Ok
+                                                     { Kind = TEEnvLoad(def, enums)
+                                                       Ty = TNamed(tyName, [])
+                                                       Span = expr.Span }
+                         | Some(Record def) ->
+                             err arg.Span $"Env.load needs a monomorphic record; '{tyName}' is generic"
+                         | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
+                         | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
+                     | _ -> err arg.Span "Env.load takes a record type name, e.g. Env.load Config")
+                | EField({ Kind = EVar "Args" }, "load", _), [ arg ] when
+                    not (Map.containsKey "Args" env.Values) && Map.containsKey "Args" env.Modules
+                    ->
+                    // Args.load T — the sixth typed-boundary instance [D:typed-argv]:
+                    // Env.load's sibling; the union acceptance is the delta
+                    // script-mode signal = the Self module [D:self-module] (injected
+                    // per-run by baseEnvs; absent in the REPL and -e). Args.load reads
+                    // Session.ScriptArgs at eval, so this is purely the availability gate.
+                    (if not (Map.containsKey "Self" env.Modules) then
+                         err expr.Span "Args.load is script-only (Self.args is not available here)"
+                     else
+                         let validateFields span (label: string) (def: RecordDef) =
+                             // Default cells / field shapes / flag collisions —
+                             // the policy lives in Argv [D:typed-argv]; the arm
+                             // keeps the span plumbing
+                             match Argv.fieldProblems label def with
+                             | Some msg -> err span msg
+                             | None -> Ok()
 
-                                     let sharedShorts = Argv.explicitShorts sharedDef |> List.map snd |> Set.ofList
+                         // case collisions + payload validation, shared by the bare-union
+                         // and shared-flags shapes [D:shared-flags]
+                         let unionPayloads span (udef: UnionDef) =
+                             let lowered = udef.Cases |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
 
-                                     let collision =
-                                         payloads
-                                         |> Map.toList
-                                         |> List.tryPick (fun (_, rdef) ->
-                                             (rdef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
-                                             @ (Argv.mintedFlags rdef |> List.map snd)
-                                             |> List.tryPick (fun k ->
-                                                 if Set.contains k sharedFlags then
-                                                     Some(
-                                                         $"flag '--{k}' is declared in {def.Name} and {rdef.Name}; "
-                                                         + "shared flags are declared once"
-                                                     )
-                                                 else
-                                                     None)
-                                             |> Option.orElse (
-                                                 Argv.explicitShorts rdef
-                                                 |> List.tryPick (fun (_, sh) ->
-                                                     if Set.contains sh sharedShorts then
+                             match lowered |> List.groupBy snd |> List.tryFind (fun (_, g) -> g.Length > 1) with
+                             | Some(word, (a, _) :: (b, _) :: _) ->
+                                 err span $"cases '{a}' and '{b}' collide as subcommand '{word}'"
+                             | _ ->
+                                 let payloadErr c =
+                                     err
+                                         span
+                                         $"case '{c}' must carry a single record payload; spell it as a record type"
+
+                                 let rec buildPayloads acc cases =
+                                     match cases with
+                                     | [] -> Ok acc
+                                     | (_, None) :: rest -> buildPayloads acc rest
+                                     | (c, Some(TNamed(rn, []))) :: rest ->
+                                         match Map.tryFind rn env.Types with
+                                         | Some(Record rdef) when rdef.Params.IsEmpty ->
+                                             validateFields span $"case '{c}': " rdef
+                                             |> Result.bind (fun () -> buildPayloads (Map.add c rdef acc) rest)
+                                         | _ -> payloadErr c
+                                     | (c, Some _) :: _ -> payloadErr c
+
+                                 buildPayloads Map.empty udef.Cases
+
+                         match arg.Kind with
+                         | EVar tyName ->
+                             match Map.tryFind tyName env.Types with
+                             | Some(Record def) when def.Params.IsEmpty ->
+                                 // the field law [D:shared-flags]: at most ONE
+                                 // union-typed field — the subcommand slot; its
+                                 // scalar siblings are shared flags
+                                 let unionFields =
+                                     def.Fields
+                                     |> List.choose (fun (f, ft) ->
+                                         match ft with
+                                         | TNamed(n, []) ->
+                                             match Map.tryFind n env.Types with
+                                             | Some(Union u) when u.Params.IsEmpty -> Some(f, u)
+                                             | _ -> None
+                                         | _ -> None)
+
+                                 match unionFields with
+                                 | [] ->
+                                     result {
+                                         do! validateFields arg.Span "" def
+
+                                         return
+                                             { Kind = TEArgsLoad(ArgsRecord def)
+                                               Ty = TNamed(tyName, [])
+                                               Span = expr.Span }
+                                     }
+                                 | [ (uf, udef) ] ->
+                                     result {
+                                         let sharedDef = Argv.sharedOf def uf
+
+                                         // the subcommand slot derives no flag —
+                                         // Default has nothing to rest [D:default-attr]
+                                         do!
+                                             (match
+                                                 def.Attrs
+                                                 |> Map.tryFind uf
+                                                 |> Option.bind (List.tryFind (fun (n, _) -> n = "Default"))
+                                              with
+                                              | Some _ ->
+                                                  err
+                                                      arg.Span
+                                                      $"'{uf}' is the subcommand slot: no flag derives there, so Default has no meaning"
+                                              | None -> Ok())
+
+                                         do! validateFields arg.Span "" sharedDef
+                                         let! payloads = unionPayloads arg.Span udef
+
+                                         // a name declared in BOTH tiers is a schema
+                                         // error — reject-don't-guess; the runtime
+                                         // scanner never faces the question
+                                         // minted --no-X twins ride in both tiers'
+                                         // namespaces [D:default-attr]
+                                         let sharedFlags =
+                                             (sharedDef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
+                                             @ (Argv.mintedFlags sharedDef |> List.map snd)
+                                             |> Set.ofList
+
+                                         let sharedShorts = Argv.explicitShorts sharedDef |> List.map snd |> Set.ofList
+
+                                         let collision =
+                                             payloads
+                                             |> Map.toList
+                                             |> List.tryPick (fun (_, rdef) ->
+                                                 (rdef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
+                                                 @ (Argv.mintedFlags rdef |> List.map snd)
+                                                 |> List.tryPick (fun k ->
+                                                     if Set.contains k sharedFlags then
                                                          Some(
-                                                             $"'-{sh}' is claimed by [<Short>] in both {def.Name} and {rdef.Name}; "
-                                                             + "a short is declared once"
+                                                             $"flag '--{k}' is declared in {def.Name} and {rdef.Name}; "
+                                                             + "shared flags are declared once"
                                                          )
                                                      else
                                                          None)
-                                             ))
+                                                 |> Option.orElse (
+                                                     Argv.explicitShorts rdef
+                                                     |> List.tryPick (fun (_, sh) ->
+                                                         if Set.contains sh sharedShorts then
+                                                             Some(
+                                                                 $"'-{sh}' is claimed by [<Short>] in both {def.Name} and {rdef.Name}; "
+                                                                 + "a short is declared once"
+                                                             )
+                                                         else
+                                                             None)
+                                                 ))
 
-                                     match collision with
-                                     | Some msg -> return! err arg.Span msg
-                                     | None ->
-                                         return
-                                             { Kind = TEArgsLoad(ArgsShared(def, uf, udef, payloads))
-                                               Ty = TNamed(tyName, [])
-                                               Span = expr.Span }
+                                         match collision with
+                                         | Some msg -> return! err arg.Span msg
+                                         | None ->
+                                             return
+                                                 { Kind = TEArgsLoad(ArgsShared(def, uf, udef, payloads))
+                                                   Ty = TNamed(tyName, [])
+                                                   Span = expr.Span }
+                                     }
+                                 | (a, _) :: (b, _) :: _ ->
+                                     err
+                                         arg.Span
+                                         $"'{a}' and '{b}' are both union-typed: one subcommand slot per record"
+                             | Some(Union udef) when udef.Params.IsEmpty ->
+                                 result {
+                                     let! payloads = unionPayloads arg.Span udef
+
+                                     return
+                                         { Kind = TEArgsLoad(ArgsUnion(udef, payloads))
+                                           Ty = TNamed(tyName, [])
+                                           Span = expr.Span }
                                  }
-                             | (a, _) :: (b, _) :: _ ->
-                                 err arg.Span $"'{a}' and '{b}' are both union-typed: one subcommand slot per record"
-                         | Some(Union udef) when udef.Params.IsEmpty ->
-                             result {
-                                 let! payloads = unionPayloads arg.Span udef
+                             | Some(Record _)
+                             | Some(Union _) ->
+                                 err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
+                             | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
+                         | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
+                | EVar(("print" | "printerr" | "|print") as pname), [ arg ] when isPrintFamily env pname ->
+                    result {
+                        let! targ = infer ctx env arg
+                        let! argTy = printArgTy ctx env arg.Span targ.Ty
 
-                                 return
-                                     { Kind = TEArgsLoad(ArgsUnion(udef, payloads))
-                                       Ty = TNamed(tyName, [])
-                                       Span = expr.Span }
-                             }
-                         | Some(Record _)
-                         | Some(Union _) -> err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
-                         | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
-                     | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
-            | EVar(("print" | "printerr" | "|print") as pname), [ arg ] when isPrintFamily env pname ->
-                result {
-                    let! targ = infer ctx env arg
-                    let! argTy = printArgTy ctx env arg.Span targ.Ty
+                        let tprint =
+                            { Kind = TEVar pname
+                              Ty = TFun(argTy, TUnit)
+                              Span = head.Span }
 
-                    let tprint =
-                        { Kind = TEVar pname
-                          Ty = TFun(argTy, TUnit)
-                          Span = head.Span }
-
-                    return
-                        { Kind = TEApp(tprint, targ)
-                          Ty = TUnit
-                          Span = expr.Span }
-                }
-            | _ -> checkSpine ctx env head args None
+                        return
+                            { Kind = TEApp(tprint, targ)
+                              Ty = TUnit
+                              Span = expr.Span }
+                    }
+                | _ -> checkSpine ctx env head args None
     | EPipe(arg, ({ Kind = ETo fmt } as toExpr)) ->
         result {
             let! targ = infer ctx env arg
@@ -2299,6 +2342,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                           Span = expr.Span }
             | ty -> return! err target.Span $"only records have fields; this expression has type {formatTy ty}"
         }
+    | EOpValue op ->
+        // desugar to EXACTLY `fun a b -> a op b` [D:operator-values]:
+        // every typing question — overload-by-context, int defaulting,
+        // the Eq/Ord class solving — inherits the infix answers
+        // verbatim, and eval sees an ordinary lambda.
+        infer ctx env (opValueLambda op expr.Span)
     | EBinOp(op, left, right) ->
         result {
             let! tleft = infer ctx env left
@@ -3015,6 +3064,12 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                       Span = expr.Span }
             | ty -> return! err first.Span (seqUnitError first ty)
         }
+    | EOpValue op, expected ->
+        // the check-mode twin [D:operator-values]: the pushed domain
+        // reaches the desugared lambda's params — `Seq.reduce (+)` pins
+        // the operands from the seq's element type, exactly as the
+        // spelled-out lambda would
+        check ctx env (opValueLambda op expr.Span) expected
     | ELambdaPat(pat, body), TFun(dom, cod) ->
         // check-mode twin: the binder shape binds against the PUSHED
         // domain before the body runs, so piped element types reach

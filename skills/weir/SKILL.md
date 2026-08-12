@@ -371,6 +371,14 @@ print first
   is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
   `average`s) own the other types — `Seq.average` alone crosses types
   (the mean of ints is a float). `Seq.filter` teaches `where`.
+  An OPERATOR can be a value, UNAPPLIED only [D:operator-values]:
+  `Seq.reduce (+)`, `Seq.fold (+) 0` — exactly `fun a b -> a + b`, so
+  context resolves the overload (`(+)` sums floats/strings/Durations/
+  Sizes where the elements say so). Admitted: `+ - * / > < >= <= ==
+  <>`. Partial application REFUSES (`(>) 10` reads backwards — the
+  message shows both lambda directions); `(&&)`/`(||)` refuse (a value
+  cannot short-circuit); the pipes and `>>`/`<<` refuse (grammar /
+  already the composed function).
 - Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
   the arm returns `Some out` or `None`, never a sentinel `""` to
   filter later. The natural pair with the `Regex` pattern:

@@ -170,6 +170,7 @@ computation expressions, no `let rec`, no implicit widening.
 | `open Seq` | no `open` — access is always qualified; `import "./lib/x.weir" as X` shares code |
 | `[\| 1; 2 \|]` arrays, `list` | one sequence type, `seq<'a>` — `[1; 2]` literals are eager seqs |
 | `{\| ip = "x" \|}` anonymous records | the same `{\| ... \|}` spelling, TYPES only, in the adapter slot: `from json {\| ip: string \|}` — no anonymous literals |
+| `(+)` and `(>) 10` | `(+)` works (`Seq.reduce (+)`); partial application refuses — `(>) 10` means `fun x -> 10 > x`, the direction nobody reads right; write the lambda |
 
 ```weir
 let same x y = x == y

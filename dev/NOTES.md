@@ -16,6 +16,23 @@ Scala's extent footgun, the row-DSL's five-incident shadowing shape,
 and the lambda being documentation. The report stays on the shelf
 with a stated re-opening trigger, so the next time someone types
 `_.age > 24h` the answer is a ledger row, not a re-exploration.
+## operators as values, unapplied only (2026-08-12)
+
+The session where the hard question evaporated on contact: `+` is
+overloaded five ways and the plan rightly feared its type as a value —
+but the desugar-to-the-lambda design means there IS no type as a
+value, only the lambda's, and context resolves it exactly as infix
+does. The one real piece of work was the check-mode twin (synthesis
+alone left `Seq.reduce (+)` unable to see the element type the way a
+spelled lambda could), and the contract that fell out is the session's
+best pin: byte-parity INCLUDING failure — the form is never better or
+worse than what it abbreviates, same successes, same messages. The
+class system answered its open question for free: `let eq = (==)`
+generalizes with Eq riding the scheme, machinery that existed since
+containsScheme and had just never been entered from a parenthesized
+operator. The refusals carry their reasons — short-circuit for &&,
+grammar for pipes, and the partial-application message shows both
+lambda directions because the direction is the documented mistake.
 ## session directives, and two papercuts that shared the surface (2026-08-11)
 
 The '#' worry dissolved into the feature's best sentence: a hash line
