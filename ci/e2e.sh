@@ -4426,11 +4426,18 @@ let racer n =
 let r = [1; 2] |> Seq.pfirst racer
 print $"winner: {r}"
 WEOF
+# FILE redirect, never $( ): command substitution's pipe stays open
+# until every process that inherited a handle to it dies, so a missed
+# kill would masquerade as weir waiting — the file separates the two.
+# The fail message carries the marker state: present = the loser's sh
+# survived to its natural end (the kill missed); absent = killed but
+# something else held the run.
 start_ms=$(now_ms)
-out=$(cd "$pfdir" && $BIN pf.weir)
+(cd "$pfdir" && $BIN pf.weir > "$pfdir/pf.out" 2>&1)
 took=$(( $(now_ms) - start_ms ))
+out=$(cat "$pfdir/pf.out")
 [ "$out" = "winner: 20" ] || fail "pfirst winner: $out"
-[ "$took" -lt 1800 ] || fail "pfirst waited for the loser (took ${took}ms)"
+[ "$took" -lt 1800 ] || fail "pfirst waited for the loser (took ${took}ms; marker=$([ -e "$pfdir/marker" ] && echo present || echo absent))"
 sleep 2.5
 [ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
