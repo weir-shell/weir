@@ -3691,8 +3691,11 @@ expect "import is a reserved word" "'import' is a keyword" "$out"
 printf 'module Sp\nlet where () = Self.scriptPath\nlet entry () = Self.entryPath\n' > "$mdir/sp.weir"
 printf 'import "./sp.weir"\nprint (Sp.where ())\nprint (Sp.entry ())\n' > "$mdir/spmain.weir"
 out=$($BIN "$mdir/spmain.weir" 2>&1)
-expect "a module's Self.scriptPath is its OWN file" "$mdir/sp.weir" "$out"
-expect "a module's Self.entryPath is the invoked script" "$mdir/spmain.weir" "$out"
+# leaf pins (weir prints the platform's path spelling): the property is
+# WHICH file each answer names, not the dir's spelling
+echo "$out" | sed -n 1p | grep -q "sp\.weir$" || fail "a module's Self.scriptPath is its OWN file: $out"
+echo "$out" | sed -n 2p | grep -q "spmain\.weir$" || fail "a module's Self.entryPath is the invoked script: $out"
+echo "e2e ok: a module's Self.scriptPath is its own file; entryPath the invoked script"
 
 rm -rf "$mdir"
 
