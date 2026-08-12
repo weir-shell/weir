@@ -1314,7 +1314,24 @@ let private fromExpr =
             <|> attempt (
                 identSpanned
                 >>= fun (w, _) ->
-                    if w = "seq" then
+                    if w = "Map" then
+                        // Map<string, Name|{|…|}> [D:map-string]: the
+                        // key slot is LITERALLY `string` (the narrowing);
+                        // the value slot is the seq< > rule's set
+                        between
+                            (str_ws "<")
+                            (str_ws ">")
+                            (str_ws "string"
+                             >>. str_ws ","
+                             >>. ((anonShape |>> FromAnon)
+                                  <|> (identSpanned
+                                       >>= fun (inner, _) ->
+                                           if Char.IsUpper inner[0] then
+                                               preturn (FromName inner)
+                                           else
+                                               fail "a record name inside Map< >")))
+                        |>> fun sh -> FromMap sh, false
+                    elif w = "seq" then
                         between
                             (str_ws "<")
                             (str_ws ">")

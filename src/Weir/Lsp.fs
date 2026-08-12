@@ -972,7 +972,7 @@ let definitionTarget
                                 None)
                     // `from json T`: the adapter's type name jumps to its
                     // declaration [PLAN-diagnostics-arc A3]
-                    | Check.TEFrom(_, rowDef, _, _) ->
+                    | Check.TEFrom(_, rowDef, _, _, _) ->
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = rowDef.Name then typeSite rowDef.Name None else None)
                     | Check.TEFromYaml(tyName, _) ->
@@ -1434,7 +1434,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                             None
 
                     match nd.Kind with
-                    | Check.TEFrom(_, rowDef, _, _) -> named rowDef.Name
+                    | Check.TEFrom(_, rowDef, _, _, _) -> named rowDef.Name
                     | Check.TEFromYaml(tyName, _) -> named tyName
                     | Check.TEEnvLoad(def, _) -> named def.Name
                     | Check.TEArgsLoad target ->
@@ -1463,7 +1463,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 | Check.TEVar name -> Some(Builtins.reifierSurface name |> Option.defaultValue name)
                 | Check.TEEnvLoad _ when word = Some "load" -> Some "Env.load"
                 | Check.TEArgsLoad _ when word = Some "load" -> Some "Args.load"
-                | Check.TEFrom(fmt, _, _, _) when word = Some "from" || word = Some fmt -> Some $"from {fmt}"
+                | Check.TEFrom(fmt, _, _, _, _) when word = Some "from" || word = Some fmt -> Some $"from {fmt}"
                 | Check.TEFromYaml _ when word = Some "from" || word = Some "yaml" -> Some "from yaml"
                 | Check.TETo fmt when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
                 | _ -> None)

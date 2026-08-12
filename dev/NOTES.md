@@ -39,6 +39,29 @@ collect joined on its receipt; contains left with its homes named;
 and the "moved into a module" message — which asserted a history most
 of its subjects never had — was retired rather than split, because no
 message that claims nothing needs its claims reconstructed.
+## Map<string, T> — the ID-keyed object (2026-08-12)
+
+The design's best moment was structural: FromMap WRAPS the existing
+shapes instead of standing beside them, so the checker peels the wrap
+and resolves the inner name through the path FromName and FromAnon
+already share — and the plan's two-features-in-one-slot bar
+(`from json Map<string, {| id: string |}>`) passed on the first run
+with zero rules written for it. Composition you don't have to
+implement is the argument for the wrapper shape. Two smaller
+payoffs of existing closed sets: Env.load/Args.load refused a Map
+field before I wrote anything (the loadable allowlists), and #help
+Map + completion appeared free once the module joined the enumerable
+table. The probe-found gap worth remembering: validateTy's
+string-keys-only teaching guards DECLARATIONS, so an anonymous
+`{| m: Map<int, string> |}` slid past it to jsonAdmitted's generic
+enumeration — boundary teachings need to live at the CATEGORY level
+(jsonAdmitted), not just the declaration gate, or the anon path
+regresses to worst-message. Eq stayed excluded by construction and
+the premise re-check the plan demanded held: the message names the
+type. Indexing stays parked — m[k] desugars at parse time where no
+type is known, so Map.get is the spelling; the ledger row states it
+so the next session doesn't re-derive the refusal.
+
 ## the echo presents string seqs as lines (2026-08-12)
 
 The smallest session of the arc and the one a newcomer meets first:

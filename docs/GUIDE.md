@@ -418,8 +418,26 @@ print doc.entityids.entityid
 
 A self-referential record refuses at check, naming its cycle — the
 boundary needs finite trees. A missing array is an error, not a
-silent `[]`: absence is `Option`'s job. (ID-keyed objects — a `Map`
-— are not typable yet.)
+silent `[]`: absence is `Option`'s job.
+
+ID-keyed objects — keys that are DATA, not schema — read as
+`Map<string, T>`: as a field, or as the whole document in the
+adapter slot:
+
+```weir
+type WDoc = { id: string }
+
+let docs = ["{\"aaa\": {\"id\": \"1\"}, \"bbb\": {\"id\": \"2\"}}"] |> from json Map<string, WDoc>
+docs |> Map.pairs |> Seq.iter (fun (k, d) -> print $"{k}={d.id}")
+```
+
+Keys are strings only (JSON object keys ARE strings — a `Map<int, …>`
+declaration teaches this); pairs walk key-sorted; duplicate keys
+last-win; `to json` writes the object back. The `Map` surface:
+`ofPairs` (last-wins) / `pairs` / `keys` / `values` (key-sorted) /
+`get` (raises, naming the key) / `tryGet` / `has` / `add` / `remove` /
+`count`. There is no `m[k]` indexing — `Map.get` is the spelling —
+and `==` is not defined for maps.
 
 `Http.query` is the QUERY method (RFC 10008): it is IDEMPOTENT by
 definition, so `retry attempts=5` around an `Http.query` is safe by the

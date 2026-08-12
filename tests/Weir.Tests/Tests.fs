@@ -9594,7 +9594,7 @@ let recursiveFieldTests =
               | Error terr ->
                   Expect.stringContains terr.Message "field 'mid.u'" "the dotted path locates the failure"
                   Expect.stringContains terr.Message "is a union, which is not admitted" "the why"
-                  Expect.stringContains terr.Message "record of admitted fields, or seq of an admitted" "the categories"
+                  Expect.stringContains terr.Message "record of admitted fields, seq of an admitted" "the categories"
               | Ok _ -> failtest "a union field must refuse"
           }
           test "Option<Rec> and seq<Option<int>> work; null means None at EVERY depth" {
@@ -11817,6 +11817,178 @@ let seqGapsTests =
                   ""
           } ]
 
+let mapStringTests =
+    // Map<string, T> [D:map-string]: the ID-keyed object — keys are
+    // DATA, not schema; string keys only; the adapter slot's third form
+    let checkErrIn te input =
+        match Weir.Check.typecheck te (parse input) with
+        | Error terr -> terr
+        | Ok _ -> failtest "expected a type error"
+
+    let wbDoc =
+        VSeq
+            [ VStr
+                  "{\"bbb\": {\"name\": \"b\", \"bytes\": 2, \"readOnly\": true}, \"aaa\": {\"name\": \"a\", \"bytes\": 1, \"readOnly\": false}}" ]
+
+    testList
+        "Map<string, T> [D:map-string]"
+        [ test "the acceptance: from json Map<string, T> reads the ID-keyed object; pairs walk sorted" {
+              let v =
+                  runWith
+                      [ "src", wbDoc ]
+                      "src |> from json Map<string, JRow> |> Map.pairs |> Seq.map (fun (k, d) -> k + \"=\" + d.name)"
+
+              Expect.equal (forceSeq v) [ VStr "aaa=a"; VStr "bbb=b" ] "sorted by key, the row typed"
+
+              Expect.equal
+                  (checkOk "src |> from json Map<string, JRow>").Ty
+                  (TNamed("Map", [ TStr; TNamed("JRow", []) ]))
+                  "the declared type, at check time"
+          }
+          test "the round-trip: to json writes the map back as ONE keyed object" {
+              let v = runWith [ "src", wbDoc ] "[src |> from json Map<string, JRow>] |> to json"
+
+              Expect.equal
+                  (forceSeq v)
+                  [ VStr
+                        "{\"aaa\":{\"bytes\":1,\"name\":\"a\",\"readOnly\":false},\"bbb\":{\"bytes\":2,\"name\":\"b\",\"readOnly\":true}}" ]
+                  ""
+          }
+          test "an anonymous shape composes in the value slot — the two-features-in-one-slot bar" {
+              let v =
+                  runWith
+                      [ "src", VSeq [ VStr "{\"k\": {\"ip\": \"9\"}}" ] ]
+                      "src |> from json Map<string, {| ip: string |}> |> Map.get \"k\" |> _.ip"
+
+              Expect.equal v (VStr "9") ""
+          }
+          test "duplicate keys LAST-WIN — the boundary's stated law" {
+              let v =
+                  runWith
+                      [ "src",
+                        VSeq
+                            [ VStr
+                                  "{\"k\": {\"name\": \"x\", \"bytes\": 1, \"readOnly\": false}, \"k\": {\"name\": \"y\", \"bytes\": 2, \"readOnly\": false}}" ] ]
+                      "let m = src |> from json Map<string, JRow> in (m |> Map.get \"k\" |> _.name, m |> Map.count)"
+
+              Expect.equal v (VTuple [ VStr "y"; VInt 1L ]) "one key, the second value"
+          }
+          test "errors name the KEYED path — a null field cites [\"k\"].name" {
+              let m =
+                  try
+                      runWith
+                          [ "src", VSeq [ VStr "{\"k\": {\"name\": null, \"bytes\": 1, \"readOnly\": false}}" ] ]
+                          "src |> from json Map<string, JRow>"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "field '[\"k\"].name' is null" "the map key IS the path segment"
+          }
+          test "a non-object value under a key refuses naming key and kind" {
+              let m =
+                  try
+                      runWith [ "src", VSeq [ VStr "{\"k\": 42}" ] ] "src |> from json Map<string, JRow>"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "key \"k\" expected an object (JRow), got number" ""
+          }
+          test "a top-level array under Map refuses, pointing at seq<T>" {
+              let m =
+                  try
+                      runWith [ "src", VSeq [ VStr "[1, 2]" ] ] "src |> from json Map<string, JRow>"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "the declared type is Map<string, JRow> — declare seq<JRow> to read an array" ""
+          }
+          test "jsonl refuses the wrap with the shape teaching; yaml states the follow-up" {
+              Expect.stringContains
+                  (checkErr "[\"\"] |> from jsonl Map<string, JRow>").Message
+                  "'from jsonl' reads one object per line; a Map is ONE object — write from json Map<string, JRow>"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "[\"\"] |> from yaml Map<string, JRow>").Message
+                  "'from yaml' does not take Map<string, JRow> yet — 'from json' does"
+                  ""
+          }
+          test "the bare teaching now names the Map form for json" {
+              Expect.stringContains
+                  (checkErr "[\"x\"] |> from json").Message
+                  "Map<string, FileRow> for an ID-keyed object"
+                  ""
+          }
+          test "string keys ONLY: the anonymous path teaches the same law as a declaration" {
+              Expect.stringContains
+                  (checkErr "[\"\"] |> from json {| m: Map<int, string> |}").Message
+                  "Map keys are strings only"
+                  "jsonAdmitted mirrors validateTy"
+          }
+          test "show renders sorted pairs and masks a Secret value" {
+              Expect.equal
+                  (run "show (Map.ofPairs [(\"b\", 2); (\"a\", 1)])")
+                  (VStr "map [(\"a\", 1); (\"b\", 2)]")
+                  "sorted"
+
+              Expect.equal (run "show (Map.ofPairs [(\"k\", Secret.of \"x\")])") (VStr "map [(\"k\", ***)]") "masked"
+          }
+          test "Eq stays excluded: '==' refuses with the type named" {
+              Expect.stringContains
+                  (checkErr "Map.ofPairs [(\"a\", 1)] == Map.ofPairs [(\"a\", 1)]").Message
+                  "'==' is not defined for Map<string, int>"
+                  ""
+          }
+          test "Env.load and Args.load refuse a Map field, naming it" {
+              // Args.load is script-only: the Self module marks script mode
+              let scriptEnv =
+                  { env with
+                      Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers }
+
+              let e = scriptEnv |> declare "type MCfg = { home: Map<string, int> }"
+
+              Expect.stringContains (checkErrIn e "Env.load MCfg").Message "'home' is Map<string, int>" ""
+              Expect.stringContains (checkErrIn e "Args.load MCfg").Message "'home' is Map<string, int>" ""
+          }
+          test
+              "the member surface: ofPairs last-wins, get raises naming the key, tryGet/has/add/remove/count/keys/values" {
+              Expect.equal (run "Map.ofPairs [(\"k\", 1); (\"k\", 9)] |> Map.get \"k\"") (VInt 9L) "last wins"
+
+              let m =
+                  try
+                      run "Map.ofPairs [(\"k\", 1)] |> Map.get \"zz\"" |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "Map.get: no key \"zz\"" "the key is named"
+
+              Expect.equal (run "Map.ofPairs [(\"k\", 1)] |> Map.tryGet \"z\"") (VUnion("None", None)) ""
+              Expect.equal (run "Map.ofPairs [(\"k\", 1)] |> Map.tryGet \"k\"") (VUnion("Some", Some(VInt 1L))) ""
+              Expect.equal (run "Map.ofPairs [(\"k\", 1)] |> Map.has \"k\"") (VBool true) ""
+              Expect.equal (run "Map.ofPairs [(\"k\", 1)] |> Map.add \"z\" 5 |> Map.count") (VInt 2L) ""
+              Expect.equal (run "Map.ofPairs [(\"k\", 1)] |> Map.remove \"k\" |> Map.count") (VInt 0L) ""
+
+              Expect.equal
+                  (run "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.keys" |> forceSeq)
+                  [ VStr "a"; VStr "b" ]
+                  "sorted"
+
+              Expect.equal
+                  (run "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values" |> forceSeq)
+                  [ VInt 1L; VInt 2L ]
+                  "key-sorted order"
+          } ]
+
 let operatorValueTests =
     // (op): an operator as a value, unapplied only [D:operator-values]
     // — the desugar contract is BYTE-PARITY with the spelled lambda
@@ -12264,6 +12436,7 @@ let allTests =
           recordKeysTests
           yamlSeqTests
           anonRecordTests
+          mapStringTests
           formatSurfaceTests
           secretTests
           httpTests

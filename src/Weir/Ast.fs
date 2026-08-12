@@ -72,6 +72,9 @@ let withinKindList =
 type FromShape =
     | FromName of string
     | FromAnon of fields: (string * Ty) list
+    // the ID-keyed object [D:map-string]: Map<string, Name|{|…|}> in
+    // the adapter slot — the inner shape is a record, string keys only
+    | FromMap of inner: FromShape
 
 type Expr = { Kind: ExprKind; Span: Span }
 
@@ -333,6 +336,14 @@ let rec sexpr (e: Expr) : string =
             $"(from {fmt} seq<{shape}>)"
         else
             $"(from {fmt} {shape})"
+    | EFrom(fmt, Some(FromMap inner), _) ->
+        let shape =
+            match inner with
+            | FromName n -> n
+            | FromAnon fields -> anonRecordName fields
+            | FromMap _ -> "…"
+
+        $"(from {fmt} Map<string, {shape}>)"
     | ETo fmt -> $"(to {fmt})"
     | EList items ->
         let body = items |> List.map sexpr |> String.concat "; "
