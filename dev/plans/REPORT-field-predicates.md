@@ -1,7 +1,10 @@
 # Report: predicates over fields — explored, priced, recommended
 
-Status: EXPLORATION COMPLETE (2026-08-11). Zero code, per the bars.
-Every claim below is probed against the current binary, not assumed.
+Status: EXPLORATION COMPLETE (2026-08-11); DECLINED (user, 2026-08-12)
+— [D:field-predicates] records the ruling and the re-opening trigger.
+The report recommended A; the ruling weighed the prompt-side pain as
+not worth the surface. Kept on the shelf, sized, safety table checked.
+Every claim below is probed against the binary of 2026-08-11.
 
 ## The recommendation, first
 
