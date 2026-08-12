@@ -11766,6 +11766,64 @@ let seqGapsTests =
                   ""
           } ]
 
+let operatorValueTests =
+    // (op): an operator as a value, unapplied only [D:operator-values]
+    // — the desugar contract is BYTE-PARITY with the spelled lambda
+    testList
+        "operators as values [D:operator-values]"
+        [ test "the receipt: reduce/scan/fold take (+), context resolves the overload" {
+              Expect.equal (run "[1; 2; 3] |> Seq.reduce (+)") (VInt 6L) ""
+              Expect.equal (run "[1.5; 2.5] |> Seq.reduce (+)") (VFloat 4.0) "floats by context"
+              Expect.equal (run "[\"a\"; \"b\"] |> Seq.reduce (+)") (VStr "ab") "concat by context"
+              Expect.equal (run "[1s; 2s] |> Seq.reduce (+)") (VDur 3000L) "Durations by context"
+              Expect.equal (run "[1; 2; 3] |> Seq.fold (+) 100") (VInt 106L) ""
+
+              Expect.equal (run "[1; 2; 3] |> Seq.scan (+) 0" |> forceSeq) [ VInt 0L; VInt 1L; VInt 3L; VInt 6L ] ""
+
+              Expect.equal (run "[5; 2] |> Seq.reduce (-)") (VInt 3L) "(-) is the operator, not unary minus"
+          }
+          test "PARITY: (op) and its lambda agree — including the failure" {
+              Expect.equal
+                  (run "[1; 2; 3] |> Seq.reduce (+)")
+                  (run "[1; 2; 3] |> Seq.reduce (fun a b -> a + b)")
+                  "the desugar is verbatim"
+
+              // both spellings fail identically where nothing pins the
+              // operands — the (op) form must not be BETTER either
+              let m1 = (checkErr "Seq.fold (+) 100 [1; 2; 3]").Message
+              let m2 = (checkErr "Seq.fold (fun a b -> a + b) 100 [1; 2; 3]").Message
+              Expect.equal m1 m2 "failure parity, same message"
+          }
+          test "(==) as a value carries its Eq constraint (the class-in-value-position answer)" {
+              Expect.equal (run "let eq = (==) in eq 1 1") (VBool true) "generalizes with Eq"
+              let m = (checkErr "let eq = (==) in eq Seq.head Seq.head").Message
+              Expect.stringContains m "'=='" "the Eq refusal reaches through the value"
+          }
+          test "partial application refuses, showing both directions" {
+              let m = (checkErr "[1; 2] |> Seq.map ((>) 10)").Message
+              Expect.stringContains m "cannot be partially applied" "the rule"
+              Expect.stringContains m "fun x -> v > x" "the backwards reading, shown"
+              Expect.stringContains m "fun x -> x > v" "the likely-intended direction, shown"
+          }
+          test "the refused set refuses with reasons; sigils cannot be caught" {
+              let perr (src: string) =
+                  match Weir.Parser.parseLine realResolver src with
+                  | Error m -> m
+                  | Ok _ -> failtest $"expected a parse refusal: {src}"
+
+              Expect.stringContains (perr "Seq.reduce (&&)") "short-circuits" "the eager-value reason"
+              Expect.stringContains (perr "Seq.reduce (||)") "short-circuits" ""
+              Expect.stringContains (perr "Seq.reduce (|>)") "grammar, not a function" ""
+              Expect.stringContains (perr "Seq.reduce (>>)") "composition already yields" ""
+              // ^ and $ are not operators in this sense — the form cannot catch them
+              perr "let f = (^) in 1" |> ignore
+          }
+          test "ordinary infix and parens are untouched" {
+              Expect.equal (run "(1 + 2) * 3") (VInt 9L) ""
+              Expect.equal (run "10 > 5") (VBool true) ""
+              Expect.equal (run "(0 - 5)") (VInt -5L) "a parenthesized subtraction is not (-)"
+          } ]
+
 let gapATests =
     testList
         "Gap audit session A remainder"
@@ -12074,6 +12132,7 @@ let allTests =
           interpShowTests
           gapATests
           seqGapsTests
+          operatorValueTests
           withinTests
           windowsV1Tests
           checkerTests

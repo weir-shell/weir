@@ -476,6 +476,56 @@ let private wordAtom =
 let private unitLit =
     spanned (attempt (pchar '(' >>. ws >>. pchar ')') >>% EUnit) |>> mkExpr .>> ws
 
+// (op): an operator as a VALUE, unapplied only [D:operator-values].
+// Admitted (+ - * / > < >= <= == <>): the checker desugars to the
+// lambda, so overload-by-context, int defaulting, and the Eq/Ord
+// classes all inherit the infix answers. Refused HERE with reasons:
+// && || (a value cannot short-circuit), |> | (grammar, not functions),
+// >> << (composition already yields the composed function). Longest
+// tokens first — the trie question is the choice's order.
+let private opValue =
+    spanned (
+        attempt (
+            pchar '(' >>. ws >>. getPosition
+            .>>. choice
+                [ pstring ">="
+                  pstring "<="
+                  pstring "=="
+                  pstring "<>"
+                  pstring "|>"
+                  pstring "||"
+                  pstring "&&"
+                  pstring ">>"
+                  pstring "<<"
+                  pstring "+"
+                  attempt (pstring "-" .>> notFollowedBy (pchar '>'))
+                  pstring "*"
+                  pstring "/"
+                  pstring ">"
+                  pstring "<"
+                  pstring "|" ]
+            .>> ws
+            .>> pchar ')'
+        )
+        >>= fun (at, op) ->
+            match op with
+            | "&&"
+            | "||" ->
+                failFatallyAt
+                    at
+                    $"'({op})' cannot be a value: '{op}' short-circuits its right operand, and a function value cannot — spell the lambda if eager evaluation is truly meant"
+            | "|>"
+            | "|" -> failFatallyAt at $"'({op})' is grammar, not a function — a pipe cannot be a value"
+            | ">>"
+            | "<<" ->
+                failFatallyAt
+                    at
+                    $"'({op})' as a value has no use — composition already yields the composed function; write f {op} g directly"
+            | op -> preturn (EOpValue op)
+    )
+    |>> mkExpr
+    .>> ws
+
 let private parens =
     // (e) groups; tuples come from the comma INSIDE seqExpr (the
     // bare-comma amendment moved the comma into the expression grammar)
@@ -828,6 +878,7 @@ let private atom =
               captureSigil
               effectSigil
               unitLit
+              opValue
               parens
               recordLit
               attempt comprehensionLit

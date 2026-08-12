@@ -95,6 +95,9 @@ and ExprKind =
     | EPipe of arg: Expr * fn: Expr
     | EField of target: Expr * field: string * fieldSpan: Span
     | EBinOp of op: string * left: Expr * right: Expr
+    // an operator as a VALUE, unapplied only [D:operator-values] —
+    // the checker desugars it to `fun a b -> a op b` verbatim
+    | EOpValue of op: string
     | ERecord of fields: (string * Span * Expr) list
     | EMatch of scrutinee: Expr * arms: (Pattern * Expr option * Expr) list
     | EIf of cond: Expr * thn: Expr * els: Expr option
@@ -215,6 +218,7 @@ let exprChildren (e: Expr) : Expr list =
     | EPipe(x, f) -> [ x; f ]
     | EField(t, _, _) -> [ t ]
     | EBinOp(_, l, r) -> [ l; r ]
+    | EOpValue _ -> []
     | ERecord fields -> fields |> List.map (fun (_, _, v) -> v)
     | EMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
     | EIf(c, t, e) -> c :: t :: Option.toList e
@@ -295,6 +299,7 @@ let rec sexpr (e: Expr) : string =
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"
     | EField(t, f, _) -> $"{sexpr t}.{f}"
     | EBinOp(op, l, r) -> $"({op} {sexpr l} {sexpr r})"
+    | EOpValue op -> $"({op})"
     | ERecord fields ->
         let body =
             fields |> List.map (fun (n, _, v) -> $"{n} = {sexpr v}") |> String.concat "; "

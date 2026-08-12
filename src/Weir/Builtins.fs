@@ -2727,10 +2727,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
           |> named [ "f"; "xs" ]
           "Seq.fold",
-          bd
-              "Left-fold: thread an accumulator through the elements."
-              (Some "[1; 2; 3] |> Seq.fold (fun acc x -> acc + x) 0")
-              None
+          bd "Left-fold: thread an accumulator through the elements." (Some "[1; 2; 3] |> Seq.fold (+) 0") None
           |> named [ "f"; "init"; "xs" ]
           "Seq.force",
           bd
@@ -2907,13 +2904,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.reduce",
           bd
               "Fold without a seed: the first element starts the accumulator (raises on empty — fold takes the seed)."
-              (Some "[1; 2; 3] |> Seq.reduce (fun a b -> a + b)")
+              (Some "[1; 2; 3] |> Seq.reduce (+)")
               None
           |> named [ "f"; "xs" ]
           "Seq.scan",
           bd
               "Fold emitting every intermediate state, the seed first, lazily."
-              (Some "[1; 2; 3] |> Seq.scan (fun acc x -> acc + x) 0 |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.scan (+) 0 |> Seq.force")
               None
           |> named [ "f"; "init"; "xs" ]
           "Seq.tryPick",
