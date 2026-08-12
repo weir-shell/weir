@@ -3600,7 +3600,12 @@ expect "importing a non-module names the fix (add module, or invoke as a command
 # a missing import puts the RESOLVED ABSOLUTE path in the message
 printf 'import "./nope.weir"\n' > "$mdir/e_missing.weir"
 out=$($BIN check "$mdir/e_missing.weir" 2>&1 || true)
-expect "a missing import names the resolved absolute path" "cannot resolve import: no file at $mdir/nope.weir" "$out"
+# message SHAPE + resolved-ness (the parent leaf, dot-joined) — never
+# the verbatim path: weir answers the platform's separators and the
+# long 8.3 form (the separator class)
+echo "$out" | grep -qF "cannot resolve import: no file at" || fail "missing-import message shape: $out"
+echo "$out" | grep -q "$(basename "$mdir").nope.weir" || fail "missing import must name the RESOLVED path: $out"
+echo "e2e ok: a missing import names the resolved absolute path"
 
 # self-import has its own message
 printf 'import "./e_self.weir"\nprint "hi"\n' > "$mdir/e_self.weir"
