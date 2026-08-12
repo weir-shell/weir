@@ -1,5 +1,18 @@
 # Spike Notes
 
+## the echo presents string seqs as lines (2026-08-12)
+
+The smallest session of the arc and the one a newcomer meets first:
+^ls -la echoed as a quoted, semicolon-joined literal of the very lines
+it had just split apart. The fix was echoTable's discipline applied to
+the type the table rule skipped — type-keyed (seq<string> exactly,
+never sniffed), tty-gated, one enumeration on the papercuts session's
+cache, footer keeping the honest unforced sentence. The instructive
+part was the pins: two existing presentation pins asserted the OLD
+literal (repl-color's leading-space triple among them), and my own new
+pin first matched the keystroke echo instead of the result — pinning a
+presentation means pinning the discriminating spelling, and the
+typed-line echo contains the input text by construction.
 ## predicates over fields — explored, declined (2026-08-12)
 
 The exploration session that ended in a ruled no, exactly as its plan

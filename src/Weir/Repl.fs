@@ -942,13 +942,14 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                 // lazy re-run law is the binding's, not the echo's)
                 let ev = Eval.echoPrep v
 
-                // the table echo [D:repl-table]: tty-only (piped REPL
-                // output is pinned surface and keeps the line rendering)
+                // the presentation echoes, tty-only (piped REPL output
+                // is pinned surface): records tabulate [D:repl-table],
+                // seq<string> shows its LINES [D:echo-lines] — keyed on
+                // the TYPE, never the content — the literal otherwise
                 match
-                    (if Console.IsOutputRedirected then
-                         None
-                     else
-                         Eval.echoTable ev)
+                    (if Console.IsOutputRedirected then None
+                     elif te.Ty = TSeq TStr then Eval.echoLines ev
+                     else Eval.echoTable ev)
                 with
                 | Some(lines, hint) ->
                     let tail = Eval.echoTail hint
@@ -978,10 +979,9 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                 let v = Eval.echoPrep v
 
                 match
-                    (if Console.IsOutputRedirected then
-                         None
-                     else
-                         Eval.echoTable v)
+                    (if Console.IsOutputRedirected then None
+                     elif te.Ty = TSeq TStr then Eval.echoLines v
+                     else Eval.echoTable v)
                 with
                 | Some(lines, hint) ->
                     lines |> List.iter Console.WriteLine
