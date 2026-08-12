@@ -39,6 +39,14 @@ awaitTcp() {
 }
 # End-to-end battery against the AOT binary (command-mode Session 4 set).
 set -euo pipefail
+# an UNGUARDED nonzero command under set -e used to kill the battery
+# SILENTLY (round 33 — the run ended after a green line with no FAIL at
+# all); the ERR trap names its own line and command. Deliberately NO
+# `set -E`: with it the trap reaches into command-substitution
+# subshells, where several pins run commands whose failure is the
+# point ($(cmd; echo rc=$?)) — top level is where the silent class
+# lives, and top level is what fires it.
+trap 'echo "e2e FAIL: unguarded command failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
@@ -196,12 +204,12 @@ if ! command -v timeout >/dev/null 2>&1; then
         local pid=$!
         (
             sleep "$secs"
-            kill -9 "$pid" 2>/dev/null
+            kill -9 "$pid" 2>/dev/null || true
         ) &
         local wd=$!
         local rc=0
         wait "$pid" || rc=$?
-        kill "$wd" 2>/dev/null
+        kill "$wd" 2>/dev/null || true
         wait "$wd" 2>/dev/null || true
         return $rc
     }
@@ -947,7 +955,7 @@ lk_pid=$!
 "$LOCKSH" acquire "$lk_pid"
 [ "$("$LOCKSH" check)" = "$lk_pid" ] || fail "check must report the live holder pid"
 "$LOCKSH" acquire 999 2>/dev/null && fail "acquire must refuse while a live holder exists"
-kill "$lk_pid" 2>/dev/null
+kill "$lk_pid" 2>/dev/null || true
 wait "$lk_pid" 2>/dev/null || true
 "$LOCKSH" check && fail "a dead holder must read as stale (no live holder)"
 [ -f "$(dirname "$0")/../.weir-deep-run.lock" ] && fail "check must clear the stale lock"
@@ -4534,12 +4542,12 @@ sleep 1.2
 d1=$(cat "$ehdir/one.txt" 2>/dev/null || true)
 d2=$(cat "$ehdir/two.txt" 2>/dev/null || true)
 [ -n "$d1" ] && [ -n "$d2" ] || { kill -9 $ehp1 $ehp2 2>/dev/null; fail "exit-hook probes never wrote their dirs: one='$d1' two='$d2'"; }
-kill -TERM $ehp1 2>/dev/null
+kill -TERM $ehp1 2>/dev/null || true
 wait $ehp1 2>/dev/null || true
 sleep 0.5
 [ ! -d "$d1" ] || { kill -9 $ehp2 2>/dev/null; fail "the TERM sweep did not remove the interrupted weir's dir: $d1 (dir=exists)"; }
 [ -d "$d2" ] || { kill -9 $ehp2 2>/dev/null; fail "the OTHER process's dir was touched (registration must be per-process): $d2"; }
-kill -TERM $ehp2 2>/dev/null
+kill -TERM $ehp2 2>/dev/null || true
 wait $ehp2 2>/dev/null || true
 sleep 0.5
 [ ! -d "$d2" ] || { rm -rf "$d2"; fail "the second weir's own SIGINT sweep failed"; }
@@ -4746,7 +4754,7 @@ WEOF
     out=$($BIN "$hdir/pmap.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "pmap fetch failed: $out"; }
     [ "$(echo "$out" | grep -c '^200$')" -eq 3 ] || { kill $hsrv 2>/dev/null; fail "pmap did not fetch all: $out"; }
 
-    kill $hsrv 2>/dev/null
+    kill $hsrv 2>/dev/null || true
 
     # TRANSPORT failure raises, in its OWN words per case [D:transport-words];
     # and CHECK makes NO request (a bogus URL checks clean, no network)
@@ -4771,7 +4779,7 @@ HANGEOF
     hangsrv=$!
     sleep 0.3
     out=$($BIN -e 'Http.send { Http.get "http://127.0.0.1:'"$hangport"'/" with timeout = 1s }' 2>&1) && { kill $hangsrv 2>/dev/null; fail "timeout must raise"; } || true
-    kill $hangsrv 2>/dev/null
+    kill $hangsrv 2>/dev/null || true
     echo "$out" | grep -qF "timed out after 1s reaching 127.0.0.1" || fail "timeout must name itself and the duration: $out"
     echo "$out" | grep -qF "canceled" && fail "the .NET cancellation text must not reach a user: $out" || true
 
@@ -4780,7 +4788,8 @@ HANGEOF
     # insecure = true accepts (openssl-guarded)
     if command -v openssl >/dev/null 2>&1; then
         tport=$((22800 + RANDOM % 200))
-        openssl req -x509 -newkey rsa:2048 -keyout "$hdir/k.pem" -out "$hdir/c.pem" -days 1 -nodes -subj "/CN=127.0.0.1" >/dev/null 2>&1
+        openssl req -x509 -newkey rsa:2048 -keyout "$hdir/k.pem" -out "$hdir/c.pem" -days 1 -nodes -subj "/CN=127.0.0.1" >/dev/null 2>&1 ||
+            fail "openssl could not generate the self-signed cert"
         cat > "$hdir/tls.py" <<TLSEOF
 import http.server, ssl, sys
 class H(http.server.BaseHTTPRequestHandler):
@@ -4807,7 +4816,7 @@ print \$"insecure-status={r.status}"
 WEOF
         out=$($BIN "$hdir/ins.weir" 2>&1) || { kill $tsrv 2>/dev/null; fail "insecure=true must accept the self-signed cert: $out"; }
         echo "$out" | grep -qF "insecure-status=200" || { kill $tsrv 2>/dev/null; fail "insecure did not connect: $out"; }
-        kill $tsrv 2>/dev/null
+        kill $tsrv 2>/dev/null || true
         echo "e2e ok: Http insecure (default rejects a self-signed cert, insecure=true accepts — per-request)"
     else
         echo "e2e SKIP: openssl absent — Http insecure TLS pin not run" >&2
