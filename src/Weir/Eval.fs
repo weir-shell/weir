@@ -188,7 +188,15 @@ let private forcedItems (items: seq<Value>) : Value list option =
     | :? System.Collections.Generic.ICollection<Value> as c -> Some(List.ofSeq c)
     | _ -> None
 
-let unforcedHint = "first 10 of an unforced seq — Seq.force to echo everything"
+/// the footer names the cap IN EFFECT [D:echo-cap] — a hardcoded count
+/// beside a configurable cap is the lying-message class
+let unforcedHint (cap: int) =
+    $"first {cap} of an unforced seq — Seq.force to echo everything"
+
+// the piped/-e echo cap [D:echo-cap]: the SESSION cap is a tty-echo
+// concern (the REPL owns it, #echo moves it); the piped surface and -e
+// keep the historical constant — their bytes are pinned
+let echoPipedCap: int option = Some 10
 
 /// echo preparation [D:echo-once]: cache an unforced seq so the table
 /// probe and the line rendering enumerate the SOURCE once — the
@@ -199,29 +207,37 @@ let echoPrep (v: Value) : Value =
     | VSeq items when (forcedItems items).IsNone -> VSeq(Seq.cache items)
     | v -> v
 
-let echoValue (v: Value) : string * string option =
+// the unforced pull, bounded by the cap [D:echo-cap]: cap+1 when
+// capped (the laziness guarantee — the echo never runs more than it
+// shows), EVERYTHING when uncapped (#echo all is the user's own
+// footgun; an infinite seq hangs, and the #help line says so)
+let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool =
+    match cap with
+    | Some c ->
+        let shown = items |> Seq.truncate (c + 1) |> List.ofSeq
+        shown |> List.truncate c, shown.Length > c
+    | None -> items |> List.ofSeq, false
+
+let echoValue (cap: int option) (v: Value) : string * string option =
     match v with
     | VSeq items ->
         match forcedItems items with
         | Some all ->
             // full at the TOP level; each ELEMENT keeps the echo's inner
             // clips (a forced outer may hold a lazy inner — [nats] is
-            // forcible and must not hang the echo)
+            // forcible and must not hang the echo). The cap NEVER clips
+            // a forced seq [D:echo-cap] — forced-ness outranks it.
             let body = all |> List.map (formatWith echoLimits 1) |> String.concat "; "
             $"[{body}]", None
         | None ->
             // ONE forcing pass — the echo must not enumerate its source
-            // twice: materialize limit+1, render from that list
-            let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
-            let rendered = formatWith echoLimits 0 (VSeq(shown :> seq<Value>))
+            // twice: materialize the capped prefix, render from that list
+            let visible, clipped = cappedPull cap items
+            let body = visible |> List.map (formatWith echoLimits 1) |> String.concat "; "
 
-            let hint =
-                if shown.Length > echoLimits.MaxItems then
-                    Some unforcedHint
-                else
-                    None
+            let ellipsis = if clipped then echoLimits.Ellipsis else ""
 
-            rendered, hint
+            $"[{body}{ellipsis}]", (if clipped then Some(unforcedHint cap.Value) else None)
     | _ -> formatWith echoLimits 0 v, None
 
 // the REPL's TABLE rendering [D:repl-table] — PRESENTATION ONLY: show
@@ -259,7 +275,7 @@ let rec private tableCell (v: Value) : (string * bool) option =
 /// COUNT clip and the forced/unforced sentence ride the footer
 /// unchanged. Keyed on the TYPE at the caller (seq<string> exactly) —
 /// never content-sniffing.
-let echoLines (v: Value) : (string list * string option) option =
+let echoLines (cap: int option) (v: Value) : (string list * string option) option =
     let asLine =
         function
         | VStr s -> s
@@ -270,33 +286,24 @@ let echoLines (v: Value) : (string list * string option) option =
         match forcedItems items with
         | Some all -> Some(all |> List.map asLine, None)
         | None ->
-            let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
+            let visible, clipped = cappedPull cap items
 
-            let hint =
-                if shown.Length > echoLimits.MaxItems then
-                    Some unforcedHint
-                else
-                    None
-
-            Some(shown |> List.truncate echoLimits.MaxItems |> List.map asLine, hint)
+            Some(visible |> List.map asLine, (if clipped then Some(unforcedHint cap.Value) else None))
     | _ -> None
 
-let echoTable (v: Value) : (string list * string option) option =
+let echoTable (cap: int option) (v: Value) : (string list * string option) option =
     match v with
     | VSeq items ->
         let forced = forcedItems items
 
-        let shown =
+        let shown, clipped =
             match forced with
-            | Some all -> all
-            | None -> items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
+            | Some all -> all, false
+            | None -> cappedPull cap items
 
         match shown with
         | VRecord(n0, f0) :: _ when shown.Length > 1 || true ->
-            let visible =
-                match forced with
-                | Some all -> all
-                | None -> shown |> List.truncate echoLimits.MaxItems
+            let visible = shown
 
             let keys0 = f0 |> Map.toList |> List.map fst
 
@@ -320,7 +327,7 @@ let echoTable (v: Value) : (string list * string option) option =
                 None
             else
                 let rows = rows |> List.map Option.get
-                let truncated = forced.IsNone && shown.Length > echoLimits.MaxItems
+                let truncated = clipped
 
                 let numeric =
                     [ 0 .. keys0.Length - 1 ]
@@ -348,7 +355,7 @@ let echoTable (v: Value) : (string list * string option) option =
                 let body = rows |> List.map (fun r -> line (r |> List.map fst))
                 let ellipsisRow = if truncated then [ "…" ] else []
 
-                let hint = if truncated then Some unforcedHint else None
+                let hint = if truncated then Some(unforcedHint cap.Value) else None
 
                 Some(header :: rule :: (body @ ellipsisRow), hint)
         | _ -> None

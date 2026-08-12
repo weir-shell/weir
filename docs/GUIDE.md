@@ -27,7 +27,11 @@ Three properties, in the order they matter:
   At a tty the echo PRESENTS: a record seq as a table, a string seq
   as its lines, anything else as the literal — the type footer (and
   the unforced-seq sentence) rides below in every case
-  (`#quit` is the typed spelling). `#help` lists the directives and
+  (`#quit` is the typed spelling). `#echo` moves the unforced-echo
+  cap for the session (`#echo 25`, `#echo all` — uncapped hangs on an
+  infinite seq; bare `#echo` reports; `echoElems` in the config seeds
+  it). A forced seq always echoes whole — the cap never clips it, and
+  piped output keeps its own fixed surface. `#help` lists the directives and
   the modules; `#help Seq` lists a module's members — the form FSI
   cannot answer — and `#help Seq.collect` shows one member's doc,
   rendered from the same source hover uses. The `#` prefix means "a
@@ -39,8 +43,10 @@ Three properties, in the order they matter:
   bold = known binding/builtin, blue = found on PATH, red = would
   fail; a red head is the typo caught before Enter. `NO_COLOR`
   honored; piped sessions are plain text always.
-  Three output roles: the echo is a bounded GLANCE (10 elements,
-  clipped strings, a hint naming the rest), the READ is `|> print`
+  Three output roles: the echo is a bounded GLANCE (100 unforced
+  elements by default — command-sized output fits without a
+  `Seq.force`; clipped strings, a hint naming the cap in effect), the
+  READ is `|> print`
   for string seqs and `|> Seq.map show |> print` for the rest
   (everything, line per element), and a bare command statement is
   the STREAM (live, as the child produces it).

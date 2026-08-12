@@ -93,7 +93,10 @@ type private ReplConfig =
     { HistorySize: int
       HistoryDedup: bool
       HistoryPath: string
-      FinderFlags: string list }
+      FinderFlags: string list
+      // REVIVED [D:echo-cap]: cut as unwired once (repl-quality) — the
+      // wiring exists now (the session cap), so the key is real again
+      EchoElems: int }
 
 let private xdgHome (var: string) (fallback: string) =
     match Environment.GetEnvironmentVariable var with
@@ -120,10 +123,11 @@ let private defaultConfig =
       HistoryDedup = true
       // STATE, not config — history is data the REPL produced, not settings
       HistoryPath = Path.Combine(stateHome (), "weir", "history")
-      FinderFlags = [ "--height"; "40%"; "--reverse" ] }
+      FinderFlags = [ "--height"; "40%"; "--reverse" ]
+      EchoElems = 100 }
 
 let private configKeys =
-    set [ "historySize"; "historyDedup"; "historyPath"; "finderFlags" ]
+    set [ "historySize"; "historyDedup"; "historyPath"; "finderFlags"; "echoElems" ]
 
 // read $XDG_CONFIG_HOME/weir/config.json (fallback ~/.config/weir/config.json);
 // unknown keys are REJECTED with did-you-mean (a typo silently doing nothing is
@@ -169,12 +173,23 @@ let private loadConfig () : ReplConfig =
             { HistorySize = getInt "historySize" defaultConfig.HistorySize
               HistoryDedup = getBool "historyDedup" defaultConfig.HistoryDedup
               HistoryPath = getStr "historyPath" defaultConfig.HistoryPath
-              FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags }
+              FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags
+              EchoElems = getInt "echoElems" defaultConfig.EchoElems }
         with ex ->
             Console.Error.WriteLine $"weir: config: {ex.Message} (using defaults)"
             defaultConfig
 
 let private config = loadConfig ()
+
+// the SESSION echo cap [D:echo-cap]: config seeds it, #echo moves it;
+// None = uncapped. A non-positive config value cannot mean anything
+// (Seq.truncate refuses it) — say so once and keep the default.
+let mutable private echoCap: int option =
+    if config.EchoElems > 0 then
+        Some config.EchoElems
+    else
+        Console.Error.WriteLine $"weir: config: echoElems must be positive; got {config.EchoElems} (using 100)"
+        Some 100
 
 let private historyFile = config.HistoryPath
 
@@ -946,17 +961,25 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                 // is pinned surface): records tabulate [D:repl-table],
                 // seq<string> shows its LINES [D:echo-lines] — keyed on
                 // the TYPE, never the content — the literal otherwise
+                // the cap in effect [D:echo-cap]: the session's at a
+                // tty; the piped surface keeps its pinned constant
+                let cap =
+                    if Console.IsOutputRedirected then
+                        Eval.echoPipedCap
+                    else
+                        echoCap
+
                 match
                     (if Console.IsOutputRedirected then None
-                     elif te.Ty = TSeq TStr then Eval.echoLines ev
-                     else Eval.echoTable ev)
+                     elif te.Ty = TSeq TStr then Eval.echoLines cap ev
+                     else Eval.echoTable cap ev)
                 with
                 | Some(lines, hint) ->
                     let tail = Eval.echoTail hint
                     Console.WriteLine $"{name} : {formatTy te.Ty} ={tail}"
                     lines |> List.iter Console.WriteLine
                 | None ->
-                    let rendered, hint = Eval.echoValue ev
+                    let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
                     Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
 
@@ -978,16 +1001,22 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                 // ONE enumeration for the whole echo [D:echo-once]
                 let v = Eval.echoPrep v
 
+                let cap =
+                    if Console.IsOutputRedirected then
+                        Eval.echoPipedCap
+                    else
+                        echoCap
+
                 match
                     (if Console.IsOutputRedirected then None
-                     elif te.Ty = TSeq TStr then Eval.echoLines v
-                     else Eval.echoTable v)
+                     elif te.Ty = TSeq TStr then Eval.echoLines cap v
+                     else Eval.echoTable cap v)
                 with
                 | Some(lines, hint) ->
                     lines |> List.iter Console.WriteLine
                     Console.WriteLine $": {formatTy te.Ty}{Eval.echoTail hint}"
                 | None ->
-                    let rendered, hint = Eval.echoValue v
+                    let rendered, hint = Eval.echoValue cap v
                     let tail = Eval.echoTail hint
                     Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
@@ -1057,6 +1086,8 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
         "Directives:\n"
         + "  #help                 // this list\n"
         + "  #help <name>          // documentation for a module or member\n"
+        + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
+        + "                        //   all = no cap — an INFINITE seq will hang (Ctrl+C)\n"
         + "  #quit                 // leave the REPL (Ctrl+D works too)\n\n"
         + "Modules: "
         + flowNames "         " 72 mods
@@ -1128,6 +1159,28 @@ let rec private loop (state: State) =
             ()
         elif t = "#help" || t.StartsWith "#help " then
             Console.WriteLine(helpDirective state.TypeEnv (t.Substring 5))
+            loop state
+        elif t = "#echo" || t.StartsWith "#echo " then
+            // the echo cap [D:echo-cap]: bare reports (FSI's #time
+            // convention), a count sets, `all` uncaps — the footgun is
+            // the user's own (the forced side made the same call)
+            (match t.Substring(5).Trim() with
+             | "" ->
+                 Console.WriteLine(
+                     match echoCap with
+                     | Some n -> $"echo cap: {n}"
+                     | None -> "echo cap: all"
+                 )
+             | "all" ->
+                 echoCap <- None
+                 Console.WriteLine "echo cap: all"
+             | arg ->
+                 match Int32.TryParse arg with
+                 | true, n when n > 0 ->
+                     echoCap <- Some n
+                     Console.WriteLine $"echo cap: {n}"
+                 | _ -> Console.WriteLine $"#echo takes a positive count or 'all' — e.g. #echo 100")
+
             loop state
         else
             let word = t.Split(' ').[0]

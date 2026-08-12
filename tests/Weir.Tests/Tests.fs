@@ -3864,10 +3864,10 @@ let replEchoTests =
                       System.Threading.Interlocked.Increment pulls |> ignore
                       VInt(int64 i))
 
-              let rendered, hint = Weir.Eval.echoValue (VSeq counted)
+              let rendered, hint = Weir.Eval.echoValue Weir.Eval.echoPipedCap (VSeq counted)
               Expect.isTrue (pulls.Value <= 11) $"forced {pulls.Value} pulls (bound is 11)"
               Expect.stringContains rendered "; …]" "truncation spelled"
-              Expect.equal hint (Some Weir.Eval.unforcedHint) "the honest lever, not a rendering-changing pipe"
+              Expect.equal hint (Some(Weir.Eval.unforcedHint 10)) "the honest lever, not a rendering-changing pipe"
           }
           test "the WHOLE echo enumerates its source once [D:echo-once]" {
               // echoTable's probe + echoValue's rendering used to pull the
@@ -3882,21 +3882,23 @@ let replEchoTests =
 
               let prepped = Weir.Eval.echoPrep (VSeq counted)
               // the tty echo path: table probe first, line rendering second
-              Weir.Eval.echoTable prepped |> ignore
-              Weir.Eval.echoValue prepped |> ignore
+              Weir.Eval.echoTable Weir.Eval.echoPipedCap prepped |> ignore
+              Weir.Eval.echoValue Weir.Eval.echoPipedCap prepped |> ignore
               Expect.equal pulls.Value 3 "one enumeration of the source across probe + render"
 
               // and the hint contract survives the cache (still unforced)
               let many = Weir.Eval.echoPrep (VSeq(Seq.init 12 (fun i -> VInt(int64 i))))
-              Weir.Eval.echoTable many |> ignore
-              let _, hint = Weir.Eval.echoValue many
-              Expect.equal hint (Some Weir.Eval.unforcedHint) "a cached seq is still an unforced seq to the echo"
+              Weir.Eval.echoTable Weir.Eval.echoPipedCap many |> ignore
+              let _, hint = Weir.Eval.echoValue Weir.Eval.echoPipedCap many
+              Expect.equal hint (Some(Weir.Eval.unforcedHint 10)) "a cached seq is still an unforced seq to the echo"
           }
           test "the LINES form [D:echo-lines]: raw per line, count-clipped, footer honest" {
               // forced: every line, no hint; content RAW (a tab stays a
               // tab — print parity; tty-only so the piped surface holds)
               let lines, hint =
-                  Weir.Eval.echoLines (VSeq([ VStr "a"; VStr ""; VStr "x\ty" ] :> seq<Weir.Eval.Value>))
+                  Weir.Eval.echoLines
+                      Weir.Eval.echoPipedCap
+                      (VSeq([ VStr "a"; VStr ""; VStr "x\ty" ] :> seq<Weir.Eval.Value>))
                   |> Option.get
 
               Expect.equal lines [ "a"; ""; "x\ty" ] "raw, empties kept"
@@ -3904,13 +3906,17 @@ let replEchoTests =
 
               // unforced: the count clip and the honest sentence
               let lines2, hint2 =
-                  Weir.Eval.echoLines (VSeq(Seq.init 12 (fun i -> VStr(string i)))) |> Option.get
+                  Weir.Eval.echoLines Weir.Eval.echoPipedCap (VSeq(Seq.init 12 (fun i -> VStr(string i))))
+                  |> Option.get
 
               Expect.equal (List.length lines2) 10 "count-clipped at ten"
-              Expect.equal hint2 (Some Weir.Eval.unforcedHint) "the honest lever"
+              Expect.equal hint2 (Some(Weir.Eval.unforcedHint 10)) "the honest lever"
 
               // empty: no body, the footer alone reads fine
-              Expect.equal (Weir.Eval.echoLines (VSeq(Seq.empty))) (Some([], None)) "empty seq: footer only"
+              Expect.equal
+                  (Weir.Eval.echoLines Weir.Eval.echoPipedCap (VSeq(Seq.empty)))
+                  (Some([], None))
+                  "empty seq: footer only"
 
               // one enumeration across the whole echo (the echo-once law):
               // prep once, lines + render pull the CACHE, the source once
@@ -3922,8 +3928,8 @@ let replEchoTests =
                       VStr(string i))
 
               let prepped = Weir.Eval.echoPrep (VSeq counted)
-              Weir.Eval.echoLines prepped |> ignore
-              Weir.Eval.echoValue prepped |> ignore
+              Weir.Eval.echoLines Weir.Eval.echoPipedCap prepped |> ignore
+              Weir.Eval.echoValue Weir.Eval.echoPipedCap prepped |> ignore
               Expect.equal pulls.Value 3 "the lines form adds no enumeration"
 
               // show is UNTOUCHED — the literal with quotes
@@ -3931,18 +3937,20 @@ let replEchoTests =
           }
           test "a FORCED seq echoes in full, no hint [D:echo-rule]" {
               let v = VSeq([ for i in 1..12 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
-              let rendered, hint = Weir.Eval.echoValue v
+              let rendered, hint = Weir.Eval.echoValue Weir.Eval.echoPipedCap v
               Expect.stringContains rendered "11; 12]" "all twelve"
               Expect.equal hint None "forcing IS the lever; nothing left to hint"
           }
           test "short seqs echo whole, no hint" {
               let v = VSeq([ VInt 1L; VInt 2L ] :> seq<Weir.Eval.Value>)
-              let rendered, hint = Weir.Eval.echoValue v
+              let rendered, hint = Weir.Eval.echoValue Weir.Eval.echoPipedCap v
               Expect.equal rendered "[1; 2]" ""
               Expect.equal hint None ""
           }
           test "echo clips long strings at 120 with an ellipsis" {
-              let rendered, _ = Weir.Eval.echoValue (VStr(String.replicate 200 "x"))
+              let rendered, _ =
+                  Weir.Eval.echoValue Weir.Eval.echoPipedCap (VStr(String.replicate 200 "x"))
+
               Expect.stringContains rendered "…\"" "clip marker inside the quotes"
               Expect.isTrue (rendered.Length < 140) $"clipped ({rendered.Length} chars)"
           }
@@ -3950,9 +3958,62 @@ let replEchoTests =
               // [nats]-is-forcible: full-at-top must not force the depths
               let inner = VSeq([ for i in 1..15 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
               let outer = VSeq([ for _ in 1..15 -> inner ] :> seq<Weir.Eval.Value>)
-              let rendered, hint = Weir.Eval.echoValue outer
+              let rendered, hint = Weir.Eval.echoValue Weir.Eval.echoPipedCap outer
               Expect.equal hint None "the outer is forced"
               Expect.equal (rendered.Split("; …").Length - 1) 15 "all 15 outers, each inner clipped"
+          }
+          test "the footer reports the cap IN EFFECT — pinned at two caps [D:echo-cap]" {
+              let src () =
+                  VSeq(Seq.init 40 (fun i -> VInt(int64 i)))
+
+              let _, h10 = Weir.Eval.echoValue (Some 10) (src ())
+              Expect.equal h10 (Some(Weir.Eval.unforcedHint 10)) "cap 10 says 10"
+
+              let r25, h25 = Weir.Eval.echoValue (Some 25) (src ())
+              Expect.equal h25 (Some(Weir.Eval.unforcedHint 25)) "cap 25 says 25 — never a hardcoded number"
+              Expect.stringContains r25 "24; …]" "25 elements shown under cap 25"
+
+              Expect.stringContains (Weir.Eval.unforcedHint 25) "first 25 of an unforced seq" "the sentence itself"
+
+              // the lines and table forms carry the same live-cap sentence
+              let lines, hl =
+                  Weir.Eval.echoLines (Some 3) (VSeq(Seq.init 9 (fun i -> VStr(string i))))
+                  |> Option.get
+
+              Expect.equal (List.length lines) 3 "lines clip at the cap"
+              Expect.equal hl (Some(Weir.Eval.unforcedHint 3)) ""
+          }
+          test "the cap NEVER clips a forced seq [D:echo-cap]" {
+              let forced = VSeq([ for i in 1..12 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
+              let rendered, hint = Weir.Eval.echoValue (Some 5) forced
+              Expect.stringContains rendered "11; 12]" "all twelve under a cap of 5"
+              Expect.equal hint None "forced-ness outranks the cap"
+          }
+          test "no cap (#echo all): a finite unforced seq echoes whole, no hint [D:echo-cap]" {
+              let rendered, hint =
+                  Weir.Eval.echoValue None (VSeq(Seq.init 30 (fun i -> VInt(int64 i))))
+
+              Expect.stringContains rendered "28; 29]" "all thirty"
+              Expect.equal hint None "nothing clipped, nothing to hint"
+
+              let lines, hl =
+                  Weir.Eval.echoLines None (VSeq(Seq.init 30 (fun i -> VStr(string i))))
+                  |> Option.get
+
+              Expect.equal (List.length lines) 30 ""
+              Expect.equal hl None ""
+          }
+          test "the cap changes no enumeration count [D:echo-once] [D:echo-cap]" {
+              let pulls = ref 0
+
+              let counted =
+                  Seq.initInfinite (fun i ->
+                      System.Threading.Interlocked.Increment pulls |> ignore
+                      VInt(int64 i))
+
+              let rendered, _ = Weir.Eval.echoValue (Some 25) (VSeq counted)
+              Expect.isTrue (pulls.Value <= 26) $"forced {pulls.Value} pulls (bound is cap+1 = 26)"
+              Expect.stringContains rendered "24; …]" ""
           }
           test "show is byte-identical to its shipped contract (NOT the echo)" {
               let long = VSeq(seq { for i in 1..100 -> VInt(int64 i) })
@@ -10040,7 +10101,7 @@ let replTableTests =
                         )
                         VRecord("FileRow", Map [ "name", VStr "n.txt"; "bytes", VSize 7L; "readOnly", VBool true ]) ]
 
-              match Weir.Eval.echoTable rows with
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap rows with
               | Some(lines, None) ->
                   Expect.equal lines[0] "bytes  name       readOnly" "alphabetical headers"
                   Expect.stringContains lines[1] "─" "the rule line"
@@ -10054,15 +10115,15 @@ let replTableTests =
 
               let lazyRows = VSeq(Seq.initInfinite (fun i -> row i))
 
-              match Weir.Eval.echoTable lazyRows with
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap lazyRows with
               | Some(lines, Some hint) ->
-                  Expect.equal hint Weir.Eval.unforcedHint "the lever that works"
+                  Expect.equal hint (Weir.Eval.unforcedHint 10) "the lever that works"
                   Expect.equal (List.last lines) "…" "the in-table signal"
               | other -> failtest $"expected a capped table, got {other}"
 
               let forcedRows = VSeq [ for i in 1..15 -> row i ]
 
-              match Weir.Eval.echoTable forcedRows with
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap forcedRows with
               | Some(lines, None) -> Expect.equal (List.length lines) 17 "header + rule + all 15 rows"
               | other -> failtest $"a forced table shows every row: {other}"
           }
@@ -10070,13 +10131,21 @@ let replTableTests =
               let mixed =
                   VSeq [ VRecord("A", Map [ "x", VInt 1L ]); VRecord("B", Map [ "y", VInt 2L ]) ]
 
-              Expect.isTrue (Weir.Eval.echoTable mixed |> Option.isNone) "different shapes"
+              Expect.isTrue (Weir.Eval.echoTable Weir.Eval.echoPipedCap mixed |> Option.isNone) "different shapes"
 
               let nested = VSeq [ VRecord("N", Map [ "inner", VSeq [ VInt 1L ] ]) ]
 
-              Expect.isTrue (Weir.Eval.echoTable nested |> Option.isNone) "a seq cell is not a scalar"
-              Expect.isTrue (Weir.Eval.echoTable (VSeq [ VInt 1L ]) |> Option.isNone) "scalars keep the list echo"
-              Expect.isTrue (Weir.Eval.echoTable (VSeq []) |> Option.isNone) "empty keeps [] : seq<T>"
+              Expect.isTrue
+                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap nested |> Option.isNone)
+                  "a seq cell is not a scalar"
+
+              Expect.isTrue
+                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap (VSeq [ VInt 1L ]) |> Option.isNone)
+                  "scalars keep the list echo"
+
+              Expect.isTrue
+                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap (VSeq []) |> Option.isNone)
+                  "empty keeps [] : seq<T>"
           }
           test "Option cells: Some inlines, None is blank; a Secret cell masks" {
               let rows =
@@ -10084,7 +10153,7 @@ let replTableTests =
                       [ VRecord("P", Map [ "note", VUnion("Some", Some(VStr "hi")); "tok", VSecret "s3cr3t" ])
                         VRecord("P", Map [ "note", VUnion("None", None); "tok", VSecret "x" ]) ]
 
-              match Weir.Eval.echoTable rows with
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap rows with
               | Some(lines, None) ->
                   Expect.stringContains lines[2] "hi" ""
                   Expect.stringContains lines[2] "***" "the rendering marker holds in cells"

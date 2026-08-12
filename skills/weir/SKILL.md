@@ -63,8 +63,9 @@ stops being true fails the build.
   port polymorphic; a bare hole defaults an unresolved type to
   string). Command-argument splices stay string/int/bool. Lossy debug format (strings come quoted, long
   seqs truncate); `print` remains the raw data channel. The REPL's
-  echo is tighter still (10 elements, clipped strings, a hint naming
-  the way out): echo = glance, `|> print` = read.
+  echo is tighter still (100 unforced elements — `#echo` moves it,
+  forced seqs echo whole; clipped strings, a hint naming the way
+  out): echo = glance, `|> print` = read.
 - `xs |> Seq.map print` does nothing (lazy) and is a check error as a
   statement; use `xs |> Seq.iter print`.
 

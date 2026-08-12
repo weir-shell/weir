@@ -82,7 +82,7 @@ let private evalOnce (input: string) : int =
                 let v = Eval.eval valueEnv te
 
                 if v <> Eval.VUnit then
-                    let rendered, hint = Eval.echoValue v
+                    let rendered, hint = Eval.echoValue Eval.echoPipedCap v
 
                     let tail = Eval.echoTail hint
 
