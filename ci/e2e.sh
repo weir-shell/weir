@@ -3702,17 +3702,27 @@ rm -rf "$mdir"
 # ---- REPL config [D:repl-quality]: inert keys, reject unknown, and the
 # load-bearing property that SCRIPTS never read it -----------------------
 cfgdir=$(mkweirtmp)
-mkdir -p "$cfgdir/weir"
-printf '{"historySizee": 10}\n' > "$cfgdir/weir/config.json"
+# weir reads XDG_CONFIG_HOME on POSIX and %APPDATA% (the shell API, not
+# the env) on Windows [D:windows-v1] — so the Windows half uses the
+# runner's REAL AppData (a throwaway VM's), giving the config path
+# actual coverage instead of a skip; cleaned up either way
+if [ "$IS_WINDOWS" = "1" ]; then
+    CFGHOME="$APPDATA"
+else
+    CFGHOME="$cfgdir"
+fi
+mkdir -p "$CFGHOME/weir"
+printf '{"historySizee": 10}\n' > "$CFGHOME/weir/config.json"
 out=$(printf '#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
 expect "the REPL config rejects an unknown key with did-you-mean" "unknown key 'historySizee'. Did you mean 'historySize'?" "$out"
 
 # a MALFORMED config must not affect a SCRIPT — scripts never read it, so the
 # script runs clean rather than erroring on the broken JSON
-printf 'not valid json {{{\n' > "$cfgdir/weir/config.json"
+printf 'not valid json {{{\n' > "$CFGHOME/weir/config.json"
 printf 'print "scripts-ignore-config"\n' > "$cfgdir/s.weir"
 out=$(XDG_CONFIG_HOME="$cfgdir" $BIN "$cfgdir/s.weir" 2>&1)
 expect "a script ignores the REPL config entirely (even a broken one)" "scripts-ignore-config" "$out"
+rm -f "$CFGHOME/weir/config.json"
 rm -rf "$cfgdir"
 
 # ---- for/do: the general effect loop [D:for-do] ---------------------------
