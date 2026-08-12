@@ -4503,21 +4503,32 @@ loser=$(cat "$ehdir/bdir.txt")
 # nohup convention), so a harness kill -INT is a no-op by DESIGN;
 # real Ctrl-C (default disposition) takes the same handler, verified
 # interactively. TERM exercises the identical sweep path.
-cat > "$ehdir/hold.weir" <<WEOF
+# per-instance TAG files, never pid-keyed: on Windows, bash's $! is the
+# msys fork-exec STUB's pid while Self.pid is the native weir's — the
+# two never match (the process-identity-across-the-msys-boundary class,
+# round 30). And on Windows the TERM stops at the msys boundary: it
+# lands on the MSYS sh child, weir raises command-failed, and the
+# RAISE-PATH finally removes the dir — the same no-leak property
+# through the error-unwind arm (the CancelKeyPress arm is
+# interactive-only, stated in Session.fs).
+for tag in one two; do
+cat > "$ehdir/hold-$tag.weir" <<WEOF
 within tmp d
-    echo \$d |> File.write \$"$ehdir/{Self.pid}.txt"
+    echo \$d |> File.write "$ehdir/$tag.txt"
     sh -c "sleep 30"
 WEOF
-$BIN "$ehdir/hold.weir" & ehp1=$!
-$BIN "$ehdir/hold.weir" & ehp2=$!
+done
+$BIN "$ehdir/hold-one.weir" & ehp1=$!
+$BIN "$ehdir/hold-two.weir" & ehp2=$!
 sleep 1.2
+d1=$(cat "$ehdir/one.txt" 2>/dev/null || true)
+d2=$(cat "$ehdir/two.txt" 2>/dev/null || true)
+[ -n "$d1" ] && [ -n "$d2" ] || { kill -9 $ehp1 $ehp2 2>/dev/null; fail "exit-hook probes never wrote their dirs: one='$d1' two='$d2'"; }
 kill -TERM $ehp1 2>/dev/null
 wait $ehp1 2>/dev/null || true
 sleep 0.5
-d1=$(cat "$ehdir/$ehp1.txt" 2>/dev/null || true)
-d2=$(cat "$ehdir/$ehp2.txt" 2>/dev/null || true)
-[ -n "$d1" ] && [ ! -d "$d1" ] || { kill -9 $ehp2 2>/dev/null; fail "the TERM sweep did not remove the interrupted weir's dir: $d1"; }
-[ -n "$d2" ] && [ -d "$d2" ] || { kill -9 $ehp2 2>/dev/null; fail "the OTHER process's dir was touched (registration must be per-process)"; }
+[ ! -d "$d1" ] || { kill -9 $ehp2 2>/dev/null; fail "the TERM sweep did not remove the interrupted weir's dir: $d1 (dir=exists)"; }
+[ -d "$d2" ] || { kill -9 $ehp2 2>/dev/null; fail "the OTHER process's dir was touched (registration must be per-process): $d2"; }
 kill -TERM $ehp2 2>/dev/null
 wait $ehp2 2>/dev/null || true
 sleep 0.5
