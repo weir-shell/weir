@@ -26,6 +26,10 @@ type Value =
     | VRecord of record: string * fields: Map<string, Value>
     | VUnion of case: string * payload: Value option
     | VSeq of items: seq<Value>
+    // string-keyed only [D:map-string]: every receipt has string keys
+    // (JSON object keys ARE strings) and int keys would make Map the
+    // first Ord-constrained container — widened only on a receipt
+    | VMap of entries: Map<string, Value>
     | VTuple of items: Value list
     | VClosure of param: string * body: TypedExpr * env: Env
     | VClosurePat of binder: Pattern * body: TypedExpr * env: Env
@@ -47,6 +51,7 @@ type Value =
             | VRecord(n1, f1), VRecord(n2, f2) -> n1 = n2 && f1 = f2
             | VUnion(c1, p1), VUnion(c2, p2) -> c1 = c2 && p1 = p2
             | VSeq a, VSeq b -> obj.ReferenceEquals(a, b) || List.ofSeq a = List.ofSeq b
+            | VMap a, VMap b -> a = b
             | VTuple a, VTuple b -> a = b
             | VClosure(p1, b1, e1), VClosure(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
             | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
@@ -67,6 +72,7 @@ type Value =
         | VRecord(n, _) -> hash n
         | VUnion(c, _) -> hash c
         | VSeq _ -> 0
+        | VMap m -> hash ("map", m.Count)
         | VTuple items -> hash (List.length items)
         | VClosure(p, _, _) -> hash p
         | VClosurePat(p, _, _) -> hash p
@@ -138,6 +144,21 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
             | VStr _
             | VBool _ -> $"{case} {inner}"
             | _ -> $"{case} ({inner})"
+        | VMap entries ->
+            // SORTED by construction (F# Map iterates in key order) — the
+            // deterministic-output law; keys render through the string
+            // arm (escaped), values recurse (Map<string, Secret> masks
+            // for free) [D:map-string]
+            let shown = entries |> Seq.truncate (lim.MaxItems + 1) |> List.ofSeq
+
+            let body =
+                shown
+                |> List.truncate lim.MaxItems
+                |> List.map (fun kv -> $"({sub (VStr kv.Key)}, {sub kv.Value})")
+                |> String.concat "; "
+
+            let ellipsis = if shown.Length > lim.MaxItems then lim.Ellipsis else ""
+            "map [" + body + ellipsis + "]"
         | VSeq items ->
             let shown = items |> Seq.truncate (lim.MaxItems + 1) |> List.ofSeq
 
@@ -441,6 +462,16 @@ let private jsonLine (v: Value) : string =
             writer.WriteStartArray()
             items |> Seq.iter write
             writer.WriteEndArray()
+        | VMap entries ->
+            // an OBJECT, keys sorted by construction [D:map-string] —
+            // the round-trip's write half
+            writer.WriteStartObject()
+
+            for kv in entries do
+                writer.WritePropertyName kv.Key
+                write kv.Value
+
+            writer.WriteEndObject()
         | VRecord(_, fields) ->
             writer.WriteStartObject()
 
@@ -483,6 +514,7 @@ let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
 let private jsonDoc
     (who: string)
     (wantSeq: bool)
+    (wantMap: bool)
     (def: RecordDef)
     (defs: Map<string, RecordDef>)
     (shown: string)
@@ -552,6 +584,17 @@ let private jsonDoc
             |> List.ofSeq
             |> List.toSeq
             |> VSeq
+        | TNamed("Map", [ TStr; inner ]) ->
+            // the ID-keyed object [D:map-string]: every property VALUE
+            // reads as the map's value type; duplicate keys LAST-WIN
+            // (System.Text.Json's own lookup — the boundary's stated law)
+            if prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
+                failwith
+                    $"{who}: field '{name}' expected an object ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
+
+            prop.EnumerateObject()
+            |> Seq.fold (fun m p -> Map.add p.Name (readValue $"{name}[\"{p.Name}\"]" inner p.Value) m) Map.empty
+            |> VMap
         | TNamed(n, []) when defs.ContainsKey n ->
             if prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
                 failwith
@@ -592,38 +635,61 @@ let private jsonDoc
 
         VRecord(rdef.Name, rdef.Fields |> List.map readField |> Map.ofList)
 
-    match wantSeq, root.ValueKind with
-    | false, System.Text.Json.JsonValueKind.Object -> objRow "" def root
-    | true, System.Text.Json.JsonValueKind.Array ->
-        root.EnumerateArray()
-        |> Seq.mapi (fun i el ->
-            if el.ValueKind <> System.Text.Json.JsonValueKind.Object then
-                failwith
-                    $"{who}: array element {i + 1} is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
-            else
-                objRow "" def el)
-        // forced BEFORE the document disposes; then seq for the ctor
-        |> List.ofSeq
-        |> List.toSeq
-        |> VSeq
-    | true, System.Text.Json.JsonValueKind.Object ->
-        failwith
-            $"{who}: expected an array (the declared type is seq<{def.Name}>); got an object — write from json {def.Name}, in: {shown}"
-    | true, k ->
-        failwith
-            $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{def.Name}>, in: {shown}"
-    | false, System.Text.Json.JsonValueKind.Array when who = "from json" ->
-        // the pointer is REAL now: the spelling exists
-        failwith
-            $"{who}: the top level is a JSON array, not an object — declare seq<{def.Name}> to read it, in: {shown}"
-    | false, k ->
-        let contract =
-            if who = "from json" then
-                "from json T reads one object document"
-            else
-                "from jsonl T reads one object per element"
+    if wantMap then
+        // the ID-keyed object [D:map-string]: the top level IS the map —
+        // each property value reads as one row; duplicate keys LAST-WIN
+        match root.ValueKind with
+        | System.Text.Json.JsonValueKind.Object ->
+            root.EnumerateObject()
+            |> Seq.fold
+                (fun m p ->
+                    if p.Value.ValueKind <> System.Text.Json.JsonValueKind.Object then
+                        failwith
+                            $"{who}: key \"{p.Name}\" expected an object ({def.Name}), got {jsonKindName p.Value.ValueKind} in: {shown}"
 
-        failwith $"{who}: the top level is a JSON {jsonKindName k}, not an object — {contract}, in: {shown}"
+                    Map.add p.Name (objRow $"[\"{p.Name}\"]." def p.Value) m)
+                Map.empty
+            |> VMap
+        | System.Text.Json.JsonValueKind.Array ->
+            failwith
+                $"{who}: the top level is a JSON array, but the declared type is Map<string, {def.Name}> — declare seq<{def.Name}> to read an array, in: {shown}"
+        | k ->
+            failwith
+                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is Map<string, {def.Name}>, in: {shown}"
+    else
+
+        match wantSeq, root.ValueKind with
+        | false, System.Text.Json.JsonValueKind.Object -> objRow "" def root
+        | true, System.Text.Json.JsonValueKind.Array ->
+            root.EnumerateArray()
+            |> Seq.mapi (fun i el ->
+                if el.ValueKind <> System.Text.Json.JsonValueKind.Object then
+                    failwith
+                        $"{who}: array element {i + 1} is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
+                else
+                    objRow "" def el)
+            // forced BEFORE the document disposes; then seq for the ctor
+            |> List.ofSeq
+            |> List.toSeq
+            |> VSeq
+        | true, System.Text.Json.JsonValueKind.Object ->
+            failwith
+                $"{who}: expected an array (the declared type is seq<{def.Name}>); got an object — write from json {def.Name}, in: {shown}"
+        | true, k ->
+            failwith
+                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{def.Name}>, in: {shown}"
+        | false, System.Text.Json.JsonValueKind.Array when who = "from json" ->
+            // the pointer is REAL now: the spelling exists
+            failwith
+                $"{who}: the top level is a JSON array, not an object — declare seq<{def.Name}> to read it, in: {shown}"
+        | false, k ->
+            let contract =
+                if who = "from json" then
+                    "from json T reads one object document"
+                else
+                    "from jsonl T reads one object per element"
+
+            failwith $"{who}: the top level is a JSON {jsonKindName k}, not an object — {contract}, in: {shown}"
 
 // a document snippet for error messages: whole if short, elided middle
 // if not (a joined body can be megabytes; the message stays a message)
@@ -631,7 +697,13 @@ let private jsonSnippet (text: string) : string =
     let t = text.Trim()
     if t.Length <= 120 then t else t.Substring(0, 117) + "..."
 
-let private fromAdapter (fmt: string) (seqOf: bool) (def: RecordDef) (defs: Map<string, RecordDef>) : Value =
+let private fromAdapter
+    (fmt: string)
+    (seqOf: bool)
+    (mapOf: bool)
+    (def: RecordDef)
+    (defs: Map<string, RecordDef>)
+    : Value =
     match fmt with
     // ONE document -> T: join the elements back into the text they came
     // from (a pretty-printed body pipes straight in) [D:from-jsonl]
@@ -650,7 +722,7 @@ let private fromAdapter (fmt: string) (seqOf: bool) (def: RecordDef) (defs: Map<
                 if text.Trim() = "" then
                     failwith "from json: empty input — expected one JSON document"
 
-                jsonDoc "from json" seqOf def defs (jsonSnippet text) text
+                jsonDoc "from json" seqOf mapOf def defs (jsonSnippet text) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // one document per element -> seq<T> (NDJSON, `to json`'s shape)
     | "jsonl" ->
@@ -661,7 +733,7 @@ let private fromAdapter (fmt: string) (seqOf: bool) (def: RecordDef) (defs: Map<
                     lines
                     |> Seq.map (fun l ->
                         match l with
-                        | VStr s -> jsonDoc "from jsonl" false def defs s s
+                        | VStr s -> jsonDoc "from jsonl" false false def defs s s
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
@@ -1795,7 +1867,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 |> ignore
 
         VStr(sb.ToString())
-    | TEFrom(fmt, def, defs, seqOf) -> fromAdapter fmt seqOf def defs
+    | TEFrom(fmt, def, defs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf def defs
     | TEFromYaml(_, shape) -> yamlFromImpl shape
     | TEYaml(tpl, _) -> evalYamlTpl env tpl
     | TETo "yaml" -> yamlToImpl

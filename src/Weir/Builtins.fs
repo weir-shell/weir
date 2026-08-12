@@ -2651,9 +2651,93 @@ let private httpMembers: (string * Ty * Value) list =
       "options", ctorTy, httpCtor "Options"
       "query", ctorTy, httpCtor "Query" ]
 
+
+// ---- Map<string, T> [D:map-string]: the ID-keyed object ------------
+// String keys ONLY: every receipt has them (JSON object keys ARE
+// strings), and int keys would make Map the first Ord-constrained
+// container. Data-last throughout; get asserts, tryGet asks.
+let private mapTy (v: Ty) = TNamed("Map", [ TStr; v ])
+
+let private asMap (name: string) =
+    function
+    | VMap m -> m
+    | v -> unreachable $"the checker rejects '{name}' on {formatValue v}"
+
+let private mapMembers: (string * Ty * Value) list =
+    [ "ofPairs",
+      TFun(TSeq(TTuple [ TStr; tA ]), mapTy tA),
+      VBuiltin(fun v ->
+          match v with
+          | VSeq items ->
+              // duplicate keys: LAST WINS, matching the JSON boundary's
+              // stated law — never a silent first-wins split
+              items
+              |> Seq.fold
+                  (fun m x ->
+                      match x with
+                      | VTuple [ VStr k; value ] -> Map.add k value m
+                      | v -> unreachable $"the checker rejects a pair {formatValue v}")
+                  Map.empty
+              |> VMap
+          | v -> unreachable $"the checker rejects 'Map.ofPairs' on {formatValue v}")
+      "pairs",
+      TFun(mapTy tA, TSeq(TTuple [ TStr; tA ])),
+      VBuiltin(fun v ->
+          (asMap "Map.pairs" v)
+          |> Seq.map (fun kv -> VTuple [ VStr kv.Key; kv.Value ])
+          |> VSeq)
+      "keys",
+      TFun(mapTy tA, TSeq TStr),
+      VBuiltin(fun v -> (asMap "Map.keys" v) |> Seq.map (fun kv -> VStr kv.Key) |> VSeq)
+      "values", TFun(mapTy tA, TSeq tA), VBuiltin(fun v -> (asMap "Map.values" v) |> Seq.map _.Value |> VSeq)
+      "get",
+      TFun(TStr, TFun(mapTy tA, tA)),
+      VBuiltin(fun k ->
+          VBuiltin(fun mv ->
+              match k, mv with
+              | VStr key, VMap m ->
+                  match Map.tryFind key m with
+                  | Some v -> v
+                  | None -> failwith $"Map.get: no key \"{key}\""
+              | _ -> unreachable "the checker rejects 'Map.get' on these arguments"))
+      "tryGet",
+      TFun(TStr, TFun(mapTy tA, TNamed("Option", [ tA ]))),
+      VBuiltin(fun k ->
+          VBuiltin(fun mv ->
+              match k, mv with
+              | VStr key, VMap m ->
+                  match Map.tryFind key m with
+                  | Some v -> VUnion("Some", Some v)
+                  | None -> VUnion("None", None)
+              | _ -> unreachable "the checker rejects 'Map.tryGet' on these arguments"))
+      "has",
+      TFun(TStr, TFun(mapTy tA, TBool)),
+      VBuiltin(fun k ->
+          VBuiltin(fun mv ->
+              match k, mv with
+              | VStr key, VMap m -> VBool(Map.containsKey key m)
+              | _ -> unreachable "the checker rejects 'Map.has' on these arguments"))
+      "count", TFun(mapTy tA, TInt), VBuiltin(fun v -> VInt(int64 (asMap "Map.count" v).Count))
+      "add",
+      TFun(TStr, TFun(tA, TFun(mapTy tA, mapTy tA))),
+      VBuiltin(fun k ->
+          VBuiltin(fun value ->
+              VBuiltin(fun mv ->
+                  match k, mv with
+                  | VStr key, VMap m -> VMap(Map.add key value m)
+                  | _ -> unreachable "the checker rejects 'Map.add' on these arguments")))
+      "remove",
+      TFun(TStr, TFun(mapTy tA, mapTy tA)),
+      VBuiltin(fun k ->
+          VBuiltin(fun mv ->
+              match k, mv with
+              | VStr key, VMap m -> VMap(Map.remove key m)
+              | _ -> unreachable "the checker rejects 'Map.remove' on these arguments")) ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
+      "Map", mapMembers
       "Path", pathMembers
       "Option", optionMembers
       "File", fileMembers @ fsMoreFileMembers
@@ -2707,6 +2791,58 @@ let private named (ps: string list) (d: BuiltinDoc) : BuiltinDoc = { d with Para
 let builtinDocs: Map<string, BuiltinDoc> =
     Map
         [
+          // ---- Map: the ID-keyed object [D:map-string] ----
+          "Map.ofPairs",
+          bd
+              "Build a map from (key, value) pairs; duplicate keys last-win (the JSON boundary's law)."
+              (Some "Map.ofPairs [(\"a\", 1); (\"b\", 2)]")
+              None
+          |> named [ "pairs" ]
+          "Map.pairs",
+          bd
+              "The entries as (key, value) pairs, key-sorted."
+              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.pairs |> Seq.force")
+              None
+          |> named [ "m" ]
+          "Map.keys",
+          bd "The keys, sorted." (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.keys |> Seq.force") None
+          |> named [ "m" ]
+          "Map.values",
+          bd
+              "The values, in key-sorted order."
+              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values |> Seq.force")
+              None
+          |> named [ "m" ]
+          "Map.get",
+          bd
+              "The value under a key (raises naming the key when absent — tryGet asks)."
+              (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.get \"aaa\"")
+              None
+          |> named [ "key"; "m" ]
+          "Map.tryGet",
+          bd
+              "Some value when the key is present, None when not."
+              (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.tryGet \"zzz\"")
+              None
+          |> named [ "key"; "m" ]
+          "Map.has",
+          bd "True when a key is present." (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.has \"aaa\"") None
+          |> named [ "key"; "m" ]
+          "Map.count",
+          bd "The number of entries." (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.count") None
+          |> named [ "m" ]
+          "Map.add",
+          bd
+              "A new map with the entry set (replacing an existing key); the original is untouched."
+              (Some "Map.ofPairs [(\"a\", 1)] |> Map.add \"k\" 5")
+              None
+          |> named [ "key"; "value"; "m" ]
+          "Map.remove",
+          bd
+              "A new map without the key (absent is fine); the original is untouched."
+              (Some "Map.ofPairs [(\"a\", 1); (\"k\", 2)] |> Map.remove \"k\"")
+              None
+          |> named [ "key"; "m" ]
           // ---- Seq: lazy sequences (weir has no list type) ----
           "Seq.map",
           bd

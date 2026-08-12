@@ -267,7 +267,10 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   curl `-d` mangling this exists to prevent). `resp.body |> from json
   T` reads the response — pretty-printed or minified, one document
   either way; for a plain GET, `curl url |> from json T` is still the
-  spelling. `secretHeaders` for credential headers; parallel
+  spelling. `secretHeaders` for credential headers; headers stay
+  PAIRS (`seq<string * string>`), never a map — duplicate header
+  names are legal HTTP (Set-Cookie), and a map cannot hold them;
+  parallel
   fetches are `urls |> Seq.pmap (fun u -> Http.send { Http.defaults with
   url = u })`.
 - Params are plain idents OR `()` (a unit param: `let cleanup () =`;
@@ -621,9 +624,19 @@ within tmp d
   level must be — nothing sniffs the input.
   The field law is RECURSIVE: a field is a scalar (`int`, `float`,
   `string`, `bool`), an `Option` of an admitted type, a record whose
-  fields are all admitted, or a `seq` of an admitted type — so
-  `{ entityids: Entity }` and `{ items: seq<Item> }` read (no `Map`
-  yet: an ID-keyed object has no typing). A self-referential record
+  fields are all admitted, a `seq` of an admitted type, or a
+  `Map<string, T>` of one — so `{ entityids: Entity }`,
+  `{ items: seq<Item> }`, and an ID-keyed `{ documents: Map<string,
+  Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
+  ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The
+  whole document can be the map: `from json Map<string, T>` (the
+  adapter slot's third form; `{| … |}` composes in the value slot;
+  `jsonl` refuses — a map is ONE object; `yaml` does not take it
+  yet). Duplicate keys last-win. `Map` surface: `ofPairs`
+  (last-wins) / `pairs` / `keys` / `values` (key-sorted) / `get`
+  (raises, naming the key) / `tryGet` / `has` / `add` / `remove` /
+  `count`; no `m[k]` indexing — `Map.get` is the spelling; `==` is
+  not defined for maps. A self-referential record
   refuses at check, naming its cycle. An `Option` field reads a
   missing key OR an explicit `null` as `None` — at EVERY depth (a
   `null` element under `seq<Option<int>>` is `None`); a required

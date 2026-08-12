@@ -93,7 +93,7 @@ and TypedKind =
     | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
-    | TEFrom of format: string * rowDef: RecordDef * defs: Map<string, RecordDef> * seqOf: bool
+    | TEFrom of format: string * rowDef: RecordDef * defs: Map<string, RecordDef> * seqOf: bool * mapOf: bool
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
     // the RESOLVED target tree (the [D:env-enums] precedent)
     | TEFromYaml of tyName: string * shape: Yaml.Shape
@@ -432,6 +432,10 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
+            // Map renders (sorted) iff its VALUES do [D:map-string];
+            // Eq stays excluded like seq (no conditional instances —
+            // the closed class system is untouched)
+            | Cls.Show, TNamed("Map", [ TStr; inner ]) -> ok seen inner
             | Cls.Show, TNamed(n, targs) -> decompose n targs
             // Ord: int | string | bool EXACTLY — no decomposition, no
             // record/union ordering (no receipts; the message names it)
@@ -870,7 +874,7 @@ let private jsonScalar (ty: Ty) : bool =
 // offending field from the top — a recursive law's failures are deep
 // and a category list alone will not find them.
 let private jsonAdmittedSet =
-    "json fields are int, float, string, bool, Option of an admitted type, a record of admitted fields, or seq of an admitted type"
+    "json fields are int, float, string, bool, Option of an admitted type, a record of admitted fields, seq of an admitted type, or Map<string, T> of one"
 
 let rec private jsonAdmitted
     (span: Span)
@@ -908,6 +912,16 @@ let rec private jsonAdmitted
         err span $"{at}Option<Option<…>> has no JSON reading; flatten the type"
     | TNamed("Option", [ inner ]) -> jsonAdmitted span env seen path inner
     | TSeq elem -> jsonAdmitted span env seen path elem
+    // the ID-keyed object [D:map-string]: Map<string, T> is a JSON
+    // object whose keys are data — admitted iff T is
+    | TNamed("Map", [ TStr; inner ]) -> jsonAdmitted span env seen path inner
+    // a non-string key reaches here through an ANONYMOUS shape (declared
+    // types validate at declaration) — same teaching as validateTy
+    | TNamed("Map", [ k; _ ]) ->
+        err
+            span
+            $"{at}Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<{formatTy k}, …>"
+    | TNamed("Map", args) -> err span $"{at}Map takes two type arguments (Map<string, T>); got {args.Length}"
     | TNamed(n, []) when seen |> List.contains n ->
         let cycle =
             ((seen |> List.rev |> List.skipWhile ((<>) n)) @ [ n ]) |> String.concat " → "
@@ -939,6 +953,7 @@ let rec private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty
     match ty with
     | TNamed("Option", [ inner ]) -> jsonDefsClosure env acc inner
     | TSeq elem -> jsonDefsClosure env acc elem
+    | TNamed("Map", [ TStr; inner ]) -> jsonDefsClosure env acc inner
     | TNamed(n, []) when not (acc.ContainsKey n) ->
         match Map.tryFind n env.Types with
         | Some(Record def) ->
@@ -2533,10 +2548,19 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // to its canonical name, whose def withAnonDefs registered
             // at typecheck entry — one lookup path serves both, so the
             // anonymous form validates EXACTLY as a declared record does
-            let! tyName =
+            // Map<string, T> in the slot [D:map-string]: peel the wrap
+            // first — the inner shape then resolves through the SAME
+            // name path a bare slot does, so anon composition is free
+            let inner, mapOf =
                 match shape with
+                | Some(FromMap sh) -> Some sh, true
+                | sh -> sh, false
+
+            let! tyName =
+                match inner with
                 | None -> Ok None
                 | Some(FromName n) -> Ok(Some n)
+                | Some(FromMap _) -> err expr.Span "Map< > does not nest in the adapter slot"
                 | Some(FromAnon fields) ->
                     match firstDup (fields |> List.map fst) with
                     | Some d -> err expr.Span $"duplicate field '{d}' in the anonymous record"
@@ -2550,6 +2574,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 if seqOf && fmt = "jsonl" then
                     let n = defaultArg tyName "T"
                     err expr.Span $"'from jsonl T' already yields seq<T> — write from jsonl {n}"
+                elif mapOf && fmt = "jsonl" then
+                    // one object per LINE vs ONE keyed object — the two
+                    // shapes cannot both be the top level [D:map-string]
+                    let n = defaultArg tyName "T"
+
+                    err
+                        expr.Span
+                        $"'from jsonl' reads one object per line; a Map is ONE object — write from json Map<string, {n}>"
+                elif mapOf && fmt = "yaml" then
+                    let n = defaultArg tyName "T"
+                    err expr.Span $"'from yaml' does not take Map<string, {n}> yet — 'from json' does"
                 else
                     Ok()
 
@@ -2571,13 +2606,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.ofList [ def.Name, def ])
 
                     let resultTy =
-                        if fmt = "json" && not seqOf then
-                            TNamed(name, [])
-                        else
-                            TSeq(TNamed(name, []))
+                        if mapOf then TNamed("Map", [ TStr; TNamed(name, []) ])
+                        elif fmt = "json" && not seqOf then TNamed(name, [])
+                        else TSeq(TNamed(name, []))
 
                     return
-                        { Kind = TEFrom(fmt, def, defs, seqOf)
+                        { Kind = TEFrom(fmt, def, defs, seqOf, mapOf)
                           Ty = TFun(TSeq TStr, resultTy)
                           Span = expr.Span }
                 | Some(Record _) ->
@@ -2587,7 +2621,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | ("json" | "jsonl"), None ->
                 let seqHint =
                     if fmt = "json" then
-                        " — or seq<FileRow> for a top-level array, or an inline shape {| ip: string |}"
+                        " — or seq<FileRow> for a top-level array, Map<string, FileRow> for an ID-keyed object, or an inline shape {| ip: string |}"
                     else
                         ""
 
@@ -3377,7 +3411,8 @@ let anonDefs (expr: Expr) : (string * TypeDef) list =
 
     let rec walk (e: Expr) =
         (match e.Kind with
-         | EFrom(_, Some(FromAnon fields), _) ->
+         | EFrom(_, Some(FromAnon fields), _)
+         | EFrom(_, Some(FromMap(FromAnon fields)), _) ->
              let name = anonRecordName fields
 
              if not (acc.ContainsKey name) then
@@ -3573,6 +3608,14 @@ let rec private validateTy
     | TSecret -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
     | TTuple ts -> allOk ts (validateTy env selfName selfArity allowed span)
+    // Map is STRUCTURAL, string-keyed only [D:map-string] — the key
+    // slot refuses anything else with the narrowing's reason
+    | TNamed("Map", [ TStr; v ]) -> validateTy env selfName selfArity allowed span v
+    | TNamed("Map", [ k; _ ]) ->
+        err
+            span
+            $"Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<{formatTy k}, …>"
+    | TNamed("Map", args) -> err span $"Map takes two type arguments (Map<string, T>); got {List.length args}"
     | TFun(a, b) ->
         Result.bind
             (fun () -> validateTy env selfName selfArity allowed span b)
