@@ -1,5 +1,27 @@
 # Spike Notes
 
+## the bare partition widened: unambiguous means bare (2026-08-12)
+
+The session that un-froze the previous session's answer. The bare-rule
+sitting was right to replace the frozen twenty with an explicit
+partition — but its declined half inherited the very shape it fixed:
+nobody had CHOSEN iter-qualified-map-bare, it was just where the
+accident's dust settled. With the accident gone, the derivation the
+data once refuted became correct: single-home means bare, and the
+whole curation collapsed to the allowlist plus a two-name collision
+set (contains, length). Two things earned their keep beyond the plan:
+the PINNED collision set — under pure derivation a NEW collision
+silently demotes a bare name, a breaking change nobody decided, so
+the pin turns it into a loud decision — and the constrained-scheme
+finding: the Ord/Eq schemes lived only on the module map, so a
+newly-bare sortBy would have typechecked LAXER than Seq.sortBy;
+the overrides now apply at both surfaces from one list, and the gate
+pins bare-refusal == qualified-refusal. Four pins inverted or moved
+to strict mode (choose/append/iter/groupBy asserted non-resolution
+that the rule now grants); their replacements pin the promotion
+instead. The overloading decline is recorded with all four reasons
+precisely so `contains` inferring its home stops being re-proposed.
+
 ## the bare-member rule, discovered then stated (2026-08-12)
 
 The frozen-list session: twenty bare names nobody could explain, and

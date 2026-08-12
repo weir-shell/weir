@@ -29,11 +29,12 @@ stops being true fails the build.
   a statement, so blocks group freely with gaps.
 - Scripts are STRICT: every module member is qualified —
   `Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read` — including in
-  command pipelines (`|> Seq.map Str.trim`). Bare names (`map`, `where`)
-  exist only in the REPL and `#loose` scripts, and the bare set is a
-  CURATED hot-path list, not all of Seq/Str [D:bare-rule] — a member
-  joins on a receipt (collect did), and a name with two homes cannot
-  be bare (contains is qualified both sides). If unsure, qualify.
+  command pipelines (`|> Seq.map Str.trim`). Bare names (`map`,
+  `where`, `sortBy`) exist only in the REPL and `#loose` scripts, and
+  the rule is DERIVED [D:bare-partition]: every single-home member of
+  `Seq`/`Str` is bare; a name with two homes is qualified-only on
+  BOTH sides — `contains` and `length`, the whole list. If unsure,
+  qualify: the qualified spelling always works.
 - The `Self` module groups a script's own facts, script-only (absent
   in the REPL and `-e`): `Self.args : seq<string>`,
   `Self.stdin : seq<string>`, `Self.pid : int` (the process id), and

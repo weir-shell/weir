@@ -392,3 +392,18 @@ Secret renders (interpolation refuses; show masks) and a row-typed
 hole (`$"{show c.port}"` — a bare hole defaults an unresolved type to
 string), both now documented as show's niche rather than left to look
 like misses.
+
+## The bare partition is derived; consult the right gate
+
+A member of an allowlisted module (`Seq`, `Str`) is bare iff its name
+is SINGLE-HOME among those modules [D:bare-partition]; a two-home name
+is qualified-only on both sides. A new MODULE contributes no bare
+names unless `bareAliasModules` is deliberately widened — a pinned
+set. So: when adding a MEMBER, check the two-home scan (a collision
+DEMOTES the existing bare name — the pinned collision set fails until
+someone decides); when adding a MODULE, check the allowlist pin. The
+gate enforces both; knowing which one will fire saves the session
+that discovers it. Naming incidents: bare `contains` resolving
+silently to Str's while Seq's hot path errored "expected string", and
+`Secret.map`/`Http.head` each stealing a bare slot for 22 unrelated
+test failures before the allowlist inversion.

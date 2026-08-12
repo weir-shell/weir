@@ -3550,13 +3550,11 @@ let chooseTests =
               | VInt n -> Expect.equal n 2L "lazy on both sides"
               | v -> failtest $"unexpected {v}"
           }
-          test "qualified-only: bare choose does not resolve" {
-              let terr = checkErr "[1] |> choose (fun x -> Some x)"
-              Expect.stringContains terr.Message "choose" ""
+          test "bare choose resolves — single-home means bare [D:bare-partition]" {
+              Expect.equal (run "[1] |> choose (fun x -> Some x) |> Seq.length") (VInt 1L) ""
           }
-          test "qualified-only: bare append does not resolve [D:seq-append]" {
-              let terr = checkErr "[1] |> append [2]"
-              Expect.stringContains terr.Message "append" ""
+          test "bare append resolves — single-home means bare [D:bare-partition]" {
+              Expect.equal (run "[1] |> append [2] |> Seq.length") (VInt 2L) ""
           }
           test "non-Option chooser rejects at check" {
               let terr = checkErr "[1] |> Seq.choose (fun x -> x)"
@@ -5994,7 +5992,14 @@ let moduleTests =
           }
           test "moved names hint their qualified home" {
               Expect.stringContains (checkErr "[] |> defaultTo 1").Message "use 'Option.defaultValue'" ""
-              Expect.stringContains (checkErr "ls |> groupBy _.readOnly").Message "use 'Seq.groupBy'" ""
+              // groupBy is bare now [D:bare-partition] — the hint pin
+              // moves to strict mode, where members stay qualified
+              let strictEnv, _ =
+                  Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+
+              match Weir.Check.typecheck strictEnv (parse "[true] |> groupBy (fun x -> x)") with
+              | Error terr -> Expect.stringContains terr.Message "use 'Seq.groupBy'" ""
+              | Ok _ -> failtest "strict mode must not resolve bare groupBy"
           }
           test "module member completion" {
               Expect.contains (suggest "Seq.tr" 0) "Seq.tryHead" ""
@@ -6349,9 +6354,15 @@ let unitPrintTests =
               Expect.equal (checkOk "Seq.iter print").Ty (TFun(TSeq TStr, TUnit)) "iter print"
           }
           test "Seq.iter runs effects and returns unit" { expectValue "[\"a\"; \"b\"] |> Seq.iter print" VUnit }
-          test "iter is qualified-only" {
-              let terr = checkErr "iter print [\"a\"]"
-              Expect.stringContains (formatError terr) "Seq.iter" "points at the module home"
+          test "iter is bare (single-home [D:bare-partition]); strict mode points at the home" {
+              expectValue "[\"a\"] |> iter print" VUnit
+
+              let strictEnv, _ =
+                  Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+
+              match Weir.Check.typecheck strictEnv (parse "iter print [\"a\"]") with
+              | Error terr -> Expect.stringContains (formatError terr) "Seq.iter" "points at the module home"
+              | Ok _ -> failtest "strict mode must not resolve bare iter"
           }
           test "a let shadows the print builtin" { expectValue "let print = fun s -> s in print \"x\"" (VStr "x") }
           test "unit renders in a hole (the class is the law) [D:interp-show]" {
@@ -11865,42 +11876,74 @@ let operatorValueTests =
           } ]
 
 let bareRuleTests =
-    // the bare-member rule [D:bare-rule]: a curated set with a GATE —
-    // the keyword-completion tripwire's shape applied to a namespace
+    // the bare-member rule [D:bare-rule] widened to a DERIVATION
+    // [D:bare-partition]: unambiguous means bare — the gate asserts the
+    // partition MATCHES the derivation, and pins the collision set so a
+    // new collision (which demotes a bare name) is a decision
     testList
-        "the bare-member rule [D:bare-rule]"
-        [ test "THE GATE: every Seq/Str member is decided — bare or declined, never neither" {
+        "the bare-member rule [D:bare-rule] [D:bare-partition]"
+        [ test "THE GATE: a member is bare IFF its name is single-home among the allowlisted modules" {
+              let homes name =
+                  [ "Seq"; "Str" ]
+                  |> List.filter (fun m -> Weir.Builtins.typeEnv.Modules[m] |> Map.containsKey name)
+                  |> List.length
+
               let members =
                   [ "Seq"; "Str" ]
                   |> List.collect (fun m -> Weir.Builtins.typeEnv.Modules[m] |> Map.keys |> List.ofSeq)
                   |> Set.ofList
 
-              let undecided = members - Weir.Builtins.bareAliases - Weir.Builtins.bareDeclined
+              let derived = members |> Set.filter (fun n -> homes n = 1)
 
-              Expect.isTrue
-                  undecided.IsEmpty
-                  $"undecided members (add to bareAliases WITH a receipt, or to bareDeclined): {undecided}"
-
-              let both = Set.intersect Weir.Builtins.bareAliases Weir.Builtins.bareDeclined
-              Expect.isTrue both.IsEmpty $"a name cannot be both bare and declined: {both}"
+              Expect.equal Weir.Builtins.bareAliases derived "bare-ness disagrees with the home count"
           }
-          test "THE GATE: a bare name has exactly ONE home (the contains accident, mechanized)" {
-              let multiHome =
-                  Weir.Builtins.bareAliases
-                  |> Set.filter (fun n ->
-                      [ "Seq"; "Str" ]
-                      |> List.filter (fun m -> Weir.Builtins.typeEnv.Modules[m] |> Map.containsKey n)
-                      |> List.length > 1)
-
-              Expect.isTrue
-                  multiHome.IsEmpty
-                  $"a bare slot holds one value — Map.ofList silently shadows the rest: {multiHome}"
+          test "THE GATE: the collision set is PINNED — a new collision demotes a bare name, which is a decision" {
+              Expect.equal
+                  Weir.Builtins.bareTwoHome
+                  (Set [ "contains"; "length" ])
+                  "the two-home scan moved: decide the new name (qualified-only), then update this pin"
           }
-          test "collect is bare (the receipt); contains is qualified BOTH sides (the accident closed)" {
+          test "no formerly-bare name lost its slot in the widening (the monotonicity check the plan demanded)" {
+              let before =
+                  Set
+                      [ "map"
+                        "where"
+                        "first"
+                        "take"
+                        "head"
+                        "sum"
+                        "force"
+                        "collect"
+                        "startsWith"
+                        "endsWith"
+                        "trim"
+                        "trimStart"
+                        "trimEnd"
+                        "toLower"
+                        "toUpper"
+                        "split"
+                        "join"
+                        "replace"
+                        "toInt"
+                        "tryToInt" ]
+
+              Expect.isTrue (Set.isSubset before Weir.Builtins.bareAliases) "a live contains-shaped accident"
+          }
+          test "a promoted name carries its CONSTRAINED scheme — bare sort/sortBy are exactly their qualified selves" {
+              Expect.equal
+                  (run "[3; 1; 2] |> sortBy (fun x -> x) |> force")
+                  (run "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.force")
+                  ""
+
+              let bare = (checkErr "[(fun x -> x)] |> sort").Message
+              let qualified = (checkErr "[(fun x -> x)] |> Seq.sort").Message
+              Expect.equal bare qualified "the Ord refusal is identical through the bare slot"
+          }
+          test "collect is bare; contains is qualified BOTH sides (the accident stays closed)" {
               Expect.equal
                   (run "[\"a<b\"; \"c\"] |> collect (Str.split \"<\") |> Seq.length")
                   (VInt 3L)
-                  "the live sitting's reach, now legal"
+                  "the live sitting's reach, still legal"
 
               let m = (checkErr "[1; 2] |> contains 1").Message
               Expect.stringContains m "module-qualified" "contains is a decision away, not a silent Str"
@@ -11910,10 +11953,15 @@ let bareRuleTests =
               Expect.equal (run "[1; 2] |> Seq.contains 1") (VBool true) "the qualified spellings work"
               Expect.equal (run "\"abc\" |> Str.contains \"b\"") (VBool true) ""
           }
-          test "no message claims a member moved when it did not" {
-              let m = (checkErr "[1] |> rev").Message
-              Expect.stringContains m "module-qualified; use 'Seq.rev'" "the truthful wording"
-              Expect.isFalse (m.Contains "moved") "no false history"
+          test "no message claims a member moved when it did not (strict mode, where names stay qualified)" {
+              let strictEnv, _ =
+                  Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+
+              match Weir.Check.typecheck strictEnv (parse "[1] |> rev") with
+              | Error terr ->
+                  Expect.stringContains terr.Message "module-qualified; use 'Seq.rev'" "the truthful wording"
+                  Expect.isFalse (terr.Message.Contains "moved") "no false history"
+              | Ok _ -> failtest "strict mode must not resolve bare rev"
           } ]
 
 let gapATests =
