@@ -23,7 +23,10 @@ Three properties, in the order they matter:
 ## Running weir
 
 - `weir` — the REPL: bare names allowed, values echo back, tab
-  completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits
+  completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits.
+  At a tty the echo PRESENTS: a record seq as a table, a string seq
+  as its lines, anything else as the literal — the type footer (and
+  the unforced-seq sentence) rides below in every case
   (`#quit` is the typed spelling). `#help` lists the directives and
   the modules; `#help Seq` lists a module's members — the form FSI
   cannot answer — and `#help Seq.collect` shows one member's doc,

@@ -260,6 +260,21 @@ if "unforced" in t2:
 if "pipe to" in t2:
     failures.append(f"the retired pipe-to hint resurfaced: {t2[-300:]!r}")
 
+# --- the LINES form [D:echo-lines]: seq<string> presents as its lines
+# at a tty (footer keeps the type + the unforced sentence); other seq
+# types keep the literal; the PIPED surface keeps the literal exactly
+t3, _ = run([("[\"lineA\"; \"lineB\"] |> Seq.force\r", 0.9)])
+if "\nlineA" not in t3 or "\nlineB" not in t3:
+    failures.append(f"a string seq must echo as LINES at a tty: {t3[-300:]!r}")
+if '"lineB"] : seq' in t3:  # the RESULT literal (typed-line echoes contain the input text)
+    failures.append(f"the tty echo must not show the literal for seq<string>: {t3[-300:]!r}")
+t4, _ = run([("[7; 8]\r", 0.9)])
+if "[7; 8] : seq<int>" not in t4:
+    failures.append(f"other seq types keep the literal: {t4[-300:]!r}")
+p3 = subprocess.run([WEIR], input='["lineA"; "lineB"] |> Seq.force\n#quit\n', capture_output=True, text=True)
+if '["lineA"; "lineB"] : seq<string>' not in p3.stdout:
+    failures.append(f"the piped surface keeps the literal byte-form: {p3.stdout!r}")
+
 # --- 9. piped input never enters the editor (untouched)
 p = subprocess.run([WEIR], input="1 + 1\n#quit\n", capture_output=True, text=True)
 if "2 : int" not in p.stdout:

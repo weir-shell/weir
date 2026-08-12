@@ -231,6 +231,35 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VUnion(name, None) -> Some(name, false)
     | _ -> None
 
+/// the LINES form [D:echo-lines]: seq<string> presents as its lines at
+/// a tty — the content arrived as lines and the literal was UNDOING
+/// that. RAW and unclipped per line (print parity — a tab or an escape
+/// renders as itself; tty-only, so the piped surface cannot move); the
+/// COUNT clip and the forced/unforced sentence ride the footer
+/// unchanged. Keyed on the TYPE at the caller (seq<string> exactly) —
+/// never content-sniffing.
+let echoLines (v: Value) : (string list * string option) option =
+    let asLine =
+        function
+        | VStr s -> s
+        | v -> unreachable $"the caller gates on seq<string>, got {formatValue v}"
+
+    match v with
+    | VSeq items ->
+        match forcedItems items with
+        | Some all -> Some(all |> List.map asLine, None)
+        | None ->
+            let shown = items |> Seq.truncate (echoLimits.MaxItems + 1) |> List.ofSeq
+
+            let hint =
+                if shown.Length > echoLimits.MaxItems then
+                    Some unforcedHint
+                else
+                    None
+
+            Some(shown |> List.truncate echoLimits.MaxItems |> List.map asLine, hint)
+    | _ -> None
+
 let echoTable (v: Value) : (string list * string option) option =
     match v with
     | VSeq items ->

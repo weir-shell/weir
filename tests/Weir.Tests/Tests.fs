@@ -3884,6 +3884,43 @@ let replEchoTests =
               let _, hint = Weir.Eval.echoValue many
               Expect.equal hint (Some Weir.Eval.unforcedHint) "a cached seq is still an unforced seq to the echo"
           }
+          test "the LINES form [D:echo-lines]: raw per line, count-clipped, footer honest" {
+              // forced: every line, no hint; content RAW (a tab stays a
+              // tab — print parity; tty-only so the piped surface holds)
+              let lines, hint =
+                  Weir.Eval.echoLines (VSeq([ VStr "a"; VStr ""; VStr "x\ty" ] :> seq<Weir.Eval.Value>))
+                  |> Option.get
+
+              Expect.equal lines [ "a"; ""; "x\ty" ] "raw, empties kept"
+              Expect.equal hint None "forced carries no hint"
+
+              // unforced: the count clip and the honest sentence
+              let lines2, hint2 =
+                  Weir.Eval.echoLines (VSeq(Seq.init 12 (fun i -> VStr(string i)))) |> Option.get
+
+              Expect.equal (List.length lines2) 10 "count-clipped at ten"
+              Expect.equal hint2 (Some Weir.Eval.unforcedHint) "the honest lever"
+
+              // empty: no body, the footer alone reads fine
+              Expect.equal (Weir.Eval.echoLines (VSeq(Seq.empty))) (Some([], None)) "empty seq: footer only"
+
+              // one enumeration across the whole echo (the echo-once law):
+              // prep once, lines + render pull the CACHE, the source once
+              let pulls = ref 0
+
+              let counted =
+                  Seq.init 3 (fun i ->
+                      System.Threading.Interlocked.Increment pulls |> ignore
+                      VStr(string i))
+
+              let prepped = Weir.Eval.echoPrep (VSeq counted)
+              Weir.Eval.echoLines prepped |> ignore
+              Weir.Eval.echoValue prepped |> ignore
+              Expect.equal pulls.Value 3 "the lines form adds no enumeration"
+
+              // show is UNTOUCHED — the literal with quotes
+              Expect.equal (run "[\"a\"; \"b\"] |> show") (VStr "[\"a\"; \"b\"]") "show renders; the echo presents"
+          }
           test "a FORCED seq echoes in full, no hint [D:echo-rule]" {
               let v = VSeq([ for i in 1..12 -> VInt(int64 i) ] :> seq<Weir.Eval.Value>)
               let rendered, hint = Weir.Eval.echoValue v

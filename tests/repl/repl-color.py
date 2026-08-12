@@ -72,8 +72,10 @@ if re.search(r"\x1b\[36myaml\x1b\[0m", t4):
 # regress because the colorizer was the dedent's unenumerated third
 # consumer
 t6 = run({}, ["  echo tri-out\r"])
-plain6 = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", t6)
-if '["tri-out"]' not in plain6:  # the echoed VALUE — only execution produces it
+plain6 = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b=", "", t6)
+# the echoed VALUE — only execution produces it (the lines form
+# [D:echo-lines]: a string seq presents as its lines + the type footer)
+if "\ntri-out" not in plain6 or ": seq<string>" not in plain6:
     failures.append(f"leading-space line must execute: {plain6[-200:]!r}")
 if "  ... " in plain6:
     failures.append("leading-space line must complete, not open a buffer")
