@@ -1,5 +1,21 @@
 # Spike Notes
 
+## predicates over fields — explored, declined (2026-08-12)
+
+The exploration session that ended in a ruled no, exactly as its plan
+allowed. The probes sharpened everything: every candidate operator is
+provably a type error with a function operand today (the safety table
+is real, not asserted), the two-placeholder case has a principled
+pointwise answer, and `not` turned out to need nothing — `where
+_.isDirectory` and `_.field >> not` both work today and the composed
+form would have participated in lifted conjunctions. What the corpus
+said mattered most: four predicate lambdas in the entire teaching
+corpus, zero multi-predicate pipelines — the pain is prompt-side, and
+the prompt already has two working spellings. The decline stands on
+Scala's extent footgun, the row-DSL's five-incident shadowing shape,
+and the lambda being documentation. The report stays on the shelf
+with a stated re-opening trigger, so the next time someone types
+`_.age > 24h` the answer is a ledger row, not a re-exploration.
 ## session directives, and two papercuts that shared the surface (2026-08-11)
 
 The '#' worry dissolved into the feature's best sentence: a hash line
