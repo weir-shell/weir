@@ -3650,7 +3650,7 @@ printf 'module DBad\nlet x = Str.trim 5\n' > "$mdir/dbad.weir"
 printf 'module MBad\nimport "./dbad.weir"\nlet y = 1\n' > "$mdir/mbad.weir"
 printf 'import "./mbad.weir"\nprint "hi"\n' > "$mdir/tbad.weir"
 out=$($BIN check "$mdir/tbad.weir" 2>&1 || true)
-expect "a transitive error reports at the deepest module's own site" "$mdir/dbad.weir:2:18: error" "$out"
+expect "a transitive error reports at the deepest module's own site" "dbad.weir:2:18: error" "$out"
 
 # the import path is a literal string only
 printf 'import foo\n' > "$mdir/e_litpath.weir"
@@ -3665,8 +3665,8 @@ let bad = Str.trim 5
 WEOF
 printf 'import "./broken.weir"\nprint "hi"\n' > "$mdir/e_broken.weir"
 out=$($BIN check "$mdir/e_broken.weir" 2>&1 || true)
-expect "a module error reports at its OWN site" "$mdir/broken.weir:2:20: error" "$out"
-expect "an imported-here note points at the import line" "$mdir/e_broken.weir:1:8: note" "$out"
+expect "a module error reports at its OWN site" "broken.weir:2:20: error" "$out"
+expect "an imported-here note points at the import line" "e_broken.weir:1:8: note" "$out"
 
 # check --json carries the module's own file per diagnostic
 out=$($BIN check --json "$mdir/e_broken.weir" 2>&1 || true)
