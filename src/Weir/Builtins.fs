@@ -3570,7 +3570,16 @@ let renderBuiltinDoc (d: BuiltinDoc) : string =
 // never a side effect of adding a module.
 let bareAliasModules: Set<string> = Set [ "Seq"; "Str" ]
 
-let private bareAliases: Set<string> =
+// THE BARE-MEMBER RULE [D:bare-rule]: a CURATED hot-path set — bare-ness
+// is a per-member DECISION, never a derivation (the same posture as the
+// bare command namespace: http was declined a slot there on identical
+// grounds). Two laws the gate enforces: every Seq/Str member is either
+// HERE or in bareDeclined (a new member fails the partition test until
+// someone decides), and a bare name has exactly ONE home — `contains`
+// lived in both modules and Map.ofList silently resolved it to Str's,
+// so the Seq hot-path errored with "expected string" (the accident this
+// rule replaces; contains is now qualified on both sides).
+let bareAliases: Set<string> =
     Set
         [ "map"
           "where"
@@ -3579,7 +3588,7 @@ let private bareAliases: Set<string> =
           "head"
           "sum"
           "force"
-          "contains"
+          "collect"
           "startsWith"
           "endsWith"
           "trim"
@@ -3592,6 +3601,75 @@ let private bareAliases: Set<string> =
           "replace"
           "toInt"
           "tryToInt" ]
+
+// declined-or-not-yet-earned, EXPLICITLY — the other half of the
+// partition. Moving a name across is a deliberate act with a receipt
+// (collect crossed on a live sitting's reach; nothing else has one).
+let bareDeclined: Set<string> =
+    Set
+        [ // Seq: the qualified-only majority
+          "append"
+          "average"
+          "choose"
+          "chunkBySize"
+          "concat"
+          "contains" // TWO homes — a bare slot holds one value; qualified both sides
+          "countBy"
+          "distinct"
+          "distinctBy"
+          "except"
+          "exists"
+          "find"
+          "fold"
+          "forall"
+          "groupBy"
+          "indexed"
+          "isEmpty"
+          "item"
+          "iter"
+          "last"
+          "length" // both homes; also the historical exclusion
+          "max"
+          "maxBy"
+          "min"
+          "minBy"
+          "pairwise"
+          "pfirst"
+          "pfirstWith"
+          "pick"
+          "piter"
+          "piterWith"
+          "pmap"
+          "pmapWith"
+          "range"
+          "reduce"
+          "replicate"
+          "rev"
+          "scan"
+          "skip"
+          "skipWhile"
+          "sort"
+          "sortBy"
+          "sortByDescending"
+          "sortDescending"
+          "takeWhile"
+          "tryFind"
+          "tryHead"
+          "tryItem"
+          "tryLast"
+          "tryPick"
+          "windowed"
+          "zip"
+          // Str: the qualified-only remainder
+          "fromBase64"
+          "isMatch"
+          "rmatch"
+          "rmatchAll"
+          "sha256"
+          "sub"
+          "toBase64"
+          "tryFromBase64"
+          "tryIndexOf" ]
 
 // factored over the table so the PROPERTY is pinnable: a hypothetical
 // module with a `map`/`head` member must contribute nothing
