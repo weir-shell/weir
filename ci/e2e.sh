@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 
+# KNOWN NOISE, not a failure (Windows, round 31's run): bash lines like
+#   dofork: child -1 - forked process N died unexpectedly ... 0xC0000142
+#   ./ci/e2e.sh: fork: retry: Resource temporarily unavailable
+# are the msys2/Git-Bash fork flake — the forked bash CHILD fails DLL
+# init (cygwin address-space collision on loaded runners), and bash
+# retries with backoff (0/1/3/7s) and recovers. Every battery-owned
+# background job is killed AND reaped at block end, so a live-leak
+# diagnosis is wrong by construction; only a fork that exhausts all
+# retries fails the run, and that is the runner's weather, not ours.
+
 # temp dirs weir can SEE on every platform: Git Bash's /tmp is
 # MSYS-virtual — a native weir.exe cannot resolve it, so hand weir the
 # mixed (C:/...) spelling; POSIX passes through untouched
