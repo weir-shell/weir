@@ -3668,9 +3668,15 @@ out=$($BIN check "$mdir/e_broken.weir" 2>&1 || true)
 expect "a module error reports at its OWN site" "broken.weir:2:20: error" "$out"
 expect "an imported-here note points at the import line" "e_broken.weir:1:8: note" "$out"
 
-# check --json carries the module's own file per diagnostic
+# check --json carries the module's own file per diagnostic — and ONE
+# spelling per document (round 26: the importer's diag carried argv's
+# form while the module's carried the resolved one; GetFullPath is the
+# identity now, so pin the LEAF and pin the consistency)
 out=$($BIN check --json "$mdir/e_broken.weir" 2>&1 || true)
-expect "check --json carries the module's file identity" "\"file\":\"$mdir/broken.weir\"" "$out"
+echo "$out" | grep -q '"file":"[^"]*broken\.weir"' || fail "check --json carries the module's file identity: $out"
+files=$(printf '%s' "$out" | grep -o '"file":"[^"]*tmp[^"]*"' | sed 's/.*tmp/tmp/; s/[\\/].*//' | sort -u | wc -l)
+[ "$files" -le 1 ] || fail "check --json must spell every file's dir ONE way: $out"
+echo "e2e ok: check --json carries the module's file identity (one spelling per document)"
 
 # import is script-only (-e has no file to resolve against)
 out=$($BIN -e 'import "./x.weir"' 2>&1 || true)

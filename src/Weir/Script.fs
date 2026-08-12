@@ -2759,7 +2759,19 @@ let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
 
 let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
     w.WriteStartObject()
-    w.WriteString("file", d.File)
+    // ONE file identity per document [D:ci-matrix-triage round 26]: an
+    // imported module's diag carried the RESOLVED path while the
+    // importer's carried argv's spelling verbatim — on Windows the same
+    // dir under two spellings (8.3 vs long, / vs \), breaking any
+    // consumer that groups by file. GetFullPath is the one spelling.
+    w.WriteString(
+        "file",
+        (try
+            IO.Path.GetFullPath d.File
+         with _ ->
+             d.File)
+    )
+
     w.WriteNumber("line", d.Line)
     w.WriteNumber("col", d.Col)
 
