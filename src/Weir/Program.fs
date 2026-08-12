@@ -221,7 +221,7 @@ let main argv =
              Console.Error.WriteLine $"weir verify: {e}"
              1
          | Ok weirDir ->
-             match Contracts.verify weirDir with
+             match Contracts.verify Proc.resolveProg weirDir with
              | Error e ->
                  Console.Error.WriteLine $"weir verify: {e}"
                  1

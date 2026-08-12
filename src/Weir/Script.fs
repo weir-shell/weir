@@ -3285,7 +3285,7 @@ let sigCmdDiagnostics
 module SigGen =
     let private runTool (tool: string) (args: string) : string option =
         try
-            let psi = System.Diagnostics.ProcessStartInfo(tool, args)
+            let psi = System.Diagnostics.ProcessStartInfo(Proc.resolveProg tool, args)
             psi.RedirectStandardOutput <- true
             psi.RedirectStandardError <- true
             psi.UseShellExecute <- false
@@ -3380,7 +3380,7 @@ module SigGen =
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n")
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
-        match Contracts.toolVersionOutput tool with
+        match Contracts.toolVersionOutput Proc.resolveProg tool with
         | None -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
         | Some rawVersion ->
             let version = rawVersion.Trim()
