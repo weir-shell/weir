@@ -1,5 +1,28 @@
 # Spike Notes
 
+## the echo cap: 100 by default, #echo to change it (2026-08-12)
+
+The rider on echo-lines that closes the arc's last papercut: the
+number 10 was tuned for literals and inherited by command output,
+where it made Seq.force a display verb. The session's real content is
+what it REFUSED: auto-forcing looked like the fix until the lazy
+inventory (nats, glob, pmap) made it a hang, an OOM, or the echo
+spawning processes on its own initiative — the double-run bug the
+echo-once work just killed, reintroduced as a feature. The cap+1 pull
+discipline survives unchanged; only the number moved, and the number
+became state. Two things worth remembering: the footer sentence had
+to become a function of the live cap in the same commit (a pinned
+"first 10" beside a #echo 25 is the lying-message class — the plan
+called it the likeliest forgotten pin and it was the first test I
+wrote), and the piped surface deliberately did NOT move (echoPipedCap
+keeps the historical 10 — piped REPL bytes are load-bearing across
+the e2e battery, and a session directive should not be able to move a
+pinned byte surface). The persistence question resolved the fuller
+way: echoElems, cut once as vacuous wiring, revived for one record
+field once the wiring existed — the cut was about the wiring, not the
+key. One plan premise corrected: the #help directive list is a
+literal, not derived; only the module list derives.
+
 ## the bare partition widened: unambiguous means bare (2026-08-12)
 
 The session that un-froze the previous session's answer. The bare-rule

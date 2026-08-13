@@ -3734,6 +3734,16 @@ printf '{"historySizee": 10}\n' > "$CFGHOME/weir/config.json"
 out=$(printf '#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
 expect "the REPL config rejects an unknown key with did-you-mean" "unknown key 'historySizee'. Did you mean 'historySize'?" "$out"
 
+# echoElems REVIVED [D:echo-cap]: the config seeds the session cap
+# (#echo reads it back); a non-positive value teaches and defaults
+printf '{"echoElems": 25}\n' > "$CFGHOME/weir/config.json"
+out=$(printf '#echo\n#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
+expect "the config seeds the echo cap" "echo cap: 25" "$out"
+printf '{"echoElems": 0}\n' > "$CFGHOME/weir/config.json"
+out=$(printf '#echo\n#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
+echo "$out" | grep -qF "echoElems must be positive; got 0 (using 100)" || fail "a non-positive echoElems must teach: $out"
+echo "$out" | grep -qF "echo cap: 100" || fail "…and default: $out"
+
 # a MALFORMED config must not affect a SCRIPT — scripts never read it, so the
 # script runs clean rather than erroring on the broken JSON
 printf 'not valid json {{{\n' > "$CFGHOME/weir/config.json"
