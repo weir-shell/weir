@@ -801,10 +801,17 @@ let streamingTests =
               Expect.isLessThan pulled.Value 500000 "the input was not drained"
           }
           test "feed closes stdin on input exhaustion: EOF-needing children finish [D:spawn-spec]" {
+              // bare `sort` (sh does not resolve in the Windows unit
+              // context — every sh-spawning unit test is skipped there),
+              // with an ODD total byte count: System32's sort.exe runs
+              // IsTextUnicode on stdin, and a short even-length LF-only
+              // buffer misdetects as UTF-16 (the Bush-hid-the-facts
+              // class, '?' output); an odd length cannot
               let out =
-                  Weir.Proc.linesWith [] "sort" [] (Some(seq [ "b"; "a"; "c" ])) |> List.ofSeq
+                  Weir.Proc.linesWith [] "sort" [] (Some(seq [ "banana"; "apples"; "kiwi" ]))
+                  |> List.ofSeq
 
-              Expect.equal out [ "a"; "b"; "c" ] "sort saw EOF and emitted"
+              Expect.equal out [ "apples"; "banana"; "kiwi" ] "sort saw EOF and emitted"
           }
           test "acceptance: first 5 pulls exactly 5 elements from the source" {
               let pulled = ref 0
@@ -9307,6 +9314,21 @@ let httpTests =
                   "opt-in, visible at the call site"
 
               Expect.equal (run "(Http.get \"u\").insecure") (VBool false) "a constructor is secure by default"
+          }
+          test "File.write/append emit LF bytes on every platform [D:lf-output]" {
+              // a written file is DATA (hashes, sigs, diffs) — the
+              // content-bytes input ruling's dual
+              let p =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-lf-{System.Environment.ProcessId}.txt")
+
+              try
+                  run $"[\"a\"; \"b\"] |> File.write \"{p.Replace('\\', '/')}\"" |> ignore
+                  run $"[\"c\"] |> File.append \"{p.Replace('\\', '/')}\"" |> ignore
+                  let bytes = System.IO.File.ReadAllBytes p
+                  Expect.isFalse (bytes |> Array.contains 13uy) "no CR byte anywhere"
+                  Expect.equal (System.IO.File.ReadAllText p) "a\nb\nc\n" "LF-joined, trailing newline"
+              finally
+                  System.IO.File.Delete p
           }
           test "Basic auth is base64(user:pass) — an ENCODING the runner does, not a caller" {
               Expect.equal (Weir.Http.basicToken "alice" "s3cr3t") "YWxpY2U6czNjcjN0" ""

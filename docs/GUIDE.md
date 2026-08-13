@@ -1166,7 +1166,9 @@ the concurrency model, and a task that truly needs async belongs in
 full F#.
 
 ```weir
-["/"; "/tmp"] |> Seq.pmap (fun d ->
+Dir.create "wa"
+Dir.create "wb"
+["wa"; "wb"] |> Seq.pmap (fun d ->
     let x = cd d
     pwd |> Seq.head) |> print
 ```

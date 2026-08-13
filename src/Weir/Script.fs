@@ -2759,7 +2759,19 @@ let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
 
 let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
     w.WriteStartObject()
-    w.WriteString("file", d.File)
+    // ONE file identity per document [D:ci-matrix-triage round 26]: an
+    // imported module's diag carried the RESOLVED path while the
+    // importer's carried argv's spelling verbatim — on Windows the same
+    // dir under two spellings (8.3 vs long, / vs \), breaking any
+    // consumer that groups by file. GetFullPath is the one spelling.
+    w.WriteString(
+        "file",
+        (try
+            IO.Path.GetFullPath d.File
+         with _ ->
+             d.File)
+    )
+
     w.WriteNumber("line", d.Line)
     w.WriteNumber("col", d.Col)
 
@@ -3273,7 +3285,7 @@ let sigCmdDiagnostics
 module SigGen =
     let private runTool (tool: string) (args: string) : string option =
         try
-            let psi = System.Diagnostics.ProcessStartInfo(tool, args)
+            let psi = System.Diagnostics.ProcessStartInfo(Proc.resolveProg tool, args)
             psi.RedirectStandardOutput <- true
             psi.RedirectStandardError <- true
             psi.UseShellExecute <- false
@@ -3368,7 +3380,7 @@ module SigGen =
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n")
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
-        match Contracts.toolVersionOutput tool with
+        match Contracts.toolVersionOutput Proc.resolveProg tool with
         | None -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
         | Some rawVersion ->
             let version = rawVersion.Trim()

@@ -13,7 +13,15 @@ def assert_fresh(weir_bin, repo_root):
     did not have — a guard's doc drifting from the guard is the exact
     masked failure the gate exists to prevent). Exits nonzero on stale."""
     gate = os.path.join(repo_root, "ci", "check-fresh.sh")
-    r = subprocess.run([gate, weir_bin])
+    # Windows cannot exec a .sh (WinError 193) — route through the
+    # battery's OWN bash (WEIR_BASH: a bare `bash` resolves System32's
+    # WSL stub on the native PATH); POSIX untouched
+    cmd = (
+        [gate, weir_bin]
+        if os.name != "nt"
+        else [os.environ.get("WEIR_BASH", "bash"), gate, weir_bin]
+    )
+    r = subprocess.run(cmd)
     if r.returncode != 0:
         sys.exit(r.returncode)
 

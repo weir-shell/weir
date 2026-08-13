@@ -523,9 +523,12 @@ let restore (weirDir: string) : Result<string list, string> =
 /// FENCED to the two commands allowed to ask the environment
 /// (`weir verify`, `weir add sig`); check/completion never call this
 /// [D:command-signatures]
-let toolVersionOutput (tool: string) : string option =
+/// `resolve` is the spawn-side PATHEXT resolution (Proc.resolveProg —
+/// this module compiles before it): CreateProcess appends only .exe,
+/// so a .bat tool needs its real file handed over [D:windows-s2]
+let toolVersionOutput (resolve: string -> string) (tool: string) : string option =
     try
-        let psi = Diagnostics.ProcessStartInfo(tool, "--version")
+        let psi = Diagnostics.ProcessStartInfo(resolve tool, "--version")
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
         psi.UseShellExecute <- false
@@ -550,7 +553,7 @@ type VerifyFinding =
     | VersionMismatch of LockEntry * actual: string
     | ToolMissing of LockEntry
 
-let verify (weirDir: string) : Result<string list * VerifyFinding list, string> =
+let verify (resolve: string -> string) (weirDir: string) : Result<string list * VerifyFinding list, string> =
     match readLock weirDir with
     | Error e -> Error e
     | Ok entries ->
@@ -579,7 +582,7 @@ let verify (weirDir: string) : Result<string list * VerifyFinding list, string> 
                     // exact match, no tolerance [D:command-signatures]
                     match e.Version with
                     | Some recorded ->
-                        match toolVersionOutput e.Name with
+                        match toolVersionOutput resolve e.Name with
                         | None ->
                             findings.Add(ToolMissing e)
 

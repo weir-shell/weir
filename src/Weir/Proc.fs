@@ -47,6 +47,11 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
         System.Threading.Tasks.Task.Run(fun () ->
             try
                 try
+                    // a child's stdin is DATA: LF on every platform
+                    // [D:lf-output] — WriteLine's Environment.NewLine
+                    // fed \r\n into child hashes on Windows
+                    p.StandardInput.NewLine <- "\n"
+
                     for l in lines do
                         p.StandardInput.WriteLine l
                 with _ ->
@@ -350,4 +355,12 @@ let complete (prog: string) (args: string list) (input: seq<string> option) : in
     completeWith [] prog args input
 
 let resolveProg (prog: string) : string =
-    if prog.Contains '/' then Session.resolve prog else prog
+    if prog.Contains '/' then
+        Session.resolve prog
+    elif System.OperatingSystem.IsWindows() && not (prog.Contains '\\') then
+        // the checker's existence gate resolves x -> x.bat via PATHEXT;
+        // the SPAWN must hand CreateProcess the same real file (it
+        // appends only .exe itself) [D:windows-s2]
+        Extern.resolveFile prog |> Option.defaultValue prog
+    else
+        prog

@@ -1953,7 +1953,16 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
                   writeGuard "File.write" r
-                  ioGuarded "File.write" r (fun () -> File.WriteAllLines(r, lines |> Seq.map asString))
+
+                  ioGuarded "File.write" r (fun () ->
+                      // LF bytes on every platform [D:lf-output] — a
+                      // written file is data (hashes, sigs, diffs)
+                      use w = new StreamWriter(r, false)
+                      w.NewLine <- "\n"
+
+                      for l in lines do
+                          w.WriteLine(asString l))
+
                   VUnit
               | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
       "append",
@@ -1964,7 +1973,14 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
                   writeGuard "File.append" r
-                  ioGuarded "File.append" r (fun () -> File.AppendAllLines(r, lines |> Seq.map asString))
+
+                  ioGuarded "File.append" r (fun () ->
+                      use w = new StreamWriter(r, true)
+                      w.NewLine <- "\n"
+
+                      for l in lines do
+                          w.WriteLine(asString l))
+
                   VUnit
               | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
       "exists",

@@ -98,6 +98,16 @@ let private evalOnce (input: string) : int =
 [<EntryPoint>]
 let main argv =
 
+    // captured output is DATA: LF on every platform [D:lf-output] — the
+    // content-bytes input ruling's dual (a line ending is not data). A
+    // tty is DISPLAY and keeps the platform newline: Windows raw-mode
+    // rendering needs CRLF, and bytes only matter where they persist.
+    if Console.IsOutputRedirected then
+        Console.Out.NewLine <- "\n"
+
+    if Console.IsErrorRedirected then
+        Console.Error.NewLine <- "\n"
+
     // WEIR_LOG validates ONCE, before anything runs — an invalid level
     // is a loud startup error, never a silent fallback [D:log-module]
     match Builtins.initLogLevel () with
@@ -211,7 +221,7 @@ let main argv =
              Console.Error.WriteLine $"weir verify: {e}"
              1
          | Ok weirDir ->
-             match Contracts.verify weirDir with
+             match Contracts.verify Proc.resolveProg weirDir with
              | Error e ->
                  Console.Error.WriteLine $"weir verify: {e}"
                  1

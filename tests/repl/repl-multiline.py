@@ -7,7 +7,7 @@
 # abandon, and wrap math at TWO terminal widths. Assertions ride evaluated
 # OUTPUT, never cursor positions (the driver lesson — drivers lie about
 # cursors; values do not).
-import os, pty, sys, time, select, re, tempfile, fcntl, struct, termios
+import os, pty, signal, sys, time, select, re, tempfile, fcntl, struct, termios
 
 WEIR = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.local/bin/weir")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
@@ -16,7 +16,7 @@ assert_fresh(WEIR, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 failures = []
 
-def run(keys, cols=80, seed=None, path=None):
+def run(keys, cols=80, seed=None, path=None, until=None, deadline=20.0):
     d = tempfile.mkdtemp()
     if seed is not None:
         os.makedirs(d + "/state/weir", exist_ok=True)
@@ -28,16 +28,40 @@ def run(keys, cols=80, seed=None, path=None):
     if pid == 0:
         os.execve(WEIR, ["weir"], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, cols, 0, 0))
+    # SIGWINCH after the ioctl: .NET may have cached the width at console
+    # init (a per-run race — macOS lost it where Linux never did); the
+    # signal invalidates the cache so the pty size ALWAYS wins
+    os.kill(pid, signal.SIGWINCH)
     time.sleep(0.8)
     for s, dl in keys:
         os.write(fd, s.encode()); time.sleep(dl)
     out = b""
-    for _ in range(50):
-        r, _, _ = select.select([fd], [], [], 0.1)
-        if r:
-            try:
-                out += os.read(fd, 4096)
-            except OSError:
+
+    if until is None:
+        for _ in range(50):
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if r:
+                try:
+                    out += os.read(fd, 4096)
+                except OSError:
+                    break
+    else:
+        # marker-driven drain: fixed settles keep losing to loaded
+        # runners — read until the marker appears (plus a short quiet
+        # tail) or the deadline names the failure
+        want = until.encode()
+        end = time.time() + deadline
+        seen_at = None
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if r:
+                try:
+                    out += os.read(fd, 4096)
+                except OSError:
+                    break
+            if seen_at is None and want in out:
+                seen_at = time.time()
+            if seen_at is not None and time.time() - seen_at > 0.5:
                 break
     return re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", out.decode(errors="replace")), d
 
@@ -121,17 +145,30 @@ def runraw(keys, cols=80):
     if pid == 0:
         os.execve(WEIR, ["weir"], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, cols, 0, 0))
+    # SIGWINCH after the ioctl: .NET may have cached the width at console
+    # init (a per-run race — macOS lost it where Linux never did); the
+    # signal invalidates the cache so the pty size ALWAYS wins
+    os.kill(pid, signal.SIGWINCH)
     time.sleep(0.8)
     for s, dl in keys:
         os.write(fd, s.encode()); time.sleep(dl)
+    # QUIESCENCE-driven drain: the old 50-iteration budget counted READS,
+    # so a loaded runner's steady repaint stream exhausted it with keys
+    # still queued (the raw tail showed the 32nd of 35 repaints). Read
+    # until 1.5s of silence — the editor idle means every repaint flushed.
     out = b""
-    for _ in range(50):
+    end = time.time() + 25
+    last = time.time()
+    while time.time() < end:
         r, _, _ = select.select([fd], [], [], 0.1)
         if r:
             try:
                 out += os.read(fd, 4096)
+                last = time.time()
             except OSError:
                 break
+        elif time.time() - last > 1.5:
+            break
     os.write(fd, b"\x03"); os.write(fd, b"#quit\r"); time.sleep(0.2)
     return out
 
@@ -140,31 +177,38 @@ def last_col_move(raw):
     m = re.fullmatch(rb"\x1b\[(\d+)C", tail)
     return int(m.group(1)) if m else (0 if tail == b"" else tail)
 
+# each probe sends dozens of separate ESC[C sequences; .NET's ReadKey
+# decodes escapes under an inter-byte timeout, and a loaded runner
+# (macOS) can split one — a lone ESC decodes wrong and the cursor
+# drifts by a few columns (cols that fit NEITHER width's math were the
+# tell). 0.15s pacing triples the margin, and ONE retry re-runs the
+# whole probe: the pin is weir's column MATH, which is deterministic —
+# only the byte-delivery timing is not. Assertions stay exact; the raw
+# tail rides the failure so a split escape is visible in the report.
+def colpin(desc, keys, want, cols):
+    raw = b""
+    for _attempt in (1, 2):
+        raw = runraw(keys, cols=cols)
+        got = last_col_move(raw)
+        if got == want:
+            return
+    failures.append(f"w={cols}: {desc} col {want}, got {got!r} (raw tail: {raw[-120:]!r})")
+
 for cols, boundary in ((30, 24), (40, 34)):  # (6+col) % cols == 0
+    body = [("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
     # mid-line boundary: Right onto it must paint START of the next row (col 0)
-    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
-                 + [("\x1b[C", 0.05)] * boundary, cols=cols)
-    got = last_col_move(raw)
-    if got != 0:
-        failures.append(f"w={cols}: mid-line wrap boundary must paint col 0 of the next row, got {got!r}")
+    colpin("mid-line wrap boundary must paint (next row)",
+           body + [("\x1b[C", 0.15)] * boundary, 0, cols)
     # one more Right: column 1 (adjacent positions differ by exactly one)
-    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
-                 + [("\x1b[C", 0.05)] * (boundary + 1), cols=cols)
-    got = last_col_move(raw)
-    if got != 1:
-        failures.append(f"w={cols}: one past the boundary must paint col 1, got {got!r}")
+    colpin("one past the boundary must paint",
+           body + [("\x1b[C", 0.15)] * (boundary + 1), 1, cols)
     # Left back across: the mirror returns to col 0
-    raw = runraw([("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
-                 + [("\x1b[C", 0.05)] * (boundary + 1) + [("\x1b[D", 0.2)], cols=cols)
-    got = last_col_move(raw)
-    if got != 0:
-        failures.append(f"w={cols}: Left across the boundary must mirror to col 0, got {got!r}")
+    colpin("Left across the boundary must mirror to",
+           body + [("\x1b[C", 0.15)] * (boundary + 1) + [("\x1b[D", 0.3)], 0, cols)
     # END of line exactly at the boundary: wrap-PENDING — the last column,
     # named explicitly (cols-1), never an off-screen col the terminal clamps
-    raw = runraw([("x" * boundary, 0.5)], cols=cols)
-    got = last_col_move(raw)
-    if got != cols - 1:
-        failures.append(f"w={cols}: exact-fill end-of-line must paint the pending col {cols-1}, got {got!r}")
+    colpin("exact-fill end-of-line must paint the pending",
+           [("x" * boundary, 0.5)], cols - 1, cols)
 
 # --- 7c. completion keeps the tracked cursor [D:windows-findings]: Tab
 # with text AFTER the cursor shows the list, then typing continues at the
@@ -237,8 +281,13 @@ if "type T redeclared; earlier values keep the old shape" not in t:
 d = tempfile.mkdtemp()
 open(d + "/a.txt", "w").write("x" * 70000)
 open(d + "/b.txt", "w").write("y")
-keys = [("cd \"%s\"\r" % d, 0.5), ("ls |> Seq.sortByDescending _.bytes\r", 0.7)]
-t, _ = run(keys)
+# marker-driven: drain until the table rule (U+2500) arrives or a 20s
+# deadline — fixed settles lost to loaded runners twice; one
+# whole-probe retry stays (tabulation is deterministic, timing is not)
+keys = [("cd \"%s\"\r" % d, 0.8), ("ls |> Seq.sortByDescending _.bytes\r", 0.3)]
+t, _ = run(keys, until="\u2500")
+if "\u2500" not in t or "bytes" not in t:
+    t, _ = run(keys, until="\u2500")
 if "\u2500" not in t or "bytes" not in t:
     failures.append(f"a record seq must tabulate under a tty: {t[-300:]!r}")
 if "[{" in t:
