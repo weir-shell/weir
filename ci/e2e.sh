@@ -4788,8 +4788,15 @@ HANGEOF
     # insecure = true accepts (openssl-guarded)
     if command -v openssl >/dev/null 2>&1; then
         tport=$((22800 + RANDOM % 200))
-        openssl req -x509 -newkey rsa:2048 -keyout "$hdir/k.pem" -out "$hdir/c.pem" -days 1 -nodes -subj "/CN=127.0.0.1" >/dev/null 2>&1 ||
-            fail "openssl could not generate the self-signed cert"
+        # Git Bash resolves the MINGW (native) openssl, and msys bash
+        # path-converts a leading-slash arg for native binaries:
+        # /CN=… arrives as C:/Program Files/Git/CN=… — the doubled
+        # slash collapses to one on the way in. POSIX keeps the plain
+        # spelling; the failure carries openssl's own words either way.
+        subj="/CN=127.0.0.1"
+        [ "$IS_WINDOWS" = "1" ] && subj="//CN=127.0.0.1"
+        osslerr=$(openssl req -x509 -newkey rsa:2048 -keyout "$hdir/k.pem" -out "$hdir/c.pem" -days 1 -nodes -subj "$subj" 2>&1 >/dev/null) ||
+            fail "openssl could not generate the self-signed cert: $osslerr"
         cat > "$hdir/tls.py" <<TLSEOF
 import http.server, ssl, sys
 class H(http.server.BaseHTTPRequestHandler):
