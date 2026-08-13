@@ -290,6 +290,31 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   arm to SUCCEED wins, losers' spawned processes are tree-killed and
   their failures never surface (all-failed rethrows the first by
   input order; empty raises). `Seq.pfirstWith n` sets the ceiling.
+- A SCOPED background process is `within proc srv = <command>` +
+  an indented block [D:scoped-procs]: the scope IS the lifetime —
+  at every exit (normal or raise) the process TREE is killed and
+  reaped; there is no `&` — an unscoped child is unrepresentable.
+  The readiness
+  wait is `poll timeout=10s watch=srv` + `Net.tcpUp <port>` as the
+  body — `watch=` fails fast if the child dies (its last output rides
+  the error) and stamps the child's state on a timeout. The handle is
+  data: `Proc.pid`/`running`/`tail`; `Proc.wait` lets it finish
+  naturally (exit code as data); `Proc.stop` tears down early. BOTH
+  the child's streams spill to files in a managed tmp dir — never the
+  parent's terminal or its stdout DATA channel (a server logging to
+  stdout cannot break `weir script | next`); the spill is bounded by
+  disk, not memory, and `Proc.tail` reads its last ~100 lines. THE
+  SURFACING RULE: a scoped child's own exit is DATA, the one place
+  raise-by-default does not apply — failure becomes visible through
+  `watch=` or `Proc.wait`, nowhere else. Nested scopes release LIFO.
+  The command position takes splices and env sigils like any command;
+  pipelines and reifiers refuse (`| complete` WAITS — the opposite of
+  backgrounding; compose inside `sh -c`); the block starts on the
+  NEXT line (the command owns the rest of its own). THE NON-CLAIM,
+  stated: normal exit, raise, SIGINT and SIGTERM all close every
+  scope; `kill -9` of weir itself cannot, by definition — no
+  userspace design closes that hole. A child that must OUTLIVE the
+  script is a daemon — write a unit file; weir declines nohup.
 - A `let` RHS takes command mode wherever lets go — top level AND
   inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
   function); `$()` covers sub-expression positions. `function | pat -> e | …`
@@ -888,6 +913,10 @@ let c = Args.load Cmd
   `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
   the message-carrying exit-1. No try/finally — for cleanup-always,
   make failure data with `| complete`, clean up, then propagate.
+  the message-carrying exit-1. No GENERAL try/finally — cleanup-always
+  is RESOURCE-SCOPED (`within tmp/cd/env/proc` release on every exit,
+  raise included); for a fallible middle that is not a resource, reify
+  with `| complete`, clean up, then propagate.
 - Blank lines are TRANSPARENT while a statement is open — bodies,
   arms, brackets, districts group freely with gaps. A statement ends
   at the next column-0 line (or EOF), nowhere else.

@@ -124,7 +124,7 @@
       "name": "meta.preprocessor.weir"
     },
     "within-kind": {
-      "match": "\\b(within)[ \\t]+(tmp|cd|env)\\b",
+      "match": "\\b(within)[ \\t]+(tmp|cd|env|proc)\\b",
       "captures": {
         "1": {
           "name": "keyword.control.weir"

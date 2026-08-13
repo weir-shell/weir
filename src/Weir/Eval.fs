@@ -11,6 +11,16 @@ let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 // returns the code silently instead of printing a located message.
 exception ExitRequest of code: int
 
+// a scoped process handle [D:scoped-procs]: the live child plus its
+// spill paths — identity IS the process (reference equality, pid hash);
+// the scope that bound it owns the lifetime
+[<ReferenceEquality>]
+type ProcHandle =
+    { Proc: System.Diagnostics.Process
+      OutPath: string
+      ErrPath: string
+      SpillDir: string }
+
 [<CustomEquality; NoComparison>]
 type Value =
     | VInt of int64
@@ -34,6 +44,7 @@ type Value =
     | VClosure of param: string * body: TypedExpr * env: Env
     | VClosurePat of binder: Pattern * body: TypedExpr * env: Env
     | VBuiltin of (Value -> Value)
+    | VProc of handle: ProcHandle
 
     override this.Equals(other) =
         match other with
@@ -56,6 +67,7 @@ type Value =
             | VClosure(p1, b1, e1), VClosure(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
             | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
             | VBuiltin f, VBuiltin g -> obj.ReferenceEquals(f, g)
+            | VProc a, VProc b -> obj.ReferenceEquals(a.Proc, b.Proc)
             | _ -> false
         | _ -> false
 
@@ -77,6 +89,7 @@ type Value =
         | VClosure(p, _, _) -> hash p
         | VClosurePat(p, _, _) -> hash p
         | VBuiltin f -> LanguagePrimitives.PhysicalHash f
+        | VProc h -> hash ("proc", h.Proc.Id)
 
 and Env = Map<string, Value>
 
@@ -169,6 +182,19 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VClosure _ -> "<fun>"
         | VClosurePat _ -> "<fun>"
         | VBuiltin _ -> "<builtin>"
+        | VProc h ->
+            // queryable after the scope killed it (Kill leaves HasExited
+            // readable); the guard is for a disposed handle only
+            let state =
+                try
+                    if h.Proc.HasExited then
+                        $"exited {h.Proc.ExitCode}"
+                    else
+                        "running"
+                with _ ->
+                    "exited"
+
+            $"proc(pid={h.Proc.Id}, {state})"
         | VUnit -> "()"
         | VTuple items -> "(" + (items |> List.map sub |> String.concat ", ") + ")"
 
@@ -177,6 +203,47 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 // The REPL/-e echo [D:repl-echo]: bounded render + the way-out hint.
 // The count shows only when already known (a materialized list) —
 // counting a lazy seq would force it.
+// the spill tail [D:scoped-procs]: the child's last words — stderr
+// first (where diagnostics live), stdout filling the remainder; read
+// SHARED (the pump holds the write handle and flushes per chunk)
+let procTail (h: ProcHandle) : string list =
+    let readLines path =
+        try
+            use fs =
+                new System.IO.FileStream(
+                    path,
+                    System.IO.FileMode.Open,
+                    System.IO.FileAccess.Read,
+                    System.IO.FileShare.ReadWrite
+                )
+
+            use r = new System.IO.StreamReader(fs)
+            let mutable lines = []
+            let mutable line = r.ReadLine()
+
+            while line <> null do
+                lines <- line :: lines
+                line <- r.ReadLine()
+
+            List.rev lines
+        with _ ->
+            []
+
+    let err = readLines h.ErrPath
+    let out = readLines h.OutPath
+    let take n (xs: string list) = xs |> List.skip (max 0 (xs.Length - n))
+    let errT = take 100 err
+    errT @ take (100 - errT.Length) out
+
+// a one-line rendering of the tail for error messages — the fzf
+// display's ⏎ join (multi-line content, one-line message)
+let procTailLine (h: ProcHandle) : string =
+    let t = procTail h
+
+    match t |> List.skip (max 0 (t.Length - 5)) with
+    | [] -> ""
+    | lines -> " — last output: " + String.concat " ⏎ " lines
+
 // the echo RULE [D:echo-rule]: a FORCED seq echoes in full (the user
 // forced it; the ceiling is scrollback, which is theirs); an UNFORCED
 // one shows the first N and names the lever that WORKS and renders
@@ -1670,8 +1737,35 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEDur n -> VDur n
     | TESize b -> VSize b
     | TEFloat f -> VFloat f
-    | TERetry(isPoll, optsE, body, until) ->
+    | TERetry(isPoll, optsE, watchE, body, until) ->
         let head = if isPoll then "poll" else "retry"
+
+        let watched =
+            watchE
+            |> Option.map (fun w ->
+                match eval env w with
+                | VProc h -> h
+                | v -> unreachable $"the checker rejects a watch of {formatValue v}")
+
+        // the watched child dying IS the answer [D:scoped-procs]: fail
+        // NOW with its own words, never a blind timeout
+        let watchCheck (sw: System.Diagnostics.Stopwatch) =
+            match watched with
+            | Some h when
+                (try
+                    h.Proc.HasExited
+                 with _ ->
+                     true)
+                ->
+                // elapsed is the POLL's clock — Process.StartTime throws
+                // on an exited child (the .NET trap), and the wait's own
+                // duration is the number the reader wants anyway
+                failwith (
+                    $"poll: watched process (pid {h.Proc.Id}) exited with code {h.Proc.ExitCode} "
+                    + $"after {formatDuration sw.ElapsedMilliseconds}"
+                    + procTailLine h
+                )
+            | _ -> ()
 
         let fields =
             match eval env optsE with
@@ -1732,11 +1826,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let exhausted (n: int) =
             if isPoll then
-                failwith $"poll: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s))"
+                // the watched state rides the exhaustion [D:scoped-procs]:
+                // up-but-never-ready names itself (only poll can reach
+                // this message — the reason watch is a key, not a wrapper)
+                let watchedNote =
+                    match watched with
+                    | Some h -> $"; watched process (pid {h.Proc.Id}) still running{procTailLine h}"
+                    | None -> ""
+
+                failwith $"poll: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s)){watchedNote}"
             else
                 failwith $"retry: exhausted {attempts} attempt(s) over {formatDuration sw.ElapsedMilliseconds}"
 
         let rec loop (n: int) =
+            watchCheck sw
             // raises PROPAGATE [D:retry-poll]: retry retries on the
             // predicate, never on exceptions — command failure becomes
             // data through the reifier family
@@ -2057,6 +2160,50 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 eval env body
             finally
                 Session.popEnvOverlay ()
+        | "proc", Some binderName, Some cmdNode ->
+            // the scoped process [D:scoped-procs]: spawn with both
+            // streams spilling, bind the handle, and at EVERY exit —
+            // normal and raise alike — tree-kill and reap. The scope IS
+            // the lifetime; the exit hook is the hard-exit backstop.
+            let prog, argv, overlay =
+                match cmdNode.Kind with
+                | TECmd(prog, args, cenvO) -> prog, argvOf env args, overlayOf env cenvO
+                | _ -> unreachable "the parser guarantees a command in the proc slot"
+
+            let spill =
+                System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-proc-{System.Guid.NewGuid():N}")
+
+            System.IO.Directory.CreateDirectory spill |> ignore
+            Session.registerTmpDir spill
+
+            let p =
+                Proc.startSpilled
+                    overlay
+                    (Proc.resolveProg prog)
+                    argv
+                    (System.IO.Path.Combine(spill, "out.log"))
+                    (System.IO.Path.Combine(spill, "err.log"))
+
+            Session.registerProc p
+
+            let handle =
+                { Proc = p
+                  OutPath = System.IO.Path.Combine(spill, "out.log")
+                  ErrPath = System.IO.Path.Combine(spill, "err.log")
+                  SpillDir = spill }
+
+            try
+                eval (Map.add binderName (VProc handle) env) body
+            finally
+                Proc.stopTree p
+                Session.deregisterProc p
+
+                (try
+                    System.IO.Directory.Delete(spill, true)
+                 with _ ->
+                     ())
+
+                Session.deregisterTmpDir spill
         | _, Some binderName, _ ->
             // kind "tmp" [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on EVERY exit —

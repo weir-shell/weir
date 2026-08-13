@@ -402,6 +402,50 @@ let isWithinHead (piece: string) : bool =
     afterLet = "within"
     || afterLet.StartsWith "within " && not (afterLet.Contains ";")
 
+// the proc head [D:scoped-procs]: its TAIL is a command line, so the
+// FIRST block statement must join at the machine boundary too — a
+// space join would feed it to the command's argv (the
+// sibling-sentinel's argument, applied one position earlier). Keyed
+// lexically like isWithinHead; the last segment is the dangling piece.
+let endsInProcHead (text: string) : bool =
+    let lastSeg =
+        match text.LastIndexOf Parser.sibSep with
+        | -1 -> text
+        | i -> text.Substring(i + 1)
+
+    // the head may sit mid-segment (behind a let, a lambda arrow, a
+    // pipe) — find its LAST occurrence OUTSIDE strings (the one
+    // scanner), then require the binder-`=` shape; the command tail
+    // then runs to the segment's end, which is the thing a space join
+    // would feed to argv
+    let marker = "within proc "
+
+    let lastStart =
+        foldOutsideStrings
+            (fun acc i _ ->
+                if
+                    i + marker.Length <= lastSeg.Length
+                    && lastSeg.Substring(i, marker.Length) = marker
+                    // word-bounded: an identifier merely ending in the
+                    // letters must not trip it (the `do` rule's argument)
+                    && (i = 0
+                        || not (System.Char.IsLetterOrDigit lastSeg[i - 1] || lastSeg[i - 1] = '_'))
+                then
+                    i
+                else
+                    acc)
+            -1
+            lastSeg
+
+    lastStart >= 0
+    && (let rest = lastSeg.Substring(lastStart + marker.Length)
+
+        match rest.IndexOf '=' with
+        | -1 -> false
+        | eq ->
+            rest.Substring(0, eq).Trim()
+            |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+
 let dangleOpensBlock (piece: string) : bool =
     let t = piece.TrimEnd()
 
@@ -1243,7 +1287,16 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         |> Result.map (fun brackets ->
                                                             Some
                                                                 { p with
-                                                                    LL = applyJoin JSpace p.LL piece lineNo indent
+                                                                    LL =
+                                                                        applyJoin
+                                                                            (if endsInProcHead p.LL.Text then
+                                                                                 JStmtSibling
+                                                                             else
+                                                                                 JSpace)
+                                                                            p.LL
+                                                                            piece
+                                                                            lineNo
+                                                                            indent
                                                                     LastIndent = backTo
                                                                     StmtLevel = backTo
                                                                     PrevDangles = dangleOpensBlock piece
@@ -1338,7 +1391,16 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             Ok(
                                                                 Some
                                                                     { p with
-                                                                        LL = applyJoin JSpace ll piece lineNo indent
+                                                                        LL =
+                                                                            applyJoin
+                                                                                (if endsInProcHead ll.Text then
+                                                                                     JStmtSibling
+                                                                                 else
+                                                                                     JSpace)
+                                                                                ll
+                                                                                piece
+                                                                                lineNo
+                                                                                indent
                                                                         LastIndent = lastIndent
                                                                         StmtLevel = stmtLevel
                                                                         PrevDangles = dangleOpensBlock piece
@@ -1392,6 +1454,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             // NOT a user ';' — command mode stops here
                                                             | _ when indent = siblingLevel && indent > lambdaFloor ->
                                                                 p.Lets, JStmtSibling
+                                                            // a proc head's block joins sentineled even in
+                                                            // the dangle position [D:scoped-procs]
+                                                            | _ when endsInProcHead ll.Text -> p.Lets, JStmtSibling
                                                             | _ -> p.Lets, JSpace
 
                                                         let lets =

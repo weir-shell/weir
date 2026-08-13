@@ -87,7 +87,12 @@ and TypedKind =
     | TEIf of cond: TypedExpr * thn: TypedExpr * els: TypedExpr option
     | TEDur of ms: int64
     | TEFloat of value: float
-    | TERetry of poll: bool * opts: TypedExpr * body: TypedExpr * until: (string * TypedExpr) option
+    | TERetry of
+        poll: bool *
+        opts: TypedExpr *
+        watch: TypedExpr option *
+        body: TypedExpr *
+        until: (string * TypedExpr) option
     | TESize of bytes: int64
     | TESeq of first: TypedExpr * rest: TypedExpr
     | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
@@ -436,6 +441,9 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // Eq stays excluded like seq (no conditional instances —
             // the closed class system is untouched)
             | Cls.Show, TNamed("Map", [ TStr; inner ]) -> ok seen inner
+            // a handle shows (pid + state) [D:scoped-procs]; Eq/Ord
+            // stay excluded by construction (the decompose fall-through)
+            | Cls.Show, TNamed("Proc", []) -> true
             | Cls.Show, TNamed(n, targs) -> decompose n targs
             // Ord: int | string | bool EXACTLY — no decomposition, no
             // record/union ordering (no receipts; the message names it)
@@ -1540,11 +1548,26 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TESize b
               Ty = TSize
               Span = expr.Span }
-    | ERetry(isPoll, opts, body, until) ->
+    | ERetry(isPoll, opts, watch, body, until) ->
         result {
             let famTy = TNamed((if isPoll then "Poll" else "Retry"), [])
             let head = if isPoll then "poll" else "retry"
             let! topts = check ctx env opts famTy
+
+            // watch= is poll's key [D:scoped-procs]: poll waits for
+            // ready (a watched child dying IS the answer); retry
+            // retries FAILURES — a dead process is not a transient one
+            do!
+                match watch with
+                | Some w when not isPoll ->
+                    err w.Span "watch= is poll's key (wait-for-ready); retry retries failures — run the wait under poll"
+                | _ -> Ok()
+
+            let! twatch =
+                match watch with
+                | Some w -> check ctx env w (TNamed("Proc", [])) |> Result.map Some
+                | None -> Ok None
+
             let! tbody = infer ctx env body
 
             match until with
@@ -1565,7 +1588,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let! tpred = check ctx env' pred TBool
 
                     return
-                        { Kind = TERetry(isPoll, topts, tbody, Some(b, tpred))
+                        { Kind = TERetry(isPoll, topts, twatch, tbody, Some(b, tpred))
                           Ty = bodyTy
                           Span = expr.Span }
             | None ->
@@ -1575,7 +1598,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     do! bind ctx env body.Span TBool tbody.Ty
 
                     return
-                        { Kind = TERetry(isPoll, topts, tbody, None)
+                        { Kind = TERetry(isPoll, topts, twatch, tbody, None)
                           Ty = TUnit
                           Span = expr.Span }
                 | bodyTy ->
@@ -1613,11 +1636,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 match kind, arg with
                 | "cd", Some a -> check ctx env a TStr |> Result.map Some
                 | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
+                // proc's arg is the COMMAND node [D:scoped-procs] — typed
+                // as any command (the parser guarantees ECmd), evaluated
+                // by the scope as a spawn, never as a statement
+                | "proc", Some a -> infer ctx env a |> Result.map Some
                 | _ -> Ok None
 
             let benv =
                 match binder with
-                | Some(n, _) -> bindParams env [ n, TStr ]
+                | Some(n, _) -> bindParams env [ n, (if kind = "proc" then TNamed("Proc", []) else TStr) ]
                 | None -> env
 
             let! tbody = infer ctx benv body
@@ -3360,8 +3387,14 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEDur _ -> te.Kind
         | TEFloat _ -> te.Kind
         | TESize _ -> te.Kind
-        | TERetry(ip, o, b, u) ->
-            TERetry(ip, finalizeExpr ctx o, finalizeExpr ctx b, u |> Option.map (fun (n, p) -> n, finalizeExpr ctx p))
+        | TERetry(ip, o, w, b, u) ->
+            TERetry(
+                ip,
+                finalizeExpr ctx o,
+                w |> Option.map (finalizeExpr ctx),
+                finalizeExpr ctx b,
+                u |> Option.map (fun (n, p) -> n, finalizeExpr ctx p)
+            )
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
         | TEWithin(k, n, a, b) -> TEWithin(k, n, a |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
         | TEEnvLoad _
@@ -3571,7 +3604,11 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEDur _ -> []
     | TEFloat _ -> []
     | TESize _ -> []
-    | TERetry(_, o, b, u) -> [ o; b ] @ (u |> Option.map (snd >> List.singleton) |> Option.defaultValue [])
+    | TERetry(_, o, w, b, u) ->
+        [ o ]
+        @ Option.toList w
+        @ [ b ]
+        @ (u |> Option.map (snd >> List.singleton) |> Option.defaultValue [])
     | TESeq(a, b) -> [ a; b ]
     | TEWithin(_, _, a, b) -> Option.toList a @ [ b ]
     | TEList items -> items

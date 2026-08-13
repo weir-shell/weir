@@ -354,6 +354,74 @@ let completeWith
 let complete (prog: string) (args: string list) (input: seq<string> option) : int * seq<string> * seq<string> =
     completeWith [] prog args input
 
+// a SCOPED background child [D:scoped-procs]: both streams spill to
+// files (the parent's terminal never interleaves; Proc.tail and the
+// poll-watch errors read them back), stdin closed — a child that reads
+// gets EOF. Registered with the exit hook by the CALLER.
+let startSpilled
+    (overlay: (string * string) list)
+    (prog: string)
+    (args: string list)
+    (outPath: string)
+    (errPath: string)
+    : Process =
+    let psi = ProcessStartInfo(prog)
+
+    for a in args do
+        psi.ArgumentList.Add a
+
+    for k, v in overlay do
+        psi.Environment[k] <- v
+
+    psi.WorkingDirectory <- Session.Cwd()
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi.RedirectStandardInput <- true
+    let p = new Process(StartInfo = psi)
+
+    (try
+        p.Start() |> ignore
+     with :? System.ComponentModel.Win32Exception ->
+         failwith $"command not found or not executable: {prog}")
+
+    p.StandardInput.Close()
+
+    // per-chunk flush: the spill must be READABLE while the child runs
+    // (tail during the scope) — CopyTo's big buffer would sit on lines
+    let pump (src: System.IO.Stream) (path: string) =
+        let t =
+            System.Threading.Thread(fun () ->
+                try
+                    use dst =
+                        new System.IO.FileStream(
+                            path,
+                            System.IO.FileMode.Create,
+                            System.IO.FileAccess.Write,
+                            System.IO.FileShare.ReadWrite
+                        )
+
+                    let buf = Array.zeroCreate 8192
+                    let mutable n = src.Read(buf, 0, buf.Length)
+
+                    while n > 0 do
+                        dst.Write(buf, 0, n)
+                        dst.Flush()
+                        n <- src.Read(buf, 0, buf.Length)
+                with _ ->
+                    ())
+
+        t.IsBackground <- true
+        t.Start()
+
+    pump p.StandardOutput.BaseStream outPath
+    pump p.StandardError.BaseStream errPath
+    p
+
+/// tree-kill then reap, idempotent — the scope-exit tail and Proc.stop
+/// share it (reap's own try/catch absorbs an already-dead child)
+let stopTree (p: Process) : unit = reap p
+
 let resolveProg (prog: string) : string =
     if prog.Contains '/' then
         Session.resolve prog

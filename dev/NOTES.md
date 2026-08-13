@@ -23,6 +23,29 @@ editor, so #he completed to head from the general pool — the fix
 returns BARE directive names at a line-head '#' so replacement
 composes with the glyph already typed.
 
+## scoped processes: within proc, and the no-orphan law (2026-08-13)
+
+The session where the plan's design questions kept resolving
+structurally. The sugar probe (can watch=srv reach an Option field?)
+dissolved by moving watch OUT of the options record entirely — a head
+key peeled before the desugar, which is also the honest semantics: a
+live handle is not configuration. The real fight was the ASSEMBLER:
+the dangle rule space-joins a block's first statement, and a proc
+head's tail is a command whose argv happily ate it — the fix is the
+sibling-sentinel's own founding argument applied one position
+earlier, and it took three tries to find all the join sites (the
+lambda-continuation pair only surfaced under a pmap probe) and to
+make the detector string-blind and word-bounded instead of
+segment-anchored. Two adjacent findings were the session's bonus
+material: def-less builtin type names were silently declarable (the
+tests' own `type Proc` fixture proved the collision by breaking), and
+the #help gap the user reported turned out to be exactly one missing
+builtinDocs entry per form head — within's now derives its kind list
+from the table, so the next kind cannot miss the doc. The .NET traps
+were the usual suspects: Process.StartTime throws on an exited child
+(the watch error now uses the poll's own clock), and a spilling child
+holds its spill dir open, so the exit hook kills before it deletes.
+
 ## the echo cap: 100 by default, #echo to change it (2026-08-12)
 
 The rider on echo-lines that closes the arc's last papercut: the
