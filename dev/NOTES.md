@@ -1,5 +1,23 @@
 # Spike Notes
 
+## Instant: absolute time, the boring subset (2026-08-14)
+
+The session where the review's scoping did the design work in
+advance: instants-only/UTC/no-calendar was settled before the first
+edit, so the implementation was mostly arms — the binop table, the
+class lists, the two boundary tables — each following Duration's
+groove exactly. The named-format reader was the real work as
+predicted, and the acceptance immediately taught it a lesson: the
+plan's strptime subset met openssl's actual enddate output and needed
+%b (month names) and %e (space-padded days) before the cert-expiry
+fixture would parse — the acceptance-first discipline catching a
+subset drawn from theory rather than from the receipts. Two smaller
+notes: the try-twin's error split is worth remembering (a mismatch is
+None but an unknown DIRECTIVE raises even in tryParseWith — a format
+bug is not a data miss), and `24h * 300` is the spelling for long
+spans because Duration deliberately has no day unit — the cert
+fixture tripped on `300d` first, which is Duration's own law working.
+
 ## the surface gate: doc completeness as a checked property (2026-08-14)
 
 The user's framing was the whole design: #help already enumerates the

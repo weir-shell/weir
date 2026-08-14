@@ -231,6 +231,21 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (convert via `Duration.toMillis` into an int field). Interpolation holes
   render Durations directly (`$"took {elapsed}"`); command arguments
   do NOT — pass `Duration.toMillis d` or `show d` deliberately.
+- Absolute time is `Instant` [D:instant] — a POINT on the UTC
+  timeline, the boring subset: no local zones, no calendar arithmetic
+  (`t + 1d`-style "next day same wall time" does not exist; a shift is
+  exact physical time — `t + 24h` means exactly 24 hours). `Instant.now ()`;
+  `Instant.parse` reads ISO 8601 (`Z` or numeric offsets, normalized
+  to UTC; a bare date is midnight UTC); `Instant.parseWith`/`tryParseWith`
+  read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
+  %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
+  `%z` means UTC. `instant - instant` IS a `Duration`
+  (`expiry - Instant.now () > 24h * 300`); `instant ± duration`
+  shifts; two points never add (teaching error). Ord/Eq admit —
+  instants sort and compare. `Args.load`/`Env.load` parse ISO into
+  `Instant` fields (`--since 2026-08-01`). No JSON (convert via
+  `Instant.epochMs` or `show`); command argv likewise deliberate.
+  `show` renders ISO UTC.
 - Secrets are `Secret` (a plain string inside — a RENDERING marker, not
   memory protection): `show` renders `***` (including a `Secret` field
   inside a shown record), interpolation REFUSES (`$"tok: {s}"` is a
@@ -1004,6 +1019,7 @@ not the teaching.
 - `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
 - `File`: `append` `copy` `delete` `exists` `move` `read` `readSecret` `size` `write`
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
+- `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`

@@ -673,6 +673,7 @@ let private scalarCompare (name: string) (a: Value) (b: Value) : int =
     | VBool x, VBool y -> compare x y
     | VFloat x, VFloat y -> compare x y
     | VDur x, VDur y -> compare x y
+    | VInstant x, VInstant y -> compare x y
     | VSize x, VSize y -> compare x y
     | v, _ -> unreachable $"the checker rejects '{name}' keys of {formatValue v}"
 
@@ -2749,6 +2750,49 @@ let private netMembers: (string * Ty * Value) list =
               )
           | v -> unreachable $"the checker rejects 'Net.portOpen' on {formatValue v}") ]
 
+// a point on the UTC timeline [D:instant]: the boring subset — no
+// local zones, no calendar arithmetic; parse in, epoch out, `-` for
+// the Duration between (the binop table's arms)
+let private instantMembers: (string * Ty * Value) list =
+    let parseP, tryParseP = parsePairImpl "Instant" parseInstantMs VInstant
+
+    [ "now", TFun(TUnit, TInstant), VBuiltin(fun _ -> VInstant(System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+      "parse", TFun(TStr, TInstant), parseP
+      "tryParse", TFun(TStr, TNamed("Option", [ TInstant ])), tryParseP
+      "parseWith",
+      TFun(TStr, TFun(TStr, TInstant)),
+      VBuiltin(fun fmtV ->
+          VBuiltin(fun v ->
+              match fmtV, v with
+              | VStr fmt, VStr text ->
+                  (match parseInstantWithMs fmt text with
+                   | Ok ms -> VInstant ms
+                   | Error e -> failwith $"Instant.parseWith: {e}")
+              | _ -> unreachable "the checker rejects 'Instant.parseWith' on these arguments"))
+      "tryParseWith",
+      TFun(TStr, TFun(TStr, TNamed("Option", [ TInstant ]))),
+      VBuiltin(fun fmtV ->
+          VBuiltin(fun v ->
+              match fmtV, v with
+              | VStr fmt, VStr text ->
+                  (match parseInstantWithMs fmt text with
+                   | Ok ms -> VUnion("Some", Some(VInstant ms))
+                   | Error e when e.StartsWith "unknown directive" -> failwith $"Instant.tryParseWith: {e}"
+                   | Error _ -> VUnion("None", None))
+              | _ -> unreachable "the checker rejects 'Instant.tryParseWith' on these arguments"))
+      "epochMs",
+      TFun(TInstant, TInt),
+      VBuiltin(fun v ->
+          match v with
+          | VInstant ms -> VInt ms
+          | v -> unreachable $"the checker rejects 'Instant.epochMs' on {formatValue v}")
+      "ofEpochMs",
+      TFun(TInt, TInstant),
+      VBuiltin(fun v ->
+          match v with
+          | VInt ms -> VInstant ms
+          | v -> unreachable $"the checker rejects 'Instant.ofEpochMs' on {formatValue v}") ]
+
 let private mapMembers: (string * Ty * Value) list =
     [ "ofPairs",
       TFun(TSeq(TTuple [ TStr; tA ]), mapTy tA),
@@ -2824,6 +2868,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
       "Map", mapMembers
+      "Instant", instantMembers
       "Proc", procMembers
       "Net", netMembers
       "Path", pathMembers
@@ -2901,6 +2946,40 @@ let builtinDocs: Map<string, BuiltinDoc> =
                + ".")
               (Some "within tmp d print d")
               (Some "within proc srv = <command> binds a Proc handle; the tree is killed and reaped at scope exit")
+          // ---- Instant: the UTC point [D:instant] ----
+          "Instant.now",
+          bd "The current instant (UTC)." (Some "Instant.now () > Instant.parse \"2020-01-01\"") None
+          |> named [ "unit" ]
+          "Instant.parse",
+          bd
+              "An ISO 8601 timestamp (Z or a numeric offset, normalized to UTC; a bare date reads as midnight UTC). Raises on anything else — tryParse asks."
+              (Some "Instant.parse \"2026-08-14T12:00:00Z\"")
+              None
+          |> named [ "text" ]
+          "Instant.tryParse",
+          bd "Some instant, or None when the text is not ISO 8601." (Some "Instant.tryParse \"not-a-time\"") None
+          |> named [ "text" ]
+          "Instant.parseWith",
+          bd
+              "Read a timestamp by a NAMED format — %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z (%% literal), other text literal. PREFIX semantics: a log line's tail rides free. No %z means UTC. Raises on mismatch, naming the position."
+              (Some "Instant.parseWith \"%Y/%m/%d %H:%M:%S\" \"2026/08/14 09:15:00 GET /health\"")
+              None
+          |> named [ "format"; "text" ]
+          "Instant.tryParseWith",
+          bd
+              "Some instant, or None when the line does not match (an unknown DIRECTIVE still raises — that is a format bug, not a data miss)."
+              (Some "Instant.tryParseWith \"%Y-%m-%d\" \"no timestamp here\"")
+              None
+          |> named [ "format"; "text" ]
+          "Instant.epochMs",
+          bd
+              "Milliseconds since the Unix epoch, as an int — the interop escape (JSON fields, date +%s%3N)."
+              (Some "Instant.parse \"1970-01-01T00:00:01Z\" |> Instant.epochMs")
+              None
+          |> named [ "t" ]
+          "Instant.ofEpochMs",
+          bd "The instant at an epoch-milliseconds int." (Some "Instant.ofEpochMs 0 |> show") None
+          |> named [ "ms" ]
           // ---- Map: the ID-keyed object [D:map-string] ----
           "Map.ofPairs",
           bd

@@ -2820,6 +2820,7 @@ tySynRef.Value <-
               | "bool" -> ws >>% TBool
               | "unit" -> ws >>% TUnit
               | "Duration" -> ws >>% TDur
+              | "Instant" -> ws >>% TInstant
               | "float" -> ws >>% TFloat
               | "Size" -> ws >>% TSize
               | "Secret" -> ws >>% TSecret

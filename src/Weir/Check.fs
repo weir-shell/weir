@@ -424,7 +424,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // Secret admits Eq [D:secret] (did the token change?) but NOT
             // Ord — sorting secrets is meaningless; constant-time is not
             // claimed (weir is not a crypto library)
-            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize | TSecret) -> true
+            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize | TInstant | TSecret) -> true
             // floats are EXCLUDED from Eq [D:floats] — finite-only kept
             // equality reflexive; representation (0.1 + 0.2) is the trap
             // that remains, and weir does not vouch for it
@@ -433,7 +433,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             | Cls.Eq, TTuple ts -> ts |> List.forall (ok seen)
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
-            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TSecret) -> true
+            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TInstant | TSecret) -> true
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
@@ -450,7 +450,9 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // Duration joins Ord [D:duration] — the first widening since
             // the class set closed; elapsed > timeout is the point
             // floats join Ord [D:floats]: total BECAUSE finite-only
-            | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur | TSize) -> true
+            // Instant joins Ord [D:instant] — before/after IS comparison
+            // (Duration's own admission argument, one type later)
+            | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur | TSize | TInstant) -> true
             | Cls.Ord, _ -> false
             // vars and row vars are consumed by the outer match arms;
             // the compiler cannot see that through this nesting
@@ -502,6 +504,8 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
                     span
                     "a Duration's argv form depends on the program; pass Duration.toMillis d or show d deliberately"
             | TSize -> err span "a Size's argv form depends on the program; pass Size.toBytes s or show s deliberately"
+            | TInstant ->
+                err span "an Instant's argv form depends on the program; pass Instant.epochMs t or show t deliberately"
             | ty -> err span $"command arguments must be strings, ints or bools; this one is {formatTy ty}"
 
 // vars discharge their pendings the moment they resolve — no trial
@@ -777,8 +781,10 @@ let rec private typeBinOp
             bind ctx env l.Span TBool l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span TBool r.Ty)
         )
-    | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur | TSize) as t) -> retryAfter (bind ctx env l.Span t l.Ty)
-    | _, ((TInt | TFloat | TStr | TBool | TDur | TSize) as t), TVar _ -> retryAfter (bind ctx env r.Span t r.Ty)
+    | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant) as t) ->
+        retryAfter (bind ctx env l.Span t l.Ty)
+    | _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant) as t), TVar _ ->
+        retryAfter (bind ctx env r.Span t r.Ty)
     | ("==" | "<>"), a, b ->
         // Eq via the class solver (Session A): concrete failures keep the
         // pre-class message verbatim; unresolved operands now DEFER (the
@@ -824,6 +830,17 @@ let rec private typeBinOp
             opSpan
             "duration ÷ duration has no unit — Duration.toMillis d1 / Duration.toMillis d2 gives the integer ratio"
     | (">" | "<" | ">=" | "<="), TDur, TDur -> Ok TBool
+    // Instant arithmetic [D:instant]: two points SUBTRACT to the
+    // Duration between them; a point shifts by a Duration (both
+    // spellings — addition commutes); points never add
+    | "-", TInstant, TInstant -> Ok TDur
+    | "+", TInstant, TDur -> Ok TInstant
+    | "+", TDur, TInstant -> Ok TInstant
+    | "-", TInstant, TDur -> Ok TInstant
+    | "+", TInstant, TInstant ->
+        err opSpan "two points don't add — subtract them ('-') for the Duration between, or shift one by a Duration"
+    | "-", TDur, TInstant -> err opSpan "a Duration minus a point has no meaning; flip it: instant - duration"
+    | (">" | "<" | ">=" | "<="), TInstant, TInstant -> Ok TBool
     | ("+" | "-"), TInt, TInt -> Ok TInt
     | "+", TStr, TStr -> Ok TStr
     | ("*" | "/"), TInt, TInt -> Ok(TInt)
@@ -910,6 +927,12 @@ let rec private jsonAdmitted
         err
             span
             $"{at}Duration is not representable in JSON — convert explicitly (Duration.toMillis into an int field, or show for a string)"
+    | TInstant ->
+        // parked with its siblings [D:instant]: timestamps have no single
+        // wire convention (epoch int and ISO string both defensible)
+        err
+            span
+            $"{at}an Instant is not representable in JSON — convert explicitly (Instant.epochMs into an int field, or show for an ISO 8601 string)"
     | TSecret ->
         // a Secret crossing to a wire format is almost certainly a
         // mistake [D:secret]; Secret.reveal is the deliberate spelling
@@ -1932,7 +1955,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  // Secret field is the main producer, not a
                                  // compromise (the non-claim is in SECURITY.md)
                                  | TSecret
-                                 | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur | TSize | TSecret ]) -> true
+                                 // --since 2026-08-01 [D:instant] — the boundary
+                                 // parsing these types exist for
+                                 | TInstant
+                                 | TNamed("Option", [ TStr | TInt | TFloat | TBool | TDur | TSize | TInstant | TSecret ]) ->
+                                     true
                                  | ty -> isEnum ty
 
                              // a payload-carrying case is a SCHEMA error, named at
@@ -1983,7 +2010,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  | Some(bad, badTy) ->
                                      err
                                          arg.Span
-                                         $"Env.load fields must be string, int, float, bool, Duration, Size, Secret, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
+                                         $"Env.load fields must be string, int, float, bool, Duration, Size, Instant, Secret, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
                                  | None ->
 
                                      match caseCollision with
@@ -3641,6 +3668,7 @@ let rec private validateTy
     | TBool
     | TUnit
     | TDur
+    | TInstant
     | TSize
     | TSecret -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t

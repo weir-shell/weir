@@ -3236,7 +3236,7 @@ let typedArgvTests =
 
               Expect.stringContains
                   (rejects e5 "Env.load CE")
-                  "string, int, float, bool, Duration, Size, Secret, an enum union (0-arity cases), or Option of these"
+                  "string, int, float, bool, Duration, Size, Instant, Secret, an enum union (0-arity cases), or Option of these"
                   ""
           }
           test "Env.load enum conversion: casing, candidates, collect [D:env-enums]" {
@@ -11999,6 +11999,133 @@ let scopedProcTests =
               Expect.isFalse (Weir.Script.endsInProcHead "let awithin proc = 5") "word-bounded"
           } ]
 
+let instantTests =
+    // Instant [D:instant]: the boring subset — instants only, UTC
+    // inside, no calendar arithmetic; `-` between points IS Duration
+    testList
+        "Instant [D:instant]"
+        [ test "the arithmetic: points subtract to Duration; Duration shifts a point (both spellings); points never add" {
+              Expect.equal
+                  (run "Instant.parse \"2026-08-14T12:00:00Z\" - Instant.parse \"2026-08-14\"")
+                  (VDur 43200000L)
+                  "12h between noon and midnight UTC"
+
+              Expect.equal
+                  (run "(Instant.parse \"2026-08-14\" + 12h) == Instant.parse \"2026-08-14T12:00:00Z\"")
+                  (VBool true)
+                  "shift right"
+
+              Expect.equal
+                  (run "(12h + Instant.parse \"2026-08-14\") == Instant.parse \"2026-08-14T12:00:00Z\"")
+                  (VBool true)
+                  "addition commutes"
+
+              Expect.stringContains
+                  (checkErr "Instant.now () + Instant.now ()").Message
+                  "two points don't add"
+                  "the teaching"
+
+              Expect.stringContains (checkErr "5m - Instant.now ()").Message "flip it" "Duration minus a point teaches"
+          }
+          test "parse: offsets normalize to UTC; bare date is midnight UTC; fractional keeps ms; tryParse asks" {
+              Expect.equal
+                  (run "Instant.parse \"2026-08-14T14:00:00+02:00\" == Instant.parse \"2026-08-14T12:00:00Z\"")
+                  (VBool true)
+                  "the offset is normalized on the way in"
+
+              Expect.equal
+                  (run "Instant.parse \"2026-08-14\" |> Instant.epochMs")
+                  (run "Instant.parse \"2026-08-14T00:00:00Z\" |> Instant.epochMs")
+                  "midnight UTC"
+
+              Expect.equal
+                  (run "show (Instant.parse \"2026-08-14T12:00:00.250Z\")")
+                  (VStr "2026-08-14T12:00:00.250Z")
+                  "ms shown when nonzero"
+
+              Expect.equal
+                  (run "show (Instant.parse \"2026-08-14T12:00:00Z\")")
+                  (VStr "2026-08-14T12:00:00Z")
+                  "…omitted when zero"
+
+              Expect.equal (run "Instant.tryParse \"not-a-time\"") (VUnion("None", None)) ""
+
+              let m =
+                  try
+                      run "Instant.parse \"14/08/2026\"" |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "ISO 8601" "the reader's law is named"
+          }
+          test "parseWith: the named-format reader — prefix semantics, %b/%e, position errors, year-less refusal" {
+              Expect.equal
+                  (run "Instant.parseWith \"%Y/%m/%d %H:%M:%S\" \"2026/08/14 09:15:00 GET /health\" |> show")
+                  (VStr "2026-08-14T09:15:00Z")
+                  "the log line's tail rides free"
+
+              Expect.equal
+                  (run "Instant.parseWith \"notAfter=%b %e %H:%M:%S %Y\" \"notAfter=Aug  4 12:34:56 2027 GMT\" |> show")
+                  (VStr "2027-08-04T12:34:56Z")
+                  "openssl's enddate spelling (month name, padded day)"
+
+              Expect.equal
+                  (run "Instant.parseWith \"%Y-%m-%dT%H:%M:%S%z\" \"2026-08-14T14:00:00+02:00\" |> show")
+                  (VStr "2026-08-14T12:00:00Z")
+                  "%z normalizes"
+
+              let mismatch =
+                  try
+                      run "Instant.parseWith \"%Y-%m-%d\" \"2026-xx-14\"" |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains mismatch "position 6" "the diverging position is named"
+
+              let unknown =
+                  try
+                      run "Instant.parseWith \"%q\" \"x\"" |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains unknown "unknown directive '%q'" "a format bug is not a data miss"
+
+              let yearless =
+                  try
+                      run "Instant.parseWith \"%H:%M\" \"09:15\"" |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains yearless "full date" "year-less formats refuse with the reason"
+
+              Expect.equal
+                  (run "Instant.tryParseWith \"%Y-%m-%d\" \"no timestamp\"")
+                  (VUnion("None", None))
+                  "a data miss is None"
+          }
+          test "epoch round-trip; Ord sorts; Eq holds" {
+              Expect.equal (run "Instant.ofEpochMs 1500 |> Instant.epochMs") (VInt 1500L) ""
+
+              Expect.equal
+                  (run "[Instant.parse \"2027-01-01\"; Instant.parse \"2026-01-01\"] |> Seq.sort |> Seq.head |> show")
+                  (VStr "2026-01-01T00:00:00Z")
+                  "Ord admits (before/after IS comparison)"
+          }
+          test "the JSON boundary refuses with both conversions named [D:instant]" {
+              let e = env |> declare "type TInstR = { t: Instant }"
+
+              match Weir.Check.typecheck e (parse "[\"{}\"] |> from json TInstR") with
+              | Error terr ->
+                  Expect.stringContains terr.Message "not representable in JSON" ""
+                  Expect.stringContains terr.Message "Instant.epochMs" "the int conversion"
+                  Expect.stringContains terr.Message "show for an ISO 8601 string" "the string conversion"
+              | Ok _ -> failtest "an Instant field must refuse the JSON boundary"
+          } ]
+
 let mapStringTests =
     // Map<string, T> [D:map-string]: the ID-keyed object — keys are
     // DATA, not schema; string keys only; the adapter slot's third form
@@ -12619,6 +12746,7 @@ let allTests =
           yamlSeqTests
           anonRecordTests
           mapStringTests
+          instantTests
           scopedProcTests
           formatSurfaceTests
           secretTests

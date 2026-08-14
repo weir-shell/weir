@@ -1162,6 +1162,41 @@ unrepresentable. Options are a record underneath — compute and share
 them: `let fast = { Retry.defaults with attempts = 3 }` then
 `retry fast`.
 
+## Absolute time
+
+`Instant` is a point on the UTC timeline — deliberately the boring
+subset. No local zones, no calendar arithmetic ("add a month" is where
+timezone hell lives, and scripts don't need it); shifting by a
+`Duration` is exact physical time, so DST does not exist here by
+construction. Two points subtract to the `Duration` between them,
+which is most of what operations work needs:
+
+```weir
+let expiry = Instant.parseWith "notAfter=%b %e %H:%M:%S %Y" "notAfter=Aug 14 12:00:00 2027 GMT"
+if expiry - Instant.now () > 24h * 30 then print "cert healthy" else print "renew soon"
+```
+
+`Instant.parse` reads ISO 8601 (offsets normalize to UTC on the way
+in; a bare date is midnight UTC); `parseWith`/`tryParseWith` read
+named formats for log lines — `%Y %m %d %e %b %H %M %S %f %z`, with
+prefix semantics so a log line's tail rides free:
+
+```weir
+let cutoff = Instant.parse "2026-08-14T10:00:00Z"
+["2026-08-14 09:00:01 boot"; "2026-08-14 11:30:00 ready"]
+    |> Seq.choose (fun l ->
+        match Instant.tryParseWith "%Y-%m-%d %H:%M:%S" l with
+        | Some t -> (if t > cutoff then Some l else None)
+        | None -> None)
+    |> Seq.iter print
+```
+
+Instants sort and compare (Ord/Eq); `Args.load`/`Env.load` parse ISO
+into `Instant` fields (`--since 2026-08-01`); JSON refuses with the
+conversions named (`Instant.epochMs` for an epoch int, `show` for the
+ISO string) — timestamps have no single wire convention, so weir does
+not guess one.
+
 ## Parallelism
 
 `Seq.pmap` / `Seq.piter` fan out over a seq: parallel execution,

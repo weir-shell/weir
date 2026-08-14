@@ -4289,6 +4289,51 @@ echo "$out" | grep -qF "pass Duration.toMillis d or show d deliberately" || fail
 rm -rf "$ddir"
 echo "e2e ok: Duration (defaults rest, both boundaries parse, rejection locates, argv word, hole renders / splice teaches)"
 
+# ---- Instant [D:instant]: the boring subset --------------------------------
+indir=$(mkweirtmp)
+# the cert-expiry acceptance: openssl's own enddate spelling (month
+# name, padded day) through the named-format reader — the use case
+# that had NO weir spelling (openssl-gated, the TLS block's precedent)
+if command -v openssl >/dev/null 2>&1; then
+    insubj="/CN=inst"
+    [ "$IS_WINDOWS" = "1" ] && insubj="//CN=inst"
+    osslerr=$(openssl req -x509 -newkey rsa:2048 -keyout "$indir/k.pem" -out "$indir/c.pem" -days 365 -nodes -subj "$insubj" 2>&1 >/dev/null) ||
+        fail "openssl could not generate the instant-acceptance cert: $osslerr"
+    openssl x509 -enddate -noout -in "$indir/c.pem" > "$indir/enddate.txt"
+    cat > "$indir/expiry.weir" <<'WEOF'
+let line = File.read "enddate.txt" |> Seq.head
+let expiry = line |> Instant.parseWith "notAfter=%b %e %H:%M:%S %Y"
+if expiry - Instant.now () > 24h * 300 then print "cert healthy" else print "cert expiring"
+WEOF
+    out=$(cd "$indir" && $BIN expiry.weir 2>&1) || fail "the cert-expiry acceptance failed: $out"
+    echo "$out" | grep -qF "cert healthy" || fail "a 365-day cert must read healthy: $out"
+else
+    echo "e2e SKIP: openssl absent — the cert-expiry acceptance not run" >&2
+fi
+
+# the log-slicing acceptance: choose + tryParseWith + an Instant cutoff
+cat > "$indir/slice.weir" <<'WEOF'
+let lines = ["2026-08-14 09:00:01 boot"; "garbage line"; "2026-08-14 11:30:00 ready"; "2026-08-14 23:59:59 late"]
+let cutoff = Instant.parse "2026-08-14T10:00:00Z"
+lines
+    |> Seq.choose (fun l ->
+        match Instant.tryParseWith "%Y-%m-%d %H:%M:%S" l with
+        | Some t -> (if t > cutoff then Some l else None)
+        | None -> None)
+    |> Seq.iter print
+WEOF
+out=$($BIN "$indir/slice.weir") || fail "log-slice acceptance failed: $out"
+[ "$out" = "2026-08-14 11:30:00 ready
+2026-08-14 23:59:59 late" ] || fail "the slice must keep exactly the two late lines: $out"
+
+# the JSON refusal teaches both conversions
+printf 'type TR = { t: Instant }\nlet x = [""] |> from json TR\n' > "$indir/jr.weir"
+out=$($BIN "$indir/jr.weir" 2>&1) && fail "an Instant json field must refuse" || true
+echo "$out" | grep -qF "Instant.epochMs into an int field" || fail "the refusal names the conversions: $out"
+
+rm -rf "$indir"
+echo "e2e ok: Instant (cert-expiry via openssl enddate, log slicing by cutoff, JSON refusal teaches)"
+
 # ---- floats, finite-only [D:floats] ----------------------------------------
 out=$($BIN -e '0.5 + 0.5')
 [ "$out" = "1.0 : float" ] || fail "float arithmetic on AOT: $out"
