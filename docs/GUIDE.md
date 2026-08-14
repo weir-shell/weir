@@ -1177,12 +1177,18 @@ is killed and reaped. The five-step shell ritual (`server &`, poll
 the port, use it, `kill`, `wait`) collapses to:
 
 ```weir
-within proc srv = python3 -u -m http.server 8617 --bind 127.0.0.1
+within proc srv = python3 -u -c "import socketserver,http.server as h; s=socketserver.TCPServer(('127.0.0.1',8617),h.SimpleHTTPRequestHandler); s.serve_forever()"
     poll timeout=15s interval=100ms watch=srv
         Net.portOpen 8617
     print $"server {Proc.pid srv} answered"
 print "scope closed, server gone"
 ```
+
+(In real scripts `python3 -m http.server` is the usual spelling; this
+block's inline server skips the reverse-DNS lookup `http.server` does
+at bind — on locked-down CI hosts that lookup can hang under privacy
+gating, a platform behavior worth knowing when a server is
+mysteriously up-but-not-listening.)
 
 `watch=` is the quality move — a child that crashes at startup fails
 the poll IMMEDIATELY with its own last output in the error, and a

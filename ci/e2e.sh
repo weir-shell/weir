@@ -4568,21 +4568,21 @@ echo "e2e ok: exit hook (pfirst exit-race fixed, signal sweep via TERM, registra
 # ---- scoped processes [D:scoped-procs] -------------------------------------
 spdir=$(mkweirtmp)
 spport=$((21500 + RANDOM % 300))
-# the acceptance: start-await-use-teardown in weir, and NOTHING survives
-# the fixture carries its OWN forensics [marker discipline]: on macOS
-# the child sat alive-but-not-listening with an empty tail — the
-# evidence dies with the scope, so capture it WHILE the child lives
-# (process state, its words, who holds the port); noise only surfaces
-# in the fail message ($out rides it)
+# the acceptance: start-await-use-teardown in weir, and NOTHING survives.
+# The server is a plain TCPServer — NOT `-m http.server`, whose
+# HTTPServer.server_bind calls getfqdn(host): on the macOS runner that
+# reverse-DNS parks in mDNSResponder FOREVER for weir-descendant
+# processes (sample(1) showed slot_tp_init -> socket_gethostbyaddr ->
+# mdns_hostbyaddr -> kevent; bash-spawned pythons resolve fine — the
+# privacy gating keys on the spawning binary, which weir cannot fix).
+# The 2.5s checkpoint keeps a light forensic tail: if this fails again
+# the child's words + the port's holder still ride the message.
 cat > "$spdir/acc.weir" <<WEOF
-within proc srv = python3 -u -X importtime -m http.server $spport --bind 127.0.0.1
+within proc srv = python3 -u -c "import socketserver,http.server as h; s=socketserver.TCPServer(('127.0.0.1',$spport),h.SimpleHTTPRequestHandler); s.serve_forever()"
     Duration.sleep 2500ms
     print \$"diag: running={show (Proc.running srv)} pid={Proc.pid srv}"
     Proc.tail srv |> Seq.iter (fun l -> print \$"diag tail: {l}")
-    sh -c \$"ps -o stat=,command= -p {Proc.pid srv} || echo diag-ps-failed"
     sh -c "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep $spport || echo diag-no-listener-on-$spport"
-    sh -c \$"command -v sample >/dev/null && sample {Proc.pid srv} 1 2>/dev/null | grep -A30 'Call graph' | head -34 || echo diag-no-sample"
-    sh -c "env | sort > $spdir/weir-child-env.txt 2>/dev/null || true"
     poll timeout=12s interval=100ms watch=srv
         Net.portOpen $spport
     let n = Http.fetch "http://127.0.0.1:$spport/" |> Seq.length
@@ -4592,12 +4592,9 @@ WEOF
 out=$($BIN "$spdir/acc.weir" 2>&1) || {
     # discriminate the halves [marker discipline]: server reachable from
     # BASH means weir's probe is the broken side; unreachable means the
-    # spawn/bind side. The env DIFF chases the import-stall theory: the
-    # stack showed python parked in pymain_run_module, which points at
-    # the spawn CONTEXT (environment/sys.path), not networking.
+    # spawn/bind side
     probe=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$spport/" 2>/dev/null || echo "curl-failed")
-    envdiff=$(env | sort | diff - "$spdir/weir-child-env.txt" 2>/dev/null | head -25 || true)
-    fail "scoped-proc acceptance failed (bash-side probe of :$spport = $probe; env diff bash-vs-weir-child: ${envdiff:-none-or-unwritten}): $out"
+    fail "scoped-proc acceptance failed (bash-side probe of :$spport = $probe): $out"
 }
 echo "$out" | grep -qF "got=true" || fail "acceptance fetch: $out"
 echo "$out" | grep -qF "closed" || fail "acceptance close: $out"

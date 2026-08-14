@@ -1007,9 +1007,11 @@ not the teaching.
 - `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
+- `Net`: `portOpen`
 - `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse`
 - `Path`: `combine` `dir` `extension` `fileName` `glob` `newTempDir` `stem` `tempRoot`
 - `Poll`: `defaults`
+- `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exists` `find` `first` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
