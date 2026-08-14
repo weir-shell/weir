@@ -580,11 +580,11 @@ within tmp d
 ```
 - Nonzero exit RAISES when the stream is forced. The exit-code
   reifiers (complete's family, single external segment, one law:
-  output goes where the meaning goes): `cmd | succeeds` reifies to
+  output goes where the meaning goes): `cmd | succeeds` is a
   BOOL (silent — a predicate's output IS its result); `cmd | orFail
   "msg"` STREAMS and raises `msg (exit N)` on nonzero, unit on
   success — THE assert idiom, legal as a statement, in `!()`, and in
-  interior lines; `cmd | exitCode` STREAMS and reifies the code as INT,
+  interior lines; `cmd | exitCode` STREAMS and gives the code as INT,
   never raises — bind it or match it (`| 130 ->` for cancels); a
   bare/`!()`/`$()` position is a teaching error ($() captures — use
   `| complete` there). **`succeeds` is exitCode == 0, exactly** —
@@ -864,7 +864,7 @@ let c = Args.load Cmd
   `snips | sha256sum`. Resolution decides: an EXTERNAL head after `|`
   is the pipe; a binding/library head keeps the `|`-chains-commands
   teaching (spell `|>`). LHS must be `seq<string>`. Reifiers compose
-  on the tail — `files | grep -c foo | complete` reifies the (single
+  on the tail — `files | grep -c foo | complete` applies to the (single
   external) segment WITH the value as stdin (`| succeeds`/`| exitCode`/
   `| orFail` too); a MULTI-external chain still needs one segment.
 - Env sigils `$e(...)`/`!e(...)` (ident GLUED to glyph and paren)
@@ -887,7 +887,7 @@ let c = Args.load Cmd
 - `exit n` exits with code n silently (propagation:
   `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
   the message-carrying exit-1. No try/finally — for cleanup-always,
-  reify with `| complete`, clean up, then propagate.
+  make failure data with `| complete`, clean up, then propagate.
 - Blank lines are TRANSPARENT while a statement is open — bodies,
   arms, brackets, districts group freely with gaps. A statement ends
   at the next column-0 line (or EOF), nowhere else.

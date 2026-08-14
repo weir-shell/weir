@@ -976,7 +976,7 @@ over-read: a spliced `int` checks against `integer`; a spliced
 validates what the checker can see.
 
 Nonzero exit raises when the stream is forced. To inspect instead of
-raise, reify the run:
+raise, make the run data:
 
 ```weir
 let r = git log --oneline -1 | complete
@@ -1184,7 +1184,7 @@ Dir.create "wb"
 `fail "reason"` stops the script with a located error and exit 1.
 `exit n` exits with a specific code, silently — the propagation
 spelling for a child's failure. There is no try/finally: to clean up
-whether a step failed or not, reify the fallible middle with
+whether a step failed or not, make the fallible middle data with
 `| complete`, run the cleanup, then propagate:
 
 ```weir

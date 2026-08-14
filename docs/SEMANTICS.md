@@ -78,7 +78,7 @@ weir rejects rather than guesses.
   to zero words when empty (replacing bash's conditional-flag idiom).
   A splat cannot head a command (N heads is incoherent — the
   computed-head park) nor build a word mid-construction (N words
-  cannot live in one). In a reified chain the splat RIDES, by desugar
+  cannot live in one). In a reifier-ended chain the splat RIDES, by desugar
   [D:splat-reifier-chains]: the segment's mixed argv becomes
   list-literal chunks folded with `Seq.append`, each splat's seq
   spliced whole — element-is-one-word carries through the builtin's
@@ -1133,7 +1133,7 @@ quantity semantics now.
   statements are the single exempt form, `|`-chains included: they keep
   shell-shaped streaming output through the same renderer `print` uses
   (byte-identity pinned in e2e). The exemption is the parser's mode
-  decision reified (`SCmd` vs `SExpr`) — syntactic, never name- or
+  decision made explicit in the statement kind (`SCmd` vs `SExpr`) — syntactic, never name- or
   type-directed. Decision archaeology: a second exempt form (bare
   `sh`/`cmd` applications) was in the blessed draft and removed at
   proposal stage — deciding it required resolving `sh` to the real
@@ -1264,7 +1264,7 @@ quantity semantics now.
 - **`complete`** (the command-mode pipe suffix; its former
   expression-mode builtin twin `completed` is retired
   [D:drop-reify-builtins]): run an
-  external command to completion and reify the outcome as
+  external command to completion and give the outcome as
   `Completed = { exitCode: int; stdout: seq<string>; stderr: seq<string> }` —
   **never raising on nonzero exit; the exit code is data**. This is the
   chosen exit-code policy (closes backlog: grep's no-match exit 1 is now

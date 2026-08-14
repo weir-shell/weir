@@ -33,7 +33,7 @@ representable.
 | `for f in *.txt; do … done` | `for f in Path.glob "*.txt" do …` |
 | `if grep -q pat f; then` | `if grep -q pat f \| succeeds then` — inline; bind first (`let hit = …`) when the verdict is reused |
 | `cmd > out.txt` | `cmd \|> File.write "out.txt"` — a function on the right takes `\|>` (the pipe rule) |
-| `$?` | `cmd \| exitCode` (streams, reifies the code as `int`) |
+| `$?` | `cmd \| exitCode` (streams, gives the code as `int`) |
 | `cat <<EOF … EOF \| cmd` | `lines \| cmd` — a value pipes into stdin |
 | `# comment` | `// comment` — full-line or trailing (needs a preceding space) |
 
@@ -58,7 +58,7 @@ a bash hand in the unfavourable direction; hash deliberately.
 
 `set -e` is unconditional and has no name: a nonzero exit raises when
 the stream is forced, stopping the script located at the fault. To
-inspect instead of raise, reify: `cmd | complete` gives
+inspect instead of raise, make it data: `cmd | complete` gives
 `{ exitCode; stdout; stderr }` — which is also where `2>&1` went.
 
 ```weir-error
@@ -104,7 +104,7 @@ module instead of a subcommand.
 | `string split , $s` / `string trim` | `Str.split "," s` / `Str.trim` |
 | `string match -r 'v(\d+)' $s` | `match s with \| Regex @"v(\d+)" v -> v \| _ -> "0"` — the binding is typed, the miss arm is forced |
 | `if test -f $path` | `let ok = test -f $path \| succeeds` then `if ok then` |
-| `$status` | `cmd \| exitCode` (streams, reifies the code as `int`) |
+| `$status` | `cmd \| exitCode` (streams, gives the code as `int`) |
 | `count $files` | `files \|> Seq.length` |
 | `function deploy; …; end` (`$argv`) | `let deploy target = …` — named, typed params instead of `$argv[1]` |
 | `for f in (cat list.txt); …; end` | `for f in File.read "list.txt" do …` |
@@ -144,7 +144,7 @@ echo $nope
   `import "./lib.weir" as Lib` names the dependency in the script.
 - `and` / `or` command chaining — a nonzero exit already raises when
   the stream is forced, so sequential lines ARE the `and` chain; for
-  the boolean, reify with `cmd | succeeds`.
+  the boolean there is `cmd | succeeds`.
 - Abbreviations and `alias` — weir has no rewriting layer; a short
   name is a `let`.
 - Globs expanding in argv — `Path.glob` is a function; splat a batch
@@ -330,8 +330,8 @@ within tmp d
   transformations are pipelines.
 - Classes — records and functions; `{ r with F = v }` instead of
   attribute mutation.
-- Exceptions and `try/except` — `fail` stops; fallible steps reify
-  with `| complete` and you branch on data.
+- Exceptions and `try/except` — `fail` stops; a fallible step becomes
+  data with `| complete` and you branch on it.
 - Dicts — there is no `Map` type (the honest gap): declared records
   where the keys are known, `seq<string * string>` pairs where they
   are not, `from json T` at the boundary.
@@ -477,7 +477,7 @@ body block directly.
 - Monkey-patching, `method_missing`, classes — records, functions,
   and the closed builtin modules.
 - `begin/rescue/ensure` — `within` scopes clean up on the raise path;
-  fallible middles reify with `| complete`.
+  fallible middles become data with `| complete`.
 - `rake` — the task-runner section above.
 
 ## Coming from Perl
