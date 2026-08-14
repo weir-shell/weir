@@ -4581,6 +4581,7 @@ within proc srv = python3 -u -m http.server $spport --bind 127.0.0.1
     Proc.tail srv |> Seq.iter (fun l -> print \$"diag tail: {l}")
     sh -c \$"ps -o stat=,command= -p {Proc.pid srv} || echo diag-ps-failed"
     sh -c "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep $spport || echo diag-no-listener-on-$spport"
+    sh -c \$"command -v sample >/dev/null && sample {Proc.pid srv} 1 2>/dev/null | grep -A6 'Call graph' | head -12 || echo diag-no-sample"
     poll timeout=12s interval=100ms watch=srv
         Net.portOpen $spport
     let n = Http.fetch "http://127.0.0.1:$spport/" |> Seq.length
