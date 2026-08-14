@@ -24,7 +24,7 @@ What's missing is the spelling that composes them.
 
     within proc srv = python3 -m http.server 8080
         poll timeout=10s watch=srv
-            Net.tcpUp 8080
+            Net.portOpen 8080
         let body = Http.fetch "http://127.0.0.1:8080/"
         print body
 
@@ -93,7 +93,7 @@ never touch each other's children.
   handle in v1; a seq of handles on receipt.
 - **An `Http.await`/`Net.await` family.** `poll` + one boolean probe
   compose; a member per protocol is an inventory with no ceiling.
-  `Net.tcpUp` is the one new probe (an HTTP probe is already spelled
+  `Net.portOpen` is the one new probe (an HTTP probe is already spelled
   `Http.send |> _.status`).
 
 ## Open questions (the session's first probes)
@@ -136,7 +136,7 @@ never touch each other's children.
 
 1. Parser: the `proc` kind in the within header, RHS as command mode.
 2. The handle Value + Proc module (running/wait/stop/tail) +
-   `Net.tcpUp`; spill wiring.
+   `Net.portOpen`; spill wiring.
 3. poll's `watch=` option (record field + sugar probe + both error
    enrichments).
 4. Scope-exit tree-kill+reap sharing pfirst's machinery; exit-hook

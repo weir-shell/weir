@@ -1179,7 +1179,7 @@ the port, use it, `kill`, `wait`) collapses to:
 ```weir
 within proc srv = python3 -m http.server 8617 --bind 127.0.0.1
     poll timeout=15s interval=100ms watch=srv
-        Net.tcpUp 8617
+        Net.portOpen 8617
     print $"server {Proc.pid srv} answered"
 print "scope closed, server gone"
 ```

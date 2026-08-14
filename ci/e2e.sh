@@ -4572,7 +4572,7 @@ spport=$((21500 + RANDOM % 300))
 cat > "$spdir/acc.weir" <<WEOF
 within proc srv = python3 -m http.server $spport --bind 127.0.0.1
     poll timeout=15s interval=100ms watch=srv
-        Net.tcpUp $spport
+        Net.portOpen $spport
     let n = Http.fetch "http://127.0.0.1:$spport/" |> Seq.length
     print \$"got={n > 0}"
 print "closed"
@@ -4587,17 +4587,17 @@ out=$($BIN "$spdir/acc.weir" 2>&1) || {
 echo "$out" | grep -qF "got=true" || fail "acceptance fetch: $out"
 echo "$out" | grep -qF "closed" || fail "acceptance close: $out"
 sleep 0.5
-$BIN -e "Net.tcpUp $spport" | grep -qF "false" || fail "the no-orphan half: port $spport still up after the scope"
+$BIN -e "Net.portOpen $spport" | grep -qF "false" || fail "the no-orphan half: port $spport still up after the scope"
 
 # died-at-startup fails the poll IMMEDIATELY with the child's own words
-printf 'within proc p = sh -c "echo boom >&2; exit 3"\n    poll timeout=8s watch=p\n        Net.tcpUp 1\n' > "$spdir/dead.weir"
+printf 'within proc p = sh -c "echo boom >&2; exit 3"\n    poll timeout=8s watch=p\n        Net.portOpen 1\n' > "$spdir/dead.weir"
 out=$($BIN "$spdir/dead.weir" 2>&1) && fail "died-at-startup must raise" || true
 echo "$out" | grep -qF "watched process" || fail "watch names itself: $out"
 echo "$out" | grep -qF "exited with code 3" || fail "watch carries the code: $out"
 echo "$out" | grep -qF "boom" || fail "watch carries the child's words: $out"
 
 # a plain timeout stamps the watched state
-printf 'within proc p = sh -c "sleep 30"\n    poll timeout=400ms interval=100ms watch=p\n        Net.tcpUp 1\n' > "$spdir/slow.weir"
+printf 'within proc p = sh -c "sleep 30"\n    poll timeout=400ms interval=100ms watch=p\n        Net.portOpen 1\n' > "$spdir/slow.weir"
 out=$($BIN "$spdir/slow.weir" 2>&1) && fail "up-but-never-ready must time out" || true
 echo "$out" | grep -qF "still running" || fail "timeout stamps the watched state: $out"
 

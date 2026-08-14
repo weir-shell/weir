@@ -295,7 +295,7 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   at every exit (normal or raise) the process TREE is killed and
   reaped; there is no `&` — an unscoped child is unrepresentable.
   The readiness
-  wait is `poll timeout=10s watch=srv` + `Net.tcpUp <port>` as the
+  wait is `poll timeout=10s watch=srv` + `Net.portOpen <port>` as the
   body — `watch=` fails fast if the child dies (its last output rides
   the error) and stamps the child's state on a timeout. The handle is
   data: `Proc.pid`/`running`/`tail`; `Proc.wait` lets it finish

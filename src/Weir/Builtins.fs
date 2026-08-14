@@ -2721,13 +2721,13 @@ let private procMembers: (string * Ty * Value) list =
 // Net [D:scoped-procs]: ONE readiness probe — poll's body. Remote
 // hosts on a receipt; localhost is the scoped-process pattern.
 let private netMembers: (string * Ty * Value) list =
-    [ "tcpUp",
+    [ "portOpen",
       TFun(TInt, TBool),
       VBuiltin(fun v ->
           match v with
           | VInt port ->
               if port < 1L || port > 65535L then
-                  failwith $"Net.tcpUp: a port is 1..65535; got {port}"
+                  failwith $"Net.portOpen: a port is 1..65535; got {port}"
 
               // a RAW v4 socket to the loopback ADDRESS — never the
               // host-string path (getaddrinfo on a loaded macOS runner
@@ -2747,7 +2747,7 @@ let private netMembers: (string * Ty * Value) list =
                   with _ ->
                       false
               )
-          | v -> unreachable $"the checker rejects 'Net.tcpUp' on {formatValue v}") ]
+          | v -> unreachable $"the checker rejects 'Net.portOpen' on {formatValue v}") ]
 
 let private mapMembers: (string * Ty * Value) list =
     [ "ofPairs",
@@ -2890,7 +2890,8 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               "retry's time-bounded twin: `poll timeout=5m interval=10s` + a readiness body. `watch=<proc>` fails FAST when the scoped process dies (its last output rides the error) and stamps the watched state on a timeout."
               (Some "poll timeout=1s interval=1ms true")
-              (Some "the wait-for-ready shape: within proc srv = … then poll timeout=10s watch=srv + Net.tcpUp <port>")
+              (Some
+                  "the wait-for-ready shape: within proc srv = … then poll timeout=10s watch=srv + Net.portOpen <port>")
           "within",
           bd
               ("A scoped resource for an indented block, released on EVERY exit (normal and raise): "
@@ -2975,10 +2976,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "poll-watch failures carry this automatically")
           |> named [ "p" ]
           // ---- Net: readiness probes [D:scoped-procs] ----
-          "Net.tcpUp",
+          "Net.portOpen",
           bd
               "True when 127.0.0.1:<port> accepts a TCP connection (250ms attempt) — poll's readiness body. Remote hosts on a receipt."
-              (Some "Net.tcpUp 1")
+              (Some "Net.portOpen 1")
               None
           |> named [ "port" ]
           // ---- Seq: lazy sequences (weir has no list type) ----
