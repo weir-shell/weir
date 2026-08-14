@@ -65,7 +65,9 @@ stops being true fails the build.
   seqs truncate); `print` remains the raw data channel. The REPL's
   echo is tighter still (100 unforced elements — `#echo` moves it,
   forced seqs echo whole; clipped strings, a hint naming the way
-  out): echo = glance, `|> print` = read.
+  out): echo = glance, `|> print` = read. BINARY output (a NUL in
+  the prefix) refuses the tty echo with a redirect hint — a compressed
+  stream never wrecks the terminal; `print` remains deliberate.
 - `xs |> Seq.map print` does nothing (lazy) and is a check error as a
   statement; use `xs |> Seq.iter print`.
 

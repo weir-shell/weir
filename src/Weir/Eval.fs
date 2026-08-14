@@ -300,6 +300,29 @@ let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool
         shown |> List.truncate c, shown.Length > c
     | None -> items |> List.ofSeq, false
 
+// binary content must not reach a TERMINAL [D:binary-echo]: a NUL in
+// the echo's pulled prefix marks the value binary (gzip at a tty — the
+// live receipt for the parked bytes item) and the echo, weir's OWN
+// rendering choice, refuses with the redirect hint; `print` stays the
+// user's decision. NUL, never strict-UTF-8 (the misdetection class
+// stays closed). The probe walks the echoPrep CACHE — no enumeration
+// added; an uncapped echo probes a bounded prefix (101).
+let echoBinary (cap: int option) (v: Value) : bool =
+    let hasNul =
+        function
+        | VStr s -> s.Contains '\u0000'
+        | _ -> false
+
+    match v with
+    | VSeq items ->
+        let bound =
+            match cap with
+            | Some c -> c + 1
+            | None -> 101
+
+        items |> Seq.truncate bound |> Seq.exists hasNul
+    | v -> hasNul v
+
 let echoValue (cap: int option) (v: Value) : string * string option =
     match v with
     | VSeq items ->
