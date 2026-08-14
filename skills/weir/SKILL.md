@@ -915,8 +915,8 @@ let c = Args.load Cmd
   make failure data with `| complete`, clean up, then propagate.
   the message-carrying exit-1. No GENERAL try/finally — cleanup-always
   is RESOURCE-SCOPED (`within tmp/cd/env/proc` release on every exit,
-  raise included); for a fallible middle that is not a resource, reify
-  with `| complete`, clean up, then propagate.
+  raise included); for a fallible middle that is not a resource, make it
+  data with `| complete`, clean up, then propagate.
 - Blank lines are TRANSPARENT while a statement is open — bodies,
   arms, brackets, districts group freely with gaps. A statement ends
   at the next column-0 line (or EOF), nowhere else.

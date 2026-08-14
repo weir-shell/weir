@@ -1220,7 +1220,7 @@ whether a step failed or not, make the fallible middle data with
 spelling for a child's failure. There is no GENERAL try/finally:
 cleanup-always is resource-scoped — the `within` family releases on
 every exit, raise included — and for a fallible middle that is not a
-resource, reify it with `| complete`, run the cleanup, then propagate:
+resource, make it data with `| complete`, run the cleanup, then propagate:
 
 ```weir
 let r = sh -c "exit 0" | complete
