@@ -358,13 +358,17 @@ let complete (prog: string) (args: string list) (input: seq<string> option) : in
 // files (the parent's terminal never interleaves; Proc.tail and the
 // poll-watch errors read them back), stdin closed — a child that reads
 // gets EOF. Registered with the exit hook by the CALLER.
+/// returns the process AND a bounded drain: joining the pump threads
+/// guarantees the spill holds the child's LAST words before a reader
+/// composes an error from it — a fast-exiting child raced the pumps
+/// and the died-at-startup message lost its "boom" [D:scoped-procs]
 let startSpilled
     (overlay: (string * string) list)
     (prog: string)
     (args: string list)
     (outPath: string)
     (errPath: string)
-    : Process =
+    : Process * (unit -> unit) =
     let psi = ProcessStartInfo(prog)
 
     for a in args do
@@ -413,10 +417,19 @@ let startSpilled
 
         t.IsBackground <- true
         t.Start()
+        t
 
-    pump p.StandardOutput.BaseStream outPath
-    pump p.StandardError.BaseStream errPath
-    p
+    let tOut = pump p.StandardOutput.BaseStream outPath
+    let tErr = pump p.StandardError.BaseStream errPath
+
+    let drain () =
+        // bounded: a dead child's pipes hit EOF at once, so the join is
+        // instant in the case that matters; the cap only guards a LIVE
+        // caller from a chatty child
+        tOut.Join 2000 |> ignore
+        tErr.Join 2000 |> ignore
+
+    p, drain
 
 /// tree-kill then reap, idempotent — the scope-exit tail and Proc.stop
 /// share it (reap's own try/catch absorbs an already-dead child)

@@ -19,7 +19,10 @@ type ProcHandle =
     { Proc: System.Diagnostics.Process
       OutPath: string
       ErrPath: string
-      SpillDir: string }
+      SpillDir: string
+      // joins the spill pumps (bounded) — called before any read that
+      // must see the child's LAST words [D:scoped-procs]
+      Drain: unit -> unit }
 
 [<CustomEquality; NoComparison>]
 type Value =
@@ -207,6 +210,14 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 // first (where diagnostics live), stdout filling the remainder; read
 // SHARED (the pump holds the write handle and flushes per chunk)
 let procTail (h: ProcHandle) : string list =
+    // an exited child's spill must be COMPLETE before it is read — the
+    // fast-exit race dropped the dying words from the watch error
+    (try
+        if h.Proc.HasExited then
+            h.Drain()
+     with _ ->
+         ())
+
     let readLines path =
         try
             use fs =
@@ -2176,7 +2187,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             System.IO.Directory.CreateDirectory spill |> ignore
             Session.registerTmpDir spill
 
-            let p =
+            let p, drain =
                 Proc.startSpilled
                     overlay
                     (Proc.resolveProg prog)
@@ -2190,13 +2201,17 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 { Proc = p
                   OutPath = System.IO.Path.Combine(spill, "out.log")
                   ErrPath = System.IO.Path.Combine(spill, "err.log")
-                  SpillDir = spill }
+                  SpillDir = spill
+                  Drain = drain }
 
             try
                 eval (Map.add binderName (VProc handle) env) body
             finally
                 Proc.stopTree p
                 Session.deregisterProc p
+                // pumps settle before the spill dir goes (Windows would
+                // refuse the delete under a live write handle)
+                drain ()
 
                 (try
                     System.IO.Directory.Delete(spill, true)
