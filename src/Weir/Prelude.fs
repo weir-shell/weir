@@ -58,4 +58,11 @@ let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
         for name in te.Types |> Map.keys do
             Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
 
+        // def-LESS builtins: type constructors with no Record/Union
+        // entry — Map [D:map-string] and the Proc handle
+        // [D:scoped-procs]. Without this a user `type Proc = …` would
+        // silently retype every scoped-process binder behind it.
+        for name in [ "Map"; "Proc" ] do
+            Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
+
         te, ve

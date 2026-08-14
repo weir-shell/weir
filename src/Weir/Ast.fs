@@ -54,7 +54,11 @@ let withinKinds: WithinKind list =
         Doc = "the working directory for the block, restored after" }
       { Name = "env"
         Binds = false
-        Doc = "an environment overlay for the block's children" } ]
+        Doc = "an environment overlay for the block's children" }
+      // the no-orphan law [D:scoped-procs]: the scope IS the lifetime
+      { Name = "proc"
+        Binds = true
+        Doc = "a background process, tree-killed and reaped when the block exits" } ]
 
 /// "tmp, cd, or env" — the teaching list, derived so a new kind
 /// cannot miss the message
@@ -87,7 +91,15 @@ and ExprKind =
     // retry/poll [D:retry-poll]: a two-segment compound — options
     // record, block body yielding 'a, optional `until` binder+predicate
     // block (absent = the body IS the predicate, form yields unit)
-    | ERetry of poll: bool * opts: Expr * body: Expr * until: ((string * Span) * Expr) option
+    | ERetry of
+        poll: bool *
+        opts: Expr *
+        // poll's watched handle [D:scoped-procs]: a HEAD key, never an
+        // options field — a live handle is per-call, not configuration,
+        // so the record form deliberately cannot spell it
+        watch: Expr option *
+        body: Expr *
+        until: ((string * Span) * Expr) option
     | EStr of string
     | EBool of bool
     | EUnit
@@ -231,8 +243,10 @@ let exprChildren (e: Expr) : Expr list =
     | ECmd(_, args, envO) -> args @ Option.toList envO
     | ESplat e -> [ e ]
     | EUpdate(src, ups) -> src :: (ups |> List.map snd)
-    | ERetry(_, opts, body, until) ->
-        [ opts; body ]
+    | ERetry(_, opts, watch, body, until) ->
+        [ opts ]
+        @ Option.toList watch
+        @ [ body ]
         @ (until |> Option.map (snd >> List.singleton) |> Option.defaultValue [])
     | EInterp parts ->
         parts
@@ -279,12 +293,15 @@ let rec sexpr (e: Expr) : string =
     | EDur n -> formatDuration n
     | EFloat f -> formatFloat f
     | ESize b -> formatSize b
-    | ERetry(isPoll, opts, body, until) ->
+    | ERetry(isPoll, opts, watch, body, until) ->
         let head = if isPoll then "poll" else "retry"
 
+        let w =
+            watch |> Option.map (fun e -> $" (watch {sexpr e})") |> Option.defaultValue ""
+
         match until with
-        | Some((b, _), pred) -> $"({head} {sexpr opts} {sexpr body} (until {b} {sexpr pred}))"
-        | None -> $"({head} {sexpr opts} {sexpr body})"
+        | Some((b, _), pred) -> $"({head} {sexpr opts}{w} {sexpr body} (until {b} {sexpr pred}))"
+        | None -> $"({head} {sexpr opts}{w} {sexpr body})"
     | EStr s -> $"\"{s}\""
     | EBool b -> if b then "true" else "false"
     | EVar x -> x
@@ -296,7 +313,8 @@ let rec sexpr (e: Expr) : string =
     | EWithin(k, binder, arg, b) ->
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""
-        $"(within {k} {bn}{av} {sexpr b})"
+        let ba = [ bn; av ] |> List.filter ((<>) "") |> String.concat " "
+        $"(within {k} {ba} {sexpr b})"
     | ECapture e -> $"(capture {sexpr e})"
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"

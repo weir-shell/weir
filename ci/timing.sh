@@ -59,6 +59,19 @@ done | sort -n | awk '{a[NR]=$1} END {print a[int(NR/2)+1]}')
 
 CHECK_MAX_MS="${WEIR_MAX_CHECK_MS:-40}"
 
+# the gates are pinned on LINUX (the header's law); elsewhere the
+# medians are ADVISORY — spawn overhead (Windows CreateProcess +
+# Defender ~50-100ms) swamps the 6-14ms being measured, so a FAIL
+# there reads as a regression and is only the runner's tax. Print the
+# numbers, say what they are, exit 0.
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "timing (ADVISORY — gates are pinned on Linux; this platform's spawn tax swamps them):"
+    echo "expression line median: ${expr_ms}ms (linux gate ${EXPR_MAX_MS}ms)"
+    echo "command-mode median:    ${cmd_ms}ms (linux gate ${CMD_MAX_MS}ms)"
+    echo "whole-file check median: ${check_ms}ms (linux gate ${CHECK_MAX_MS}ms)"
+    exit 0
+fi
+
 echo "expression line median: ${expr_ms}ms (max ${EXPR_MAX_MS}ms)"
 echo "command-mode median:    ${cmd_ms}ms (max ${CMD_MAX_MS}ms)"
 echo "whole-file check median: ${check_ms}ms (max ${CHECK_MAX_MS}ms)"

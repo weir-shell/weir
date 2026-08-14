@@ -1171,6 +1171,43 @@ There is no async/await and never will be: processes and pipelines are
 the concurrency model, and a task that truly needs async belongs in
 full F#.
 
+A background process gets a SCOPE, never a `&`: `within proc` binds a
+handle, and at every block exit — normal or raise — the process tree
+is killed and reaped. The five-step shell ritual (`server &`, poll
+the port, use it, `kill`, `wait`) collapses to:
+
+```weir
+within proc srv = python3 -u -c "import socketserver,http.server as h; s=socketserver.TCPServer(('127.0.0.1',8617),h.SimpleHTTPRequestHandler); s.serve_forever()"
+    poll timeout=15s interval=100ms watch=srv
+        Net.portOpen 8617
+    print $"server {Proc.pid srv} answered"
+print "scope closed, server gone"
+```
+
+(In real scripts `python3 -m http.server` is the usual spelling; this
+block's inline server skips the reverse-DNS lookup `http.server` does
+at bind — on locked-down CI hosts that lookup can hang under privacy
+gating, a platform behavior worth knowing when a server is
+mysteriously up-but-not-listening.)
+
+`watch=` is the quality move — a child that crashes at startup fails
+the poll IMMEDIATELY with its own last output in the error, and a
+plain timeout reports whether the watched process was still running.
+Both the child's streams spill to files (bounded by disk, not
+memory) — never the parent's terminal or its stdout data channel, so
+a chatty server cannot break `weir script | next`; `Proc.tail` reads
+the last ~100 spill lines — pass the child's unbuffered flag
+(python's `-u`) when you want them live: children block-buffer
+stdout when it is a pipe. A scoped child's own exit is DATA — the
+one place raise-by-default does not apply: failure surfaces through
+`watch=` or `Proc.wait` (which yields the exit code), nowhere else.
+`Proc.stop` tears down early; nested scopes release LIFO. The
+teardown guarantee, precisely: normal exit, raise, SIGINT and
+SIGTERM close every scope; `kill -9` of weir itself cannot, by
+definition. A process that must outlive the script is a daemon —
+that belongs to systemd/launchd, and weir deliberately has no
+`nohup`.
+
 ```weir
 Dir.create "wa"
 Dir.create "wb"
@@ -1186,6 +1223,10 @@ Dir.create "wb"
 spelling for a child's failure. There is no try/finally: to clean up
 whether a step failed or not, make the fallible middle data with
 `| complete`, run the cleanup, then propagate:
+spelling for a child's failure. There is no GENERAL try/finally:
+cleanup-always is resource-scoped — the `within` family releases on
+every exit, raise included — and for a fallible middle that is not a
+resource, make it data with `| complete`, run the cleanup, then propagate:
 
 ```weir
 let r = sh -c "exit 0" | complete

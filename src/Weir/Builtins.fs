@@ -2679,6 +2679,76 @@ let private asMap (name: string) =
     | VMap m -> m
     | v -> unreachable $"the checker rejects '{name}' on {formatValue v}"
 
+// the scoped-process surface [D:scoped-procs]: the handle is DATA —
+// pid/running/wait make the lifecycle inspectable, stop is the early
+// teardown (the scope's own exit is then a no-op), tail reads the
+// spill (the child's last words; poll-watch errors carry it free)
+let private procTy = TNamed("Proc", [])
+
+let private asProc (who: string) (v: Value) : ProcHandle =
+    match v with
+    | VProc h -> h
+    | v -> unreachable $"the checker rejects '{who}' on {formatValue v}"
+
+let private procMembers: (string * Ty * Value) list =
+    [ "pid", TFun(procTy, TInt), VBuiltin(fun v -> VInt(int64 (asProc "Proc.pid" v).Proc.Id))
+      "running",
+      TFun(procTy, TBool),
+      VBuiltin(fun v ->
+          let h = asProc "Proc.running" v
+
+          VBool(
+              try
+                  not h.Proc.HasExited
+              with _ ->
+                  false
+          ))
+      "wait",
+      TFun(procTy, TInt),
+      VBuiltin(fun v ->
+          let h = asProc "Proc.wait" v
+
+          Waiting.during $"waiting for pid {h.Proc.Id}" (fun () ->
+              h.Proc.WaitForExit()
+              VInt(int64 h.Proc.ExitCode)))
+      "stop",
+      TFun(procTy, TUnit),
+      VBuiltin(fun v ->
+          Proc.stopTree (asProc "Proc.stop" v).Proc
+          VUnit)
+      "tail", TFun(procTy, TSeq TStr), VBuiltin(fun v -> VSeq(procTail (asProc "Proc.tail" v) |> List.map VStr)) ]
+
+// Net [D:scoped-procs]: ONE readiness probe — poll's body. Remote
+// hosts on a receipt; localhost is the scoped-process pattern.
+let private netMembers: (string * Ty * Value) list =
+    [ "portOpen",
+      TFun(TInt, TBool),
+      VBuiltin(fun v ->
+          match v with
+          | VInt port ->
+              if port < 1L || port > 65535L then
+                  failwith $"Net.portOpen: a port is 1..65535; got {port}"
+
+              // a RAW v4 socket to the loopback ADDRESS — never the
+              // host-string path (getaddrinfo on a loaded macOS runner
+              // turned "127.0.0.1" into ~400ms per probe and the poll
+              // starved past its own timeout)
+              use sock =
+                  new System.Net.Sockets.Socket(
+                      System.Net.Sockets.AddressFamily.InterNetwork,
+                      System.Net.Sockets.SocketType.Stream,
+                      System.Net.Sockets.ProtocolType.Tcp
+                  )
+
+              VBool(
+                  try
+                      sock.ConnectAsync(System.Net.IPAddress.Loopback, int port).Wait 250
+                      && sock.Connected
+                  with _ ->
+                      false
+              )
+          | v -> unreachable $"the checker rejects 'Net.portOpen' on {formatValue v}") ]
+
 let private mapMembers: (string * Ty * Value) list =
     [ "ofPairs",
       TFun(TSeq(TTuple [ TStr; tA ]), mapTy tA),
@@ -2754,6 +2824,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
       "Map", mapMembers
+      "Proc", procMembers
+      "Net", netMembers
       "Path", pathMembers
       "Option", optionMembers
       "File", fileMembers @ fsMoreFileMembers
@@ -2807,6 +2879,28 @@ let private named (ps: string list) (d: BuiltinDoc) : BuiltinDoc = { d with Para
 let builtinDocs: Map<string, BuiltinDoc> =
     Map
         [
+          // ---- the FORM heads [D:scoped-procs]: #help retry/poll/within
+          // answer like any member — the docs live here, one source
+          "retry",
+          bd
+              "Re-run a body until its predicate passes: `retry attempts=5 delay=30s` + an indented body. A bool body IS the predicate; a value body takes `until r` + a predicate block and yields the value. Exhaustion raises; raises inside the body propagate (make failure data with | succeeds / | complete)."
+              (Some "retry attempts=2 delay=1ms true")
+              (Some "options are a record underneath: retry { Retry.defaults with attempts = 3 }")
+          "poll",
+          bd
+              "retry's time-bounded twin: `poll timeout=5m interval=10s` + a readiness body. `watch=<proc>` fails FAST when the scoped process dies (its last output rides the error) and stamps the watched state on a timeout."
+              (Some "poll timeout=1s interval=1ms true")
+              (Some
+                  "the wait-for-ready shape: within proc srv = … then poll timeout=10s watch=srv + Net.portOpen <port>")
+          "within",
+          bd
+              ("A scoped resource for an indented block, released on EVERY exit (normal and raise): "
+               + (Ast.withinKinds
+                  |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
+                  |> String.concat "; ")
+               + ".")
+              (Some "within tmp d print d")
+              (Some "within proc srv = <command> binds a Proc handle; the tree is killed and reaped at scope exit")
           // ---- Map: the ID-keyed object [D:map-string] ----
           "Map.ofPairs",
           bd
@@ -2859,6 +2953,35 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Map.ofPairs [(\"a\", 1); (\"k\", 2)] |> Map.remove \"k\"")
               None
           |> named [ "key"; "m" ]
+          // ---- Proc: the scoped-process handle [D:scoped-procs] ----
+          "Proc.pid",
+          bd "The child's OS process id." None (Some "within proc p = <command> binds the handle; see #help within")
+          |> named [ "p" ]
+          "Proc.running",
+          bd "True while the child has not exited." None (Some "poll watch=p checks this for you, with better errors")
+          |> named [ "p" ]
+          "Proc.wait",
+          bd
+              "Block until the child exits NATURALLY; its exit code as data. The way to let a scoped process finish — the scope's own exit kills."
+              None
+              None
+          |> named [ "p" ]
+          "Proc.stop",
+          bd "Tree-kill and reap now, idempotent; the scope's exit is then a no-op." None None
+          |> named [ "p" ]
+          "Proc.tail",
+          bd
+              "The child's last ~100 output lines (stderr first) from the spill — readable while it runs."
+              None
+              (Some "poll-watch failures carry this automatically")
+          |> named [ "p" ]
+          // ---- Net: readiness probes [D:scoped-procs] ----
+          "Net.portOpen",
+          bd
+              "True when 127.0.0.1:<port> accepts a TCP connection (250ms attempt) — poll's readiness body. Remote hosts on a receipt."
+              (Some "Net.portOpen 1")
+              None
+          |> named [ "port" ]
           // ---- Seq: lazy sequences (weir has no list type) ----
           "Seq.map",
           bd

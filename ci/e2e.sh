@@ -1109,7 +1109,7 @@ PYADP
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
-    echo "e2e ok: repl directives (#help x3, #quit, :q teaches, comments no-op)"
+    echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     fi
@@ -4564,6 +4564,88 @@ sleep 0.5
 
 rm -rf "$ehdir"
 echo "e2e ok: exit hook (pfirst exit-race fixed, signal sweep via TERM, registration per-process)"
+
+# ---- scoped processes [D:scoped-procs] -------------------------------------
+spdir=$(mkweirtmp)
+spport=$((21500 + RANDOM % 300))
+# the acceptance: start-await-use-teardown in weir, and NOTHING survives.
+# The server is a plain TCPServer — NOT `-m http.server`, whose
+# HTTPServer.server_bind calls getfqdn(host): on the macOS runner that
+# reverse-DNS parks in mDNSResponder FOREVER for weir-descendant
+# processes (sample(1) showed slot_tp_init -> socket_gethostbyaddr ->
+# mdns_hostbyaddr -> kevent; bash-spawned pythons resolve fine — the
+# privacy gating keys on the spawning binary, which weir cannot fix).
+# The 2.5s checkpoint keeps a light forensic tail: if this fails again
+# the child's words + the port's holder still ride the message.
+cat > "$spdir/acc.weir" <<WEOF
+within proc srv = python3 -u -c "import socketserver,http.server as h; s=socketserver.TCPServer(('127.0.0.1',$spport),h.SimpleHTTPRequestHandler); s.serve_forever()"
+    Duration.sleep 2500ms
+    print \$"diag: running={show (Proc.running srv)} pid={Proc.pid srv}"
+    Proc.tail srv |> Seq.iter (fun l -> print \$"diag tail: {l}")
+    sh -c "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep $spport || echo diag-no-listener-on-$spport"
+    poll timeout=12s interval=100ms watch=srv
+        Net.portOpen $spport
+    let n = Http.fetch "http://127.0.0.1:$spport/" |> Seq.length
+    print \$"got={n > 0}"
+print "closed"
+WEOF
+out=$($BIN "$spdir/acc.weir" 2>&1) || {
+    # discriminate the halves [marker discipline]: server reachable from
+    # BASH means weir's probe is the broken side; unreachable means the
+    # spawn/bind side
+    probe=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$spport/" 2>/dev/null || echo "curl-failed")
+    fail "scoped-proc acceptance failed (bash-side probe of :$spport = $probe): $out"
+}
+echo "$out" | grep -qF "got=true" || fail "acceptance fetch: $out"
+echo "$out" | grep -qF "closed" || fail "acceptance close: $out"
+sleep 0.5
+$BIN -e "Net.portOpen $spport" | grep -qF "false" || fail "the no-orphan half: port $spport still up after the scope"
+
+# died-at-startup fails the poll IMMEDIATELY with the child's own words
+printf 'within proc p = sh -c "echo boom >&2; exit 3"\n    poll timeout=8s watch=p\n        Net.portOpen 1\n' > "$spdir/dead.weir"
+out=$($BIN "$spdir/dead.weir" 2>&1) && fail "died-at-startup must raise" || true
+echo "$out" | grep -qF "watched process" || fail "watch names itself: $out"
+echo "$out" | grep -qF "exited with code 3" || fail "watch carries the code: $out"
+echo "$out" | grep -qF "boom" || fail "watch carries the child's words: $out"
+
+# a plain timeout stamps the watched state
+printf 'within proc p = sh -c "sleep 30"\n    poll timeout=400ms interval=100ms watch=p\n        Net.portOpen 1\n' > "$spdir/slow.weir"
+out=$($BIN "$spdir/slow.weir" 2>&1) && fail "up-but-never-ready must time out" || true
+echo "$out" | grep -qF "still running" || fail "timeout stamps the watched state: $out"
+
+# watch is poll's key; a non-Proc watch refuses by type
+out=$($BIN -e 'retry attempts=2 watch=ls true' 2>&1) && fail "retry+watch must refuse" || true
+echo "$out" | grep -qF "watch= is poll's key" || fail "the retry refusal reason: $out"
+
+if [ "$IS_WINDOWS" != "1" ]; then
+    # the raise path kills the tree (pgrep is the POSIX spelling; the
+    # Windows arm rides the exit-hook block's stated coverage)
+    printf 'within proc p = sh -c "sleep 297"\n    fail "mid-scope"\n' > "$spdir/raise.weir"
+    out=$($BIN "$spdir/raise.weir" 2>&1) && fail "the raise must propagate" || true
+    echo "$out" | grep -qF "mid-scope" || fail "the raise is the scope's error: $out"
+    sleep 0.3
+    pgrep -f "sleep 297" >/dev/null && { pkill -f "sleep 297" 2>/dev/null || true; fail "the raise path left an orphan"; } || true
+
+    # the hard-exit sweep: a TERM'd weir leaves no registered child
+    printf 'within proc p = sh -c "sleep 298"\n    Duration.sleep 30s\n' > "$spdir/term.weir"
+    $BIN "$spdir/term.weir" & sptw=$!
+    sleep 1.2
+    kill -TERM $sptw 2>/dev/null || true
+    wait $sptw 2>/dev/null || true
+    sleep 0.5
+    pgrep -f "sleep 298" >/dev/null && { pkill -f "sleep 298" 2>/dev/null || true; fail "the TERM sweep left the scoped child"; } || true
+fi
+
+# an ESCAPED handle (the scope's value) answers gracefully after the
+# scope killed the child: running=false, tail empty (spill gone), wait
+# yields the kill's code — never a crash
+printf 'let esc = within proc p = sh -c "sleep 5"\n    p\nprint (show (Proc.running esc))\nprint (show (Proc.tail esc |> Seq.length))\n' > "$spdir/esc.weir"
+out=$($BIN "$spdir/esc.weir" 2>&1) || fail "the escaped handle must not crash: $out"
+printf '%s' "$out" | head -1 | grep -qF "false" || fail "escaped running must be false: $out"
+printf '%s' "$out" | tail -1 | grep -qF "0" || fail "escaped tail must be empty (spill gone): $out"
+
+rm -rf "$spdir"
+echo "e2e ok: scoped processes (acceptance + no-orphan, watch died/timeout, retry refusal, raise + TERM sweeps, escaped handle graceful)"
 
 # ---- command signatures [D:command-signatures] -----------------------------
 sgdir=$(mkweirtmp)

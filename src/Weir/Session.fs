@@ -134,10 +134,27 @@ let private hookInstalled = ref 0
 // collected registration stops handling
 let mutable private hookRoots: obj list = []
 
+// the hook's SECOND customer [D:scoped-procs]: live scoped processes,
+// killed (tree) before the dirs go — a spilling child holds its spill
+// dir open, so the order is load-bearing on Windows
+let private liveProcs =
+    System.Collections.Concurrent.ConcurrentDictionary<int, System.Diagnostics.Process>()
+
 let private sweepLiveTmpDirs () =
     // runs at exit while finallys may also be running: a vanished dir is
     // benign (the double-delete pin's territory), and the hook must
     // never throw during exit
+    for kv in liveProcs do
+        try
+            kv.Value.Kill true
+        with _ ->
+            ()
+
+        try
+            kv.Value.WaitForExit()
+        with _ ->
+            ()
+
     for kv in liveTmpDirs do
         try
             System.IO.Directory.Delete(kv.Key, true)
@@ -171,3 +188,11 @@ let registerTmpDir (dir: string) : unit =
     liveTmpDirs[dir] <- ()
 
 let deregisterTmpDir (dir: string) : unit = liveTmpDirs.TryRemove dir |> ignore
+
+let registerProc (p: System.Diagnostics.Process) : unit =
+    if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
+        installExitHook ()
+
+    liveProcs[p.Id] <- p
+
+let deregisterProc (p: System.Diagnostics.Process) : unit = liveProcs.TryRemove p.Id |> ignore

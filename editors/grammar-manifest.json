@@ -43,6 +43,7 @@
   "withinKinds": [
     "cd",
     "env",
+    "proc",
     "tmp"
   ]
 }

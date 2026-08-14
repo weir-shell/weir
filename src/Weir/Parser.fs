@@ -1419,6 +1419,27 @@ let private withinExpr =
             // dispatch off the kinds TABLE [D:within-kinds]: Binds is the
             // arity switch, membership and the teaching list derive
             match Ast.withinKinds |> List.tryFind (fun k -> k.Name = kind) with
+            | Some wk when wk.Name = "proc" ->
+                // the scoped process [D:scoped-procs]: binder `=` then ONE
+                // command line (the block-let RHS grammar — splices, ^, the
+                // argv law); a pipeline refuses — the scope owns ONE child,
+                // compose inside sh -c
+                identSpanned .>> ws .>> str_ws "="
+                >>= fun (binder, bspan) ->
+                    letRhsCmd
+                    >>= fun cmdE ->
+                        (match cmdE.Kind with
+                         | ECmd _ -> preturn cmdE
+                         | _ ->
+                             failFatally
+                                 "within proc takes ONE command — a pipeline or capture is not a scoped child; compose inside sh -c \"…\"")
+                        >>= fun cmdE ->
+                            (opt (str_ws ";" <|> str_ws sibSepStr))
+                            >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
+                                 <?> "the scope's block")
+                            |>> fun body ->
+                                { Kind = EWithin(kind, Some(binder, bspan), Some cmdE, body)
+                                  Span = { Start = pos p; End = body.Span.End } }
             | Some wk when wk.Binds ->
                 // a binding kind PRODUCES its resource: a binder, joining
                 // bindings-beat-PATH (the patLeafNames class, 5th site)
@@ -1470,7 +1491,20 @@ let private retryExpr =
                  failFatallyAtCol ks.Start.Col $"duplicate key '{k}' — each option is given once"
              | None -> preturn ())
             >>= fun () ->
+                // watch= is a HEAD key [D:scoped-procs]: peeled before
+                // the record desugar — a live handle is per-call, not
+                // configuration, so it never enters the options record
+                let watchE =
+                    pairs |> List.tryPick (fun ((k, _), v) -> if k = "watch" then Some v else None)
+
+                let pairs = pairs |> List.filter (fun ((k, _), _) -> k <> "watch")
+
                 (match pairs with
+                 | [] when watchE.IsSome ->
+                     // watch alone: the defaults record, the bare-head form
+                     preturn
+                         { Kind = EVar(if isPoll then "|pollDefaults" else "|retryDefaults")
+                           Span = { Start = pos p; End = pos p } }
                  | [] ->
                      // the record form: one atom, exactly as within cd
                      let headWord = if isPoll then "poll" else "retry"
@@ -1505,7 +1539,7 @@ let private retryExpr =
                                 | Some(_, pr) -> pr.Span.End
                                 | None -> body.Span.End
 
-                            { Kind = ERetry(isPoll, optsE, body, until)
+                            { Kind = ERetry(isPoll, optsE, watchE, body, until)
                               Span = { Start = pos p; End = endSpan } }
 
 let private matchExpr =

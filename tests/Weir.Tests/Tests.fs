@@ -51,7 +51,7 @@ let private preludeTypeEnv, preludeValueEnv =
 let private env =
     let e =
         preludeTypeEnv
-        |> declare "type Proc = Running of int | Stopped"
+        |> declare "type Job = Running of int | Stopped"
         // a 2-param generic union — the type-system fixture that Result
         // used to be, now a local declaration [D:no-result]
         |> declare "type Either<'a, 'e> = Left of 'a | Right of 'e"
@@ -75,7 +75,7 @@ let private env =
             |> Map.add "double" (generalize (TFun(TInt, TInt))) }
 
 let private ctorValues =
-    [ "type Proc = Running of int | Stopped"
+    [ "type Job = Running of int | Stopped"
       "type Either<'a, 'e> = Left of 'a | Right of 'e" ]
     |> List.collect (fun d ->
         match (parseDecl d).Body with
@@ -453,8 +453,8 @@ let declTests =
     testList
         "Type declarations"
         [ test "union declares constructors as typed values" {
-              Expect.equal (checkOk "Running 5").Ty (TNamed("Proc", [])) "payload ctor applies"
-              Expect.equal (checkOk "Stopped").Ty (TNamed("Proc", [])) "nullary ctor is a value"
+              Expect.equal (checkOk "Running 5").Ty (TNamed("Job", [])) "payload ctor applies"
+              Expect.equal (checkOk "Stopped").Ty (TNamed("Job", [])) "nullary ctor is a value"
           }
           test "constructor payload is checked" {
               Expect.stringContains (checkErr "Running \"x\"").Message "expected int, got string" ""
@@ -502,7 +502,7 @@ let declTests =
               let terr = declErr "type Bad = A | A" env
               Expect.stringContains terr.Message "duplicate case 'A'" ""
           }
-          test "redeclaration is allowed" { env |> declare "type Proc = Running of int | Stopped" |> ignore } ]
+          test "redeclaration is allowed" { env |> declare "type Job = Running of int | Stopped" |> ignore } ]
 
 let matchTests =
     testList
@@ -531,7 +531,7 @@ let matchTests =
           }
           test "wrong constructor for the scrutinee type" {
               let terr = checkErr "match Running 1 with | Leaf -> 0 | _ -> 1"
-              Expect.stringContains terr.Message "Proc has no case 'Leaf'" ""
+              Expect.stringContains terr.Message "Job has no case 'Leaf'" ""
           }
           test "constructor typo gets a hint" {
               Expect.stringContains
@@ -1623,7 +1623,7 @@ let boundaryCheckTests =
               Expect.stringContains (checkErr "[\"x\"] |> from json Missing").Message "unknown type 'Missing'" ""
           }
           test "from json rejects unions" {
-              Expect.stringContains (checkErr "[\"x\"] |> from json Proc").Message "needs a record" ""
+              Expect.stringContains (checkErr "[\"x\"] |> from json Job").Message "needs a record" ""
           }
           test "unknown format is rejected" {
               Expect.stringContains (checkErr "[\"x\"] |> from toml").Message "unknown format 'toml'" ""
@@ -4465,14 +4465,14 @@ let withinKindsTests =
               Expect.equal (Weir.Lsp.hoverType t 1 13) (Some "string") "the binder is the dir path, not unit"
           }
           test "completion after `within ` offers the kinds and NOTHING else; a boundary non-match stays normal" {
-              Expect.equal (sug "within ") [ "tmp"; "cd"; "env" ] "the closed set"
+              Expect.equal (sug "within ") [ "tmp"; "cd"; "env"; "proc" ] "the closed set"
               Expect.equal (sug "within c") [ "cd" ] "prefix-filtered"
               Expect.equal (sug "within t") [ "tmp" ] ""
-              Expect.isFalse (sug "notwithin " = [ "tmp"; "cd"; "env" ]) "boundary: notwithin is not within"
-              Expect.isFalse (sug "within cd " = [ "tmp"; "cd"; "env" ]) "the arg slot is not the kind slot"
+              Expect.isFalse (sug "notwithin " = [ "tmp"; "cd"; "env"; "proc" ]) "boundary: notwithin is not within"
+              Expect.isFalse (sug "within cd " = [ "tmp"; "cd"; "env"; "proc" ]) "the arg slot is not the kind slot"
           }
           test "the teaching list derives from the table (a new kind cannot miss the message)" {
-              Expect.equal Weir.Ast.withinKindList "tmp, cd, or env" "derived, not hand-written"
+              Expect.equal Weir.Ast.withinKindList "tmp, cd, env, or proc" "derived, not hand-written"
           }
           test "a form word inside a STRING or a COMMENT is data, not a form — no hover [D:within-kinds]" {
               // the form hovers run before the silence guard, so the
@@ -8850,7 +8850,7 @@ let envLoadTests =
                   | Ok _ -> failtest $"{bad} should be rejected"
           }
           test "from-json-family errors: generic, union, unknown, non-type" {
-              Expect.stringContains (formatError (checkErr "Env.load Proc")) "union" ""
+              Expect.stringContains (formatError (checkErr "Env.load Job")) "union" ""
               Expect.stringContains (formatError (checkErr "Env.load Nonesuch")) "unknown type" ""
               Expect.stringContains (formatError (checkErr "Env.load double")) "unknown type" ""
           }
@@ -8979,7 +8979,7 @@ let adversarialTests =
           }
           test "piping a constructor as data is rejected" { checkErr "Running |> double" |> ignore }
           test "field access on a union is rejected toward the eval-unreachable arm" {
-              Expect.stringContains (checkErr "match Stopped with | p -> p.Sze").Message "Proc is a union" ""
+              Expect.stringContains (checkErr "match Stopped with | p -> p.Sze").Message "Job is a union" ""
           }
           test "match scrutinee cannot be a raw constructor pattern target mismatch" {
               Expect.stringContains
@@ -11920,6 +11920,85 @@ let seqGapsTests =
                   ""
           } ]
 
+let scopedProcTests =
+    // scoped processes [D:scoped-procs]: the no-orphan law's STATIC
+    // half — parse/assemble/check shapes; the live lifecycle (kill,
+    // reap, sweep, watch errors) pins in e2e where processes are real
+    let assembleParse (lines: string list) =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Ok [ st ] ->
+            match Weir.Parser.parseLine cmdResolver st.Text with
+            | Ok(Weir.Ast.SExpr e)
+            | Ok(Weir.Ast.SCmd e) -> e
+            | other -> failtest $"expected an expression statement, got {other}"
+        | Ok other -> failtest $"expected ONE logical line, got {List.length other}"
+        | Error e -> failtest $"assemble failed: {e}"
+
+    testList
+        "scoped processes [D:scoped-procs]"
+        [ test "the proc head's block joins SENTINELED — the command tail cannot swallow it" {
+              match Weir.Script.assemble [ 1, "within proc p = git status"; 2, "    print \"hi\"" ] with
+              | Ok [ st ] -> Expect.isTrue (st.Text.Contains Weir.Parser.sibSepStr) "the machine boundary, not a space"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "parses to the within shape with the command in the arg slot" {
+              let e = assembleParse [ "within proc p = git status"; "    print \"hi\"" ]
+
+              Expect.stringContains (Weir.Ast.sexpr e) "(within proc p" "the kind and binder"
+              Expect.stringContains (Weir.Ast.sexpr e) "(cmd git \"status\")" "the command node rides the arg slot"
+          }
+          test "the binder types as Proc; show admits; '==' refuses with the type named" {
+              let e = assembleParse [ "within proc p = git status"; "    show p" ]
+
+              match Weir.Check.typecheck env e with
+              | Ok te -> Expect.equal te.Ty TStr "show p : string"
+              | Error terr -> failtest $"show must admit a Proc: {terr.Message}"
+
+              let e2 = assembleParse [ "within proc p = git status"; "    p == p" ]
+
+              match Weir.Check.typecheck env e2 with
+              | Error terr -> Expect.stringContains terr.Message "'==' is not defined for Proc" ""
+              | Ok _ -> failtest "Eq must stay excluded for Proc"
+          }
+          test "a pipeline in the proc slot is a parse-time refusal with the sh -c teaching" {
+              match Weir.Script.assemble [ 1, "within proc p = git status | complete"; 2, "    print \"x\"" ] with
+              | Ok [ st ] ->
+                  match Weir.Parser.parseLine cmdResolver st.Text with
+                  | Error m ->
+                      Expect.stringContains m "ONE command" "the refusal"
+                      Expect.stringContains m "sh -c" "…and the way out"
+                  | Ok _ -> failtest "a pipeline must not become a scoped child"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "watch= is poll's key: retry refuses with the reason; a non-Proc watch refuses by type" {
+              Expect.stringContains
+                  (checkErr "retry attempts=2 watch=ls true").Message
+                  "watch= is poll's key (wait-for-ready); retry retries failures"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "poll timeout=1s watch=5 true").Message
+                  "Proc"
+                  "the handle type is the contract"
+          }
+          test "watch rides the sexpr; peeled from the options (the record never carries it)" {
+              match Weir.Parser.parseExpr "poll timeout=1s watch=srv true" with
+              | Ok e ->
+                  Expect.stringContains (Weir.Ast.sexpr e) "(watch srv)" "the head key"
+                  Expect.isFalse ((Weir.Ast.sexpr e).Contains "watch =") "never an options field"
+              | Error m -> failtest $"must parse: {m}"
+          }
+          test "the proc-head detector is word-bounded and string-blind" {
+              Expect.isTrue (Weir.Script.endsInProcHead "within proc p = sh -c \"x\"") "the plain head"
+
+              Expect.isTrue
+                  (Weir.Script.endsInProcHead "xs |> Seq.pmap (fun n -> within proc w = git status")
+                  "mid-segment"
+
+              Expect.isFalse (Weir.Script.endsInProcHead "print \"within proc p = x\"") "a string is data"
+              Expect.isFalse (Weir.Script.endsInProcHead "let awithin proc = 5") "word-bounded"
+          } ]
+
 let mapStringTests =
     // Map<string, T> [D:map-string]: the ID-keyed object — keys are
     // DATA, not schema; string keys only; the adapter slot's third form
@@ -12341,7 +12420,7 @@ let withinTests =
           }
           test "unknown scope kinds teach the shipped one" {
               match Weir.Parser.parseLine realResolver ("within lock f" + Weir.Parser.sibSepStr + "print f") with
-              | Error msg -> Expect.stringContains msg "within takes tmp, cd, or env" ""
+              | Error msg -> Expect.stringContains msg "within takes tmp, cd, env, or proc" ""
               | Ok _ -> failtest "expected the teaching"
           }
           test "within is reserved with the keyword teaching" {
@@ -12540,6 +12619,7 @@ let allTests =
           yamlSeqTests
           anonRecordTests
           mapStringTests
+          scopedProcTests
           formatSurfaceTests
           secretTests
           httpTests
