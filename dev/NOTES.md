@@ -1,5 +1,28 @@
 # Spike Notes
 
+## the surface gate: doc completeness as a checked property (2026-08-14)
+
+The user's framing was the whole design: #help already enumerates the
+real surface machine-readably, so diffing it against SKILL.md is the
+same shape of job as running the fenced blocks — and worth more than
+any single feature, because the fallback protocol ("not in the skill
+file, assume it does not exist") silently depends on the doc being
+complete. The first audit proved the point: 35 members invisible,
+including all of Str's core splitters and four Http verbs — a fifth
+of the surface the protocol was silently wrong about. The interesting
+call was the fix: an inventory section is a hand list of a derived
+set, exactly the drift this project keeps retiring — but a hand list
+WITH a gate is the same move as the bare-partition's pinned collision
+set: the derivation checks the copy, so the copy is safe to hold.
+Negative controls earned their keep immediately — the first missing-
+member probe chose pfirstWith, which the gate "passed" because prose
+already spelled it qualified; a control that cannot fail is the
+vacuous-probe class, and the second pick (tryIndexOf) proved the gate
+both ways. The rider was a user find: '#' is not a word char to the
+editor, so #he completed to head from the general pool — the fix
+returns BARE directive names at a line-head '#' so replacement
+composes with the glyph already typed.
+
 ## the echo cap: 100 by default, #echo to change it (2026-08-12)
 
 The rider on echo-lines that closes the arc's last papercut: the

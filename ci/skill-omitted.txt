@@ -1,0 +1,3 @@
+# omitted-on-purpose [D:skill-surface]: `Module.member reason…` per
+# line. An entry that becomes documented, or stops shipping, is STALE
+# and fails the gate — the list cannot rot silently.

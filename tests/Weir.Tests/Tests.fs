@@ -1691,6 +1691,18 @@ let completionTests =
               // from the full parser set [D:keyword-completion]
               Expect.equal (suggest "ls |> whe" 6) [ "when"; "where" ] ""
           }
+          test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
+              // bare names: the editor's word starts AFTER the '#', so
+              // replacement yields `#help` — never `##help` or `head`
+              Expect.equal (suggest "#" 1) [ "echo"; "help"; "quit" ] "the closed set"
+              Expect.equal (suggest "#he" 1) [ "help" ] "the prefix filters"
+              Expect.equal (suggest "#q" 1) [ "quit" ] ""
+              Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
+              // mid-line '#' is not a directive slot
+              Expect.isFalse (List.contains "help" (suggest "ls # he" 5)) "line-head only"
+              // the ARGUMENT of #help completes from the general pool
+              Expect.contains (suggest "#help Se" 6) "Seq" "modules complete in the arg slot"
+          }
           test "the `with ` slot offers the source record's fields [D:with-slot]" {
               let text = "{ Http.defaults with "
               let got = suggest text text.Length
