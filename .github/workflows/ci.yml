@@ -87,8 +87,7 @@ jobs:
         run: ./ci/e2e.sh
       - name: doc-tests
         run: ./ci/skill-doc.sh
-      - name: timing (note the medians; advisory off-linux)
-        continue-on-error: true
+      - name: timing (advisory off-linux — the script states it)
         run: ./ci/timing.sh
 
   windows:
@@ -119,6 +118,5 @@ jobs:
         run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/e2e.sh
       - name: doc-tests
         run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/skill-doc.sh
-      - name: timing (note the medians; advisory off-linux)
-        continue-on-error: true
+      - name: timing (advisory off-linux — the script states it)
         run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/timing.sh
