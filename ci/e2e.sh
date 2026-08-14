@@ -4569,9 +4569,19 @@ echo "e2e ok: exit hook (pfirst exit-race fixed, signal sweep via TERM, registra
 spdir=$(mkweirtmp)
 spport=$((21500 + RANDOM % 300))
 # the acceptance: start-await-use-teardown in weir, and NOTHING survives
+# the fixture carries its OWN forensics [marker discipline]: on macOS
+# the child sat alive-but-not-listening with an empty tail — the
+# evidence dies with the scope, so capture it WHILE the child lives
+# (process state, its words, who holds the port); noise only surfaces
+# in the fail message ($out rides it)
 cat > "$spdir/acc.weir" <<WEOF
 within proc srv = python3 -u -m http.server $spport --bind 127.0.0.1
-    poll timeout=15s interval=100ms watch=srv
+    Duration.sleep 2500ms
+    print \$"diag: running={show (Proc.running srv)} pid={Proc.pid srv}"
+    Proc.tail srv |> Seq.iter (fun l -> print \$"diag tail: {l}")
+    sh -c \$"ps -o stat=,command= -p {Proc.pid srv} || echo diag-ps-failed"
+    sh -c "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep $spport || echo diag-no-listener-on-$spport"
+    poll timeout=12s interval=100ms watch=srv
         Net.portOpen $spport
     let n = Http.fetch "http://127.0.0.1:$spport/" |> Seq.length
     print \$"got={n > 0}"
