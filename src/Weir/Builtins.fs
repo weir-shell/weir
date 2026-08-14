@@ -2729,11 +2729,21 @@ let private netMembers: (string * Ty * Value) list =
               if port < 1L || port > 65535L then
                   failwith $"Net.tcpUp: a port is 1..65535; got {port}"
 
-              use c = new System.Net.Sockets.TcpClient()
+              // a RAW v4 socket to the loopback ADDRESS — never the
+              // host-string path (getaddrinfo on a loaded macOS runner
+              // turned "127.0.0.1" into ~400ms per probe and the poll
+              // starved past its own timeout)
+              use sock =
+                  new System.Net.Sockets.Socket(
+                      System.Net.Sockets.AddressFamily.InterNetwork,
+                      System.Net.Sockets.SocketType.Stream,
+                      System.Net.Sockets.ProtocolType.Tcp
+                  )
 
               VBool(
                   try
-                      c.ConnectAsync("127.0.0.1", int port).Wait 250 && c.Connected
+                      sock.ConnectAsync(System.Net.IPAddress.Loopback, int port).Wait 250
+                      && sock.Connected
                   with _ ->
                       false
               )

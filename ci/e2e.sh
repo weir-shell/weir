@@ -4577,7 +4577,13 @@ within proc srv = python3 -m http.server $spport --bind 127.0.0.1
     print \$"got={n > 0}"
 print "closed"
 WEOF
-out=$($BIN "$spdir/acc.weir" 2>&1) || fail "scoped-proc acceptance failed: $out"
+out=$($BIN "$spdir/acc.weir" 2>&1) || {
+    # discriminate the halves [marker discipline]: server reachable from
+    # BASH means weir's probe is the broken side; unreachable means the
+    # spawn/bind side
+    probe=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$spport/" 2>/dev/null || echo "curl-failed")
+    fail "scoped-proc acceptance failed (bash-side probe of :$spport = $probe): $out"
+}
 echo "$out" | grep -qF "got=true" || fail "acceptance fetch: $out"
 echo "$out" | grep -qF "closed" || fail "acceptance close: $out"
 sleep 0.5
