@@ -1177,7 +1177,7 @@ is killed and reaped. The five-step shell ritual (`server &`, poll
 the port, use it, `kill`, `wait`) collapses to:
 
 ```weir
-within proc srv = python3 -m http.server 8617 --bind 127.0.0.1
+within proc srv = python3 -u -m http.server 8617 --bind 127.0.0.1
     poll timeout=15s interval=100ms watch=srv
         Net.portOpen 8617
     print $"server {Proc.pid srv} answered"
@@ -1190,7 +1190,9 @@ plain timeout reports whether the watched process was still running.
 Both the child's streams spill to files (bounded by disk, not
 memory) — never the parent's terminal or its stdout data channel, so
 a chatty server cannot break `weir script | next`; `Proc.tail` reads
-the last ~100 spill lines. A scoped child's own exit is DATA — the
+the last ~100 spill lines — pass the child's unbuffered flag
+(python's `-u`) when you want them live: children block-buffer
+stdout when it is a pipe. A scoped child's own exit is DATA — the
 one place raise-by-default does not apply: failure surfaces through
 `watch=` or `Proc.wait` (which yields the exit code), nowhere else.
 `Proc.stop` tears down early; nested scopes release LIFO. The

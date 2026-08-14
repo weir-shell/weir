@@ -1189,10 +1189,6 @@ let rec private loop (state: State) =
                 $"unknown directive '{word}' — #help lists them (#sig and #schema are file directives, read at check time)"
 
             loop state
-    | ":q" ->
-        // the one retired vim-ism teaches its replacement
-        Console.WriteLine "`:q` is now `#quit` (Ctrl+D also leaves)"
-        loop state
     | entry when entry.Contains '\n' ->
         // a MULTILINE entry [D:repl-multiline]: the same assembler the
         // script runner uses turns the buffer into logical lines — the

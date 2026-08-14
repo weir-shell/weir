@@ -1109,7 +1109,7 @@ PYADP
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
-    echo "e2e ok: repl directives (#help x3, #quit, :q teaches, comments no-op)"
+    echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     fi
@@ -4570,7 +4570,7 @@ spdir=$(mkweirtmp)
 spport=$((21500 + RANDOM % 300))
 # the acceptance: start-await-use-teardown in weir, and NOTHING survives
 cat > "$spdir/acc.weir" <<WEOF
-within proc srv = python3 -m http.server $spport --bind 127.0.0.1
+within proc srv = python3 -u -m http.server $spport --bind 127.0.0.1
     poll timeout=15s interval=100ms watch=srv
         Net.portOpen $spport
     let n = Http.fetch "http://127.0.0.1:$spport/" |> Seq.length

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Session directives [D:repl-directives]: '#' is the prefix for
 # everything addressed to the tooling — #help's three forms from the
-# one hover source, #quit (Ctrl+D still works), the retired :q
-# teaching, and comment-only lines as silent no-ops.
+# one hover source, #quit (Ctrl+D still works), and comment-only
+# lines as silent no-ops. The :q teaching arm retired 2026-08-14.
 import os
 import pty
 import re
@@ -45,16 +45,16 @@ t = piped("#help Seq.colect\n#quit\n")
 if "no member 'colect'" not in t or "collect" not in t:
     failures.append(f"a dotted typo must did-you-mean in its module: {t[-200:]!r}")
 
-# --- #quit quits; a stale :q TEACHES and stays ------------------------
+# --- #quit quits; :q is fully retired (user 2026-08-14) ---------------
 t = piped("#quit\nprint \"unreached\"\n")
 if "unreached" in t:
     failures.append("#quit must leave the REPL")
 
 t = piped(":q\nprint \"still-here\"\n#quit\n")
-if "`:q` is now `#quit`" not in t:
-    failures.append(f"a stale :q must teach its replacement: {t[-200:]!r}")
+if "`:q` is now" in t:
+    failures.append("the :q teaching arm should be gone")
 if "still-here" not in t:
-    failures.append(":q must NOT quit (it only teaches)")
+    failures.append(":q (now an ordinary error) must not quit the session")
 
 # --- unknown directive names the family ------------------------------
 t = piped("#time\n#quit\n")
@@ -191,4 +191,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), #quit + Ctrl+D, :q teaches, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned)")
+print("repl-directives: #help x3 (one source), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned)")
