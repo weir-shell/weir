@@ -24,7 +24,9 @@ Three properties, in the order they matter:
 
 - `weir` — the REPL: bare names allowed, values echo back, tab
   completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits.
-  At a tty the echo PRESENTS: a record seq as a table, a string seq
+  At a tty the echo PRESENTS: a record seq as a table (bold header,
+  dim rule, clamped to the terminal width — the widest column absorbs
+  the clip; `NO_COLOR` strips the dressing), a string seq
   as its lines, anything else as the literal — the type footer (and
   the unforced-seq sentence) rides below in every case
   (`#quit` is the typed spelling). `#echo` moves the unforced-echo

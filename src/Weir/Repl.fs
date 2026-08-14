@@ -193,6 +193,34 @@ let mutable private echoCap: int option =
 
 let private historyFile = config.HistoryPath
 
+// the table's tint is POSITIONAL [D:table-polish]: echoTable's lines
+// stay plain (one law, tests untouched) — the printer knows line 0 is
+// the header, line 1 the rule, a trailing "…" the clip row. Cells are
+// DATA and stay untinted; NO_COLOR and piped ride Color's own gate.
+let private printTable (lines: string list) =
+    let on = Types.Color.onStdout.Value
+
+    lines
+    |> List.iteri (fun i l ->
+        Console.WriteLine(
+            if i = 0 then Types.Color.bold on l
+            elif i = 1 || l = "…" then Types.Color.dim on l
+            else l
+        ))
+
+// the echo's metadata line (name : ty = / : ty (hint)) recedes — dim
+// at a tty, plain elsewhere [D:table-polish]
+let private echoMeta (s: string) =
+    Console.WriteLine(Types.Color.dim Types.Color.onStdout.Value s)
+
+// the live terminal width for the table clamp — piped echoes never
+// tabulate, so None only guards the resize/console-less edge
+let private termWidth () =
+    try
+        Some(max 20 Console.WindowWidth)
+    with _ ->
+        None
+
 // ---------------------------------------------------------------------------
 // The owned line editor [D:owned-line-editor]: bash key semantics —
 // Ctrl+C cancels the LINE, Ctrl+D on an empty line is EOF.
@@ -992,12 +1020,16 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                      elif te.Ty = TSeq TStr then
                          Eval.echoLines cap ev
                      else
-                         Eval.echoTable cap ev)
+                         Eval.echoTable cap (termWidth ()) ev)
                 with
                 | Some(lines, hint) ->
                     let tail = Eval.echoTail hint
-                    Console.WriteLine $"{name} : {formatTy te.Ty} ={tail}"
-                    lines |> List.iter Console.WriteLine
+                    echoMeta $"{name} : {formatTy te.Ty} ={tail}"
+
+                    if te.Ty = TSeq TStr then
+                        lines |> List.iter Console.WriteLine
+                    else
+                        printTable lines
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
@@ -1039,11 +1071,15 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                      elif te.Ty = TSeq TStr then
                          Eval.echoLines cap v
                      else
-                         Eval.echoTable cap v)
+                         Eval.echoTable cap (termWidth ()) v)
                 with
                 | Some(lines, hint) ->
-                    lines |> List.iter Console.WriteLine
-                    Console.WriteLine $": {formatTy te.Ty}{Eval.echoTail hint}"
+                    (if te.Ty = TSeq TStr then
+                         lines |> List.iter Console.WriteLine
+                     else
+                         printTable lines)
+
+                    echoMeta $": {formatTy te.Ty}{Eval.echoTail hint}"
                 | None ->
                     let rendered, hint = Eval.echoValue cap v
                     let tail = Eval.echoTail hint

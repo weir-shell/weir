@@ -278,6 +278,9 @@ module Color =
     let red on s = wrap on "31" s
     let yellow on s = wrap on "33" s
     let bold on s = wrap on "1" s
+    // faint — the table's rule/ellipsis and the echo footers
+    // [D:table-polish]: metadata recedes, cells stay untinted data
+    let dim on s = wrap on "2" s
 
 // the waiting indicator [D:waiting-indicator]: whoever owns the terminal
 // and is working draws the progress — so it wraps ONLY weir's own
