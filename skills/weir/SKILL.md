@@ -960,3 +960,29 @@ print "unreached"
 - NEVER invent weir syntax. If unsure a feature exists, check this
   file; if absent here, assume absent, fall back, log. The full
   rejected-vs-pending border with F# is tests/fidelity/divergences.md.
+
+## Surface inventory
+
+The complete member table, kept honest by `ci/skill-surface.sh`: a
+shipped member missing from this file fails CI, so "not in the skill
+file" MEANS "does not exist". Semantics live in the sections above
+and in `#help Module.member`; this list is the completeness contract,
+not the teaching.
+
+- `Args`: `flag` `load` `value`
+- `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move`
+- `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
+- `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
+- `File`: `append` `copy` `delete` `exists` `move` `read` `readSecret` `size` `write`
+- `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
+- `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
+- `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
+- `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
+- `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse`
+- `Path`: `combine` `dir` `extension` `fileName` `glob` `newTempDir` `stem` `tempRoot`
+- `Poll`: `defaults`
+- `Retry`: `defaults`
+- `Secret`: `map` `of` `reveal`
+- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exists` `find` `first` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
+- `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
+- `Str`: `contains` `endsWith` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `sha256` `split` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryIndexOf` `tryToInt`

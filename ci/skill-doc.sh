@@ -64,3 +64,7 @@ for entry in "${blocks[@]}"; do
 done
 
 echo "skill-doc: all $i blocks hold"
+
+# the doc's COMPLETENESS is checked beside its correctness
+# [D:skill-surface]: every shipped member documented or omitted-on-purpose
+"$(dirname "$0")/skill-surface.sh"
