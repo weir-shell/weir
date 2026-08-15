@@ -1,5 +1,22 @@
 # Spike Notes
 
+## ls-sort rider, and the merge that lost a ruling (2026-08-15)
+
+The rider itself was small — one sort call, one sibling (Env.vars'
+hashtable order), one doc line. The session's real event was the
+archaeology tripping over a LOST RULING: PR #43 merged the instant
+branch's pre-amend push, so the user-ruled age→modified swap
+(amended locally as b163e6b, fully verified, reported as landed)
+silently never reached main — main still had age, and three later
+sessions rebased onto it without anyone noticing because the swap's
+pins lived only in the unmerged amendment. Recovered by applying the
+b163e6b diff verbatim as this branch's first commit. The process
+lesson is sharp: an AMEND after the user may have already pushed the
+branch invisibly forks local from remote — the local verify passes,
+the merged tree differs, and nothing in the ritual compares the two.
+A push-state check (local tip == origin tip before reporting
+ready-to-push) would have caught it for the cost of one git command.
+
 ## Instant: absolute time, the boring subset (2026-08-14)
 
 The session where the review's scoping did the design work in

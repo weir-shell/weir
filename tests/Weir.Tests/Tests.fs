@@ -10224,6 +10224,44 @@ let replTableTests =
               | other -> failtest $"expected a table, got {other}"
           } ]
 
+let lsSortTests =
+    // ls joins the sorted discovery surfaces [D:ls-sort]: by name,
+    // ORDINAL — case-sensitive, uppercase first, never the locale
+    testList
+        "ls is sorted [D:ls-sort]"
+        [ test "Env.vars is name-sorted (the sweep's one sibling); fromFile keeps FILE order" {
+              let names =
+                  run "Env.vars |> Seq.map _.name"
+                  |> forceSeq
+                  |> List.map (fun v ->
+                      match v with
+                      | VStr s -> s
+                      | _ -> failtest "string expected")
+
+              Expect.equal
+                  names
+                  (List.sortWith (fun (a: string) b -> System.String.CompareOrdinal(a, b)) names)
+                  "sorted ordinal"
+
+              Expect.isTrue (names.Length > 3) "a real environment"
+          }
+          test "the FileRow table's column order is the field law's (alphabetical) — pinned as decided [D:table-polish]" {
+              // reordering was DECLINED on the table-polish row; this pin
+              // makes the decided order fail loudly if it ever drifts
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap None (VSeq(fakeFiles |> List.toSeq)) with
+              | Some(header :: _, _) ->
+                  Expect.isTrue (header.StartsWith "bytes") "first column"
+
+                  for col in [ "bytes"; "hidden"; "isDirectory"; "modified"; "name"; "path"; "readOnly" ] do
+                      Expect.stringContains header col $"column present: {col}"
+
+                  Expect.isTrue
+                      (header.IndexOf "modified" < header.IndexOf "name"
+                       && header.IndexOf "name" < header.IndexOf "path")
+                      "alphabetical order holds"
+              | other -> failtest $"expected a table, got {other}"
+          } ]
+
 let lsTruthTests =
     // ls tells the whole truth [D:ls-truth]: files AND directories, the
     // stated seven-field surface
@@ -10236,6 +10274,9 @@ let lsTruthTests =
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub")) |> ignore
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".dot"), "")
+              // for the sort pin [D:ls-sort]: a case pair proves ORDINAL
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "B.txt"), "x")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "a.txt"), "x")
 
               try
                   let saved = Weir.Session.Cwd()
@@ -10261,8 +10302,14 @@ let lsTruthTests =
                       | [ VStr ".dot" ] -> ()
                       | other -> failtest $"the dot-name is hidden: {other}"
 
+                      // sorted by name, ORDINAL [D:ls-sort]: B(66) before
+                      // a(97); the locale is never consulted
+                      match runLive "ls |> Seq.map _.name" |> forceSeq with
+                      | [ VStr ".dot"; VStr "B.txt"; VStr "a.txt"; VStr "f.txt"; VStr "sub" ] -> ()
+                      | other -> failtest $"ls must sort ordinal by name: {other}"
+
                       match runLive "ls |> Seq.where (fun f -> Instant.now () - f.modified < 1h) |> Seq.length" with
-                      | VInt 3L -> ()
+                      | VInt 5L -> ()
                       | other -> failtest $"fresh files filter by age: {other}"
 
                       match runLive "(ls |> Seq.head).path" with
@@ -12793,6 +12840,7 @@ let allTests =
           fileRowSizeTests
           replTableTests
           lsTruthTests
+          lsSortTests
           recordKeysTests
           yamlSeqTests
           anonRecordTests

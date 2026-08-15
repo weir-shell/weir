@@ -91,7 +91,11 @@ let private realLs: Value =
                 | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {cwd}"
                 | :? System.IO.IOException as e -> failwith $"ls: cannot access {cwd} — {e.Message}"
 
-            infos |> Seq.map lsRow)
+            // SORTED BY NAME, ordinal [D:ls-sort]: the third discovery
+            // surface joins Dir.list/Path.glob's rule (F# string compare
+            // is ordinal — case-sensitive, uppercase first, never the
+            // locale; coreutils ls inherits LC_COLLATE, weir does not)
+            infos |> Array.sortBy (fun i -> i.Name) |> Seq.map lsRow)
     )
 
 let private whereImpl: Value =
@@ -1888,8 +1892,13 @@ let private envMembers: (string * Ty * Value) list =
       TSeq(TNamed(envVarDef.Name, [])),
       VSeq(
           Seq.delay (fun () ->
+              // hashtable order is noise — the sweep's one sibling of
+              // the ls gap [D:ls-sort]: sorted by name, the same ordinal
+              // rule. (fromFile/ofPairs stay in GIVEN order — there the
+              // order is the author's information, the YMap argument.)
               System.Environment.GetEnvironmentVariables()
               |> Seq.cast<System.Collections.DictionaryEntry>
+              |> Seq.sortBy (fun e -> string e.Key)
               |> Seq.map (fun e -> recordOf envVarDef [ VStr(string e.Key); VStr(string e.Value) ]))
       )
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
@@ -3875,7 +3884,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
           "FileRow",
           bd
-              "A directory entry: name, path, bytes (0 B for a directory), isDirectory, hidden, readOnly, modified (the last-write Instant — the file's own fact, stable under binding). From `ls` — files AND subdirectories."
+              "A directory entry: name, path, bytes (0 B for a directory), isDirectory, hidden, readOnly, modified (the last-write Instant — the file's own fact, stable under binding). From `ls` — files AND subdirectories, SORTED by name (ordinal: case-sensitive, uppercase first; never the locale). name is for MATCHING and display; path is for handing to File.* - name derives from path, never the reverse."
               None
               None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
