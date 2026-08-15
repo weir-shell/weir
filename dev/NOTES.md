@@ -17,6 +17,20 @@ None but an unknown DIRECTIVE raises even in tryParseWith — a format
 bug is not a data miss), and `24h * 300` is the spelling for long
 spans because Duration deliberately has no day unit — the cert
 fixture tripped on `300d` first, which is Duration's own law working.
+## the table dresses, the data does not (2026-08-14)
+
+A polish rider whose design cost was one decision made twice: keep
+the machinery plain and put the presentation at the edge. The tint is
+applied by the PRINTER positionally (line 0, line 1, the trailing
+clip row) so echoTable's output stays byte-plain and every existing
+pin holds untouched; the clamp is a parameter the tty caller fills
+and every other caller declines, so the piped surface and the test
+battery keep byte-parity by construction. The one taste call worth
+recording: cells are never tinted — the header/rule/footer are
+weir's furniture, but a cell is the user's data, and data does not
+get decorated. Declines on the row: borders/zebra (copy-paste), column
+reordering (would fork show's field law), interactivity (the
+dynamism boundary).
 
 ## the surface gate: doc completeness as a checked property (2026-08-14)
 

@@ -3894,13 +3894,13 @@ let replEchoTests =
 
               let prepped = Weir.Eval.echoPrep (VSeq counted)
               // the tty echo path: table probe first, line rendering second
-              Weir.Eval.echoTable Weir.Eval.echoPipedCap prepped |> ignore
+              Weir.Eval.echoTable Weir.Eval.echoPipedCap None prepped |> ignore
               Weir.Eval.echoValue Weir.Eval.echoPipedCap prepped |> ignore
               Expect.equal pulls.Value 3 "one enumeration of the source across probe + render"
 
               // and the hint contract survives the cache (still unforced)
               let many = Weir.Eval.echoPrep (VSeq(Seq.init 12 (fun i -> VInt(int64 i))))
-              Weir.Eval.echoTable Weir.Eval.echoPipedCap many |> ignore
+              Weir.Eval.echoTable Weir.Eval.echoPipedCap None many |> ignore
               let _, hint = Weir.Eval.echoValue Weir.Eval.echoPipedCap many
               Expect.equal hint (Some(Weir.Eval.unforcedHint 10)) "a cached seq is still an unforced seq to the echo"
           }
@@ -4048,6 +4048,34 @@ let replEchoTests =
 
               Weir.Eval.echoBinary (Some 10) (VSeq counted) |> ignore
               Expect.isTrue (pulls.Value <= 11) $"probed {pulls.Value} pulls (bound is 11)"
+          }
+          test "the width clamp: the widest column absorbs the clip, floors hold, None means untouched [D:table-polish]" {
+              let rows =
+                  VSeq
+                      [ VRecord("P", Map [ "name", VStr "a"; "path", VStr(String.replicate 60 "x") ])
+                        VRecord("P", Map [ "name", VStr "b"; "path", VStr "/short" ]) ]
+
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap (Some 40) rows with
+              | Some(lines, None) ->
+                  for l in lines do
+                      Expect.isLessThanOrEqual l.Length 40 $"every line fits the terminal: {l}"
+
+                  Expect.stringContains lines[2] "…" "the fat column's cell ends in the ellipsis"
+                  Expect.stringContains lines[2] "a" "the short column is intact"
+                  Expect.isTrue (lines[0].StartsWith "name") "the header survives clamping"
+              | other -> failtest $"expected a table, got {other}"
+
+              // a terminal too narrow for the floors: rendered unclamped
+              // (the terminal wraps — stated), never a mangled floor
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap (Some 8) rows with
+              | Some(lines, None) -> Expect.isGreaterThan lines[0].Length 8 "gives up rather than mangles"
+              | other -> failtest $"expected a table, got {other}"
+
+              // None = the exact pre-clamp shape (the piped/None law)
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
+              | Some(lines, None) ->
+                  Expect.isFalse (lines |> List.exists (fun l -> l.Contains "…")) "no clip without a width"
+              | other -> failtest $"expected a table, got {other}"
           }
           test "show is byte-identical to its shipped contract (NOT the echo)" {
               let long = VSeq(seq { for i in 1..100 -> VInt(int64 i) })
@@ -10135,7 +10163,7 @@ let replTableTests =
                         )
                         VRecord("FileRow", Map [ "name", VStr "n.txt"; "bytes", VSize 7L; "readOnly", VBool true ]) ]
 
-              match Weir.Eval.echoTable Weir.Eval.echoPipedCap rows with
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
               | Some(lines, None) ->
                   Expect.equal lines[0] "bytes  name       readOnly" "alphabetical headers"
                   Expect.stringContains lines[1] "─" "the rule line"
@@ -10149,7 +10177,7 @@ let replTableTests =
 
               let lazyRows = VSeq(Seq.initInfinite (fun i -> row i))
 
-              match Weir.Eval.echoTable Weir.Eval.echoPipedCap lazyRows with
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap None lazyRows with
               | Some(lines, Some hint) ->
                   Expect.equal hint (Weir.Eval.unforcedHint 10) "the lever that works"
                   Expect.equal (List.last lines) "…" "the in-table signal"
@@ -10157,7 +10185,7 @@ let replTableTests =
 
               let forcedRows = VSeq [ for i in 1..15 -> row i ]
 
-              match Weir.Eval.echoTable Weir.Eval.echoPipedCap forcedRows with
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap None forcedRows with
               | Some(lines, None) -> Expect.equal (List.length lines) 17 "header + rule + all 15 rows"
               | other -> failtest $"a forced table shows every row: {other}"
           }
@@ -10165,20 +10193,21 @@ let replTableTests =
               let mixed =
                   VSeq [ VRecord("A", Map [ "x", VInt 1L ]); VRecord("B", Map [ "y", VInt 2L ]) ]
 
-              Expect.isTrue (Weir.Eval.echoTable Weir.Eval.echoPipedCap mixed |> Option.isNone) "different shapes"
+              Expect.isTrue (Weir.Eval.echoTable Weir.Eval.echoPipedCap None mixed |> Option.isNone) "different shapes"
 
               let nested = VSeq [ VRecord("N", Map [ "inner", VSeq [ VInt 1L ] ]) ]
 
               Expect.isTrue
-                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap nested |> Option.isNone)
+                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap None nested |> Option.isNone)
                   "a seq cell is not a scalar"
 
               Expect.isTrue
-                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap (VSeq [ VInt 1L ]) |> Option.isNone)
+                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap None (VSeq [ VInt 1L ])
+                   |> Option.isNone)
                   "scalars keep the list echo"
 
               Expect.isTrue
-                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap (VSeq []) |> Option.isNone)
+                  (Weir.Eval.echoTable Weir.Eval.echoPipedCap None (VSeq []) |> Option.isNone)
                   "empty keeps [] : seq<T>"
           }
           test "Option cells: Some inlines, None is blank; a Secret cell masks" {
@@ -10187,7 +10216,7 @@ let replTableTests =
                       [ VRecord("P", Map [ "note", VUnion("Some", Some(VStr "hi")); "tok", VSecret "s3cr3t" ])
                         VRecord("P", Map [ "note", VUnion("None", None); "tok", VSecret "x" ]) ]
 
-              match Weir.Eval.echoTable Weir.Eval.echoPipedCap rows with
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
               | Some(lines, None) ->
                   Expect.stringContains lines[2] "hi" ""
                   Expect.stringContains lines[2] "***" "the rendering marker holds in cells"

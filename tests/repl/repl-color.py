@@ -165,9 +165,23 @@ t2 = run({"NO_COLOR": "1"}, ["let s = 1\r"])
 if ANSI.search(t2):
     failures.append("NO_COLOR must suppress every color span")
 
+# --- the table's tint [D:table-polish]: header bold, rule dim; cells
+# stay untinted data; NO_COLOR strips the whole dressing ---------------
+import tempfile as _tf
+_td = _tf.mkdtemp()
+open(_td + "/a.txt", "w").write("x")
+tt = run({}, ["cd \"%s\"\r" % _td, "ls\r"])
+if "\x1b[1m" not in tt or "\x1b[2m" not in tt:
+    failures.append(f"the tty table must bold its header and dim its rule: {tt[-300:]!r}")
+tt2 = run({"NO_COLOR": "1"}, ["cd \"%s\"\r" % _td, "ls\r"])
+if "\u2500" not in tt2:
+    failures.append(f"NO_COLOR must still tabulate: {tt2[-300:]!r}")
+if ANSI.search(tt2):
+    failures.append("NO_COLOR must strip the table's dressing too")
+
 if failures:
     for f in failures:
         print("repl-color FAIL:", f)
     sys.exit(1)
 
-print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain)")
+print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain)")

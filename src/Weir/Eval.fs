@@ -396,7 +396,7 @@ let echoLines (cap: int option) (v: Value) : (string list * string option) optio
             Some(visible |> List.map asLine, (if clipped then Some(unforcedHint cap.Value) else None))
     | _ -> None
 
-let echoTable (cap: int option) (v: Value) : (string list * string option) option =
+let echoTable (cap: int option) (width: int option) (v: Value) : (string list * string option) option =
     match v with
     | VSeq items ->
         let forced = forcedItems items
@@ -446,7 +446,49 @@ let echoTable (cap: int option) (v: Value) : (string list * string option) optio
                     [ 0 .. keys0.Length - 1 ]
                     |> List.map (fun i -> rows |> List.fold (fun w r -> max w (fst r[i]).Length) keys0[i].Length)
 
+                // terminal-width clamping [D:table-polish]: the WIDEST
+                // column above its floor absorbs the clip (path,
+                // usually), repeatedly until the table fits; a terminal
+                // too narrow even for the floors renders unclamped —
+                // the terminal wraps, stated, never a mangled floor
+                let widths =
+                    match width with
+                    | Some termW ->
+                        let sep = 2 * (keys0.Length - 1)
+                        let floorOf i = max 5 keys0[i].Length
+
+                        let rec shrink (ws: int list) =
+                            let total = List.sum ws + sep
+
+                            if total <= termW then
+                                ws
+                            else
+                                let candidate =
+                                    [ 0 .. ws.Length - 1 ]
+                                    |> List.filter (fun i -> ws[i] > floorOf i)
+                                    |> List.sortByDescending (fun i -> ws[i])
+                                    |> List.tryHead
+
+                                match candidate with
+                                | None -> ws
+                                | Some i ->
+                                    let newW = max (floorOf i) (ws[i] - (total - termW))
+                                    shrink (ws |> List.mapi (fun j w -> if j = i then newW else w))
+
+                        shrink widths
+                    | None -> widths
+
+                // a cell longer than its (possibly clamped) column ends
+                // in the ellipsis — never a silent cut
+                let clip (w: int) (t: string) =
+                    if t.Length > w then
+                        t.Substring(0, max 0 (w - 1)) + "…"
+                    else
+                        t
+
                 let pad (i: int) (t: string) =
+                    let t = clip widths[i] t
+
                     if numeric[i] then
                         t.PadLeft(widths[i])
                     else
