@@ -23,6 +23,10 @@ type Ty =
     // exist only in parsing and rendering — the no-floats law's answer
     // to the time want
     | TDur
+    // a point on the UTC timeline [D:instant]: integer ms since the
+    // Unix epoch — instants ONLY (no local zones, no calendar
+    // arithmetic; t + 1d is exactly 24h, never next-day-same-wall-time)
+    | TInstant
     // a marker the renderers respect [D:secret]: a plain string the
     // rendering machinery refuses to print — show is ***, interpolation
     // and the wire boundaries refuse; Secret.reveal is the one exit. NOT
@@ -39,6 +43,7 @@ type Ty =
 let rec formatTy (ty: Ty) : string =
     match ty with
     | TDur -> "Duration"
+    | TInstant -> "Instant"
     | TSize -> "Size"
     | TSecret -> "Secret"
     | TVar v -> $"'{v}"
@@ -126,6 +131,7 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TBool
     | TUnit
     | TDur
+    | TInstant
     | TSize
     | TSecret -> Set.empty
 
@@ -471,6 +477,206 @@ let formatDuration (totalMs: int64) : string =
             let hPart = if h > 0L then $"{h}h" else ""
             let mPart = if m > 0L then $"{m}m" else ""
             $"{sign}{hPart}{mPart}{sec}"
+
+// ---- Instant [D:instant]: a point on the UTC timeline ----------------
+
+// the ISO reader: full timestamps (Z or a numeric offset, normalized
+// to UTC on the way in; fractional seconds truncate to ms) and the
+// bare date (midnight UTC). The format LIST is the law — never the
+// platform parser's leniency (invariant M/d/yyyy must not slip in).
+let private instantFormats =
+    [| "yyyy-MM-dd'T'HH:mm:ssK"
+       "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK"
+       "yyyy-MM-dd'T'HH:mm:ss"
+       "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF"
+       "yyyy-MM-dd" |]
+
+let parseInstantMs (text: string) : Result<int64, string> =
+    let t = text.Trim()
+
+    match
+        System.DateTimeOffset.TryParseExact(
+            t,
+            instantFormats,
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal
+            ||| System.Globalization.DateTimeStyles.AdjustToUniversal
+        )
+    with
+    | true, dto -> Ok(dto.ToUnixTimeMilliseconds())
+    | _ ->
+        Error
+            $"not an ISO 8601 instant ('{t}'; 2026-08-14T12:34:56Z — offsets allowed, a bare date reads as midnight UTC)"
+
+/// UTC always; millis shown only when nonzero (show's spelling)
+let formatInstant (ms: int64) : string =
+    let dto = System.DateTimeOffset.FromUnixTimeMilliseconds ms
+
+    if ms % 1000L = 0L then
+        dto.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture)
+    else
+        dto.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture)
+
+// the named-format reader [D:instant] — a strptime subset for log
+// lines: %Y %m %d %H %M %S %f %z, %% for a literal percent, everything
+// else literal text. PREFIX semantics: the format's end ends the read
+// (a log line's tail rides free — slicing is the use case). No %z
+// means UTC, stated. The format must carry a full date — year-less
+// log formats (syslog) need the year supplied; re-open on receipts.
+let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
+    let mutable fi = 0
+    let mutable ti = 0
+    let mutable y = -1
+    let mutable mo = -1
+    let mutable d = -1
+    let mutable h = 0
+    let mutable mi = 0
+    let mutable sec = 0
+    let mutable frac = 0
+    let mutable offMin = 0
+    let mutable error: string option = None
+
+    let readDigits (n: int) (what: string) =
+        if
+            ti + n > text.Length
+            || text.Substring(ti, n) |> Seq.exists (System.Char.IsDigit >> not)
+        then
+            let got =
+                if ti < text.Length then
+                    text.Substring(ti, min n (text.Length - ti))
+                else
+                    "end of input"
+
+            error <-
+                Some
+                    $"input does not match the format at position {ti + 1}: expected {n} digits for {what}, got '{got}'"
+
+            0
+        else
+            let v = int (text.Substring(ti, n))
+            ti <- ti + n
+            v
+
+    while error.IsNone && fi < fmt.Length do
+        if fmt[fi] = '%' && fi + 1 < fmt.Length then
+            (match fmt[fi + 1] with
+             | 'Y' -> y <- readDigits 4 "%Y"
+             | 'm' -> mo <- readDigits 2 "%m"
+             | 'b' ->
+                 // the invariant month abbreviations — openssl's enddate,
+                 // most access logs
+                 let names =
+                     [| "Jan"
+                        "Feb"
+                        "Mar"
+                        "Apr"
+                        "May"
+                        "Jun"
+                        "Jul"
+                        "Aug"
+                        "Sep"
+                        "Oct"
+                        "Nov"
+                        "Dec" |]
+
+                 if ti + 3 <= text.Length then
+                     let w = text.Substring(ti, 3)
+
+                     match
+                         names
+                         |> Array.tryFindIndex (fun n ->
+                             System.String.Equals(n, w, System.StringComparison.OrdinalIgnoreCase))
+                     with
+                     | Some i ->
+                         mo <- i + 1
+                         ti <- ti + 3
+                     | None ->
+                         error <-
+                             Some
+                                 $"input does not match the format at position {ti + 1}: expected a month name (Jan..Dec) for %%b, got '{w}'"
+                 else
+                     error <-
+                         Some
+                             $"input does not match the format at position {ti + 1}: expected a month name for %%b, got end of input"
+             | 'e' ->
+                 // 1-2 digit day, optionally space-padded (openssl's 'Aug  4')
+                 if ti < text.Length && text[ti] = ' ' then
+                     ti <- ti + 1
+
+                 let start = ti
+
+                 while ti < text.Length && System.Char.IsDigit text[ti] && ti - start < 2 do
+                     ti <- ti + 1
+
+                 if ti = start then
+                     error <- Some $"input does not match the format at position {start + 1}: expected a day for %%e"
+                 else
+                     d <- int (text.Substring(start, ti - start))
+             | 'd' -> d <- readDigits 2 "%d"
+             | 'H' -> h <- readDigits 2 "%H"
+             | 'M' -> mi <- readDigits 2 "%M"
+             | 'S' -> sec <- readDigits 2 "%S"
+             | 'f' ->
+                 let start = ti
+
+                 while ti < text.Length && System.Char.IsDigit text[ti] && ti - start < 9 do
+                     ti <- ti + 1
+
+                 if ti = start then
+                     error <- Some $"input does not match the format at position {start + 1}: expected digits for %%f"
+                 else
+                     let digits = text.Substring(start, min 3 (ti - start)).PadRight(3, '0')
+                     frac <- int digits
+             | 'z' ->
+                 if ti < text.Length && (text[ti] = 'Z' || text[ti] = 'z') then
+                     ti <- ti + 1
+                 elif ti < text.Length && (text[ti] = '+' || text[ti] = '-') then
+                     let sign = if text[ti] = '-' then -1 else 1
+                     ti <- ti + 1
+                     let hh = readDigits 2 "%z hours"
+
+                     if error.IsNone then
+                         if ti < text.Length && text[ti] = ':' then
+                             ti <- ti + 1
+
+                         let mm = readDigits 2 "%z minutes"
+                         offMin <- sign * (hh * 60 + mm)
+                 else
+                     error <- Some $"input does not match the format at position {ti + 1}: expected Z or ±HH:MM for %%z"
+             | '%' ->
+                 if ti < text.Length && text[ti] = '%' then
+                     ti <- ti + 1
+                 else
+                     error <- Some $"input does not match the format at position {ti + 1}: expected '%%'"
+             | c ->
+                 error <-
+                     Some
+                         $"unknown directive '%%{c}' — the format takes %%Y %%m %%d %%e %%b %%H %%M %%S %%f %%z (and %%%% for a literal percent)")
+
+            fi <- fi + 2
+        else
+            (if ti < text.Length && text[ti] = fmt[fi] then
+                 ti <- ti + 1
+             else
+                 let got = if ti < text.Length then string text[ti] else "end of input"
+
+                 error <-
+                     Some $"input does not match the format at position {ti + 1}: expected '{fmt[fi]}', got '{got}'")
+
+            fi <- fi + 1
+
+    match error with
+    | Some e -> Error e
+    | None when y < 0 || mo < 0 || d < 0 ->
+        Error "the format must carry a full date (%Y %m %d) — a year-less log format needs the year supplied elsewhere"
+    | None ->
+        try
+            let dto =
+                System.DateTimeOffset(y, mo, d, h, mi, sec, frac, System.TimeSpan.FromMinutes(float offMin))
+
+            Ok(dto.ToUnixTimeMilliseconds())
+        with _ ->
+            Error $"not a real date/time: {y:D4}-{mo:D2}-{d:D2} {h:D2}:{mi:D2}:{sec:D2}"
 
 /// parse "30s" / "2.5s" / "1h30m" / "-90s" to ms — compound components
 /// largest-first not required; decimals convert by INTEGER math and

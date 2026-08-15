@@ -29,6 +29,7 @@ type Value =
     | VInt of int64
     | VFloat of float
     | VDur of ms: int64
+    | VInstant of ms: int64
     | VSize of bytes: int64
     | VStr of string
     // a Secret wraps a plain string [D:secret]; the renderers show *** —
@@ -57,6 +58,7 @@ type Value =
             // finite-only and -0.0-normalized [D:floats]: reflexive
             | VFloat a, VFloat b -> a = b
             | VDur a, VDur b -> a = b
+            | VInstant a, VInstant b -> a = b
             | VSize a, VSize b -> a = b
             | VStr a, VStr b -> a = b
             | VSecret a, VSecret b -> a = b
@@ -79,6 +81,7 @@ type Value =
         | VInt n -> hash n
         | VFloat f -> hash f
         | VDur n -> hash ("dur", n)
+        | VInstant n -> hash ("instant", n)
         | VSize b -> hash ("size", b)
         | VStr s -> hash s
         | VSecret s -> hash ("secret", s)
@@ -128,6 +131,7 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VInt n -> string n
         | VFloat f -> formatFloat f
         | VDur n -> formatDuration n
+        | VInstant n -> formatInstant n
         | VSize b -> formatSize b
         // the load-bearing render [D:secret]: *** ALWAYS, and because this
         // is the one recursive renderer, a Secret inside a shown record /
@@ -507,6 +511,14 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "*", VDur a, VInt b -> VDur(Checked.(*) a b)
     | "*", VInt a, VDur b -> VDur(Checked.(*) a b)
     | "/", VDur a, VInt b -> VDur(a / b)
+    | "-", VInstant a, VInstant b -> VDur(Checked.(-) a b)
+    | "+", VInstant a, VDur d -> VInstant(Checked.(+) a d)
+    | "+", VDur d, VInstant a -> VInstant(Checked.(+) a d)
+    | "-", VInstant a, VDur d -> VInstant(Checked.(-) a d)
+    | ">", VInstant a, VInstant b -> VBool(a > b)
+    | "<", VInstant a, VInstant b -> VBool(a < b)
+    | ">=", VInstant a, VInstant b -> VBool(a >= b)
+    | "<=", VInstant a, VInstant b -> VBool(a <= b)
     | ">", VDur a, VDur b -> VBool(a > b)
     | "<", VDur a, VDur b -> VBool(a < b)
     | ">=", VDur a, VDur b -> VBool(a >= b)
@@ -1440,6 +1452,11 @@ let private argvParseValue
         match parseDurationMs raw with
         | Ok n -> values[f] <- wrapOpt ty (VDur n)
         | Error e -> problems.Add $"{flagTok}: {e}"
+    | TInstant
+    | TNamed("Option", [ TInstant ]) ->
+        match parseInstantMs raw with
+        | Ok n -> values[f] <- wrapOpt ty (VInstant n)
+        | Error e -> problems.Add $"{flagTok}: {e}"
     | TSize
     | TNamed("Option", [ TSize ]) ->
         match parseSize raw with
@@ -2081,6 +2098,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     | (TDur | TNamed("Option", [ TDur ])), v ->
                         match parseDurationMs v with
                         | Ok n -> wrapOpt ty (VDur n)
+                        | Error e ->
+                            problems.Add $"{name}: {e}"
+                            VUnit
+                    | (TInstant | TNamed("Option", [ TInstant ])), v ->
+                        match parseInstantMs v with
+                        | Ok n -> wrapOpt ty (VInstant n)
                         | Error e ->
                             problems.Add $"{name}: {e}"
                             VUnit

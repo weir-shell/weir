@@ -189,8 +189,9 @@ let private badArgsShape (label: string) (def: RecordDef) : string option =
             | TBool
             | TDur
             | TSize
+            | TInstant
             | TSecret
-            | TNamed("Option", [ TStr | TInt | TFloat | TDur | TSize | TSecret ]) -> false
+            | TNamed("Option", [ TStr | TInt | TFloat | TDur | TSize | TInstant | TSecret ]) -> false
             | _ -> true)
 
     match badShape with
@@ -198,7 +199,7 @@ let private badArgsShape (label: string) (def: RecordDef) : string option =
         Some $"{label}'{f}' is Option<bool>: a presence flag is already optional; use bool"
     | Some(f, ft) ->
         Some
-            $"{label}Args.load fields must be string, int, float, bool, Duration, Size, Secret, or Option of those; '{f}' is {formatTy ft}"
+            $"{label}Args.load fields must be string, int, float, bool, Duration, Size, Instant, Secret, or Option of those; '{f}' is {formatTy ft}"
     | None -> None
 
 let private dupFlag (label: string) (def: RecordDef) : string option =
