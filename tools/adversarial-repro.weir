@@ -1,29 +1,37 @@
 #!/usr/bin/env weir
-// Repro harness for dev/plans/PLAN-adversarial-review.md. Each probe prints
-// OK when the finding is FIXED and anything else (or a nonzero exit) when it
-// still reproduces, so one script is both the bug report and the gate.
+// Repro harness for dev/plans/PLAN-adversarial-review.md. Each finding probe
+// prints OK when the finding is FIXED and anything else (or a nonzero exit)
+// when it still reproduces, so one script is both the bug report and the gate.
 //
 //     weir tools/adversarial-repro.weir --bin ./path/to/weir
 //
-// Probes run as CHILD processes against the binary under test: F2 RAISES
-// today, and a raise is not data in-process (no general try) — a child's
-// exit code is. That also follows the behavioral-pins rule: measure the
-// built binary, not a parse shape.
+// Probe labels match the plan's numbering exactly (F1a, F1b, F2a-F2d, F3, F4,
+// F5), and so do the binding names, so a fixer never translates between the
+// two documents.
 //
-// LOUD: exits nonzero while any finding reproduces, and a probe that fails
-// to RUN counts as reproducing, never as a pass. The interop oracle is
-// LOUD ABOUT ABSENCE too — a missing PyYAML is a named SKIP that keeps the
-// finding open, never a silent pass.
+// Probes run as CHILD processes against the binary under test: F2a RAISES
+// today, and a raise is not data in-process (no general try) — a child's exit
+// code is. That also follows the behavioral-pins rule: measure the built
+// binary, not a parse shape.
 //
-// Positive controls (the vacuous-probe bar): `control-sees-broken` proves
-// the OK/BROKEN channel can report failure, `control-shallow-checks` proves
-// the depth runner tells a clean check from a crash, and
-// `control-oracle-rejects` proves the external YAML oracle FAILS on a value
-// it should reject.
+// LOUD, and in every direction:
+//   - a probe that fails to RUN counts as reproducing, never as a pass;
+//   - a MISSING INSTRUMENT (PyYAML, `timeout`) is a named SKIP that keeps its
+//     finding OPEN — absence is never a pass;
+//   - "fixed" for a depth/budget probe means exit 1, a located diagnostic. A
+//     crash (>=128) is NOT a fix, so those probes test == 1, never <> n.
+//
+// Positive controls are INDEPENDENT OF EVERY FINDING'S STATE — a control that
+// passes only while a bug exists is measuring the bug twice, not controlling.
+//   - control-sees-broken: the OK/BROKEN channel can report failure.
+//   - control-shallow-checks: the depth runner tells a clean check from a crash.
+//   - control-oracle-rejects: the external YAML oracle FAILS on a STRUCTURAL
+//     mismatch (emit "abc", tell the oracle to expect "xyz") — it never reuses
+//     a finding's payload, so it stays valid after every fix lands.
 //
 // Note the shape of this file: every command-running helper is a TOP-LEVEL
-// function, because F3 is that a block `let` with a command RHS silently
-// loses its reifier off the topLet spine.
+// function, because F3 is that a block `let` with a command RHS silently loses
+// its reifier off the topLet spine.
 
 type Cli = {
     /// the weir binary under test
@@ -36,30 +44,30 @@ let q = "\""
 
 // ---- probes whose verdict weir can reach on its own ------------------------
 
-let probeF2 =
+let probeF2a =
     [ @"type Doc = { k: string }"
       @"let orig = "" a\nb"""
       @"let back = { k = orig } |> to yaml |> from yaml Doc"
       @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
 
-let probeF3 =
+let probeF2b =
     [ @"type Doc = { k: string }"
       @"let orig = ""a\n """
       @"let back = { k = orig } |> to yaml |> from yaml Doc"
       @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
 
 // F3: the reifier survives in a block let inside an if-body
-let probeF6 =
+let probeF3 =
     [ @"if 1 > 0 then"
       @"    let r = sh -c ""exit 7"" | complete"
       @"    print (if r.exitCode == 7 then ""OK"" else ""BROKEN"")" ]
 
 // F4: a NUL-bearing value must not silently truncate at the argv hand-off.
-// CAVEAT for the fixer: the other legal fix is to make Str.fromBase64 REJECT
-// non-text bytes (which is what SKILL.md already claims it does). That fix
-// makes this probe RAISE, which reads here as REPRODUCES — re-point the probe
-// at the rejection instead of loosening it.
-let probeF7 argvLenPath =
+// CAVEAT for the fixer: the plan's fix (1) makes Str.fromBase64 REJECT
+// non-text bytes, and then this probe RAISES rather than printing BROKEN. The
+// runner distinguishes the two, so that reads as "probe RAISED" at runtime —
+// re-point it at the rejection rather than loosening it.
+let probeF4 argvLenPath =
     [ @"let v = Str.fromBase64 ""YQBi"""
       $"let p = {q}{argvLenPath}{q}"
       @"let got = python3 $p $v |> Seq.head"
@@ -71,8 +79,8 @@ let argvLen =
 
 // F5: the POST-PARSE seam. Parse depth here is ~1 — no parse-depth guard can
 // ever see this file — but each line DOUBLES the inferred type, so the
-// checker's tree walk never returns. This is the probe that a parser-only fix
-// would sail past, which is the whole reason it exists separately.
+// checker's tree walk never returns. This is the probe a parser-only fix would
+// sail past, which is the whole reason it exists separately.
 let inferBomb =
     [ @"let f0 x = (x, x)"
       @"let f1 x = f0 (f0 x)"
@@ -108,9 +116,13 @@ let emitProbe b64 =
       $"let v = Str.fromBase64 {q}{b64}{q}"
       @"{ k = v } |> to yaml |> Seq.iter print" ]
 
+// instrument availability — probed, never assumed. `timeout` is GNU coreutils
+// and absent on a stock macOS, where sh would return 127 and a `<> 124` test
+// would have read that as a pass.
 let oracleReady = sh -c "python3 -c 'import yaml' 2>/dev/null" | succeeds
+let timeoutReady = sh -c "command -v timeout >/dev/null 2>&1" | succeeds
 
-// ---- runners (top-level: see the F6 note) ----------------------------------
+// ---- runners (top-level: see the F3 note) ----------------------------------
 
 let runProbe path =
     let r = sh -c $"'{cli.bin}' '{path}' 2>/dev/null" | complete
@@ -148,37 +160,77 @@ let verdict d name lines =
     let r = runProbe path
     let said = r.stdout |> Seq.tryHead |> Option.defaultValue ""
     let fixed = r.exitCode == 0 && said == "OK"
-    let word = if fixed then "fixed" else "REPRODUCES"
-    print $"  {name}: {word} (exit {r.exitCode}, said '{said}')"
+
+    let how =
+        if fixed then "fixed"
+        elif said == "BROKEN" then "REPRODUCES (probe ran, verdict BROKEN)"
+        else $"REPRODUCES (probe RAISED, exit {r.exitCode})"
+
+    print $"  {name}: {how}"
     fixed
 
-let interop d name b64 =
+// controls get their own verb: a working control must not print the word a
+// reader scans for as failure
+let control d name lines =
+    let path = $"{d}/{name}.weir"
+    File.write path lines
+    let r = runProbe path
+    let said = r.stdout |> Seq.tryHead |> Option.defaultValue ""
+    let ok = r.exitCode == 0 && said == "BROKEN"
+    let word = if ok then "control OK (correctly saw BROKEN)" else "*** CONTROL FAILED"
+    print $"  {name}: {word}"
+    ok
+
+// emit and expect are SEPARATE payloads, so a control can assert a structural
+// mismatch instead of borrowing a finding's value
+let interopRun d name emitB64 expectB64 =
     let probePath = $"{d}/{name}.weir"
     let checkPath = $"{d}/oracle.py"
-    File.write probePath (emitProbe b64)
-    let r = interopExit cli.bin probePath checkPath b64
+    File.write probePath (emitProbe emitB64)
+    let r = interopExit cli.bin probePath checkPath expectB64
     let said = r.stdout |> Seq.tryHead |> Option.defaultValue ""
-    let fixed = r.exitCode == 0
+    (r.exitCode == 0, said)
+
+let interop d name b64 =
+    let res = interopRun d name b64 b64
+    let fixed = fst res
     let word = if fixed then "fixed" else "REPRODUCES"
-    print $"  {name}: {word} ({said})"
+    print $"  {name}: {word} ({snd res})"
     fixed
+
+let interopControl d =
+    // emit "abc", tell the oracle to expect "xyz": the oracle MUST reject.
+    // Independent of every finding, so it stays valid after the fixes land.
+    let res = interopRun d "control-oracle-rejects" "YWJj" "eHl6"
+    let rejected = not (fst res)
+    let word = if rejected then "control OK (correctly rejected)" else "*** CONTROL FAILED"
+    print $"  control-oracle-rejects: {word}"
+    rejected
 
 let depthExit d name head =
     let path = $"{d}/{name}.weir"
     File.write path [head; @"print ""x"""]
     checkExit path
 
+// 1 = a located diagnostic, which IS the fix. 0 means the probe stopped
+// reaching the seam (re-point it deeper); >=128 is a crash, never a fix.
+let depthWord code =
+    if code == 1 then "fixed"
+    elif code == 0 then "*** probe no longer reaches the seam — re-point it deeper"
+    elif code >= 128 then $"REPRODUCES (crashed, exit {code})"
+    else $"REPRODUCES (exit {code})"
+
 within tmp d
     print $"weir under test: {cli.bin}"
     print ""
     print "round-trip findings (weir refereeing itself):"
 
-    let f2 = verdict d "F2a-block-scalar-roundtrip" probeF2
-    let f3 = verdict d "F2b-trailing-ws-roundtrip" probeF3
-    let f6 = verdict d "F3-reifier-in-block-let" probeF6
+    let f2a = verdict d "F2a-block-scalar-roundtrip" probeF2a
+    let f2b = verdict d "F2b-trailing-ws-roundtrip" probeF2b
+    let f3 = verdict d "F3-reifier-in-block-let" probeF3
 
     File.write $"{d}/argvlen.py" argvLen
-    let f7 = verdict d "F4-nul-truncates-at-argv" (probeF7 $"{d}/argvlen.py")
+    let f4 = verdict d "F4-nul-truncates-at-argv" (probeF4 $"{d}/argvlen.py")
 
     print ""
     print "interop findings (an EXTERNAL YAML reader referees):"
@@ -195,57 +247,62 @@ within tmp d
         if oracleReady then
             interopPairs |> Seq.map (fun p -> interop d (fst p) (snd p)) |> Seq.force
         else
-            print "  SKIPPED: python3 + PyYAML not available — F2c/F2d stay OPEN"
+            print "  SKIPPED: python3 + PyYAML absent — F2c/F2d stay OPEN"
             print "  (the property is interop; weir cannot referee it, so absence is not a pass)"
             [false]
 
     let interopOk = interopResults |> Seq.forall (fun b -> b)
 
     print ""
-    print "positive controls:"
-    let ctl = verdict d "control-sees-broken" probeControl
-
-    let oracleCtl =
-        if oracleReady then
-            // ".inf" must FAIL the oracle today; if it passes, the oracle is blind
-            not (interop d "control-oracle-rejects" "LmluZg==")
-        else
-            true
-
-    print ""
-    print "depth guards (1 = a located diagnostic, which is the fix; >=128 = crash):"
+    print "depth guards:"
     let shallow = depthExit d "shallow-10" (deepType 10)
     print $"  control-shallow-checks: depth 10 -> exit {shallow} (expect 0)"
 
     let deepT = depthExit d "type-20000" (deepType 20000)
     let f1a = deepT == 1
-    let f1aword = if f1a then "fixed" else "REPRODUCES"
-    print $"  F1a-type-grammar: {f1aword} (depth 20000 -> exit {deepT})"
+    print $"  F1a-type-grammar: {depthWord deepT} (depth 20000)"
 
     let deepP = depthExit d "pattern-20000" (deepPattern 20000)
     let f1b = deepP == 1
-    let f1bword = if f1b then "fixed" else "REPRODUCES"
-    print $"  F1b-pattern-grammar: {f1bword} (depth 20000 -> exit {deepP})"
+    print $"  F1b-pattern-grammar: {depthWord deepP} (depth 20000)"
 
     print "  (type: Option<...>, Map<string, ...>, {| a: ... |} nest identically)"
     print "  (pattern: tuple, ctor, list, cons-chain, let-binder, lambda-param too)"
 
+    print ""
+    print "inference budget:"
     let bombPath = $"{d}/infer-bomb.weir"
     File.write bombPath inferBomb
-    let bomb = timedCheckExit bombPath
-    // 124 = timeout fired; anything else means the checker ANSWERED
-    let f5 = bomb <> 124
-    let f5word = if f5 then "fixed" else "REPRODUCES"
-    print $"  F5-no-time-bound: {f5word} (149-byte file, parse depth ~1 -> exit {bomb})"
+
+    let f5 =
+        if timeoutReady then
+            let bomb = timedCheckExit bombPath
+            let word = if bomb == 124 then "REPRODUCES (timed out at 20s)" else depthWord bomb
+            print $"  F5-no-time-bound: {word} (149-byte file, parse depth ~1)"
+            bomb == 1
+        else
+            print "  SKIPPED: `timeout` absent (GNU coreutils; a stock macOS has none) — F5 stays OPEN"
+            false
+
+    print ""
+    print "positive controls:"
+    let ctl = control d "control-sees-broken" probeControl
+
+    let oracleCtl =
+        if oracleReady then
+            interopControl d
+        else
+            print "  control-oracle-rejects: SKIPPED (no oracle to control)"
+            true
 
     let broken =
         [ ("F1a", f1a)
           ("F1b", f1b)
-          ("F2a", f2)
-          ("F2b", f3)
+          ("F2a", f2a)
+          ("F2b", f2b)
           ("F2c/F2d", interopOk)
-          ("F3", f6)
-          ("F4", f7)
+          ("F3", f3)
+          ("F4", f4)
           ("F5", f5) ]
         |> Seq.where (fun p -> not (snd p))
         |> Seq.map fst
@@ -253,11 +310,11 @@ within tmp d
 
     print ""
 
-    if ctl then
-        fail "positive control failed: a deliberately-broken probe was reported as fixed"
+    if not ctl then
+        fail "positive control failed: the OK/BROKEN channel could not report a deliberately-broken probe"
 
     if not oracleCtl then
-        fail "positive control failed: the external oracle accepted a value it must reject"
+        fail "positive control failed: the external oracle accepted a structural mismatch"
 
     if shallow <> 0 then
         fail $"positive control failed: a depth-10 type must check clean, got exit {shallow}"

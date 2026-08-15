@@ -407,6 +407,27 @@ The harness is written in weir per the scripting policy. Its shape is
 dictated by F3: every command-running helper is a top-level function,
 because a block let with a command RHS loses its reifier off the spine.
 
-Probe labels match this document's numbering exactly (`F1a`, `F1b`, `F2a`–
-`F2d`, `F3`, `F4`, `F5`), so a fixer can run the harness and read the plan
-without translating between them.
+Probe labels AND binding names match this document's numbering exactly
+(`F1a`, `F1b`, `F2a`–`F2d`, `F3`, `F4`, `F5`), so a fixer never translates
+between the two documents.
+
+Three instrument defects were found by review of the harness itself and are
+recorded because each is a shape that recurs:
+
+- **A control that borrows a finding's payload is not a control.** The oracle
+  control originally emitted `.inf` — the same value as F2c — so it passed
+  only BECAUSE the finding reproduced, and would have failed the moment F2c
+  was fixed, making the gate unreachable. It now asserts a STRUCTURAL
+  mismatch (emit `abc`, expect `xyz`), independent of every finding. The
+  oracle is verified TWO-SIDED (it accepts `abc`/`abc` and rejects
+  `abc`/`xyz`), because a one-sided "correctly rejected" is vacuous.
+- **`<> n` is not the complement of a fix.** The budget probe tested
+  `exit <> 124`, which a SEGV, an abort, and a missing binary all satisfy —
+  it would have reported "fixed" on a crash, in the one file whose subject is
+  that crashes are not fixes. Every depth/budget probe now tests `== 1` (a
+  located diagnostic) and names the crash and the no-longer-reaching-the-seam
+  cases separately.
+- **An instrument must be probed, not assumed.** `timeout` is GNU coreutils
+  and absent on a stock macOS, where `sh` returns 127 — which the old `<> 124`
+  test read as a pass. It is now probed like the oracle, and its absence is a
+  named SKIP that keeps F5 OPEN.
