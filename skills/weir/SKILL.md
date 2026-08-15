@@ -953,6 +953,18 @@ let c = Args.load Cmd
   is a sibling (runs after, unconditionally); only deeper lines are
   the body. Guard lines before a block result work:
   `if x == "" then fail "usage"` then the result line at same indent.
+- `weir check --can script.weir` reports what a script CAN do before
+  anything runs [D:can-report] — capability, not behaviour (an untaken
+  branch still counts): every command it can run (heads are literal by
+  the argv law, so the set is static), filesystem reads/writes (literal
+  paths named; otherwise "not statically known"), network members with
+  literal urls, environment reads/writes, Secret loads AND any Secret
+  reaching a command's argv (the ps-visible non-claim, surfaced), and
+  scoped processes. `sh -c` and the other interpreters are FIRST-CLASS
+  UNKNOWNS — the report's header says "incomplete: N opaque sites" and
+  `--strict` exits 2 on any, so CI chooses whether unanalysable means
+  failure. `--json` for machines. The boundary, stated: the report
+  covers what WEIR does; any external can itself do anything.
 - `exit n` exits with code n silently (propagation:
   `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
   the message-carrying exit-1. No try/finally — for cleanup-always,

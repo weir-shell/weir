@@ -1257,6 +1257,39 @@ Dir.create "wb"
     pwd |> Seq.head) |> print
 ```
 
+## What a script can do, before it runs
+
+`weir check --can` extends check-before-run one step: because command
+heads are literal and nothing expands in argv, the set of commands a
+script can reach is statically knowable — so weir reports it, with a
+site for every line:
+
+```
+deploy.weir can (capability, not behaviour — an untaken branch still counts):
+  ⚠ this report is incomplete: 1 opaque site(s) — an interpreter's argument cannot be analyzed
+  runs:
+    git  deploy.weir:3:1
+    sh  deploy.weir:5:1
+  opaque:
+    sh takes a program as its argument — not analyzed  deploy.weir:5:1
+  writes:
+    File.write out.txt  deploy.weir:7:10
+  network:
+    Http.fetch https://api.example.com/items  deploy.weir:8:12
+  secrets:
+    loads token (Env.load Cfg)  deploy.weir:2:11
+    a Secret reaches the argv of curl (ps-visible — the stated non-claim)  deploy.weir:9:9
+```
+
+Three honesty rules: it reports capability, never behaviour — a
+command inside a branch that never runs still counts; `sh -c` and the
+other interpreters are first-class unknowns, counted in the header
+(`--strict` exits 2 when any exist, so a CI gate can refuse
+unanalysable scripts); and the claim covers what weir itself does —
+any external can do anything, and no static report closes that.
+Imports are walked transitively; a module's capabilities carry the
+module's own file:line. `--json` emits the same facts for machines.
+
 ## Failing and diagnosing
 
 `fail "reason"` stops the script with a located error and exit 1.

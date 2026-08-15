@@ -1882,7 +1882,10 @@ and LoadedModule =
       TypeDefs: (string * TypeDef) list
       Members: (string * Scheme) list
       TypeNames: string list
-      Body: CheckedStmt list }
+      // each statement WITH its logical line [D:can-report]: the line
+      // carries the segment table, so a capability inside a module can
+      // name its own file:line:col like any diagnostic
+      Body: (LogicalLine * CheckedStmt) list }
 
 // an import failure [D:modules-v1]. File=Some for a MODULE-CONTENT error —
 // reported at the module's OWN site (Line/Col into that file) plus an
@@ -2635,7 +2638,7 @@ let rec loadModuleCached
                               Col = col
                               Message = msg }
 
-                    let rec go (tenv: TypeEnv) (accBody: CheckedStmt list) (stmts: LogicalLine list) =
+                    let rec go (tenv: TypeEnv) (accBody: (LogicalLine * CheckedStmt) list) (stmts: LogicalLine list) =
                         match stmts with
                         | [] -> Ok(tenv, List.rev accBody)
                         | (ll: LogicalLine) :: tail ->
@@ -2654,8 +2657,8 @@ let rec loadModuleCached
                                 | None -> at d.PhysLine d.PhysCol d.Message
                             | Ok chk ->
                                 match chk.Kind with
-                                | KType decl -> go chk.Env (CType decl :: accBody) tail
-                                | KImport lm -> go chk.Env (CImport lm :: accBody) tail
+                                | KType decl -> go chk.Env ((ll, CType decl) :: accBody) tail
+                                | KImport lm -> go chk.Env ((ll, CImport lm) :: accBody) tail
                                 | KLet(_, _, te) when runsCommandT te ->
                                     at
                                         ll.Head
@@ -2663,8 +2666,8 @@ let rec loadModuleCached
                                         "a module 'let' cannot run a command at import — wrap it in a function (let f () = …), the command runs when a script calls it"
                                 | KLetPat(_, _, te) when runsCommandT te ->
                                     at ll.Head 1 "a module 'let' cannot run a command at import"
-                                | KLet(name, _, te) -> go chk.Env (CLet(name, te) :: accBody) tail
-                                | KLetPat(pat, _, te) -> go chk.Env (CLetPat(pat, te) :: accBody) tail
+                                | KLet(name, _, te) -> go chk.Env ((ll, CLet(name, te)) :: accBody) tail
+                                | KLetPat(pat, _, te) -> go chk.Env ((ll, CLetPat(pat, te)) :: accBody) tail
                                 | KModule _ -> at ll.Head 1 "a file has at most one 'module' marker, and it comes first"
                                 | KCmd _
                                 | KExpr _ ->
@@ -2683,7 +2686,7 @@ let rec loadModuleCached
                         let typeDefs =
                             moduleBody
                             |> List.choose (function
-                                | CType decl ->
+                                | _, CType decl ->
                                     Map.tryFind decl.Name finalTenv.Types |> Option.map (fun d -> decl.Name, d)
                                 | _ -> None)
 
@@ -2727,18 +2730,18 @@ let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) 
     let rec replay (mv: Eval.Env) body =
         match body with
         | [] -> mv
-        | CType decl :: t ->
+        | (_, CType decl) :: t ->
             let mv' =
                 match decl.Body with
                 | DUnion cases -> Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) mv
                 | DRecord _ -> mv
 
             replay mv' t
-        | CLet(name, te) :: t -> replay (Map.add name (Eval.eval mv te) mv) t
-        | CLetPat(pat, te) :: t ->
+        | (_, CLet(name, te)) :: t -> replay (Map.add name (Eval.eval mv te) mv) t
+        | (_, CLetPat(pat, te)) :: t ->
             let bs = Eval.bindPattern pat (Eval.eval mv te)
             replay (bs |> List.fold (fun m (n, v) -> Map.add n v m) mv) t
-        | CImport nested :: t ->
+        | (_, CImport nested) :: t ->
             let nestedVenv = replayModule procFacts nested
             replay (expose nested.Alias nested.Members nestedVenv mv) t
         | _ :: t -> replay mv t
@@ -3100,7 +3103,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                     let letStr name =
                         lm.Body
                         |> List.tryPick (function
-                            | CLet(n, te) when n = name ->
+                            | _, CLet(n, te) when n = name ->
                                 match te.Kind with
                                 | Check.TEStr s -> Some s
                                 | _ -> None
@@ -3109,7 +3112,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                     let letBool name =
                         lm.Body
                         |> List.tryPick (function
-                            | CLet(n, te) when n = name ->
+                            | _, CLet(n, te) when n = name ->
                                 match te.Kind with
                                 | Check.TEBool b -> Some b
                                 | _ -> None
@@ -3864,6 +3867,30 @@ let analyzeLines
         typeEnv0,
         logicalLines
 
+/// diagnostic rendering shared by `check` and `check --can`
+/// [D:can-report] — one spelling for both consumers
+let printDiags (json: bool) (diags: Diagnostic list) : unit =
+    if json then
+        Console.WriteLine(
+            jsonBuild (fun w ->
+                w.WriteStartArray()
+                diags |> List.iter (writeDiag w)
+                w.WriteEndArray())
+        )
+    else
+        let c = Color.onStdout.Value
+
+        for d in diags do
+            let sev =
+                if d.Severity = "warning" then
+                    Color.yellow c $"warning [{d.Code}]"
+                elif d.Severity = "note" then
+                    Color.bold c $"note [{d.Code}]"
+                else
+                    Color.red c $"error [{d.Code}]"
+
+            Console.WriteLine(Color.bold c $"{d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}")
+
 let checkOnly (json: bool) (path: string) : int =
     if not (IO.File.Exists path) then
         Console.Error.WriteLine $"weir: no such script: {path}"
@@ -3871,27 +3898,7 @@ let checkOnly (json: bool) (path: string) : int =
     else
         let rawLines = IO.File.ReadAllLines path |> Array.toList
         let diags, _, _, _ = analyzeLines path rawLines
-
-        if json then
-            Console.WriteLine(
-                jsonBuild (fun w ->
-                    w.WriteStartArray()
-                    diags |> List.iter (writeDiag w)
-                    w.WriteEndArray())
-            )
-        else
-            let c = Color.onStdout.Value
-
-            for d in diags do
-                let sev =
-                    if d.Severity = "warning" then
-                        Color.yellow c $"warning [{d.Code}]"
-                    elif d.Severity = "note" then
-                        Color.bold c $"note [{d.Code}]"
-                    else
-                        Color.red c $"error [{d.Code}]"
-
-                Console.WriteLine(Color.bold c $"{d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}")
+        printDiags json diags
 
         if diags |> List.exists (fun d -> d.Severity = "error") then
             1

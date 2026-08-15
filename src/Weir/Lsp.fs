@@ -1353,7 +1353,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                          |> Option.bind (fun lm ->
                              lm.Body
                              |> List.tryPick (function
-                                 | Script.CLet(bn, te) when bn = mem -> Some te
+                                 | _, Script.CLet(bn, te) when bn = mem -> Some te
                                  | _ -> None))
                          |> Option.bind (fun te ->
                              match te.Ty, lambdaParamNames te with
