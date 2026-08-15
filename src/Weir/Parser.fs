@@ -2805,7 +2805,17 @@ let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
 tySynRef.Value <-
     choice
-        [ pchar '\'' >>. rawWord .>> ws |>> TVar
+        [
+          // the one-level rule REVERSED [D:anon-nesting]: the shape
+          // parses anywhere a type is written — the canonical name IS
+          // the type (synthetic-nominal recursion for free); the fields
+          // ride the pending table for the registration seams to drain
+          anonShape
+          |>> fun fields ->
+              let n = anonRecordName fields
+              pushAnonDef n fields
+              TNamed(n, [])
+          pchar '\'' >>. rawWord .>> ws |>> TVar
           rawWord
           >>= fun w ->
               match w with

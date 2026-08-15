@@ -3490,12 +3490,28 @@ let anonDefs (expr: Expr) : (string * TypeDef) list =
     walk expr
     acc |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
 
-let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
-    match anonDefs expr with
+/// nested shapes drained from the parser's pending table
+/// [D:anon-nesting] — same synthetic defs, same registration
+let private pendingAnonRecords () : (string * TypeDef) list =
+    Types.drainAnonDefs ()
+    |> List.map (fun (name, fields) ->
+        name,
+        Record
+            { Name = name
+              Params = []
+              Fields = List.sortBy fst fields
+              Attrs = Map.empty
+              Docs = Map.empty })
+
+let private withDefList (env: TypeEnv) (defs: (string * TypeDef) list) : TypeEnv =
+    match defs with
     | [] -> env
     | defs ->
         { env with
             Types = defs |> List.fold (fun ts (n, d) -> Map.add n d ts) env.Types }
+
+let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
+    withDefList env (anonDefs expr @ pendingAnonRecords ())
 
 let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExpr * (string * Scheme) list, TypeError> =
     let env = withAnonDefs env expr
@@ -3795,6 +3811,11 @@ let preludeLoading: System.Threading.ThreadLocal<bool> =
     new System.Threading.ThreadLocal<bool>(fun () -> false)
 
 let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
+    // a declared record's anon FIELD shapes drain here [D:anon-nesting]
+    // — registered before validation so the names resolve, and they
+    // ride the returned env like any registration
+    let env = withDefList env (pendingAnonRecords ())
+
     if not preludeLoading.Value && builtinTypeNames.ContainsKey decl.Name then
         err decl.Span $"'{decl.Name}' is a built-in type — pick another name"
     else

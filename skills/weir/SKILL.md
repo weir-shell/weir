@@ -673,8 +673,18 @@ within tmp d
   form to read a FOREIGN shape once; declare a type for your own data
   and anything reused. Same-shape anonymous types are one type; a
   declared record with the same fields stays a different (nominal)
-  type. Adapter slot only — no anonymous literals, no nesting (a
-  nested object needs a declared record).
+  type. The shape NESTS — anywhere a type is written, including
+  fields of `{| … |}` and of declared records
+  (`{| a: {| b: int |} |}`, `{| rows: seq<{| id: string |}> |}`) —
+  so a REPL session can sketch a whole foreign payload anonymously
+  before declaring anything. The teaching stands: once a shape is
+  YOUR data model, name it. No anonymous literals.
+
+```weir
+let x = ["{\"a\": {\"b\": 1}}"] |> from json {| a: {| b: int |} |}
+print (show x.a.b)
+```
+
   `from json T` reads ONE DOCUMENT -> `T` (any number of lines — a
   pretty-printed body pipes straight in); `from json seq<T>` reads a
   top-level ARRAY document -> `seq<T>` (the list-endpoint shape);
