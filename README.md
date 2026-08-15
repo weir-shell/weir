@@ -21,7 +21,7 @@ type error: FileRow has no field 'bytse'. Did you mean 'bytes'?
 
 Two lines, the whole idea: rows are typed records — `bytes` is a
 `Size` (`f.bytes > 10MiB`), `age` is a `Duration`
-(`f.age < 1h`), directories are rows too — the REPL tabulates any
+(`Instant.now () - f.modified < 1h`), directories are rows too — the REPL tabulates any
 seq of records, and the second line is refused before anything runs — in a script, before *any*
 line runs. External commands are first-class in the same pipelines
 (`git status --porcelain |> where (Str.startsWith "M ")`), scripts

@@ -31,6 +31,13 @@ weir's furniture, but a cell is the user's data, and data does not
 get decorated. Declines on the row: borders/zebra (copy-paste), column
 reordering (would fork show's field law), interactivity (the
 dynamism boundary).
+The session's coda: FileRow's `age` became `modified: Instant` the
+same day — the ls-truth row had reserved that reopening explicitly
+("the DateTime gap stays its own question"), and the type arriving
+flipped the balance against a field that was derived, snapshotted,
+and stale the moment a listing was bound. A reservation written into
+a row four days earlier getting called on schedule is the ledger
+working exactly as designed.
 
 ## the surface gate: doc completeness as a checked property (2026-08-14)
 

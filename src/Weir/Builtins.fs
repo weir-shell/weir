@@ -13,10 +13,14 @@ let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
       Fields =
-        [ "age", TDur
-          "bytes", TSize
+        [ "bytes", TSize
           "hidden", TBool
           "isDirectory", TBool
+          // the file's OWN fact [D:instant]: replaced age (derived,
+          // snapshotted per pull, stale after binding — the ls-truth
+          // row's stated wart); Instant landing called that row's
+          // reserved reopening
+          "modified", TInstant
           "name", TStr
           "path", TStr
           "readOnly", TBool ]
@@ -37,18 +41,18 @@ let recordOf (def: RecordDef) (values: Value list) : Value =
 
 let file (name: string) (bytes: int64) (readOnly: bool) : Value =
     // the fixture-friendly constructor: test rows are plain files at
-    // the cwd with zero age — real rows come from lsRow below
+    // the cwd, modified at the epoch — real rows come from lsRow below
     recordOf
         fileRow
-        [ VDur 0L
-          VSize bytes
+        [ VSize bytes
           VBool(name.StartsWith ".")
           VBool false
+          VInstant 0L
           VStr name
           VStr name
           VBool readOnly ]
 
-let private lsRow (now: System.DateTime) (info: FileSystemInfo) : Value =
+let private lsRow (info: FileSystemInfo) : Value =
     let isDir = info.Attributes.HasFlag FileAttributes.Directory
 
     let bytes =
@@ -65,10 +69,10 @@ let private lsRow (now: System.DateTime) (info: FileSystemInfo) : Value =
 
     recordOf
         fileRow
-        [ VDur(int64 (now - info.LastWriteTimeUtc).TotalMilliseconds)
-          VSize bytes
+        [ VSize bytes
           VBool hidden
           VBool isDir
+          VInstant(System.DateTimeOffset(info.LastWriteTimeUtc, System.TimeSpan.Zero).ToUnixTimeMilliseconds())
           VStr info.Name
           VStr info.FullName
           VBool(info.Attributes.HasFlag FileAttributes.ReadOnly) ]
@@ -77,9 +81,7 @@ let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
             // the WHOLE directory — files AND subdirectories (GetFiles
-            // silently halved the listing for a month) [D:ls-truth];
-            // age snapshots once per enumeration pass
-            let now = System.DateTime.UtcNow
+            // silently halved the listing for a month) [D:ls-truth]
             let cwd = Session.Cwd()
 
             let infos =
@@ -89,7 +91,7 @@ let private realLs: Value =
                 | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {cwd}"
                 | :? System.IO.IOException as e -> failwith $"ls: cannot access {cwd} — {e.Message}"
 
-            infos |> Seq.map (lsRow now))
+            infos |> Seq.map lsRow)
     )
 
 let private whereImpl: Value =
@@ -3873,7 +3875,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
           "FileRow",
           bd
-              "A directory entry: name, path, bytes (0 B for a directory), isDirectory, hidden, readOnly, age (Duration since last write, snapshotted per `ls` pull). From `ls` — files AND subdirectories."
+              "A directory entry: name, path, bytes (0 B for a directory), isDirectory, hidden, readOnly, modified (the last-write Instant — the file's own fact, stable under binding). From `ls` — files AND subdirectories."
               None
               None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None

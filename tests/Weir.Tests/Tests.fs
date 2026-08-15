@@ -1833,10 +1833,10 @@ let completionTests =
 
               Expect.equal
                   (suggest text (text.Length - 2))
-                  [ "f.age"
-                    "f.bytes"
+                  [ "f.bytes"
                     "f.hidden"
                     "f.isDirectory"
+                    "f.modified"
                     "f.name"
                     "f.path"
                     "f.readOnly" ]
@@ -1847,10 +1847,10 @@ let completionTests =
 
               Expect.equal
                   (suggest text (text.Length - 2))
-                  [ "x.age"
-                    "x.bytes"
+                  [ "x.bytes"
                     "x.hidden"
                     "x.isDirectory"
+                    "x.modified"
                     "x.name"
                     "x.path"
                     "x.readOnly" ]
@@ -1868,10 +1868,10 @@ let completionTests =
 
               Expect.equal
                   (suggest upto ws)
-                  [ "x.age"
-                    "x.bytes"
+                  [ "x.bytes"
                     "x.hidden"
                     "x.isDirectory"
+                    "x.modified"
                     "x.name"
                     "x.path"
                     "x.readOnly" ]
@@ -7300,7 +7300,7 @@ let showTests =
               expectValue
                   "show (ls |> Seq.head)"
                   (VStr
-                      "{ age = 0s; bytes = 0 B; hidden = false; isDirectory = false; name = \"a.txt\"; path = \"a.txt\"; readOnly = false }")
+                      "{ bytes = 0 B; hidden = false; isDirectory = false; modified = 1970-01-01T00:00:00Z; name = \"a.txt\"; path = \"a.txt\"; readOnly = false }")
           }
           test "unions, seqs, scalars" {
               expectValue "show (Some 3)" (VStr "Some 3")
@@ -10142,7 +10142,7 @@ let fileRowSizeTests =
               expectValue
                   "show (ls |> where (fun f -> f.name == \"b.bin\") |> Seq.head)"
                   (VStr
-                      "{ age = 0s; bytes = 5 MiB; hidden = false; isDirectory = false; name = \"b.bin\"; path = \"b.bin\"; readOnly = true }")
+                      "{ bytes = 5 MiB; hidden = false; isDirectory = false; modified = 1970-01-01T00:00:00Z; name = \"b.bin\"; path = \"b.bin\"; readOnly = true }")
           }
           test "sortBy crosses the class boundary: Ord admits Size" {
               expectValue "ls |> Seq.sortByDescending _.bytes |> first 1 |> map _.name" (VSeq [ VStr "b.bin" ])
@@ -10261,7 +10261,7 @@ let lsTruthTests =
                       | [ VStr ".dot" ] -> ()
                       | other -> failtest $"the dot-name is hidden: {other}"
 
-                      match runLive "ls |> Seq.where (fun f -> f.age < 1h) |> Seq.length" with
+                      match runLive "ls |> Seq.where (fun f -> Instant.now () - f.modified < 1h) |> Seq.length" with
                       | VInt 3L -> ()
                       | other -> failtest $"fresh files filter by age: {other}"
 
