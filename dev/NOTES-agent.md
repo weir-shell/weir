@@ -155,3 +155,14 @@ skill lines and targeted hints).
   GUIDE). All bicep receipts now dispositioned: 1 shipped, 2 GUIDE
   idiom, 3 shipped (Exit.code), 4 parked-with-idiom, 5-7 shipped in
   the consolidation session.
+- 2026-08-15 | adversarial-repro.weir | writing the review's repro
+  harness hit F6 (PLAN-adversarial-review): a block `let` with a
+  command RHS keeps command mode OFF the topLet spine, but the
+  reifier marker does not survive there — `let r = sh -c "…" |
+  complete` inside an if-body, a within-body, or a lambda body
+  re-reads `complete` as a PATH program, runs whatever has that name,
+  and pipes the command's stdout into it. The harness is shaped
+  around it (every command-running helper hoisted to a top-level
+  function). The diagnostic when nothing is on PATH — "install the
+  tool" — is what sent the first attempt looking for a missing
+  binary rather than at the position.

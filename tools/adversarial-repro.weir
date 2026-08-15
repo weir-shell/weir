@@ -1,0 +1,147 @@
+#!/usr/bin/env weir
+// Repro harness for dev/plans/PLAN-adversarial-review.md. Each probe prints
+// OK when the finding is FIXED and anything else (or a nonzero exit) when it
+// still reproduces, so one script is both the bug report and the gate.
+//
+// Probes run as CHILD processes against the binary under test: F2 RAISES
+// today, and a raise is not data in-process (no general try) — a child's
+// exit code is. That also follows the behavioral-pins rule: measure the
+// built binary, not a parse shape.
+//
+// LOUD: exits nonzero while any finding reproduces, and a probe that fails
+// to RUN counts as reproducing, never as a pass.
+//
+// Positive controls (the vacuous-probe bar): `control-sees-broken` proves
+// the OK/BROKEN channel can report failure, and `control-shallow-checks`
+// proves the F1 runner tells a clean check from a crash. F4/F5 assert on
+// weir's own emitted bytes rather than a second YAML reader — the property
+// they name is INTEROP, so by that measure they are loud but UNCONTROLLED;
+// the plan carries the external-parser evidence.
+//
+// Note the shape of this file: every command-running helper is a TOP-LEVEL
+// function, because F6 is that a block `let` with a command RHS silently
+// loses its reifier inside an if/within/lambda body.
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+}
+
+let cli = Args.load Cli
+
+let probeF2 =
+    [ @"type Doc = { k: string }"
+      @"let orig = "" a\nb"""
+      @"let back = { k = orig } |> to yaml |> from yaml Doc"
+      @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
+
+let probeF3 =
+    [ @"type Doc = { k: string }"
+      @"let orig = ""a\n """
+      @"let back = { k = orig } |> to yaml |> from yaml Doc"
+      @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
+
+let probeF4 =
+    [ @"type Doc = { k: string }"
+      @"let plain = { k = "".inf"" } |> to yaml |> Seq.head"
+      @"print (if plain == ""k: .inf"" then ""BROKEN"" else ""OK"")" ]
+
+let probeF5 =
+    [ @"type Doc = { k: string }"
+      @"let cr = Str.fromBase64 ""YQ1i"""
+      @"let crOnly = Str.sub 1 1 cr"
+      @"let line = { k = cr } |> to yaml |> Seq.head"
+      @"print (if line |> Str.contains crOnly then ""BROKEN"" else ""OK"")" ]
+
+// F6: the reifier survives in a block let inside an if-body
+let probeF6 =
+    [ @"if 1 > 0 then"
+      @"    let r = sh -c ""exit 7"" | complete"
+      @"    print (if r.exitCode == 7 then ""OK"" else ""BROKEN"")" ]
+
+let probeControl = [ @"print ""BROKEN""" ]
+
+let nest n opener =
+    [1..n] |> Seq.map (fun _ -> opener) |> Str.join ""
+
+let deepType n =
+    let opened = nest n "seq<"
+    let closed = nest n ">"
+    $"type T = {{ x: {opened}int{closed} }}"
+
+let runProbe path =
+    let r = sh -c $"'{cli.bin}' '{path}' 2>/dev/null" | complete
+    r
+
+let checkExit path =
+    let r = sh -c $"'{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
+    r.exitCode
+
+let verdict d name lines =
+    let path = $"{d}/{name}.weir"
+    File.write path lines
+    let r = runProbe path
+    let said = r.stdout |> Seq.tryHead |> Option.defaultValue ""
+    let fixed = r.exitCode == 0 && said == "OK"
+    let word = if fixed then "fixed" else "REPRODUCES"
+    print $"  {name}: {word} (exit {r.exitCode}, said '{said}')"
+    fixed
+
+let depthExit d n =
+    let path = $"{d}/depth-{n}.weir"
+    let head = deepType n
+    File.write path [head; @"print ""x"""]
+    checkExit path
+
+within tmp d
+    print $"weir under test: {cli.bin}"
+    print ""
+    print "value-level findings (fixed = the probe printed OK):"
+
+    let f2 = verdict d "F2-block-scalar-roundtrip" probeF2
+    let f3 = verdict d "F3-trailing-ws-roundtrip" probeF3
+    let f4 = verdict d "F4-inf-nan-unquoted" probeF4
+    let f5 = verdict d "F5-cr-not-escaped" probeF5
+    let f6 = verdict d "F6-reifier-in-block-let" probeF6
+
+    print ""
+    print "positive control:"
+    let ctl = verdict d "control-sees-broken" probeControl
+
+    print ""
+    print "F1 type-grammar depth guard:"
+    let shallow = depthExit d 10
+    print $"  control-shallow-checks: depth 10 -> exit {shallow} (expect 0)"
+
+    // 139 = SIGSEGV, 134 = SIGABRT; 1 = a located diagnostic, which is the fix
+    let deep = depthExit d 20000
+    let f1 = deep == 1
+    let f1word = if f1 then "fixed" else "REPRODUCES"
+    print $"  F1-type-depth-crash: {f1word} (depth 20000 -> exit {deep})"
+    print "  (Option<...>, Map<string, ...> and the {| a: ... |} form nest identically)"
+
+    let broken =
+        [ ("F1", f1)
+          ("F2", f2)
+          ("F3", f3)
+          ("F4", f4)
+          ("F5", f5)
+          ("F6", f6) ]
+        |> Seq.where (fun p -> not (snd p))
+        |> Seq.map fst
+        |> Seq.force
+
+    print ""
+
+    if ctl then
+        fail "positive control failed: a deliberately-broken probe was reported as fixed"
+
+    if shallow <> 0 then
+        fail $"positive control failed: a depth-10 type must check clean, got exit {shallow}"
+
+    if (broken |> Seq.length) > 0 then
+        let names = broken |> Str.join ", "
+        fail $"still reproducing: {names}"
+
+    print "all findings fixed"
