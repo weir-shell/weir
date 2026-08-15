@@ -40,6 +40,10 @@ Three properties, in the order they matter:
   line addressed to the tooling rather than the language": file
   directives (`#sig`, `#schema`) are read at check time, session
   directives (`#help`, `#quit`) run now — one glyph, two lifetimes.
+  The prompt itself reddens after an entry that ERRORS and clears on
+  the next success — a reified nonzero exit (`cmd | exitCode`,
+  `| complete`) is data, not an error, and stays quiet (weir has no
+  ambient `$?` to report; the tint tracks the error path only).
   Input colors as you type (lexical: keywords, strings, comments,
   numbers, sigils) and the HEAD word colors by live resolution —
   bold = known binding/builtin, blue = found on PATH, red = would
