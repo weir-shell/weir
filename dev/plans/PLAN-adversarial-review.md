@@ -224,10 +224,19 @@ draft of this plan called them mutually exclusive; that was wrong):
    there will be other routes to a NUL and the argv boundary should hold on
    its own.
 
-This is a design call with downstream consequences and belongs in the bless
-note, DECIDED BEFORE implementation rather than during. Silent truncation is
-wrong under every answer. Note the harness probe assumes (2); under (1) the
-string cannot be constructed, so the probe RAISES and reads as reproducing —
+(2) IS REQUIRED; (1) is desirable. The boundary should hold on its own
+rather than depending on every upstream constructor being careful — once
+BYTES lands there will be other routes to a NUL, and an invariant enforced
+at the one place the value crosses into argv cannot drift the way a
+collection of careful producers can. Same reasoning that put the equality
+arm in the type rather than in a Map-plus-order-field: put the invariant
+where it cannot drift. So (1) is a gate-consistency fix worth making on its
+own merits, and (2) is the one the property actually rests on.
+
+The choice of whether to also do (1) belongs in the bless note, DECIDED
+BEFORE implementation rather than during. Silent truncation is wrong under
+every answer. Note the harness probe assumes (2); under (1) the string
+cannot be constructed, so the probe RAISES and reads as reproducing —
 re-point it at the rejection rather than loosening it.
 
 DONE WHEN: a NUL-bearing splice either cannot be constructed or is refused
@@ -267,16 +276,40 @@ FIX SHAPE: not "make it fast" — that is impossible in general, and the
 oracle proves the reference implementation does not manage it either. The
 shape is a BUDGET, the same move the depth guard already makes: a bounded
 work counter (unification steps, or type-node allocations) that converts
-non-termination into a located diagnostic. The teaching writes itself in the
-script author's language — this expression's type grew too large — and the
-ceiling wants the same treatment the depth guard's 500 got: a stated cost
-bound, re-askable on a receipt, not a measured constant presented as a
-contract.
+non-termination into a located diagnostic.
+
+THE UNITS NEED CARE. The counter is an implementation detail; the number a
+script author SEES must not be, or people tune against it and it becomes a
+contract nobody meant to sign. Same property the depth guard's 500 has, and
+it wants the same treatment: a stated cost bound, re-askable on a receipt,
+never a measured constant presented as a guarantee. The teaching itself
+writes in the author's language — this expression's type grew too large —
+without naming unification steps.
+
+TWO HANG SHAPES, and only one is reachable today. F5 hangs by growing type
+SIZE exponentially. A pathological constraint graph or a non-terminating
+occurs check could hang WITHOUT growing anything, and a step budget catches
+both — but only the size-growth shape earns the good message. Probed for the
+second shape and did NOT find one: seven programs across five families
+(generalization/env scan over a 1600-long polymorphic chain, row-constraint
+accumulation, a shared tyvar threaded through 1600 bindings, a wide env
+where each binding cites all priors, self-application `x x`, nested
+self-application, and a row cycle `{ r with a = r }`) are all LINEAR and
+fast — 0.06s at n=1600, and the occurs-check pathologies diagnose in ~110ms.
+So the only non-termination reachable today is type-size growth.
+
+The corollary for the message: the budget must NOT assert "your type grew
+too large" merely because the budget was exhausted, since it cannot prove
+that in the general case. Assert it where the size is evidenced, and fall
+back to a neutral exhaustion message otherwise — a future second shape
+should get an honest generic answer, not a confidently wrong specific one.
 
 DONE WHEN: the inference bomb yields a located diagnostic inside a stated
-bound; the fuzzer's totality invariant gains a TIME axis alongside its depth
-axis, since a hang and a crash are different failures and only one of them
-is currently patrolled.
+bound; the message names a bound an author can act on rather than an
+internal counter; the fuzzer's totality invariant gains a TIME axis that
+looks for ANY non-termination (not the size-growth shape specifically),
+since a hang and a crash are different failures and only one is currently
+patrolled.
 
 ## Documentation defects — and the pattern is NOT what it looks like
 
