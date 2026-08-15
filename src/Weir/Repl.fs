@@ -7,6 +7,15 @@ open Weir.Types
 
 let private prompt = "weir> "
 
+// the prompt's status tint [D:red-prompt]: TRUE after an entry ends in
+// a printed error (parse, check, or eval), FALSE after one executes
+// clean — a REIFIED nonzero exit (`cmd | exitCode`, `| complete`) is
+// DATA and never reddens (the reifier family's point); directives
+// clear like any succeeding entry; blank/comment no-ops leave it
+// untouched (bash's own $? behavior for empty input). Column math
+// everywhere counts prompt.Length — the tint is zero-width.
+let mutable private lastErrored = false
+
 // the cooked-terminal trap [D:repl-cooked-trap]: when a child that shares
 // the terminal runs long enough, .NET restores cooked mode for it and can
 // fail to re-apply its raw config afterwards (the managed surface offers
@@ -586,7 +595,15 @@ let private readLineTty () : string option =
                 else
                     text
 
-            out.Append(if i = 0 then prompt else contPrompt).Append painted |> ignore
+            let p0 =
+                // the status tint [D:red-prompt] — zero-width dressing;
+                // every width computation keeps counting prompt.Length
+                if lastErrored then
+                    Types.Color.red Types.Color.onStdout.Value prompt
+                else
+                    prompt
+
+            out.Append(if i = 0 then p0 else contPrompt).Append painted |> ignore
             totalRows <- totalRows + dispRows w text.Length
 
             if i < lines.Count - 1 then
@@ -944,6 +961,8 @@ let private printHint (state: State) (line: string) =
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
 let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
+    lastErrored <- false
+
     match chk.Kind with
     | Script.KType decl ->
         let ctors =
@@ -979,6 +998,7 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
+             lastErrored <- true
              Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
              state)
     | Script.KLet(name, _, te) ->
@@ -1040,6 +1060,7 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
+             lastErrored <- true
              Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
              state)
     | Script.KExpr te
@@ -1089,6 +1110,7 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
+             lastErrored <- true
              Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
              state)
     | Script.KModule _ ->
@@ -1220,6 +1242,8 @@ let rec private loop (state: State) =
     | line when line.TrimStart().StartsWith "#" ->
         let t = line.Trim()
 
+        lastErrored <- false
+
         if t = "#quit" then
             ()
         elif t = "#help" || t.StartsWith "#help " then
@@ -1283,6 +1307,7 @@ let rec private loop (state: State) =
                             Script.checkStatement false (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll
                         with
                         | Error d ->
+                            lastErrored <- true
                             // script-style rendering: the offending source
                             // line + caret + message (the buffer's echo is
                             // rows above; reprinting is deterministic)
@@ -1318,6 +1343,7 @@ let rec private loop (state: State) =
 
             match Script.checkStatement false (fun _ -> resolver state) Script.scriptOnlyImport state.TypeEnv ll with
             | Error d when d.Parse ->
+                lastErrored <- true
                 // the input sits on the prompt line above — caret under it
                 Console.WriteLine(
                     Types.Color.red Types.Color.onStdout.Value (String(' ', prompt.Length + d.PhysCol - 1) + "^")
@@ -1327,6 +1353,8 @@ let rec private loop (state: State) =
                 printHint state line
                 state
             | Error d ->
+                lastErrored <- true
+
                 d.Span
                 |> Option.iter (underline >> Types.Color.red Types.Color.onStdout.Value >> Console.WriteLine)
 

@@ -179,9 +179,25 @@ if "\u2500" not in tt2:
 if ANSI.search(tt2):
     failures.append("NO_COLOR must strip the table's dressing too")
 
+# --- the prompt's status tint [D:red-prompt]: red after an entry that
+# ERRORED, plain after one that succeeds; a reified nonzero exit is
+# data and stays quiet; NO_COLOR strips it with everything else ------
+rp = run({}, ["nope\r", "1 + 1\r"])
+if "\x1b[31mweir> " not in rp:
+    failures.append(f"the prompt must redden after an error: {rp[-300:]!r}")
+_tail = rp[rp.rindex("2 : int"):] if "2 : int" in rp else rp
+if "\x1b[31mweir> " in _tail:
+    failures.append(f"the prompt must clear after a success: {_tail[-200:]!r}")
+rp2 = run({}, ['let rc = sh -c "exit 3" | exitCode\r'])
+if "\x1b[31mweir> " in rp2:
+    failures.append(f"a REIFIED nonzero exit is data — the prompt stays plain: {rp2[-300:]!r}")
+rp3 = run({"NO_COLOR": "1"}, ["nope\r"])
+if "\x1b[31m" in rp3:
+    failures.append("NO_COLOR must strip the status tint too")
+
 if failures:
     for f in failures:
         print("repl-color FAIL:", f)
     sys.exit(1)
 
-print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain)")
+print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain), status prompt (red on error, plain on success/reified)")
