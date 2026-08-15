@@ -440,6 +440,35 @@ recorded because each is a shape that recurs:
   test read as a pass. It is now probed like the oracle, and its absence is a
   named SKIP that keeps F5 OPEN.
 
+## Acceptance — what a green harness does and does not mean
+
+Two rules for the fix session, both standing rather than one-time.
+
+**Eight probes green is NECESSARY, NOT SUFFICIENT — re-run the corpus.** The
+four F2 instances share one code spine, verified:
+
+    renderString  (block-vs-inline, instance a)
+      -> Inline(Yaml.renderScalar s)   (instance d)
+        -> needsQuote
+          -> ambiguousPlain            (instance c)
+
+So the patches are not independent, and the coupling runs the wrong way for
+comfort: fixing (a) NARROWS the block predicate, which routes MORE values
+down the `renderScalar` path — the exact path (c) and (d) are defects in.
+A patch that fixes its own probe can move a neighbour the harness samples
+with one payload. The harness carries five interop payloads; the review drove
+84. Acceptance is the corpus, and the harness is the gate that tells you when
+to bother running it.
+
+**If F4 fix (1) lands, RE-POINT the probe — do not loosen it.** Under (1)
+`Str.fromBase64` rejects the NUL payload, so the probe RAISES instead of
+printing BROKEN, and the harness reads that as reproducing. That is CORRECT
+behaviour and it will look exactly like a failed fix. The runner prints
+`REPRODUCES (probe RAISED, exit N)` rather than `(probe ran, verdict BROKEN)`
+precisely so the difference is visible at the moment it matters, but it stays
+red until someone edits the probe to assert the rejection. Editing it to
+accept a raise as a pass would delete the finding instead of verifying it.
+
 ## The failure this review kept making
 
 Recorded because it is the same shape twice, and because F1's proposed
