@@ -600,8 +600,8 @@ print x
   ride the row. `^ls` forces the external.
 
 ```weir
-"x" |> File.write "lssort-B.txt"
-"x" |> File.write "lssort-a.txt"
+["x"] |> File.write "lssort-B.txt"
+["x"] |> File.write "lssort-a.txt"
 ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f -> print f.name)
 ```
 
