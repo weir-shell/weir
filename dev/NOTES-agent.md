@@ -166,3 +166,10 @@ skill lines and targeted hints).
   function). The diagnostic when nothing is on PATH — "install the
   tool" — is what sent the first attempt looking for a missing
   binary rather than at the position.
+- 2026-08-15 | adversarial-repro.weir | the interop half of the yaml
+  findings cannot be refereed from inside weir (the question is what a
+  DIFFERENT reader makes of weir's bytes), so the harness shells to
+  PyYAML via sh -c — the stated escape, logged here as the forcing
+  gap rather than left implicit. Absence of PyYAML prints a named SKIP
+  and keeps the finding open; a missing oracle must never read as a
+  pass.

@@ -1,269 +1,303 @@
 # weir — adversarial review of the shipped claims
 
-Status: PROPOSED (findings-shaped; not blessed, nothing fixed yet). Six
-findings, each reproducing on the AOT binary at `e961984`. The repro
-harness is `tools/adversarial-repro.weir` — it exits nonzero while any
-finding reproduces, so it is both the bug report and the acceptance gate:
+Status: PROPOSED (findings-shaped; not blessed, nothing fixed yet). Four
+findings, ordered by which stated property they falsify. Every one
+reproduces on the AOT binary at `e961984` through the harness:
 
     weir tools/adversarial-repro.weir --bin ./path/to/weir
 
+The harness exits nonzero while anything reproduces, so it is both the bug
+report and the acceptance gate.
+
 Method: weir's non-claims are stated well enough that attacking them would
 be a strawman, so the review attacked only the POSITIVE claims —
-SECURITY.md's four defended properties plus the checker soundness the
-check-before-effects promise rests on. Each was turned into a falsifiable
-property and driven mechanically with an INDEPENDENT oracle where one
-exists (PyYAML at the yaml boundary, `json` at the json boundary, an
-argv-dumping child for word integrity), never by reading code and
-asserting. Corpus: 84 hostile strings (the 1.1/1.2 boolean and null forms,
-number-alikes, structural sigils, leading/interior/trailing whitespace,
-CR/CRLF/NEL/LS, block-scalar shapes, emoji, long lines).
+SECURITY.md's four defended properties plus the checker soundness that the
+check-before-effects promise rests on. Each became a falsifiable property
+driven mechanically against an INDEPENDENT oracle where one exists (PyYAML
+at the yaml boundary, `json` at the json boundary, an argv-dumping child for
+word integrity), never by reading code and asserting. Corpus: 84 hostile
+strings (1.1/1.2 boolean and null forms, number-alikes, structural sigils,
+leading/interior/trailing whitespace, CR/CRLF/NEL/LS, block-scalar shapes,
+emoji, long lines).
 
-## The findings
-
-### F1 — the depth guard has a THIRD seam: the type grammar (SAFETY)
+## F1 — the depth guard covers ONE of three sub-grammars (Property 3)
 
 `[D:depth-guard]` named unbounded expression depth "a SAFETY bug — a
-memory-unsafe SEGV (rc 139) in a safe-by-design language" and closed TWO
-seams (in-parser nesting via `deepen`, post-parse spine via the iterative
-gate). The TYPE grammar is a third, unguarded:
+memory-unsafe SEGV (rc 139) in a safe-by-design language" and closed two
+seams. It closed them on the EXPRESSION grammar. The TYPE grammar and the
+PATTERN grammar are both unguarded:
 
-    type T = { x: seq<seq<seq< ... >>> }      # 20000 deep, 100 KB of source
+    type T = { x: seq<seq<...>>> }              # ~4.5k JIT / ~10k AOT -> SEGV
+    let v = match 1 with | ((((0)))) -> 0 | _ -> 1   # ~10k -> SEGV
 
-    weir check -> rc 139 (SIGSEGV, core dumped, AOT)
+    weir check -> rc 139 (SIGSEGV, core dumped)
     weir fmt   -> rc 139
     weir lsp   -> rc 139 on didOpen
 
-Every type-constructor axis nests the same way: `seq<…>`, `Option<…>`,
-`Map<string, …>`, and the anonymous-record form `{| a: … |}`. Threshold is
-~4548 on a Release JIT build and between 8k and 20k on AOT — stack
-dependent, exactly the premise `[D:depth-stack-probe]` was written to
-remove.
+Every constructor on each axis nests the same way. Type side: `seq<…>`,
+`Option<…>`, `Map<string, …>`, `{| a: … |}`. Pattern side: parenthesised,
+tuple, constructor, list, cons-chain, let-binder, and lambda-param patterns
+— all seven crash at 20000. Import chains are FINE to 2000 (checked).
 
-REACH, and why this is worse than a local crash: `weir lsp` reads
+REACH, and why this outranks a local crash: `weir lsp` reads
 import-reachable files from disk, so no hostile buffer is needed —
 
     # importer.weir, entirely benign
     import "./evil.weir"
     print "hi"
 
-Opening `importer.weir` kills the server; the editor restarts it and it
-dies again. Cloning a repo that carries one hostile module is the whole
-attack, and `weir check` in CI dies identically. SECURITY.md Property 3
-("No input crashes the process… a machine-checked invariant, not a prose
-promise") is false as written.
+Opening `importer.weir` kills the server; the editor restarts it and it dies
+again. Cloning a repo carrying one hostile module is the whole attack, and
+`weir check` in CI dies identically. SECURITY.md Property 3 ("No input
+crashes the process… a machine-checked invariant, not a prose promise") is
+false as written.
 
 Why it survived: `tests/Weir.Fuzz/Main.fs:293-295` pins the depth axis with
 three seeds — `deepNest "(" ")"`, `opSpine`, `deepNest "[" "]"` — all
 expression-side, carrying the comments "was SEGV ~6000" and "was SEGV in
-check". The denominator `[D:depth-guard]` called honest never included the
-type grammar.
+check". The denominator `[D:depth-guard]` called honest covered one
+sub-grammar of three.
 
-FIX SHAPE: the mechanism already exists — route the type parser's recursive
-descent through the same `deepen` that owns `atom`, so it inherits both the
-counted ceiling and the stack probe (`[D:depth-stack-probe]`: "the probe
-owns SAFETY — any depth, any stack, any platform"). Then extend the
-fuzzer's depth seeds to `seq<`/`>`, `Option<`/`>`, `Map<string, `/`>` and
-`{| a: `/` |}` per the fuzzer-grammar-membership rule, so the invariant
-stays machine-checked rather than re-earned by hand.
+FIX SHAPE — and the reason to prefer the general one. The mechanism exists:
+`[D:depth-stack-probe]` put a stack probe in `deepen` that "owns SAFETY —
+any depth, any stack, any platform". Routing the type and pattern parsers
+through `deepen` fixes both known axes. But this review found the type
+grammar by attacking a NAMED axis and the pattern grammar only by then
+asking what else exists — which is the argument against a third patch. The
+durable form is a coverage check: **every recursive nonterminal in the
+grammar routes through `deepen`**, asserted mechanically rather than
+remembered, so axis four is caught by machinery. Then extend the fuzzer's
+depth seeds to the type and pattern constructors per the
+fuzzer-grammar-membership rule.
 
-DONE WHEN: all four axes yield a located diagnostic at 20000 (never rc
-≥128) through `check`, `fmt`, `check --json`, `lsp` didOpen, and the import
-path; the seeds are in the fuzzer's depth axis; the SECURITY.md Property-3
-sentence names the type grammar as covered.
+Note the second seam is separate: `[D:depth-guard]` records that the
+checker/evaluator tree-walk dies on deep ASTs independently of the parser,
+caught by a post-parse iterative gate. A deep TYPE or PATTERN that now
+parses must also survive that walk — the fix is not done when the parse
+stops crashing.
 
-### F2 — `to yaml` emits a block scalar `from yaml` refuses (never-drop-bytes)
+DONE WHEN: all eleven constructors (four type, seven pattern) yield a
+located diagnostic at 20000, never rc ≥128, through `check`, `fmt`,
+`check --json`, `lsp` didOpen and the import path; the coverage check
+exists; the seeds are in the fuzzer's depth axis; SECURITY.md Property 3
+names what is covered.
 
-`Eval.fs:1063` (`renderString`) picks literal block form for any
-newline-bearing "tame" string. Block-scalar content indentation is detected
-from the first non-empty line, so a value whose FIRST LINE BEGINS WITH
-WHITESPACE needs an explicit indentation indicator — which
-`[D:block-scalars]` deliberately rejects ("explicit indentation indicators
-`|2` — content indentation is detected"). The emitter emits block form
-anyway:
+## F2 — the yaml boundary: one defect, four instances (round-trip + interop)
 
-    let orig = " a\nb"
-    { k = orig } |> to yaml        // k: |- / "   a" / "  b"
-                 |> from yaml Doc
-    error: from yaml: line 3: this line sits left of the block scalar's
-           content indentation
+Treating these as four bugs is the mistake the first draft of this plan
+made. They are one defect — **the yaml emitter/reader pair has no external
+referee** — and the four instances are what that bought.
 
-That error is the read side's own extent-consistency guard firing on the
-write side's own output: weir writes YAML weir refuses to read. PyYAML
-refuses it too, so this is malformed output, not a subset disagreement.
-Where it does not fail outright it corrupts instead — one level deeper,
-`" x\n  y"` round-trips through PyYAML as `"x\n y"`, one leading space
-stripped from every line.
+| # | instance | referee that catches it |
+|---|---|---|
+| a | first line begins with whitespace → block scalar weir itself refuses | weir's own reader |
+| b | trailing whitespace-only line dropped on read | external only |
+| c | `.inf` / `.nan` emit plain → other readers type them as floats | external only |
+| d | CR / NEL / LS unescaped in quoted scalars → value changes or fails to parse | external only |
+
+Instance (a): `Eval.fs:1063` picks block form for any newline-bearing "tame"
+string, but content indentation is detected from the first non-empty line,
+so a leading-whitespace first line needs an explicit indentation indicator —
+which `[D:block-scalars]` deliberately rejects. weir emits block form
+anyway, and `from yaml` answers with its own extent-consistency guard: "this
+line sits left of the block scalar's content indentation". weir writes YAML
+weir refuses to read.
+
+Instance (b): the write side is right and the READ side drops the line;
+PyYAML round-trips those bytes correctly.
+
+Instances (c) and (d): `Yaml.fs:554`'s `ambiguousPlain` covers the boolean
+and null families but not `.inf`/`.nan`, and `renderScalar` (`Yaml.fs:598`)
+escapes `"`, `\`, `\n`, `\t` and nothing else. U+2028 does not even trigger
+quoting (`Char.IsControl` is false for it), so it emits plain and PyYAML
+cannot parse the document at all.
 
 NOT INJECTION — checked, and stated so the next reader does not re-derive
 it: payloads were crafted to land an escaping line on an enclosing mapping
 key, in nested districts at several depths. It FAILS CLOSED every time; the
-emitter's base indent means no content line can reach column 0 or align
-with an outer key, so a parse error is the worst case and never a forged
-key. The README's no-yaml-injection claim stands. What breaks is
-correctness and the round trip.
+emitter's base indent means no content line reaches column 0 or aligns with
+an outer key, so a parse error is the worst case and never a forged key. The
+README's no-yaml-injection claim stands. What breaks is correctness.
 
-FIX SHAPE: the fallback already exists and `[D:content-bytes]` R1 states
-its law — 2+ trailing newlines "FALL BACK to the quoted-with-escapes
-spelling: valid, exact, round-trips… every legal string stays renderable".
-This is the same law, one case further: extend `renderString`'s block-form
-predicate to require that no content line begins with a space or tab, so
-these values take the existing quoted path.
+THE PREMISE THIS PLAN FIRST GOT WRONG, corrected because it changes the fix:
+the natural reading is "json has an independent oracle and yaml does not,
+hence the clustering". Checked — **neither does**. `ci/e2e.sh:3802` validates
+yaml with `d |> to yaml |> from yaml Deploy` (weir reading its own output)
+plus substring assertions; `to json` is validated the same way
+(`ci/e2e.sh:2366`, `:2396`). The only `import json` in the suite parses the
+editor grammar inventory and mutates a lockfile. So json is not better
+tested — it is one emitter change away from the same exposure, and it came
+through 84/84 on the strength of a simpler escape law, not machinery.
 
-DONE WHEN: `to yaml |> from yaml` is the identity for a leading-whitespace
-multiline string, pinned both directions, with the hostile-byte fixture
-extended to carry one.
+FIX SHAPE: the four instances are each a small patch (extend the block-form
+predicate to require no content line begins with space or tab, so those
+values take the quoted fallback `[D:content-bytes]` R1 already established;
+preserve whitespace-only content lines on read; add the `.inf`/`.nan` family
+to `ambiguousPlain`; emit `\r`, `\N`, `\L`, `\P` and widen `needsQuote` past
+`Char.IsControl`). The DURABLE fix is the referee: an external YAML reader
+in CI asserting `to yaml` round-trips through a parser weir did not write —
+and the same for `to json`, since the gap is symmetric. `tools/adversarial-repro.weir`
+already carries a working one (PyYAML via `sh -c`, with a positive control
+that fails on a value the oracle must reject); promoting it into `ci/e2e.sh`
+is the change that makes instance five machine-caught.
 
-### F3 — the read side drops a whitespace-only content line
+DONE WHEN: all four instances round-trip through the external reader; the
+external referee runs in CI over the hostile corpus for both adapters.
 
-    let orig = "a\n "               // emits: k: |- / "  a" / "   "
-    { k = orig } |> to yaml |> from yaml Doc
-    // orig len 3, read-back len 1 — ROUND-TRIP BROKEN, no diagnostic
+## F3 — a non-spine block let degrades its reifier into a PATH lookup (Property 2)
 
-Here the WRITE side is right and the READ side is wrong: PyYAML round-trips
-these bytes correctly. `[D:block-scalars]` says "Content is BYTES both
-sides"; the reader drops a trailing whitespace-only content line silently,
-which is the never-drop class with no error to catch it.
+`[D:block-let-cmd]` holds the block-let command RHS with a ThreadLocal spine
+flag, true only along topLet's RHS and its let-in chain: "parens, lambda
+bodies, and single-line let-in stay expression-only, pinned". Off the spine
+the boundary is not enforced by a teaching error — it is enforced by silent
+degradation.
 
-FIX SHAPE: preserve whitespace-only content lines beyond the detected
-content indentation on read. Note the deliberate neighbour so the fix does
-not overreach: `[D:content-bytes]` states fmt rendering a whitespace-only
-SOURCE line as empty is value-preserving — that is fmt on source text, not
-the yaml reader on a runtime value.
-
-DONE WHEN: the round trip is the identity for `"a\n "`, pinned.
-
-### F4 — `.inf` / `.nan` escape the reverse-Norway quoting law
-
-`Yaml.fs:554`'s `ambiguousPlain` covers the boolean and null families;
-`looksNumeric` requires a digit after a leading `.`, so `.inf`/`.nan` match
-neither gate and emit PLAIN:
-
-    emitted:      k: .inf
-    pyyaml reads: {'k': inf}        # the string became a float
-
-weir reads its own output back as a string (finite-only rejects both), so
-this is interop-only — but interop is the whole point of the law, which
-`[D:yaml-v1]` calls "adversarially pinned": "a YAML reader cannot mis-type
-weir's output". For `.inf` it can.
-
-FIX SHAPE: add the `.inf`/`.nan` family (with the casings the boolean set
-already carries) to `ambiguousPlain`.
-
-DONE WHEN: both emit quoted, pinned alongside the existing reverse-Norway
-cases.
-
-### F5 — `renderScalar` escapes LF but not its siblings
-
-`Yaml.fs:598` escapes `"`, `\`, `\n`, `\t` and nothing else. CR, NEL
-(U+0085) and LS (U+2028) are line breaks to a YAML reader:
-
-    emitted:      k: "a\rb"          # raw CR inside the quotes
-    pyyaml reads: {'k': 'a b'}       # value silently changed
-
-U+2028 does not even trigger quoting (`Char.IsControl` is false for it), so
-it emits plain and PyYAML fails to parse the document at all. The tell that
-this is an oversight rather than a policy: the emitter knows to escape LF
-and misses its siblings.
-
-FIX SHAPE: emit `\r`, `\N`, `\L`, `\P` escapes, and widen `needsQuote` past
-`Char.IsControl` to cover the Unicode line/paragraph separators.
-
-DONE WHEN: every payload in the corpus's CR/NEL/LS group round-trips
-through an external reader, pinned.
-
-### F6 — a non-spine block let degrades its reifier into a PATH lookup
-
-`[D:block-let-cmd]` holds the boundary with a ThreadLocal spine flag, TRUE
-only along topLet's RHS and its let-in chain: "parens, lambda bodies, and
-single-line let-in stay expression-only, pinned". Off the spine the
-boundary is not enforced by a teaching error — it is enforced by silent
-degradation. Measured:
-
-    | reifier applied          | statement form, every position; top-level
-    |                          | let; let in a function body (on the spine)
-    | degrades to PATH lookup  | let in an if-body, a within-body, a lambda
-    |                          | body
+| position | result |
+|---|---|
+| statement form anywhere; top-level let; let in a function body | reifier applied |
+| let in an if-body, a within-body, a lambda body | degrades to PATH lookup |
 
 Off the spine the command still RUNS and `| complete` is re-read as the
 value-headed pipe `[D:value-headed-pipe]` into an external program of that
-name. With a binary named `complete` on PATH:
+name. Measured with a decoy `complete` on PATH:
 
     [1] |> Seq.iter (fun _ ->
         let r = sh -c "echo payload-data" | complete
         r |> Seq.iter print)
 
-the fake binary runs AND receives `payload-data` on stdin. All four
-reifiers behave this way. Two consequences:
+the decoy runs AND receives `payload-data` on stdin. All four reifiers
+behave this way. Two consequences: a reifier KEYWORD becomes a PATH lookup,
+so ambient PATH decides what runs — the shape Property 2 exists to deny; and
+with nothing on PATH the diagnostic reads "unknown command 'complete' — not
+found on PATH… install the tool", telling the author to install a tool named
+after a language keyword.
 
-- The legal-parse-wrong-meaning class PROCESS names after the silent
-  swallow: a reifier KEYWORD becomes a PATH lookup, so what runs is decided
-  by ambient PATH rather than by the source — the shape SECURITY.md
-  Property 2 exists to deny.
-- With nothing on PATH the diagnostic is "unknown command 'complete' — not
-  found on PATH… install the tool", which tells the author to install a
-  tool named after a language keyword. That is the opposite of naming the
-  repair.
-
-Note SKILL.md reads "BLOCK lets inside bodies (and lambda bodies) take the
-same command RHS along a top-level let's spine" — the parenthetical and the
-qualifier contradict each other, and the pinned design is the qualifier.
-
-FIX SHAPE: make the boundary teach instead of degrade. The machinery
-exists — `[D:reifier-family-complete]` already refuses reifiers in four
-wrong contexts (sigil/bang/statement/district) with located teaching
-errors; this is a fifth cell. A reifier marker terminating a command RHS
-off the spine should name the position and the repair (hoist the binding,
-or use the statement form), never resolve as a program name. Whether the
-position should instead SUPPORT the reifier is a design question for the
-bless note; the silent PATH lookup is wrong under either answer.
+FIX SHAPE: make the boundary teach rather than degrade.
+`[D:reifier-family-complete]` already refuses reifiers in four wrong
+contexts with located teaching errors; this is a fifth cell. Whether the
+position should instead SUPPORT the reifier is a bless-note question — the
+silent PATH lookup is wrong under either answer.
 
 DONE WHEN: the fifth cell is pinned for all four reifiers across if-body,
 within-body and lambda-body; no PATH resolution is attempted for a reifier
-name; SKILL.md's sentence is corrected.
+name.
+
+## F4 — a NUL-bearing value truncates at the argv hand-off (Property 1)
+
+Property 1 says a spliced value "arrives at the child process byte-for-byte
+as a single argument". The word-integrity half holds everywhere (84/84
+payloads, argc always 1). The byte-for-byte half does not, for one byte:
+
+    let v = Str.fromBase64 "YQBi"     // "a<NUL>b", Str.length 3
+    python3 argvlen.py $v             // child receives "a" — length 1
+
+Silent truncation, no diagnostic. Isolated: the byte survives in memory
+(length 3) and survives `File.write` (`a \0 b` on disk), so weir carries it
+faithfully everywhere except the spawn hand-off — this is not a general
+string defect.
+
+The route in is a documentation defect that is really a behaviour defect:
+SKILL.md says `Str.fromBase64` / `tryFromBase64` "raise/None on malformed
+AND on non-text bytes", and they do not — `Str.tryFromBase64 "AAA="` returns
+`Some` of a two-NUL string. weir treats NUL as the binary marker elsewhere
+(`[D:binary-echo]`'s NUL-probe), so the claim matches the project's own
+reckoning; the implementation does not match the claim.
+
+FIX SHAPE: two legal answers, and the fixer picks one. Either make
+`fromBase64`/`tryFromBase64` reject non-text bytes as SKILL.md already
+claims (closing the route, at the cost of base64-decoding genuinely binary
+payloads), or refuse a NUL-bearing value AT THE SPLICE with a located error
+naming the truncation. Silent truncation is wrong under both. Note the
+harness probe assumes the second; if the first is chosen it will RAISE and
+read as reproducing — re-point it at the rejection rather than loosening it.
+
+DONE WHEN: a NUL-bearing splice either cannot be constructed or is refused
+with a diagnostic; never silently truncated. Property 1's sentence gains the
+qualifier it needs either way.
+
+## Documentation defects — and the pattern is NOT what it looks like
+
+Three found by reading, each independently checked against the binary:
+
+1. **SECURITY.md:155** — "TLS verification is ON and there is no `insecure`
+   in v1", fifteen lines below the bullet documenting `insecure` as a
+   shipped loud opt-in `[D:http-s2]`. Verified: `{ Http.get u with insecure
+   = true }` checks clean. Line 155 is stale. It sits in the SECURITY
+   document's non-claims list, where it understates the surface a reviewer
+   must audit.
+2. **SKILL.md** — "BLOCK lets inside bodies (and lambda bodies) take the
+   same command RHS": the parenthetical contradicts the qualifier in its own
+   sentence, and the pinned design (`[D:block-let-cmd]`) is the qualifier.
+   This is F3's documentation face.
+3. **SKILL.md** — `fromBase64`/`tryFromBase64` "None on non-text bytes",
+   false. This is F4's documentation face.
+
+The tempting diagnosis is that parenthetical asides are where contradictions
+live. TESTED, and it does not hold: twelve SKILL.md parenthetical claims
+were run against the binary (`f -1` passes -1 as the argument; `f [0]` with a
+space applies a list; `Path.dir` gives `""` at the top; `Seq.windowed 0`
+raises and a short source gives the empty seq; `fst` on a triple is a type
+error; `1.` and `.5` are parse errors; `Seq.reduce` raises on empty;
+`Instant.parse` reads a bare date as midnight UTC; `Seq.pmap` returns
+ordered results). Eleven of twelve hold.
+
+The real discriminator is COVERAGE, not grammar: `ci/skill-doc.sh` executes
+every fenced `weir` block in SKILL.md, so fenced claims cannot drift — and
+all three defects are PROSE, which nothing executes. Two of the three are
+also stale supersessions (`[D:http-s2]` added `insecure`; `[D:block-let-cmd]`
+narrowed the boundary), which is the standing "a change that makes a
+spelling redundant sweeps for that spelling" rule not being mechanised.
+
+FIX SHAPE: promote load-bearing prose claims to fences. "Lambda bodies take
+a command RHS" and "tryFromBase64 gives None on non-text bytes" are both one
+`weir-error` block away from being machine-checked, and a fenced claim is
+one an agent following the protocol can trust.
 
 ## DENOMINATOR — what was attacked and HELD
 
 Recorded so the next review starts past it rather than re-running it.
 
-- Injection safety (Property 1): 84/84 payloads reached the child as
-  exactly ONE argv word, byte-identical. Newlines, quotes, `;`, `&&`,
-  `$(...)`, glob characters, leading dashes, emoji — all inert.
-- The json boundary: 84/84 clean round trips through Python's `json`. The
-  contrast with yaml localises the defect: four of six findings are the
-  yaml emitter/reader pair, and none are json.
+- Injection safety (Property 1), word integrity: 84/84 payloads reached the
+  child as exactly ONE argv word. Newlines, quotes, `;`, `&&`, `$(...)`,
+  glob characters, leading dashes, emoji — all inert. (The byte-for-byte
+  half is F4, and only for NUL.)
+- The json boundary: 84/84 clean round trips through Python's `json` — on
+  the emitter's merits, not on test machinery it does not have.
 - `Secret`: masked in every renderer reachable — `show`, interpolation
-  (refuses), tuple, `Option`, seq, `Map` value, union payload, doubly
-  nested record, seq-of-records, and the REPL's separate table renderer.
-  `to json` refuses. No leak found.
+  (refuses), tuple, `Option`, seq, `Map` value, union payload, doubly nested
+  record, seq-of-records, and the REPL's separate table renderer. `to json`
+  refuses. No leak found.
 - Checker soundness, 16 probes aimed at `dev/READ-ORDER.md`'s own debt list
   (`instantiate`, occurs-through-`TNamed`, `envFreeVars`, constructor
   schemes, `isEquatable`): all correctly rejected with precise codes.
-  Eq/Show/Ord constraints recurse through tuples, `Option`, nesting, and
-  laundering through a generic `let`; function types are UNWRITABLE in
-  declared types, which closes the smuggling family by construction rather
-  than case by case.
+  Eq/Show/Ord recurse through tuples, `Option`, nesting, and laundering
+  through a generic `let`; function types are UNWRITABLE in declared types,
+  closing the smuggling family by construction rather than case by case.
 - Resolution integrity (Property 2): PATH overridden to a decoy directory
   through both `Env.ofPairs` + `!e(…)` and `within env` still ran the real
-  `/usr/bin/git`. Check-time resolution is genuinely pinned to the spawn.
-  (F6 is the one place a name escapes to PATH that should not.)
+  `/usr/bin/git`. (F3 is the one cell where a name escapes to PATH.)
 - Check-before-effects: a file-writing first line followed by a type error
   produced zero side effects.
 - yaml dynamic keys: hostile keys through `for (k, v) in pairs` (`a: b`,
-  embedded newline, `? a`, `- x`) were all correctly quoted. No key
-  injection.
+  embedded newline, `? a`, `- x`) all correctly quoted. No key injection.
+- Import-chain depth: clean to 2000 modules.
 
 ## Instrument honesty
 
-Per the vacuous-probe bar, stated rather than presumed. The harness is LOUD
-(nonzero exit while anything reproduces; a probe that fails to run counts
-as reproducing) and carries two positive controls: `control-sees-broken`
-proves the OK/BROKEN channel can report failure, and
-`control-shallow-checks` proves the F1 runner tells a clean check from a
-crash. F4 and F5 assert on weir's OWN emitted bytes, because a second YAML
-reader is not available to a weir script — the property they name is
-interop, so by that measure they are loud but UNCONTROLLED; the
-external-parser evidence for both lives in this plan, not in the harness.
+Stated rather than presumed, per the vacuous-probe bar. The harness is LOUD
+(nonzero exit while anything reproduces; a probe that fails to RUN counts as
+reproducing) and carries three positive controls: `control-sees-broken`
+proves the OK/BROKEN channel can report failure, `control-shallow-checks`
+proves the depth runner tells a clean check from a crash, and
+`control-oracle-rejects` proves the external YAML oracle FAILS on a value it
+must reject.
 
-The harness itself is written in weir per the scripting policy. Its shape
-is dictated by F6: every command-running helper is a top-level function,
+F2's interop instances are refereed EXTERNALLY (PyYAML through `sh -c`, the
+stated escape for what weir cannot do itself) rather than by weakening them
+to something weir can check about its own bytes — the property is interop,
+so the oracle has to be foreign. Where PyYAML is absent the harness prints a
+named SKIP and keeps the finding OPEN; absence is never a pass.
+
+The harness is written in weir per the scripting policy. Its shape is
+dictated by F3: every command-running helper is a top-level function,
 because a block let with a command RHS loses its reifier off the spine.

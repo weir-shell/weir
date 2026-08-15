@@ -3,24 +3,27 @@
 // OK when the finding is FIXED and anything else (or a nonzero exit) when it
 // still reproduces, so one script is both the bug report and the gate.
 //
+//     weir tools/adversarial-repro.weir --bin ./path/to/weir
+//
 // Probes run as CHILD processes against the binary under test: F2 RAISES
 // today, and a raise is not data in-process (no general try) — a child's
 // exit code is. That also follows the behavioral-pins rule: measure the
 // built binary, not a parse shape.
 //
 // LOUD: exits nonzero while any finding reproduces, and a probe that fails
-// to RUN counts as reproducing, never as a pass.
+// to RUN counts as reproducing, never as a pass. The interop oracle is
+// LOUD ABOUT ABSENCE too — a missing PyYAML is a named SKIP that keeps the
+// finding open, never a silent pass.
 //
 // Positive controls (the vacuous-probe bar): `control-sees-broken` proves
-// the OK/BROKEN channel can report failure, and `control-shallow-checks`
-// proves the F1 runner tells a clean check from a crash. F4/F5 assert on
-// weir's own emitted bytes rather than a second YAML reader — the property
-// they name is INTEROP, so by that measure they are loud but UNCONTROLLED;
-// the plan carries the external-parser evidence.
+// the OK/BROKEN channel can report failure, `control-shallow-checks` proves
+// the depth runner tells a clean check from a crash, and
+// `control-oracle-rejects` proves the external YAML oracle FAILS on a value
+// it should reject.
 //
 // Note the shape of this file: every command-running helper is a TOP-LEVEL
 // function, because F6 is that a block `let` with a command RHS silently
-// loses its reifier inside an if/within/lambda body.
+// loses its reifier off the topLet spine.
 
 type Cli = {
     /// the weir binary under test
@@ -29,6 +32,9 @@ type Cli = {
 }
 
 let cli = Args.load Cli
+let q = "\""
+
+// ---- probes whose verdict weir can reach on its own ------------------------
 
 let probeF2 =
     [ @"type Doc = { k: string }"
@@ -42,25 +48,67 @@ let probeF3 =
       @"let back = { k = orig } |> to yaml |> from yaml Doc"
       @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
 
-let probeF4 =
-    [ @"type Doc = { k: string }"
-      @"let plain = { k = "".inf"" } |> to yaml |> Seq.head"
-      @"print (if plain == ""k: .inf"" then ""BROKEN"" else ""OK"")" ]
-
-let probeF5 =
-    [ @"type Doc = { k: string }"
-      @"let cr = Str.fromBase64 ""YQ1i"""
-      @"let crOnly = Str.sub 1 1 cr"
-      @"let line = { k = cr } |> to yaml |> Seq.head"
-      @"print (if line |> Str.contains crOnly then ""BROKEN"" else ""OK"")" ]
-
 // F6: the reifier survives in a block let inside an if-body
 let probeF6 =
     [ @"if 1 > 0 then"
       @"    let r = sh -c ""exit 7"" | complete"
       @"    print (if r.exitCode == 7 then ""OK"" else ""BROKEN"")" ]
 
+// F7: a NUL-bearing value must not silently truncate at the argv hand-off.
+// CAVEAT for the fixer: the other legal fix is to make Str.fromBase64 REJECT
+// non-text bytes (which is what SKILL.md already claims it does). That fix
+// makes this probe RAISE, which reads here as REPRODUCES — re-point the probe
+// at the rejection instead of loosening it.
+let probeF7 argvLenPath =
+    [ @"let v = Str.fromBase64 ""YQBi"""
+      $"let p = {q}{argvLenPath}{q}"
+      @"let got = python3 $p $v |> Seq.head"
+      @"print (if got == ""3"" then ""OK"" else ""BROKEN"")" ]
+
+let argvLen =
+    [ @"import sys"
+      @"print(len(sys.argv[1]))" ]
+
 let probeControl = [ @"print ""BROKEN""" ]
+
+// ---- the external interop oracle -------------------------------------------
+// F4/F5 name an INTEROP property, so weir cannot referee them: the question
+// is what a DIFFERENT YAML reader makes of weir's bytes. sh -c is the stated
+// escape for what weir cannot do itself (repo scripting policy).
+
+let checker =
+    [ @"import sys, base64, yaml"
+      @"expected = base64.b64decode(sys.argv[1]).decode(""utf-8"")"
+      @"try:"
+      @"    got = yaml.safe_load(sys.stdin.read())"
+      @"except Exception as e:"
+      @"    print(""PARSE-FAIL "" + type(e).__name__)"
+      @"    sys.exit(1)"
+      @"if got == {""k"": expected}:"
+      @"    sys.exit(0)"
+      @"print(""MISMATCH "" + repr(got))"
+      @"sys.exit(1)" ]
+
+let emitProbe b64 =
+    [ @"type Doc = { k: string }"
+      $"let v = Str.fromBase64 {q}{b64}{q}"
+      @"{ k = v } |> to yaml |> Seq.iter print" ]
+
+let oracleReady = sh -c "python3 -c 'import yaml' 2>/dev/null" | succeeds
+
+// ---- runners (top-level: see the F6 note) ----------------------------------
+
+let runProbe path =
+    let r = sh -c $"'{cli.bin}' '{path}' 2>/dev/null" | complete
+    r
+
+let checkExit path =
+    let r = sh -c $"'{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
+    r.exitCode
+
+let interopExit binPath probePath checkPath b64 =
+    let r = sh -c $"'{binPath}' '{probePath}' 2>/dev/null | python3 '{checkPath}' '{b64}'" | complete
+    r
 
 let nest n opener =
     [1..n] |> Seq.map (fun _ -> opener) |> Str.join ""
@@ -70,13 +118,10 @@ let deepType n =
     let closed = nest n ">"
     $"type T = {{ x: {opened}int{closed} }}"
 
-let runProbe path =
-    let r = sh -c $"'{cli.bin}' '{path}' 2>/dev/null" | complete
-    r
-
-let checkExit path =
-    let r = sh -c $"'{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
-    r.exitCode
+let deepPattern n =
+    let opened = nest n "("
+    let closed = nest n ")"
+    $"let v = match 1 with | {opened}0{closed} -> 0 | _ -> 1"
 
 let verdict d name lines =
     let path = $"{d}/{name}.weir"
@@ -88,46 +133,92 @@ let verdict d name lines =
     print $"  {name}: {word} (exit {r.exitCode}, said '{said}')"
     fixed
 
-let depthExit d n =
-    let path = $"{d}/depth-{n}.weir"
-    let head = deepType n
+let interop d name b64 =
+    let probePath = $"{d}/{name}.weir"
+    let checkPath = $"{d}/oracle.py"
+    File.write probePath (emitProbe b64)
+    let r = interopExit cli.bin probePath checkPath b64
+    let said = r.stdout |> Seq.tryHead |> Option.defaultValue ""
+    let fixed = r.exitCode == 0
+    let word = if fixed then "fixed" else "REPRODUCES"
+    print $"  {name}: {word} ({said})"
+    fixed
+
+let depthExit d name head =
+    let path = $"{d}/{name}.weir"
     File.write path [head; @"print ""x"""]
     checkExit path
 
 within tmp d
     print $"weir under test: {cli.bin}"
     print ""
-    print "value-level findings (fixed = the probe printed OK):"
+    print "round-trip findings (weir refereeing itself):"
 
     let f2 = verdict d "F2-block-scalar-roundtrip" probeF2
     let f3 = verdict d "F3-trailing-ws-roundtrip" probeF3
-    let f4 = verdict d "F4-inf-nan-unquoted" probeF4
-    let f5 = verdict d "F5-cr-not-escaped" probeF5
     let f6 = verdict d "F6-reifier-in-block-let" probeF6
 
+    File.write $"{d}/argvlen.py" argvLen
+    let f7 = verdict d "F7-nul-truncates-at-argv" (probeF7 $"{d}/argvlen.py")
+
     print ""
-    print "positive control:"
+    print "interop findings (an EXTERNAL YAML reader referees):"
+    File.write $"{d}/oracle.py" checker
+
+    let interopPairs =
+        [ ("F4-inf", "LmluZg==")
+          ("F4-nan", "Lm5hbg==")
+          ("F5-cr", "YQ1i")
+          ("F5-ls", "YeKAqGI=")
+          ("F5-nel", "YcKFYg==") ]
+
+    let interopResults =
+        if oracleReady then
+            interopPairs |> Seq.map (fun p -> interop d (fst p) (snd p)) |> Seq.force
+        else
+            print "  SKIPPED: python3 + PyYAML not available — F4/F5 stay OPEN"
+            print "  (the property is interop; weir cannot referee it, so absence is not a pass)"
+            [false]
+
+    let interopOk = interopResults |> Seq.forall (fun b -> b)
+
+    print ""
+    print "positive controls:"
     let ctl = verdict d "control-sees-broken" probeControl
 
+    let oracleCtl =
+        if oracleReady then
+            // ".inf" must FAIL the oracle today; if it passes, the oracle is blind
+            not (interop d "control-oracle-rejects" "LmluZg==")
+        else
+            true
+
     print ""
-    print "F1 type-grammar depth guard:"
-    let shallow = depthExit d 10
+    print "depth guards (1 = a located diagnostic, which is the fix; >=128 = crash):"
+    let shallow = depthExit d "shallow-10" (deepType 10)
     print $"  control-shallow-checks: depth 10 -> exit {shallow} (expect 0)"
 
-    // 139 = SIGSEGV, 134 = SIGABRT; 1 = a located diagnostic, which is the fix
-    let deep = depthExit d 20000
-    let f1 = deep == 1
-    let f1word = if f1 then "fixed" else "REPRODUCES"
-    print $"  F1-type-depth-crash: {f1word} (depth 20000 -> exit {deep})"
-    print "  (Option<...>, Map<string, ...> and the {| a: ... |} form nest identically)"
+    let deepT = depthExit d "type-20000" (deepType 20000)
+    let f1a = deepT == 1
+    let f1aword = if f1a then "fixed" else "REPRODUCES"
+    print $"  F1a-type-grammar: {f1aword} (depth 20000 -> exit {deepT})"
+
+    let deepP = depthExit d "pattern-20000" (deepPattern 20000)
+    let f1b = deepP == 1
+    let f1bword = if f1b then "fixed" else "REPRODUCES"
+    print $"  F1b-pattern-grammar: {f1bword} (depth 20000 -> exit {deepP})"
+
+    print "  (type: Option<...>, Map<string, ...>, {| a: ... |} nest identically)"
+    print "  (pattern: tuple, ctor, list, cons-chain, let-binder, lambda-param too)"
 
     let broken =
-        [ ("F1", f1)
+        [ ("F1a", f1a)
+          ("F1b", f1b)
           ("F2", f2)
           ("F3", f3)
-          ("F4", f4)
-          ("F5", f5)
-          ("F6", f6) ]
+          ("F4/F5", interopOk)
+          ("F6", f6)
+          ("F7", f7) ]
         |> Seq.where (fun p -> not (snd p))
         |> Seq.map fst
         |> Seq.force
@@ -136,6 +227,9 @@ within tmp d
 
     if ctl then
         fail "positive control failed: a deliberately-broken probe was reported as fixed"
+
+    if not oracleCtl then
+        fail "positive control failed: the external oracle accepted a value it must reject"
 
     if shallow <> 0 then
         fail $"positive control failed: a depth-10 type must check clean, got exit {shallow}"
