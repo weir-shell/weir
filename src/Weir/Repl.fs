@@ -340,6 +340,15 @@ let private fzfSearch (query: string) : string option =
         p.StandardInput.Close()
         let sel = p.StandardOutput.ReadToEnd().TrimEnd('\n', '\r')
         p.WaitForExit()
+
+        // fzf (≥0.52) pushes the kitty keyboard protocol on the tty; a
+        // quirky exit can leave it PUSHED, after which Ctrl+C arrives as
+        // CSI-u DATA (\x1b[99;5u) instead of SIGINT — the unkillable-child
+        // incident [D:binary-echo]. Pop unconditionally: popping an empty
+        // stack is a no-op by the protocol's own spec.
+        if not Console.IsOutputRedirected then
+            Console.Out.Write "\x1b[<u"
+            Console.Out.Flush()
         // exit 130 (Esc) -> cancel; only a clean selection replaces the line
         if p.ExitCode = 0 && sel <> "" then
             match byDisplay.TryGetValue sel with
@@ -970,9 +979,20 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                         echoCap
 
                 match
-                    (if Console.IsOutputRedirected then None
-                     elif te.Ty = TSeq TStr then Eval.echoLines cap ev
-                     else Eval.echoTable cap ev)
+                    (if Console.IsOutputRedirected then
+                         None
+                     // binary refuses the terminal [D:binary-echo] —
+                     // zero body lines, the reason rides the footer
+                     elif Eval.echoBinary cap ev then
+                         Some(
+                             [],
+                             Some
+                                 "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
+                         )
+                     elif te.Ty = TSeq TStr then
+                         Eval.echoLines cap ev
+                     else
+                         Eval.echoTable cap ev)
                 with
                 | Some(lines, hint) ->
                     let tail = Eval.echoTail hint
@@ -1008,9 +1028,18 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
                         echoCap
 
                 match
-                    (if Console.IsOutputRedirected then None
-                     elif te.Ty = TSeq TStr then Eval.echoLines cap v
-                     else Eval.echoTable cap v)
+                    (if Console.IsOutputRedirected then
+                         None
+                     elif Eval.echoBinary cap v then
+                         Some(
+                             [],
+                             Some
+                                 "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
+                         )
+                     elif te.Ty = TSeq TStr then
+                         Eval.echoLines cap v
+                     else
+                         Eval.echoTable cap v)
                 with
                 | Some(lines, hint) ->
                     lines |> List.iter Console.WriteLine

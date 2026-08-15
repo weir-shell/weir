@@ -4004,7 +4004,7 @@ ctport=$((18930 + RANDOM % 2000))
 # python alive holding the dir as its cwd (rm: Device or resource busy)
 python3 -m http.server $ctport --bind 127.0.0.1 --directory "$ctdir/serve" >/dev/null 2>&1 &
 ctsrv=$!
-awaitHttp "http://127.0.0.1:$ctport/configmap-v1.json" || { kill $ctsrv 2>/dev/null; fail "the schema server never came up"; }
+awaitHttp "http://127.0.0.1:$ctport/configmap-v1.json" || { kill $ctsrv 2>/dev/null || true; fail "the schema server never came up"; }
 
 mkdir -p "$ctdir/proj/sub"
 ( cd "$ctdir/proj" && git init -q . )
@@ -4166,7 +4166,7 @@ printf '{ "type": "object", "properties": { "a": { "type": "string" } } }' > "$c
 # python alive holding the dir as its cwd (rm: Device or resource busy)
 python3 -m http.server $ctport --bind 127.0.0.1 --directory "$ctdir/serve" >/dev/null 2>&1 &
 ctsrv2=$!
-awaitHttp "http://127.0.0.1:$ctport/loose.json" || { kill $ctsrv2 2>/dev/null; fail "the schema server (2) never came up"; }
+awaitHttp "http://127.0.0.1:$ctport/loose.json" || { kill $ctsrv2 2>/dev/null || true; fail "the schema server (2) never came up"; }
 out=$( cd "$ctdir/proj" && $BIN add schema http://127.0.0.1:$ctport/loose.json --as loose 2>&1 )
 echo "$out" | grep -qF "unknown-field checking will NOT fire" || fail "the inert-schema warning: $out"
 echo "$out" | grep -qF "standalone-strict" || fail "the warning names the strict variant: $out"
@@ -4839,17 +4839,17 @@ let ok = (sent |> Seq.length) == (resp.body |> Seq.length)
 print \$"lines={resp.body |> Seq.length} match={ok}"
 resp.body |> Seq.iter print
 WEOF
-    out=$($BIN "$hdir/mangle.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "mangle send failed: $out"; }
-    echo "$out" | grep -qF "lines=3 match=true" || { kill $hsrv 2>/dev/null; fail "body did not round-trip line-count: $out"; }
-    echo "$out" | grep -qF '{"count":2,"name":"b"}' || { kill $hsrv 2>/dev/null; fail "body bytes mangled: $out"; }
+    out=$($BIN "$hdir/mangle.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "mangle send failed: $out"; }
+    echo "$out" | grep -qF "lines=3 match=true" || { kill $hsrv 2>/dev/null || true; fail "body did not round-trip line-count: $out"; }
+    echo "$out" | grep -qF '{"count":2,"name":"b"}' || { kill $hsrv 2>/dev/null || true; fail "body bytes mangled: $out"; }
 
     # STATUS IS DATA: a 404 binds, never raises
     cat > "$hdir/status.weir" <<WEOF
 let resp = Http.send { Http.defaults with url = "http://127.0.0.1:$hport/x"; headers = [("X-Want-Status", "404")] }
 print \$"status={resp.status}"
 WEOF
-    out=$($BIN "$hdir/status.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "404 must bind, not raise: $out"; }
-    echo "$out" | grep -qF "status=404" || { kill $hsrv 2>/dev/null; fail "404 not bound as data: $out"; }
+    out=$($BIN "$hdir/status.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "404 must bind, not raise: $out"; }
+    echo "$out" | grep -qF "status=404" || { kill $hsrv 2>/dev/null || true; fail "404 not bound as data: $out"; }
 
     # auth reaches the server, the Secret revealed only at send
     cat > "$hdir/auth.weir" <<WEOF
@@ -4858,9 +4858,9 @@ r1.body |> Seq.iter print
 let r2 = Http.send { Http.defaults with url = "http://127.0.0.1:$hport/auth"; auth = Basic ("alice", Secret.of "s3cr3t") }
 r2.body |> Seq.iter print
 WEOF
-    out=$($BIN "$hdir/auth.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "auth send failed: $out"; }
-    echo "$out" | grep -qF "Bearer tok123" || { kill $hsrv 2>/dev/null; fail "Bearer not sent: $out"; }
-    echo "$out" | grep -qF "Basic YWxpY2U6czNjcjN0" || { kill $hsrv 2>/dev/null; fail "Basic base64 wrong: $out"; }
+    out=$($BIN "$hdir/auth.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "auth send failed: $out"; }
+    echo "$out" | grep -qF "Bearer tok123" || { kill $hsrv 2>/dev/null || true; fail "Bearer not sent: $out"; }
+    echo "$out" | grep -qF "Basic YWxpY2U6czNjcjN0" || { kill $hsrv 2>/dev/null || true; fail "Basic base64 wrong: $out"; }
 
     # Http.fetch RAISES on non-2xx (naming the status); the SAME 404 that
     # send BINDS as data [D:http-s2] — two names, no boolean
@@ -4870,26 +4870,26 @@ print \$"fetch-ok lines={ok |> Seq.length}"
 let bound = Http.send (Http.get "http://127.0.0.1:$hport/missing")
 print \$"send-binds={bound.status}"
 WEOF
-    out=$($BIN "$hdir/fetch.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "fetch/send failed: $out"; }
-    echo "$out" | grep -qF "send-binds=404" || { kill $hsrv 2>/dev/null; fail "send must BIND a 404: $out"; }
-    out=$($BIN -e 'Http.fetch "http://127.0.0.1:'"$hport"'/missing" |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null; fail "fetch must RAISE on 404"; } || true
-    echo "$out" | grep -qF "answered 404" || { kill $hsrv 2>/dev/null; fail "fetch raise must name the status: $out"; }
+    out=$($BIN "$hdir/fetch.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "fetch/send failed: $out"; }
+    echo "$out" | grep -qF "send-binds=404" || { kill $hsrv 2>/dev/null || true; fail "send must BIND a 404: $out"; }
+    out=$($BIN -e 'Http.fetch "http://127.0.0.1:'"$hport"'/missing" |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null || true; fail "fetch must RAISE on 404"; } || true
+    echo "$out" | grep -qF "answered 404" || { kill $hsrv 2>/dev/null || true; fail "fetch raise must name the status: $out"; }
 
     # a constructor round-trips through send (Http.post carries the method)
     cat > "$hdir/ctor.weir" <<WEOF
 let r = Http.send (Http.post "http://127.0.0.1:$hport/x")
 print \$"ctor-status={r.status}"
 WEOF
-    out=$($BIN "$hdir/ctor.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "constructor send failed: $out"; }
-    echo "$out" | grep -qF "ctor-status=200" || { kill $hsrv 2>/dev/null; fail "constructor did not send: $out"; }
+    out=$($BIN "$hdir/ctor.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "constructor send failed: $out"; }
+    echo "$out" | grep -qF "ctor-status=200" || { kill $hsrv 2>/dev/null || true; fail "constructor did not send: $out"; }
 
     # parallel fetches via Seq.pmap
     cat > "$hdir/pmap.weir" <<WEOF
 let urls = ["http://127.0.0.1:$hport/a"; "http://127.0.0.1:$hport/b"; "http://127.0.0.1:$hport/c"]
 urls |> Seq.pmap (fun u -> Http.send { Http.defaults with url = u }) |> Seq.map (fun r -> show r.status) |> Seq.iter print
 WEOF
-    out=$($BIN "$hdir/pmap.weir" 2>&1) || { kill $hsrv 2>/dev/null; fail "pmap fetch failed: $out"; }
-    [ "$(echo "$out" | grep -c '^200$')" -eq 3 ] || { kill $hsrv 2>/dev/null; fail "pmap did not fetch all: $out"; }
+    out=$($BIN "$hdir/pmap.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "pmap fetch failed: $out"; }
+    [ "$(echo "$out" | grep -c '^200$')" -eq 3 ] || { kill $hsrv 2>/dev/null || true; fail "pmap did not fetch all: $out"; }
 
     kill $hsrv 2>/dev/null || true
 
@@ -4915,7 +4915,7 @@ HANGEOF
     python3 "$hdir/hang.py" "$hangport" 2>/dev/null &
     hangsrv=$!
     sleep 0.3
-    out=$($BIN -e 'Http.send { Http.get "http://127.0.0.1:'"$hangport"'/" with timeout = 1s }' 2>&1) && { kill $hangsrv 2>/dev/null; fail "timeout must raise"; } || true
+    out=$($BIN -e 'Http.send { Http.get "http://127.0.0.1:'"$hangport"'/" with timeout = 1s }' 2>&1) && { kill $hangsrv 2>/dev/null || true; fail "timeout must raise"; } || true
     kill $hangsrv 2>/dev/null || true
     echo "$out" | grep -qF "timed out after 1s reaching 127.0.0.1" || fail "timeout must name itself and the duration: $out"
     echo "$out" | grep -qF "canceled" && fail "the .NET cancellation text must not reach a user: $out" || true
@@ -4948,18 +4948,18 @@ srv.serve_forever()
 TLSEOF
         python3 "$hdir/tls.py" "$tport" 2>/dev/null &
         tsrv=$!
-        awaitTcp "$tport" || { kill $tsrv 2>/dev/null; fail "the TLS server never came up"; }
+        awaitTcp "$tport" || { kill $tsrv 2>/dev/null || true; fail "the TLS server never came up"; }
         # default REJECTS the self-signed cert (verification on)
-        out=$($BIN -e 'Http.send (Http.get "https://127.0.0.1:'"$tport"'/")' 2>&1) && { kill $tsrv 2>/dev/null; fail "default must reject a self-signed cert"; } || true
-        echo "$out" | grep -qF "certificate is not trusted" || { kill $tsrv 2>/dev/null; fail "TLS rejection message: $out"; }
-        echo "$out" | grep -qF "insecure = true" || { kill $tsrv 2>/dev/null; fail "TLS rejection must name its repair: $out"; }
+        out=$($BIN -e 'Http.send (Http.get "https://127.0.0.1:'"$tport"'/")' 2>&1) && { kill $tsrv 2>/dev/null || true; fail "default must reject a self-signed cert"; } || true
+        echo "$out" | grep -qF "certificate is not trusted" || { kill $tsrv 2>/dev/null || true; fail "TLS rejection message: $out"; }
+        echo "$out" | grep -qF "insecure = true" || { kill $tsrv 2>/dev/null || true; fail "TLS rejection must name its repair: $out"; }
         # insecure = true ACCEPTS it
         cat > "$hdir/ins.weir" <<WEOF
 let r = Http.send { Http.get "https://127.0.0.1:$tport/" with insecure = true }
 print \$"insecure-status={r.status}"
 WEOF
-        out=$($BIN "$hdir/ins.weir" 2>&1) || { kill $tsrv 2>/dev/null; fail "insecure=true must accept the self-signed cert: $out"; }
-        echo "$out" | grep -qF "insecure-status=200" || { kill $tsrv 2>/dev/null; fail "insecure did not connect: $out"; }
+        out=$($BIN "$hdir/ins.weir" 2>&1) || { kill $tsrv 2>/dev/null || true; fail "insecure=true must accept the self-signed cert: $out"; }
+        echo "$out" | grep -qF "insecure-status=200" || { kill $tsrv 2>/dev/null || true; fail "insecure did not connect: $out"; }
         kill $tsrv 2>/dev/null || true
         echo "e2e ok: Http insecure (default rejects a self-signed cert, insecure=true accepts — per-request)"
     else

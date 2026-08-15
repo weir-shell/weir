@@ -161,6 +161,13 @@ if "l5" not in segs[2] or "l6" in segs[2] or "first 5 of an unforced seq" not in
 if "l29" not in segs[4] or "first" in segs[4]:
     failures.append(f"#echo all must uncap the tty echo: {segs[4][-300:]!r}")
 
+# --- binary output refuses the tty echo [D:binary-echo] ---------------
+segs = pty_session(["sh -c 'printf \"x\\0y\\n\"'"])
+if "binary output" not in segs[0]:
+    failures.append(f"a NUL-carrying echo must refuse the terminal: {segs[0][-200:]!r}")
+if "\x00" in segs[0]:
+    failures.append("raw NUL bytes must never reach the terminal")
+
 # --- Ctrl+D still leaves (the pty half) -------------------------------
 pid, fd = pty.fork()
 if pid == 0:

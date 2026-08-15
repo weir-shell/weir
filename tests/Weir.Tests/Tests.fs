@@ -4027,6 +4027,28 @@ let replEchoTests =
               Expect.isTrue (pulls.Value <= 26) $"forced {pulls.Value} pulls (bound is cap+1 = 26)"
               Expect.stringContains rendered "24; …]" ""
           }
+          test "binary refuses the echo: a NUL in the pulled prefix, bounded, cache-walking [D:binary-echo]" {
+              Expect.isTrue
+                  (Weir.Eval.echoBinary (Some 10) (VSeq([ VStr "a\u0000b" ] :> seq<Weir.Eval.Value>)))
+                  "a NUL line marks the value binary"
+
+              Expect.isFalse
+                  (Weir.Eval.echoBinary (Some 10) (VSeq([ VStr "plain"; VStr "text" ] :> seq<Weir.Eval.Value>)))
+                  "text stays text"
+
+              Expect.isTrue (Weir.Eval.echoBinary None (VStr "x\u0000")) "a scalar carries the mark too"
+
+              // the probe is BOUNDED and walks the cache — cap+1 pulls, max
+              let pulls = ref 0
+
+              let counted =
+                  Seq.initInfinite (fun i ->
+                      System.Threading.Interlocked.Increment pulls |> ignore
+                      VStr(string i))
+
+              Weir.Eval.echoBinary (Some 10) (VSeq counted) |> ignore
+              Expect.isTrue (pulls.Value <= 11) $"probed {pulls.Value} pulls (bound is 11)"
+          }
           test "show is byte-identical to its shipped contract (NOT the echo)" {
               let long = VSeq(seq { for i in 1..100 -> VInt(int64 i) })
 
