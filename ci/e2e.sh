@@ -4841,7 +4841,7 @@ resp.body |> Seq.iter print
 WEOF
     out=$($BIN "$hdir/mangle.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "mangle send failed: $out"; }
     echo "$out" | grep -qF "lines=3 match=true" || { kill $hsrv 2>/dev/null || true; fail "body did not round-trip line-count: $out"; }
-    echo "$out" | grep -qF '{"count":2,"name":"b"}' || { kill $hsrv 2>/dev/null || true; fail "body bytes mangled: $out"; }
+    echo "$out" | grep -qF '{"name":"b","count":2}' || { kill $hsrv 2>/dev/null || true; fail "body bytes mangled: $out"; }
 
     # STATUS IS DATA: a 404 binds, never raises
     cat > "$hdir/status.weir" <<WEOF
