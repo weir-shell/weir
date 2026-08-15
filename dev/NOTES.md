@@ -1,5 +1,26 @@
 # Spike Notes
 
+## check --can: the constraint pays out visibly (2026-08-15)
+
+The feature was a walk, not an analysis — Phase 0 established that
+everything the report needs was already computed and mostly already
+RULED: the deliberate TSecret->Ok() arm at the CmdArg position, a
+months-old recorded ruling, turned out to be exactly the
+secret-reaches-argv analysis, which is the strongest argument yet for
+writing rulings down. Two design moments to remember: the review's
+exit-code pushback (the day-one CI gate greps for new capabilities
+and would sail straight past `opaque` — so the incomplete header is
+loud AND --strict exists; correctness of the JSON key alone was
+insufficient), and the walker discovering module members are dotted
+TEVars, not field nodes — the typed tree's own shape teaching the
+walker its arms. My favorite probe failure of the stretch: the
+Secret-argv pin first spelled `curl -H t` with a bareword, and the
+report correctly showed no secret reaching argv — because t WAS the
+literal string "t"; the argv law taught its own author. Standing
+category, fourth instance now noted elsewhere: docs recommending
+spellings that error (the `cmd "["` teaching) deserve a sweep of
+their own, not incidental fixes.
+
 ## record order: the container was wrong (2026-08-15)
 
 Phase 0 before code, and the measurement rewrote the task: what

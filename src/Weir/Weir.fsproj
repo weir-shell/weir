@@ -69,6 +69,9 @@
     <Compile Include="Complete.fs" />
     <Compile Include="Prelude.fs" />
     <Compile Include="Script.fs" />
+    <!-- after Script: the capability walker reads CheckedStmt trees
+         [D:can-report] -->
+    <Compile Include="Can.fs" />
     <Compile Include="Fmt.fs" />
     <Compile Include="Lsp.fs" />
     <Compile Include="Repl.fs" />

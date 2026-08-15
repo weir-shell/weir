@@ -4334,6 +4334,65 @@ echo "$out" | grep -qF "Instant.epochMs into an int field" || fail "the refusal 
 rm -rf "$indir"
 echo "e2e ok: Instant (cert-expiry via openssl enddate, log slicing by cutoff, JSON refusal teaches)"
 
+# ---- weir check --can [D:can-report] ---------------------------------------
+candir=$(mkweirtmp)
+cat > "$candir/lib.weir" <<'WEOF'
+module Lib
+let fetchTags () = git tag
+WEOF
+cat > "$candir/cap.weir" <<'WEOF'
+import "./lib.weir"
+type Cfg = { token: Secret }
+let cfg = Env.load Cfg
+let t = cfg.token
+sh -c "curl example.com"
+if 1 == 2 then rg TODO
+["x"] |> File.write "out.txt"
+let body = Http.fetch "https://api.example.com/items"
+curl -H $t https://x.example
+WEOF
+canrc=0
+out=$($BIN check --can "$candir/cap.weir" 2>&1) || canrc=$?
+[ "$canrc" = "0" ] || fail "--can must not change a valid check's exit (got $canrc): $out"
+echo "$out" | grep -qF "capability, not behaviour" || fail "the model is the first line: $out"
+echo "$out" | grep -qF "this report is incomplete: 1 opaque site" || fail "the loud incomplete header: $out"
+echo "$out" | grep -qE "sh takes a program as its argument" || fail "sh -c is a first-class unknown: $out"
+echo "$out" | grep -qF "rg" || fail "an untaken branch still counts (capability, not behaviour): $out"
+echo "$out" | grep -qF "File.write out.txt" || fail "the literal path is named: $out"
+echo "$out" | grep -qF "Http.fetch https://api.example.com/items" || fail "the literal url is named: $out"
+echo "$out" | grep -qF "a Secret reaches the argv of curl" || fail "the ps-visible line: $out"
+echo "$out" | grep -qF "git" || fail "an imported module's externals appear transitively: $out"
+echo "$out" | grep -qF "lib.weir" || fail "the module site carries the module's own file: $out"
+
+# --strict: opaque sites become a distinct nonzero for CI's choosing
+strictrc=0
+$BIN check --can --strict "$candir/cap.weir" >/dev/null 2>&1 || strictrc=$?
+[ "$strictrc" = "2" ] || fail "--strict must exit 2 on opaque sites (got $strictrc)"
+printf 'print "clean"\n' > "$candir/clean.weir"
+$BIN check --can --strict "$candir/clean.weir" >/dev/null 2>&1 || fail "--strict must pass a clean script"
+
+# --json parses and carries the shape
+$BIN check --can --json "$candir/cap.weir" > "$candir/can.json" 2>&1 || fail "--json failed"
+python3 - "$candir/can.json" <<'PYCAN' || fail "the --can json shape"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["opaqueSites"] == 1, d["opaqueSites"]
+kinds = {c["kind"] for c in d["capabilities"]}
+assert {"runs", "opaque", "write", "network", "secret-argv", "secret-load"} <= kinds, kinds
+assert all("file" in c and "line" in c and "col" in c for c in d["capabilities"])
+PYCAN
+
+# a check FAILURE suppresses the report (reporting on what cannot run)
+printf 'let x = 1 + "a"\n' > "$candir/bad.weir"
+badrc=0
+out=$($BIN check --can "$candir/bad.weir" 2>&1) || badrc=$?
+[ "$badrc" = "1" ] || fail "--can on a failing check exits 1 (got $badrc)"
+echo "$out" | grep -qE "error" || fail "the check's own diagnostics print: $out"
+echo "$out" | grep -qF "capability" && fail "no report for a script that cannot run: $out" || true
+
+rm -rf "$candir"
+echo "e2e ok: check --can (model line, opaque loud + --strict, literals, untaken branch, import transitive, secret-argv, json shape, failure suppresses)"
+
 # ---- floats, finite-only [D:floats] ----------------------------------------
 out=$($BIN -e '0.5 + 0.5')
 [ "$out" = "1.0 : float" ] || fail "float arithmetic on AOT: $out"

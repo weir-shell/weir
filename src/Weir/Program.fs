@@ -148,6 +148,13 @@ let main argv =
         2
     | [ "check"; path ] -> Script.checkOnly false path
     | [ "check"; "--json"; path ] -> Script.checkOnly true path
+    // the capability report [D:can-report]: --can implies the check;
+    // --strict exits 2 on any opaque site (CI's choice, not a default)
+    | [ "check"; "--can"; path ] -> Can.run false false path
+    | [ "check"; "--can"; "--json"; path ] -> Can.run true false path
+    | [ "check"; "--can"; "--strict"; path ] -> Can.run false true path
+    | [ "check"; "--can"; "--strict"; "--json"; path ] -> Can.run true true path
+    | [ "check"; "--can"; "--json"; "--strict"; path ] -> Can.run true true path
     | [ "fmt"; "--qualify"; path ] -> Fmt.qualifyFile path
     | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
     | [ "fmt"; path ] -> Fmt.formatFile false path
