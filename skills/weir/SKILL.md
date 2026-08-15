@@ -724,7 +724,8 @@ print (show x.a.b)
   `value |> to yaml` (a seq = multi-doc; `None` fields omit;
   ambiguous strings like `"no"`/`"007"` auto-quote). `Yaml`
   nodes (`YMap [("k", YStr "v")]`, `YSeq`, `YInt`…) render directly —
-  `YMap` keeps YOUR key order; record fields render alphabetically.
+  `YMap` keeps YOUR key order; record fields render in DECLARATION
+  order [D:record-order] (wire order for an anonymous shape).
   Literal block scalars `|`/`|-` are in the subset (folded `>` and
   `|+` reject): `|` MEANS ends-with-one-newline, `|-` ends-with-none —
   the form follows the value both directions, and a multiline string

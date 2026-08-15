@@ -37,7 +37,13 @@ type Value =
     | VSecret of string
     | VBool of bool
     | VUnit
-    | VRecord of record: string * fields: Map<string, Value>
+    // fields in DECLARATION order [D:record-order] (wire order for an
+    // anonymous shape read at a boundary): the ordered list IS the
+    // container — order by construction, no parallel invariant; the
+    // Map it replaced was 6-23x slower to build and bought nothing at
+    // record widths. Equality is order-INSENSITIVE by the custom arm
+    // below — the one place the rule lives, where it cannot drift.
+    | VRecord of record: string * fields: (string * Value) list
     | VUnion of case: string * payload: Value option
     | VSeq of items: seq<Value>
     // string-keyed only [D:map-string]: every receipt has string keys
@@ -64,7 +70,16 @@ type Value =
             | VSecret a, VSecret b -> a = b
             | VBool a, VBool b -> a = b
             | VUnit, VUnit -> true
-            | VRecord(n1, f1), VRecord(n2, f2) -> n1 = n2 && f1 = f2
+            | VRecord(n1, f1), VRecord(n2, f2) ->
+                // order-insensitive [D:record-order]: order is carried,
+                // never semantic — two spellings of one record are equal
+                n1 = n2
+                && f1.Length = f2.Length
+                && f1
+                   |> List.forall (fun (k, v) ->
+                       match f2 |> List.tryFind (fun (k2, _) -> k2 = k) with
+                       | Some(_, v2) -> v = v2
+                       | None -> false)
             | VUnion(c1, p1), VUnion(c2, p2) -> c1 = c2 && p1 = p2
             | VSeq a, VSeq b -> obj.ReferenceEquals(a, b) || List.ofSeq a = List.ofSeq b
             | VMap a, VMap b -> a = b
@@ -121,6 +136,20 @@ let private echoLimits =
       MaxDepth = 8
       Ellipsis = "; …" }
 
+// ordered-field access [D:record-order]: linear scan — record widths
+// are single digits and the scan beat the Map it replaced; recSet
+// replaces IN PLACE (a copy-and-update keeps the field's position)
+let recTryGet (name: string) (fields: (string * Value) list) : Value option =
+    fields |> List.tryPick (fun (k, v) -> if k = name then Some v else None)
+
+let recGet (name: string) (fields: (string * Value) list) : Value =
+    match recTryGet name fields with
+    | Some v -> v
+    | None -> failwith $"unreachable: record field '{name}' missing"
+
+let recSet (name: string) (value: Value) (fields: (string * Value) list) : (string * Value) list =
+    fields |> List.map (fun (k, v) -> if k = name then (k, value) else (k, v))
+
 let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string =
     if depth > lim.MaxDepth then
         "…"
@@ -151,8 +180,7 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VBool true -> "true"
         | VBool false -> "false"
         | VRecord(_, fields) ->
-            let body =
-                fields |> Seq.map (fun kv -> $"{kv.Key} = {sub kv.Value}") |> String.concat "; "
+            let body = fields |> Seq.map (fun (k, v) -> $"{k} = {sub v}") |> String.concat "; "
 
             "{ " + body + " }"
         | VUnion(case, None) -> case
@@ -413,13 +441,13 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
         | VRecord(n0, f0) :: _ when shown.Length > 1 || true ->
             let visible = shown
 
-            let keys0 = f0 |> Map.toList |> List.map fst
+            let keys0 = f0 |> List.map fst
 
             let cellsOf (r: Value) =
                 match r with
-                | VRecord(n, f) when n = n0 && (f |> Map.toList |> List.map fst) = keys0 ->
+                | VRecord(n, f) when n = n0 && (f |> List.map fst) = keys0 ->
                     keys0
-                    |> List.map (fun k -> tableCell f[k])
+                    |> List.map (fun k -> tableCell (recGet k f))
                     |> List.fold
                         (fun acc c ->
                             match acc, c with
@@ -645,11 +673,11 @@ let private jsonLine (v: Value) : string =
                 // weir-produced payload looks like the ecosystem's (gh /
                 // kubectl / docker inspect omit rather than null). Missing
                 // and null both read back as None, so the roundtrip holds.
-                match kv.Value with
+                match snd kv with
                 | VUnion("None", None) -> ()
                 | _ ->
-                    writer.WritePropertyName kv.Key
-                    write kv.Value
+                    writer.WritePropertyName(fst kv)
+                    write (snd kv)
 
             writer.WriteEndObject()
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
@@ -798,7 +826,32 @@ let private jsonDoc
 
             name, value
 
-        VRecord(rdef.Name, rdef.Fields |> List.map readField |> Map.ofList)
+        // fields read in DECLARATION order; an ANONYMOUS shape takes the
+        // WIRE's order instead [D:record-order] — the one place order
+        // comes from data, which is what makes read-modify-write
+        // roundtrips hold for shapes the author never declared
+        let fields = rdef.Fields |> List.map readField
+
+        let ordered =
+            if rdef.Name.StartsWith "{|" then
+                let wireIndex (k: string) =
+                    let mutable i = 0
+                    let mutable found = System.Int32.MaxValue
+
+                    for p in root.EnumerateObject() do
+                        if found = System.Int32.MaxValue then
+                            (if p.Name = k then
+                                 found <- i)
+
+                            i <- i + 1
+
+                    found
+
+                fields |> List.sortBy (fst >> wireIndex)
+            else
+                fields
+
+        VRecord(rdef.Name, ordered)
 
     if wantMap then
         // the ID-keyed object [D:map-string]: the top level IS the map —
@@ -976,7 +1029,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
 
-        VRecord(name, Map.ofList fieldValues)
+        VRecord(name, fieldValues)
     | Yaml.SSeq inner, Yaml.NSeq(items, _) -> VSeq(items |> List.map (yamlConvert inner) |> List.toSeq)
     // a null where a seq/mapping sits is the EMPTY collection (the yaml
     // idiom: `ports:` with nothing below)
@@ -1130,7 +1183,7 @@ let rec private yamlRender (v: Value) : Rendered =
         )
     | VUnion("Some", Some inner) -> yamlRender inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
-    | VRecord(_, fields) -> Block(renderMap (Map.toList fields))
+    | VRecord(_, fields) -> Block(renderMap fields)
     | VSeq items ->
         let items = List.ofSeq items
 
@@ -1607,7 +1660,7 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
     if problems.Count > 0 then
         failwith ($"{label}: " + String.concat "; " problems)
 
-    VRecord(def.Name, Map.ofList fields)
+    VRecord(def.Name, fields)
 
 // the shared-flags load [D:shared-flags]: shared flags float anywhere on
 // the line; the first non-flag token anchors the case; payload flags
@@ -1737,7 +1790,7 @@ let private argvLoadShared
         match selected with
         | Some(c, Some _) ->
             let pd = Map.find c payloads
-            Some(c, Some(VRecord(pd.Name, Map.ofList (collectFields pd payloadValues))))
+            Some(c, Some(VRecord(pd.Name, collectFields pd payloadValues)))
         | Some(c, None) -> Some(c, None)
         | None -> None
 
@@ -1749,7 +1802,7 @@ let private argvLoadShared
         | Some(c, p) -> c, p
         | None -> failwith $"{label}: internal — no case after validation"
 
-    VRecord(outer.Name, Map.ofList ((unionField, VUnion(case, payload)) :: sharedFields))
+    VRecord(outer.Name, (unionField, VUnion(case, payload)) :: sharedFields)
 
 let private argvLoad (target: ArgsTarget) : Value =
     let argv = Session.ScriptArgs
@@ -1797,7 +1850,7 @@ let private envPairsOf (v: Value) : (string * string) list =
         |> Seq.map (fun item ->
             match item with
             | VRecord(_, fields) ->
-                (match Map.tryFind "name" fields, Map.tryFind "value" fields with
+                (match recTryGet "name" fields, recTryGet "value" fields with
                  | Some(VStr n), Some(VStr value) -> n, value
                  | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
             | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
@@ -1869,7 +1922,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | v -> unreachable $"the checker rejects '{head}' options of {formatValue v}"
 
         let dur name =
-            match fields[name] with
+            match recGet name fields with
             | VDur ms -> ms
             | v -> unreachable $"the checker rejects a {name} of {formatValue v}"
 
@@ -1880,11 +1933,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if isPoll then
                 System.Int32.MaxValue, dur "interval", Some(dur "timeout")
             else
-                (match fields["attempts"] with
+                (match recGet "attempts" fields with
                  | VInt n -> int n
                  | v -> unreachable $"the checker rejects attempts of {formatValue v}"),
                 dur "delay",
-                (match fields["timeout"] with
+                (match recGet "timeout" fields with
                  | VUnion("Some", Some(VDur t)) -> Some t
                  | _ -> None)
 
@@ -2006,7 +2059,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEField(target, field) ->
         match eval env target with
         | VRecord(name, fields) ->
-            match Map.tryFind field fields with
+            match recTryGet field fields with
             | Some v -> v
             | None -> unreachable $"the checker rejects unknown field '{field}' on {name}"
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
@@ -2031,7 +2084,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         let f = eval env r
         VBuiltin(fun x -> apply g (apply f x))
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
-    | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv) |> Map.ofList)
+    | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv))
     | TEUpdate(src, updates) ->
         // source evaluated ONCE [D:record-update]; nested paths overlay
         let source = eval env src
@@ -2041,8 +2094,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             (fun acc (path, tval) ->
                 let rec go (v: Value) (path: string list) : Value =
                     match v, path with
-                    | VRecord(n, fs), [ f ] -> VRecord(n, Map.add f (eval env tval) fs)
-                    | VRecord(n, fs), f :: rest -> VRecord(n, Map.add f (go fs[f] rest) fs)
+                    // recSet replaces IN PLACE [D:record-order]: an
+                    // updated field keeps its position, never moves
+                    | VRecord(n, fs), [ f ] -> VRecord(n, recSet f (eval env tval) fs)
+                    | VRecord(n, fs), f :: rest -> VRecord(n, recSet f (go (recGet f fs) rest) fs)
                     | v, _ -> unreachable $"the checker rejects update on {formatValue v}"
 
                 go acc path)
@@ -2226,7 +2281,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         if problems.Count > 0 then
             failwith ($"Env.load {def.Name}: " + String.concat "; " problems)
 
-        VRecord(def.Name, Map.ofList fields)
+        VRecord(def.Name, fields)
     | TESeq(a, b) ->
         eval env a |> ignore
         eval env b

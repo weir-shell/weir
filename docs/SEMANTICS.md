@@ -1628,6 +1628,17 @@ IEEE semantics nowhere else.
   raises outside the 64-bit range) / `round` (halves away from
   zero) / `abs` / `near` / `parse` / `tryParse`. `Float` members
   never flatten to bare aliases (`toInt` stays `Str`'s).
+- **Record field order is CARRIED, never semantic** [D:record-order]:
+  values hold fields in declaration order (the container is an ordered
+  list — order by construction), every renderer and serializer emits
+  that order, and `{ r with F = v }` preserves F's position. Equality
+  is order-INSENSITIVE by a single custom arm — the one place the rule
+  lives, where it cannot drift; Ord never touches records (the class
+  solver refuses record keys, and the value type is `NoComparison`).
+  The ONE place order comes from data rather than source: an ANONYMOUS
+  shape read at a boundary takes the WIRE's field order — which is
+  what makes read-modify-write roundtrips hold for shapes the author
+  never declared. Declared records always take source order.
 - **`Duration.toSeconds`** is float-returning and lossless (`2500ms` is
   `2.5`) — the member the truncation kept unshipped. Duration's own
   parse/render path stays integer.

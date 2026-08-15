@@ -1,5 +1,25 @@
 # Spike Notes
 
+## record order: the container was wrong (2026-08-15)
+
+Phase 0 before code, and the measurement rewrote the task: what
+looked like "add ordering to a Map" was "the Map never earned its
+place" — 6-23x slower to build at the widths records actually have,
+buying sublinear access nothing needs. The review's reframing of the
+equality cost deserves its NOTES line verbatim: order-insensitive Eq
+as a custom arm is the invariant moving somewhere better, one place
+that cannot drift, versus a Map-plus-order-field carrying agreement
+between two representations at every construction site. The Ord
+check the review asked for came back closed three deep (NoComparison,
+the class solver, scalarCompare's unreachable wildcard) — and found
+the sortBy teaching had never learned Instant, the kind of drift a
+one-line check catches in passing. The fixture estimate (30-40) came
+in at ten because most JSON pins were single-field or coincidentally
+alphabetical — and because doc blocks assert NOTHING about output,
+which is its own finding now on the row: executability is pinned,
+rendered claims are not, and the site-snippet question that raises is
+deliberately left as separate work.
+
 ## ls-sort rider, and the merge that lost a ruling (2026-08-15)
 
 The rider itself was small — one sort call, one sibling (Env.vars'
