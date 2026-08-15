@@ -366,6 +366,9 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VFloat _
     | VSize _
     | VDur _ -> Some(formatWith echoLimits 0 v, true)
+    // fixed-width ISO, text-aligned — a timestamp column reads as a
+    // label, not a magnitude [D:instant]
+    | VInstant _ -> Some(formatWith echoLimits 0 v, false)
     | VBool b -> Some((if b then "true" else "false"), false)
     | VSecret _ -> Some("***", false)
     | VUnion("None", None) -> Some("", false)

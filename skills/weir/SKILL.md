@@ -588,9 +588,25 @@ print x
 - Bareword heads run externals: `git status` works at a statement head.
   Builtins shadow PATH (`ls` is typed rows — files AND
   subdirectories: name, path, bytes (`0 B` for a directory),
-  isDirectory, hidden, readOnly, age (Duration since last write) —
-  so `where _.isDirectory` and `where (fun f -> f.age < 1h)` are the
-  spellings); `^ls` forces the external.
+  isDirectory, hidden, readOnly, modified (the last-write `Instant` —
+  the file's own fact, stable under binding) — so `where _.isDirectory`
+  and `where (fun f -> Instant.now () - f.modified < 1h)` are the
+  spellings). Rows come back SORTED by name — ordinal, like
+  `Dir.list`/`Path.glob` (case-sensitive, uppercase first; never the
+  locale — coreutils inherits LC_COLLATE, weir does not), and
+  `Env.vars` sorts the same way. `name` is for MATCHING and display,
+  `path` for handing to `File.*` — name derives from path, never the
+  reverse (a later `cd` makes name→path ambiguous), which is why both
+  ride the row. `^ls` forces the external.
+
+```weir
+["x"] |> File.write "lssort-B.txt"
+["x"] |> File.write "lssort-a.txt"
+ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f -> print f.name)
+```
+
+  (prints `lssort-B.txt` then `lssort-a.txt` — ordinal order, the
+  uppercase name first.)
 - Splice values into commands: `$x` is ONE word; `$@xs` (and
   `$@(expr)`) is N words — the argv splat, each `seq<string>` element
   one word, never re-split, never re-joined (no injection either

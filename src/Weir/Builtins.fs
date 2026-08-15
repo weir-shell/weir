@@ -13,10 +13,14 @@ let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
       Fields =
-        [ "age", TDur
-          "bytes", TSize
+        [ "bytes", TSize
           "hidden", TBool
           "isDirectory", TBool
+          // the file's OWN fact [D:instant]: replaced age (derived,
+          // snapshotted per pull, stale after binding — the ls-truth
+          // row's stated wart); Instant landing called that row's
+          // reserved reopening
+          "modified", TInstant
           "name", TStr
           "path", TStr
           "readOnly", TBool ]
@@ -37,18 +41,18 @@ let recordOf (def: RecordDef) (values: Value list) : Value =
 
 let file (name: string) (bytes: int64) (readOnly: bool) : Value =
     // the fixture-friendly constructor: test rows are plain files at
-    // the cwd with zero age — real rows come from lsRow below
+    // the cwd, modified at the epoch — real rows come from lsRow below
     recordOf
         fileRow
-        [ VDur 0L
-          VSize bytes
+        [ VSize bytes
           VBool(name.StartsWith ".")
           VBool false
+          VInstant 0L
           VStr name
           VStr name
           VBool readOnly ]
 
-let private lsRow (now: System.DateTime) (info: FileSystemInfo) : Value =
+let private lsRow (info: FileSystemInfo) : Value =
     let isDir = info.Attributes.HasFlag FileAttributes.Directory
 
     let bytes =
@@ -65,10 +69,10 @@ let private lsRow (now: System.DateTime) (info: FileSystemInfo) : Value =
 
     recordOf
         fileRow
-        [ VDur(int64 (now - info.LastWriteTimeUtc).TotalMilliseconds)
-          VSize bytes
+        [ VSize bytes
           VBool hidden
           VBool isDir
+          VInstant(System.DateTimeOffset(info.LastWriteTimeUtc, System.TimeSpan.Zero).ToUnixTimeMilliseconds())
           VStr info.Name
           VStr info.FullName
           VBool(info.Attributes.HasFlag FileAttributes.ReadOnly) ]
@@ -77,9 +81,7 @@ let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
             // the WHOLE directory — files AND subdirectories (GetFiles
-            // silently halved the listing for a month) [D:ls-truth];
-            // age snapshots once per enumeration pass
-            let now = System.DateTime.UtcNow
+            // silently halved the listing for a month) [D:ls-truth]
             let cwd = Session.Cwd()
 
             let infos =
@@ -89,7 +91,11 @@ let private realLs: Value =
                 | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {cwd}"
                 | :? System.IO.IOException as e -> failwith $"ls: cannot access {cwd} — {e.Message}"
 
-            infos |> Seq.map (lsRow now))
+            // SORTED BY NAME, ordinal [D:ls-sort]: the third discovery
+            // surface joins Dir.list/Path.glob's rule (F# string compare
+            // is ordinal — case-sensitive, uppercase first, never the
+            // locale; coreutils ls inherits LC_COLLATE, weir does not)
+            infos |> Array.sortBy (fun i -> i.Name) |> Seq.map lsRow)
     )
 
 let private whereImpl: Value =
@@ -1886,8 +1892,13 @@ let private envMembers: (string * Ty * Value) list =
       TSeq(TNamed(envVarDef.Name, [])),
       VSeq(
           Seq.delay (fun () ->
+              // hashtable order is noise — the sweep's one sibling of
+              // the ls gap [D:ls-sort]: sorted by name, the same ordinal
+              // rule. (fromFile/ofPairs stay in GIVEN order — there the
+              // order is the author's information, the YMap argument.)
               System.Environment.GetEnvironmentVariables()
               |> Seq.cast<System.Collections.DictionaryEntry>
+              |> Seq.sortBy (fun e -> string e.Key)
               |> Seq.map (fun e -> recordOf envVarDef [ VStr(string e.Key); VStr(string e.Value) ]))
       )
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
@@ -3873,7 +3884,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
           "FileRow",
           bd
-              "A directory entry: name, path, bytes (0 B for a directory), isDirectory, hidden, readOnly, age (Duration since last write, snapshotted per `ls` pull). From `ls` — files AND subdirectories."
+              "A directory entry: name, path, bytes (0 B for a directory), isDirectory, hidden, readOnly, modified (the last-write Instant — the file's own fact, stable under binding). From `ls` — files AND subdirectories, SORTED by name (ordinal: case-sensitive, uppercase first; never the locale). name is for MATCHING and display; path is for handing to File.* - name derives from path, never the reverse."
               None
               None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
