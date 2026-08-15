@@ -673,8 +673,17 @@ within tmp d
   form to read a FOREIGN shape once; declare a type for your own data
   and anything reused. Same-shape anonymous types are one type; a
   declared record with the same fields stays a different (nominal)
-  type. Adapter slot only — no anonymous literals, no nesting (a
-  nested object needs a declared record).
+  type. ONE placement rule: an anonymous shape appears only in the
+  adapter slot's OWN positions — the slot itself, `seq<{| … |}>`'s
+  element, and `Map<string, {| … |}>`'s value — never as a FIELD
+  type (inside `{| … |}` or a declared record: a nested object needs
+  a declared record, and the parser teaches this at the `{|`). No
+  anonymous literals.
+
+```weir-error
+let x = [""] |> from json {| a: {| b: int |} |}
+```
+
   `from json T` reads ONE DOCUMENT -> `T` (any number of lines — a
   pretty-printed body pipes straight in); `from json seq<T>` reads a
   top-level ARRAY document -> `seq<T>` (the list-endpoint shape);
@@ -689,7 +698,8 @@ within tmp d
   Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
   ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The
   whole document can be the map: `from json Map<string, T>` (the
-  adapter slot's third form; `{| … |}` composes in the value slot;
+  adapter slot's third form; `{| … |}` composes in the value slot —
+  a slot position, per the placement rule above;
   `jsonl` refuses — a map is ONE object; `yaml` does not take it
   yet). Duplicate keys last-win. `Map` surface: `ofPairs`
   (last-wins) / `pairs` / `keys` / `values` (key-sorted) / `get`

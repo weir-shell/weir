@@ -2805,7 +2805,17 @@ let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
 tySynRef.Value <-
     choice
-        [ pchar '\'' >>. rawWord .>> ws |>> TVar
+        [
+          // the recorded rule [D:anon-records]: tySyn does NOT nest the
+          // anonymous form — a field's type is a NAME; the shape lives in
+          // the adapter slot's own positions only. The teaching replaces
+          // the bare expecting-list users hit early at this boundary.
+          getPosition .>> lookAhead (pstring "{|")
+          >>= fun p ->
+              failFatallyAt
+                  p
+                  "an anonymous record cannot be a field type — declare a record and name it here ({| … |} lives in the adapter slot only: from json {| … |}, seq<{| … |}>, Map<string, {| … |}>)"
+          pchar '\'' >>. rawWord .>> ws |>> TVar
           rawWord
           >>= fun w ->
               match w with

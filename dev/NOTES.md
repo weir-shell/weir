@@ -16,6 +16,23 @@ branch invisibly forks local from remote — the local verify passes,
 the merged tree differs, and nothing in the ritual compares the two.
 A push-state check (local tip == origin tip before reporting
 ready-to-push) would have caught it for the cost of one git command.
+## the nesting rider: intent, verified from the ledger (2026-08-15)
+
+The rider's third hypothesis — a narrowing nobody asked for, hardened
+into apparent semantics — is the failure mode an agent-authored
+codebase should fear most, and the investigation's answer is the
+ledger working: the rule was recorded at introduction, in the row, in
+exactly the words needed four days later ("tySyn does NOT nest the
+form"). What LOOKED like depth-dependent inconsistency was two
+grammars each behaving as separately ruled — the slot's alternatives
+grew (map-string, rowed) while the one type grammar stayed closed
+(anon-records, rowed). The real defect was the seam BETWEEN two
+correct decisions: a parser-level expecting-list where users first
+meet the boundary, and two SKILL sentences written by different
+sessions that never met. Both fixed as one motion. The discipline
+that made the answer cheap is the discipline the rider asked for:
+evidence before code — the archaeology took four greps because the
+rows are dense enough to hold the mechanism, not just the verdict.
 
 ## Instant: absolute time, the boring subset (2026-08-14)
 

@@ -9802,6 +9802,25 @@ let recursiveFieldTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "an anonymous shape cannot be a FIELD type — the recorded rule teaches at the '{|' [D:anon-records]" {
+              // the depth rule is INTENTIONAL, rowed at introduction
+              // ("tySyn does NOT nest the form"); the map-string value
+              // slot is a SLOT position, not a field position — this pin
+              // holds the line AND the message across all three field
+              // homes (anon field, seq element of a field, declared field)
+              for src in
+                  [ "[\"\"] |> from json {| a: {| b: int |} |}"
+                    "[\"\"] |> from json {| a: seq<{| b: int |}> |}" ] do
+                  match Weir.Parser.parseExpr src with
+                  | Error m ->
+                      Expect.stringContains m "cannot be a field type" $"the constraint is named: {src}"
+                      Expect.stringContains m "declare a record" $"…and the repair: {src}"
+                  | Ok _ -> failtest $"must not parse: {src}"
+
+              match Weir.Parser.parseStmt "type NT = { x: {| a: int |} }" with
+              | Error m -> Expect.stringContains m "cannot be a field type" "declared records share the rule"
+              | Ok other -> failtest $"expected the teaching, got {other}"
+          }
           test "an anonymous shape composes with a nested DECLARED record [D:anon-records]" {
               let e = env |> declare "type Entity = { entityid: string }"
 
