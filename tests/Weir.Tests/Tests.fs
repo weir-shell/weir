@@ -467,7 +467,7 @@ let declTests =
               Expect.equal (checkOk "{ X = 1; Y = 2 }").Ty (TNamed("Point", [])) ""
           }
           test "record literal evaluates and fields project" {
-              expectValue "{ X = 1; Y = 2 }" (VRecord("Point", Map [ "X", VInt 1; "Y", VInt 2 ]))
+              expectValue "{ X = 1; Y = 2 }" (VRecord("Point", [ "X", VInt 1; "Y", VInt 2 ]))
               expectValue "let p = { X = 3; Y = 4 } in p.X + p.Y" (VInt 7)
           }
           test "record literal with unknown field set is rejected" {
@@ -931,11 +931,11 @@ let boundaryTests =
           }
           test "to json serializes records as ndjson" {
               let src =
-                  VSeq [ VRecord("JRow", Map [ "name", VStr "a.txt"; "bytes", VInt 0L; "readOnly", VBool false ]) ]
+                  VSeq [ VRecord("JRow", [ "name", VStr "a.txt"; "bytes", VInt 0L; "readOnly", VBool false ]) ]
 
               Expect.equal
                   (runWith [ "src", src ] "src |> to json" |> forceSeq)
-                  [ VStr """{"bytes":0,"name":"a.txt","readOnly":false}""" ]
+                  [ VStr """{"name":"a.txt","bytes":0,"readOnly":false}""" ]
                   ""
           }
           test "ls rows no longer cross the wire: Size is non-representable there [D:size]" {
@@ -950,7 +950,7 @@ let boundaryTests =
           }
           test "json roundtrip preserves rows (the jsonable stand-in)" {
               let src =
-                  VSeq [ VRecord("JRow", Map [ "name", VStr "a"; "bytes", VInt 5L; "readOnly", VBool false ]) ]
+                  VSeq [ VRecord("JRow", [ "name", VStr "a"; "bytes", VInt 5L; "readOnly", VBool false ]) ]
 
               Expect.equal
                   (runWith [ "src", src ] "src |> to json |> from jsonl JRow"
@@ -975,7 +975,7 @@ let boundaryTests =
 
               Expect.equal
                   (runWith [ "src", src ] "src |> from jsonl JRow" |> forceSeq)
-                  [ VRecord("JRow", Map [ "name", VStr "x"; "bytes", VInt 1048576L; "readOnly", VBool true ]) ]
+                  [ VRecord("JRow", [ "name", VStr "x"; "bytes", VInt 1048576L; "readOnly", VBool true ]) ]
                   ""
           }
           test "from jsonl: an Option field reads present as Some, missing AND null as None [D:json-option]" {
@@ -995,7 +995,7 @@ let boundaryTests =
 
               Expect.equal
                   (runWith [ "src", src ] "src |> from jsonl JOpt |> to json" |> forceSeq)
-                  [ VStr """{"age":5,"name":"a"}"""; VStr """{"name":"b"}""" ]
+                  [ VStr """{"name":"a","age":5}"""; VStr """{"name":"b"}""" ]
                   "Some writes the scalar; None OMITS its key (the fork)"
 
               let once = runWith [ "src", src ] "src |> from jsonl JOpt" |> forceSeq
@@ -1107,7 +1107,7 @@ let boundaryTests =
               // is intercepted since a record type name is never a value)
               Expect.equal
                   (run "Point { X = 1; Y = 2 }")
-                  (VRecord("Point", Map [ "X", VInt 1L; "Y", VInt 2L ]))
+                  (VRecord("Point", [ "X", VInt 1L; "Y", VInt 2L ]))
                   "named literal builds the record"
 
               match typecheck env (parse "Point { X = 1; Y = 2 }") with
@@ -2556,9 +2556,9 @@ let session3Tests =
 
               match runReal "grep nomatch /etc/hosts | complete" with
               | VRecord("Completed", fields) ->
-                  Expect.equal fields["exitCode"] (VInt 1) "exit code"
-                  Expect.equal (fields["stdout"] |> forceSeq) [] "stdout empty"
-                  Expect.equal (fields["stderr"] |> forceSeq) [] "stderr empty"
+                  Expect.equal (Weir.Eval.recGet "exitCode" fields) (VInt 1) "exit code"
+                  Expect.equal (Weir.Eval.recGet "stdout" fields |> forceSeq) [] "stdout empty"
+                  Expect.equal (Weir.Eval.recGet "stderr" fields |> forceSeq) [] "stderr empty"
               | v -> failtest $"unexpected: {formatValue v}"
           }
           test "complete captures stderr and nonzero exit" {
@@ -2566,7 +2566,7 @@ let session3Tests =
 
               match runReal "^ls /weir-definitely-not | complete" with
               | VRecord("Completed", fields) ->
-                  match fields["exitCode"], fields["stderr"] with
+                  match Weir.Eval.recGet "exitCode" fields, Weir.Eval.recGet "stderr" fields with
                   | VInt code, VSeq errs ->
                       Expect.isTrue (code > 0) "nonzero exit"
                       Expect.isFalse (Seq.isEmpty errs) "stderr captured"
@@ -3261,8 +3261,8 @@ let typedArgvTests =
 
                       match load () with
                       | VRecord(_, fs) ->
-                          Expect.equal fs["LOGE_ZZQ"] (VUnion("Debug", None)) $"casing '{spelling}'"
-                          Expect.equal fs["OPTE_ZZQ"] (VUnion("None", None)) "absent Option is None"
+                          Expect.equal (Weir.Eval.recGet "LOGE_ZZQ" fs) (VUnion("Debug", None)) $"casing '{spelling}'"
+                          Expect.equal (Weir.Eval.recGet "OPTE_ZZQ" fs) (VUnion("None", None)) "absent Option is None"
                       | v -> failtest $"unexpected: {formatValue v}"
 
                   // a miss carries the candidates and a did-you-mean
@@ -4052,8 +4052,8 @@ let replEchoTests =
           test "the width clamp: the widest column absorbs the clip, floors hold, None means untouched [D:table-polish]" {
               let rows =
                   VSeq
-                      [ VRecord("P", Map [ "name", VStr "a"; "path", VStr(String.replicate 60 "x") ])
-                        VRecord("P", Map [ "name", VStr "b"; "path", VStr "/short" ]) ]
+                      [ VRecord("P", [ "name", VStr "a"; "path", VStr(String.replicate 60 "x") ])
+                        VRecord("P", [ "name", VStr "b"; "path", VStr "/short" ]) ]
 
               match Weir.Eval.echoTable Weir.Eval.echoPipedCap (Some 40) rows with
               | Some(lines, None) ->
@@ -7300,7 +7300,7 @@ let showTests =
               expectValue
                   "show (ls |> Seq.head)"
                   (VStr
-                      "{ bytes = 0 B; hidden = false; isDirectory = false; modified = 1970-01-01T00:00:00Z; name = \"a.txt\"; path = \"a.txt\"; readOnly = false }")
+                      "{ name = \"a.txt\"; bytes = 0 B; modified = 1970-01-01T00:00:00Z; isDirectory = false; hidden = false; readOnly = false; path = \"a.txt\" }")
           }
           test "unions, seqs, scalars" {
               expectValue "show (Some 3)" (VStr "Some 3")
@@ -8044,7 +8044,7 @@ let typeClassBTests =
 
               Expect.stringContains
                   (formatError terr)
-                  "cannot be ordered — keys are int, float, string, bool, Duration, or Size"
+                  "cannot be ordered — keys are int, float, string, bool, Duration, Size, or Instant"
                   ""
           }
           test "Ord: function key rejects" {
@@ -8848,9 +8848,9 @@ let envLoadTests =
 
                       match eval valueEnv te with
                       | VRecord(_, fs) ->
-                          Expect.equal fs["WT_I"] (VInt 42L) "int parsed"
-                          Expect.equal fs["WT_B"] (VBool false) "bool parsed"
-                          Expect.equal fs["WT_O"] (VUnion("None", None)) "absent Option is None"
+                          Expect.equal (Weir.Eval.recGet "WT_I" fs) (VInt 42L) "int parsed"
+                          Expect.equal (Weir.Eval.recGet "WT_B" fs) (VBool false) "bool parsed"
+                          Expect.equal (Weir.Eval.recGet "WT_O" fs) (VUnion("None", None)) "absent Option is None"
                       | v -> failtest $"unexpected {formatValue v}"
                   | Error terr -> failtest (formatError terr)
               finally
@@ -9340,7 +9340,7 @@ let secretTests =
 
               Expect.equal
                   (Weir.Eval.formatValue v)
-                  "{ token = ***; user = \"admin\" }"
+                  "{ user = \"admin\"; token = *** }"
                   "the secret field is ***, the public is not"
           }
           test "show of a bare Secret, and inside seq/tuple, all render ***" {
@@ -9559,7 +9559,7 @@ let httpTests =
 
               match v with
               | VRecord("HttpRequest", f) ->
-                  match Map.find "body" f with
+                  match Weir.Eval.recGet "body" f with
                   | VUnion("Json", Some(VSeq lines)) ->
                       Expect.equal (lines |> Seq.map strOf |> List.ofSeq) [ "{\"name\":\"a\"}" ] "one NDJSON line"
                   | v -> failtest $"body not Json: {v}"
@@ -9699,7 +9699,7 @@ let recursiveFieldTests =
                   |> declare "type Inner = { v: int }"
                   |> declare "type Outer = { name: string; inner: Inner; xs: seq<int> }"
 
-              let src = "{\"inner\":{\"v\":5},\"name\":\"a\",\"xs\":[1,2]}"
+              let src = "{\"name\":\"a\",\"inner\":{\"v\":5},\"xs\":[1,2]}"
 
               match Weir.Parser.parseStmt "[src |> from json Outer] |> to json" with
               | Ok(SExpr expr) ->
@@ -10172,7 +10172,7 @@ let fileRowSizeTests =
               expectValue
                   "show (ls |> where (fun f -> f.name == \"b.bin\") |> Seq.head)"
                   (VStr
-                      "{ bytes = 5 MiB; hidden = false; isDirectory = false; modified = 1970-01-01T00:00:00Z; name = \"b.bin\"; path = \"b.bin\"; readOnly = true }")
+                      "{ name = \"b.bin\"; bytes = 5 MiB; modified = 1970-01-01T00:00:00Z; isDirectory = false; hidden = false; readOnly = true; path = \"b.bin\" }")
           }
           test "sortBy crosses the class boundary: Ord admits Size" {
               expectValue "ls |> Seq.sortByDescending _.bytes |> first 1 |> map _.name" (VSeq [ VStr "b.bin" ])
@@ -10189,21 +10189,20 @@ let replTableTests =
                   VSeq
                       [ VRecord(
                             "FileRow",
-                            Map [ "name", VStr "core.dump"; "bytes", VSize 4194304L; "readOnly", VBool false ]
+                            [ "name", VStr "core.dump"; "bytes", VSize 4194304L; "readOnly", VBool false ]
                         )
-                        VRecord("FileRow", Map [ "name", VStr "n.txt"; "bytes", VSize 7L; "readOnly", VBool true ]) ]
+                        VRecord("FileRow", [ "name", VStr "n.txt"; "bytes", VSize 7L; "readOnly", VBool true ]) ]
 
               match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
               | Some(lines, None) ->
-                  Expect.equal lines[0] "bytes  name       readOnly" "alphabetical headers"
+                  Expect.equal lines[0] "name       bytes  readOnly" "declaration-order headers [D:record-order]"
                   Expect.stringContains lines[1] "─" "the rule line"
-                  Expect.equal lines[2] "4 MiB  core.dump  false" "unquoted strings, show's scalar spellings"
-                  Expect.equal lines[3] "  7 B  n.txt      true" "numeric right-aligned"
+                  Expect.equal lines[2] "core.dump  4 MiB  false" "unquoted strings, show's scalar spellings"
+                  Expect.equal lines[3] "n.txt        7 B  true" "numeric right-aligned"
               | other -> failtest $"expected a table, got {other}"
           }
           test "an UNFORCED seq's table caps with the honest hint; a FORCED one shows every row [D:echo-rule]" {
-              let row i =
-                  VRecord("R", Map [ "n", VInt(int64 i) ])
+              let row i = VRecord("R", [ "n", VInt(int64 i) ])
 
               let lazyRows = VSeq(Seq.initInfinite (fun i -> row i))
 
@@ -10220,12 +10219,11 @@ let replTableTests =
               | other -> failtest $"a forced table shows every row: {other}"
           }
           test "non-uniform and non-scalar shapes decline — the line rendering stands" {
-              let mixed =
-                  VSeq [ VRecord("A", Map [ "x", VInt 1L ]); VRecord("B", Map [ "y", VInt 2L ]) ]
+              let mixed = VSeq [ VRecord("A", [ "x", VInt 1L ]); VRecord("B", [ "y", VInt 2L ]) ]
 
               Expect.isTrue (Weir.Eval.echoTable Weir.Eval.echoPipedCap None mixed |> Option.isNone) "different shapes"
 
-              let nested = VSeq [ VRecord("N", Map [ "inner", VSeq [ VInt 1L ] ]) ]
+              let nested = VSeq [ VRecord("N", [ "inner", VSeq [ VInt 1L ] ]) ]
 
               Expect.isTrue
                   (Weir.Eval.echoTable Weir.Eval.echoPipedCap None nested |> Option.isNone)
@@ -10243,8 +10241,8 @@ let replTableTests =
           test "Option cells: Some inlines, None is blank; a Secret cell masks" {
               let rows =
                   VSeq
-                      [ VRecord("P", Map [ "note", VUnion("Some", Some(VStr "hi")); "tok", VSecret "s3cr3t" ])
-                        VRecord("P", Map [ "note", VUnion("None", None); "tok", VSecret "x" ]) ]
+                      [ VRecord("P", [ "note", VUnion("Some", Some(VStr "hi")); "tok", VSecret "s3cr3t" ])
+                        VRecord("P", [ "note", VUnion("None", None); "tok", VSecret "x" ]) ]
 
               match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
               | Some(lines, None) ->
@@ -10275,20 +10273,22 @@ let lsSortTests =
 
               Expect.isTrue (names.Length > 3) "a real environment"
           }
-          test "the FileRow table's column order is the field law's (alphabetical) — pinned as decided [D:table-polish]" {
-              // reordering was DECLINED on the table-polish row; this pin
-              // makes the decided order fail loudly if it ever drifts
+          test "the FileRow table's column order is DECLARATION order — name leads, path trails [D:record-order]" {
+              // supersedes the alphabetical pin (that order was the Map
+              // container's accident; the table-polish decline was about
+              // a reorder KNOB, not about order being carried)
               match Weir.Eval.echoTable Weir.Eval.echoPipedCap None (VSeq(fakeFiles |> List.toSeq)) with
               | Some(header :: _, _) ->
-                  Expect.isTrue (header.StartsWith "bytes") "first column"
+                  Expect.isTrue (header.StartsWith "name") "name leads"
 
                   for col in [ "bytes"; "hidden"; "isDirectory"; "modified"; "name"; "path"; "readOnly" ] do
                       Expect.stringContains header col $"column present: {col}"
 
                   Expect.isTrue
-                      (header.IndexOf "modified" < header.IndexOf "name"
-                       && header.IndexOf "name" < header.IndexOf "path")
-                      "alphabetical order holds"
+                      (header.IndexOf "name" < header.IndexOf "bytes"
+                       && header.IndexOf "bytes" < header.IndexOf "modified"
+                       && header.IndexOf "readOnly" < header.IndexOf "path")
+                      "declaration order holds"
               | other -> failtest $"expected a table, got {other}"
           } ]
 
@@ -10371,7 +10371,7 @@ let recordKeysTests =
               // the e2e pins that access every field on a live response)
               let keysOf (v: Value) =
                   match v with
-                  | VRecord(_, fs) -> fs |> Map.toList |> List.map fst
+                  | VRecord(_, fs) -> fs |> List.map fst
                   | v -> failtest $"expected a record, got {v}"
 
               let declared name =
@@ -11513,7 +11513,7 @@ let floatBoundaryTests =
                       Weir.Check.typecheck e (parse $"[\"{line}\"] |> from json FJ")
                       |> Result.map (eval valueEnv)
                   with
-                  | Ok(VRecord(_, fs)) -> fs["rate"]
+                  | Ok(VRecord(_, fs)) -> Weir.Eval.recGet "rate" fs
                   | other -> failtest $"unexpected {other}"
 
               Expect.equal (read "{\\\"rate\\\": 1.5}") (VFloat 1.5) "float reads"
@@ -11566,8 +11566,8 @@ let floatBoundaryTests =
 
               match read with
               | VRecord(_, fs) ->
-                  Expect.equal fs["rate"] (VFloat 1.5) "unquoted is the number"
-                  Expect.equal fs["label"] (VStr "1.5") "quoted is the string"
+                  Expect.equal (Weir.Eval.recGet "rate" fs) (VFloat 1.5) "unquoted is the number"
+                  Expect.equal (Weir.Eval.recGet "label" fs) (VStr "1.5") "quoted is the string"
               | v -> failtest $"unexpected {v}"
           }
           test "yaml: .inf/.nan are REJECTED on the way in — no value exists to read into" {
@@ -12127,6 +12127,37 @@ let scopedProcTests =
               Expect.isFalse (Weir.Script.endsInProcHead "let awithin proc = 5") "word-bounded"
           } ]
 
+let recordOrderTests =
+    // field order carried, never semantic [D:record-order]
+    testList
+        "record order [D:record-order]"
+        [ test "an update preserves the field's POSITION" {
+              let e = env |> declare "type RO = { z: int; a: int }"
+
+              match Weir.Parser.parseStmt "[RO { z = 1; a = 2 } |> (fun r -> { r with z = 9 })] |> to json" with
+              | Ok(Weir.Ast.SExpr ex) ->
+                  match Weir.Check.typecheck e ex with
+                  | Ok te ->
+                      Expect.equal (Weir.Eval.eval valueEnv te |> forceSeq) [ VStr """{"z":9,"a":2}""" ] "z stays first"
+                  | Error terr -> failtest terr.Message
+              | other -> failtest $"parse: {other}"
+          }
+          test "equality ignores order; hash agrees" {
+              let a = VRecord("P", [ "x", VInt 1L; "y", VInt 2L ])
+              let b = VRecord("P", [ "y", VInt 2L; "x", VInt 1L ])
+              Expect.equal a b "two spellings of one record"
+              Expect.equal (hash a) (hash b) "hash is order-blind (name only)"
+          }
+          test "the JSON roundtrip: an anonymous read carries WIRE order back out" {
+              Expect.equal
+                  (runWith
+                      [ "src", VSeq [ VStr """{"z": 2, "a": 1}""" ] ]
+                      "[src |> from json {| a: int; z: int |}] |> to json"
+                   |> forceSeq)
+                  [ VStr """{"z":2,"a":1}""" ]
+                  "read-modify-nothing writes the input's order"
+          } ]
+
 let instantTests =
     // Instant [D:instant]: the boring subset — instants only, UTC
     // inside, no calendar arithmetic; `-` between points IS Duration
@@ -12288,7 +12319,7 @@ let mapStringTests =
               Expect.equal
                   (forceSeq v)
                   [ VStr
-                        "{\"aaa\":{\"bytes\":1,\"name\":\"a\",\"readOnly\":false},\"bbb\":{\"bytes\":2,\"name\":\"b\",\"readOnly\":true}}" ]
+                        "{\"aaa\":{\"name\":\"a\",\"bytes\":1,\"readOnly\":false},\"bbb\":{\"name\":\"b\",\"bytes\":2,\"readOnly\":true}}" ]
                   ""
           }
           test "an anonymous shape composes in the value slot — the two-features-in-one-slot bar" {
@@ -12876,6 +12907,7 @@ let allTests =
           anonRecordTests
           mapStringTests
           instantTests
+          recordOrderTests
           scopedProcTests
           formatSurfaceTests
           secretTests

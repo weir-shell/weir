@@ -13,17 +13,18 @@ let fileRow: RecordDef =
     { Name = "FileRow"
       Params = []
       Fields =
-        [ "bytes", TSize
-          "hidden", TBool
-          "isDirectory", TBool
+        // DECLARATION order is display order now [D:record-order] —
+        // name leads (the ls-rider's ask), path trails (the widest
+        // column reads best at the edge)
+        [ "name", TStr
+          "bytes", TSize
           // the file's OWN fact [D:instant]: replaced age (derived,
-          // snapshotted per pull, stale after binding — the ls-truth
-          // row's stated wart); Instant landing called that row's
-          // reserved reopening
+          // snapshotted per pull, stale after binding)
           "modified", TInstant
-          "name", TStr
-          "path", TStr
-          "readOnly", TBool ]
+          "isDirectory", TBool
+          "hidden", TBool
+          "readOnly", TBool
+          "path", TStr ]
       Attrs = Map.empty
       Docs = Map.empty }
 
@@ -37,20 +38,20 @@ let recordOf (def: RecordDef) (values: Value list) : Value =
         unreachable
             $"builtin record {def.Name}: {List.length values} values for {List.length def.Fields} declared fields"
 
-    VRecord(def.Name, Map(List.map2 (fun (name, _) v -> name, v) def.Fields values))
+    VRecord(def.Name, List.map2 (fun (name, _) v -> name, v) def.Fields values)
 
 let file (name: string) (bytes: int64) (readOnly: bool) : Value =
     // the fixture-friendly constructor: test rows are plain files at
     // the cwd, modified at the epoch — real rows come from lsRow below
     recordOf
         fileRow
-        [ VSize bytes
-          VBool(name.StartsWith ".")
-          VBool false
+        [ VStr name
+          VSize bytes
           VInstant 0L
-          VStr name
-          VStr name
-          VBool readOnly ]
+          VBool false
+          VBool(name.StartsWith ".")
+          VBool readOnly
+          VStr name ]
 
 let private lsRow (info: FileSystemInfo) : Value =
     let isDir = info.Attributes.HasFlag FileAttributes.Directory
@@ -69,13 +70,13 @@ let private lsRow (info: FileSystemInfo) : Value =
 
     recordOf
         fileRow
-        [ VSize bytes
-          VBool hidden
-          VBool isDir
+        [ VStr info.Name
+          VSize bytes
           VInstant(System.DateTimeOffset(info.LastWriteTimeUtc, System.TimeSpan.Zero).ToUnixTimeMilliseconds())
-          VStr info.Name
-          VStr info.FullName
-          VBool(info.Attributes.HasFlag FileAttributes.ReadOnly) ]
+          VBool isDir
+          VBool hidden
+          VBool(info.Attributes.HasFlag FileAttributes.ReadOnly)
+          VStr info.FullName ]
 
 let private realLs: Value =
     VSeq(
@@ -2538,15 +2539,14 @@ let private headerPairs (v: Value) : (string * string) list =
 let private httpDefaults: Value =
     VRecord(
         "HttpRequest",
-        Map
-            [ "method", VUnion("Get", None)
-              "url", VStr ""
-              "auth", VUnion("NoAuth", None)
-              "headers", VSeq Seq.empty
-              "secretHeaders", VSeq Seq.empty
-              "body", VUnion("NoBody", None)
-              "timeout", VDur 30000L
-              "insecure", VBool false ]
+        [ "method", VUnion("Get", None)
+          "url", VStr ""
+          "auth", VUnion("NoAuth", None)
+          "headers", VSeq Seq.empty
+          "secretHeaders", VSeq Seq.empty
+          "body", VUnion("NoBody", None)
+          "timeout", VDur 30000L
+          "insecure", VBool false ]
     )
 
 // translate the request record to Http.Req, send, RAISE on transport
@@ -2554,7 +2554,7 @@ let private httpDefaults: Value =
 let private runRequest (reqV: Value) : Http.Resp =
     match reqV with
     | VRecord("HttpRequest", f) ->
-        let get k = Map.find k f
+        let get k = recGet k f
 
         let req: Http.Req =
             { Method = httpMethodName (get "method")
@@ -2602,10 +2602,9 @@ let private httpSendImpl: Value =
 
         VRecord(
             "HttpResponse",
-            Map
-                [ "status", VInt(int64 resp.Status)
-                  "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
-                  "body", VSeq(respBodyLines resp) ]
+            [ "status", VInt(int64 resp.Status)
+              "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
+              "body", VSeq(respBodyLines resp) ]
         ))
 
 // a CONSTRUCTOR [D:http-s2]: `Http.get u` = `{ Http.defaults with method =
@@ -2616,7 +2615,7 @@ let private httpCtor (methodCase: string) : Value =
     VBuiltin(fun urlV ->
         match urlV, httpDefaults with
         | VStr url, VRecord("HttpRequest", f) ->
-            VRecord("HttpRequest", f |> Map.add "method" (VUnion(methodCase, None)) |> Map.add "url" (VStr url))
+            VRecord("HttpRequest", f |> recSet "method" (VUnion(methodCase, None)) |> recSet "url" (VStr url))
         | v, _ -> unreachable $"the checker rejects an Http constructor on {formatValue v}")
 
 // the raising shorthand [D:http-s2]: GET, raise on non-2xx naming the
@@ -2626,7 +2625,7 @@ let private httpFetchImpl: Value =
     VBuiltin(fun urlV ->
         match urlV, httpDefaults with
         | VStr url, VRecord("HttpRequest", f) ->
-            let resp = runRequest (VRecord("HttpRequest", Map.add "url" (VStr url) f))
+            let resp = runRequest (VRecord("HttpRequest", recSet "url" (VStr url) f))
 
             if resp.Status < 200 || resp.Status >= 300 then
                 failwith $"{url} answered {resp.Status}"
@@ -2897,9 +2896,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Retry",
       [ "defaults",
         TNamed("Retry", []),
-        VRecord("Retry", Map [ "attempts", VInt 5L; "delay", VDur 1000L; "timeout", VUnion("None", None) ]) ]
-      "Poll",
-      [ "defaults", TNamed("Poll", []), VRecord("Poll", Map [ "timeout", VDur 60000L; "interval", VDur 1000L ]) ]
+        VRecord("Retry", [ "attempts", VInt 5L; "delay", VDur 1000L; "timeout", VUnion("None", None) ]) ]
+      "Poll", [ "defaults", TNamed("Poll", []), VRecord("Poll", [ "timeout", VDur 60000L; "interval", VDur 1000L ]) ]
       "Http", httpMembers
       "Float", floatMembers ]
 
@@ -3992,7 +3990,7 @@ let private envVarPairs (v: Value) : (string * string) list =
         |> Seq.map (fun item ->
             match item with
             | VRecord(_, fields) ->
-                match fields["name"], fields["value"] with
+                match recGet "name" fields, recGet "value" fields with
                 | VStr n, VStr value -> n, value
                 | _ -> unreachable "the checker rejects non-EnvVar overlay entries"
             | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
