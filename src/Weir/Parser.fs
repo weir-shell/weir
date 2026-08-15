@@ -2806,15 +2806,15 @@ let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 tySynRef.Value <-
     choice
         [
-          // the recorded rule [D:anon-records]: tySyn does NOT nest the
-          // anonymous form — a field's type is a NAME; the shape lives in
-          // the adapter slot's own positions only. The teaching replaces
-          // the bare expecting-list users hit early at this boundary.
-          getPosition .>> lookAhead (pstring "{|")
-          >>= fun p ->
-              failFatallyAt
-                  p
-                  "an anonymous record cannot be a field type — declare a record and name it here ({| … |} lives in the adapter slot only: from json {| … |}, seq<{| … |}>, Map<string, {| … |}>)"
+          // the one-level rule REVERSED [D:anon-nesting]: the shape
+          // parses anywhere a type is written — the canonical name IS
+          // the type (synthetic-nominal recursion for free); the fields
+          // ride the pending table for the registration seams to drain
+          anonShape
+          |>> fun fields ->
+              let n = anonRecordName fields
+              pushAnonDef n fields
+              TNamed(n, [])
           pchar '\'' >>. rawWord .>> ws |>> TVar
           rawWord
           >>= fun w ->

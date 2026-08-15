@@ -16,6 +16,24 @@ branch invisibly forks local from remote — the local verify passes,
 the merged tree differs, and nothing in the ritual compares the two.
 A push-state check (local tip == origin tip before reporting
 ready-to-push) would have caught it for the cost of one git command.
+## nesting, reversed on a live receipt (2026-08-15)
+
+The rider ruled the depth restriction intentional in the morning and
+the user reversed it by evening with the receipt the original ruling
+never weighed: REPL shape exploration, where declaring a type
+mid-sketch breaks the loop the anonymous form exists to serve. The
+implementation vindicated the synthetic-nominal design a second time
+— because the canonical name IS the type, nesting cost one parser arm
+and a pending-table drain at the two registration seams, with
+unification, display, dotted error paths, and the JSON reader all
+recursing for free. The pending table's design note is the part worth
+remembering: parser backtracking means shapes can be pushed for
+parses that never survive, and the fix is to not care — registering
+an unreachable hidden type is benign, so the drain needs no
+parse-success bookkeeping at all. Both halves of the day are honest
+on the ledger: the investigation that proved the rule was intentional
+AND the receipt that retired it, in one row, same branch.
+
 ## the nesting rider: intent, verified from the ledger (2026-08-15)
 
 The rider's third hypothesis — a narrowing nobody asked for, hardened

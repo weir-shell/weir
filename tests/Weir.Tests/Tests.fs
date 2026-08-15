@@ -9802,24 +9802,35 @@ let recursiveFieldTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
-          test "an anonymous shape cannot be a FIELD type — the recorded rule teaches at the '{|' [D:anon-records]" {
-              // the depth rule is INTENTIONAL, rowed at introduction
-              // ("tySyn does NOT nest the form"); the map-string value
-              // slot is a SLOT position, not a field position — this pin
-              // holds the line AND the message across all three field
-              // homes (anon field, seq element of a field, declared field)
-              for src in
-                  [ "[\"\"] |> from json {| a: {| b: int |} |}"
-                    "[\"\"] |> from json {| a: seq<{| b: int |}> |}" ] do
-                  match Weir.Parser.parseExpr src with
-                  | Error m ->
-                      Expect.stringContains m "cannot be a field type" $"the constraint is named: {src}"
-                      Expect.stringContains m "declare a record" $"…and the repair: {src}"
-                  | Ok _ -> failtest $"must not parse: {src}"
+          test "anonymous shapes NEST — everywhere a type is written [D:anon-nesting]" {
+              // the one-level rule reversed on the REPL shape-exploration
+              // receipt: field-of-anon, seq-element, Map-value, and a
+              // DECLARED record's field all admit the form; registration
+              // drains the parser's pending table at the existing seams
+              let v =
+                  runWith
+                      [ "src", VSeq [ VStr "{\"a\": {\"b\": 7}}" ] ]
+                      "src |> from json {| a: {| b: int |} |} |> _.a |> _.b"
 
-              match Weir.Parser.parseStmt "type NT = { x: {| a: int |} }" with
-              | Error m -> Expect.stringContains m "cannot be a field type" "declared records share the rule"
-              | Ok other -> failtest $"expected the teaching, got {other}"
+              Expect.equal v (VInt 7L) "nested field access, end to end"
+
+              let v2 =
+                  runWith
+                      [ "src", VSeq [ VStr "{\"rows\": [{\"id\": \"z\"}]}" ] ]
+                      "src |> from json {| rows: seq<{| id: string |}> |} |> _.rows |> Seq.map _.id |> Seq.head"
+
+              Expect.equal v2 (VStr "z") "seq-wrapped nesting"
+
+              // same nested shape = same canonical name = one type
+              let te =
+                  checkOk "[[\"{}\"]  |> from json {| a: {| b: int |} |}; [\"{}\"]  |> from json {| a: {| b: int |} |}]"
+
+              Expect.equal te.Ty (TSeq(TNamed("{| a: {| b: int |} |}", []))) "canonical names recurse"
+
+              // a Secret buried two deep still refuses with the dotted path
+              let m = (checkErr "[\"\"] |> from json {| t: {| x: Secret |} |}").Message
+              Expect.stringContains m "t.x" "the path reaches through the nesting"
+              Expect.stringContains m "must not cross to JSON" ""
           }
           test "an anonymous shape composes with a nested DECLARED record [D:anon-records]" {
               let e = env |> declare "type Entity = { entityid: string }"

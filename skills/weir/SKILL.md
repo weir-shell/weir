@@ -673,15 +673,16 @@ within tmp d
   form to read a FOREIGN shape once; declare a type for your own data
   and anything reused. Same-shape anonymous types are one type; a
   declared record with the same fields stays a different (nominal)
-  type. ONE placement rule: an anonymous shape appears only in the
-  adapter slot's OWN positions — the slot itself, `seq<{| … |}>`'s
-  element, and `Map<string, {| … |}>`'s value — never as a FIELD
-  type (inside `{| … |}` or a declared record: a nested object needs
-  a declared record, and the parser teaches this at the `{|`). No
-  anonymous literals.
+  type. The shape NESTS — anywhere a type is written, including
+  fields of `{| … |}` and of declared records
+  (`{| a: {| b: int |} |}`, `{| rows: seq<{| id: string |}> |}`) —
+  so a REPL session can sketch a whole foreign payload anonymously
+  before declaring anything. The teaching stands: once a shape is
+  YOUR data model, name it. No anonymous literals.
 
-```weir-error
-let x = [""] |> from json {| a: {| b: int |} |}
+```weir
+let x = ["{\"a\": {\"b\": 1}}"] |> from json {| a: {| b: int |} |}
+print (show x.a.b)
 ```
 
   `from json T` reads ONE DOCUMENT -> `T` (any number of lines — a
@@ -698,8 +699,7 @@ let x = [""] |> from json {| a: {| b: int |} |}
   Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
   ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The
   whole document can be the map: `from json Map<string, T>` (the
-  adapter slot's third form; `{| … |}` composes in the value slot —
-  a slot position, per the placement rule above;
+  adapter slot's third form; `{| … |}` composes in the value slot;
   `jsonl` refuses — a map is ONE object; `yaml` does not take it
   yet). Duplicate keys last-win. `Map` surface: `ofPairs`
   (last-wins) / `pairs` / `keys` / `values` (key-sorted) / `get`

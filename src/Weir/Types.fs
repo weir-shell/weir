@@ -95,6 +95,26 @@ let anonRecordName (fields: (string * Ty) list) : string =
 
     "{| " + body + " |}"
 
+// NESTED anonymous shapes [D:anon-nesting]: tySyn admits the form
+// anywhere a type is written (the REPL shape-exploration receipt that
+// reversed the one-level rule), and each nested shape it parses lands
+// HERE — the registration seams (withAnonDefs, checkDecl) drain it
+// into the env, so every existing TNamed lookup resolves the inner
+// defs with zero new resolution points. Backtracked parses may leave
+// entries; registering an unreachable hidden name is benign, so the
+// drain never needs parse-success bookkeeping. ThreadLocal: parsing is
+// per-thread; workers never share an accumulator.
+let pendingAnonDefs: System.Threading.ThreadLocal<ResizeArray<string * (string * Ty) list>> =
+    new System.Threading.ThreadLocal<_>(fun () -> ResizeArray())
+
+let pushAnonDef (name: string) (fields: (string * Ty) list) : unit =
+    pendingAnonDefs.Value.Add(name, fields)
+
+let drainAnonDefs () : (string * (string * Ty) list) list =
+    let xs = List.ofSeq pendingAnonDefs.Value
+    pendingAnonDefs.Value.Clear()
+    xs
+
 /// the annotated DECLARATION form for hover [D:annotated-signature]:
 /// `name (p1: t1) (p2: t2) : result`, decomposing `ty` by the given
 /// parameter names (the arrow tail beyond the named params is the
