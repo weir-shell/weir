@@ -96,7 +96,7 @@ referee** — and the four instances are what that bought.
 | c | `.inf` / `.nan` emit plain → other readers type them as floats | external only |
 | d | CR / NEL / LS unescaped in quoted scalars → value changes or fails to parse | external only |
 
-Instance (a): `Eval.fs:1063` picks block form for any newline-bearing "tame"
+Instance (a): `Eval.fs:1062` (`renderString`) picks block form for any newline-bearing "tame"
 string, but content indentation is detected from the first non-empty line,
 so a leading-whitespace first line needs an explicit indentation indicator —
 which `[D:block-scalars]` deliberately rejects. weir emits block form
@@ -234,7 +234,15 @@ where it cannot drift. So (1) is a gate-consistency fix worth making on its
 own merits, and (2) is the one the property actually rests on.
 
 The choice of whether to also do (1) belongs in the bless note, DECIDED
-BEFORE implementation rather than during. Silent truncation is wrong under
+BEFORE implementation rather than during.
+
+REVIEW RECOMMENDATION (not a decision — the bless is the maintainer's):
+do BOTH. (2) because the property rests on it; (1) because the gate as
+written contradicts `[D:encoding-law]`'s stated intent, which is worth
+fixing on its own merits rather than as a side effect. Recorded here so
+the fixer inherits a recommendation to accept or overrule, rather than an
+open question to settle mid-implementation — which is the failure this
+paragraph exists to prevent. Silent truncation is wrong under
 every answer. Note the harness probe assumes (2); under (1) the string
 cannot be constructed, so the probe RAISES and reads as reproducing —
 re-point it at the rejection rather than loosening it.
@@ -431,3 +439,25 @@ recorded because each is a shape that recurs:
   and absent on a stock macOS, where `sh` returns 127 — which the old `<> 124`
   test read as a pass. It is now probed like the oracle, and its absence is a
   named SKIP that keeps F5 OPEN.
+
+## The failure this review kept making
+
+Recorded because it is the same shape twice, and because F1's proposed
+coverage check is its mechanical answer.
+
+**Concluding absence from a partial search.** F1 was written as "the type
+grammar is unguarded" and was only widened to the pattern grammar after
+someone asked what else existed — the first search had covered the axis it
+went looking for and stopped. In review of this very document, a member was
+reported missing from SKILL.md when it was present in a section the search
+had not accounted for (the Surface inventory, which `ci/skill-surface.sh`
+enforces). Same error, opposite directions: one under-reported coverage, one
+over-reported a gap.
+
+Neither was caught by being more careful; both were caught by someone asking
+for the denominator. That is the argument for the F1 coverage check being a
+MACHINE-checked property ("every recursive nonterminal routes through
+`deepen`") rather than a thorough search: a search answers "what did I find",
+and only an enumeration answers "what is there". The fix session inherits the
+same exposure — a fix verified against the eleven constructors listed here is
+verified against a list, not against the grammar.
