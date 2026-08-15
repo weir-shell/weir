@@ -22,7 +22,7 @@
 // it should reject.
 //
 // Note the shape of this file: every command-running helper is a TOP-LEVEL
-// function, because F6 is that a block `let` with a command RHS silently
+// function, because F3 is that a block `let` with a command RHS silently
 // loses its reifier off the topLet spine.
 
 type Cli = {
@@ -48,13 +48,13 @@ let probeF3 =
       @"let back = { k = orig } |> to yaml |> from yaml Doc"
       @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
 
-// F6: the reifier survives in a block let inside an if-body
+// F3: the reifier survives in a block let inside an if-body
 let probeF6 =
     [ @"if 1 > 0 then"
       @"    let r = sh -c ""exit 7"" | complete"
       @"    print (if r.exitCode == 7 then ""OK"" else ""BROKEN"")" ]
 
-// F7: a NUL-bearing value must not silently truncate at the argv hand-off.
+// F4: a NUL-bearing value must not silently truncate at the argv hand-off.
 // CAVEAT for the fixer: the other legal fix is to make Str.fromBase64 REJECT
 // non-text bytes (which is what SKILL.md already claims it does). That fix
 // makes this probe RAISE, which reads here as REPRODUCES — re-point the probe
@@ -69,10 +69,24 @@ let argvLen =
     [ @"import sys"
       @"print(len(sys.argv[1]))" ]
 
+// F5: the POST-PARSE seam. Parse depth here is ~1 — no parse-depth guard can
+// ever see this file — but each line DOUBLES the inferred type, so the
+// checker's tree walk never returns. This is the probe that a parser-only fix
+// would sail past, which is the whole reason it exists separately.
+let inferBomb =
+    [ @"let f0 x = (x, x)"
+      @"let f1 x = f0 (f0 x)"
+      @"let f2 x = f1 (f1 x)"
+      @"let f3 x = f2 (f2 x)"
+      @"let f4 x = f3 (f3 x)"
+      @"let f5 x = f4 (f4 x)"
+      @"let v = f5 1"
+      @"print ""done""" ]
+
 let probeControl = [ @"print ""BROKEN""" ]
 
 // ---- the external interop oracle -------------------------------------------
-// F4/F5 name an INTEROP property, so weir cannot referee them: the question
+// F2c/F2d name an INTEROP property, so weir cannot referee them: the question
 // is what a DIFFERENT YAML reader makes of weir's bytes. sh -c is the stated
 // escape for what weir cannot do itself (repo scripting policy).
 
@@ -104,6 +118,11 @@ let runProbe path =
 
 let checkExit path =
     let r = sh -c $"'{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
+    r.exitCode
+
+// a HANG is not a crash: rc >= 128 cannot see it, so this seam needs a clock
+let timedCheckExit path =
+    let r = sh -c $"timeout 20 '{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
     r.exitCode
 
 let interopExit binPath probePath checkPath b64 =
@@ -154,29 +173,29 @@ within tmp d
     print ""
     print "round-trip findings (weir refereeing itself):"
 
-    let f2 = verdict d "F2-block-scalar-roundtrip" probeF2
-    let f3 = verdict d "F3-trailing-ws-roundtrip" probeF3
-    let f6 = verdict d "F6-reifier-in-block-let" probeF6
+    let f2 = verdict d "F2a-block-scalar-roundtrip" probeF2
+    let f3 = verdict d "F2b-trailing-ws-roundtrip" probeF3
+    let f6 = verdict d "F3-reifier-in-block-let" probeF6
 
     File.write $"{d}/argvlen.py" argvLen
-    let f7 = verdict d "F7-nul-truncates-at-argv" (probeF7 $"{d}/argvlen.py")
+    let f7 = verdict d "F4-nul-truncates-at-argv" (probeF7 $"{d}/argvlen.py")
 
     print ""
     print "interop findings (an EXTERNAL YAML reader referees):"
     File.write $"{d}/oracle.py" checker
 
     let interopPairs =
-        [ ("F4-inf", "LmluZg==")
-          ("F4-nan", "Lm5hbg==")
-          ("F5-cr", "YQ1i")
-          ("F5-ls", "YeKAqGI=")
-          ("F5-nel", "YcKFYg==") ]
+        [ ("F2c-inf", "LmluZg==")
+          ("F2c-nan", "Lm5hbg==")
+          ("F2d-cr", "YQ1i")
+          ("F2d-ls", "YeKAqGI=")
+          ("F2d-nel", "YcKFYg==") ]
 
     let interopResults =
         if oracleReady then
             interopPairs |> Seq.map (fun p -> interop d (fst p) (snd p)) |> Seq.force
         else
-            print "  SKIPPED: python3 + PyYAML not available — F4/F5 stay OPEN"
+            print "  SKIPPED: python3 + PyYAML not available — F2c/F2d stay OPEN"
             print "  (the property is interop; weir cannot referee it, so absence is not a pass)"
             [false]
 
@@ -211,14 +230,23 @@ within tmp d
     print "  (type: Option<...>, Map<string, ...>, {| a: ... |} nest identically)"
     print "  (pattern: tuple, ctor, list, cons-chain, let-binder, lambda-param too)"
 
+    let bombPath = $"{d}/infer-bomb.weir"
+    File.write bombPath inferBomb
+    let bomb = timedCheckExit bombPath
+    // 124 = timeout fired; anything else means the checker ANSWERED
+    let f5 = bomb <> 124
+    let f5word = if f5 then "fixed" else "REPRODUCES"
+    print $"  F5-no-time-bound: {f5word} (149-byte file, parse depth ~1 -> exit {bomb})"
+
     let broken =
         [ ("F1a", f1a)
           ("F1b", f1b)
-          ("F2", f2)
-          ("F3", f3)
-          ("F4/F5", interopOk)
-          ("F6", f6)
-          ("F7", f7) ]
+          ("F2a", f2)
+          ("F2b", f3)
+          ("F2c/F2d", interopOk)
+          ("F3", f6)
+          ("F4", f7)
+          ("F5", f5) ]
         |> Seq.where (fun p -> not (snd p))
         |> Seq.map fst
         |> Seq.force

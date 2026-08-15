@@ -1,6 +1,6 @@
 # weir — adversarial review of the shipped claims
 
-Status: PROPOSED (findings-shaped; not blessed, nothing fixed yet). Four
+Status: PROPOSED (findings-shaped; not blessed, nothing fixed yet). Five
 findings, ordered by which stated property they falsify. Every one
 reproduces on the AOT binary at `e961984` through the harness:
 
@@ -70,17 +70,18 @@ remembered, so axis four is caught by machinery. Then extend the fuzzer's
 depth seeds to the type and pattern constructors per the
 fuzzer-grammar-membership rule.
 
-Note the second seam is separate: `[D:depth-guard]` records that the
-checker/evaluator tree-walk dies on deep ASTs independently of the parser,
-caught by a post-parse iterative gate. A deep TYPE or PATTERN that now
-parses must also survive that walk — the fix is not done when the parse
-stops crashing.
+THE LIKELY FAILURE MODE, stated because it is easy to miss: fixing the
+parser and declaring victory. `[D:depth-guard]` records that the
+checker/evaluator tree-walk dies on deep ASTs INDEPENDENTLY of the parser.
+F5 below is a live instance that no parse-depth guard can ever see — parse
+depth ~1, and `weir check` never returns. The parse fix does not touch it.
 
 DONE WHEN: all eleven constructors (four type, seven pattern) yield a
 located diagnostic at 20000, never rc ≥128, through `check`, `fmt`,
 `check --json`, `lsp` didOpen and the import path; the coverage check
 exists; the seeds are in the fuzzer's depth axis; SECURITY.md Property 3
-names what is covered.
+names what is covered. AND the acceptance is run under a CLOCK, not only an
+exit code — a hang is not a crash, so `rc >= 128` cannot see F5's shape.
 
 ## F2 — the yaml boundary: one defect, four instances (round-trip + interop)
 
@@ -196,24 +197,86 @@ Silent truncation, no diagnostic. Isolated: the byte survives in memory
 faithfully everywhere except the spawn hand-off — this is not a general
 string defect.
 
-The route in is a documentation defect that is really a behaviour defect:
-SKILL.md says `Str.fromBase64` / `tryFromBase64` "raise/None on malformed
-AND on non-text bytes", and they do not — `Str.tryFromBase64 "AAA="` returns
-`Some` of a two-NUL string. weir treats NUL as the binary marker elsewhere
-(`[D:binary-echo]`'s NUL-probe), so the claim matches the project's own
-reckoning; the implementation does not match the claim.
+THE ROUTE IN is a gate that does not mean what it says. `[D:encoding-law]`
+states the intent plainly: "`Str.fromBase64` raises on malformed input AND
+on valid-base64-of-non-text (a PNG's bytes through GetString would be U+FFFD
+corruption wearing a success); `Str.tryFromBase64` = None for BOTH cases."
+The implementation gates on UTF-8 VALIDITY, and NUL is valid UTF-8 — so
+`Str.tryFromBase64 "AAA="` returns `Some` of a two-NUL string while a real
+PNG header correctly returns `None` (both verified). The gate stops binary
+that is invalid UTF-8 and passes binary that happens to be valid UTF-8. NUL
+is the whole gap, and it is the one byte weir's own binary detector keys on
+(`[D:binary-echo]`'s NUL-probe) — weir's decoder and weir's binary detector
+disagree about what "binary" means.
 
-FIX SHAPE: two legal answers, and the fixer picks one. Either make
-`fromBase64`/`tryFromBase64` reject non-text bytes as SKILL.md already
-claims (closing the route, at the cost of base64-decoding genuinely binary
-payloads), or refuse a NUL-bearing value AT THE SPLICE with a located error
-naming the truncation. Silent truncation is wrong under both. Note the
-harness probe assumes the second; if the first is chosen it will RAISE and
-read as reproducing — re-point it at the rejection rather than loosening it.
+FIX SHAPE — and the two answers COMPOSE rather than compete (an earlier
+draft of this plan called them mutually exclusive; that was wrong):
+
+1. Tighten the gate so "non-text" includes NUL, matching `[D:encoding-law]`'s
+   stated intent and `[D:binary-echo]`'s probe. This costs LESS than it
+   appears: it removes no capability weir has, because the text-only posture
+   is already decided and genuine binary is already refused. It does mean
+   base64→binary waits for the parked BYTES type (`[D:binary-echo]` records
+   "live receipt no. 1 for the parked BYTES"), which is where binary
+   payloads are supposed to land and which will need its own decoder anyway.
+2. Refuse a NUL-bearing value AT THE SPLICE with a located error naming the
+   truncation. Worth doing independently of (1), because once BYTES lands
+   there will be other routes to a NUL and the argv boundary should hold on
+   its own.
+
+This is a design call with downstream consequences and belongs in the bless
+note, DECIDED BEFORE implementation rather than during. Silent truncation is
+wrong under every answer. Note the harness probe assumes (2); under (1) the
+string cannot be constructed, so the probe RAISES and reads as reproducing —
+re-point it at the rejection rather than loosening it.
 
 DONE WHEN: a NUL-bearing splice either cannot be constructed or is refused
 with a diagnostic; never silently truncated. Property 1's sentence gains the
 qualifier it needs either way.
+
+## F5 — the checker has no time bound (Property 3, the post-parse seam)
+
+A 149-byte file, eight lines, parse depth ~1, on which `weir check` never
+returns:
+
+    let f0 x = (x, x)
+    let f1 x = f0 (f0 x)
+    ...                       // each line DOUBLES the inferred type
+    let f5 x = f4 (f4 x)
+    let v = f5 1
+
+Measured: n=4 → 0.23s, n=5 → still running past 150s. No parse-depth guard
+can see this — the source is flat. This is the seam F1's fix will sail past.
+
+NOT A FIDELITY DIVERGENCE, and not a weir-specific defect — checked against
+the F# oracle before writing it up, which changed the finding. The same
+program in `dotnet fsi`: n=4 in ~2.2s of work, n=5 times out at 180s. Same
+cliff, same place; weir is if anything FASTER at n=4 (0.23s). This is the
+inherent DEXPTIME property of Hindley-Milner type inference, faithfully
+reproduced. `tests/fidelity/divergences.md` should gain no row.
+
+WHY IT IS STILL WEIR'S PROBLEM: F# makes no totality claim; weir does.
+Property 3 says "on any input the checker returns a located diagnostic
+rather than silently mis-executing". Here it returns NOTHING, forever — and
+`weir lsp` inherits the hang, so the editor stops answering rather than
+crashing (worse to diagnose than F1, which at least dies loudly). "A crash
+is the only wrong answer" (`[D:depth-stack-probe]`) needs its sibling: no
+answer is also a wrong answer.
+
+FIX SHAPE: not "make it fast" — that is impossible in general, and the
+oracle proves the reference implementation does not manage it either. The
+shape is a BUDGET, the same move the depth guard already makes: a bounded
+work counter (unification steps, or type-node allocations) that converts
+non-termination into a located diagnostic. The teaching writes itself in the
+script author's language — this expression's type grew too large — and the
+ceiling wants the same treatment the depth guard's 500 got: a stated cost
+bound, re-askable on a receipt, not a measured constant presented as a
+contract.
+
+DONE WHEN: the inference bomb yields a located diagnostic inside a stated
+bound; the fuzzer's totality invariant gains a TIME axis alongside its depth
+axis, since a hang and a crash are different failures and only one of them
+is currently patrolled.
 
 ## Documentation defects — and the pattern is NOT what it looks like
 
@@ -281,6 +344,9 @@ Recorded so the next review starts past it rather than re-running it.
 - yaml dynamic keys: hostile keys through `for (k, v) in pairs` (`a: b`,
   embedded newline, `? a`, `- x`) all correctly quoted. No key injection.
 - Import-chain depth: clean to 2000 modules.
+- Type-inference cost BELOW the cliff: n=4 of the F5 bomb checks in 0.23s,
+  against ~2.2s for the same program in `dotnet fsi`. weir is not slow here;
+  it is unbounded (F5).
 
 ## Instrument honesty
 
@@ -298,6 +364,16 @@ to something weir can check about its own bytes — the property is interop,
 so the oracle has to be foreign. Where PyYAML is absent the harness prints a
 named SKIP and keeps the finding OPEN; absence is never a pass.
 
+F5 is measured on a CLOCK, not an exit code, because a hang and a crash are
+different failures: the depth probes assert `rc < 128`, which a
+non-terminating checker satisfies forever. The probe wraps `check` in
+`timeout 20` and treats rc 124 as reproducing. Any acceptance run for F1
+that only reads exit codes will pass while F5 is wide open.
+
 The harness is written in weir per the scripting policy. Its shape is
 dictated by F3: every command-running helper is a top-level function,
 because a block let with a command RHS loses its reifier off the spine.
+
+Probe labels match this document's numbering exactly (`F1a`, `F1b`, `F2a`–
+`F2d`, `F3`, `F4`, `F5`), so a fixer can run the harness and read the plan
+without translating between them.
