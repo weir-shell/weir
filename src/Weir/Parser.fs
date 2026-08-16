@@ -3077,6 +3077,7 @@ tySynRef.Value <-
                   | "Instant" -> ws >>% TInstant
                   | "float" -> ws >>% TFloat
                   | "Size" -> ws >>% TSize
+                  | "Bytes" -> ws >>% TBytes
                   | "Secret" -> ws >>% TSecret
                   | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
                   | w when keywords.Contains w -> fail $"'{w}' is a keyword"

@@ -6154,7 +6154,11 @@ let moduleTests =
           test "length is qualified-only in both homes" {
               expectValue "Str.length \"abc\"" (VInt 3)
               expectValue "[1; 2; 3] |> Seq.length" (VInt 3)
-              Expect.stringContains (checkErr "length \"abc\"").Message "use Seq.length or Str.length" ""
+
+              Expect.stringContains
+                  (checkErr "length \"abc\"").Message
+                  "use Bytes.length or Seq.length or Str.length"
+                  ""
           }
           test "three-way precedence: the shadow case is grammar-dead (casing law, 2026-07-21)" {
               // was: value shadow wins over module (`let Seq = {...}`).
@@ -13078,11 +13082,76 @@ let dxMessageTests =
               mustSay [ "let x = \"abc"; "print x" ] "strings are single-line" "unclosed"
           } ]
 
+// [D:bytes] — the non-text value: sources/sinks/ops, and every
+// refusal law with its named exit
+let bytesTests =
+    testList
+        "Bytes"
+        [ test "utf8 round-trip and byte equality" {
+              expectValue "Str.fromUtf8 (Str.toUtf8 \"caf\u00e9\")" (VStr "caf\u00e9")
+              expectValue "(Str.toUtf8 \"a\") == (Str.toUtf8 \"a\")" (VBool true)
+              expectValue "(Str.toUtf8 \"a\") == (Str.toUtf8 \"b\")" (VBool false)
+          }
+          test "base64 door: malformed raises/None; binary decodes (what F4 closed, reopened in the right place)" {
+              let ex = Expect.throwsC (fun () -> run "Bytes.fromBase64 \"!!!\"" |> ignore) id
+              Expect.stringContains ex.Message "invalid base64" ""
+              expectValue "Bytes.tryFromBase64 \"!!!\"" (VUnion("None", None))
+              // a PNG header decodes as BYTES — Str.fromBase64 refuses it
+              expectValue "Bytes.length (Bytes.fromBase64 \"iVBORw0KGgo=\")" (VSize 8L)
+          }
+          test "fromUtf8 wears the encoding law's gate, NUL included [D:encoding-law]" {
+              let ex =
+                  Expect.throwsC (fun () -> run "Str.fromUtf8 (Bytes.fromBase64 \"YQBi\")" |> ignore) id
+
+              Expect.stringContains ex.Message "NUL" "the gate names the byte"
+              expectValue "Str.tryFromUtf8 (Bytes.fromBase64 \"YQBi\")" (VUnion("None", None))
+              expectValue "Str.tryFromUtf8 (Bytes.fromBase64 \"//79\")" (VUnion("None", None))
+          }
+          test "length is a Size; sha256 is sha256sum-parity hex" {
+              expectValue "Bytes.length (Str.toUtf8 \"abc\")" (VSize 3L)
+
+              expectValue
+                  "Bytes.sha256 (Str.toUtf8 \"hello\")"
+                  (VStr "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+          }
+          test "every renderer shows a SUMMARY, never content [D:binary-echo]" {
+              expectValue "show (Str.toUtf8 \"hello\")" (VStr "<5 B>")
+              expectValue "$\"{Str.toUtf8 \"hello\"}\"" (VStr "<5 B>")
+          }
+          test "the refusal laws, each naming its exit" {
+              let terr = checkErr "print (Str.toUtf8 \"x\")"
+              Expect.stringContains terr.Message "Bytes.toBase64" "print names the exit"
+
+              let ord = checkErr "(Str.toUtf8 \"a\") > (Str.toUtf8 \"b\")"
+              Expect.stringContains ord.Message "not defined for Bytes" "no Ord"
+          }
+          test "file round-trip is byte-identical; File.sha256 agrees with Bytes.sha256" {
+              let tmp = System.IO.Path.GetTempFileName()
+              let out = System.IO.Path.GetTempFileName()
+
+              try
+                  let payload = [| 0x89uy; 0x50uy; 0uy; 255uy; 254uy; 10uy; 13uy; 26uy |]
+                  System.IO.File.WriteAllBytes(tmp, payload)
+
+                  runReal $"File.writeBytes \"{out.Replace('\\', '/')}\" (File.readBytes \"{tmp.Replace('\\', '/')}\")"
+                  |> ignore
+
+                  Expect.equal (System.IO.File.ReadAllBytes out) payload "byte-identical through the round trip"
+
+                  let viaFile = runReal $"File.sha256 \"{tmp.Replace('\\', '/')}\""
+                  let viaBytes = runReal $"Bytes.sha256 (File.readBytes \"{tmp.Replace('\\', '/')}\")"
+                  Expect.equal viaFile viaBytes "the streaming hash agrees with the value hash"
+              finally
+                  System.IO.File.Delete tmp
+                  System.IO.File.Delete out
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ dxMessageTests
+          bytesTests
           parserTests
           fsMemberTests
           durationTests

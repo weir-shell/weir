@@ -15,6 +15,18 @@ weir rejects rather than guesses.
 
 - **Base types and literals**: `int`, `float`, `string`, `bool`,
   `Duration`, `seq<T>`, functions, declared records and unions.
+  `Bytes` [D:bytes] (2026-08-16) is the non-text value: an in-memory
+  byte array, opt-in at both ends (`File.readBytes`/`Str.toUtf8` in,
+  `File.writeBytes`/`Str.fromUtf8` out — the second door is fallible,
+  the encoding law's gate with NUL included), no literal form, no
+  implicit conversion. Scoped by the CAPTURE law applied to a new
+  type: bounded and in-memory; unbounded data streams to a sink.
+  `==` is byte equality; no `Ord`; `print`/`to json`/`to yaml`/argv
+  splices/`Args.load`/`Env.load` refuse, naming `Bytes.toBase64` or
+  `File.writeBytes` as the exit; every renderer shows a SUMMARY
+  (`<1.4 MiB>`), never content ([D:binary-echo]'s rule, now by
+  construction). `File.sha256` streams internally — the value type
+  being bounded does not bound the implementation.
   Literals: digit runs with prefix minus at operand positions
   (F#'s adjacency rule [D:prefix-minus] — `-5`, `2 * -3`; `x-1` and
   `x - 1` stay subtraction),

@@ -19,6 +19,11 @@ type Ty =
     // ceiling); decimals exist only in parse and render, the Duration
     // pattern copied
     | TSize
+    // the non-text value [D:bytes]: an in-memory byte array, opt-in at
+    // both ends (readBytes/toUtf8 in, writeBytes/fromUtf8 out) — the
+    // capture law's scoping applies (bounded, in-memory; unbounded
+    // data streams to a sink instead)
+    | TBytes
     // time as a type [D:duration]: an INTEGER of milliseconds; decimals
     // exist only in parsing and rendering — the no-floats law's answer
     // to the time want
@@ -45,6 +50,7 @@ let rec formatTy (ty: Ty) : string =
     | TDur -> "Duration"
     | TInstant -> "Instant"
     | TSize -> "Size"
+    | TBytes -> "Bytes"
     | TSecret -> "Secret"
     | TVar v -> $"'{v}"
     | TRowVar(_, []) -> "{ .. }"
@@ -152,6 +158,7 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TDur
     | TInstant
     | TSize
+    | TBytes
     | TSecret -> Set.empty
 
 // The closed class family [D:inferred-type-classes] — fully erased

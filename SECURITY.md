@@ -116,6 +116,10 @@ it, by design):
     Framework and Microsoft advise against it for new code, immutable
     strings cannot be zeroed, and the value must be plaintext at every
     use anyway);
+  - **`Bytes` shares the same memory posture** — a managed byte
+    array, not pinned, not zeroed, not encrypted; a core dump or swap
+    sees it. Same reasoning, same non-claim, stated so a reviewer
+    audits one posture, not two;
   - **anything the author never marked.** `Secret` is OPT-IN: declare
     `GITHUB_TOKEN: string` and you get a plain string with no
     protection, and weir does not notice, warn, or infer. A heuristic

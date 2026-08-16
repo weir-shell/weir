@@ -1558,6 +1558,18 @@ let private base64Bytes (s: string) : byte[] =
     let t = s.Trim()
     System.Convert.FromBase64String(t + System.String('=', (4 - t.Length % 4) % 4))
 
+// bytes -> text is the SAME gate fromBase64 wears [D:encoding-law]:
+// strict UTF-8, and NUL is non-text (the byte the binary detector
+// keys on, and the one that truncates at every C boundary)
+let private utf8TextOf (name: string) (b: byte[]) : Result<string, string> =
+    if System.Array.IndexOf(b, 0uy) >= 0 then
+        Error $"{name}: the bytes are not text (they contain NUL — keep them Bytes, or Bytes.toBase64 for a text form)"
+    else
+        try
+            Ok(utf8Strict.GetString b)
+        with _ ->
+            Error $"{name}: the bytes are not text (not valid UTF-8)"
+
 let private fromBase64Text (name: string) (s: string) : Result<string, string> =
     let bytes =
         try
@@ -1630,6 +1642,30 @@ let private strMembers: (string * Ty * Value) list =
               | Ok t -> VUnion("Some", Some(VStr t))
               | Error _ -> VUnion("None", None)
           | v -> unreachable $"the checker rejects 'tryFromBase64' on {formatValue v}")
+      "toUtf8",
+      TFun(TStr, TBytes),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s -> VBytes(System.Text.Encoding.UTF8.GetBytes s)
+          | v -> unreachable $"the checker rejects 'Str.toUtf8' on {formatValue v}")
+      "fromUtf8",
+      TFun(TBytes, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b ->
+              (match utf8TextOf "Str.fromUtf8" b with
+               | Ok t -> VStr t
+               | Error e -> failwith e)
+          | v -> unreachable $"the checker rejects 'Str.fromUtf8' on {formatValue v}")
+      "tryFromUtf8",
+      TFun(TBytes, TNamed("Option", [ TStr ])),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b ->
+              (match utf8TextOf "Str.tryFromUtf8" b with
+               | Ok t -> VUnion("Some", Some(VStr t))
+               | Error _ -> VUnion("None", None))
+          | v -> unreachable $"the checker rejects 'Str.tryFromUtf8' on {formatValue v}")
       "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl
       "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
       "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
@@ -2110,7 +2146,49 @@ let private fsStr2 (name: string) (f: string -> string -> unit) : Value =
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
 let private fsMoreFileMembers: (string * Ty * Value) list =
-    [ "delete",
+    [ "readBytes",
+      // the byte-faithful read [D:bytes]: File.read decodes leniently
+      // and line-splits; this one does neither
+      TFun(TStr, TBytes),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+              readGuard "File.readBytes" r
+              VBytes(ioGuarded "File.readBytes" r (fun () -> System.IO.File.ReadAllBytes r))
+          | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
+      "writeBytes",
+      TFun(TStr, TFun(TBytes, TUnit)),
+      VBuiltin(fun pathV ->
+          VBuiltin(fun bytesV ->
+              match pathV, bytesV with
+              | VStr path, VBytes b ->
+                  let r = Session.resolve path
+                  writeGuard "File.writeBytes" r
+                  ioGuarded "File.writeBytes" r (fun () -> System.IO.File.WriteAllBytes(r, b))
+                  VUnit
+              | _ -> unreachable "the checker rejects 'File.writeBytes' on these arguments"))
+      "sha256",
+      // STREAMS internally [D:bytes] — the value type is bounded, the
+      // implementation is not required to materialise; the install
+      // story hashes files bigger than a value should be
+      TFun(TStr, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+              readGuard "File.sha256" r
+
+              VStr(
+                  ioGuarded "File.sha256" r (fun () ->
+                      use fs = System.IO.File.OpenRead r
+
+                      System.Security.Cryptography.SHA256.HashData fs
+                      |> Array.map (fun x -> x.ToString "x2")
+                      |> String.concat "")
+              )
+          | v -> unreachable $"the checker rejects 'File.sha256' on {formatValue v}")
+      "delete",
       TFun(TStr, TUnit),
       VBuiltin(fun v ->
           match v with
@@ -2373,6 +2451,55 @@ let private floatMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'Float.average' on {formatValue v}") ]
 
 // ---- Size [D:size]: integer bytes; decimals only in text -----------
+// the non-text value's members [D:bytes] — the smallest useful cut:
+// every member answers a receipt (F4's closed base64 route, the NUL
+// route through File.read, hashing for the install story). Bounded and
+// in-memory by the capture law; unbounded data streams to a sink.
+let private bytesMembers: (string * Ty * Value) list =
+    [ "fromBase64",
+      TFun(TStr, TBytes),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              (try
+                  VBytes(base64Bytes s)
+               with _ ->
+                   failwith $"Bytes.fromBase64: invalid base64: \"{s}\"")
+          | v -> unreachable $"the checker rejects 'Bytes.fromBase64' on {formatValue v}")
+      "tryFromBase64",
+      TFun(TStr, TNamed("Option", [ TBytes ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              (try
+                  VUnion("Some", Some(VBytes(base64Bytes s)))
+               with _ ->
+                   VUnion("None", None))
+          | v -> unreachable $"the checker rejects 'Bytes.tryFromBase64' on {formatValue v}")
+      "toBase64",
+      TFun(TBytes, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b -> VStr(System.Convert.ToBase64String b)
+          | v -> unreachable $"the checker rejects 'Bytes.toBase64' on {formatValue v}")
+      "sha256",
+      TFun(TBytes, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b ->
+              VStr(
+                  System.Security.Cryptography.SHA256.HashData b
+                  |> Array.map (fun x -> x.ToString "x2")
+                  |> String.concat ""
+              )
+          | v -> unreachable $"the checker rejects 'Bytes.sha256' on {formatValue v}")
+      "length",
+      TFun(TBytes, TSize),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b -> VSize(int64 b.Length)
+          | v -> unreachable $"the checker rejects 'Bytes.length' on {formatValue v}") ]
+
 let private sizeMembers: (string * Ty * Value) list =
     [ "bytes",
       TFun(TInt, TSize),
@@ -2898,6 +3025,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Log", logMembers
       "Duration", durationMembers
       "Size", sizeMembers
+      "Bytes", bytesMembers
       "Secret", secretMembers
       // the bounded-loop option templates [D:retry-poll]: the resting
       // values the key=value head desugars over
@@ -3504,6 +3632,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Str.tryFromBase64 \"!!!\"")
               None
            |> named [ "s" ])
+          "Str.toUtf8",
+          (bd "The string's UTF-8 bytes as a Bytes value." (Some "Str.toUtf8 \"caf\u00e9\"") None
+           |> named [ "s" ])
+          "Str.fromUtf8",
+          (bd
+              "Decode Bytes as text; raises when the bytes are not valid UTF-8 OR contain NUL (the encoding law's gate — corruption never wears a success)."
+              None
+              None
+           |> named [ "b" ])
+          "Str.tryFromUtf8",
+          (bd "fromUtf8 as an Option: None for non-text bytes, NUL included." None None
+           |> named [ "b" ])
           "Str.tryIndexOf",
           (bd "The index of a substring as an Option." (Some "Str.tryIndexOf \"b\" \"abc\"") None
            |> named [ "needle"; "s" ])
@@ -3631,6 +3771,21 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "src"; "dst" ])
           "File.read",
           (bd "Read a file's lines (eager — the whole file reads at the call)." None None
+           |> named [ "path" ])
+          "File.readBytes",
+          (bd
+              "Read a file's raw bytes — no decode, no line split (File.read substitutes U+FFFD and splits; this is the byte-faithful read). Bounded and in-memory: stream big data to a sink instead."
+              None
+              None
+           |> named [ "path" ])
+          "File.writeBytes",
+          (bd "Write raw bytes to a file — the byte-faithful sink (File.write encodes lines and appends LF)." None None
+           |> named [ "path"; "bytes" ])
+          "File.sha256",
+          (bd
+              "The SHA-256 digest of a file's bytes, lowercase hex (sha256sum parity). Streams internally — never loads the file as a value."
+              None
+              None
            |> named [ "path" ])
           "File.readSecret",
           (bd
@@ -3771,6 +3926,25 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "params"; "base" ])
 
           // ---- Size: bytes as a type [D:size] --------------------------
+          "Bytes.fromBase64",
+          (bd
+              "Decode standard base64 (padded or unpadded) to Bytes; raises on malformed input. The binary door Str.fromBase64 deliberately is not."
+              (Some "Bytes.fromBase64 \"iVBORw0KGgo=\"")
+              None
+           |> named [ "s" ])
+          "Bytes.tryFromBase64",
+          (bd "fromBase64 as an Option: None for malformed base64." (Some "Bytes.tryFromBase64 \"!!!\"") None
+           |> named [ "s" ])
+          "Bytes.toBase64",
+          (bd
+              "Base64 of the bytes — ONE unwrapped line; the deliberate text exit (print and the boundaries refuse raw bytes)."
+              None
+              None
+           |> named [ "b" ])
+          "Bytes.sha256",
+          (bd "The SHA-256 digest of the bytes, lowercase hex (sha256sum parity)." None None
+           |> named [ "b" ])
+          "Bytes.length", (bd "The byte count as a Size." None None |> named [ "b" ])
           "Size.bytes",
           (bd "A size of n bytes — the literal 512B, as a function." (Some "Size.bytes 512") None
            |> named [ "n" ])
