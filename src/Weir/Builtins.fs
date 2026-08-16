@@ -942,7 +942,11 @@ let private rangeImpl: Value =
 let logLevelNames = [ "trace"; "debug"; "info"; "warn"; "off" ]
 
 let parseLogLevel (s: string) : Result<int, string> =
-    match logLevelNames |> List.tryFindIndex ((=) s) with
+    // case-insensitive like every env-loaded enum (the SKILL rule:
+    // env is the channel where DEBUG/Debug/debug all mean debug)
+    let lowered = s.ToLowerInvariant()
+
+    match logLevelNames |> List.tryFindIndex ((=) lowered) with
     | Some i -> Ok i
     | None -> Error $"WEIR_LOG={s}: unknown log level (one of trace|debug|info|warn|off)"
 

@@ -13067,6 +13067,19 @@ let windowsV1Tests =
 
 // PLAN-dx-review D2-D8: the message-family completions, pinned — each
 // mistake census case that moved buckets has its message here
+// WEIR_LOG follows the env-enum convention: case-INSENSITIVE (the
+// SKILL rule for the channel — DEBUG in a CI config must not be a
+// startup error)
+let logLevelTests =
+    testList
+        "Log level parse"
+        [ test "WEIR_LOG casings all select the level" {
+              Expect.equal (Weir.Builtins.parseLogLevel "debug") (Ok 1) "lower"
+              Expect.equal (Weir.Builtins.parseLogLevel "DEBUG") (Ok 1) "upper"
+              Expect.equal (Weir.Builtins.parseLogLevel "Debug") (Ok 1) "title"
+              Expect.isTrue (Weir.Builtins.parseLogLevel "loud" |> Result.isError) "unknown still refuses"
+          } ]
+
 let dxMessageTests =
     let diagsOf lines =
         let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
@@ -13207,7 +13220,8 @@ let bytesTests =
 let allTests =
     testList
         "Weir"
-        [ dxMessageTests
+        [ logLevelTests
+          dxMessageTests
           bytesTests
           parserTests
           fsMemberTests
