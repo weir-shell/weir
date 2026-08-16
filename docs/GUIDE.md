@@ -1212,8 +1212,10 @@ not guess one.
 results in input order, first failure rethrown. Workers fork the
 session — `cd` inside a worker is worker-local and gone at the join.
 There is no async/await and never will be: processes and pipelines are
-the concurrency model, and a task that truly needs async belongs in
-full F#.
+the concurrency model of the LANGUAGE SURFACE (underneath, the fan-out
+members run arms on dedicated threads inside the weir process — worth
+knowing when reasoning about shared state or what a raise does), and a
+task that truly needs async belongs in full F#.
 
 A background process gets a SCOPE, never a `&`: `within proc` binds a
 handle, and at every block exit — normal or raise — the process tree
