@@ -4,30 +4,43 @@ open System
 open Weir.Ast
 open Weir.Types
 
+// -e takes a PROGRAM: newlines are statement boundaries exactly as in
+// a file (assemble handles blocks and comment stripping), and a LONE
+// declaration is still refused with its kind's teaching — the property
+// is "-e evaluates something and shows you the result", a deliberate
+// divergence from python -c and friends [D:e-programs]. Strict like
+// files: bare module members live in the REPL session only.
 let private evalOnce (input: string) : int =
-    // -e agrees with scripts and the REPL [D:trailing-comments]
-    let input = Script.stripComment input
     let typeEnv, valueEnv = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
 
-    let resolver = Script.resolver typeEnv
-
-    let printHint () =
+    let printHint (line: string) =
         Diagnose.hint
             (fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules)
             Builtins.commandCallable.Contains
             Extern.exists
-            input
+            line
         |> Option.iter (fun h -> Console.Error.WriteLine $"hint: {h}")
 
-    let ll = Script.singleLine input
+    let normalized = (input: string).Replace("\r\n", "\n")
+    let srcLines = normalized.Split('\n') |> Array.toList
 
-    // [D:one-pipeline]: -e is a consumer; non-expression kinds are
-    // rejected AFTER checking, so an ill-typed let reports its real
-    // error rather than the form message
-    match Script.checkStatement false (fun _ -> resolver) Script.scriptOnlyImport typeEnv ll with
-    | Error d ->
+    let assembled =
+        if normalized.Contains '\n' then
+            Script.assemble (srcLines |> List.mapi (fun i l -> i + 1, l))
+        else
+            // the single-line spelling keeps its exact path (stripComment
+            // up front [D:trailing-comments]); multi-line strips inside
+            // assembly, as files do
+            Ok [ Script.singleLine (Script.stripComment input) ]
+
+    let srcLine (n: int) =
+        srcLines |> List.tryItem (n - 1) |> Option.defaultValue ""
+
+    let showDiag (d: Script.StmtDiag) =
+        let line = srcLine d.PhysLine
+
         (if d.Parse then
-             Console.Error.WriteLine input
+             Console.Error.WriteLine line
 
              Console.Error.WriteLine(
                  Types.Color.red Types.Color.onStderr.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
@@ -37,7 +50,7 @@ let private evalOnce (input: string) : int =
          else
              match d.Span with
              | Some _ ->
-                 Console.Error.WriteLine input
+                 Console.Error.WriteLine line
 
                  let width =
                      match d.PhysEnd with
@@ -53,47 +66,113 @@ let private evalOnce (input: string) : int =
                  Console.Error.WriteLine $"type error: {d.Message}"
              | None -> Console.Error.WriteLine d.Message)
 
-        printHint ()
+        printHint line
+
+    match assembled with
+    | Error msg ->
+        Console.Error.WriteLine msg
         1
-    | Ok chk ->
-        match chk.Kind with
-        | Script.KType _ ->
-            Console.Error.WriteLine "-e takes an expression, not a declaration"
-            1
-        | Script.KLet _ ->
-            Console.Error.WriteLine "-e takes an expression, not a let statement"
-            1
-        | Script.KLetPat _ ->
-            Console.Error.WriteLine "-e evaluates one expression; use 'let (x, y) = ... in ...'"
-            1
-        | Script.KModule _ ->
-            Console.Error.WriteLine "-e takes an expression, not a module declaration"
-            1
-        | Script.KImport _ ->
-            // unreachable: scriptOnlyImport rejects the import before this
-            Console.Error.WriteLine "import is script-only"
-            1
-        | Script.KExpr te
-        | Script.KCmd te ->
-            for w in Check.warnings te do
-                Console.Error.WriteLine(Check.formatWarning w)
+    | Ok lls ->
+        let rec checkAll tenv acc rest =
+            match rest with
+            | [] -> Ok(List.rev acc)
+            | (ll: Script.LogicalLine) :: tail ->
+                match Script.checkStatement false Script.resolver Script.scriptOnlyImport tenv ll with
+                | Error d -> Error d
+                | Ok chk -> checkAll chk.Env ((ll, chk) :: acc) tail
 
-            try
-                let v = Eval.eval valueEnv te
+        match checkAll typeEnv [] lls with
+        | Error d ->
+            showDiag d
+            1
+        | Ok checked' ->
+            // reading (b) [D:e-programs]: every statement may declare,
+            // but the PROGRAM must end in an expression — the four kind
+            // teachings survive, pointed at exactly the case they were
+            // written for
+            let lastKindError =
+                match checked' |> List.tryLast with
+                | Some(_, chk) ->
+                    match chk.Kind with
+                    | Script.KType _ -> Some "-e takes an expression, not a declaration"
+                    | Script.KLet _ -> Some "-e takes an expression, not a let statement"
+                    | Script.KLetPat _ -> Some "-e evaluates one expression; use 'let (x, y) = ... in ...'"
+                    | Script.KModule _ -> Some "-e takes an expression, not a module declaration"
+                    | Script.KImport _ ->
+                        // unreachable: scriptOnlyImport rejects the import before this
+                        Some "import is script-only"
+                    | Script.KExpr _
+                    | Script.KCmd _ -> None
+                | None -> None
 
-                if v <> Eval.VUnit then
-                    let rendered, hint = Eval.echoValue Eval.echoPipedCap v
-
-                    let tail = Eval.echoTail hint
-
-                    Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
-
-                0
-            with
-            | Eval.ExitRequest code -> code
-            | ex ->
-                Console.Error.WriteLine(Types.Color.red Types.Color.onStderr.Value "error" + $": {ex.Message}")
+            match lastKindError with
+            | Some m ->
+                Console.Error.WriteLine m
                 1
+            | None ->
+                for _, chk in checked' do
+                    for wl, wc, wm in chk.Warnings do
+                        if List.length lls > 1 then
+                            Console.Error.WriteLine $"{wl}:{wc}: warning: {wm}"
+                        else
+                            Console.Error.WriteLine $"warning: {wm}"
+
+                let lastIdx = List.length checked' - 1
+
+                let rec execAll (venv: Eval.Env) idx rest =
+                    match rest with
+                    | [] -> 0
+                    | (_, (chk: Script.CheckedStatement)) :: tail ->
+                        try
+                            match chk.Kind with
+                            | Script.KType decl ->
+                                let venv' =
+                                    match decl.Body with
+                                    | DUnion cases ->
+                                        Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                    | DRecord _ -> venv
+
+                                execAll venv' (idx + 1) tail
+                            | Script.KLet(name, _, te) -> execAll (Map.add name (Eval.eval venv te) venv) (idx + 1) tail
+                            | Script.KLetPat(pat, _, te) ->
+                                let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                                execAll (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) (idx + 1) tail
+                            | Script.KModule _
+                            | Script.KImport _ ->
+                                // unreachable: gated above / by scriptOnlyImport
+                                execAll venv (idx + 1) tail
+                            | Script.KExpr te
+                            | Script.KCmd te when idx < lastIdx ->
+                                // mid-program statements behave as in a file:
+                                // commands stream, expression values discard
+                                (match chk.Kind with
+                                 | Script.KCmd _ -> Script.printResult (Eval.eval venv te)
+                                 | _ -> Eval.eval venv te |> ignore)
+
+                                execAll venv (idx + 1) tail
+                            | Script.KExpr te
+                            | Script.KCmd te ->
+                                // the LAST statement is the result — the -e echo
+                                let v = Eval.eval venv te
+
+                                if v <> Eval.VUnit then
+                                    let rendered, hint = Eval.echoValue Eval.echoPipedCap v
+
+                                    let tail' = Eval.echoTail hint
+
+                                    Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail'}"
+
+                                0
+                        with
+                        | Eval.ExitRequest code -> code
+                        | ex ->
+                            Console.Error.WriteLine(
+                                Types.Color.red Types.Color.onStderr.Value "error" + $": {ex.Message}"
+                            )
+
+                            1
+
+                execAll valueEnv 0 checked'
 
 [<EntryPoint>]
 let main argv =
@@ -246,11 +325,11 @@ let main argv =
     // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
     // ONE-expression intent often arrives shell-split into many argv)
     | [ "-e" ] ->
-        Console.Error.WriteLine "weir -e takes exactly one argument: the expression"
+        Console.Error.WriteLine "weir -e takes exactly one argument: the program"
         2
     | "-e" :: rest ->
         Console.Error.WriteLine
-            $"weir -e takes ONE expression argument, got {List.length rest} — quote the expression so the shell passes it whole"
+            $"weir -e takes ONE program argument, got {List.length rest} — quote the program so the shell passes it whole"
 
         2
     | "--version" :: _ ->
@@ -266,7 +345,7 @@ let main argv =
         let usage =
             "usage: weir                                    the REPL\n"
             + "       weir <script> [args...]                 run a script\n"
-            + "       weir -e <expression>                    evaluate one expression\n"
+            + "       weir -e <program>                       evaluate a program; the result is its last expression\n"
             + "       weir check [--json] <script>            diagnostics only (no evaluation)\n"
             + "       weir fmt [--check] <script>   canonical formatter\n"
             + "       weir lsp                                language server (stdio)\n"

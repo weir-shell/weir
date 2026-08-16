@@ -1967,7 +1967,7 @@ let private located (path: string) (lineNo: int) (msg: string) : string =
 
 // Streaming output for command-mode statements — the single exempt form.
 // The seq case goes through Eval.writeLines, the same renderer print uses.
-let private printResult (v: Eval.Value) =
+let printResult (v: Eval.Value) =
     match v with
     | Eval.VStr s -> Console.WriteLine s
     | Eval.VSeq items -> Eval.writeLines items

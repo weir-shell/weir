@@ -7,6 +7,11 @@ stops being true fails the build.
 ## Files and running
 
 - Shebang `#!/usr/bin/env weir`; extension `.weir`; run `weir file.weir [args]`.
+- `weir -e '<program>'` evaluates a PROGRAM (newlines are statement
+  boundaries, exactly as in a file) and echoes its LAST statement's
+  value — so declarations may precede the expression, but a lone
+  declaration is refused (`-e` shows you a result, by design — a
+  deliberate divergence from `python -c`).
 - `weir fmt file.weir` canonicalizes indentation (4 per block depth);
   `--check` for CI.
 - The whole file typechecks before ANY line runs. A check error = zero

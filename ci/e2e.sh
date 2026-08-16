@@ -396,6 +396,37 @@ echo "$out" | grep -q "spell it 'Seq.where'" || fail "the bare-name teaching mus
 out=$($BIN -e '[1] |> where (fun n -> n > 0)' 2>&1 || true)
 echo "$out" | grep -q "Seq.where" || fail "-e is strict and must teach the qualified spelling: $out"
 echo "e2e ok: #loose removed — strict everywhere, fmt --qualify gone, bare names teach"
+
+# -e takes a PROGRAM (PLAN-dx-review D9, reading (b)): newlines are
+# statement boundaries as in a file, a lone declaration is still
+# refused, and the AGREEMENT with the file path is the property —
+# pin both and pin that they agree.
+prog='let x = 1
+print $"{x}"'
+eout=$($BIN -e "$prog")
+cat > "$scriptdir/e9.weir" <<'WEOF'
+let x = 1
+print $"{x}"
+WEOF
+fout=$($BIN "$scriptdir/e9.weir")
+expect "-e two-statement program runs" "1" "$eout"
+[ "$eout" = "$fout" ] || fail "-e and the file disagree on identical bytes: -e '$eout' vs file '$fout'"
+out=$($BIN -e 'for x in [1; 2] do
+    print (show x)')
+expect "-e indented block body parses" "1
+2" "$out"
+out=$($BIN -e 'type V = | Pass of int | Fail
+let v = Pass 3
+match v with | Pass n -> n | Fail -> 0')
+echo "$out" | grep -q "3 : int" || fail "-e declarations-then-expression must echo the result: $out"
+out=$($BIN -e 'let x = 1' 2>&1 || true)
+echo "$out" | grep -qF "not a let statement" || fail "a lone let must keep its teaching: $out"
+out=$($BIN -e 'type T = { a: int }' 2>&1 || true)
+echo "$out" | grep -qF "not a declaration" || fail "a lone type must keep its teaching: $out"
+out=$($BIN -e 'let x = 2 // trailing comment
+print $"{x}"')
+expect "-e multi-line trailing comment strips as in a file" "2" "$out"
+echo "e2e ok: -e evaluates a program and shows the result; lone declarations still teach"
 cat > "$scriptdir/multi.weir" <<'WEOF'
 type Verdict =
     | Pass of int
