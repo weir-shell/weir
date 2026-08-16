@@ -3616,21 +3616,27 @@ echo "e2e ok: NUL refuses at the spawn boundary (argv and env), naming the trunc
 # where absent (absence is never a pass).
 if command -v script >/dev/null 2>&1; then
     bindir=$(mkweirtmp)
-    printf 'let b = sh -c "printf \"x\\0y\"" | complete\nb\n#quit\n' > "$bindir/repl-in.txt"
+    cat > "$bindir/repl-in.txt" <<'RINEOF'
+let b = sh -c "printf \"x\\0y\"" | complete
+b
+#quit
+RINEOF
+    cat > "$bindir/e-payload.txt" <<'PINEOF'
+let r = sh -c "printf \"x\\0y\"" | complete
+r.stdout
+PINEOF
     cat > "$bindir/repl-run.sh" <<RUNEOF
 #!/bin/sh
 exec $BIN < "$bindir/repl-in.txt"
 RUNEOF
-    chmod +x "$bindir/repl-run.sh"
+    cat > "$bindir/e-run.sh" <<RUNEOF
+#!/bin/sh
+exec $BIN -e "\$(cat "$bindir/e-payload.txt")"
+RUNEOF
+    chmod +x "$bindir/repl-run.sh" "$bindir/e-run.sh"
     out=$(script -qec "$bindir/repl-run.sh" /dev/null 2>&1 | cat -v)
     echo "$out" | grep -qF "binary output" || fail "the record echo must refuse binary at a tty: $out"
     echo "$out" | grep -qF 'x^@y' && fail "raw bytes leaked through the record echo: $out"
-    cat > "$bindir/e-run.sh" <<RUNEOF
-#!/bin/sh
-exec $BIN -e 'let r = sh -c "printf \"x\\0y\"" | complete
-r.stdout'
-RUNEOF
-    chmod +x "$bindir/e-run.sh"
     out=$(script -qec "$bindir/e-run.sh" /dev/null 2>&1 | cat -v)
     echo "$out" | grep -qF "binary output" || fail "-e must refuse binary at a tty: $out"
     out=$("$bindir/e-run.sh" 2>&1 | cat -v)
