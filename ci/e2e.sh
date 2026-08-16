@@ -3609,6 +3609,38 @@ echo "$out" | grep -qF "contains a NUL byte" || fail "the env NUL refusal is mis
 rm -rf "$nuldir"
 echo "e2e ok: NUL refuses at the spawn boundary (argv and env), naming the truncation"
 
+# the binary-echo probe recurses through CONTAINERS [D:binary-echo]: a
+# `| complete` record carrying NUL-bearing stdout must refuse the tty
+# echo (the record echo leaked what the seq echo refused); the -e echo
+# wears the same guard. Needs a pty — `script` — and SKIPs by name
+# where absent (absence is never a pass).
+if command -v script >/dev/null 2>&1; then
+    bindir=$(mkweirtmp)
+    printf 'let b = sh -c "printf \"x\\0y\"" | complete\nb\n#quit\n' > "$bindir/repl-in.txt"
+    cat > "$bindir/repl-run.sh" <<RUNEOF
+#!/bin/sh
+exec $BIN < "$bindir/repl-in.txt"
+RUNEOF
+    chmod +x "$bindir/repl-run.sh"
+    out=$(script -qec "$bindir/repl-run.sh" /dev/null 2>&1 | cat -v)
+    echo "$out" | grep -qF "binary output" || fail "the record echo must refuse binary at a tty: $out"
+    echo "$out" | grep -qF 'x^@y' && fail "raw bytes leaked through the record echo: $out"
+    cat > "$bindir/e-run.sh" <<RUNEOF
+#!/bin/sh
+exec $BIN -e 'let r = sh -c "printf \"x\\0y\"" | complete
+r.stdout'
+RUNEOF
+    chmod +x "$bindir/e-run.sh"
+    out=$(script -qec "$bindir/e-run.sh" /dev/null 2>&1 | cat -v)
+    echo "$out" | grep -qF "binary output" || fail "-e must refuse binary at a tty: $out"
+    out=$("$bindir/e-run.sh" 2>&1 | cat -v)
+    echo "$out" | grep -qF 'x^@y' || fail "-e redirected must stay RAW (the data channel): $out"
+    rm -rf "$bindir"
+    echo "e2e ok: binary echo refuses containers and -e at a tty; redirected stays raw"
+else
+    echo "e2e SKIP: binary-echo pty cells — no 'script' on this runner"
+fi
+
 # scalar mid-word splice mirrors the splat's fatal [D:argv-splat]: the
 # glued prefix would silently drop, so name the space/interp spellings
 errout=$(printf 'let f = "x"

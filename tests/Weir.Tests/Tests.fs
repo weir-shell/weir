@@ -13070,6 +13070,30 @@ let windowsV1Tests =
 // WEIR_LOG follows the env-enum convention: case-INSENSITIVE (the
 // SKILL rule for the channel — DEBUG in a CI config must not be a
 // startup error)
+// [D:binary-echo] recurses through containers: the `| complete`
+// record held the bytes the seq echo refused (the pty probe's exact
+// finding); Secret and Bytes render mask/summary so they never leak
+let echoBinaryTests =
+    let nul = "a\u0000b"
+
+    testList
+        "Binary echo probe"
+        [ test "containers carrying NUL are binary: record, tuple, union, map, nested seq" {
+              let vSeq = Weir.Eval.VSeq [ Weir.Eval.VStr nul ]
+              Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VRecord("R", [ "out", vSeq ]))) "record"
+              Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VTuple [ Weir.Eval.VInt 1L; Weir.Eval.VStr nul ])) "tuple"
+              Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VUnion("Some", Some(Weir.Eval.VStr nul)))) "union"
+              Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VMap(Map [ "k", Weir.Eval.VStr nul ]))) "map"
+          }
+          test "clean containers are not binary; mask/summary renderers are never probed" {
+              Expect.isFalse
+                  (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VRecord("R", [ "out", Weir.Eval.VStr "plain" ])))
+                  "clean record"
+
+              Expect.isFalse (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VSecret nul)) "Secret renders ***"
+              Expect.isFalse (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VBytes [| 0uy |])) "Bytes renders a summary"
+          } ]
+
 let logLevelTests =
     testList
         "Log level parse"
@@ -13220,7 +13244,8 @@ let bytesTests =
 let allTests =
     testList
         "Weir"
-        [ logLevelTests
+        [ echoBinaryTests
+          logLevelTests
           dxMessageTests
           bytesTests
           parserTests
