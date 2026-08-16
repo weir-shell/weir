@@ -3932,7 +3932,7 @@ let renderBuiltinDoc (d: BuiltinDoc) : string =
     [ Some d.Summary; d.Example; d.Pointer ] |> List.choose id |> String.concat "\n"
 
 // the ALLOWLIST [D:bare-allowlist]: only these modules contribute bare
-// aliases to loose mode / the REPL. Inverted from a blocklist after
+// aliases to the REPL. Inverted from a blocklist after
 // three collisions (Secret.map stole bare `map` — 22 unrelated tests
 // failed naming a module they never mentioned; Http.head stole `head`;
 // Option/Float were earlier rounds): a blocklist made every NEW module
@@ -4166,7 +4166,8 @@ let private sortByScheme: Scheme =
     { Forall = Set [ "a"; "b" ]
       Cs = Map [ "b", Set [ Cls.Ord ] ]
       Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 // the cohort's constrained schemes [D:seq-gaps]: Ord on the ELEMENT for
 // the key-less sorts and extrema, Ord on the KEY for the By twins
@@ -4176,37 +4177,43 @@ let private ordSeqToElem: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Ord ] ]
       Ty = TFun(TSeq(TVar "a"), TVar "a")
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 let private ordSeqToSeq: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Ord ] ]
       Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a"))
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 let private ordByToElem: Scheme =
     { Forall = Set [ "a"; "b" ]
       Cs = Map [ "b", Set [ Cls.Ord ] ]
       Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TVar "a"))
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 let private eqKeyCountBy: Scheme =
     { Forall = Set [ "a"; "b" ]
       Cs = Map [ "b", Set [ Cls.Eq ] ]
       Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TTuple [ TVar "b"; TInt ])))
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 let private eqKeyDistinctBy: Scheme =
     { Forall = Set [ "a"; "b" ]
       Cs = Map [ "b", Set [ Cls.Eq ] ]
       Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 let private eqExcept: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Eq ] ]
       Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 // members whose signature is a CONSTRAINED scheme, not a plain
 // generalization — applied at the module map AND at the bare slot

@@ -120,7 +120,7 @@
       "name": "comment.line.shebang.weir"
     },
     "directive": {
-      "match": "^#loose\\b",
+      "match": "^#sig\\b",
       "name": "meta.preprocessor.weir"
     },
     "within-kind": {
@@ -146,7 +146,7 @@
       }
     },
     "keywords": {
-      "match": "\\b(let|in|if|then|elif|else|when|match|with|function|fun|type|of|from|to|for|do|module|import|within|retry|poll|until)\\b",
+      "match": "\\b(let|in|if|then|elif|else|when|match|with|function|fun|type|of|from|to|for|do|module|import|within|retry|poll|until|while|return|try|def)\\b",
       "name": "keyword.control.weir"
     },
     "reserved": {

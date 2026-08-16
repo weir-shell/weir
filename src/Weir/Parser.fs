@@ -41,7 +41,14 @@ let keywords =
           "for"
           "do"
           // the implicit-match lambda [D:function-keyword]
-          "function" ]
+          "function"
+          // foreign control-flow words, reserved so they teach weir's
+          // spelling instead of resolving as PATH programs
+          // (PLAN-dx-review D4)
+          "while"
+          "return"
+          "try"
+          "def" ]
 
 // the keyword set, exposed for tooling resolvers (weir check's
 // assume-command rule must never claim a keyword head)
@@ -51,7 +58,10 @@ type Resolver =
     { IsKnown: string -> bool
       IsCommandCallable: string -> bool
       IsExternal: string -> bool
-      ExternalNames: unit -> seq<string> }
+      ExternalNames: unit -> seq<string>
+      // a bare module member's home (where -> Seq) [D:bare-partition]:
+      // the strict-context teaching names the qualified spelling
+      BareHome: string -> string option }
 
 // Sigil interiors ($(...) / !(...)) need the resolver inside the
 // expression grammar, which is otherwise resolver-free. parseLine sets
@@ -61,7 +71,8 @@ let private ambientResolver =
         { IsKnown = (fun _ -> true)
           IsCommandCallable = (fun _ -> false)
           IsExternal = (fun _ -> false)
-          ExternalNames = fun () -> Seq.empty })
+          ExternalNames = (fun () -> Seq.empty)
+          BareHome = fun _ -> None })
 
 // Block-let command RHS [D:block-let-cmd]: TRUE only along the
 // statement spine a block assembles into (topLet RHS + its let-in
@@ -456,8 +467,28 @@ let private escapedChar =
 let private stringChar =
     choice [ satisfy (fun c -> c <> '"' && c <> '\\'); escapedChar ]
 
+// a missing closer at end-of-input is the pasted-multi-line-literal
+// shape (PLAN-dx-review D8): the assembler split the paste, so the
+// newline itself is never seen — teach the spelling instead of the
+// end-of-input dump
+// thrown past FParsec's error protocol like DepthExceeded: the open
+// quote usually sits inside an attempt (topLet's RHS), and a fatal
+// inside an attempt is not a fatal — the exception unwinds straight to
+// parseLineFull with the teaching
+exception private UnclosedString of Pos
+
+let private unclosedStringTeaching: Parser<char, unit> =
+    fun stream ->
+        if stream.IsEndOfStream then
+            raise (UnclosedString(pos stream.Position))
+        else
+            (ifail "unclosed string") stream
+
 let private strLit =
-    spanned (between (pchar '"') (pchar '"') (manyChars stringChar) |>> EStr)
+    spanned (
+        pchar '"' >>. manyChars stringChar .>> (pchar '"' <|> unclosedStringTeaching)
+        |>> EStr
+    )
     |>> mkExpr
     .>> ws
 
@@ -690,15 +721,35 @@ let private interpChar =
         [ satisfy (fun c -> c <> '"' && c <> '\\' && c <> '{' && c <> '}')
           escapedChar ]
 
+// inside an interpolation hole [D:anchor-before-read]: a stray '\' at
+// EXPRESSION level produced a dump a reader turned into a false rule
+// ("strings are not allowed inside holes" — PLAN-dx-review D3); weir
+// has no expression-level escape, so the char can teach directly
+let private inHole = new System.Threading.ThreadLocal<bool>(fun () -> false)
+
+let private holeExpr: Parser<Expr, unit> =
+    fun stream ->
+        let saved = inHole.Value
+        inHole.Value <- true
+
+        try
+            expr stream
+        finally
+            inHole.Value <- saved
+
 let private interpPart =
     choice
         [ pstring "{{" >>% IStr "{"
           pstring "}}" >>% IStr "}"
-          pchar '{' >>. ws >>. expr .>> pchar '}' |>> IExpr
+          pchar '{' >>. ws >>. holeExpr .>> pchar '}' |>> IExpr
           many1Chars interpChar |>> IStr ]
 
 let private interpLit =
-    spanned (pstring "$\"" >>. many interpPart .>> pchar '"' |>> EInterp) |>> mkExpr
+    spanned (
+        pstring "$\"" >>. many interpPart .>> (pchar '"' <|> unclosedStringTeaching)
+        |>> EInterp
+    )
+    |>> mkExpr
     .>> ws
 
 // Command-mode sigils: explicit, delimited guest entry for command
@@ -891,6 +942,16 @@ let private comprehensionLit, private comprehensionLitRef =
 // a leading '.' before a digit is the .5 spelling [D:floats]: teach
 // the full form (attempted AFTER intLit — digits-first literals never
 // reach it; `_.name` and command paths live in other grammars)
+let private holeBackslashTeaching: Parser<Expr, unit> =
+    fun stream ->
+        if inHole.Value && stream.Peek() = '\\' then
+            (getPosition
+             >>= fun at ->
+                 failFatallyAt at "'\\' is not an escape here — a quote needs none inside an interpolation hole")
+                stream
+        else
+            (ifail "not a hole backslash") stream
+
 let private dotFloatTeaching =
     attempt (getPosition .>> pchar '.' .>> lookAhead (satisfy System.Char.IsDigit))
     >>= fun at -> failFatallyAt at "float literals need a digit before the point (write 0.5)"
@@ -902,6 +963,7 @@ let private atom =
               negAtom
               intLit
               dotFloatTeaching
+              holeBackslashTeaching
               tripleLit
               verbatimLit
               strLit
@@ -1200,6 +1262,10 @@ let private mkOpp (withPipe: bool) =
     opp.AddOperator(InfixOperator("||", ws, 2, Associativity.Left, binOp "||"))
     opp.AddOperator(InfixOperator("&&", ws, 3, Associativity.Left, binOp "&&"))
     opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
+    // '=' parses AND always rejects at check with the equality teaching
+    // (PLAN-dx-review D3): failing the parse here buried the repair
+    // under the expecting-list dump
+    opp.AddOperator(InfixOperator("=", notFollowedBy (pchar '=') >>. ws, 4, Associativity.Left, binOp "="))
     opp.AddOperator(InfixOperator("<>", ws, 4, Associativity.Left, binOp "<>"))
     opp.AddOperator(InfixOperator(">=", ws, 4, Associativity.Left, binOp ">="))
     opp.AddOperator(InfixOperator("<=", ws, 4, Associativity.Left, binOp "<="))
@@ -2349,6 +2415,25 @@ let private seqSep = (str_ws ";" <|> str_ws sibSepStr) <?> "';'"
 // it when the context demands unit (the if-body case). Known heads and
 // keywords fall through to the expression grammar exactly as the
 // statement classifier decides.
+// foreign control-flow words TEACH weir's spelling at statement
+// positions (PLAN-dx-review D4) — reserved words, so they can never
+// resolve as identifiers or PATH programs; the guard dominates the
+// expecting-list [D:anchor-before-read]
+let private foreignKeywordTeachings =
+    [ "while", "'while' is not a weir word — a bounded loop is 'retry'/'poll'; iterate a seq with 'for x in xs do'"
+      "return", "'return' is not a weir word — a function's last expression is its value"
+      "try",
+      "'try' is not a weir word — a failing command reifies: bind 'let r = <command> | complete' and read r.exitCode; scoped cleanup is 'within'"
+      "def", "'def' is not a weir word — define with 'let f x = ...'" ]
+
+let private foreignKeywordGuard () : Parser<'a, unit> =
+    choice (
+        foreignKeywordTeachings
+        |> List.map (fun (w, teach) ->
+            attempt (getPosition .>> pstring w .>> notFollowedBy (satisfy isIdentCont))
+            >>= fun at -> failFatallyAt at teach)
+    )
+
 let private stmtElem: Parser<Choice<Expr, Expr>, unit> =
     let cmdTry: Parser<Expr, unit> =
         fun stream ->
@@ -2357,7 +2442,10 @@ let private stmtElem: Parser<Choice<Expr, Expr>, unit> =
             else
                 letRhsCmd stream
 
-    choice [ attempt (cmdTry |>> Choice1Of2); commaExpr |>> Choice2Of2 ]
+    choice
+        [ foreignKeywordGuard ()
+          attempt (cmdTry |>> Choice1Of2)
+          commaExpr |>> Choice2Of2 ]
 
 let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
     let n = List.length all
@@ -2867,10 +2955,21 @@ let private reifierStageGuard: Parser<Seg, unit> =
     )
     >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name)
 
+// '||' in a command chain is the bash prior (PLAN-dx-review D2): the
+// first '|' reads as the pipe, so the SECOND lands at a stage position
+// — teach the branch idiom instead of the stage expecting-list
+let private doublePipeGuard: Parser<Seg, unit> =
+    attempt (getPosition .>> pchar '|')
+    >>= fun at ->
+        failFatallyAt
+            at
+            "'||' does not chain commands in weir — branch on the exit instead: if cmd | succeeds then ... else ... (a literal '||' argument needs quotes)"
+
 let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEnv: Expr option) (r: Resolver) =
     many (
         pipeSepSpanned
-        .>>. (completeMarker
+        .>>. (doublePipeGuard
+              <|> completeMarker
               <|> succeedsMarker
               <|> exitCodeMarker
               <|> orFailMarker
@@ -3243,6 +3342,7 @@ let private stmtWith (r: Resolver) =
                   .>> eof
               )
               |>> SLetPat
+              foreignKeywordGuard ()
               letKeywordGuard
               topLet r
               cmdLine r .>> eof |>> SCmd
@@ -3252,7 +3352,8 @@ let private noExternals =
     { IsKnown = fun _ -> true
       IsCommandCallable = fun _ -> false
       IsExternal = fun _ -> false
-      ExternalNames = fun () -> Seq.empty }
+      ExternalNames = (fun () -> Seq.empty)
+      BareHome = fun _ -> None }
 
 // Structured failure: the position travels as DATA
 // [D:structured-parse-failure]. Message text is unchanged; Col is
@@ -3319,10 +3420,16 @@ let private stmtExprs (s: Stmt) : Expr list =
 // PROGRAM (its RHS is headed by an external command). foldChain catches the
 // command-CHAIN mismatches; this catches the value-headed operator form,
 // anchored on the offending program name.
-let private pipeToCommand (r: Resolver) (root: Expr) : Span option =
+let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) option =
     let rec cmdHead (e: Expr) =
         match e.Kind with
-        | EVar n when r.IsExternal n && not (r.IsKnown n) -> Some e.Span
+        | EVar n when r.IsExternal n && not (r.IsKnown n) ->
+            let teach =
+                r.BareHome n
+                |> Option.map (fun home ->
+                    $"'{n}' is a bare module member — spell it '{home}.{n}' (bare names live in the REPL session)")
+
+            Some(e.Span, teach)
         | EApp(f, _) -> cmdHead f
         | _ -> None
 
@@ -3353,11 +3460,11 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                           Col = col }
                 | None ->
                     match s |> stmtExprs |> List.tryPick (pipeToCommand r) with
-                    | Some span ->
+                    | Some(span, teach) ->
                         let col = if span.Start.Line = 1 then Some span.Start.Col else None
 
                         Result.Error
-                            { Message = "'|>' applies functions; feed a program with '|'"
+                            { Message = teach |> Option.defaultValue "'|>' applies functions; feed a program with '|'"
                               Col = col }
                     | None -> Result.Ok s
             | Failure(msg, err, _) ->
@@ -3368,7 +3475,14 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                         None
 
                 Result.Error { Message = msg; Col = col }
-        with DepthExceeded p ->
+        with
+        | UnclosedString p ->
+            let col = if p.Line = 1 then Some p.Col else None
+
+            Result.Error
+                { Message = "strings are single-line — use \\n for a line break"
+                  Col = col }
+        | DepthExceeded p ->
             let col = if p.Line = 1 then Some p.Col else None
 
             Result.Error

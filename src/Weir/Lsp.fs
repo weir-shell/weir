@@ -1592,7 +1592,13 @@ let run (debug: bool) : int =
     // URIs published with diagnostics last cycle — cleared when they go clean
     let publishedUris = Collections.Generic.HashSet<string>()
 
+    // the last published set per URI — the code-action handler reads the
+    // qualified spelling out of a bare-name teaching [D:bare-partition]
+    let lastPublished = Collections.Generic.Dictionary<string, Script.Diagnostic list>()
+
     let publishFor (uri: string) (diags: Script.Diagnostic list) =
+        lastPublished[uri] <- diags
+
         if debug then
             Console.Error.WriteLine $"weir lsp: -> publish {uri} ({List.length diags} diags)"
 
@@ -1782,7 +1788,7 @@ let run (debug: bool) : int =
                         |> Option.iter (fun id ->
                             respond id (fun w ->
                                 w.WriteRawValue
-                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir"}}"""))
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir"}}"""))
                     | "initialized" -> ()
                     | "shutdown" -> idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
                     | "exit" -> running <- false
@@ -1840,6 +1846,103 @@ let run (debug: bool) : int =
 
                                 w.WriteEndArray()
                                 w.WriteEndObject()
+                            | None -> w.WriteNullValue()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/codeAction" ->
+                        // quickfix on a bare-name teaching: the diagnostic
+                        // carries the qualified spelling ("spell it
+                        // 'Seq.where'" / "use 'Seq.where'"), so the edit
+                        // derives from the published set — no re-analysis
+                        // [D:bare-partition]. source.fixAll qualifies every
+                        // such name in the file.
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf () with
+                            | Some(uri, _) ->
+                                let published =
+                                    match lastPublished.TryGetValue uri with
+                                    | true, ds -> ds
+                                    | _ -> []
+
+                                let actionable =
+                                    published
+                                    |> List.choose (fun d ->
+                                        let m =
+                                            Text.RegularExpressions.Regex.Match(
+                                                d.Message,
+                                                "^'(\\w+)' is (?:a bare module member — spell it|module-qualified; use) '(\\w+\\.\\w+)'"
+                                            )
+
+                                        if m.Success then
+                                            Some(d, m.Groups[1].Value, m.Groups[2].Value)
+                                        else
+                                            None)
+
+                                let requestedLines =
+                                    jObj "range" ps
+                                    |> Option.bind (fun r ->
+                                        match jObj "start" r, jObj "end" r with
+                                        | Some st, Some en ->
+                                            match jNum "line" st, jNum "line" en with
+                                            | Some a, Some b -> Some(a + 1, b + 1)
+                                            | _ -> None
+                                        | _ -> None)
+
+                                let inRange (d: Script.Diagnostic) =
+                                    match requestedLines with
+                                    | Some(a, b) -> d.Line >= a && d.Line <= b
+                                    | None -> true
+
+                                let writeEdit (d: Script.Diagnostic) (bare: string) (qualified: string) =
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "range"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "start"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", d.Line - 1)
+                                    w.WriteNumber("character", d.Col - 1)
+                                    w.WriteEndObject()
+                                    w.WritePropertyName "end"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", d.Line - 1)
+                                    w.WriteNumber("character", d.Col - 1 + bare.Length)
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+                                    w.WriteString("newText", qualified)
+                                    w.WriteEndObject()
+
+                                let writeAction
+                                    (title: string)
+                                    (kind: string)
+                                    (edits: (Script.Diagnostic * string * string) list)
+                                    =
+                                    w.WriteStartObject()
+                                    w.WriteString("title", title)
+                                    w.WriteString("kind", kind)
+                                    w.WritePropertyName "edit"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "changes"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName uri
+                                    w.WriteStartArray()
+
+                                    for d, bare, qualified in edits do
+                                        writeEdit d bare qualified
+
+                                    w.WriteEndArray()
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+
+                                w.WriteStartArray()
+
+                                for d, bare, qualified in actionable |> List.filter (fun (d, _, _) -> inRange d) do
+                                    writeAction $"Qualify: {qualified}" "quickfix" [ d, bare, qualified ]
+
+                                if not actionable.IsEmpty then
+                                    writeAction "Qualify all bare names in file" "source.fixAll" actionable
+
+                                w.WriteEndArray()
                             | None -> w.WriteNullValue()
 
                         idStr |> Option.iter (fun id -> respond id writeResult)

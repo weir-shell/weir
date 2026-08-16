@@ -126,7 +126,8 @@ let private cmdResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
       IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
       IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
-      ExternalNames = fun () -> fakeExternals }
+      ExternalNames = (fun () -> fakeExternals)
+      BareHome = fun _ -> None }
 
 // Windows: parse-only fixtures resolve coreutils heads (echo, sh,
 // grep ...) through the REAL resolver, and those are cmd BUILTINS or
@@ -170,7 +171,8 @@ let private realResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
       IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
       IsExternal = Weir.Extern.exists
-      ExternalNames = fun () -> Weir.Extern.names () :> seq<string> }
+      ExternalNames = (fun () -> Weir.Extern.names () :> seq<string>)
+      BareHome = fun n -> Map.tryFind n Weir.Builtins.bareAliasHomes }
 
 let private parseCmd input =
     match Weir.Parser.parseLine cmdResolver input with
@@ -1855,7 +1857,7 @@ let completionTests =
 
               Expect.equal
                   Weir.Complete.unsuggestedKeywords
-                  (Set [ "rec"; "mutable"; "function" ])
+                  (Set [ "rec"; "mutable"; "function"; "while"; "return"; "try"; "def" ])
                   "the exclusion set moved — its reasons live beside its definition"
 
               // behavioral, through suggest itself: the once-missing
@@ -4357,7 +4359,8 @@ let blockLetCmdTests =
                   { IsKnown = fun n -> n <> "echo"
                     IsCommandCallable = fun _ -> false
                     IsExternal = fun n -> n = "echo"
-                    ExternalNames = fun () -> Seq.empty }
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = fun _ -> None }
 
               match Weir.Parser.parseLine r "let f x = let w = echo alpha \"in\" beta |> Seq.head in w" with
               | Ok _ -> ()
@@ -5750,7 +5753,8 @@ let multilineLambdaTests =
                   { IsKnown = (fun n -> n = "xs" || n = "Seq")
                     IsCommandCallable = (fun _ -> false)
                     IsExternal = (fun n -> n = "echo")
-                    ExternalNames = fun () -> Seq.empty }
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = fun _ -> None }
 
               match
                   Weir.Parser.parseLine r "let out = xs |> Seq.map (fun k -> let g = echo tag in g |> Seq.length)"
@@ -6214,22 +6218,54 @@ let scriptTests =
               | Error terr -> Expect.stringContains terr.Message "use Option.map or Secret.map or Seq.map" ""
               | Ok _ -> failtest "expected strict rejection"
           }
-          test "fmt qualifies bare uses span-precisely" {
-              let line, n =
-                  Weir.Fmt.qualifyLine realResolver "ls |> map _.name |> where (startsWith \"x\")"
+          test "#loose is GONE: the directive is unknown, files are always strict [D:bare-partition]" {
+              // no migration message — a mode that never executed gets
+              // whatever the generic stray-directive path does (a parse
+              // error under check, the directive error on run); the pin
+              // is that it ERRORS with no bespoke farewell
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "#loose"; "print (show 1)" ]
 
-              Expect.equal n 3 "three rewrites"
-              Expect.equal line "ls |> Seq.map _.name |> Seq.where (Str.startsWith \"x\")" ""
+              Expect.isNonEmpty
+                  (diags |> List.filter (fun d -> d.Severity = "error"))
+                  "a #loose file must not check clean"
+
+              Expect.isFalse
+                  (diags |> List.exists (fun d -> d.Message.Contains "removed"))
+                  "no migration message for a mode that never executed"
           }
-          test "fmt leaves splices and fields alone" {
-              let line, n = Weir.Fmt.qualifyLine realResolver "git checkout $map"
-              Expect.equal n 0 "splice untouched"
-              Expect.equal line "git checkout $map" ""
+          test "a bare module member in a strict pipe teaches the qualified spelling [D:bare-partition]" {
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "pin.weir"
+                      [ "let xs = [1] |> where (fun n -> n > 0)"; "print (show (Seq.length xs))" ]
+
+              Expect.exists
+                  diags
+                  (fun d -> d.Message.Contains "spell it 'Seq.where'" && d.Message.Contains "REPL session")
+                  $"the pipe path must teach, got: {diags |> List.map _.Message}"
           }
-          test "fmt leaves already-qualified lines alone" {
-              let line, n = Weir.Fmt.qualifyLine realResolver "ls |> Seq.map _.name"
-              Expect.equal n 0 ""
-              Expect.equal line "ls |> Seq.map _.name" ""
+          test "a bare module member at command head teaches, not 'install the tool' [D:bare-partition]" {
+              // sortBy, not where: the head teaching fires only when the
+              // name is NOT on PATH (a real tool of that name must stay
+              // runnable — resolution integrity), and Windows SHIPS
+              // where.exe, so `where` resolves there and never reaches
+              // the cmd-not-found path
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "let xs = sortBy (fun n -> n) [1]"; "print (show 1)" ]
+
+              Expect.exists
+                  diags
+                  (fun d -> d.Message.Contains "spell it 'Seq.sortBy'")
+                  $"the head path must teach, got: {diags |> List.map _.Message}"
+
+              Expect.isFalse
+                  (diags |> List.exists (fun d -> d.Message.Contains "install"))
+                  "a bare member is never an installable tool"
+          }
+          test "the REPL keeps bare names: typeEnv carries them, strict does not [D:bare-allowlist]" {
+              Expect.isTrue (Map.containsKey "where" Weir.Builtins.typeEnv.Values) "REPL env keeps bare where"
+              Expect.isFalse (Map.containsKey "where" Weir.Builtins.typeEnvStrict.Values) "strict env has no bare where"
           } ]
 
 
@@ -6867,7 +6903,7 @@ let agentFindingsTests =
                   match stmt with
                   | SLet(_, e) ->
                       match Weir.Check.typecheckWith env e with
-                      | Ok(te, _, _) -> Expect.equal (formatTy te.Ty) "string -> seq<string>" ""
+                      | Ok(te, _, _, _) -> Expect.equal (formatTy te.Ty) "string -> seq<string>" ""
                       | Error terr -> failtest (formatError terr)
                   | _ -> ()
               | other -> failtest $"parse failed: {other}"
@@ -8105,7 +8141,7 @@ let typeClassTests =
               match Weir.Parser.parseStmt "let same x y = x == y" with
               | Ok(SLet(_, e)) ->
                   match Weir.Check.typecheckWith env e with
-                  | Ok(te, cs, _) ->
+                  | Ok(te, cs, _, _) ->
                       let sch = Weir.Types.generalizeWith cs te.Ty
                       Expect.isTrue (sch.Cs |> Map.exists (fun _ s -> s.Contains Weir.Types.Cls.Eq)) "Eq rides"
                   | Error terr -> failtest (formatError terr)
@@ -8400,7 +8436,8 @@ let offsideTests =
                   { IsKnown = fun _ -> true
                     IsCommandCallable = fun _ -> false
                     IsExternal = fun _ -> false
-                    ExternalNames = fun () -> Seq.empty }
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = fun _ -> None }
 
               match Weir.Parser.parseLineFull r "type P = | Pulled | upToDate | Join of string" with
               | Error f ->
@@ -8497,7 +8534,8 @@ let offsideTests =
                   { IsKnown = (fun _ -> false)
                     IsCommandCallable = (fun _ -> false)
                     IsExternal = (fun _ -> false)
-                    ExternalNames = fun () -> Seq.empty }
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = fun _ -> None }
 
               let rGit =
                   { rNone with
@@ -12966,11 +13004,86 @@ let windowsV1Tests =
                   Expect.equal vp "/c:/a/b.weir" "POSIX keeps the literal path"
           } ]
 
+// PLAN-dx-review D2-D8: the message-family completions, pinned — each
+// mistake census case that moved buckets has its message here
+let dxMessageTests =
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+        diags
+
+    let mustSay lines (needle: string) label =
+        Expect.exists
+            (diagsOf lines)
+            (fun d -> d.Message.Contains needle)
+            $"{label}: expected a diagnostic containing '{needle}', got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "DX message pins"
+        [ test "D2: '&&' and '||' join the prior-bleed family" {
+              mustSay [ "echo a && echo b" ] "'&&' does not chain commands" "and"
+              mustSay [ "echo a || echo b" ] "'||' does not chain commands" "or"
+          }
+          test "D3: '=' in expression position teaches '=='" {
+              mustSay [ "let n = if 1 = 1 then 1 else 2"; "print (show n)" ] "use '==' for equality" "if-cond"
+              mustSay [ "let b = 1 = 2"; "print (show b)" ] "use '==' for equality" "let-rhs"
+          }
+          test "D3: a stray backslash at hole level teaches, quotes need no escape there" {
+              mustSay [ "print $\"{ \\\"abc\\\" }\"" ] "not an escape here" "hole backslash"
+
+              // the CONTROL: an unescaped string inside a hole is fine
+              let clean, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "print $\"{Str.length \"abc\"}\"" ]
+
+              Expect.isEmpty clean "strings in holes need no escaping"
+          }
+          test "D4: foreign control-flow words teach weir's spelling" {
+              mustSay [ "while true do"; "    print (show 1)" ] "'while' is not a weir word" "while"
+              mustSay [ "let f n ="; "    return n"; "print (show (f 1))" ] "'return' is not a weir word" "return"
+              mustSay [ "def f():"; "    print (show 1)" ] "'def' is not a weir word" "def"
+              mustSay [ "let r = try (echo x)"; "print (show 1)" ] "'try' is not a weir word" "try"
+          }
+          test "D5: List/Array teach Seq; no cross-kind did-you-mean" {
+              mustSay [ "let n = List.length [1]"; "print (show n)" ] "weir's sequences are 'Seq'" "List"
+              mustSay [ "let n = Array.length [1]"; "print (show n)" ] "weir's sequences are 'Seq'" "Array"
+
+              Expect.isFalse
+                  (diagsOf [ "let n = List.length [1]"; "print (show n)" ]
+                   |> List.exists (fun d -> d.Message.Contains "Post"))
+                  "a union case is never suggested for a module"
+          }
+          test "D6: a hole-defaulted parameter's mismatch names the defaulting decision" {
+              mustSay
+                  [ "let name n = $\"item-{n}\""; "print (name 5)" ]
+                  "a bare interpolation hole defaulted its parameter"
+                  "hole default"
+
+              mustSay [ "let name n = $\"item-{n}\""; "print (name 5)" ] "the hole at 1:22" "anchor"
+          }
+          test "D7: Seq.iter print resolves at the use site; non-printables still refuse" {
+              let clean, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ "[1] |> Seq.iter print" ]
+
+              Expect.isEmpty clean "the obvious spelling works on the obvious type"
+
+              let cleanStr, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "[\"a\"] |> Seq.iter print" ]
+
+              Expect.isEmpty cleanStr "strings unchanged"
+
+              mustSay
+                  [ "type R = { a: int }"; "[{ a = 1 }] |> Seq.iter print" ]
+                  "print takes a string, int, float, bool, or seq<string>"
+                  "record refused"
+          }
+          test "D8: a pasted multi-line string literal teaches the single-line law" {
+              mustSay [ "let x = \"abc"; "print x" ] "strings are single-line" "unclosed"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
-        [ parserTests
+        [ dxMessageTests
+          parserTests
           fsMemberTests
           durationTests
           floatTests

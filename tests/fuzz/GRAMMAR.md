@@ -104,7 +104,7 @@ matches render as `(function | arms) scrut` [D:function-keyword]
   options records (the desugar equivalence is unit-pinned instead)
 - `let ... in` inline form; param-ful lets / function defs;
   seq patterns; Regex patterns; tuples; copy-and-update literals;
-  `Args.load` / `Env.load`; raw strings; `#loose` mode
+  `Args.load` / `Env.load`; raw strings
 - `for … do` effect loops, `do !` command blocks, and
   `[for … -> …]` comprehensions [D:for-do] — statement line-shapes
   landed 2026-07-30, never added here (the coverage audit's

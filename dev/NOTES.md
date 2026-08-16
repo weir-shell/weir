@@ -1,5 +1,51 @@
 # Spike Notes
 
+## dx review fixes: the lists complete, and two instruments were wrong (2026-08-16)
+
+The plan's premise that needed correcting: D1's rider assumed "the
+bare-name diagnostic already names the repair" and gated the removal on
+an LSP code action riding it. Measured, the diagnostic did not exist —
+bare `where` in a strict file hit the pipe-glyph error or "install the
+tool" — so the session shipped the diagnostic (Resolver.BareHome,
+three teaching sites) AND the code action (the LSP's first: quickfix +
+source.fixAll, edits derived from the published diagnostics). The
+removal itself confirmed the vacuous-probe diagnosis end to end: zero
+fixtures, one e2e test that converted before running, and a checker
+that refused the mode the other components believed in. [D:strict-only]
+
+-e's widening honored reading (b) exactly — multi-line input routes
+through the FILE assembler, so blocks, comments and block-lets came
+free, and the agreement pin (-e output == file output on identical
+bytes) is the property, not either alone. The four kind teachings
+survive on the last statement. [D:e-programs]
+
+The message families: `=` was fixed by PARSING it (an operator the
+checker always rejects) — failing the parse was what buried the repair
+under the expecting-list; `||` needed a stage-position guard because
+the first `|` reads as the pipe; the unclosed-string teaching needed
+the DepthExceeded exception channel (the fatal-in-attempt property's
+fourth sighting, looked up this time, not rediscovered). while/return/
+try/def are reserved with per-word teachings and excluded from
+completion. List/Array teach Seq; did-you-mean pools are kind-filtered
+with the Exit->exit case-insensitive carve-out. [D:dx-message-families]
+
+D7 became a SEMANTIC fix, not a message: point-free print now defers
+its sentinel to the statement boundary like splice holes — the obvious
+spelling works on the obvious type, printArgTy stays the one law, and
+`let f = print` keeps the string default. D6 rode row-provenance's
+pattern: hole-default anchors on the scheme, named at the call-site
+mismatch with the exact hole position. [D:print-use-site]
+[D:hole-default-provenance]
+
+Two instruments were themselves wrong, recorded per the honesty rule:
+the D5 gate probe's FILENAME contained its own needle ("Post" in the
+path echoed by every diagnostic), so it stayed red after the fix; and
+the census called the fixed D7 spelling "silent" — its worst bucket —
+because correct code has no bucket in a mistake census; the case left
+the corpus with a stated reason, as loose-bare-where did. Census after:
+teaches 17 / plain 5 / dump 4 / silent 0 (n=26, baseline 17, vocab
+extended with the new messages' repair phrases).
+
 ## adversarial review fixes: the coverage question keeps paying (2026-08-16)
 
 The session's biggest finding wasn't in the plan — the plan predicted

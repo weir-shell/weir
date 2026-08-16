@@ -239,7 +239,16 @@ type private Ctx =
       mutable WorkSpan: Span
       // the innermost bind's operands, for the evidence probe: at
       // exhaustion these are the types whose SIZE is or is not the story
-      mutable WorkTys: Ty * Ty }
+      mutable WorkTys: Ty * Ty
+      // point-free print uses (Seq.iter print) DEFER their sentinel to
+      // the statement boundary like splices do [D:splice-default-last]:
+      // a use-site-determined type passes printArgTy there, an
+      // undetermined one keeps the string default (PLAN-dx-review D7)
+      mutable PendingPrints: (string * Span) list
+      // physical positions of bare holes whose var took the string
+      // DEFAULT this statement (PLAN-dx-review D6) — ride the let's
+      // scheme so a later call-site mismatch can name the anchor
+      mutable HoleDefaulted: (int * int) list }
 
 // exhaustion carries whether type SIZE is actually in evidence — the
 // message must not claim "your type grew too large" merely because the
@@ -261,7 +270,9 @@ let private newCtx () =
       WorkSpan =
         { Start = { Line = 1; Col = 1 }
           End = { Line = 1; Col = 1 } }
-      WorkTys = TUnit, TUnit }
+      WorkTys = TUnit, TUnit
+      PendingPrints = []
+      HoleDefaulted = [] }
 
 let private freshName (ctx: Ctx) (prefix: string) : string =
     ctx.Fresh <- ctx.Fresh + 1
@@ -723,7 +734,8 @@ let printScheme: Scheme =
     { Forall = Set.singleton "__print"
       Cs = Map.empty
       Ty = TFun(TVar "__print", TUnit)
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 let private isPrintFamily (env: TypeEnv) (name: string) =
     // "|print" is the arming desugar's un-typeable alias
@@ -740,7 +752,8 @@ let showScheme: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Show ] ]
       Ty = TFun(TVar "a", TStr)
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 // Seq.contains — an ordinary constrained scheme
 // `Eq a => a -> seq<a> -> bool` [D:inferred-type-classes], served by
@@ -749,14 +762,16 @@ let containsScheme: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Eq ] ]
       Ty = TFun(TVar "a", TFun(TSeq(TVar "a"), TBool))
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 // Seq.distinct : Eq a => seq<a> -> seq<a> [D:seq-distinct]
 let distinctScheme: Scheme =
     { Forall = Set.singleton "a"
       Cs = Map [ "a", Set [ Cls.Eq ] ]
       Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a"))
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 
 // the sequenced-unit message, ONE home for its two arms (the infer and
@@ -824,6 +839,9 @@ let rec private typeBinOp
         binding |> Result.bind (fun () -> typeBinOp ctx env opSpan op l r)
 
     match op, resolve ctx l.Ty, resolve ctx r.Ty with
+    // '=' parses only to carry this teaching (PLAN-dx-review D3): the
+    // docs' most-emphasised difference deserves better than a dump
+    | "=", _, _ -> err opSpan "use '==' for equality; '=' binds in let and record fields"
     // composition [D:composition-operators] — fully parametric, typed
     // like a builtin scheme: (a -> b) >> (b -> c) : a -> c, `<<`
     // mirrored. FIRST in the match: the scalar-defaulting arms below
@@ -1450,7 +1468,8 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
     { Forall = fa
       Cs = cs
       Ty = valueTy
-      RowOrigins = origins }
+      RowOrigins = origins
+      HoleDefaults = [] }
 
 // per-name generalization for destructuring binders: each bound name's
 // type generalizes INDEPENDENTLY against the env (constraints scooped
@@ -1770,10 +1789,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | ty -> return! err first.Span (seqUnitError first ty)
         }
     | EVar(("print" | "printerr" | "|print") as pname) when isPrintFamily env pname ->
-        // Bare-value position (e.g. Seq.iter print): the defaulted form.
+        // Bare-value position (e.g. Seq.iter print): defer like a splice
+        // — the use site decides the type, the boundary validates it,
+        // and only a genuinely undetermined use defaults to string
+        let ty = instantiate ctx expr.Span printScheme
+
+        (match ty with
+         | TFun(TVar v, _) -> ctx.PendingPrints <- (v, expr.Span) :: ctx.PendingPrints
+         | _ -> ())
+
         Ok
             { Kind = TEVar pname
-              Ty = TFun(TStr, TUnit)
+              Ty = ty
               Span = expr.Span }
     | EVar name ->
         match Map.tryFind name env.Values with
@@ -1812,8 +1839,25 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         err
                             expr.Span
                             "scriptPath is script-only (the running script's absolute path; absent in the REPL and -e)"
+                    | None when name = "List" || name = "Array" ->
+                        // the commonest .NET prior (PLAN-dx-review D5): a
+                        // wrong suggestion ('Post') sent readers somewhere
+                        // confidently — the registry answer is the repair
+                        err
+                            expr.Span
+                            $"'{name}' is not a weir module — weir's sequences are 'Seq' (Seq.length, Seq.map, ...; one sequence type)"
                     | None ->
-                        let hint = didYouMean name (Map.keys env.Values |> Seq.filter Types.isUserName)
+                        // same-kind candidates only (PLAN-dx-review D5): a
+                        // lowercase name never suggests a constructor and
+                        // an uppercase one never suggests a binding — but a
+                        // candidate differing ONLY by case stays (Exit ->
+                        // exit is the rename teaching [D:exit-rename])
+                        let sameCase (c: string) =
+                            (c.Length > 0 && System.Char.IsUpper c[0] = System.Char.IsUpper name[0])
+                            || System.String.Equals(c, name, System.StringComparison.OrdinalIgnoreCase)
+
+                        let hint =
+                            didYouMean name (Map.keys env.Values |> Seq.filter Types.isUserName |> Seq.filter sameCase)
 
                         err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, nameSpan, value, body) ->
@@ -3095,9 +3139,37 @@ and private checkSpine
                             head.Span
                             $"this expression is not a function taking {args.Length} argument(s); it has type {formatTy (finalTy ctx thead.Ty)}"
         | Some(paramTys, resultTy) ->
+            // when a defaulted-to-string parameter causes the mismatch,
+            // say so and name the anchor (PLAN-dx-review D6): the string
+            // came from a defaulting decision in the callee's body, not
+            // from anything visible at the call
+            let nameHoleDefault (paramTy: Ty) (e: TypeError) : TypeError =
+                let defaults =
+                    match thead.Kind with
+                    | TEVar name ->
+                        match Map.tryFind name env.Values with
+                        | Some sch -> sch.HoleDefaults
+                        | None -> []
+                    | _ -> []
+
+                match defaults, resolve ctx paramTy with
+                | (l, c) :: _, TStr when e.Message.StartsWith "expected string" ->
+                    let name =
+                        match thead.Kind with
+                        | TEVar n -> $"'{n}'"
+                        | _ -> "the function"
+
+                    { e with
+                        Message =
+                            e.Message
+                            + $" — {name} takes string because a bare interpolation hole defaulted its parameter (the hole at {l}:{c}); a typed use in the hole fixes it (e.g. {{n + 0}}), or pass a string" }
+                | _ -> e
+
             do!
                 match piped with
-                | Some(pipedTy, pipedSpan) -> bind ctx env pipedSpan (List.last paramTys) pipedTy
+                | Some(pipedTy, pipedSpan) ->
+                    bind ctx env pipedSpan (List.last paramTys) pipedTy
+                    |> Result.mapError (nameHoleDefault (List.last paramTys))
                 | None -> Ok()
 
             let! typedArgs =
@@ -3105,7 +3177,10 @@ and private checkSpine
                 |> List.fold
                     (fun acc (arg, paramTy) ->
                         acc
-                        |> Result.bind (fun ts -> check ctx env arg paramTy |> Result.map (fun t -> t :: ts)))
+                        |> Result.bind (fun ts ->
+                            check ctx env arg paramTy
+                            |> Result.mapError (nameHoleDefault paramTy)
+                            |> Result.map (fun t -> t :: ts)))
                     (Ok [])
                 |> Result.map List.rev
 
@@ -3452,9 +3527,31 @@ let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) : Result<unit, TypeE
             acc
             |> Result.bind (fun () ->
                 match resolve ctx (TVar v) with
-                | TVar _ -> bind ctx env span TStr (TVar v)
+                | TVar _ ->
+                    // the string DEFAULT fires — record the hole's
+                    // physical anchor for the scheme (D6); only interp
+                    // holes teach (a cmd splice defaulting is the argv
+                    // law, not a surprise)
+                    (match site, toPhys.Value with
+                     | Hole, Some tr ->
+                         let l, c = tr span.Start.Col
+                         ctx.HoleDefaulted <- (l, c) :: ctx.HoleDefaulted
+                     | _ -> ())
+
+                    bind ctx env span TStr (TVar v)
                 | ty -> spliceAdmit ctx env site span ty))
         (Ok())
+    |> Result.bind (fun () ->
+        // point-free print resolves the same way (PLAN-dx-review D7):
+        // printArgTy is the one law — use-site types validate, a free
+        // var takes the string default
+        ctx.PendingPrints
+        |> List.rev
+        |> List.fold
+            (fun acc (v, span) ->
+                acc
+                |> Result.bind (fun () -> printArgTy ctx env span (TVar v) |> Result.map ignore))
+            (Ok()))
 
 let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
     let kind =
@@ -3657,7 +3754,11 @@ let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExp
 let typecheckWithCore
     (env: TypeEnv)
     (expr: Expr)
-    : Result<TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list>, TypeError> =
+    : Result<
+          TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list> * (int * int) list,
+          TypeError
+       >
+    =
     let env = withAnonDefs env expr
     let ctx = newCtx ()
 
@@ -3694,7 +3795,7 @@ let typecheckWithCore
 
                 // origins ride out with the residue [D:row-provenance]:
                 // the SLet scheme is built OUTSIDE this ctx
-                Ok(te, residue, rowOriginsFor ctx resultVars)
+                Ok(te, residue, rowOriginsFor ctx resultVars, List.rev ctx.HoleDefaulted)
 
 // every TypedExpr embedded in a typed yaml template — splices, key
 // splices, and for sources
@@ -3771,11 +3872,15 @@ let childExprs (te: TypedExpr) : TypedExpr list =
 let typecheckWith
     (env: TypeEnv)
     (expr: Expr)
-    : Result<TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list>, TypeError> =
+    : Result<
+          TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list> * (int * int) list,
+          TypeError
+       >
+    =
     catchBudget (fun () -> typecheckWithCore env expr)
 
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
-    typecheckWith env expr |> Result.map (fun (te, _, _) -> te)
+    typecheckWith env expr |> Result.map (fun (te, _, _, _) -> te)
 
 let rec private validateTy
     (env: TypeEnv)
@@ -3995,7 +4100,8 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                             { Forall = allowed + tyVars (ctorTy payload)
                               Cs = Map.empty
                               Ty = ctorTy payload
-                              RowOrigins = Map.empty }
+                              RowOrigins = Map.empty
+                              HoleDefaults = [] }
 
                         let values =
                             cases
@@ -4043,6 +4149,23 @@ let warnings (te: TypedExpr) : Warning list =
                              "'>>' does not redirect in weir — pipe to File.append: "
                              + "cmd |> File.append \"out.txt\" "
                              + "(if you meant a literal '>>' argument, ignore this)" }
+                 // the two commonest bash chaining glyphs were the
+                 // family's missing members (PLAN-dx-review D2): the
+                 // pass-through is deliberate, the SILENCE was the defect
+                 | TEStr "&&" ->
+                     acc.Add
+                         { Span = a.Span
+                           Message =
+                             "'&&' does not chain commands in weir — put commands on separate lines "
+                             + "(a later line runs only if the earlier one succeeds: '| orFail' raises on failure; "
+                             + "if you meant a literal '&&' argument, ignore this)" }
+                 | TEStr "||" ->
+                     acc.Add
+                         { Span = a.Span
+                           Message =
+                             "'||' does not chain commands in weir — branch on the exit instead: "
+                             + "if cmd | succeeds then ... else ... "
+                             + "(if you meant a literal '||' argument, ignore this)" }
                  | _ -> ()
          | _ -> ())
 

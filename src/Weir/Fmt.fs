@@ -2,7 +2,7 @@ module Weir.Fmt
 
 open Weir.Ast
 
-let private collectBareUses (e: Expr) : (Span * string) list =
+let collectBareUses (e: Expr) : (Span * string) list =
     // traversal is Ast.exprChildren's job; only EVar collects
     let acc = ResizeArray<Span * string>()
 
@@ -15,82 +15,6 @@ let private collectBareUses (e: Expr) : (Span * string) list =
 
     walk e
     List.ofSeq acc
-
-let qualifyLine (r: Parser.Resolver) (line: string) : string * int =
-    match Parser.parseLine r line with
-    | Error _ -> line, 0
-    | Ok stmt ->
-        let uses =
-            match stmt with
-            | SExpr e
-            | SCmd e -> collectBareUses e
-            | SLet(_, e) -> collectBareUses e
-            | SLetPat(_, e) -> collectBareUses e
-            | SType _
-            | SModule _
-            | SImport _ -> []
-
-        let applicable =
-            uses
-            |> List.filter (fun (span, _) ->
-                let idx = span.Start.Col - 1
-                idx >= line.Length || line[idx] <> '$')
-            |> List.sortByDescending (fun (span, _) -> span.Start.Col)
-
-        let rewritten =
-            applicable
-            |> List.fold
-                (fun (l: string) (span, name) ->
-                    let home = Builtins.bareAliasHomes[name]
-                    let before = l.Substring(0, span.Start.Col - 1)
-                    let after = l.Substring(span.Start.Col - 1 + name.Length)
-                    before + $"{home}.{name}" + after)
-                line
-
-        rewritten, List.length applicable
-
-let qualifyFile (path: string) : int =
-    if not (System.IO.File.Exists path) then
-        System.Console.Error.WriteLine $"weir: no such script: {path}"
-        2
-    else
-        let typeEnv, _ = Prelude.extend Builtins.typeEnv Builtins.valueEnv
-
-        let r = Script.resolver typeEnv
-
-        Extern.refresh ()
-        let lines = System.IO.File.ReadAllLines path
-        let mutable total = 0
-        let mutable droppedLoose = false
-
-        let output =
-            lines
-            |> Array.map (fun line ->
-                if line.StartsWith "#!" then
-                    line
-                elif line.Trim() = "#loose" then
-                    droppedLoose <- true
-                    null
-                else
-                    let code = Script.stripComment line
-
-                    if code.Trim() = "" then
-                        line
-                    else
-                        let rewrittenCode, n = qualifyLine r code
-                        total <- total + n
-
-                        if n = 0 then
-                            line
-                        else
-                            rewrittenCode + line.Substring(code.Length))
-            |> Array.filter (fun l -> not (isNull l))
-
-        System.IO.File.WriteAllLines(path, output)
-
-        let looseNote = if droppedLoose then "; #loose directive removed" else ""
-        System.Console.Error.WriteLine $"weir fmt: {total} name(s) qualified{looseNote}"
-        0
 
 // ---------------------------------------------------------------------------
 // weir fmt <script> [D:fmt-v1] + intra-line respace [D:fmt-respace]
@@ -434,11 +358,7 @@ let formatFile (checkOnly: bool) (path: string) : int =
 
         let header, body =
             match lines with
-            | first :: rest when first.StartsWith "#!" ->
-                match rest with
-                | second :: tail when second.Trim() = "#loose" -> [ first; second ], tail
-                | _ -> [ first ], rest
-            | first :: rest when first.Trim() = "#loose" -> [ first ], rest
+            | first :: rest when first.StartsWith "#!" -> [ first ], rest
             | _ -> [], lines
 
         match formatLines body with

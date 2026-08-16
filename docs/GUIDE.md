@@ -71,7 +71,10 @@ Three properties, in the order they matter:
   | `Ctrl+R` | history search (fzf when installed; entries display one-line, ⏎-joined) |
   | `Esc` / `Ctrl+C` | abandon the whole buffer |
   | `Ctrl+D` | EOF on an empty buffer; delete/join otherwise |
-- `weir -e '1 + 2'` — one expression.
+- `weir -e '1 + 2'` — a program whose LAST statement is an
+  expression (newlines are statement boundaries, as in a file); the
+  result is echoed. A lone declaration is refused — `-e` evaluates
+  something and shows you the result. Strict like files.
 - `weir script.weir args...` — run a script; `#!/usr/bin/env weir`
   works. Scripts are STRICT: library calls are module-qualified
   (`Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read`).

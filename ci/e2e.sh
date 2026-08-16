@@ -225,7 +225,7 @@ expect() {
 out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
 
-out=$($BIN -e 'ls |> where (fun f -> f.bytes > 1MiB) |> first 5' 2>&1); rc=$?
+out=$($BIN -e 'ls |> Seq.where (fun f -> f.bytes > 1MiB) |> Seq.first 5' 2>&1); rc=$?
 [ $rc -eq 0 ] || fail "flagship pipeline must run measure-free: $out"
 echo "e2e ok: flagship pipeline, bare bytes"
 
@@ -244,13 +244,13 @@ printf 'Self.args |> print\n' > "$awdir/args.weir"
 out=$(PATH="$BINDIR:$PATH" $BIN -e "\$(weir \"$awdir/args.weir\" \"*\")")
 expect "argv stays literal" '["*"]' "$out"
 
-out=$($BIN -e 'echo hi (40 + 2) |> first 1')
+out=$($BIN -e 'echo hi (40 + 2) |> Seq.first 1')
 expect "command mode with splice" '["hi 42"]' "$out"
 
 out=$($BIN -e '[1..5] |> Seq.length')
 expect "range literal on the AOT binary" "5 : int" "$out"
 
-out=$(timeout 5 $BIN -e '[1..1000000] |> first 3') || fail "huge range under first must terminate (laziness)"
+out=$(timeout 5 $BIN -e '[1..1000000] |> Seq.first 3') || fail "huge range under first must terminate (laziness)"
 expect "ranges are lazy generators" '[1; 2; 3]' "$out"
 
 rangedir=$(mkweirtmp)
@@ -266,7 +266,7 @@ rm -rf "$rangedir"
 out=$($BIN -e 'let n = 40 + 2 in $"answer: {n} {{ok}}"')
 expect "string interpolation with brace escapes" '"answer: 42 {ok}"' "$out"
 
-out=$($BIN -e 'echo $"n={40 + 2}" |> first 1')
+out=$($BIN -e 'echo $"n={40 + 2}" |> Seq.first 1')
 expect "interpolated string is one argv entry" '["n=42"]' "$out"
 
 dir=$(mkweirtmp)
@@ -289,7 +289,7 @@ expect "^ls forces external" 'untracked.txt' "$out"
 expect "bound-variable splice into grep" '["staged.txt"]' "$out"
 rm -rf "$dir"
 
-out=$($BIN -e 'yes hi | cat |> first 2')
+out=$($BIN -e 'yes hi | cat |> Seq.first 2')
 expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
 
 # /etc/hosts, not /etc/hostname: the latter doesn't exist on macOS
@@ -373,16 +373,60 @@ if [ -e "$scriptdir/proof-file" ]; then
 fi
 echo "e2e ok: whole-file check runs nothing on error"
 
+# #loose is REMOVED (PLAN-dx-review D1): files are always strict, the
+# directive is unknown, and fmt --qualify went with the mode. The gate
+# is pointed at what CHANGED, not at a probe that passed on the
+# untouched tree.
 cat > "$scriptdir/loose.weir" <<'WEOF'
 #loose
-[2; 1] |> where (fun x -> x > 0) |> map (fun x -> x * 3) |> first 1 |> sum |> print
+[2; 1] |> where (fun x -> x > 0) |> Seq.iter (fun x -> print (show x))
 WEOF
-$BIN fmt --qualify "$scriptdir/loose.weir" 2>/dev/null
-out=$($BIN "$scriptdir/loose.weir")
-expect "fmt --qualify graduates loose to strict-clean" "6" "$out"
-grep -q "Seq.map" "$scriptdir/loose.weir" || fail "fmt did not qualify"
-if grep -q "#loose" "$scriptdir/loose.weir"; then fail "fmt left the #loose directive"; fi
-echo "e2e ok: fmt --qualify roundtrip"
+if $BIN fmt --qualify "$scriptdir/loose.weir" 2>/dev/null; then
+    fail "fmt --qualify must be an unknown flag now"
+fi
+before=$(cat "$scriptdir/loose.weir")
+$BIN fmt "$scriptdir/loose.weir" >/dev/null 2>&1 || true
+after=$(cat "$scriptdir/loose.weir")
+grep -q "#loose" "$scriptdir/loose.weir" || fail "fmt must not strip the unknown directive"
+echo "$after" | grep -q "Seq.where" && fail "fmt must not rewrite bare names"
+out=$($BIN "$scriptdir/loose.weir" 2>&1 || true)
+echo "$out" | grep -q "unknown or misplaced directive" || fail "a #loose file must hit the generic directive error: $out"
+out=$($BIN check "$scriptdir/loose.weir" 2>&1 || true)
+echo "$out" | grep -q "spell it 'Seq.where'" || fail "the bare-name teaching must name the qualified spelling: $out"
+out=$($BIN -e '[1] |> where (fun n -> n > 0)' 2>&1 || true)
+echo "$out" | grep -q "Seq.where" || fail "-e is strict and must teach the qualified spelling: $out"
+echo "e2e ok: #loose removed — strict everywhere, fmt --qualify gone, bare names teach"
+
+# -e takes a PROGRAM (PLAN-dx-review D9, reading (b)): newlines are
+# statement boundaries as in a file, a lone declaration is still
+# refused, and the AGREEMENT with the file path is the property —
+# pin both and pin that they agree.
+prog='let x = 1
+print $"{x}"'
+eout=$($BIN -e "$prog")
+cat > "$scriptdir/e9.weir" <<'WEOF'
+let x = 1
+print $"{x}"
+WEOF
+fout=$($BIN "$scriptdir/e9.weir")
+expect "-e two-statement program runs" "1" "$eout"
+[ "$eout" = "$fout" ] || fail "-e and the file disagree on identical bytes: -e '$eout' vs file '$fout'"
+out=$($BIN -e 'for x in [1; 2] do
+    print (show x)')
+expect "-e indented block body parses" "1
+2" "$out"
+out=$($BIN -e 'type V = | Pass of int | Fail
+let v = Pass 3
+match v with | Pass n -> n | Fail -> 0')
+echo "$out" | grep -q "3 : int" || fail "-e declarations-then-expression must echo the result: $out"
+out=$($BIN -e 'let x = 1' 2>&1 || true)
+echo "$out" | grep -qF "not a let statement" || fail "a lone let must keep its teaching: $out"
+out=$($BIN -e 'type T = { a: int }' 2>&1 || true)
+echo "$out" | grep -qF "not a declaration" || fail "a lone type must keep its teaching: $out"
+out=$($BIN -e 'let x = 2 // trailing comment
+print $"{x}"')
+expect "-e multi-line trailing comment strips as in a file" "2" "$out"
+echo "e2e ok: -e evaluates a program and shows the result; lone declarations still teach"
 cat > "$scriptdir/multi.weir" <<'WEOF'
 type Verdict =
     | Pass of int
@@ -4292,7 +4336,7 @@ rm -rf "$lgdir"
 out=$($BIN --e 'x' 2>&1) && fail "--e must exit nonzero" || true
 echo "$out" | grep -qF "unknown option '--e'. Did you mean '-e'?" || fail "--e did-you-means -e: $out"
 out=$($BIN -e one two three 2>&1) && fail "-e arity must exit nonzero" || true
-echo "$out" | grep -qF "got 3 — quote the expression" || fail "-e names its arity: $out"
+echo "$out" | grep -qF "got 3 — quote the program" || fail "-e names its arity: $out"
 $BIN --help | grep -qF "usage: weir" || fail "--help prints usage on stdout, exit 0"
 echo "e2e ok: CLI teaching arms (--e did-you-mean, -e arity, --help)"
 

@@ -107,8 +107,7 @@ let anonRecordName (fields: (string * Ty) list) : string =
 let pendingAnonDefs: System.Threading.ThreadLocal<ResizeArray<string * (string * Ty) list>> =
     new System.Threading.ThreadLocal<_>(fun () -> ResizeArray())
 
-let pushAnonDef (name: string) (fields: (string * Ty) list) : unit =
-    pendingAnonDefs.Value.Add(name, fields)
+let pushAnonDef (name: string) (fields: (string * Ty) list) : unit = pendingAnonDefs.Value.Add(name, fields)
 
 let drainAnonDefs () : (string * (string * Ty) list) list =
     let xs = List.ofSeq pendingAnonDefs.Value
@@ -174,13 +173,20 @@ type Scheme =
       // translated to PHYSICAL at generalization (spans die at statement
       // boundaries), rehydrated at instantiation, reported by the
       // row-vs-record discharge
-      RowOrigins: Map<string, (string * int * int * int) list> }
+      RowOrigins: Map<string, (string * int * int * int) list>
+      // hole-default PROVENANCE (PLAN-dx-review D6): the physical
+      // (line, col) of each bare interpolation hole whose var took the
+      // string DEFAULT at this statement's boundary — a later call-site
+      // mismatch names the defaulting decision instead of blaming the
+      // call
+      HoleDefaults: (int * int) list }
 
 let generalize (ty: Ty) : Scheme =
     { Forall = tyVars ty
       Cs = Map.empty
       Ty = ty
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 // generalization with the checker's constraint residue: only
 // constraints on vars actually quantified ride into the scheme
@@ -190,13 +196,16 @@ let generalizeWith (cs: Map<string, Set<Cls>>) (ty: Ty) : Scheme =
     { Forall = fa
       Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
       Ty = ty
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 // generalizeWith + row origins [D:row-provenance], filtered like Cs:
-// only origins for quantified row vars ride into the scheme
+// only origins for quantified row vars ride into the scheme; hole
+// defaults ride whole (they anchor prose, not vars)
 let generalizeWithOrigins
     (cs: Map<string, Set<Cls>>)
     (origins: Map<string, (string * int * int * int) list>)
+    (holeDefaults: (int * int) list)
     (ty: Ty)
     : Scheme =
     let fa = tyVars ty
@@ -204,13 +213,15 @@ let generalizeWithOrigins
     { Forall = fa
       Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
       Ty = ty
-      RowOrigins = origins |> Map.filter (fun v _ -> fa.Contains v) }
+      RowOrigins = origins |> Map.filter (fun v _ -> fa.Contains v)
+      HoleDefaults = holeDefaults }
 
 let mono (ty: Ty) : Scheme =
     { Forall = Set.empty
       Cs = Map.empty
       Ty = ty
-      RowOrigins = Map.empty }
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
 
 // attribute arguments [D:attributes]: literal-only, the splice family
 type AttrArg =

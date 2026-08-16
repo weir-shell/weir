@@ -10,7 +10,12 @@ open Weir.Types
 //     suggests a spelling whose only outcome is the reserved-word
 //     teaching error)
 //   function — reserved for the parked match-lambda sugar; same fate
-let unsuggestedKeywords = Set [ "rec"; "mutable"; "function" ]
+// rec/mutable/function are reserved-for-teaching; the foreign
+// control-flow words (PLAN-dx-review D4) exist only to teach weir's
+// spelling — offering any of them would suggest a word that can never
+// parse
+let unsuggestedKeywords =
+    Set [ "rec"; "mutable"; "function"; "while"; "return"; "try"; "def" ]
 
 let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 

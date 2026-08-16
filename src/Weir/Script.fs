@@ -1800,10 +1800,6 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
 
         sb.ToString()
 
-type Mode =
-    | Strict
-    | Loose
-
 // a `#sig` head directive [D:command-signatures]: tool + optional
 // override path + its physical line (for the declared-by teaching)
 type SigDecl =
@@ -1811,16 +1807,15 @@ type SigDecl =
       Override: string option
       Line: int }
 
-// shebang/#loose/#sig peeling — ONE derivation for the runner and the
-// check-side analyzeLines. The head block takes any mix of #loose and
-// #sig lines; a #-line past it stays the misplaced-directive error.
-let private scriptBody (rawLines: string list) : Mode * string list * int * SigDecl list =
+// shebang/#sig peeling — ONE derivation for the runner and the
+// check-side analyzeLines. The head block takes #sig lines; a #-line
+// past it stays the misplaced-directive error.
+let private scriptBody (rawLines: string list) : string list * int * SigDecl list =
     let afterShebang, shebangOffset =
         match rawLines with
         | first :: rest when first.StartsWith "#!" -> rest, 1
         | _ -> rawLines, 0
 
-    let mutable mode = Strict
     let mutable rest = afterShebang
     let mutable off = shebangOffset
     let sigs = ResizeArray<SigDecl>()
@@ -1828,10 +1823,6 @@ let private scriptBody (rawLines: string list) : Mode * string list * int * SigD
 
     while go do
         match rest with
-        | first :: tail when first.Trim() = "#loose" ->
-            mode <- Loose
-            rest <- tail
-            off <- off + 1
         | first :: tail when first.TrimStart().StartsWith "#sig" ->
             let t = (stripComment first).Trim()
 
@@ -1856,7 +1847,7 @@ let private scriptBody (rawLines: string list) : Mode * string list * int * SigD
             off <- off + 1
         | _ -> go <- false
 
-    mode, rest, off, List.ofSeq sigs
+    rest, off, List.ofSeq sigs
 
 type CheckedStmt =
     | CLet of name: string * te: Check.TypedExpr
@@ -1919,11 +1910,8 @@ let selfMembers: Map<string, Scheme> =
           "scriptPath", generalize TStr
           "entryPath", generalize TStr ]
 
-let private baseEnvs (mode: Mode) (scriptArgs: string list) (scriptPath: string) =
-    let typeEnv =
-        match mode with
-        | Strict -> Builtins.typeEnvStrict
-        | Loose -> Builtins.typeEnv
+let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
+    let typeEnv = Builtins.typeEnvStrict
 
     let typeEnv, valueEnv = Prelude.extend typeEnv Builtins.valueEnv
 
@@ -1965,7 +1953,8 @@ let resolver (typeEnv: TypeEnv) : Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
       IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
       IsExternal = Extern.exists
-      ExternalNames = fun () -> Extern.names () :> seq<string> }
+      ExternalNames = (fun () -> Extern.names () :> seq<string>)
+      BareHome = fun n -> Map.tryFind n Builtins.bareAliasHomes }
 
 let private located (path: string) (lineNo: int) (msg: string) : string =
     let msg =
@@ -1978,7 +1967,7 @@ let private located (path: string) (lineNo: int) (msg: string) : string =
 
 // Streaming output for command-mode statements — the single exempt form.
 // The seq case goes through Eval.writeLines, the same renderer print uses.
-let private printResult (v: Eval.Value) =
+let printResult (v: Eval.Value) =
     match v with
     | Eval.VStr s -> Console.WriteLine s
     | Eval.VSeq items -> Eval.writeLines items
@@ -2261,7 +2250,11 @@ let checkStatement
                       Span = Some span
                       Parse = true
                       Message =
-                        $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or run it through sh -c"
+                        (match Map.tryFind prog Builtins.bareAliasHomes with
+                         | Some home ->
+                             $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
+                         | None ->
+                             $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or run it through sh -c")
                       File = None
                       Note = None
                       Warnings = [] }
@@ -2328,8 +2321,8 @@ let checkStatement
                 |> Result.bind (fun () -> Check.typecheckWith tenv e)
             with
             | Error terr -> Error(typed StmtTag.Let terr)
-            | Ok(te, cs, origins) ->
-                let scheme = generalizeWithOrigins cs origins te.Ty
+            | Ok(te, cs, origins, holeDefaults) ->
+                let scheme = generalizeWithOrigins cs origins holeDefaults te.Ty
 
                 Ok
                     { Kind = KLet(name, scheme, te)
@@ -2606,7 +2599,7 @@ let rec loadModuleCached
         stmt $"cannot resolve import: no file at {absPath}"
     else
         let rawLines = readImportSource absPath |> Option.get
-        let _, body, bodyOffset, _ = scriptBody rawLines
+        let body, bodyOffset, _ = scriptBody rawLines
 
         let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
 
@@ -3195,7 +3188,7 @@ let targetSourceLines (absPath: string) : string list option = readImportSource 
 /// the signatures a file's #sig head declares, loaded; QUIET on load
 /// errors — diagnostics are analyzeLines' job [D:lsp-cross-file]
 let sigInfosForFile (path: string) (rawLines: string list) : SigInfo list =
-    let _, _, _, decls = scriptBody rawLines
+    let _, _, decls = scriptBody rawLines
     loadSigs path decls |> snd
 
 let sigCmdDiagnostics
@@ -3568,7 +3561,7 @@ let analyzeLines
     (path: string)
     (rawLines: string list)
     : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv * LogicalLine list =
-    let _, body, bodyOffset, sigDecls = scriptBody rawLines
+    let body, bodyOffset, sigDecls = scriptBody rawLines
     let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
 
     let typeEnv0, _ = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
@@ -3682,7 +3675,17 @@ let analyzeLines
                 // expression mode and errors "unbound 'xx' —
                 // did you mean 'xr'?"; check's command reading
                 // must surface the same candidate
-                let hint = didYouMean prog (Map.keys tenv.Values |> Seq.filter Types.isUserName)
+                // a missing PROGRAM suggests programs — externals and
+                // lowercase user bindings; a constructor (YMap) is never
+                // a plausible command (PLAN-dx-review D5)
+                let hint =
+                    didYouMean
+                        prog
+                        (Seq.append
+                            (Extern.names () :> seq<string>)
+                            (Map.keys tenv.Values
+                             |> Seq.filter Types.isUserName
+                             |> Seq.filter (fun n -> n.Length > 0 && System.Char.IsLower n[0])))
 
                 diags.Add
                     { File = path
@@ -3695,7 +3698,11 @@ let analyzeLines
                       Severity = "warning"
                       Code = "cmd-not-found"
                       Message =
-                        $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed" }
+                        (match Map.tryFind prog Builtins.bareAliasHomes with
+                         | Some home ->
+                             $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
+                         | None ->
+                             $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed") }
 
             match checkStatement true assumeResolver analyzeImport tenv ll with
             | Ok chk ->
@@ -3815,7 +3822,8 @@ let analyzeLines
                          { Forall = Set.singleton "__hole"
                            Cs = Map.empty
                            Ty = TVar "__hole"
-                           RowOrigins = Map.empty }
+                           RowOrigins = Map.empty
+                           HoleDefaults = [] }
 
                      let bound =
                          match stmt with
@@ -3934,7 +3942,7 @@ let run (path: string) (scriptArgs: string list) : int =
     else
         let rawLines = IO.File.ReadAllLines path |> Array.toList
 
-        let mode, body, bodyOffset, runSigDecls = scriptBody rawLines
+        let body, bodyOffset, runSigDecls = scriptBody rawLines
 
         // COLUMN-0 only: a directive is a statement-position thing.
         // Indented `#` lines are continuations — inside a yaml district
@@ -3949,7 +3957,10 @@ let run (path: string) (scriptArgs: string list) : int =
         match directiveError with
         | Some(i, l) ->
             Console.Error.WriteLine(
-                located path (bodyOffset + i + 1) $"unknown or misplaced directive: {l} (#loose belongs at file head)"
+                located
+                    path
+                    (bodyOffset + i + 1)
+                    $"unknown or misplaced directive: {l} (directives belong at the file head)"
             )
 
             1
@@ -3959,7 +3970,7 @@ let run (path: string) (scriptArgs: string list) : int =
             // unresolved (the bash-$0 behavior)
             let absScriptPath = IO.Path.GetFullPath path
 
-            let typeEnv0, valueEnv0 = baseEnvs mode scriptArgs absScriptPath
+            let typeEnv0, valueEnv0 = baseEnvs scriptArgs absScriptPath
             Extern.refresh ()
 
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
