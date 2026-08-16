@@ -1455,9 +1455,12 @@ echo "e2e ok: ambient env reaches every spawn — reifier family, In/Env twins, 
 
 # the observed-count loop [D:observed-report]: the driver must report
 # what the harness MEASURED, not what it was asked — a tiny run, the
-# regression guard for the silent-defaults window
+# regression guard for the silent-defaults window. Linux-only, where
+# the deep nightly lives: native Windows cannot spawn ci/deep-lock.sh,
+# and the fuzz suite's depth pins abort the macOS testhost (no fuzz
+# step has ever run there — smaller thread stacks)
 froot="$(cd "$(dirname "$0")/.." && pwd)"
-if command -v dotnet >/dev/null 2>&1 && [ -f "$froot/tests/Weir.Fuzz/Weir.Fuzz.fsproj" ]; then
+if [ "$(uname -s)" = "Linux" ] && command -v dotnet >/dev/null 2>&1 && [ -f "$froot/tests/Weir.Fuzz/Weir.Fuzz.fsproj" ]; then
     obs_rc=0
     obs=$( cd "$froot" && $BIN tools/fuzz.weir --seed 4242 --count 10 2>&1 ) || obs_rc=$?
     [ "$obs_rc" = "0" ] || fail "observed-count run failed: $(echo "$obs" | tail -3)"
@@ -1465,7 +1468,7 @@ if command -v dotnet >/dev/null 2>&1 && [ -f "$froot/tests/Weir.Fuzz/Weir.Fuzz.f
         || fail "driver must report the OBSERVED config: $(echo "$obs" | tail -3)"
     echo "e2e ok: fuzz driver reports observed seed/count (instrument measures, not restates)"
 else
-    echo "e2e skip: fuzz observed-count loop (no dotnet)"
+    echo "e2e skip: fuzz observed-count loop (Linux + dotnet only)"
 fi
 
 # ---- filesystem members [D:fs-members] -------------------------------------
