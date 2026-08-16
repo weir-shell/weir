@@ -508,7 +508,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // Secret admits Eq [D:secret] (did the token change?) but NOT
             // Ord — sorting secrets is meaningless; constant-time is not
             // claimed (weir is not a crypto library)
-            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize | TInstant | TSecret) -> true
+            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize | TInstant | TBytes | TSecret) -> true
             // floats are EXCLUDED from Eq [D:floats] — finite-only kept
             // equality reflexive; representation (0.1 + 0.2) is the trap
             // that remains, and weir does not vouch for it
@@ -517,7 +517,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             | Cls.Eq, TTuple ts -> ts |> List.forall (ok seen)
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
-            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TInstant | TSecret) -> true
+            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TInstant | TBytes | TSecret) -> true
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
@@ -588,6 +588,10 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
                     span
                     "a Duration's argv form depends on the program; pass Duration.toMillis d or show d deliberately"
             | TSize -> err span "a Size's argv form depends on the program; pass Size.toBytes s or show s deliberately"
+            | TBytes ->
+                err
+                    span
+                    "Bytes cannot splice into argv — bytes are not text; Bytes.toBase64 b for a text form, or File.writeBytes and pass the path"
             | TInstant ->
                 err span "an Instant's argv form depends on the program; pass Instant.epochMs t or show t deliberately"
             | ty -> err span $"command arguments must be strings, ints or bools; this one is {formatTy ty}"
@@ -804,6 +808,10 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
         // a Secret refuses print [D:secret] — show s prints ***; the value
         // is the deliberate Secret.reveal
         err span "print will not render a Secret — show s prints ***, or Secret.reveal s to print its value"
+    | TBytes ->
+        // Bytes refuses print [D:bytes] — raw bytes wreck a terminal
+        // (the gzip receipt); the exits are deliberate
+        err span "print will not render Bytes — Bytes.toBase64 b for text, or File.writeBytes path b for a file"
     | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy t}"
 
 // the (op) desugar target [D:operator-values]: `fun a b -> a op b`
@@ -1017,6 +1025,7 @@ let rec private jsonAdmitted
         err
             span
             $"{at}Size is not representable in JSON — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TBytes -> err span $"{at}Bytes is not representable in JSON — Bytes.toBase64 into a string field"
     | TDur ->
         // parked [D:duration]: no duration convention (ms-int vs
         // ISO-8601 both defensible) — an honest rejection beats a guess
@@ -1103,6 +1112,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
         err
             span
             "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TBytes -> err span "Bytes is not representable in yaml — Bytes.toBase64 into a string field"
     | TDur ->
         err
             span
@@ -1147,6 +1157,7 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty:
         err
             span
             "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TBytes -> err span "Bytes is not representable in yaml — Bytes.toBase64 into a string field"
     | TDur ->
         err
             span
@@ -3899,6 +3910,7 @@ let rec private validateTy
     | TDur
     | TInstant
     | TSize
+    | TBytes
     | TSecret -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
     | TTuple ts -> allOk ts (validateTy env selfName selfArity allowed span)

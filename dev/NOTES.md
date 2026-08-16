@@ -1,5 +1,35 @@
 # Spike Notes
 
+## bytes: the capture law grows a second customer (2026-08-16)
+
+Phase 0's trace turned up the sharpest fact of the session: the capture
+BUFFER has been byte-faithful all along (segments of raw bytes, line
+offsets, decode per pull) — only the VALUE surface is text. Everything
+else crosses seq<string> somewhere: File.read decodes leniently and
+line-splits, File.write re-encodes and appends LF per line, stdin
+writes lines. So weir had NO byte-faithful passthrough, and the scoping
+ruling's escape hatch ("unbounded data streams to a sink") did not
+exist for binary — File.readBytes/writeBytes are that hatch for the
+bounded case, and the unbounded command→file case is stated in the
+ledger as still-external (curl -o) pending the deferred reifier/HTTP
+work rather than papered over.
+
+The laws all had precedents to copy and none needed invention: the
+summary render is [D:binary-echo]'s rule made structural (a Bytes
+value CANNOT put content on a terminal, rather than a probe catching
+it); the fromUtf8 gate is fromBase64's gate verbatim, NUL included, so
+[D:nul-boundary] stays closed — the argv route did not reopen because
+the splice arm refuses Bytes at check. Secret-of-Bytes decided NO:
+Secret's laws are string-shaped end to end, and a receiptless widening
+that doubles a security type's surface is exactly what the park
+discipline exists to refuse. One pleasant surprise: sha256/toBase64
+gaining Bytes homes demoted no bare names — the allowlist counts homes
+within Seq/Str only, so the inverted-blocklist design absorbed a new
+module without a single collision. File.sha256 streams (HashData over
+an open stream); the bounded value type never forced a bounded
+implementation. External referees per [D:yaml-interop]: cmp on the
+round trip, sha256sum on the digest, both agreeing.
+
 ## dx review fixes: the lists complete, and two instruments were wrong (2026-08-16)
 
 The plan's premise that needed correcting: D1's rider assumed "the
