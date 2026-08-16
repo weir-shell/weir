@@ -1857,7 +1857,7 @@ let completionTests =
 
               Expect.equal
                   Weir.Complete.unsuggestedKeywords
-                  (Set [ "rec"; "mutable"; "function" ])
+                  (Set [ "rec"; "mutable"; "function"; "while"; "return"; "try"; "def" ])
                   "the exclusion set moved — its reasons live beside its definition"
 
               // behavioral, through suggest itself: the once-missing
@@ -6898,7 +6898,7 @@ let agentFindingsTests =
                   match stmt with
                   | SLet(_, e) ->
                       match Weir.Check.typecheckWith env e with
-                      | Ok(te, _, _) -> Expect.equal (formatTy te.Ty) "string -> seq<string>" ""
+                      | Ok(te, _, _, _) -> Expect.equal (formatTy te.Ty) "string -> seq<string>" ""
                       | Error terr -> failtest (formatError terr)
                   | _ -> ()
               | other -> failtest $"parse failed: {other}"
@@ -8136,7 +8136,7 @@ let typeClassTests =
               match Weir.Parser.parseStmt "let same x y = x == y" with
               | Ok(SLet(_, e)) ->
                   match Weir.Check.typecheckWith env e with
-                  | Ok(te, cs, _) ->
+                  | Ok(te, cs, _, _) ->
                       let sch = Weir.Types.generalizeWith cs te.Ty
                       Expect.isTrue (sch.Cs |> Map.exists (fun _ s -> s.Contains Weir.Types.Cls.Eq)) "Eq rides"
                   | Error terr -> failtest (formatError terr)
@@ -12999,11 +12999,86 @@ let windowsV1Tests =
                   Expect.equal vp "/c:/a/b.weir" "POSIX keeps the literal path"
           } ]
 
+// PLAN-dx-review D2-D8: the message-family completions, pinned — each
+// mistake census case that moved buckets has its message here
+let dxMessageTests =
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+        diags
+
+    let mustSay lines (needle: string) label =
+        Expect.exists
+            (diagsOf lines)
+            (fun d -> d.Message.Contains needle)
+            $"{label}: expected a diagnostic containing '{needle}', got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "DX message pins"
+        [ test "D2: '&&' and '||' join the prior-bleed family" {
+              mustSay [ "echo a && echo b" ] "'&&' does not chain commands" "and"
+              mustSay [ "echo a || echo b" ] "'||' does not chain commands" "or"
+          }
+          test "D3: '=' in expression position teaches '=='" {
+              mustSay [ "let n = if 1 = 1 then 1 else 2"; "print (show n)" ] "use '==' for equality" "if-cond"
+              mustSay [ "let b = 1 = 2"; "print (show b)" ] "use '==' for equality" "let-rhs"
+          }
+          test "D3: a stray backslash at hole level teaches, quotes need no escape there" {
+              mustSay [ "print $\"{ \\\"abc\\\" }\"" ] "not an escape here" "hole backslash"
+
+              // the CONTROL: an unescaped string inside a hole is fine
+              let clean, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "print $\"{Str.length \"abc\"}\"" ]
+
+              Expect.isEmpty clean "strings in holes need no escaping"
+          }
+          test "D4: foreign control-flow words teach weir's spelling" {
+              mustSay [ "while true do"; "    print (show 1)" ] "'while' is not a weir word" "while"
+              mustSay [ "let f n ="; "    return n"; "print (show (f 1))" ] "'return' is not a weir word" "return"
+              mustSay [ "def f():"; "    print (show 1)" ] "'def' is not a weir word" "def"
+              mustSay [ "let r = try (echo x)"; "print (show 1)" ] "'try' is not a weir word" "try"
+          }
+          test "D5: List/Array teach Seq; no cross-kind did-you-mean" {
+              mustSay [ "let n = List.length [1]"; "print (show n)" ] "weir's sequences are 'Seq'" "List"
+              mustSay [ "let n = Array.length [1]"; "print (show n)" ] "weir's sequences are 'Seq'" "Array"
+
+              Expect.isFalse
+                  (diagsOf [ "let n = List.length [1]"; "print (show n)" ]
+                   |> List.exists (fun d -> d.Message.Contains "Post"))
+                  "a union case is never suggested for a module"
+          }
+          test "D6: a hole-defaulted parameter's mismatch names the defaulting decision" {
+              mustSay
+                  [ "let name n = $\"item-{n}\""; "print (name 5)" ]
+                  "a bare interpolation hole defaulted its parameter"
+                  "hole default"
+
+              mustSay [ "let name n = $\"item-{n}\""; "print (name 5)" ] "the hole at 1:22" "anchor"
+          }
+          test "D7: Seq.iter print resolves at the use site; non-printables still refuse" {
+              let clean, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ "[1] |> Seq.iter print" ]
+
+              Expect.isEmpty clean "the obvious spelling works on the obvious type"
+
+              let cleanStr, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "[\"a\"] |> Seq.iter print" ]
+
+              Expect.isEmpty cleanStr "strings unchanged"
+
+              mustSay
+                  [ "type R = { a: int }"; "[{ a = 1 }] |> Seq.iter print" ]
+                  "print takes a string, int, float, bool, or seq<string>"
+                  "record refused"
+          }
+          test "D8: a pasted multi-line string literal teaches the single-line law" {
+              mustSay [ "let x = \"abc"; "print x" ] "strings are single-line" "unclosed"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
-        [ parserTests
+        [ dxMessageTests
+          parserTests
           fsMemberTests
           durationTests
           floatTests

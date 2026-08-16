@@ -1,8 +1,13 @@
 # weir — adversarial review of the developer experience
 
-Status: PROPOSED (findings-shaped; not blessed, nothing fixed yet). Nine
-findings, all reproducing on the AOT binary at `e961984` — D1-D8 from the
-review, D9 measured while answering rider 2. Gate:
+Status: EXECUTED (2026-08-16 — gate green end to end, "all DX findings
+fixed"; census teaches 11→17 / plain 10→5 / dump 6→4 / silent 1→0,
+n=26, baseline 17). Decision rows: [D:strict-only], [D:e-programs],
+[D:dx-message-families], [D:print-use-site],
+[D:hole-default-provenance]. Report-backs are answered inline under
+their findings. Originally: nine findings, all reproducing on the AOT
+binary at `e961984` — D1-D8 from the review, D9 measured while
+answering rider 2. Gate:
 
     weir tools/dx-repro.weir --bin ./path/to/weir
 
@@ -82,6 +87,23 @@ with specific holes, not a rough one.
 
 ## D1 — `#loose` does not work in `check` or run (HIGH)
 
+STATUS: EXECUTED — removal, as disposed. The gate was re-pointed at
+what changed (fmt --qualify unknown flag; fmt leaves the directive and
+names alone; bare names teach), exactly per the instruction above.
+REPORT-BACK, answered: (1) REPL and file bare-name resolution DID
+share the path — baseEnvs is now unconditionally strict and
+`Builtins.typeEnv` survives for the REPL alone; (2) the LSP code
+action did NOT exist and landed here — and so did the bare-name
+DIAGNOSTIC itself, which this plan assumed already existed ("the
+diagnostic already names the repair" was false on the pipe and
+command-head paths: bare `where` hit the pipe-glyph error or "install
+the tool"); Resolver gained BareHome and three sites now teach the
+qualified spelling, with the quickfix + source.fixAll riding them;
+(3) new census n=26, baseline 17 (loose-bare-where removed per this
+rider; iter-print-ints removed because D7 made it VALID); (4) nothing
+in docs/ argued FOR `#loose` — SEMANTICS' rationale sentence argued
+for strictness and was kept in the rewritten bullet. [D:strict-only]
+
 SKILL.md: *"Bare names (`map`, `where`, `sortBy`) exist only in the REPL and
 `#loose` scripts."* The REPL half is true. The script half is not:
 
@@ -128,6 +150,16 @@ checker rejects, is not. A fixture that checks and runs a loose script
 without converting it first is the acceptance.
 
 ## D9 — `-e` takes multiple statements, and is strict (rider 2)
+
+STATUS: EXECUTED — reading (b), as recommended (the bless-note call
+was taken as the recorded recommendation; the divergence-from-ecosystem
+is stated in [D:e-programs], with the note that NO old key existed to
+supersede). Multi-line input routes through the FILE assembler, so
+indented blocks, block-lets and per-line comment stripping came free —
+which also answers the stripComment divergence flagged below (pinned:
+a multi-line -e with a trailing comment agrees with the file). The
+-e/file agreement is pinned as the property. -e is strict (shipped
+with D1's commit, as the scope note required — two commits).
 
 Amends rider 1, which left `-e` open after `Program.fs:10` turned out to take
 the bare env.
@@ -275,6 +307,8 @@ both of which become wrong.
 
 ## D2 — `&&` and `||` are silently accepted (HIGH)
 
+STATUS: EXECUTED. `&&` joined the argv family; `||` needed a STAGE-position parse guard (the first `|` reads as the pipe, so `||` never becomes argv). Both teach the weir idiom. [D:dx-message-families]
+
 `Check.fs:3912` names the family in a comment: *"the bash prior-bleed family:
 ; does not chain, > / >>"*. It has three members. The two commonest bash
 chaining glyphs are not among them:
@@ -294,6 +328,8 @@ itself from the siblings' pattern — *"'&&' does not chain commands in weir —
 put commands on separate lines"*.
 
 ## D3 — the raw expecting-list dump, 6 of 28 (MEDIUM-HIGH)
+
+STATUS: EXECUTED for the two named fix shapes: `=` now PARSES (==-precedence) and the checker rejects with the teaching — domination by parsing, no expecting-list to merge; the hole `\` teaches "a quote needs none inside an interpolation hole". The remaining dump cases (glob, `:` block, annotation, record comma) stay open — this section named no fix shape for them and the census carries them. [D:dx-message-families]
 
 Six cases produce a bare FParsec expecting-list as their FIRST diagnostic,
 naming no repair: `=` used for equality, `let x: int = 1` (a type annotation),
@@ -332,6 +368,8 @@ hole"*.
 
 ## D4 — other languages' keywords land as "command not found on PATH" (MEDIUM)
 
+STATUS: EXECUTED. while/return/try/def reserved, per-word teachings at statement positions (while → retry/poll/for; return → last expression; try → `| complete` + within; def → let), excluded from completion. [D:dx-message-families]
+
 `while`, `return`, `try`, `def` are not reserved, so they fall through to the
 PATH resolver:
 
@@ -350,6 +388,8 @@ last expression is the value).
 
 ## D5 — the commonest .NET prior gets an actively misleading suggestion (MEDIUM)
 
+STATUS: EXECUTED. List/Array → "weir's sequences are 'Seq'"; did-you-mean pools kind-filtered (same-case, with the case-insensitive-equal carve-out for Exit→exit; a missing PROGRAM suggests programs and externals, never a constructor). Instrument note: the gate probe's own FILENAME contained "Post" and kept the cell red after the fix — renamed, recorded. [D:dx-message-families]
+
     List.length [1]     →  unbound variable 'List'. Did you mean 'Post'?
     map (...) [1]       →  command not found on PATH: map. Did you mean 'YMap'?
 
@@ -365,6 +405,8 @@ and suppress a did-you-mean whose target is not plausibly the same KIND of
 thing (a module suggestion for a module, not a union case).
 
 ## D6 — hole-defaulting reports at the call site, not the cause (MEDIUM)
+
+STATUS: EXECUTED. Scheme.HoleDefaults carries the holes' physical anchors ([D:row-provenance]'s pattern, second instance); a call-site string-mismatch names the defaulting decision and the exact hole ("the hole at 1:22") with both repairs. [D:hole-default-provenance]
 
     let name n = $"item-{n}"
     print (name 5)
@@ -383,6 +425,8 @@ type error at the call.
 
 ## D7 — `Seq.iter print` fails on `seq<int>` (LOW-MEDIUM)
 
+STATUS: EXECUTED — the resolve-at-use-site reading, via the EXISTING deferral pattern (splice holes): point-free print defers its sentinel to the statement boundary, printArgTy validates there, the string default survives only for genuinely undetermined uses. The obvious spelling now RUNS on the obvious type, so the census case left the corpus (correct code has no bucket in a mistake census). [D:print-use-site]
+
     [1] |> Seq.iter print       error [check]: expected int, got string
     ["a"] |> Seq.iter print     clean
 
@@ -396,6 +440,8 @@ FIX SHAPE: either resolve `print` at the use site like the other generics, or
 teach at the point-free position naming `Seq.iter (fun n -> print $"{n}")`.
 
 ## D8 — small, real, and already documented
+
+STATUS: EXECUTED for the string case: the missing closer at end-of-input teaches "strings are single-line — use \n" through the exception channel (the fatal-in-attempt property — the open quote sits inside topLet's attempt, so a failFatally was swallowed; DepthExceeded's precedent applied). The `\r` counter-example stands untouched. [D:dx-message-families]
 
 Recorded because each cost time and each has a one-line answer that the error
 does not give.

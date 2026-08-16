@@ -36,7 +36,7 @@ type Cli = {
     [<Default "weir">]
     bin: string
     /// fail if fewer than this many cases teach a repair
-    [<Default 11>]
+    [<Default 17>]
     baseline: int
 }
 
@@ -69,10 +69,15 @@ let corpus =
       ("typo-member", [ @"print (show (Seq.lenght [1]))" ])
       ("comma-in-record", [ @"type R = { a: int, b: int }"; @"print (show 1)" ])
       ("precedence-pipe-eq", [ @"let b = [1] |> Seq.length == 1"; @"print (show b)" ])
+      // iter-print-ints REMOVED (PLAN-dx-review D7): the fix made the
+      // spelling VALID — it is a right-first-try now, and correct code
+      // has no bucket in a mistake census (the no-regression pin lives
+      // in the unit suite); n is 26
       ("map-as-statement", [ @"[1] |> Seq.map print" ])
-      ("iter-print-ints", [ @"[1] |> Seq.iter print" ])
-      ("bare-where-strict", [ @"let xs = [1] |> where (fun n -> n > 0)"; @"print (show (Seq.length xs))" ])
-      ("loose-bare-where", [ @"#loose"; @"let xs = [1; 2; 3]"; @"xs |> where (fun n -> n > 1) |> Seq.iter (fun n -> print (show n))" ]) ]
+      // loose-bare-where REMOVED with #loose itself (PLAN-dx-review D1):
+      // once the directive is out of the docs nobody types it, so it
+      // stopped being a realistic wrong-first-try; n is 27
+      ("bare-where-strict", [ @"let xs = [1] |> where (fun n -> n > 0)"; @"print (show (Seq.length xs))" ]) ]
 
 // a message "teaches" if it names a repair; the phrases below are the
 // vocabulary the existing good messages already use
@@ -88,7 +93,11 @@ let teachPhrases =
       "add an"
       "spell it"
       "names start"
-      "bind it" ]
+      "bind it"
+      // the D4/D5 messages' vocabulary (they name weir's spelling
+      // explicitly — repair-naming, not explanation)
+      "is not a weir word"
+      "weir's sequences are" ]
 
 let checkRun path =
     let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete

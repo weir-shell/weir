@@ -35,7 +35,7 @@ rules:
     # ---- keywords (the parser's set, verified) ----
     # rule: keywords
     - statement: "\\b(let|in|if|then|elif|else|when|match|with|function|fun|type|of)\\b"
-    - statement: "\\b(from|to|for|do|module|import|within|retry|poll|until)\\b"
+    - statement: "\\b(from|to|for|do|module|import|within|retry|poll|until|while|return|try|def)\\b"
     # the within KIND is part of the form, not a name [D:within-kinds] —
     # micro paints the whole match, so within + kind share the statement
     # color (the richer engines give the kind its own capture)

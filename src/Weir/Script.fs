@@ -2321,8 +2321,8 @@ let checkStatement
                 |> Result.bind (fun () -> Check.typecheckWith tenv e)
             with
             | Error terr -> Error(typed StmtTag.Let terr)
-            | Ok(te, cs, origins) ->
-                let scheme = generalizeWithOrigins cs origins te.Ty
+            | Ok(te, cs, origins, holeDefaults) ->
+                let scheme = generalizeWithOrigins cs origins holeDefaults te.Ty
 
                 Ok
                     { Kind = KLet(name, scheme, te)
@@ -3675,7 +3675,17 @@ let analyzeLines
                 // expression mode and errors "unbound 'xx' —
                 // did you mean 'xr'?"; check's command reading
                 // must surface the same candidate
-                let hint = didYouMean prog (Map.keys tenv.Values |> Seq.filter Types.isUserName)
+                // a missing PROGRAM suggests programs — externals and
+                // lowercase user bindings; a constructor (YMap) is never
+                // a plausible command (PLAN-dx-review D5)
+                let hint =
+                    didYouMean
+                        prog
+                        (Seq.append
+                            (Extern.names () :> seq<string>)
+                            (Map.keys tenv.Values
+                             |> Seq.filter Types.isUserName
+                             |> Seq.filter (fun n -> n.Length > 0 && System.Char.IsLower n[0])))
 
                 diags.Add
                     { File = path
@@ -3812,7 +3822,8 @@ let analyzeLines
                          { Forall = Set.singleton "__hole"
                            Cs = Map.empty
                            Ty = TVar "__hole"
-                           RowOrigins = Map.empty }
+                           RowOrigins = Map.empty
+                           HoleDefaults = [] }
 
                      let bound =
                          match stmt with

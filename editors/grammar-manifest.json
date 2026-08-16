@@ -12,6 +12,7 @@
     ]
   },
   "keywords": [
+    "def",
     "do",
     "elif",
     "else",
@@ -31,12 +32,15 @@
     "poll",
     "rec",
     "retry",
+    "return",
     "then",
     "to",
     "true",
+    "try",
     "type",
     "until",
     "when",
+    "while",
     "with",
     "within"
   ],

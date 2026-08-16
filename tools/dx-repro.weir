@@ -149,7 +149,10 @@ within tmp d
     let d2 = mustDiagnose d "D2-ampersand-silent" d2Amp
     let d3 = mustSay d "D3-equals-teaches" d3Eq "=="
     let d4 = mustNotSay d "D4-while-as-command" d4While "command not found on PATH: while"
-    let d5 = mustNotSay d "D5-List-suggests-Post" d5List "Post"
+    // the probe FILE NAME must not contain the needle: the diagnostic
+    // echoes the path, and a name carrying "Post" kept the cell red
+    // after the fix (instrument honesty: found while executing)
+    let d5 = mustNotSay d "D5-List-suggestion" d5List "Post"
     let d7 = mustCheckClean d "D7-iter-print-on-ints" d7IterPrint
 
     print ""
