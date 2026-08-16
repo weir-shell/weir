@@ -173,3 +173,14 @@ skill lines and targeted hints).
   gap rather than left implicit. Absence of PyYAML prints a named SKIP
   and keeps the finding open; a missing oracle must never read as a
   pass.
+- 2026-08-16 | dx-repro.weir + dx-message-census.weir | writing the DX
+  review's instruments found three defects in the instruments before
+  they found anything about weir: a probe named loose-bare-where that
+  used a QUALIFIED name (tested nothing), a classifier that folded
+  "correct but teaches nothing" into "teaches" (inflated 19), and a
+  classifier that read the whole output so a cascading second error's
+  "Did you mean" rescued a case whose real message was a dump
+  (inflated 14). The honest number is 11. Recorded because the
+  correction direction was the same all three times: every fix to the
+  instrument made the score WORSE, which is the expected sign when an
+  instrument starts out lenient.

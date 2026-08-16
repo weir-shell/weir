@@ -1,0 +1,150 @@
+#!/usr/bin/env weir
+// Gate for dev/plans/PLAN-dx-review.md — the DX findings that are BINARY
+// (a probe checks clean or it does not; a message says a word or it does
+// not). The census ratio in the plan is a measurement, not a gate; these are
+// the cells a fix must move.
+//
+//     weir tools/dx-repro.weir --bin ./path/to/weir
+//
+// Exits nonzero while any finding reproduces. A probe that fails to RUN
+// counts as reproducing, never as a pass.
+//
+// Positive controls: `control-sees-clean` proves the runner can observe a
+// clean check, `control-sees-error` proves it can observe a failing one.
+// Neither borrows a finding's payload, so both stay valid after the fixes.
+//
+// Probes avoid string literals entirely (they use `show`) so that this file
+// never needs a quote nested three deep to ask a one-line question.
+//
+// Shape note: every command-running helper is TOP-LEVEL, because a block
+// `let` with a command RHS loses its reifier off the topLet spine
+// (PLAN-adversarial-review F3).
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+}
+
+let cli = Args.load Cli
+
+// ---- probes -----------------------------------------------------------------
+
+let d1Loose =
+    [ @"#loose"
+      @"let xs = [1; 2; 3]"
+      @"xs |> where (fun n -> n > 1) |> Seq.iter (fun n -> print (show n))" ]
+
+let d2Amp = [ @"echo a && echo b" ]
+
+let d3Eq =
+    [ @"let n = if 1 = 1 then 1 else 2"
+      @"print (show n)" ]
+
+let d4While =
+    [ @"while true do"
+      @"    print (show 1)" ]
+
+let d5List =
+    [ @"let n = List.length [1]"
+      @"print (show n)" ]
+
+let d7IterPrint = [ @"[1] |> Seq.iter print" ]
+
+let controlClean = [ @"print (show 1)" ]
+let controlError = [ @"print (show thisNameIsNotBound)" ]
+
+// ---- runners (top-level: see the shape note) --------------------------------
+
+let checkRun path =
+    let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete
+    r
+
+let writeProbe d name lines =
+    let path = $"{d}/{name}.weir"
+    File.write path lines
+    path
+
+// ---- assertions -------------------------------------------------------------
+
+// the probe must CHECK CLEAN for the finding to be fixed
+let mustCheckClean d name lines =
+    let path = writeProbe d name lines
+    let r = checkRun path
+    let fixed = r.exitCode == 0
+    let first = r.stdout |> Seq.tryHead |> Option.defaultValue ""
+    let word = if fixed then "fixed" else $"REPRODUCES (exit {r.exitCode}: {first})"
+    print $"  {name}: {word}"
+    fixed
+
+// the probe must produce SOME diagnostic — silence is the defect
+let mustDiagnose d name lines =
+    let path = writeProbe d name lines
+    let r = checkRun path
+    let said = r.stdout |> Seq.length
+    let fixed = said > 0
+    let word = if fixed then "fixed" else "REPRODUCES (no diagnostic at all)"
+    print $"  {name}: {word}"
+    fixed
+
+// the message must MENTION the repair
+let mustSay d name lines needle =
+    let path = writeProbe d name lines
+    let r = checkRun path
+    let text = r.stdout |> Str.join " "
+    let fixed = text |> Str.contains needle
+    let word = if fixed then "fixed" else $"REPRODUCES (message never says {needle})"
+    print $"  {name}: {word}"
+    fixed
+
+// the message must NOT contain a misleading word
+let mustNotSay d name lines needle =
+    let path = writeProbe d name lines
+    let r = checkRun path
+    let text = r.stdout |> Str.join " "
+    let fixed = not (text |> Str.contains needle)
+    let word = if fixed then "fixed" else $"REPRODUCES (message still says {needle})"
+    print $"  {name}: {word}"
+    fixed
+
+within tmp d
+    print $"weir under test: {cli.bin}"
+    print ""
+    print "DX findings (fixed = the cell moved):"
+
+    let d1 = mustCheckClean d "D1-loose-bare-names" d1Loose
+    let d2 = mustDiagnose d "D2-ampersand-silent" d2Amp
+    let d3 = mustSay d "D3-equals-teaches" d3Eq "=="
+    let d4 = mustNotSay d "D4-while-as-command" d4While "command not found on PATH: while"
+    let d5 = mustNotSay d "D5-List-suggests-Post" d5List "Post"
+    let d7 = mustCheckClean d "D7-iter-print-on-ints" d7IterPrint
+
+    print ""
+    print "positive controls:"
+    let ctlClean = mustCheckClean d "control-sees-clean" controlClean
+    let ctlError = mustDiagnose d "control-sees-error" controlError
+
+    let broken =
+        [ ("D1", d1)
+          ("D2", d2)
+          ("D3", d3)
+          ("D4", d4)
+          ("D5", d5)
+          ("D7", d7) ]
+        |> Seq.where (fun p -> not (snd p))
+        |> Seq.map fst
+        |> Seq.force
+
+    print ""
+
+    if not ctlClean then
+        fail "positive control failed: a valid script did not check clean — the runner is blind to success"
+
+    if not ctlError then
+        fail "positive control failed: an invalid script produced no diagnostic — the runner is blind to failure"
+
+    if (broken |> Seq.length) > 0 then
+        let names = broken |> Str.join ", "
+        fail $"still reproducing: {names}"
+
+    print "all DX findings fixed"

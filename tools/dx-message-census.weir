@@ -1,0 +1,140 @@
+#!/usr/bin/env weir
+// The mistake census behind dev/plans/PLAN-dx-review.md's headline number.
+//
+//     weir tools/dx-message-census.weir --bin ./path/to/weir [--baseline 11]
+//
+// Realistic wrong-first-tries — bash, F# and Python priors plus weir-specific
+// slips — each graded into one of three buckets:
+//
+//   teaches   the message names a repair (did-you-mean, "use X", a stated rule)
+//   plain     a located, correct error that names NO repair ("expected int, got string")
+//   dump      a bare parser expecting-list with no repair named
+//   silent    accepted with NO diagnostic (the worst bucket: wrong and quiet)
+//
+// `plain` exists because an earlier draft folded it into `teaches` and
+// inflated the score — a correct diagnosis is not the same as a taught fix.
+//
+// KNOWN PROXY LIMIT, stated rather than tuned away: `teaches` is detected by
+// a stock-phrase list, so a message that teaches by EXPLANATION lands in
+// `plain` — the non-exhaustive-match error ("missing: false") and the
+// precedence error ("'==' binds tighter than '|>', so this parses as ...")
+// both teach well and both score `plain`. So `teaches` is a FLOOR, `plain` is
+// a mixed bucket, and the per-case bucket is worth more than the total.
+//
+// This is a REGRESSION BASELINE, not an absolute grade — the corpus is
+// hand-chosen for realism, because no corpus of real weir errors exists yet.
+// The number is meaningful as "did this get worse", and the bucket a given
+// case sits in is meaningful on its own.
+//
+// Fails if `teaches` drops below --baseline, so a message refactor cannot
+// quietly regress the set.
+//
+// Shape note: command-running helpers are TOP-LEVEL (PLAN-adversarial-review F3).
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+    /// fail if fewer than this many cases teach a repair
+    [<Default 11>]
+    baseline: int
+}
+
+let cli = Args.load Cli
+
+// (name, source lines) — probes use `show` rather than interpolation so the
+// corpus never needs a quote nested three deep
+let corpus =
+    [ ("bash-and", [ @"echo a && echo b" ])
+      ("bash-redirect", [ @"echo hi > out.txt" ])
+      ("bash-semicolon", [ @"echo a ; echo b" ])
+      ("bash-glob", [ @"ls *.txt" ])
+      ("bash-var", [ @"echo $HOME" ])
+      ("fsharp-printfn", [ @"printfn (show 1)" ])
+      ("fsharp-listmap", [ @"let n = List.length [1]"; @"print (show n)" ])
+      ("fsharp-ignore", [ @"[1] |> Seq.length |> ignore" ])
+      ("fsharp-mutable", [ @"let mutable x = 1"; @"print (show x)" ])
+      ("fsharp-rec", [ @"let rec f n = n"; @"print (show (f 1))" ])
+      ("fsharp-while", [ @"while true do"; @"    print (show 1)" ])
+      ("fsharp-equals", [ @"let n = if 1 = 1 then 1 else 2"; @"print (show n)" ])
+      ("fsharp-annotation", [ @"let x: int = 1"; @"print (show x)" ])
+      ("py-colon", [ @"for x in [1]:"; @"    print (show x)" ])
+      ("py-def", [ @"def f():"; @"    print (show 1)" ])
+      ("py-return", [ @"let f n ="; @"    return n"; @"print (show (f 1))" ])
+      ("uppercase-binder", [ @"let Total = 1"; @"print (show Total)" ])
+      ("discarded-value", [ @"1 + 1" ])
+      ("missing-else", [ @"let x = if 1 > 0 then 1"; @"print (show x)" ])
+      ("non-exhaustive", [ @"let x = match 1 == 1 with | true -> 1"; @"print (show x)" ])
+      ("typo-field", [ @"type R = { bytes: int }"; @"let r = { bytes = 1 }"; @"print (show r.bytse)" ])
+      ("typo-member", [ @"print (show (Seq.lenght [1]))" ])
+      ("comma-in-record", [ @"type R = { a: int, b: int }"; @"print (show 1)" ])
+      ("precedence-pipe-eq", [ @"let b = [1] |> Seq.length == 1"; @"print (show b)" ])
+      ("map-as-statement", [ @"[1] |> Seq.map print" ])
+      ("iter-print-ints", [ @"[1] |> Seq.iter print" ])
+      ("bare-where-strict", [ @"let xs = [1] |> where (fun n -> n > 0)"; @"print (show (Seq.length xs))" ])
+      ("loose-bare-where", [ @"#loose"; @"let xs = [1; 2; 3]"; @"xs |> where (fun n -> n > 1) |> Seq.iter (fun n -> print (show n))" ]) ]
+
+// a message "teaches" if it names a repair; the phrases below are the
+// vocabulary the existing good messages already use
+let teachPhrases =
+    [ "Did you mean"
+      "did you mean"
+      "is retired"
+      "use '"
+      "instead"
+      "put commands on"
+      "pipe to File"
+      "is a keyword"
+      "add an"
+      "spell it"
+      "names start"
+      "bind it" ]
+
+let checkRun path =
+    let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete
+    r
+
+let saysAny text phrases =
+    phrases |> Seq.exists (fun p -> text |> Str.contains p)
+
+let classify d entry =
+    let name = fst entry
+    let path = $"{d}/{name}.weir"
+    File.write path (snd entry)
+    let r = checkRun path
+    // grade the FIRST diagnostic only — the one the reader actually hits.
+    // Grading the whole output let a CASCADING secondary error carry a teach
+    // phrase and rescue a case whose real message was a dump (`1 = 1` did
+    // exactly this: the dump on line 1, "Did you mean 'cd'?" on line 2).
+    let text = r.stdout |> Seq.tryHead |> Option.defaultValue ""
+    let hasDump = text |> Str.contains "Expecting:"
+    let teaches = saysAny text teachPhrases
+
+    let bucket =
+        if (r.stdout |> Seq.isEmpty) then "silent"
+        elif teaches then "teaches"
+        elif hasDump then "dump"
+        else "plain"
+
+    print $"  {name}: {bucket}"
+    bucket
+
+within tmp d
+    print $"weir under test: {cli.bin}"
+    print ""
+    let buckets = corpus |> Seq.map (fun e -> classify d e) |> Seq.force
+
+    let count b = buckets |> Seq.where (fun x -> x == b) |> Seq.length
+    let teaches = count "teaches"
+    let plain = count "plain"
+    let dumps = count "dump"
+    let silent = count "silent"
+    let total = buckets |> Seq.length
+
+    print ""
+    print $"teaches {teaches} / plain {plain} / dump {dumps} / silent {silent}   (n={total}, baseline {cli.baseline})"
+
+    if teaches < cli.baseline then
+        fail $"message quality regressed: {teaches} cases teach a repair, baseline is {cli.baseline}"
+
+    print "census at or above baseline"
