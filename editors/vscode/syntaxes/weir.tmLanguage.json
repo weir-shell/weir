@@ -25,6 +25,9 @@
       "include": "#directive"
     },
     {
+      "include": "#raw-interp"
+    },
+    {
       "include": "#interp-string"
     },
     {
@@ -438,6 +441,47 @@
         {
           "match": "(?:[^#$\"\\n]|(?<![ \\t])#)+",
           "name": "string.unquoted.yaml.weir"
+        }
+      ]
+    },
+    "raw-interp": {
+      "begin": "\\$\"\"\"",
+      "end": "\"\"\"",
+      "name": "string.interpolated.weir",
+      "patterns": [
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "name": "meta.interpolation.weir",
+          "patterns": [
+            {
+              "match": "\\b(if|then|elif|else|when|match|with|function|fun|let|in)\\b",
+              "name": "keyword.control.weir"
+            },
+            {
+              "include": "#bool"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#builtin-types"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#field-sugar"
+            },
+            {
+              "match": "\\|>|==|<>|<=|>=|->|\\.\\.|::|[+\\-*/<>=]",
+              "name": "keyword.operator.weir"
+            },
+            {
+              "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.weir"
+            }
+          ]
         }
       ]
     }
