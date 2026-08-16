@@ -116,7 +116,7 @@ let rec private walkExpr (site: Span -> Site) (acc: ResizeArray<Cap>) (te: Typed
 
          if envO.IsSome then
              add (EnvWrite "env sigil") te.Span
-     | TEWithin(kind, _, _, _) ->
+     | TEWithin(kind, _, _, _, _) ->
          (match kind with
           | "tmp" -> add (TempWrite "within tmp (a temporary directory)") te.Span
           | "proc" ->

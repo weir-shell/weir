@@ -95,7 +95,13 @@ and TypedKind =
         until: (string * TypedExpr) option
     | TESize of bytes: int64
     | TESeq of first: TypedExpr * rest: TypedExpr
-    | TEWithin of kind: string * binder: string option * arg: TypedExpr option * body: TypedExpr
+    | TEWithin of
+        kind: string *
+        binder: string option *
+        arg: TypedExpr option *
+        opts: TypedExpr option *
+        body: TypedExpr
+    | TEAlways of body: TypedExpr * cleanup: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
     | TEFrom of format: string * rowDef: RecordDef * defs: Map<string, RecordDef> * seqOf: bool * mapOf: bool
@@ -1757,9 +1763,42 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // erased [D:district-retirement]: the marker exists for the
         // statement gate; typing sees straight through
         infer ctx env inner
-    | EWithin(kind, binder, arg, body) ->
+    | EAlways(body, cleanup) ->
+        // the bare scope [D:within-always]: the scope's type IS the
+        // body's; the always block is teardown and must be unit. exit
+        // is REFUSED inside always (lexically — a shadowing binding is
+        // still refused): an exit during teardown of an unwinding
+        // scope is almost never meant, and it would swap the original
+        // error for a code. retry/poll stay legal — a cleanup that
+        // retries is reasonable, the deadline is the author's.
+        result {
+            let rec exitSite (e: Expr) : Ast.Span option =
+                match e.Kind with
+                | EVar "exit" -> Some e.Span
+                | _ -> Ast.exprChildren e |> List.tryPick exitSite
+
+            do!
+                match exitSite cleanup with
+                | Some sp ->
+                    Error
+                        { Message =
+                            "exit inside always is refused — teardown of an unwinding scope must finish (the original error would become a code); fail \"msg\" carries a message instead"
+                          Span = sp
+                          Origin = None }
+                | None -> Ok()
+
+            let! tbody = infer ctx env body
+            let! tcleanup = check ctx env cleanup TUnit
+
+            return
+                { Kind = TEAlways(tbody, tcleanup)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
+    | EWithin(kind, binder, arg, opts, body) ->
         // tmp binds its path (a plain string, platform-native); cd
-        // consumes a string path; env consumes seq<EnvVar> — the arg
+        // consumes a string path; env consumes seq<EnvVar>; lock
+        // consumes a string path (+ timeout: Duration) — the arg
         // types are the kinds' contracts [D:within-scopes]; the
         // scope's type IS the body's type
         result {
@@ -1767,11 +1806,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 match kind, arg with
                 | "cd", Some a -> check ctx env a TStr |> Result.map Some
                 | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
+                | "lock", Some a -> check ctx env a TStr |> Result.map Some
                 // proc's arg is the COMMAND node [D:scoped-procs] — typed
                 // as any command (the parser guarantees ECmd), evaluated
                 // by the scope as a spawn, never as a statement
                 | "proc", Some a -> infer ctx env a |> Result.map Some
                 | _ -> Ok None
+
+            let! topts =
+                match opts with
+                | Some o -> check ctx env o TDur |> Result.map Some
+                | None -> Ok None
 
             let benv =
                 match binder with
@@ -1781,7 +1826,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! tbody = infer ctx benv body
 
             return
-                { Kind = TEWithin(kind, binder |> Option.map fst, targ, tbody)
+                { Kind = TEWithin(kind, binder |> Option.map fst, targ, topts, tbody)
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -3239,8 +3284,11 @@ and armTail (e: Expr) : Expr =
         // the tail rides through a scope and a let-in to their bodies
         // [D:within-scopes] — statement position arms a scope's final
         // command exactly as an if body's
-        | EWithin(k, n, a, b) ->
-            { Kind = EWithin(k, n, a, armTail b)
+        | EWithin(k, n, a, o, b) ->
+            { Kind = EWithin(k, n, a, o, armTail b)
+              Span = e.Span }
+        | EAlways(b, c) ->
+            { Kind = EAlways(armTail b, c)
               Span = e.Span }
         | ELet(n, ns, v, b) ->
             { Kind = ELet(n, ns, v, armTail b)
@@ -3281,13 +3329,44 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
     // a statement-position `within` demands unit of the block, arming a
     // final command exactly as any block does
     | ECapture inner, _ -> check ctx env inner expected
-    | EWithin(kind, binder, arg, body), _ ->
+    | EAlways(body, cleanup), _ ->
+        result {
+            let rec exitSite (e: Expr) : Ast.Span option =
+                match e.Kind with
+                | EVar "exit" -> Some e.Span
+                | _ -> Ast.exprChildren e |> List.tryPick exitSite
+
+            do!
+                match exitSite cleanup with
+                | Some sp ->
+                    Error
+                        { Message =
+                            "exit inside always is refused — teardown of an unwinding scope must finish (the original error would become a code); fail \"msg\" carries a message instead"
+                          Span = sp
+                          Origin = None }
+                | None -> Ok()
+
+            let! tbody = check ctx env body expected
+            let! tcleanup = check ctx env cleanup TUnit
+
+            return
+                { Kind = TEAlways(tbody, tcleanup)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
+    | EWithin(kind, binder, arg, opts, body), _ ->
         result {
             let! targ =
                 match kind, arg with
                 | "cd", Some a -> check ctx env a TStr |> Result.map Some
                 | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
+                | "lock", Some a -> check ctx env a TStr |> Result.map Some
                 | _ -> Ok None
+
+            let! topts =
+                match opts with
+                | Some o -> check ctx env o TDur |> Result.map Some
+                | None -> Ok None
 
             let benv =
                 match binder with
@@ -3297,7 +3376,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let! tbody = check ctx benv body expected
 
             return
-                { Kind = TEWithin(kind, binder |> Option.map fst, targ, tbody)
+                { Kind = TEWithin(kind, binder |> Option.map fst, targ, topts, tbody)
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -3609,7 +3688,9 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
                 u |> Option.map (fun (n, p) -> n, finalizeExpr ctx p)
             )
         | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
-        | TEWithin(k, n, a, b) -> TEWithin(k, n, a |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
+        | TEWithin(k, n, a, o, b) ->
+            TEWithin(k, n, a |> Option.map (finalizeExpr ctx), o |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
+        | TEAlways(b, c) -> TEAlways(finalizeExpr ctx b, finalizeExpr ctx c)
         | TEEnvLoad _
         | TEArgsLoad _ -> te.Kind
         | leaf -> leaf
@@ -3867,7 +3948,8 @@ let childExprs (te: TypedExpr) : TypedExpr list =
         @ [ b ]
         @ (u |> Option.map (snd >> List.singleton) |> Option.defaultValue [])
     | TESeq(a, b) -> [ a; b ]
-    | TEWithin(_, _, a, b) -> Option.toList a @ [ b ]
+    | TEWithin(_, _, a, o, b) -> Option.toList a @ Option.toList o @ [ b ]
+    | TEAlways(b, c) -> [ b; c ]
     | TEList items -> items
     | TETuple items -> items
     | TECmd(_, args, envO) -> args @ Option.toList envO

@@ -132,6 +132,16 @@ it, by design):
     protection, and weir does not notice, warn, or infer. A heuristic
     on field names would be exactly the guessing this type replaces.
 
+- **`within lock` is advisory, not access control** [D:within-lock].
+  The lock excludes only COOPERATING processes — anything that opens
+  the file without asking for the lock (or ignores flock semantics)
+  proceeds untouched, and on NFS and network filesystems advisory
+  locking itself is unreliable. The honest claim runs the other way:
+  because it is a kernel file lock, release survives every death
+  including `kill -9` — the one scope whose teardown has no hard-exit
+  carve-out. Same register as `Secret`: a coordination marker the
+  cooperating world respects, not an enforcement boundary.
+
 - **`Http` types your request; it does not vet your endpoint**
   [D:http]. `Http.send` fetches whatever URL it is given — including
   `localhost`, link-local, and cloud-metadata addresses. What it does

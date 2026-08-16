@@ -127,7 +127,7 @@
       "name": "meta.preprocessor.weir"
     },
     "within-kind": {
-      "match": "\\b(within)[ \\t]+(tmp|cd|env|proc)\\b",
+      "match": "\\b(within)[ \\t]+(tmp|cd|env|proc|lock)\\b",
       "captures": {
         "1": {
           "name": "keyword.control.weir"
@@ -149,7 +149,7 @@
       }
     },
     "keywords": {
-      "match": "\\b(let|in|if|then|elif|else|when|match|with|function|fun|type|of|from|to|for|do|module|import|within|retry|poll|until|while|return|try|def)\\b",
+      "match": "\\b(let|in|if|then|elif|else|when|match|with|function|fun|type|of|from|to|for|do|module|import|within|always|retry|poll|until|while|return|try|def)\\b",
       "name": "keyword.control.weir"
     },
     "reserved": {

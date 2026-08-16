@@ -70,6 +70,51 @@ AsyncLocal asymmetry remains F1's (env cleared, never restored), which
 is the rider's own item and out of this plan's scope.
 
 
+## two within members, and the measurement that shaped both (2026-08-16)
+
+Phase 0 before either part, as directed, and both answers moved the
+design. `exit n` turned out to be an ExitRequest RAISE — the tmp dir
+in the probe was removed by the scope's own finally, not the hook
+sweep — so `always` runs on exit with no carve-out and the previously
+ambiguous door is now a pinned e2e row instead of folklore. The BCL
+answer was the load-bearing one: FileShare.None on Unix is flock(2),
+per-open-file-description — two pmap arms exclude each other (the
+fcntl per-process trap the plan warned about does NOT apply), and it
+interoperates with flock(1) in both directions, which is what makes
+the eventual deep-lock.sh migration honest. FileStream.Lock IS the
+fcntl path; we never touch it.
+
+The bare within + always segment cost almost nothing at the grammar —
+the assembler's isWithinHead already accepted a bare `within`, and
+`always` is until's machinery with no binder — but it surfaced a
+pre-existing family bug: ElseHead segments joined with a SPACE, so a
+COMMAND body statement ate the keyword into its argv. `retry` with a
+command body and an `until` segment had been silently mis-parsing
+since until landed (the error surfaced as "retry without an until
+segment", one step removed from the truth). Both segments now join at
+the sentinel; seqExpr's separator commit backs out exactly when the
+next segment is until/always; pinned for both.
+
+The raise rulings came out as blessed: original wins, marker to
+stderr, LIFO unconditional — and the eval shape that honors them is
+explicit Ok/Error on the body rather than F# try/finally, because a
+finally cannot raise cleanly on the clean-exit case. Signals run
+pending cleanups through the exit hook (registered thunks, removed
+before running so SIGTERM-then-ProcessExit cannot run one twice).
+exit-inside-always refused lexically at check; the unknown-scope-kind
+teaching moved — a non-kind word now falls into the bare reading and
+the missing-always error names both readings (the old pin's bogus
+example was literally `within lock`, which is now real).
+
+Lock probes that were one-liners: two processes serialize
+(enter/exit/enter/exit with overlapping starts — the contention IS
+the non-zero control), pmap arms serialize, flock -n fails while weir
+holds and succeeds after kill -9. The no-lock e2e control interleaves
+on the same instrument. Not done here, recorded: within proc + always
+(ordering vs tree-kill unruled — nesting is the spelling until the
+receipt), and the deep-lock.sh migration (publish.sh shares that
+protocol; its own session).
+
 ## bytes: the capture law grows a second customer (2026-08-16)
 
 Phase 0's trace turned up the sharpest fact of the session: the capture

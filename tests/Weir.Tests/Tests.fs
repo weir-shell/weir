@@ -1848,7 +1848,10 @@ let completionTests =
                         // start statements, until continues (the for/do shape)
                         "retry"
                         "poll"
-                        "until" ]
+                        "until"
+                        // the bare scope's teardown segment continues,
+                        // as until does [D:within-always]
+                        "always" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
@@ -4567,14 +4570,18 @@ let withinKindsTests =
               Expect.equal (Weir.Lsp.hoverType t 1 13) (Some "string") "the binder is the dir path, not unit"
           }
           test "completion after `within ` offers the kinds and NOTHING else; a boundary non-match stays normal" {
-              Expect.equal (sug "within ") [ "tmp"; "cd"; "env"; "proc" ] "the closed set"
+              Expect.equal (sug "within ") [ "tmp"; "cd"; "env"; "proc"; "lock" ] "the closed set"
               Expect.equal (sug "within c") [ "cd" ] "prefix-filtered"
               Expect.equal (sug "within t") [ "tmp" ] ""
-              Expect.isFalse (sug "notwithin " = [ "tmp"; "cd"; "env"; "proc" ]) "boundary: notwithin is not within"
+
+              Expect.isFalse
+                  (sug "notwithin " = [ "tmp"; "cd"; "env"; "proc"; "lock" ])
+                  "boundary: notwithin is not within"
+
               Expect.isFalse (sug "within cd " = [ "tmp"; "cd"; "env"; "proc" ]) "the arg slot is not the kind slot"
           }
           test "the teaching list derives from the table (a new kind cannot miss the message)" {
-              Expect.equal Weir.Ast.withinKindList "tmp, cd, env, or proc" "derived, not hand-written"
+              Expect.equal Weir.Ast.withinKindList "tmp, cd, env, proc, or lock" "derived, not hand-written"
           }
           test "a form word inside a STRING or a COMMENT is data, not a form — no hover [D:within-kinds]" {
               // the form hovers run before the silence guard, so the
@@ -4588,6 +4595,90 @@ let withinKindsTests =
                   (Weir.Lsp.hoverType [ "let x = 1 // within cd here"; "print x" ] 1 15)
                   None
                   "within in a comment"
+          } ]
+
+let withinAlwaysLockTests =
+    // the bare scope and the lock kind [D:within-always][D:within-lock]
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "wal.weir" lines
+        diags
+
+    let mustSay lines (needle: string) label =
+        Expect.exists
+            (diagsOf lines)
+            (fun d -> d.Message.Contains needle)
+            $"{label}: expected a diagnostic containing '{needle}', got {diagsOf lines |> List.map _.Message}"
+
+    let clean lines label =
+        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "bare within + always, within lock"
+        [ test "bare within: body + always checks clean" {
+              clean [ "within"; "    print \"b\""; "always"; "    print \"c\"" ] "the plan's shape"
+          }
+          test "always after a COMMAND body statement — the sentinel join (until's fixed sibling)" {
+              // the space join fed `always` to the command's argv; the
+              // sentinel join is the fix, pinned for both segments
+              clean [ "within"; "    sh -c \"true\""; "always"; "    print \"c\"" ] "command body"
+
+              clean
+                  [ "let r = retry attempts=2 delay=10ms"
+                    "    sh -c \"true\""
+                    "until r"
+                    "    true"
+                    "print \"done\"" ]
+                  "until after a command body parses (was: argv ate the keyword)"
+          }
+          test "a bare within without always names both readings" {
+              mustSay [ "within"; "    print \"b\"" ] "always segment" "missing always"
+              mustSay [ "within tpm d"; "    print \"b\"" ] "always segment" "a typo'd kind lands in the bare reading"
+          }
+          test "exit inside always is refused, at the exit's site" {
+              mustSay
+                  [ "within"; "    print \"b\""; "always"; "    exit 0" ]
+                  "exit inside always is refused"
+                  "the teardown-must-finish rule"
+          }
+          test "retry inside always is legal (a cleanup that retries is reasonable)" {
+              clean
+                  [ "within"
+                    "    print \"b\""
+                    "always"
+                    "    retry attempts=2 delay=10ms"
+                    "        true" ]
+                  "retry in cleanup"
+          }
+          test "the always block must be unit" {
+              mustSay [ "within"; "    print \"b\""; "always"; "    42" ] "unit" "a valued cleanup refuses"
+          }
+          test "within lock: path is a string, timeout is a Duration" {
+              clean [ "within lock \"/tmp/x.lock\""; "    print \"in\"" ] "bare lock"
+              clean [ "within lock \"/tmp/x.lock\" timeout=30s"; "    print \"in\"" ] "with timeout"
+              mustSay [ "within lock 42"; "    print \"in\"" ] "string" "an int path refuses"
+
+              mustSay
+                  [ "within lock \"/tmp/x.lock\" timeout=30"; "    print \"in\"" ]
+                  "Duration"
+                  "an int timeout refuses"
+          }
+          test "sexpr shapes: the bare scope and the lock carry their parts" {
+              let sib = Weir.Parser.sibSepStr
+
+              let shapeOf (text: string) =
+                  match Weir.Parser.parseStmt text with
+                  | Ok(Weir.Ast.SExpr e)
+                  | Ok(Weir.Ast.SCmd e) -> Weir.Ast.sexpr e
+                  | other -> failtest $"unexpected: {other}"
+
+              let sh =
+                  shapeOf ("within" + sib + "print \"b\"" + sib + "always" + sib + "print \"c\"")
+
+              Expect.stringContains sh "always" "the always segment is in the tree"
+
+              let sh2 = shapeOf ("within lock \"/tmp/x\" timeout=5s" + sib + "print \"in\"")
+              Expect.stringContains sh2 "within lock" "the kind"
+              Expect.stringContains sh2 "timeout=" "the timeout rides the head"
           } ]
 
 let adapterFormTests =
@@ -12885,7 +12976,7 @@ let withinTests =
               let asmLine = "within tmp d" + Weir.Parser.sibSepStr + "print d"
 
               match Weir.Parser.parseLine realResolver asmLine with
-              | Ok(SExpr { Kind = EWithin("tmp", Some("d", _), None, _) }) -> ()
+              | Ok(SExpr { Kind = EWithin("tmp", Some("d", _), None, None, _) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "the binder is a string; the scope's type is the body's" {
@@ -12895,9 +12986,16 @@ let withinTests =
               | Ok te -> Expect.equal te.Ty TInt "body type flows out"
               | Error terr -> failtest (formatError terr)
           }
-          test "unknown scope kinds teach the shipped one" {
-              match Weir.Parser.parseLine realResolver ("within lock f" + Weir.Parser.sibSepStr + "print f") with
-              | Error msg -> Expect.stringContains msg "within takes tmp, cd, env, or proc" ""
+          test "a non-kind word after within reads as the bare form; the missing always names both" {
+              // pre-lock this pin used `within lock` as its bogus kind —
+              // the kind landed [D:within-lock] and the unknown-kind path
+              // now falls to the bare reading [D:within-always]
+              match Weir.Parser.parseLine realResolver ("within bogus f" + Weir.Parser.sibSepStr + "print f") with
+              | Error msg ->
+                  Expect.stringContains msg "always segment" "the bare reading"
+                  // FParsec wraps expecting-lists — assert a fragment that
+                  // cannot straddle the wrap
+                  Expect.stringContains msg "names its kind" "the kinds teaching rides along"
               | Ok _ -> failtest "expected the teaching"
           }
           test "within is reserved with the keyword teaching" {
@@ -13336,6 +13434,7 @@ let allTests =
           semanticTokenTests
           lspCrossFileTests
           withinKindsTests
+          withinAlwaysLockTests
           adapterFormTests
           hoverResidueTests
           schemaHoverTests
