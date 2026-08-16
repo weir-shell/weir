@@ -95,6 +95,54 @@ writing the read-side fix — beyond-indent whitespace is content,
 at-or-below is an empty line. Both re-point rules from the acceptance
 section were honored, and both probes now assert the
 rejection/teaching rather than the old behavior. [D:yaml-interop]
+## raw interpolation: a park's trigger fires (2026-08-16)
+
+The third reservation-called-on-schedule this stretch, and the
+cleanest: the no-interpolated-raw cell recorded its own reopening
+condition in 2026-07-22 and the receipt arrived shaped exactly as
+predicted. Two things came free that the plan budgeted as work — the
+Regex rejection (the computed-pattern fatal predates the feature and
+already refuses any non-literal kind) and the Secret refusal (the raw
+form produces the same EInterp node, so one check serves both
+syntaxes) — both instances of the same lesson: route new syntax
+through existing nodes and the existing law follows. The scanner
+needed literally nothing (a $ is a plain char; """ opens triple),
+which is the one-scanner rule paying rent. Phase 3's diagnostic turned
+out to be a five-kind family, fixed with one shared anchored fatal;
+the pre-existing splat-head guard needed splitting so $@" teaches the
+new spelling instead of accusing the user of splatting. Phase 2
+(multi-line) deferred by ruling with its four dependencies priced and
+the district machinery named as precedent — the deferral is ON the
+divergence row, so the next person finds a price, not a mystery.
+
+The fuzz gate then earned its keep twice. First, a real regression:
+the anchored-fatal rewrite used `getPosition >>= fun opener -> …`,
+and getPosition succeeds at EVERY atom position — the bind ran its
+lambda and RECONSTRUCTED the whole combinator chain per attempt, for
+all four rewritten literals, at every atom the choice walks past.
+Invisible on real scripts; the 50k-operator depth-guard spine paid it
+~200k times and blew its 5s hang bound (+60% parse time). The fix is
+a `followedBy <opener>` gate in front of each bind — the lambda now
+runs only when a string actually starts. The FParsec lesson: a bind
+whose left side always succeeds turns parser CONSTRUCTION into a
+per-call cost; gate it or hoist it.
+
+Second, diagnosing WHY "three fresh seeds" all failed identically
+exposed a defect in the harness's own instrument: a command piped
+into a reifier (`cmd | orFail msg`) never sees the ambient
+`within env` overlay. The reifier desugar builtins are registered
+with a BAKED overlay (`orFailedWith []`, Builtins.fs) and spawn
+through it — only Eval's overlayOf path reads Session.envOverlay().
+The Env-sigil twins drop the ambient layers too, against the
+documented outer-first law. Consequence: tools/fuzz.weir's
+`dotnet test | orFail` has run at the harness DEFAULTS (seed 1789001,
+count 200) since the tool adopted `within env` — every "deep run" was
+a 200-case smoke wearing a 10k banner. Probe:
+`within env` + `sh -c "echo $X" | orFail "…"` prints empty; the bare
+and `$( )` forms print the overlay. NOT fixed here (raw-strings
+session) — the fix wants its own pins (each reifier family member ×
+ambient env) and an e2e row. This session's three seeds ran via the
+env route directly.
 
 ## check --can: the constraint pays out visibly (2026-08-15)
 

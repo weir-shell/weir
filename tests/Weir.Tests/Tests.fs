@@ -12288,6 +12288,63 @@ let recordOrderTests =
                   "read-modify-nothing writes the input's order"
           } ]
 
+let interpRawTests =
+    // the raw interpolated literal [D:interp-raw]: escapes OFF, holes
+    // ON — reopened from the no-interpolated-raw park on its stated
+    // trigger (raw-with-splice receipts)
+    testList
+        "raw interpolation [D:interp-raw]"
+        [ test "the receipt's composition: backslashes, quotes, and a hole in ONE literal" {
+              Expect.equal
+                  (runWith [ "src", VStr "x" ] "$\"\"\"C:\\tmp\\{src} says \"hi\"!\"\"\"")
+                  (VStr "C:\\tmp\\x says \"hi\"!")
+                  "no double-escape anywhere"
+          }
+          test "escapes are OFF: backslash-n is two characters" {
+              Expect.equal (run "$\"\"\"a\\n{1}\"\"\" |> Str.length") (VInt 4L) "a, backslash, n, 1"
+          }
+          test "a quote-run short of three is content" {
+              Expect.equal (run "$\"\"\"say \"\"{1}\"\"\"") (VStr "say \"\"1") "two quotes ride"
+          }
+          test "the {{ attempt teaches the ordinary form" {
+              match Weir.Parser.parseExpr "$\"\"\"a {{ b\"\"\"" with
+              | Error m -> Expect.stringContains m "literal brace has no spelling" "the teaching"
+              | Ok _ -> failtest "{{ must not parse in the raw form"
+          }
+          test "$@\" teaches the one spelling" {
+              match Weir.Parser.parseExpr "print $@\"x\"" with
+              | Error m -> Expect.stringContains m "the raw interpolated spelling is" ""
+              | Ok _ -> failtest "$@ must not parse"
+          }
+          test "the Regex position refuses the interpolated form (computed patterns stay expression-side)" {
+              match Weir.Parser.parseExpr "match \"a\" with | Regex $\"\"\"a{1}\"\"\" g -> g | _ -> \"n\"" with
+              | Error m -> Expect.stringContains m "LITERAL string" "the recorded park's reason, enforced"
+              | Ok _ -> failtest "an interpolated pattern must refuse"
+          }
+          test "a Secret refuses the raw hole exactly as the ordinary one [D:secret]" {
+              let e = env |> declare "type ST = { t: Secret }"
+
+              match Weir.Parser.parseStmt "let s = Secret.of \"x\" in $\"\"\"tok {s}\"\"\"" with
+              | Ok(Weir.Ast.SExpr ex) ->
+                  match Weir.Check.typecheck e ex with
+                  | Error terr -> Expect.stringContains terr.Message "does not interpolate" "same check, new syntax"
+                  | Ok _ -> failtest "a Secret hole must refuse"
+              | other -> failtest $"parse: {other}"
+          }
+          test "unterminated strings name their OPENER — the whole family [D:interp-raw]" {
+              for src, kind in
+                  [ "print \"never", "\""
+                    "print @\"never", "@\""
+                    "print \"\"\"never", "\"\"\""
+                    "print $\"never", "$\""
+                    "print $\"\"\"never", "$\"\"\"" ] do
+                  match Weir.Parser.parseExpr (src.Substring 6) with
+                  | Error m ->
+                      Expect.stringContains m "string literal not closed" $"the family sentence: {kind}"
+                      Expect.stringContains m "single-line" $"…and the law: {kind}"
+                  | Ok _ -> failtest $"must not parse: {src}"
+          } ]
+
 let instantTests =
     // Instant [D:instant]: the boring subset — instants only, UTC
     // inside, no calendar arithmetic; `-` between points IS Duration
@@ -13112,6 +13169,7 @@ let allTests =
           anonRecordTests
           mapStringTests
           instantTests
+          interpRawTests
           recordOrderTests
           scopedProcTests
           formatSurfaceTests

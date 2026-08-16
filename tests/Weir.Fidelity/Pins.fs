@@ -149,8 +149,12 @@ let pins =
       pin "edge: quad-quote closer (\"\"\"a\"\"\"\")" "let s = \"\"\"a\"\"\"\"\n" Same
       pin "multi-line verbatim: weir is single-line" "let s = @\"a\nb\"\n" (Diverges "raw-single-line")
       pin "multi-line triple: weir is single-line" "let s = \"\"\"a\nb\"\"\"\n" (Diverges "raw-single-line")
-      pin "interpolated verbatim $@ is parked" "let s = $@\"x{1}\"\n" (Diverges "no-interpolated-raw")
-      pin "interpolated triple is parked" "let s = $\"\"\"x{1}\"\"\"\n" (Diverges "no-interpolated-raw")
+      pin "interpolated verbatim $@ teaches the one spelling" "let s = $@\"x{1}\"\n" (Diverges "interpolated-raw")
+      pin "interpolated triple: raw with holes lands both sides" "let s = $\"\"\"x{1}\"\"\"\n" Same
+      pin
+          "raw interpolated {{ has no spelling (F# escapes; weir teaches)"
+          "let s = $\"\"\"x{{y\"\"\"\n"
+          (Diverges "interpolated-raw")
 
       // --- Seq.fold + fun-sugar probes (PLAN-fold) — BEFORE code; the
       // argument-order claim class bit once (composition precedence) ---
