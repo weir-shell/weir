@@ -24,7 +24,7 @@ Two lines, the whole idea: rows are typed records — `bytes` is a
 (`Instant.now () - f.modified < 1h`), directories are rows too — the REPL tabulates any
 seq of records, and the second line is refused before anything runs — in a script, before *any*
 line runs. External commands are first-class in the same pipelines
-(`git status --porcelain |> where (Str.startsWith "M ")`), scripts
+(`git status --porcelain |> Seq.where (Str.startsWith "M ")`), scripts
 take real flags derived from a record, and everything is one static
 binary. The rest — parallel fan-out, retries with deadlines, typed
 HTTP and YAML — is in [docs/GUIDE.md](docs/GUIDE.md).

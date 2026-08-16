@@ -231,7 +231,7 @@ weir rejects rather than guesses.
   parser sugar over `Seq.range : int -> int -> int -> seq<int>`
   (start/step/stop, qualified-only — computed ranges spell it out).
   **Named asymmetry**: *bracketed semicolon lists are eager values;
-  bracketed ranges are lazy generators* — `[1..1000000] |> first 3`
+  bracketed ranges are lazy generators* — `[1..1000000] |> Seq.first 3`
   never materializes; re-enumeration re-runs the generator (pure, so
   the collect caveat does not bite). Zero step: parse-time error for a
   literal step, runtime "range step is zero" when computed. Endpoints
@@ -802,7 +802,7 @@ quantity semantics now.
   RIGHT-HAND side decides the glyph:** `|` when the stage is a program or a
   reifier (command grammar), `|>` when it is a function. That is the whole
   table (`cmd|cmd`, `expr|cmd`, `cmd|reifier` take `|`; `cmd|fn`, `expr|fn`
-  take `|>`), symmetric, no exceptions. So `git log | grep x |> first 2`
+  take `|>`), symmetric, no exceptions. So `git log | grep x |> Seq.first 2`
   flows external→external (`|`)→function (`|>`). A mismatch teaches both
   ways: `cmd | fn` → "'|' chains commands; pipe expressions with '|>'";
   `expr |> cmd` → "'|>' applies functions; feed a program with '|'", each
@@ -1290,7 +1290,7 @@ quantity semantics now.
 - **A command-headed line commits to command mode**: once the first segment
   parses as a command, there is no backtrack to expression parsing for the
   rest of the line — errors after that point are command-line errors (this is
-  why `git status |> first 1 | complete` reports the marker rule instead of a
+  why `git status |> Seq.first 1 | complete` reports the marker rule instead of a
   generic expression error).
 - **External-to-external pipes feed stdin**: `git log | grep x` wires the
   left stream (which must be `seq<string>`) into the right command's stdin.
