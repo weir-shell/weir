@@ -408,8 +408,13 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT and SIGTERM all close every
   scope; `kill -9` of weir itself cannot, by definition — no
-  userspace design closes that hole. A child that must OUTLIVE the
-  script is a daemon — write a unit file; weir declines nohup.
+  userspace design closes that hole. AND THE MIRROR non-claim: the
+  tree-kill weir performs lands as SIGKILL on the CHILDREN too
+  (measured: wait = 137), so `within proc` does not run your child's
+  cleanup — a child that traps SIGTERM to flush state, remove a
+  lockfile or deregister never gets the chance. A child that must
+  OUTLIVE the script is a daemon — write a unit file; weir declines
+  nohup.
 - A `let` RHS takes command mode wherever lets go — top level AND
   inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
   function); `$()` covers sub-expression positions. `function | pat -> e | …`
