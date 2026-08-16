@@ -183,9 +183,28 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   add a `_`/var arm or it is a hard error. Guards remain legal.
 - Raw strings, F#'s two kinds, both SINGLE-LINE: `@"..."` verbatim
   (backslashes literal; `""` = one embedded quote) and `"""..."""`
-  (no escapes at all; bare `"` fine inside). Rawness belongs to the
+  (no escapes at all; bare `"` fine inside), and the RAW INTERPOLATED
+  `$"""…{hole}…"""` [D:interp-raw] — escapes off AND holes on, the
+  generating-weir-from-weir spelling (a backslash, a quote, and a
+  splice in one literal; no `$@"…"` — one spelling, and the attempt
+  teaches). A literal brace has no raw spelling ({{ teaches the
+  ordinary form); the Regex position refuses it (patterns are
+  check-time literals); Secrets refuse the raw hole exactly as the
+  ordinary one. An unterminated string of ANY kind now names its
+  opener. Rawness belongs to the
   literal KIND, never to position — a string means the same thing
   everywhere.
+
+```weir
+let v = "1.2.3"
+print $"""say "{v}" with a \ backslash"""
+```
+
+```weir-error
+let s = Secret.of "x"
+print $"""tok {s}"""
+```
+
 - The `Regex` pattern matches and extracts in one arm:
   `| Regex @"(\w+)=(\d+)" (k, v) ->`. The literal is RAW-ONLY
   (`@"..."` or `"""..."""` — an ordinary string there is a check

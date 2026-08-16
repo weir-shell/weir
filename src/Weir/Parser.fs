@@ -470,27 +470,33 @@ let private stringChar =
 // a missing closer at end-of-input is the pasted-multi-line-literal
 // shape (PLAN-dx-review D8): the assembler split the paste, so the
 // newline itself is never seen — teach the spelling instead of the
-// end-of-input dump
-// thrown past FParsec's error protocol like DepthExceeded: the open
-// quote usually sits inside an attempt (topLet's RHS), and a fatal
-// inside an attempt is not a fatal — the exception unwinds straight to
-// parseLineFull with the teaching
-exception private UnclosedString of Pos
+// end-of-input dump. Thrown past FParsec's error protocol like
+// DepthExceeded: the open quote usually sits inside an attempt
+// (topLet's RHS), and a fatal inside an attempt is not a fatal — the
+// exception unwinds straight to parseLineFull with the teaching.
+// Per kind [D:interp-raw]: the OPENER anchors the report and the
+// missing closer is NAMED. Each literal gates its getPosition-bind
+// behind followedBy — the bind reconstructs the combinator chain per
+// call, and ungated it runs at EVERY atom position (the 50k-op fuzz
+// spine pays it ~200k times)
+exception private UnclosedString of Pos * string * string
 
-let private unclosedStringTeaching: Parser<char, unit> =
+let private unclosed (opener: FParsec.Position) (kind: string) (closer: string) : Parser<'a, unit> =
     fun stream ->
         if stream.IsEndOfStream then
-            raise (UnclosedString(pos stream.Position))
+            raise (UnclosedString(pos opener, kind, closer))
         else
             (ifail "unclosed string") stream
 
 let private strLit =
-    spanned (
-        pchar '"' >>. manyChars stringChar .>> (pchar '"' <|> unclosedStringTeaching)
-        |>> EStr
-    )
-    |>> mkExpr
-    .>> ws
+    followedBy (pchar '"') >>. getPosition
+    >>= fun opener ->
+        spanned (
+            pchar '"' >>. manyChars stringChar .>> (pchar '"' <|> unclosed opener "\"" "\"")
+            |>> EStr
+        )
+        |>> mkExpr
+        .>> ws
 
 // raw strings [D:raw-strings] — F#'s two kinds, single-line, oracle
 // probe-pinned BEFORE implementation: @"..." verbatim (backslashes
@@ -508,13 +514,25 @@ let private tripleBody =
     )
 
 let private verbatimLit =
-    spanned (pstring "@\"" >>. verbatimBody .>> pchar '"' |>> EStr) |>> mkExpr
-    .>> ws
+    followedBy (pstring "@\"") >>. getPosition
+    >>= fun opener ->
+        spanned (
+            pstring "@\"" >>. verbatimBody .>> (pchar '"' <|> unclosed opener "@\"" "\"")
+            |>> EStr
+        )
+        |>> mkExpr
+        .>> ws
 
 let private tripleLit =
-    spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"" |>> EStr)
-    |>> mkExpr
-    .>> ws
+    followedBy (pstring "\"\"\"") >>. getPosition
+    >>= fun opener ->
+        spanned (
+            pstring "\"\"\"" >>. tripleBody
+            .>> (pstring "\"\"\"" <|> unclosed opener "\"\"\"" "\"\"\"")
+            |>> EStr
+        )
+        |>> mkExpr
+        .>> ws
 
 let private wordAtom =
     attempt (
@@ -745,12 +763,50 @@ let private interpPart =
           many1Chars interpChar |>> IStr ]
 
 let private interpLit =
-    spanned (
-        pstring "$\"" >>. many interpPart .>> (pchar '"' <|> unclosedStringTeaching)
-        |>> EInterp
-    )
-    |>> mkExpr
-    .>> ws
+    followedBy (pstring "$\"") >>. getPosition
+    >>= fun opener ->
+        spanned (
+            pstring "$\"" >>. many interpPart .>> (pchar '"' <|> unclosed opener "$\"" "\"")
+            |>> EInterp
+        )
+        |>> mkExpr
+        .>> ws
+
+// the raw interpolated literal [D:interp-raw]: escapes OFF, holes ON —
+// a backslash is a backslash, a bare " (or "") is content, `{` opens a
+// hole. No brace escape exists (raw means no escapes): a literal brace
+// belongs to the ordinary $"..." form, and the {{ attempt teaches.
+// Reopened from the no-interpolated-raw park on its own stated trigger
+// (raw-with-splice receipts). Single-line, like every string kind.
+let private interpRawPart =
+    choice
+        [ lookAhead (pstring "{{") >>. getPosition
+          >>= fun p ->
+              failFatallyAt
+                  p
+                  "a literal brace has no spelling in a raw interpolated string — use the ordinary $\"…\" form ({{ escapes there)"
+          pchar '{' >>. ws >>. expr .>> pchar '}' |>> IExpr
+          attempt (pstring "\"\"" .>> notFollowedBy (pchar '"')) >>% IStr "\"\""
+          attempt (pchar '"' .>> notFollowedBy (pstring "\"\"")) >>% IStr "\""
+          many1Satisfy (fun c -> c <> '"' && c <> '{' && c <> '\n' && c <> '\r') |>> IStr ]
+
+let private interpRawLit =
+    followedBy (pstring "$\"\"\"") >>. getPosition
+    >>= fun opener ->
+        spanned (
+            pstring "$\"\"\"" >>. many interpRawPart
+            .>> (pstring "\"\"\"" <|> unclosed opener "$\"\"\"" "\"\"\"")
+            |>> EInterp
+        )
+        |>> mkExpr
+        .>> ws
+
+// $@"…" does not exist — ONE raw interpolated spelling [D:interp-raw]
+// (two spellings for one capability is what this project removes)
+let private dollarAtTeach: Parser<Expr, unit> =
+    lookAhead (pstring "$@\"") >>. getPosition
+    >>= fun p ->
+        failFatallyAt p "no $@\"…\" — the raw interpolated spelling is $\"\"\"…\"\"\" (escapes off, {holes} on)"
 
 // Command-mode sigils: explicit, delimited guest entry for command
 // chains in expression position. Interior grammar is IDENTICAL to a
@@ -967,6 +1023,8 @@ let private atom =
               tripleLit
               verbatimLit
               strLit
+              dollarAtTeach
+              interpRawLit
               interpLit
               captureSigil
               effectSigil
@@ -2597,6 +2655,8 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) =
     choice
         [ strLit
           singleQuoted
+          dollarAtTeach
+          interpRawLit
           interpLit
           captureSigil
           spliceSplat
@@ -2668,9 +2728,19 @@ let private commandSegment
     // non-consuming fatal here merges the head alternative's expected-set
     (getPosition .>> pstring "$@"
      >>= fun at ->
-         failFatallyAt
-             at
-             "a splat cannot head a command (N words would be N heads); a command head is a literal — branch the whole command line")
+         fun stream ->
+             // $@" is the F# reflex for interpolated-verbatim — teach the
+             // one spelling instead of the splat guard's message [D:interp-raw]
+             if stream.Peek() = '"' then
+                 (failFatallyAt
+                     at
+                     "no $@\"…\" — the raw interpolated spelling is $\"\"\"…\"\"\" (escapes off, {holes} on)")
+                     stream
+             else
+                 (failFatallyAt
+                     at
+                     "a splat cannot head a command (N words would be N heads); a command head is a literal — branch the whole command line")
+                     stream)
     <|> (attempt head .>>. many argP)
     |>> fun ((kind, prog, span), args) ->
         let fullSpan =
@@ -3477,11 +3547,12 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
 
                 Result.Error { Message = msg; Col = col }
         with
-        | UnclosedString p ->
+        | UnclosedString(p, kind, closer) ->
             let col = if p.Line = 1 then Some p.Col else None
 
             Result.Error
-                { Message = "strings are single-line — use \\n for a line break"
+                { Message =
+                    $"string literal not closed — the {kind} opened here needs its closing {closer}; strings are single-line (use \\n for a line break)"
                   Col = col }
         | DepthExceeded p ->
             let col = if p.Line = 1 then Some p.Col else None

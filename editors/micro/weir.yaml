@@ -111,6 +111,28 @@ rules:
     - special: "_\\.[A-Za-z][A-Za-z0-9_]*"
     - special: "_\\["
 
+    # ---- raw interpolated: escapes OFF, holes ON; BEFORE interp-string
+    # so the $""" opener wins the $" tie ----
+    # rule: raw-interp
+    - constant.string:
+        start: "\\$\"\"\""
+        end: "\"\"\""
+        rules:
+            - special:
+                start: "\\{"
+                end: "\\}"
+                rules:
+                    - statement: "\\b(if|then|elif|else|when|match|with|function|fun|let|in)\\b"
+                    - constant.bool: "\\b(true|false)\\b"
+                    - type: "\\b[A-Z][A-Za-z0-9_]*\\b"
+                    - type: "\\b(int|string|bool|unit)\\b"
+                    - constant.number: "\\b[0-9]+\\b"
+                    - special: "_\\.[A-Za-z][A-Za-z0-9_]*"
+                    - symbol.operator: "\\|>"
+                    - symbol.operator: "(==|<>|<=|>=|->|\\.\\.)"
+                    - symbol.operator: "[+\\-*/<>=]"
+                    - identifier: "\\b[a-z_][A-Za-z0-9_]*\\b"
+
     # ---- interpolated strings, holes get real weir highlighting ----
     # rule: interp-string
     - constant.string:
