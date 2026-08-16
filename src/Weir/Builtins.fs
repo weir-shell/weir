@@ -203,7 +203,12 @@ let private intoImpl: Value =
             match c, sv with
             | VStr cmdline, VSeq items ->
                 let lines = items |> Seq.map asString
-                VSeq(Proc.lines "/bin/sh" [ "-c"; cmdline ] (Some lines) |> Seq.map VStr)
+                // sh resolves on PATH like every other spawn — the /bin/sh
+                // hardcode had no Windows answer (Git Bash puts sh on PATH)
+                VSeq(
+                    Proc.lines (Proc.resolveProg "sh") [ "-c"; cmdline ] (Some lines)
+                    |> Seq.map VStr
+                )
             | _ -> unreachable "the checker rejects 'into' on these arguments"))
 
 let private cdImpl: Value =

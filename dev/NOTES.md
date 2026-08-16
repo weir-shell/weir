@@ -174,6 +174,73 @@ session) — the fix wants its own pins (each reifier family member ×
 ambient env) and an e2e row. This session's three seeds ran via the
 env route directly.
 
+## reifiers drop the ambient env — the receipt audit (2026-08-16)
+
+The bug (found mid-raw-strings, fixed here): reifier desugar builtins
+spawned through a baked empty overlay; `within env` reached bare
+commands and $() but never `cmd | orFail` or its family. Fixed at the
+LAW: ambient layers now apply inside Proc.start/startSpilled, under
+the explicit env, so every spawn — reifiers, cmd, into, future
+members — obeys outer-first [D:ambient-env-starter]. The membership
+question ("what else is registered that way?") answered wider than
+the report guessed: cmd and into spawned with NO overlay at all, and
+the Env-sigil twins dropped the ambient underlay. feedWith turned out
+to be dead code — defined, never registered.
+
+THE RECEIPT AUDIT — the window is 793f945 (2026-08-04, the !-district
+retirement moved fuzz.weir from `!fenv` to `within env`) to this fix.
+Before it, `!fenv` rode the ECmd env slot into the |orFailedEnv twin:
+those runs were genuine. Inside it, every tools/fuzz.weir run executed
+seed=1789001 count=200 — the defaults — under whatever banner was
+requested. Affected claims, each marked, none silently re-run:
+
+- duration (03acd33, 08-04): "3 fresh 10k deep seeds (lexer changed)"
+  — actually 3x the same pinned 200. Decision stands on unit/e2e/
+  oracle pins; the depth claim was corroboration.
+- floats session 2 (222a822, 08-04): "the fuzzer's expect-red
+  prediction did not fire: 30k fresh-seed cases green" — actually
+  ~200 effective. The WEAKEST survivor: the did-not-fire observation
+  was nearly vacuous at that depth; the analytical explanation
+  (exact-quarter literals render deterministically) still argues the
+  prediction, but as theory, not measurement.
+- dedent correct-join (d87c5f9, 08-04): "30k strict-span deep cases
+  green" — ~200 effective; shapes covered directly by 1027 unit + e2e.
+- trailing comments (08-04): "3 fresh 10k strict-span seeds" — same.
+- function lambda (8656b01, 08-08): "three fresh 10k seeds came back
+  clean" — the one that matters most: that session ADDED the function
+  production to the generator, so the new grammar arm was exercised
+  ~200 times, not 30k.
+- the transcript sessions (08-10..08-15): Map, anonymous records,
+  scoped-procs-era runs, and spot-checks all "3 fresh 10k" — all 200.
+  One run in that stretch FAILED then "passed with a different seed" —
+  under the bug both runs were the SAME 200 cases, so that pass
+  masked a timing-flaky failure, not a seed difference.
+- nightly fuzz-deep.yml: three invocations per night (pinned + two
+  RUN_NUMBER-derived), all 200-case since 08-04.
+- raw-strings (08-16): caught it; its three seeds re-ran genuinely via
+  the env route, 3x10k clean.
+
+No blessed DECISION rested solely on a deep-fuzz green — every row
+above also carried unit/e2e/oracle evidence — but every "N fresh 10k"
+sentence in that window overstated its evidence, and floats2's
+prediction-did-not-fire is downgraded to analysis. RE-RUN (post-fix,
+recorded here against the rows above): three fresh 10k-case seeds
+through the FIXED driver — 660017, 812338, 447291 — ALL CLEAN, each
+closing line self-reporting "count=10000 (observed)".
+These exercise the CURRENT grammar union (function lambdas, dedent
+joins, trailing comments, float production included); the historical
+intermediate trees are unrecoverable and stay marked.
+
+The class fix is [D:observed-report]: the harness writes what it
+read, the driver verifies requested==observed and fails loud. The
+sweep found no other restated-input banner in tools/ or ci/. Two
+parser gaps logged while building the pins, not fixed here:
+value-headed pipes (plain or reified) parse at top level but not as
+block-interior statements or block-interior let-RHS ("Expecting: end
+of input" / the '|' teaching); the e2e matrix pins the In twin
+through a function called inside the scope instead — which also pins
+the dynamic-scope semantics deliberately.
+
 ## check --can: the constraint pays out visibly (2026-08-15)
 
 The feature was a walk, not an analysis — Phase 0 established that

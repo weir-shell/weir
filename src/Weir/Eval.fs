@@ -1882,18 +1882,16 @@ let private envPairsOf (v: Value) : (string * string) list =
         |> List.ofSeq
     | _ -> unreachable "the checker rejects non-seq overlays"
 
-// ambient `within env` layers apply OUTER-FIRST under the explicit
-// sigil env, so inner and explicit keys win at Proc's last-wins
-// application [D:within-scopes]
+// the explicit sigil env only — ambient `within env` layers apply in
+// Proc's starters themselves [D:within-scopes], so EVERY spawn
+// (reifier desugars, cmd/into included) obeys the outer-first law,
+// not just these Eval paths
 let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
-    let ambient = Session.envOverlay () |> List.rev |> List.collect id
-
     match cenvO with
-    | None -> ambient
+    | None -> []
     | Some ce ->
-        ambient
-        @ (envPairsOf (eval env ce)
-           |> List.map (fun (k, v) -> k, noNul $"the env value for '{k}'" v))
+        envPairsOf (eval env ce)
+        |> List.map (fun (k, v) -> k, noNul $"the env value for '{k}'" v)
 
 // a NUL cannot cross the spawn hand-off [D:encoding-law]: argv and env
 // are NUL-terminated C strings, so the byte would silently TRUNCATE

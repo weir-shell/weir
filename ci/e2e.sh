@@ -1417,6 +1417,60 @@ vout=$( cd "$widir" && $BIN envval.weir )
 [ "$vout" = "carried" ] || fail "env value case captures under the overlay: $vout"
 echo "e2e ok: within env expression position yields a captured value"
 
+# ---- ambient env reaches EVERY spawn [D:within-scopes] ---------------------
+# the reifier desugars spawned with a BAKED empty overlay for 12 days
+# (found 2026-08-16): within env + `| orFail` ran the child WITHOUT the
+# overlay while bare commands and $() saw it — the deep-fuzz driver ran
+# at harness defaults the whole window. The matrix pins the law where
+# it broke: every reifier family member, the In/Env twins, cmd/into,
+# nesting outer-first, explicit sigil last-wins.
+cat > "$widir/envreify.weir" <<'WEOF'
+let outer = [Env.pair "RA" "amb"; Env.pair "RB" "keep"]
+let inner = [Env.pair "RA" "in"]
+let sig1 = [Env.pair "RA" "sig"]
+let xs = ["a"]
+let feedIt () = xs | sh -c "cat >/dev/null; echo intwin=$RA" | complete
+within env outer
+    sh -c "echo orfail=$RA-$RB" | orFail "orFail lost the ambient overlay"
+    let c = $(sh -c "echo complete=$RA" | complete)
+    print $"{c.stdout |> Seq.head}"
+    let ok = $(sh -c "test \"$RA\" = amb" | succeeds)
+    print $"succeeds={ok}"
+    let r2 = feedIt ()
+    print $"{r2.stdout |> Seq.head}"
+    ["z"] |> into "echo into=$RA" |> Seq.iter print
+    within env inner
+        sh -c "echo nested=$RA-$RB" | orFail "nested orFail lost a layer"
+        $sig1(sh -c "echo sigil=$RA-$RB" | orFail "sigil twin lost the ambient underlay")
+WEOF
+rout=$( cd "$widir" && $BIN envreify.weir )
+echo "$rout" | grep -qF "orfail=amb-keep"  || fail "orFail sees ambient env: $rout"
+echo "$rout" | grep -qF "complete=amb"     || fail "complete sees ambient env: $rout"
+echo "$rout" | grep -qF "succeeds=true"    || fail "succeeds sees ambient env: $rout"
+echo "$rout" | grep -qF "intwin=amb"       || fail "stdin twin sees ambient env (dynamic scope): $rout"
+echo "$rout" | grep -qF "into=amb"         || fail "into sees ambient env: $rout"
+echo "$rout" | grep -qF "nested=in-keep"   || fail "reifier nesting: inner wins, outer key survives: $rout"
+echo "$rout" | grep -qF "sigil=sig-keep"   || fail "explicit sigil wins over ambient, ambient underlay survives: $rout"
+echo "e2e ok: ambient env reaches every spawn — reifier family, In/Env twins, into; nesting outer-first"
+
+# the observed-count loop [D:observed-report]: the driver must report
+# what the harness MEASURED, not what it was asked — a tiny run, the
+# regression guard for the silent-defaults window. Linux-only, where
+# the deep nightly lives: native Windows cannot spawn ci/deep-lock.sh,
+# and the fuzz suite's depth pins abort the macOS testhost (no fuzz
+# step has ever run there — smaller thread stacks)
+froot="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "$(uname -s)" = "Linux" ] && command -v dotnet >/dev/null 2>&1 && [ -f "$froot/tests/Weir.Fuzz/Weir.Fuzz.fsproj" ]; then
+    obs_rc=0
+    obs=$( cd "$froot" && $BIN tools/fuzz.weir --seed 4242 --count 10 2>&1 ) || obs_rc=$?
+    [ "$obs_rc" = "0" ] || fail "observed-count run failed: $(echo "$obs" | tail -3)"
+    echo "$obs" | grep -qF "deep fuzz clean: seed=4242 count=10 (observed)" \
+        || fail "driver must report the OBSERVED config: $(echo "$obs" | tail -3)"
+    echo "e2e ok: fuzz driver reports observed seed/count (instrument measures, not restates)"
+else
+    echo "e2e skip: fuzz observed-count loop (Linux + dotnet only)"
+fi
+
 # ---- filesystem members [D:fs-members] -------------------------------------
 fsdir=$(mkweirtmp)
 cat > "$fsdir/glob.weir" <<'WEOF'
