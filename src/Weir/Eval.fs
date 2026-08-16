@@ -1119,8 +1119,22 @@ let private renderString (s: string) : Rendered =
     // multiple trailing newlines have no block form in the subset (`|+`
     // is rejected) — they FALL BACK to the quoted-with-escapes spelling:
     // valid, exact, round-trips; every legal string stays renderable
-    // [D:content-bytes]
-    if s.Contains '\n' && tame && s.TrimEnd '\n' <> "" && not (s.EndsWith "\n\n") then
+    // [D:content-bytes]. A content line starting with space/tab also
+    // falls back: block content indentation is detected from the first
+    // non-empty line, and the explicit indentation indicator that a
+    // leading-whitespace line needs is outside the subset — block form
+    // there writes YAML the subset refuses to read
+    let noIndentedContent =
+        s.Split '\n'
+        |> Array.forall (fun l -> not (l.StartsWith " " || l.StartsWith "\t"))
+
+    if
+        s.Contains '\n'
+        && tame
+        && s.TrimEnd '\n' <> ""
+        && not (s.EndsWith "\n\n")
+        && noIndentedContent
+    then
         let keep = s.EndsWith "\n"
         let body = if keep then s.Substring(0, s.Length - 1) else s
         BlockScalar((if keep then "|" else "|-"), body.Split '\n' |> List.ofArray)
@@ -1865,7 +1879,23 @@ let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * strin
 
     match cenvO with
     | None -> ambient
-    | Some ce -> ambient @ envPairsOf (eval env ce)
+    | Some ce ->
+        ambient
+        @ (envPairsOf (eval env ce)
+           |> List.map (fun (k, v) -> k, noNul $"the env value for '{k}'" v))
+
+// a NUL cannot cross the spawn hand-off [D:encoding-law]: argv and env
+// are NUL-terminated C strings, so the byte would silently TRUNCATE
+// the word at the child — and silent truncation is wrong under every
+// answer. The boundary holds on its own rather than trusting every
+// upstream constructor: once BYTES lands there will be other routes
+// to a NUL.
+and private noNul (what: string) (s: string) : string =
+    if s.Contains '\u0000' then
+        failwith
+            $"{what} contains a NUL byte — it would silently truncate at the process boundary (argv and env are NUL-terminated); NUL-bearing data is binary: pass it via a file or stdin, not an argument"
+    else
+        s
 
 // spawn-argv assembly [D:argv-splat]: a splat enumerates ONCE at
 // spawn (argv is finite — the splat forces by necessity), order
@@ -1876,9 +1906,12 @@ and argvOf (env: Env) (args: Check.TypedExpr list) : string list =
         match a.Kind with
         | Check.TESplat inner ->
             match eval env inner with
-            | VSeq items -> items |> Seq.map (scalarString "splat element") |> List.ofSeq
+            | VSeq items ->
+                items
+                |> Seq.map (scalarString "splat element" >> noNul "a splat element")
+                |> List.ofSeq
             | v -> unreachable $"the checker rejects '$@' on {formatValue v}"
-        | _ -> [ scalarString "command argument" (eval env a) ])
+        | _ -> [ eval env a |> scalarString "command argument" |> noNul "a command argument" ])
 
 and eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with

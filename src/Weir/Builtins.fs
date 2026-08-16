@@ -1568,10 +1568,18 @@ let private fromBase64Text (name: string) (s: string) : Result<string, string> =
     match bytes with
     | Error e -> Error e
     | Ok(b: byte[]) ->
-        try
-            Ok(utf8Strict.GetString b)
-        with _ ->
-            Error $"{name}: the decoded content is not text (not valid UTF-8)"
+        // NUL is non-text too [D:encoding-law]: it is valid UTF-8, but
+        // it is the byte the binary detector keys on [D:binary-echo],
+        // and a NUL-bearing string silently truncates at every C
+        // boundary (argv, env) — binary payloads wait for BYTES
+        if System.Array.IndexOf(b, 0uy) >= 0 then
+            Error
+                $"{name}: the decoded content is not text (it contains NUL bytes — binary payloads need the BYTES type, not string)"
+        else
+            try
+                Ok(utf8Strict.GetString b)
+            with _ ->
+                Error $"{name}: the decoded content is not text (not valid UTF-8)"
 
 let private strMembers: (string * Ty * Value) list =
     [ "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)

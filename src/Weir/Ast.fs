@@ -209,6 +209,57 @@ let rec yamlTplExprs (tpl: YamlTpl) : Expr list =
                 :: (body
                     |> List.collect (fun e -> yamlTplExprs (YtMap([ e ], Unchecked.defaultof<Span>)))))
 
+// the pattern tree's child list — the depth gate walks patterns the
+// way it walks expressions (a bare cons chain is a spine that parses
+// shallow) [D:depth-guard]
+let patChildren (p: Pattern) : Pattern list =
+    match p.PKind with
+    | PWildcard
+    | PVar _
+    | PBool _
+    | PInt _
+    | PStr _
+    | PUnit
+    | PSeqNil -> []
+    | PTuple ps
+    | PSeqList ps -> ps
+    | PCase(_, arg) -> Option.toList arg
+    | PRegex(_, _, _, binder) -> [ binder ]
+    | PCons(h, t) -> [ h; t ]
+
+// every Pattern embedded in a yaml template — the `for` binders
+let rec yamlTplPats (tpl: YamlTpl) : Pattern list =
+    match tpl with
+    | YtScalar _
+    | YtBlock _
+    | YtSplice _ -> []
+    | YtSeq(items, _) ->
+        items
+        |> List.collect (function
+            | YtItem t -> yamlTplPats t
+            | YtForItems(b, _, body) ->
+                b
+                :: (body
+                    |> List.collect (fun i -> yamlTplPats (YtSeq([ i ], Unchecked.defaultof<Span>)))))
+    | YtMap(entries, _) ->
+        entries
+        |> List.collect (function
+            | YtPair(_, v) -> yamlTplPats v
+            | YtForEntries(b, _, body) ->
+                b
+                :: (body
+                    |> List.collect (fun e -> yamlTplPats (YtMap([ e ], Unchecked.defaultof<Span>)))))
+
+// the patterns attached directly to an expression node — the depth
+// gate pairs this with exprChildren to cover both trees
+let exprPats (e: Expr) : Pattern list =
+    match e.Kind with
+    | EMatch(_, arms) -> arms |> List.map (fun (p, _, _) -> p)
+    | ELetPat(p, _, _)
+    | ELambdaPat(p, _) -> [ p ]
+    | EYaml(tpl, _) -> yamlTplPats tpl
+    | _ -> []
+
 // the expression tree's child list — tooling walks share this (the
 // TypedExpr twin lives in Check.childExprs)
 let exprChildren (e: Expr) : Expr list =

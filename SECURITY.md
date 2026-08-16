@@ -152,7 +152,6 @@ it, by design):
     it. And a credential the author puts in a URL as a plain string is
     not a `Secret` at all — error messages redact userinfo
     (`user:pass@`), but a token in a query string is unprotected.
-  - **TLS verification is ON** and there is no `insecure` in v1.
   - **`Http` shares the BCL `HttpClient` with the contracts fetch** —
     deliberate and stated: the contracts fetch has a fetch-only fence
     (never `check`, completion, or run), `Http.send` is an ordinary
@@ -174,7 +173,11 @@ contributes N words, each itself one word. There is no weir spelling
 that turns a variable's contents into multiple arguments, a flag, or a
 subcommand by accident. A value containing spaces, newlines, quotes,
 glob characters, `;`, `&&`, or `$(...)` text arrives at the child
-process byte-for-byte as a single argument.
+process byte-for-byte as a single argument. The one byte that cannot
+cross is NUL — argv and env are NUL-terminated, so a NUL-bearing value
+is **refused with a diagnostic at the spawn boundary** (and
+`Str.fromBase64` already rejects NUL as non-text); it is never
+silently truncated.
 
 This is architectural, not defensive coding: weir spawns via the argv
 vector (`Proc.Spec` holds `Prog` + `Args`), never by building a shell
@@ -196,12 +199,27 @@ Check-time resolution matches run-time resolution.
 On any input the checker returns a located diagnostic rather than
 silently mis-executing. Totality is patrolled by the fuzzer
 (invariant 2, including an adversarial-depth axis) with an always-on
-strict-span floor, and a parse-depth guard (limit 500) converts what
-were three stack/time blowups — extreme nesting depth, very long
-operator chains, deeply nested brackets — into located "expression
-nested too deeply" diagnostics. No input crashes the process; that is
-now a machine-checked invariant (unit `Depth guard` pins plus the
-fuzzer's depth seeds), not a prose promise.
+strict-span floor, and a depth guard (limit 500) converts stack/time
+blowups into located "expression nested too deeply" diagnostics.
+
+What the depth guard covers is enumerated, not remembered: the
+expression, type, pattern, command/sigil, and yaml-district grammars
+all route through the guard, and `ci/depth-coverage.py` asserts
+mechanically that every recursive parser cycle does — a new nesting
+axis fails CI rather than shipping unguarded (the adversarial review
+found the type and pattern grammars missing from an earlier,
+list-shaped version of this claim). Spines that parse shallow but
+build deep trees (operator chains, cons chains, field chains) are
+bounded by a post-parse gate. The checker additionally carries an
+inference budget: Hindley-Milner inference is DEXPTIME, a 7-line file
+can make it run forever with no crash to see, and no answer is also a
+wrong answer — exhaustion becomes a located diagnostic ("this
+expression's type grew too large"). The budget is a cost ceiling far
+above any real program, re-askable on a receipt, not a measured
+constant presented as a guarantee. No input crashes the process; that
+is a machine-checked
+invariant (unit `Depth guard` pins plus the fuzzer's depth seeds over
+every nesting constructor), not a prose promise.
 
 ### 4. Deployment — one binary, no runtime
 

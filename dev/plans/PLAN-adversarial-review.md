@@ -1,8 +1,16 @@
 # weir — adversarial review of the shipped claims
 
-Status: PROPOSED (findings-shaped; not blessed, nothing fixed yet). Five
-findings, ordered by which stated property they falsify. Every one
-reproduces on the AOT binary at `e961984` through the harness:
+Status: EXECUTED (2026-08-16, the fix session — harness green end to
+end, "all findings fixed"). Per-finding status rides each section;
+decision rows: [D:depth-coverage], [D:inference-budget],
+[D:reifier-fifth-cell], [D:nul-boundary], [D:yaml-interop]. Both
+re-point rules below were honored: the F4 probe asserts the REJECTION
+(both faces — construction and the argv boundary), and F3's probe
+asserts the fifth-cell TEACHING (the fix made the boundary teach; the
+review's support-it-instead alternative remains an open bless
+question). Originally: five findings, ordered by which stated property
+they falsify. Every one reproduced on the AOT binary at `e961984`
+through the harness:
 
     weir tools/adversarial-repro.weir --bin ./path/to/weir
 
@@ -21,6 +29,18 @@ leading/interior/trailing whitespace, CR/CRLF/NEL/LS, block-scalar shapes,
 emoji, long lines).
 
 ## F1 — the depth guard covers ONE of three sub-grammars (Property 3)
+
+STATUS: EXECUTED. The general fix, per this section's own argument:
+deepen on every cycle-starting nonterminal (type, pattern, and the
+FIVE further axes the coverage question surfaced: index interiors,
+block-form chains, sigil nests, yaml-district blocks, field/cons/elif
+spines — axis four through eight, found by the gate, not by a list),
+the post-parse gate walks patterns, and ci/depth-coverage.py asserts
+the parser's reference graph minus deepen-guarded nodes is ACYCLIC.
+All eleven constructors (and the new axes) diagnose at 20000 through
+check/fmt/--json/lsp didOpen/import; fuzzer seeds added per
+constructor; SECURITY names the coverage. [D:depth-coverage]
+
 
 `[D:depth-guard]` named unbounded expression depth "a SAFETY bug — a
 memory-unsafe SEGV (rc 139) in a safe-by-design language" and closed two
@@ -85,6 +105,16 @@ exit code — a hang is not a crash, so `rc >= 128` cannot see F5's shape.
 
 ## F2 — the yaml boundary: one defect, four instances (round-trip + interop)
 
+STATUS: EXECUTED. All four instances fixed ((a) quoted fallback for
+leading-whitespace content lines; (b) whitespace-only block lines
+kept per YAML's own law, PyYAML-verified; (c) .inf/.nan joined
+ambiguousPlain; (d) escape law widened \r \N \L \P \xNN \uNNNN both
+directions, needsQuote past IsControl). The durable referee shipped:
+ci/interop-referee.py in e2e — ~100 hostile payloads through PyYAML
+AND Python's json (the gap was symmetric), CI image carries PyYAML.
+The corpus re-run rule was honored (103/103 green). [D:yaml-interop]
+
+
 Treating these as four bugs is the mistake the first draft of this plan
 made. They are one defect — **the yaml emitter/reader pair has no external
 referee** — and the four instances are what that bought.
@@ -147,6 +177,16 @@ external referee runs in CI over the hostile corpus for both adapters.
 
 ## F3 — a non-spine block let degrades its reifier into a PATH lookup (Property 2)
 
+STATUS: EXECUTED. The fifth refusal cell: a stage beginning with a
+reifier name whose marker did not match TEACHES (one text, two
+firing sites — piped-stage guard and bare-pipe hint), pinned 4
+reifiers x 3 positions; ^name stays the escape for a real tool of
+that name; no PATH resolution for a bare reifier name anywhere.
+Whether the position should SUPPORT the reifier instead remains an
+open bless question, as this section framed it.
+[D:reifier-fifth-cell]
+
+
 `[D:block-let-cmd]` holds the block-let command RHS with a ThreadLocal spine
 flag, true only along topLet's RHS and its let-in chain: "parens, lambda
 bodies, and single-line let-in stay expression-only, pinned". Off the spine
@@ -184,6 +224,15 @@ within-body and lambda-body; no PATH resolution is attempted for a reifier
 name.
 
 ## F4 — a NUL-bearing value truncates at the argv hand-off (Property 1)
+
+STATUS: EXECUTED — BOTH fixes, per the review recommendation
+(accepted): (1) fromBase64/tryFromBase64 treat NUL as non-text;
+(2) argv AND env values refuse NUL at the spawn hand-off with a
+diagnostic naming the truncation (File.read remains a live route in,
+which is why the boundary holds on its own). The probe was
+RE-POINTED at the rejection exactly as prescribed. Property 1
+gained its qualifier. [D:nul-boundary]
+
 
 Property 1 says a spliced value "arrives at the child process byte-for-byte
 as a single argument". The word-integrity half holds everywhere (84/84
@@ -253,6 +302,16 @@ qualifier it needs either way.
 
 ## F5 — the checker has no time bound (Property 3, the post-parse seam)
 
+STATUS: EXECUTED. A resolution-work budget (ticks in resolve, the
+step every type walk pays — bind entries alone missed the blowup);
+exhaustion is a located diagnostic at the innermost bind. The bomb
+diagnoses in ~1s; n=3 unchanged. The message follows the evidence:
+"type grew too large" only when a bounded size probe confirms it,
+neutral text otherwise — exactly this section's corollary. The
+fuzzer's totality gained the TIME axis (the bomb under a 30s
+clock). [D:inference-budget]
+
+
 A 149-byte file, eight lines, parse depth ~1, on which `weir check` never
 returns:
 
@@ -320,6 +379,14 @@ since a hang and a crash are different failures and only one is currently
 patrolled.
 
 ## Documentation defects — and the pattern is NOT what it looks like
+
+STATUS: EXECUTED. SECURITY:155 stale non-claim deleted (the accurate
+insecure bullet stands); SKILL's block-let sentence now states the
+spine boundary precisely AND carries a weir + weir-error fence pair
+(the off-spine teaching is machine-checked); the fromBase64 claim
+gained the NUL clause and a weir-error fence. Load-bearing prose
+promoted to fences, per this section's fix shape.
+
 
 Three found by reading, each independently checked against the binary:
 

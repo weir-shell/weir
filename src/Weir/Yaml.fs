@@ -124,10 +124,12 @@ let stripDistrictComment (s: string) =
     let cut = commentCutAt true s
     (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd()
 
-// a scalar token: quoted (double: \" \\ \n \t unescaped; single: '' = ')
-// or plain (raw, trimmed). Rejections carry the subset's teaching. The
-// CORE is position-free so the yaml DISTRICT's template parser reuses it
-// (one machine); parseScalar wraps it with the line prefix.
+// a scalar token: quoted (double: \" \\ \n \t \r \N \L \P \xNN \uNNNN
+// unescaped — the emitter's own escape set, so weir reads what weir
+// writes; single: '' = ') or plain (raw, trimmed). Rejections carry
+// the subset's teaching. The CORE is position-free so the yaml
+// DISTRICT's template parser reuses it (one machine); parseScalar
+// wraps it with the line prefix.
 // Ok None = null (empty); Ok (Some (text, quoted)) = a scalar.
 let scalarCore (raw: string) : Result<(string * bool) option, string> =
     let t = raw.Trim()
@@ -143,22 +145,76 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
             let mutable i = 0
             let mutable bad = None
 
+            let hex (start: int) (len: int) =
+                if start + len <= body.Length then
+                    let mutable v = 0
+                    let mutable ok = true
+
+                    for k in start .. start + len - 1 do
+                        let c = body[k]
+
+                        if System.Uri.IsHexDigit c then
+                            v <- v * 16 + System.Uri.FromHex c
+                        else
+                            ok <- false
+
+                    if ok then Some v else None
+                else
+                    None
+
             while i < body.Length do
                 if body[i] = '\\' && i + 1 < body.Length then
                     (match body[i + 1] with
-                     | 'n' -> sb.Append '\n' |> ignore
-                     | 't' -> sb.Append '\t' |> ignore
-                     | '\\' -> sb.Append '\\' |> ignore
-                     | '"' -> sb.Append '"' |> ignore
-                     | c -> bad <- Some c)
-
-                    i <- i + 2
+                     | 'n' ->
+                         sb.Append '\n' |> ignore
+                         i <- i + 2
+                     | 't' ->
+                         sb.Append '\t' |> ignore
+                         i <- i + 2
+                     | 'r' ->
+                         sb.Append '\r' |> ignore
+                         i <- i + 2
+                     | 'N' ->
+                         sb.Append '\u0085' |> ignore
+                         i <- i + 2
+                     | 'L' ->
+                         sb.Append '\u2028' |> ignore
+                         i <- i + 2
+                     | 'P' ->
+                         sb.Append '\u2029' |> ignore
+                         i <- i + 2
+                     | '\\' ->
+                         sb.Append '\\' |> ignore
+                         i <- i + 2
+                     | '"' ->
+                         sb.Append '"' |> ignore
+                         i <- i + 2
+                     | 'x' ->
+                         (match hex (i + 2) 2 with
+                          | Some v ->
+                              sb.Append(char v) |> ignore
+                              i <- i + 4
+                          | None ->
+                              bad <- Some 'x'
+                              i <- i + 2)
+                     | 'u' ->
+                         (match hex (i + 2) 4 with
+                          | Some v ->
+                              sb.Append(char v) |> ignore
+                              i <- i + 6
+                          | None ->
+                              bad <- Some 'u'
+                              i <- i + 2)
+                     | c ->
+                         bad <- Some c
+                         i <- i + 2)
                 else
                     sb.Append body[i] |> ignore
                     i <- i + 1
 
             match bad with
-            | Some c -> Error $"unsupported escape '\\{c}' (the subset takes \\\" \\\\ \\n \\t)"
+            | Some c ->
+                Error $"unsupported escape '\\{c}' (the subset takes \\\" \\\\ \\n \\t \\r \\N \\L \\P \\xNN \\uNNNN)"
             | None -> Ok(Some(sb.ToString(), true))
     elif t.StartsWith "'" then
         if t.Length < 2 || not (t.EndsWith "'") then
@@ -281,7 +337,10 @@ let private blockScalar
         let no, line = raw[i]
 
         if line.Trim() = "" then
-            content.Add(no, "")
+            // a whitespace-only line is kept RAW: bytes beyond the
+            // block's indentation are content (PyYAML agrees), bytes
+            // at-or-below it are an empty line — extraction decides
+            content.Add(no, line.TrimEnd '\r')
             i <- i + 1
         elif indentOf line > parentIndent then
             content.Add(no, line.TrimEnd '\r')
@@ -289,24 +348,33 @@ let private blockScalar
         else
             stop <- true
 
-    // trailing blanks drop for both forms (keeping them is |+'s job, rejected)
-    while content.Count > 0 && snd content[content.Count - 1] = "" do
-        content.RemoveAt(content.Count - 1)
+    let isWsOnly (l: string) = l.Trim() = ""
 
-    if content.Count = 0 then
-        Error $"line {headerNo}: a block scalar header needs an indented block below it"
-    else
-        let cIndent =
-            content |> Seq.filter (fun (_, l) -> l <> "") |> Seq.head |> snd |> indentOf
-
-        match content |> Seq.tryFind (fun (_, l) -> l <> "" && indentOf l < cIndent) with
+    match
+        content
+        |> Seq.filter (fun (_, l) -> not (isWsOnly l))
+        |> Seq.tryHead
+        |> Option.map (snd >> indentOf)
+    with
+    | None -> Error $"line {headerNo}: a block scalar header needs an indented block below it"
+    | Some cIndent ->
+        match content |> Seq.tryFind (fun (_, l) -> not (isWsOnly l) && indentOf l < cIndent) with
         | Some(no, _) -> Error $"line {no}: this line sits left of the block scalar's content indentation"
         | None ->
-            let body =
+            let extracted =
                 content
-                |> Seq.map (fun (_, l) -> if l = "" then "" else l.Substring cIndent)
-                |> String.concat "\n"
+                |> Seq.map (fun (_, l) -> if l.Length > cIndent then l.Substring cIndent else "")
+                |> Seq.toArray
 
+            // trailing EMPTY lines drop for both forms (keeping them is
+            // |+'s job, rejected); a trailing whitespace line beyond the
+            // indent is content and STAYS — dropping it loses bytes
+            let mutable last = extracted.Length
+
+            while last > 0 && extracted[last - 1] = "" do
+                last <- last - 1
+
+            let body = extracted[.. last - 1] |> String.concat "\n"
             Ok(NBlock((if keep then body + "\n" else body), headerNo))
 
 /// the last content line's number, for the extent-consistency guard
@@ -553,7 +621,9 @@ let private looksNumeric (s: string) =
 
 let private ambiguousPlain =
     // the reverse-Norway set: a plain rendering a YAML reader would
-    // mis-TYPE — booleans in three casings (the 1.1 legacy set), null forms
+    // mis-TYPE — booleans in three casings (the 1.1 legacy set), null
+    // forms, and the float specials (.inf/.nan families) — a reader
+    // types those as floats
     set
         [ "true"
           "false"
@@ -576,7 +646,19 @@ let private ambiguousPlain =
           "NO"
           "ON"
           "OFF"
-          "NULL" ]
+          "NULL"
+          ".inf"
+          ".Inf"
+          ".INF"
+          "+.inf"
+          "+.Inf"
+          "+.INF"
+          "-.inf"
+          "-.Inf"
+          "-.INF"
+          ".nan"
+          ".NaN"
+          ".NAN" ]
 
 let private needsQuote (s: string) =
     s = ""
@@ -589,12 +671,18 @@ let private needsQuote (s: string) =
     || s.Contains " #" // a mid-line comment marker would truncate the value
     || "-?[]{},#&*!|>'\"%@`".Contains s[0]
     || (s.StartsWith "- ")
-    || s |> Seq.exists System.Char.IsControl
+    // past Char.IsControl: U+2028/U+2029 are line breaks to a YAML
+    // reader but not IsControl, so they must force quoting too
+    || s
+       |> Seq.exists (fun c -> System.Char.IsControl c || c = '\u2028' || c = '\u2029')
 
 /// render a STRING scalar per the quoting law [D:yaml-v1]: plain when a
-/// reader cannot mis-type it, double-quoted (with \" \\ \n \t escapes)
-/// otherwise — the reverse-Norway rule: `"no"`, `"007"`, `"1e5"` get
-/// quotes so no YAML reader turns them into bool/number
+/// reader cannot mis-type it, double-quoted otherwise — the
+/// reverse-Norway rule: `"no"`, `"007"`, `"1e5"` get quotes so no YAML
+/// reader turns them into bool/number. Every control character and
+/// unicode line break is ESCAPED inside the quotes (\r \N \L \P, \xNN
+/// for the rest): a raw CR/NEL/LS in a quoted scalar is a line break
+/// to a YAML reader and the value changes
 let renderScalar (s: string) : string =
     if not (needsQuote s) then
         s
@@ -608,6 +696,18 @@ let renderScalar (s: string) : string =
              | '\\' -> sb.Append "\\\\" |> ignore
              | '\n' -> sb.Append "\\n" |> ignore
              | '\t' -> sb.Append "\\t" |> ignore
+             | '\r' -> sb.Append "\\r" |> ignore
+             | '\u0085' -> sb.Append "\\N" |> ignore
+             | '\u2028' -> sb.Append "\\L" |> ignore
+             | '\u2029' -> sb.Append "\\P" |> ignore
+             // ToString, not sprintf: printf's generic specialization
+             // is reflection under AOT and this arm must run there
+             | c when System.Char.IsControl c ->
+                 (if int c < 256 then
+                      sb.Append("\\x").Append((int c).ToString "X2")
+                  else
+                      sb.Append("\\u").Append((int c).ToString "X4"))
+                 |> ignore
              | c -> sb.Append c |> ignore)
 
         sb.Append '"' |> ignore

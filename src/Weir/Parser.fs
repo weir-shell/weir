@@ -208,11 +208,35 @@ let private failFatallyAtCol (col: int) (msg: string) : Parser<'a, unit> =
         stream.Seek(int64 (col - 1))
         Reply(ReplyStatus.FatalError, messageError msg)
 
+// the fifth refusal cell's teaching [D:reifier-family-complete] — one
+// text, two firing sites (the piped-stage guard and the bare-pipe hint)
+let private reifierHereMsg (name: string) =
+    $"'{name}' is a reifier, not a PATH program — reify on a statement-level let RHS (let r = <command> | {name}); a real tool named '{name}' runs with ^{name}"
+
+let private reifierWordEnd: Parser<unit, unit> =
+    notFollowedBy (
+        satisfy (fun c ->
+            not (System.Char.IsWhiteSpace c)
+            && c <> ')'
+            && c <> ';'
+            && c <> '|'
+            && c <> sibSep)
+    )
+
 let private barePipeHint: Parser<unit, unit> =
     // a bare `|` after a completed EXPRESSION [D:pipe-hint]; anchor the
     // caret ON the `|`, not the ws after it [D:anchor-before-read]
     (attempt (getPosition .>> pchar '|' .>> notFollowedBy (anyOf "|>"))
-     >>= fun pipePos -> failFatallyAt pipePos "'|' chains commands; pipe expressions with '|>'")
+     >>= fun pipePos ->
+         // a reifier name after the bare pipe teaches the reifier
+         // boundary, not the pipe glyph [D:reifier-family-complete]
+         (attempt (
+             ws >>. getPosition
+             .>>. (choice [ pstring "complete"; pstring "succeeds"; pstring "exitCode"; pstring "orFail" ]
+                   .>> reifierWordEnd)
+          )
+          >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name))
+         <|> failFatallyAt pipePos "'|' chains commands; pipe expressions with '|>'")
     <|> preturn ()
 
 // non-field positions name the scope decision [D:attributes]
@@ -837,6 +861,12 @@ let private parseDepth = new System.Threading.ThreadLocal<int>(fun () -> 0)
 // reaches, so it never perturbs a real parse.
 exception private DepthExceeded of Pos
 
+// the stack probe only engages past a shallow floor: depth <= 64
+// cannot overflow even the 512KB macOS test-host stack (it died at
+// ~420 of 500), and probing on every SHALLOW attempt made long flat
+// spines pay 10x for the guards on the opp's term alternatives
+let private stackProbeFloor = 64
+
 let private deepen (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
         parseDepth.Value <- parseDepth.Value + 1
@@ -844,7 +874,8 @@ let private deepen (p: Parser<'a, unit>) : Parser<'a, unit> =
         try
             if
                 parseDepth.Value > maxDepth
-                || not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+                || (parseDepth.Value > stackProbeFloor
+                    && not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()))
             then
                 raise (DepthExceeded(pos stream.Position))
             else
@@ -907,28 +938,66 @@ let private indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
         )
       Span = span }
 
+// the block forms sit among the opp's term ALTERNATIVES, tried and
+// failed on every term of a flat spine — the guard engages only when
+// the form's keyword is actually ahead, so a failing alternative pays
+// one cheap lookahead, not the ThreadLocal/try cost [D:depth-guard]
+let private deepenAfter (kws: string list) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    let ahead = choice (kws |> List.map (fun k -> followedBy (pstring k)))
+    ahead >>. deepen p
+
+// index interiors nest without re-entering atom (a[a[…]]) — a named
+// deepen node so every recursive cycle routes through the guard
+// [D:depth-guard]
+let private indexExpr = deepen expr
+
 let private postfixAtom =
-    let rec suffixes (target: Expr) : Parser<Expr, unit> =
+    // one suffix step; the chain is a LOOP, not recursion — a long
+    // field chain (a.b.b.…) must not grow the parser stack
+    // [D:depth-guard]
+    let oneSuffix (target: Expr) : Parser<Expr, unit> =
         let fieldNext =
             attempt fieldSuffix
-            >>= fun (name, fspan) ->
-                suffixes
-                    { Kind = EField(target, name, fspan)
-                      Span = Span.union target.Span fspan }
+            |>> fun (name, fspan) ->
+                { Kind = EField(target, name, fspan)
+                  Span = Span.union target.Span fspan }
 
         let indexNext =
             attempt (
                 getPosition
                 >>= fun p ->
                     if int p.Line = target.Span.End.Line && int p.Column = target.Span.End.Col then
-                        pchar '[' >>. ws >>. expr .>> pchar ']' .>>. getPosition .>> ws
+                        pchar '[' >>. ws >>. indexExpr .>> pchar ']' .>>. getPosition .>> ws
                         |>> fun (idx, endP) -> indexDesugar target idx (pos endP)
                     else
                         ifail "whitespace before [ means application"
             )
-            >>= suffixes
 
-        fieldNext <|> indexNext <|> preturn target
+        fieldNext <|> indexNext
+
+    let suffixes (target: Expr) : Parser<Expr, unit> =
+        fun stream ->
+            let mutable cur = target
+            let mutable bad = Reply(cur)
+            let mutable failedHard = false
+            let mutable go = true
+
+            while go do
+                let tag = stream.StateTag
+                let r = (oneSuffix cur) stream
+
+                if r.Status = Ok then
+                    cur <- r.Result
+                elif stream.StateTag = tag then
+                    // clean no-progress failure: the chain ends here
+                    go <- false
+                else
+                    // consumed input or fatal: propagate the reply
+                    bad <- r
+                    failedHard <- true
+                    go <- false
+
+            if failedHard then bad else Reply(cur)
 
     atom
     >>= fun target ->
@@ -1012,7 +1081,7 @@ let private curryParams (ps: Pattern list) (value: Expr) : Expr =
         ps
         value
 
-let private lambda =
+let private lambdaBody =
     // fun a b -> e desugars to nested lambdas [D:fun-sugar] — the
     // lambda-side twin of let-param sugar, same param set, same
     // curryParams, zero checker surface. The body INHERITS the spine
@@ -1058,7 +1127,12 @@ let private lambda =
 // checker (the name "()" is unforgeable through declarations); other
 // pattern params stay rejected.
 
-let private letIn =
+// deepen on every block form [D:depth-guard]: their bodies nest
+// through seqExpr without re-entering atom, so a chain of them
+// (fun … -> fun … ->, let … in let … in) is its own depth axis
+let private lambda = deepenAfter [ "fun" ] lambdaBody
+
+let private letInBody =
     let patForm =
         attempt (
             keyword "let" >>. binderPat .>> str_ws "="
@@ -1106,6 +1180,8 @@ let private letIn =
                       |>> fun body ->
                           { Kind = ELet(name, nameSpan, curryParams ps value, body)
                             Span = { Start = pos p; End = body.Span.End } } ]
+
+let private letIn = deepenAfter [ "let" ] letInBody // [D:depth-guard]
 
 let private binOp op l r =
     { Kind = EBinOp(op, l, r)
@@ -1267,22 +1343,25 @@ let private patCore =
 
 // cons is the pattern grammar's one infix: right-associative, tighter
 // than comma, looser than constructor application [D:seq-patterns]
+// deepen: the pattern grammar nests through parens/seq/ctor args the
+// same way the expression grammar does [D:depth-guard]; the fold is
+// iterative because a bare cons chain arrives as a flat list
 patRef.Value <-
-    sepBy1 patCore (str_ws "::")
-    |>> fun ps ->
-        let rec build =
-            function
-            | [ last ] -> last
-            | h :: rest ->
-                let t = build rest
-
-                { PKind = PCons(h, t)
-                  PSpan =
-                    { Start = h.PSpan.Start
-                      End = t.PSpan.End } }
+    deepen (
+        sepBy1 patCore (str_ws "::")
+        |>> fun ps ->
+            match List.rev ps with
+            | last :: rest ->
+                rest
+                |> List.fold
+                    (fun t h ->
+                        { PKind = PCons(h, t)
+                          PSpan =
+                            { Start = h.PSpan.Start
+                              End = t.PSpan.End } })
+                    last
             | [] -> failwith "sepBy1 never yields empty"
-
-        build ps
+    )
 
 
 binderParamRef.Value <-
@@ -1405,7 +1484,7 @@ let private matchArm =
 // as an ordinary EXPRESSION — the body is a plain expression block
 // (statements sequence, commands arm, the last expression is the
 // value), so mode-from-position needs no rule. Session 1: kind `tmp`.
-let private withinExpr =
+let private withinExprBody =
     getPosition .>> keyword "within"
     >>= fun p ->
         identSpanned
@@ -1469,7 +1548,9 @@ let private withinExpr =
 // construction. Keys are atoms (parenthesize compounds — the within-cd
 // argument rule); with no keys, ONE atom is the options value
 // (`retry fast`); the head never falls through to the body.
-let private retryExpr =
+let private withinExpr = deepenAfter [ "within" ] withinExprBody // [D:depth-guard]
+
+let private retryExprBody =
     getPosition .>>. ((keyword "retry" >>% false) <|> (keyword "poll" >>% true))
     >>= fun (p, isPoll) ->
         let famName = if isPoll then "Poll" else "Retry"
@@ -1542,7 +1623,9 @@ let private retryExpr =
                             { Kind = ERetry(isPoll, optsE, watchE, body, until)
                               Span = { Start = pos p; End = endSpan } }
 
-let private matchExpr =
+let private retryExpr = deepenAfter [ "retry"; "poll" ] retryExprBody // [D:depth-guard]
+
+let private matchExprBody =
     pipe3
         getPosition
         // the scrutinee is an ordinary expression at the let-RHS's
@@ -1570,7 +1653,9 @@ let private matchExpr =
 // ordinary lambda over an ordinary match; fmt alone recognizes the
 // shape and prints the spelling back (the |-key discipline:
 // completion/hints filter on isUserName, so the binder cannot leak)
-let private functionExpr =
+let private matchExpr = deepenAfter [ "match" ] matchExprBody // [D:depth-guard]
+
+let private functionExprBody =
     getPosition .>> keyword "function"
     >>= fun p ->
         (opt (str_ws "|") >>. matchArm .>>. many (str_ws "|" >>. matchArm))
@@ -1609,9 +1694,11 @@ let private functionExpr =
 // fallthrough. `then` terminates the chain's argv (position-sensitive:
 // only inside a condition), so `if test -f $p | succeeds then` parses;
 // the checker still demands bool, so a streaming chain teaches there.
+let private functionExpr = deepenAfter [ "function" ] functionExprBody // [D:depth-guard]
+
 let private ifCond: Parser<Expr, unit> = withIfCond true ifCondCmd <|> expr
 
-let private ifExpr =
+let private ifExprBody =
     // elif is SPELLING [D:elif]: `elif c then e` desugars at parse to
     // `else if c then e` — zero checker surface; the trailing else
     // stays optional under the unit rule, F#'s chain exactly
@@ -1627,18 +1714,17 @@ let private ifExpr =
         ))
         (opt (keyword "else" >>. withExprParen false seqExpr))
         (fun p cond thn elifs els ->
-            let rec build clauses =
-                match clauses with
-                | [] -> els
-                | (c: Expr, t: Expr) :: rest ->
-                    let inner = build rest
+            // fold from the right, iteratively — a long elif chain is a
+            // spine and must not recurse per clause [D:depth-guard]
+            let chained =
+                (els, List.rev elifs)
+                ||> List.fold (fun inner (c: Expr, t: Expr) ->
                     let e = (inner |> Option.defaultValue t).Span.End
 
                     Some
                         { Kind = EIf(c, t, inner)
-                          Span = { Start = c.Span.Start; End = e } }
+                          Span = { Start = c.Span.Start; End = e } })
 
-            let chained = build elifs
             let endPos = (chained |> Option.defaultValue thn).Span.End
 
             { Kind = EIf(cond, thn, chained)
@@ -1653,10 +1739,12 @@ let private ifExpr =
 // through to the expression body exactly as the statement classifier
 // decides.
 // lookahead twin of seqSep for forExpr (defined before seqSep itself)
+let private ifExpr = deepenAfter [ "if" ] ifExprBody // [D:depth-guard]
+
 let private seqSepAhead: Parser<unit, unit> =
     (attempt (pchar ';') |>> ignore) <|> (attempt (pstring sibSepStr) |>> ignore)
 
-let private forExpr =
+let private forExprBody =
     let cmdBody =
         attempt (
             // a MULTI-LINE body yields to seqExpr [D:interior-arming]:
@@ -1693,6 +1781,8 @@ let private forExpr =
 // literal's EAGERNESS contract. The desugar bypasses EList entirely, so
 // list-literal inference (the empty-list fresh var, element unification)
 // is untouched -- the session finding: same path as the statement form.
+let private forExpr = deepenAfter [ "for" ] forExprBody // [D:depth-guard]
+
 comprehensionLitRef.Value <-
     spanned (
         attempt (pchar '[' >>. ws >>. keyword "for") >>. binderPat .>> keyword "in"
@@ -1842,8 +1932,38 @@ type private TplUnit =
     | UItem of YamlTplItem
     | UFor of Pattern * Expr * YamlTpl // body block, context-checked later
 
+// the district's block walker recurses per nesting level and cannot
+// wear `deepen` (not an FParsec parser) — it carries the SAME counter
+// and stack probe by hand [D:depth-guard]; depth-coverage.py recognizes
+// the spelling
 let rec private parseTplBlock
     (lines: (int * int * string)[]) // (logical col of text start, rel indent, text)
+    (start: int)
+    (fin: int)
+    (indent: int)
+    : Result<YamlTpl, string * int> =
+    parseDepth.Value <- parseDepth.Value + 1
+
+    try
+        if
+            parseDepth.Value > maxDepth
+            || not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        then
+            let col =
+                if start < fin then
+                    let (c, _, _) = lines[start]
+                    c
+                else
+                    1
+
+            Result.Error($"expression nested too deeply (limit {maxDepth}, less on small stacks)", col)
+        else
+            parseTplBlockBody lines start fin indent
+    finally
+        parseDepth.Value <- parseDepth.Value - 1
+
+and private parseTplBlockBody
+    (lines: (int * int * string)[])
     (start: int)
     (fin: int)
     (indent: int)
@@ -2097,7 +2217,7 @@ let rec private parseTplBlock
                         tplValueSlot col text
                 | _ -> Result.Error("multiple for blocks need a surrounding mapping or sequence context", firstCol)
 
-let private yamlDistrict: Parser<Expr, unit> =
+let private yamlDistrictBody: Parser<Expr, unit> =
     attempt (
         getPosition .>> pstring "yaml"
         .>>. opt (
@@ -2148,6 +2268,8 @@ let private yamlDistrict: Parser<Expr, unit> =
                           Span =
                             { Start = pos startP
                               End = { Line = int startP.Line; Col = endCol } } }
+
+let private yamlDistrict = deepenAfter [ "yaml" ] yamlDistrictBody // [D:depth-guard]
 
 opp.TermParser <-
     choice
@@ -2731,6 +2853,20 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
 let private pipeSepSpanned: Parser<string * Span, unit> =
     spanned (attempt (pstring "|>") <|> pstring "|") .>> ws
 
+// the fifth refusal cell [D:reifier-family-complete]: a stage that
+// BEGINS with a reifier name whose marker did not match (off the
+// let-RHS spine, or trailing argv) must TEACH, never resolve the name
+// on PATH — ambient PATH deciding what runs is the shape Property 2
+// exists to deny. `^name` stays the escape for a real tool of that
+// name (the caret refuses this guard by construction).
+let private reifierStageGuard: Parser<Seg, unit> =
+    attempt (
+        getPosition
+        .>>. (choice [ pstring "complete"; pstring "succeeds"; pstring "exitCode"; pstring "orFail" ]
+              .>> notFollowedBy (satisfy cmdWordChar))
+    )
+    >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name)
+
 let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEnv: Expr option) (r: Resolver) =
     many (
         pipeSepSpanned
@@ -2738,6 +2874,7 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
               <|> succeedsMarker
               <|> exitCodeMarker
               <|> orFailMarker
+              <|> reifierStageGuard
               <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )
 
@@ -2756,15 +2893,18 @@ let private cmdLineWith
 
 let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg None r
 
-sigilChainImpl <- fun envO -> fun stream -> (cmdLineWith true cmdArg envO ambientResolver.Value) stream
+// deepen: sigils nest through command args ($(cmd $(cmd …))) without
+// re-entering atom [D:depth-guard]
+sigilChainImpl <- fun envO -> deepen (fun stream -> (cmdLineWith true cmdArg envO ambientResolver.Value) stream)
 
 // a single bare pipe `|` — NOT `|>` (expression pipe) or `||` (or)
 let private singlePipe: Parser<unit, unit> =
     attempt (pchar '|' .>> notFollowedBy (anyOf "|>")) >>. ws
 
 valueHeadedTailImpl <-
+    // deepen: the tail re-enters the command grammar [D:depth-guard]
     fun lhs ->
-        fun stream ->
+        deepen (fun stream ->
             let r = ambientResolver.Value
 
             // gate [D:value-headed-pipe]: a single `|` then a head that
@@ -2785,7 +2925,7 @@ valueHeadedTailImpl <-
                     | Result.Ok e -> preturn e
                     | Result.Error(m, sp) -> failFatallyAtCol sp.Start.Col m
 
-            p stream
+            p stream)
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
 // command-callable builtins (cd) stay ordinary functions there —
@@ -2794,7 +2934,9 @@ valueHeadedTailImpl <-
 let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
     cmdLineWith false (cmdArgWith true) None r
 
-letRhsCmdRef.Value <- fun stream -> (cmdLineLetRhs ambientResolver.Value) stream
+// deepen: a block let's command RHS re-enters the statement grammar
+// through its args (cmd (let y = cmd (…))) [D:depth-guard]
+letRhsCmdRef.Value <- deepen (fun stream -> (cmdLineLetRhs ambientResolver.Value) stream)
 
 // the condition's command grammar [D:if-succeeds]: the let-RHS shape
 // (no builtin heads — `myfunc x` in a condition is already expression
@@ -2803,48 +2945,52 @@ ifCondCmdRef.Value <- fun stream -> (cmdLineWith false (cmdArgStops false true) 
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
+// deepen: the type grammar nests through seq<…>/Option<…>/Map<…>/
+// {| … |} exactly like the expression grammar's brackets [D:depth-guard]
 tySynRef.Value <-
-    choice
-        [
-          // the one-level rule REVERSED [D:anon-nesting]: the shape
-          // parses anywhere a type is written — the canonical name IS
-          // the type (synthetic-nominal recursion for free); the fields
-          // ride the pending table for the registration seams to drain
-          anonShape
-          |>> fun fields ->
-              let n = anonRecordName fields
-              pushAnonDef n fields
-              TNamed(n, [])
-          pchar '\'' >>. rawWord .>> ws |>> TVar
-          rawWord
-          >>= fun w ->
-              match w with
-              | "int" ->
-                  // anchor at the measure's '<' [D:anchor-before-read]
-                  getPosition .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws
-                  >>= (fun (at, m) ->
-                      match m with
-                      | Some _ -> failFatallyAt at "units of measure are not supported; use bare int"
-                      | None -> preturn TInt)
-              | "string" -> ws >>% TStr
-              | "bool" -> ws >>% TBool
-              | "unit" -> ws >>% TUnit
-              | "Duration" -> ws >>% TDur
-              | "Instant" -> ws >>% TInstant
-              | "float" -> ws >>% TFloat
-              | "Size" -> ws >>% TSize
-              | "Secret" -> ws >>% TSecret
-              | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
-              | w when keywords.Contains w -> fail $"'{w}' is a keyword"
-              | w ->
-                  ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
-                  |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
-    // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]
-    |> fun atom ->
-        sepBy1 atom (attempt (str_ws "*"))
-        |>> function
-            | [ one ] -> one
-            | many -> TTuple many
+    deepen (
+        choice
+            [
+              // the one-level rule REVERSED [D:anon-nesting]: the shape
+              // parses anywhere a type is written — the canonical name IS
+              // the type (synthetic-nominal recursion for free); the fields
+              // ride the pending table for the registration seams to drain
+              anonShape
+              |>> fun fields ->
+                  let n = anonRecordName fields
+                  pushAnonDef n fields
+                  TNamed(n, [])
+              pchar '\'' >>. rawWord .>> ws |>> TVar
+              rawWord
+              >>= fun w ->
+                  match w with
+                  | "int" ->
+                      // anchor at the measure's '<' [D:anchor-before-read]
+                      getPosition .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws
+                      >>= (fun (at, m) ->
+                          match m with
+                          | Some _ -> failFatallyAt at "units of measure are not supported; use bare int"
+                          | None -> preturn TInt)
+                  | "string" -> ws >>% TStr
+                  | "bool" -> ws >>% TBool
+                  | "unit" -> ws >>% TUnit
+                  | "Duration" -> ws >>% TDur
+                  | "Instant" -> ws >>% TInstant
+                  | "float" -> ws >>% TFloat
+                  | "Size" -> ws >>% TSize
+                  | "Secret" -> ws >>% TSecret
+                  | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
+                  | w when keywords.Contains w -> fail $"'{w}' is a keyword"
+                  | w ->
+                      ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+                      |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
+        // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]
+        |> fun atom ->
+            sepBy1 atom (attempt (str_ws "*"))
+            |>> function
+                | [ one ] -> one
+                | many -> TTuple many
+    )
 
 // literal-only attribute arguments [D:attributes]
 let private attrArgLit =
@@ -3117,9 +3263,24 @@ type ParseFailure = { Message: string; Col: int option }
 // walk the tree recursively, so a spine past the ceiling would overflow
 // THEIR stack; this measures depth WITHOUT recursing (an explicit
 // stack), then early-exits at the first over-limit node. Catches the
-// operator/application/pipe/sequencing spines that parse shallow.
-let private exprTooDeep (root: Expr) : Span option =
-    let stack = System.Collections.Generic.Stack<Expr * int>()
+// operator/application/pipe/sequencing spines that parse shallow —
+// and the pattern spines (a bare cons chain), which nest the same way.
+type private DeepNode =
+    | NExpr of Expr
+    | NPat of Pattern
+
+let private nodeSpan =
+    function
+    | NExpr e -> e.Span
+    | NPat p -> p.PSpan
+
+let private nodeChildren =
+    function
+    | NExpr e -> (exprChildren e |> List.map NExpr) @ (exprPats e |> List.map NPat)
+    | NPat p -> patChildren p |> List.map NPat
+
+let private nodeTooDeep (root: DeepNode) : Span option =
+    let stack = System.Collections.Generic.Stack<DeepNode * int>()
     stack.Push(root, 1)
     let mutable hit = None
 
@@ -3127,12 +3288,22 @@ let private exprTooDeep (root: Expr) : Span option =
         let node, d = stack.Pop()
 
         if d > maxDepth then
-            hit <- Some node.Span
+            hit <- Some(nodeSpan node)
         else
-            for c in exprChildren node do
+            for c in nodeChildren node do
                 stack.Push(c, d + 1)
 
     hit
+
+let private stmtNodes (s: Stmt) : DeepNode list =
+    match s with
+    | SLet(_, v)
+    | SExpr v
+    | SCmd v -> [ NExpr v ]
+    | SLetPat(p, v) -> [ NPat p; NExpr v ]
+    | SType _
+    | SModule _
+    | SImport _ -> []
 
 let private stmtExprs (s: Stmt) : Expr list =
     match s with
@@ -3173,7 +3344,7 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
         try
             match run (stmtWith r) input with
             | Success(s, _, _) ->
-                match s |> stmtExprs |> List.tryPick exprTooDeep with
+                match s |> stmtNodes |> List.tryPick nodeTooDeep with
                 | Some span ->
                     let col = if span.Start.Line = 1 then Some span.Start.Col else None
 

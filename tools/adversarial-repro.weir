@@ -56,26 +56,29 @@ let probeF2b =
       @"let back = { k = orig } |> to yaml |> from yaml Doc"
       @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
 
-// F3: the reifier survives in a block let inside an if-body
+// F3, RE-POINTED at the teaching: the shipped fix makes the off-spine
+// boundary TEACH (the fifth refusal cell) rather than degrade to a
+// PATH lookup — supporting the reifier there is a separate bless
+// question. The probe asserts the located teaching, and silent
+// success (the old degradation running a PATH tool) stays BROKEN.
 let probeF3 =
     [ @"if 1 > 0 then"
       @"    let r = sh -c ""exit 7"" | complete"
       @"    print (if r.exitCode == 7 then ""OK"" else ""BROKEN"")" ]
 
-// F4: a NUL-bearing value must not silently truncate at the argv hand-off.
-// CAVEAT for the fixer: the plan's fix (1) makes Str.fromBase64 REJECT
-// non-text bytes, and then this probe RAISES rather than printing BROKEN. The
-// runner distinguishes the two, so that reads as "probe RAISED" at runtime —
-// re-point it at the rejection rather than loosening it.
-let probeF4 argvLenPath =
+// F4, RE-POINTED at the rejection (the plan's acceptance rule): fix (1)
+// landed, so the base64 construction must REFUSE with the not-text
+// teaching; and because NUL still has routes in (File.read of a
+// NUL-bearing file), the argv boundary must refuse ON ITS OWN with the
+// truncation diagnostic. Silent truncation (a child seeing 1 byte)
+// stays BROKEN.
+let probeF4construct =
     [ @"let v = Str.fromBase64 ""YQBi"""
-      $"let p = {q}{argvLenPath}{q}"
-      @"let got = python3 $p $v |> Seq.head"
-      @"print (if got == ""3"" then ""OK"" else ""BROKEN"")" ]
+      @"print (show (Str.length v))" ]
 
-let argvLen =
-    [ @"import sys"
-      @"print(len(sys.argv[1]))" ]
+let probeF4argv nulPath =
+    [ $"let v = File.read {q}{nulPath}{q} |> Seq.head"
+      @"python3 -c ""import sys; print(len(sys.argv[1]))"" $v" ]
 
 // F5: the POST-PARSE seam. Parse depth here is ~1 — no parse-depth guard can
 // ever see this file — but each line DOUBLES the inferred type, so the
@@ -126,6 +129,12 @@ let timeoutReady = sh -c "command -v timeout >/dev/null 2>&1" | succeeds
 
 let runProbe path =
     let r = sh -c $"'{cli.bin}' '{path}' 2>/dev/null" | complete
+    r
+
+// stderr merged in: the re-pointed F3/F4 verdicts read the teaching
+// text of a REFUSAL, which lands on stderr
+let runProbeMerged path =
+    let r = sh -c $"'{cli.bin}' '{path}' 2>&1" | complete
     r
 
 let checkExit path =
@@ -227,10 +236,51 @@ within tmp d
 
     let f2a = verdict d "F2a-block-scalar-roundtrip" probeF2a
     let f2b = verdict d "F2b-trailing-ws-roundtrip" probeF2b
-    let f3 = verdict d "F3-reifier-in-block-let" probeF3
 
-    File.write $"{d}/argvlen.py" argvLen
-    let f4 = verdict d "F4-nul-truncates-at-argv" (probeF4 $"{d}/argvlen.py")
+    File.write $"{d}/F3-reifier-in-block-let.weir" probeF3
+    let f3r = runProbeMerged $"{d}/F3-reifier-in-block-let.weir"
+
+    let f3taught = f3r.stdout |> Seq.exists (fun l -> Str.contains "is a reifier, not a PATH program" l)
+    let f3 = f3r.exitCode <> 0 && f3taught
+
+    let f3Word =
+        if f3 then "fixed (off-spine reifier teaches, fifth cell)"
+        elif f3r.exitCode == 0 then "REPRODUCES (the reifier degraded or PATH-resolved silently)"
+        else $"REPRODUCES (refused WITHOUT the reifier teaching, exit {f3r.exitCode})"
+
+    print $"  F3-reifier-in-block-let: {f3Word}"
+
+    // F4 verdicts run OUTSIDE the probe (both faces are REJECTIONS now,
+    // and a raise is not data in-process)
+    File.write $"{d}/f4-construct.weir" probeF4construct
+    sh -c $"printf 'a\\0b' > '{d}/f4-nul.bin'"
+    File.write $"{d}/f4-argv.weir" (probeF4argv $"{d}/f4-nul.bin")
+
+    let f4c = runProbeMerged $"{d}/f4-construct.weir"
+
+    let f4cTaught = f4c.stdout |> Seq.exists (fun l -> Str.contains "it contains NUL bytes" l)
+    let f4cFixed = f4c.exitCode <> 0 && f4cTaught
+
+    let f4cWord =
+        if f4cFixed then "fixed (construction refused, not-text teaching)"
+        elif f4c.exitCode == 0 then "REPRODUCES (NUL string constructed silently)"
+        else $"REPRODUCES (refused WITHOUT the teaching, exit {f4c.exitCode})"
+
+    print $"  F4-nul-fromBase64: {f4cWord}"
+
+    let f4a = runProbeMerged $"{d}/f4-argv.weir"
+    let f4aSaid = f4a.stdout |> Seq.tryHead |> Option.defaultValue ""
+
+    let f4aTaught = f4a.stdout |> Seq.exists (fun l -> Str.contains "would silently truncate" l)
+    let f4aFixed = f4a.exitCode <> 0 && f4aTaught
+
+    let f4aWord =
+        if f4aFixed then "fixed (argv boundary refused, truncation named)"
+        elif f4aSaid == "1" then "REPRODUCES (child saw 1 byte — silent truncation)"
+        else $"REPRODUCES (said '{f4aSaid}', exit {f4a.exitCode})"
+
+    print $"  F4-nul-truncates-at-argv: {f4aWord}"
+    let f4 = f4cFixed && f4aFixed
 
     print ""
     print "interop findings (an EXTERNAL YAML reader referees):"
