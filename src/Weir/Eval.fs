@@ -2411,8 +2411,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                 System.IO.FileShare.None
                             )
                         )
-                     with :? System.IO.IOException ->
-                         None)
+                     with
+                     // DirectoryNotFound IS an IOException — a missing
+                     // parent must fail NOW, not spin as "held elsewhere"
+                     // (the Windows C:\tmp lesson)
+                     | :? System.IO.DirectoryNotFoundException ->
+                         failwith $"within lock: no such directory for {resolved} — the lock file's parent must exist"
+                     | :? System.IO.IOException -> None)
                 with
                 | Some fs -> fs
                 | None ->

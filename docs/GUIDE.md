@@ -923,11 +923,12 @@ exhaustion, safe across processes and `pmap` arms alike, and released
 by the kernel on any death, `kill -9` included:
 
 ```weir
-within lock "/tmp/guide-demo.lock" timeout=10s
-    within
-        print "one holder at a time"
-    always
-        print "released either way"
+within tmp d
+    within lock $"{d}/demo.lock" timeout=10s
+        within
+            print "one holder at a time"
+        always
+            print "released either way"
 ```
 
 A scratch TREE composes the family [D:fs-members]: `Dir.create` for

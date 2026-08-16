@@ -1566,6 +1566,13 @@ WEOF
 WEOF
     ( cd "$lkdir" && rm -f LOG && $BIN arms.weir )
     [ "$(cat "$lkdir/LOG" | tr '\n' ' ')" = "enter exit enter exit " ] || fail "pmap arms exclusion (flock per-open-fd, got: $(cat "$lkdir/LOG" | tr '\n' ' '))"
+    cat > "$lkdir/nodir.weir" <<'WEOF'
+within lock "no-such-dir-xyz/l.lock" timeout=10s
+    print "unreachable"
+WEOF
+    nd_rc=0; nd=$( cd "$lkdir" && $BIN nodir.weir 2>&1 ) || nd_rc=$?
+    [ "$nd_rc" != "0" ] || fail "a missing lock parent must fail"
+    echo "$nd" | grep -qF "no such directory" || fail "missing parent fails NOW, not as a timeout (got: $nd)"
     cat > "$lkdir/tmo.weir" <<'WEOF'
 within lock "probe.lock" timeout=300ms
     print "acquired"

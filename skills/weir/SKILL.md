@@ -744,11 +744,12 @@ within tmp d
 ```weir
 // the exit discipline alone, and a held lock — both release on every
 // exit path (the lock even on kill -9: the kernel lets go)
-within lock "/tmp/skill-demo.lock" timeout=10s
-    within
-        print "guarded work"
-    always
-        print "teardown, every path"
+within tmp d
+    within lock $"{d}/demo.lock" timeout=10s
+        within
+            print "guarded work"
+        always
+            print "teardown, every path"
 ```
 - Nonzero exit RAISES when the stream is forced. The exit-code
   reifiers (complete's family, single external segment, one law:
