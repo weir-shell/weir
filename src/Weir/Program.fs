@@ -156,11 +156,20 @@ let private evalOnce (input: string) : int =
                                 let v = Eval.eval venv te
 
                                 if v <> Eval.VUnit then
-                                    let rendered, hint = Eval.echoValue Eval.echoPipedCap v
+                                    // the -e echo wears the same binary
+                                    // refusal as the REPL's [D:binary-echo]
+                                    // — it was the one echo path without it
+                                    let v = Eval.echoPrep v
 
-                                    let tail' = Eval.echoTail hint
+                                    if not Console.IsOutputRedirected && Eval.echoBinary Eval.echoPipedCap v then
+                                        Console.WriteLine
+                                            $": {formatTy te.Ty} (binary output — the echo refuses a terminal; redirect to a file, or print deliberately)"
+                                    else
+                                        let rendered, hint = Eval.echoValue Eval.echoPipedCap v
 
-                                    Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail'}"
+                                        let tail' = Eval.echoTail hint
+
+                                        Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail'}"
 
                                 0
                         with

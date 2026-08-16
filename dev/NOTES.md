@@ -1,5 +1,45 @@
 # Spike Notes
 
+## the owed small fixes, batched — and a masked flake, recorded (2026-08-16)
+
+Six one-liners from four reviews' findings, each its own commit: WEIR_LOG
+went case-insensitive (the env-enum rule applied to weir's own channel);
+the ladder prose was off by one in FOUR places, not the three the finding
+named (SEMANTICS too — "nested twice runs serially", since depth 2 hits
+the 1); watch= now says "fails at the next interval tick" (C11 measured
+721ms of lag under an 8s poll — prompt detection noted as the unbuilt
+alternative); the SIGKILL mirror non-claim is stated (within proc does
+not run your child's SIGTERM cleanup — wait=137 is the receipt); the
+concurrency-model sentence names the machine in one clause (threads
+in-process at the surface's edge).
+
+A6 earned its probe-first instruction. Under a real pty the REPL's seq
+echo REFUSED the binary — the #44 fix held — and the leak was one line
+up: the `| complete` RECORD echo rendered the same bytes raw, because
+echoBinary probed top-level shapes and never looked inside containers.
+The membership question also found the -e echo carrying no guard at
+all. Both fixed (the probe recurses; -e wears the REPL's refusal);
+print/stream and Proc.tail stay raw BY LAW (deliberate channels, the
+byte-identity claim); redirected output everywhere stays the data
+channel.
+
+THE MASKED FLAKE, recorded so it is findable: in the window before
+45970b1 (the ambient-env starter fix), a run failed and then "passed
+with a different seed" — but under the env-overlay bug both runs were
+the SAME 200 cases, so that was a timing-flaky failure waved through by
+a change that changed nothing. Its identity is unknown and it is still
+out there. If something intermittent surfaces in the concurrency
+neighborhood later: this window is where it was first seen.
+
+B3's root, established while cheap: the block-interior value-headed
+pipe failure is ONE place — pipeOrHint is wired at the three spine
+positions (stmtWith, topLet, letIn) and absent from stmtElem — and the
+let-RHS half no longer reproduces at all. Same CLASS as F3 (an
+interior position missing a spine capability), different mechanism (no
+gate to widen; a wiring absence plus one arming decision: what does a
+value-headed pipe MEAN as a discarded interior statement). A short
+session, not a line; not two places.
+
 ## parallel ladder: bounded at spawn, receipted before fixed (2026-08-16)
 
 The plan's own discipline did the work. The prerequisite gap was real —

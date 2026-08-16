@@ -345,21 +345,29 @@ let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool
 // user's decision. NUL, never strict-UTF-8 (the misdetection class
 // stays closed). The probe walks the echoPrep CACHE — no enumeration
 // added; an uncapped echo probes a bounded prefix (101).
+// The probe RECURSES through containers: a `| complete` RECORD holds
+// the command's stdout, and the record echo leaked the bytes the seq
+// echo refused — the membership shape again (the mechanism was right;
+// records/tuples/unions/maps were missing). Secret renders *** and
+// Bytes renders a summary, so neither can leak content and neither is
+// probed.
 let echoBinary (cap: int option) (v: Value) : bool =
-    let hasNul =
-        function
+    let bound =
+        match cap with
+        | Some c -> c + 1
+        | None -> 101
+
+    let rec has (v: Value) : bool =
+        match v with
         | VStr s -> s.Contains '\u0000'
+        | VSeq items -> items |> Seq.truncate bound |> Seq.exists has
+        | VRecord(_, fields) -> fields |> List.exists (snd >> has)
+        | VTuple items -> items |> List.exists has
+        | VUnion(_, Some payload) -> has payload
+        | VMap entries -> entries |> Map.exists (fun _ x -> has x)
         | _ -> false
 
-    match v with
-    | VSeq items ->
-        let bound =
-            match cap with
-            | Some c -> c + 1
-            | None -> 101
-
-        items |> Seq.truncate bound |> Seq.exists hasNul
-    | v -> hasNul v
+    has v
 
 let echoValue (cap: int option) (v: Value) : string * string option =
     match v with

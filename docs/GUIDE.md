@@ -1212,8 +1212,10 @@ not guess one.
 results in input order, first failure rethrown. Workers fork the
 session — `cd` inside a worker is worker-local and gone at the join.
 There is no async/await and never will be: processes and pipelines are
-the concurrency model, and a task that truly needs async belongs in
-full F#.
+the concurrency model of the LANGUAGE SURFACE (underneath, the fan-out
+members run arms on dedicated threads inside the weir process — worth
+knowing when reasoning about shared state or what a raise does), and a
+task that truly needs async belongs in full F#.
 
 A background process gets a SCOPE, never a `&`: `within proc` binds a
 handle, and at every block exit — normal or raise — the process tree
@@ -1235,7 +1237,10 @@ gating, a platform behavior worth knowing when a server is
 mysteriously up-but-not-listening.)
 
 `watch=` is the quality move — a child that crashes at startup fails
-the poll IMMEDIATELY with its own last output in the error, and a
+the poll at the NEXT INTERVAL TICK, carrying its own last output in
+the error (the watch is sampled with the poll, not awaited — prompt
+detection would be more machinery for a difference that only matters
+at long intervals), and a
 plain timeout reports whether the watched process was still running.
 Both the child's streams spill to files (bounded by disk, not
 memory) — never the parent's terminal or its stdout data channel, so

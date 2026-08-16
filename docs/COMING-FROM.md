@@ -214,8 +214,9 @@ print word
 
 - Computation expressions (`seq { }`, `async { }`) — pipelines are
   the composition story; `[for x in xs -> e]` comprehensions exist.
-- Async/task — processes are the concurrency model;
-  `Seq.pmap`/`Seq.piter` fan out (bounded, ordered).
+- Async/task — processes are the concurrency model at the surface;
+  `Seq.pmap`/`Seq.piter` fan out (bounded, ordered — arms run on
+  dedicated threads in-process, not as child processes).
 - Classes, interfaces, members — records and functions.
 - `mutable`, `<-` — copy-and-update: `{ r with F = v }`.
 - Type annotations on params, `(e : ty)` ascription — inference plus

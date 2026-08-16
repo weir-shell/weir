@@ -371,8 +371,8 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
   ordered results) / `Seq.piter` for effects — sized for I/O-BOUND
   arms (spawns/waits/sleeps): the DEFAULT ceiling is PER FAN-OUT and
-  shrinks with nesting — 64 at top level, 8 inside a worker, serial
-  past two levels — so nested fan-outs cannot multiply into a width
+  shrinks with nesting — 64 at top level, 8 inside a worker, and a
+  fan-out nested twice runs serially — so nested fan-outs cannot multiply into a width
   nobody chose (64 outer x 8 inner caps the product at 512).
   `Seq.pmapWith n` / `piterWith n` / `pfirstWith n` set the ceiling
   explicitly and are NEVER reduced: a written number is the author's
@@ -391,7 +391,7 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   reaped; there is no `&` — an unscoped child is unrepresentable.
   The readiness
   wait is `poll timeout=10s watch=srv` + `Net.portOpen <port>` as the
-  body — `watch=` fails fast if the child dies (its last output rides
+  body — `watch=` fails at the next interval tick if the child dies (its last output rides
   the error) and stamps the child's state on a timeout. The handle is
   data: `Proc.pid`/`running`/`tail`; `Proc.wait` lets it finish
   naturally (exit code as data); `Proc.stop` tears down early. BOTH
@@ -408,8 +408,13 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT and SIGTERM all close every
   scope; `kill -9` of weir itself cannot, by definition — no
-  userspace design closes that hole. A child that must OUTLIVE the
-  script is a daemon — write a unit file; weir declines nohup.
+  userspace design closes that hole. AND THE MIRROR non-claim: the
+  tree-kill weir performs lands as SIGKILL on the CHILDREN too
+  (measured: wait = 137), so `within proc` does not run your child's
+  cleanup — a child that traps SIGTERM to flush state, remove a
+  lockfile or deregister never gets the chance. A child that must
+  OUTLIVE the script is a daemon — write a unit file; weir declines
+  nohup.
 - A `let` RHS takes command mode wherever lets go — top level AND
   inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
   function); `$()` covers sub-expression positions. `function | pat -> e | …`

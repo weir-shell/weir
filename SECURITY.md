@@ -67,6 +67,13 @@ it, by design):
   weir leaves its live temp dirs behind; the `weir-tmp-` prefix keeps
   them identifiable for external cleanup. `Dir.newTempDir` is exempt
   by contract (it exists to outlive the scope).
+- **`within proc` does not run your child's cleanup.** The scope's
+  tree-kill lands as SIGKILL (the BCL's kill; measured wait = 137),
+  so a child that traps SIGTERM to flush state, remove a lockfile, or
+  deregister never gets the chance. Deliberate — a child that ignores
+  a polite signal would otherwise outlive its scope — and stated here
+  because the failure looks like the child's bug, not the scope's
+  semantics.
 
 - **Capture is unbounded by design.** `| complete` and `Seq.force`
   materialize their whole input in memory (`complete` holds one byte

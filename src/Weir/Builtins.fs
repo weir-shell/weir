@@ -942,7 +942,11 @@ let private rangeImpl: Value =
 let logLevelNames = [ "trace"; "debug"; "info"; "warn"; "off" ]
 
 let parseLogLevel (s: string) : Result<int, string> =
-    match logLevelNames |> List.tryFindIndex ((=) s) with
+    // case-insensitive like every env-loaded enum (the SKILL rule:
+    // env is the channel where DEBUG/Debug/debug all mean debug)
+    let lowered = s.ToLowerInvariant()
+
+    match logLevelNames |> List.tryFindIndex ((=) lowered) with
     | Some i -> Ok i
     | None -> Error $"WEIR_LOG={s}: unknown log level (one of trace|debug|info|warn|off)"
 
@@ -973,7 +977,8 @@ let private parallelCeiling = 64
 
 // the DEFAULT ceiling is a LADDER over nesting depth [D:parallel-ladder]:
 // 64 / 8 / 1 — a fan-out inside a worker gets a smaller ceiling, and
-// past two levels runs serially, so the product is <= 512 at any depth
+// one nested TWICE runs serially (depth 2 and beyond hit the ladder's
+// 1), so the product is <= 512 at any depth
 // (two reasonable call sites in different files can no longer compose
 // into a width nobody chose). Measured before the constants were
 // fixed: the 64x8 shape runs 512 arms in one round at ~26MB peak RSS
