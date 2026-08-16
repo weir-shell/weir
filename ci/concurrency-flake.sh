@@ -146,5 +146,128 @@ printf "  %-30s %s  CONTROL: must be >0\n" "ledger sees a real leak" "$seen"
 reap 31339
 [ "$seen" -gt 0 ] || { echo "CONTROL FAILED: the ledger is blind — its zeros are meaningless" >&2; exit 1; }
 
+
+# ---- scope lifecycle: C7/C8/C9, and the env-overlay finding ----------------
+
+cat > "$work/c7.weir" <<'WEOF'
+// C7: the process TREE dies at BLOCK EXIT, not at process exit. 800ms inside
+// the scope (sample window A), 1500ms after it (window B).
+within proc srv = sh -c "sleep 41337 & sleep 41337"
+    Duration.sleep 800ms
+
+Duration.sleep 1500ms
+print "done"
+WEOF
+
+cat > "$work/c7raise.weir" <<'WEOF'
+within proc srv = sh -c "sleep 41340 & sleep 41340"
+    Duration.sleep 300ms
+    fail "boom"
+WEOF
+
+cat > "$work/c9.weir" <<'WEOF'
+// C9: LIFO asserted DIRECTLY — the inner tree (41342) must be dead while the
+// outer (41341) is still alive, sampled in the gap between the two closes.
+within proc a = sh -c "sleep 41341 & sleep 41341"
+    within proc b = sh -c "sleep 41342 & sleep 41342"
+        Duration.sleep 400ms
+
+    Duration.sleep 900ms
+
+Duration.sleep 900ms
+print "done"
+WEOF
+
+cat > "$work/envnest.weir" <<'WEOF'
+// FINDING: an overlay pushed INSIDE a worker survives only the FIRST item on
+// each inner worker thread. Expect exactly `degree` good and the rest empty.
+[1]
+|> Seq.piter (fun _ ->
+    within env [Env.pair "MARK" "inner"]
+        [1..200]
+        |> Seq.pmap (fun _ -> $(sh -c "echo [$MARK]") |> Seq.head)
+        |> Seq.iter print)
+WEOF
+
+cat > "$work/envctl.weir" <<'WEOF'
+// CONTROL: the top-level path goes through rootEnvOverlay and MUST hold.
+within env [Env.pair "MARK" "top"]
+    [1..20]
+    |> Seq.pmapWith 1 (fun _ -> $(sh -c "echo [$MARK]") |> Seq.head)
+    |> Seq.iter print
+WEOF
+
+echo
+echo "scope teardown (ledger sampled WHILE weir runs):"
+sn=$((N / 20 + 1))
+inside=0; after=0; i=0
+while [ "$i" -lt "$sn" ]; do
+    "$BIN" "$work/c7.weir" >/dev/null 2>&1 &
+    w=$!
+    sleep 0.4; a=$(ledger 41337)
+    sleep 1.0; b=$(ledger 41337)
+    wait $w 2>/dev/null
+    [ "$a" -gt 0 ] && inside=$((inside + 1))
+    [ "$b" -eq 0 ] && after=$((after + 1))
+    reap 41337
+    i=$((i + 1))
+done
+printf "  %-30s %d/%d  CONTROL: must be %d\n" "C7 tree alive inside scope" "$inside" "$sn" "$sn"
+printf "  %-30s %d/%d\n" "C7 tree dead at scope exit" "$after" "$sn"
+[ "$inside" -eq "$sn" ] || { echo "CONTROL FAILED: ledger never saw a live tree" >&2; exit 1; }
+
+ok=0; i=0
+while [ "$i" -lt "$sn" ]; do
+    "$BIN" "$work/c7raise.weir" >/dev/null 2>&1
+    [ "$(ledger 41340)" -eq 0 ] && ok=$((ok + 1)) || reap 41340
+    i=$((i + 1))
+done
+printf "  %-30s %d/%d\n" "C7 teardown on raise" "$ok" "$sn"
+
+for sig in INT TERM; do
+    ok=0; i=0
+    while [ "$i" -lt "$sn" ]; do
+        "$BIN" "$work/c7.weir" >/dev/null 2>&1 &
+        w=$!
+        sleep 0.4; kill -"$sig" $w 2>/dev/null; wait $w 2>/dev/null; sleep 0.3
+        [ "$(ledger 41337)" -eq 0 ] && ok=$((ok + 1)); reap 41337
+        i=$((i + 1))
+    done
+    printf "  %-30s %d/%d\n" "C8 SIG$sig reaps the tree" "$ok" "$sn"
+done
+
+res=0; i=0
+while [ "$i" -lt "$sn" ]; do
+    "$BIN" "$work/c7.weir" >/dev/null 2>&1 &
+    w=$!
+    sleep 0.4; kill -9 $w 2>/dev/null; wait $w 2>/dev/null; sleep 0.3
+    [ "$(ledger 41337)" -gt 0 ] && res=$((res + 1)); reap 41337
+    i=$((i + 1))
+done
+printf "  %-30s %d/%d  CONTROL: kill -9 MUST leak\n" "C8 kill -9 carve-out" "$res" "$sn"
+[ "$res" -eq "$sn" ] || { echo "CONTROL FAILED: kill -9 left no residue — the ledger cannot see survivors here" >&2; exit 1; }
+
+lifo=0; i=0
+while [ "$i" -lt "$sn" ]; do
+    "$BIN" "$work/c9.weir" >/dev/null 2>&1 &
+    w=$!
+    sleep 0.2; a1=$(ledger 41341); a2=$(ledger 41342)
+    sleep 0.9; b1=$(ledger 41341); b2=$(ledger 41342)
+    wait $w 2>/dev/null
+    [ "$a1" -gt 0 ] && [ "$a2" -gt 0 ] && [ "$b2" -eq 0 ] && [ "$b1" -gt 0 ] && lifo=$((lifo + 1))
+    reap 4134
+    i=$((i + 1))
+done
+printf "  %-30s %d/%d\n" "C9 LIFO (inner dead, outer up)" "$lifo" "$sn"
+
+echo
+echo "env overlay across a nested fan-out (the finding):"
+good=$("$BIN" "$work/envnest.weir" 2>/dev/null | grep -cF "[inner]")
+lost=$("$BIN" "$work/envnest.weir" 2>/dev/null | grep -cF "[]")
+printf "  %-30s %s kept / %s LOST of 200\n" "nested: overlay per item" "$good" "$lost"
+ctlgood=$("$BIN" "$work/envctl.weir" 2>/dev/null | grep -cF "[top]")
+printf "  %-30s %s/20  CONTROL: must be 20\n" "top-level: overlay per item" "$ctlgood"
+[ "$ctlgood" -eq 20 ] || { echo "CONTROL FAILED: the top-level overlay path is broken too — probe suspect" >&2; exit 1; }
+
 echo
 echo "all probes reported with rates; controls held"

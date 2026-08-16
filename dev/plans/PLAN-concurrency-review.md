@@ -1,170 +1,202 @@
 # weir — adversarial review of the concurrency claims
 
-Status: EXECUTED IN PART. Phase 0 complete; Phase 1 covers 4 of 14 claims with
-rates. The 10 untested claims are listed by name below — per the plan, an
-untested claim recorded as untested is worth more than one silently assumed to
-hold. Nothing fixed; findings-shaped, like its three predecessors.
+Status: EXECUTED. Phase 0 complete; 13 of 14 claims measured with rates, one
+recorded untestable here with its reason. **One finding**, predicted from the
+source in Phase 0 and then confirmed with an exact numeric match. Nothing
+fixed; findings-shaped, like its three predecessors.
 
     ci/concurrency-flake.sh ./path/to/weir [N]
 
-Every probe reports a RATE, never a verdict, and timing is FORCED rather than
-awaited.
+Every probe reports a RATE, never a verdict; timing is FORCED rather than
+awaited; every section carries a control that must fail.
 
-## Phase 0 — the four answers, before attacking
+## Phase 0 — the four answers
 
-**0.1 Where the concurrency lives: .NET tasks on dedicated threads, not
-processes.** `Builtins.fs:933` `runParallelWith` uses
-`Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning)` — a dedicated
-OS thread per active worker — with a work-stolen index
-(`Interlocked.Increment`), a `Task.WaitAll` join, and errors collected into a
-`ConcurrentDictionary<int, exn>` then rethrown as `raise errors[Seq.min
-errors.Keys]`. `[D:tasks-underneath]`.
+**0.1 Tasks on dedicated threads, not processes.** `Builtins.fs:933`
+`runParallelWith` uses `Task.Factory.StartNew(worker,
+TaskCreationOptions.LongRunning)` — a dedicated OS thread per active worker —
+a work-stolen index (`Interlocked.Increment`), a `Task.WaitAll` join, and
+errors collected into `ConcurrentDictionary<int, exn>` then rethrown as `raise
+errors[Seq.min errors.Keys]`. `[D:tasks-underneath]`.
 
-So C2's "first error by INPUT order" is STRUCTURAL — `Seq.min` over the index
-keys — not a timing accident. Worth stating plainly because SKILL says
-"processes and pipelines are the concurrency model"; that describes the
-LANGUAGE SURFACE. `pmap` underneath is threads. The two statements do not
-conflict, but a reader reasoning about failure modes from the doc sentence
-would reason about the wrong machine.
+C2's "first error by INPUT order" is therefore STRUCTURAL — `Seq.min` over
+index keys — not a timing accident, which is why it does not flake. Worth
+stating plainly: SKILL says "processes and pipelines are the concurrency
+model", which describes the LANGUAGE SURFACE; `pmap` underneath is threads. No
+contradiction, but a reader reasoning about failure modes from that sentence
+reasons about the wrong machine.
 
-**0.2 Tree-kill is .NET's, not POSIX process groups.** Every kill site
-(`Session.fs:90,101,149`, `Proc.fs:71`) calls `p.Kill true` —
-`Process.Kill(entireProcessTree: true)`. Not `killpg`, not job objects
-directly; whatever the BCL does per platform. The plan's macOS/Linux
-process-group concern therefore lands on .NET's implementation rather than on
-weir's, and a claim verified on Linux is NOT verified on macOS.
+**0.2 Tree-kill is the BCL's, not POSIX process groups.** Every kill site
+(`Session.fs:90,101,149`, `Proc.fs:71`) calls `p.Kill true`. Corroborated
+downstream: C12's escaped handle reports `wait` = **137** (128+9), so the tree
+kill lands as SIGKILL. A child that traps SIGTERM cannot survive it — and
+equally, nothing gets a chance to clean up. Platform note: these are the BCL's
+per-platform semantics, so none of the rates below transfer to macOS/Windows.
 
 **0.3 The session fork carries cwd explicitly and env by execution context.**
-All three session slots — `localCwd`, `localEnvOverlay`, `raceGroup` — are
-`AsyncLocal`, deliberately (`[D:tasks-underneath]`: "AsyncLocal, not
-ThreadLocal"). `enterWorker parentCwd` sets ONLY cwd; `exitWorker()` clears
-cwd AND env.
+`localCwd`, `localEnvOverlay` and `raceGroup` are all `AsyncLocal`
+(`[D:tasks-underneath]`: "AsyncLocal, not ThreadLocal"). `enterWorker
+parentCwd` sets ONLY cwd; `exitWorker()` clears cwd AND env.
 
-The plan asked whether `within env` around a `pmap` reaches the arms. It does,
-and by a path worth writing down: a top-level `within env` runs with
-`localCwd.Value = None`, so `pushEnvOverlay` writes `rootEnvOverlay` (a plain
-ref); a worker's `envOverlay()` finds `localEnvOverlay.Value = None` and falls
-back to `rootEnvOverlay`. Inside a worker, `pushEnvOverlay` forks over the
-ROOT snapshot, so an arm's own `within env` stays worker-local and
-`exitWorker` clears it between items. That is a correct design, and it is NOT
-the baked-overlay shape `[D:reifier-env-overlay]` found on the reifier path.
+A top-level `within env` around a `pmap` DOES reach the arms, by a path worth
+writing down: at top level `localCwd.Value = None`, so `pushEnvOverlay` writes
+`rootEnvOverlay`; a worker's `envOverlay()` finds `localEnvOverlay.Value =
+None` and falls back to it. Inside a worker, `pushEnvOverlay` forks over the
+root snapshot, so an arm's own overlay stays worker-local. That is correct,
+and it is NOT the baked-overlay shape `[D:reifier-env-overlay]` found.
 
-HYPOTHESIS, UNTESTED, recorded with its mechanism: in a NESTED fan-out, an
-overlay pushed inside an OUTER worker lives in `localEnvOverlay`. Inner tasks
-inherit it by AsyncLocal flow, but the inner `exitWorker()` sets
-`localEnvOverlay.Value <- None` between items, so the SECOND and later items
-on a given inner worker thread fall back to `rootEnvOverlay` and lose the
-outer arm's overlay. Requires: `within env` inside a `pmap` arm, wrapping a
-nested `pmap` of ≥2 items per inner worker. Cheap to test; not tested here.
+**Reading it also produced the review's one finding — F1 below.**
 
-**0.4 There is no shared pool, and nesting MULTIPLIES rather than starves.**
-Zero `SemaphoreSlim` in `Builtins.fs`; each `runParallelWith` call creates its
-own `min degree (max 1 length)` LongRunning tasks. Measured rather than
-inferred — nested `piter`, each innermost arm spawning a 1.31s child:
+**0.4 No shared pool; nesting MULTIPLIES rather than starves.** Zero
+`SemaphoreSlim`; each `runParallelWith` creates its own `min degree (max 1
+length)` LongRunning tasks. Measured, nested `piter` with a 1.31s child at each
+leaf:
 
     4x4  =  16 arms -> 1413ms
     8x8  =  64 arms -> 1408ms
     12x12 = 144 arms -> 1508ms
 
-144 arms finish in the wall time of 16. If the 64 ceiling were shared, 144
-arms of 1.31s would need two rounds (≈2.6s). So the ceiling is PER CALL. A
-64×64 nest would attempt 4096 concurrent children and ~4160 dedicated threads
-— the plan asked about starvation and the answer is its opposite. Whether that
-wants a shared ceiling is a design question, not a defect: the cap's stated
-purpose (`[D:tasks-underneath]`) is that "an unbounded fan-out over 10k items
-is not a well-mannered fork bomb", and nesting reopens exactly that.
+144 arms in the wall time of 16, so all ran concurrently: the ceiling is PER
+CALL. A 64×64 nest would attempt 4096 concurrent children and ~4160 dedicated
+threads. The plan asked about starvation; the answer is its opposite. Not a
+defect — but `[D:tasks-underneath]` gives the cap's purpose as "an unbounded
+fan-out over 10k items is not a well-mannered fork bomb", and nesting reopens
+precisely that.
 
-## Phase 1 — measured, with rates
+## F1 — `within env` is lost across a nested fan-out (silent)
+
+**Predicted from `Session.fs` in Phase 0, then measured.** An overlay pushed
+INSIDE a worker lives in `localEnvOverlay`. Inner tasks inherit it by
+AsyncLocal flow, but the inner `exitWorker()` sets `localEnvOverlay.Value <-
+None` between items — so every item after the FIRST on a given inner worker
+thread falls back to `rootEnvOverlay` and loses it.
+
+    [1] |> Seq.piter (fun _ ->
+        within env [Env.pair "MARK" "inner"]
+            [1..200]
+            |> Seq.pmap (fun _ -> $(sh -c "echo [$MARK]") |> Seq.head)
+            |> Seq.iter print)
+
+    64 items print [inner]      <- exactly the worker count
+    136 items print []          <- the overlay is simply gone
+
+The match is exact: 64 kept = `parallelCeiling`, i.e. precisely one item per
+worker thread. With `pmapWith 1` the shape is starker — 1 kept, 5 lost of 6.
+
+CONTROL: the top-level path (`within env` outside any worker, then `pmap`)
+keeps the overlay on **20/20** items, so the probe can show success and the
+loss is specific to the nested shape.
+
+ROOT CAUSE, and it is an asymmetry rather than an omission:
+
+    enterWorker parentCwd  ->  localCwd.Value <- Some parentCwd   // RESTORES
+    exitWorker ()          ->  localCwd.Value <- None
+                               localEnvOverlay.Value <- None       // CLEARS
+
+cwd is cleared and then RESTORED on the next item's `enterWorker`; env is
+cleared and never restored. Confirmed by the mirror probe: the same nested
+shape under a worker-pushed `within cd` keeps the directory on **20/20**
+items.
+
+WHY IT MATTERS. It is silent — no error, the variable is just empty — and env
+is the channel the language nominates for secrets (`Env.load` with a `Secret`
+field is "the main producer", SECURITY.md). A script that wraps a nested
+fan-out in `within env` to pass credentials gets arms that run without them,
+and the failure surfaces as whatever the child does with an empty variable.
+
+FIX SHAPE: `enterWorker` should capture and restore the parent's env overlay
+the way it already does cwd — one more parameter, symmetric with the existing
+line.
+
+## Phase 1 — the claims, measured
 
 Machine: 12 cores, Linux 7.0.10, load 6.2–9.8 across runs (contended, which
-strengthens rather than weakens these). Probes written FROM THE DOCS.
+strengthens these). Probes written FROM THE DOCS.
 
-| claim | skew pattern | rate |
+| claim | how it was forced | result |
 |---|---|---|
-| C1 `pmap` returns input order | item 1 sleeps longest — time order is the exact reverse of input order | **200/200** |
-| C2/C6 first error by INPUT order | arm 1 fails at 250ms, arm 5 fails immediately | **200/200** |
-| C5 `pfirst` loser tree-kill, incl. GRANDCHILD | loser spawns `sh -c "sleep & sleep"`, winner returns at 60ms | **0/30 leaked** |
-| 0.4 nested ceiling | 12×12 nested `piter` | 144 concurrent, no residue |
+| C1 `pmap` input order | item 1 sleeps longest — time order reversed | **200/200** |
+| C2/C6 first error by input order | arm 1 fails at 250ms, arm 5 immediately | **200/200** |
+| C3 ceiling moves with `pmapWith` | 8 arms × 300ms | 2414ms at n=1 vs **314ms** default |
+| C4 worker-local `cd` | two arms `cd` elsewhere, each asks the OS | each saw its own; parent's cwd survived the join |
+| C5 `pfirst` loser tree-kill (grandchild) | loser spawns `sh -c "sleep & sleep"` | **0/30 leaked** |
+| C7 teardown at BLOCK exit | sampled inside the scope, then after it, while weir still runs | **10/10** dead at scope exit |
+| C7 teardown on raise | `fail` inside the scope | **10/10** |
+| C8 SIGINT mid-scope | signal at 400ms | **10/10** reaped |
+| C8 SIGTERM mid-scope | signal at 400ms | **10/10** reaped |
+| C8 second signal during handling | two SIGTERMs 20ms apart | **10/10** reaped |
+| C8 `kill -9` carve-out | SIGKILL at 400ms | **10/10 leaked — the non-claim holds** |
+| C9 LIFO teardown | sampled in the gap between inner and outer close | **10/10** inner dead while outer alive |
+| C10 exit is DATA | `Proc.wait` on a child exiting 7 | code 7, no raise |
+| C11 `watch=` fails fast with last output | child dies at 300ms under an 8s poll | failed at **1021ms**, message carried `STARTING-MARKER` |
+| C12 escaped handle post-kill | handle bound out of the scope | `running false`, `tail []`, `wait 137` |
+| C13 spill never reaches parent stdout | child emits 300 lines then sleeps | **10/10** clean |
 
-Inverted controls (the assertion must be able to fail): C1 inverted 0/20, C2
-inverted 0/20. Ledger control: a deliberately backgrounded child IS seen, so
-the orphan zeros are measurements rather than blindness.
+C7's "dead at scope exit" is measured against a control that the tree was
+ALIVE inside the scope (**10/10**), so it separates teardown-at-scope-exit
+from teardown-at-process-exit rather than conflating them. C9's LIFO is
+asserted DIRECTLY — the inner tree observed dead while the outer is still
+running — not inferred from a final state. C13's control reads the spill back
+through `Proc.tail` (**100 lines, contains the noise**), so "no noise on
+stdout" cannot be satisfied by a child that produced nothing.
 
-**No finding.** The three claims tested at N=200 held under schedules chosen
-to break them.
+## Untested — recorded as untested
 
-## Untested claims — recorded as untested
+**C14, TTY contention.** Two concurrent arms opening `/dev/tty`. Not testable
+in this environment: there is no controlling terminal, so the single-arm claim
+cannot be established either, let alone the concurrent case the docs do not
+cover. It needs a pty harness on an interactive machine.
 
-C3 (the 64 ceiling on a single call, and `pmapWith` moving it — only the
-NESTED question was measured); C4 (concurrent `cd` in two arms, and the
-documented force-inside-the-worker repair); C7/C9 (`within proc` teardown at
-every exit, and LIFO order asserted directly rather than inferred); C8
-(SIGINT/SIGTERM mid-scope, mid-fan-out, and during teardown; the second signal
-during handling; the `kill -9` residue including spill directories); C10/C11
-(exit-as-data, `watch=` failing immediately with last output); C12 (escaped
-handle answering gracefully post-kill); C13 (spill files never reaching the
-parent's stdout); C14 (TTY contention between two concurrent arms); output
-interleaving / torn lines, which no claim currently covers; and 0.3's nested
-env-overlay hypothesis.
-
-The plan's flagged REPL/script SIGINT split is untested in both paths, so the
-observation that the REPL does not forward SIGINT to a foreground child
-remains unconfirmed here and is neither corroborated nor refuted by this
-review.
+**The REPL/script SIGINT split.** The plan flagged an observation that the
+REPL does not forward SIGINT to a running foreground child. C8 is verified for
+the SCRIPT path only; the REPL path is a different code path and is neither
+corroborated nor refuted here. Testing it needs the same pty harness as C14,
+which is why both are parked together.
 
 ## Denominator — what held, with N
 
-- **C1 input-order: 200/200** under reversed time order, load 6.2.
-- **C2/C6 first-error-by-input-order: 200/200** under a schedule where the
-  input-first arm fails 250ms after the input-last arm. Structural in the
-  implementation (`Seq.min` over error keys), which is why it does not flake.
-- **C5 grandchild tree-kill: 0/30 leaks**, ledger positive-controlled.
-- **No process residue** after any batch, including the 144-arm nested run.
+Fourteen measurements, none flaked. The strongest are C1 and C2/C6 at
+**200/200 under schedules chosen to break them**, and both are structural in
+the implementation rather than incidental. The teardown family (C7–C9, C12)
+held at 10/10 each with the `kill -9` carve-out behaving exactly as the
+non-claim states — which is the best kind of denominator entry, because the
+documented limit is as true as the documented guarantee.
 
 ## Instrument honesty
 
-**The machine.** 12 cores, Linux, load 6.2–9.8. A 200-iteration pass on a
-contended box is better evidence than an idle one, but this is ONE platform:
-0.2 established that tree-kill is the BCL's per-platform implementation, so
-none of these rates transfer to macOS or Windows. This is the review where
-that matters most and it is the review's largest gap.
+**The controls did real work this time.** `kill -9` leaking 10/10 is not just
+a finding, it proves the ledger sees survivors in the exact setup where the
+other rows report zero. C7's inside-scope sample proves the tree existed
+before it was reaped. C13's `Proc.tail` control proves the noise was produced.
+The env control proves the overlay probe can show success. Every zero above
+has a matching non-zero from the same instrument.
 
-**Probes were written from the docs**, so they can in principle catch the docs
-and the binary disagreeing. They found no such case in the four claims tested.
+**One platform.** 0.2 established that tree-kill is the BCL's per-platform
+implementation, so none of these transfer to macOS or Windows. That is this
+review's largest gap and the reason C8's rates should be read as
+Linux-specific.
 
-**N is stated everywhere.** C5 ran at N=30 rather than 200 because each
-iteration spawns and reaps a process tree; that is a weaker number than C1's
-and is labelled as such.
+**N is uneven and labelled.** C1/C2 at 200; the teardown family at 10, because
+each iteration spawns and reaps a process tree and samples on a clock. Ten is
+thin for a concurrency claim and is stated as such.
 
-**The instrument was, again, the least trustworthy thing in the review.**
-Three separate self-match failures, all the genus `dev/PROCESS.md` already
-documents ("count processes by name, never by a pattern the measuring command
-also carries" — a rule whose origin note even uses the word "self-kills"):
+**The instrument was, again, defective before the subject was.** Three
+self-match failures in one session, all the genus `dev/PROCESS.md` documents:
+`pgrep -fc` counted its own shell (baseline 1, not 0); `ps -eo args= -C sleep`
+silently ignored `-C` and matched the harness's own argv for two distinct
+markers; and `pkill -f` **killed the harness shell**, which surfaced as two
+silent no-output runs and one phantom orphan count nearly written up as a weir
+defect. A fourth, different: the first nested probe slept 8.7 hours per arm,
+so the fan-out could never join and the timeout killed the harness rather than
+weir. All four failed TOWARD A PASS, and all four were caught because the
+numbers looked wrong — not because a control fired. `ledger()` and `reap()`
+now filter on `comm` so the measuring shell is excluded by construction, and
+the harness header says why.
 
-1. `pgrep -fc "sleep 3133"` reported **1 at baseline** — it matched the shell
-   running it.
-2. `ps -eo args= -C sleep` **silently ignored `-C`** on this box and listed
-   every process, so two DISTINCT markers both "matched" 4 lines — the
-   harness's own argv contained both.
-3. `pkill -f "sleep 2.31341"` **killed the harness shell** (exit 143). This
-   surfaced as two runs producing no output at all, and one phantom "11
-   surviving processes" that was nearly written up as a weir orphan leak.
-
-A fourth, different: the first nested probe used `sleep 31341` — 8.7 hours —
-so the fan-out could never join, and the timeout killed the harness rather
-than weir. The residue that produced was mine, not weir's.
-
-All four were caught before they reached a finding, but only because the
-numbers looked wrong, not because a control fired. The fix is structural:
-`ledger()` and `reap()` filter on `comm` via awk, so the measuring shell is
-excluded by construction. The header of `ci/concurrency-flake.sh` records this
-so the next editor does not reintroduce `pgrep -f`.
-
-**This is the fourth consecutive review whose instrument was defective before
-its subject was.** The security review's oracle control borrowed a finding's
-payload; the DX census counted a cascading error as a teach; the upgrade
-corpus used post-window surface and reported a clean zero; this one counted
-and then killed itself. In every case the instrument's failure mode was
-toward a PASS. That is a pattern about how these harnesses get written, not
-four coincidences, and it is the strongest argument in the series for the
-positive-control discipline the plans keep demanding.
+**Four reviews, four defective instruments.** The security review's oracle
+control borrowed a finding's payload; the DX census counted a cascading error
+as a teach; the upgrade corpus used post-window surface and reported a clean
+zero; this one counted and then killed itself. In every case the failure mode
+was toward a pass. That is a property of how these harnesses get written, and
+the only reliable defence found so far is the one this review finally applied
+throughout: **every zero needs a matching non-zero from the same instrument.**
