@@ -85,12 +85,16 @@ let helperDir = Path.dir Self.scriptPath
 let echoArgs = Path.combine helperDir "echo-args.weir"
 let probe = Path.combine helperDir "probe.weir"
 
-// ---- strings: four kinds, one meaning everywhere ----------------------
+// ---- strings: five kinds, one meaning everywhere ----------------------
 
 let who = "world"
 print $"hello {who} with {{literal braces}}"
 print @"C:\verbatim\no-escapes"
 print """say "hi" with no escapes at all"""
+// the RAW INTERPOLATED kind [D:interp-raw]: escapes OFF and holes ON — a
+// backslash, a quote and a splice in one literal, which is what generating
+// weir from weir needs (there is no $@"…"; one spelling)
+print $"""raw+holes: File.read "{who}\keep" — no escape pass, one splice"""
 
 // ranges are lazy; comprehensions are eager
 let squares = [for n in [1..cli.limit] -> n * n]
@@ -158,6 +162,13 @@ let ratio = Duration.toSeconds cli.timeout / Duration.toSeconds 1m
 print $"budget {cli.timeout}, half {half}"
 print $"ratio {ratio} of {Duration.toSeconds 1m} seconds, at rate {cli.rate}"
 Duration.sleep 1ms // takes a Duration, not a number; module-qualified so coreutils sleep stays reachable
+
+// absolute time is `Instant` [D:instant] — a POINT on the UTC timeline, the
+// boring subset: no local zones and no calendar arithmetic, so the only
+// algebra is the one above — two instants SUBTRACT to a Duration
+let cut = Instant.parse "2026-08-09T12:00:00Z"
+let later = Instant.parse "2026-08-16T18:30:00Z"
+print $"between the two tags: {later - cut} (from {cut})"
 
 // retry: the bounded condition loop (a bool body IS the predicate,
 // yields unit; poll is the time-bounded twin — timeout=/interval=)
@@ -295,6 +306,9 @@ within tmp scratch
     print $"first back: {back[0]}; missing 99th: {back |> Seq.tryItem 99}"
     let txts = Path.glob (Path.combine scratch "*.txt") |> Seq.force
     print $"glob sees {txts |> Seq.length} txt file(s); stem = {Path.stem store}"
+    // File.size is a `Size`, not an int: binary units, comparable directly
+    // (`> 10MiB` needs no arithmetic), which is why the row carries the type
+    print $"size {File.size store}; over a KiB? {File.size store > 1KiB}"
 
 // ---- env overlays: sigils and the env district ------------------------
 
