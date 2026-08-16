@@ -6246,12 +6246,17 @@ let scriptTests =
                   $"the pipe path must teach, got: {diags |> List.map _.Message}"
           }
           test "a bare module member at command head teaches, not 'install the tool' [D:bare-partition]" {
+              // sortBy, not where: the head teaching fires only when the
+              // name is NOT on PATH (a real tool of that name must stay
+              // runnable — resolution integrity), and Windows SHIPS
+              // where.exe, so `where` resolves there and never reaches
+              // the cmd-not-found path
               let diags, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "let xs = where (fun n -> n > 0) [1]"; "print (show 1)" ]
+                  Weir.Script.analyzeLines "pin.weir" [ "let xs = sortBy (fun n -> n) [1]"; "print (show 1)" ]
 
               Expect.exists
                   diags
-                  (fun d -> d.Message.Contains "spell it 'Seq.where'")
+                  (fun d -> d.Message.Contains "spell it 'Seq.sortBy'")
                   $"the head path must teach, got: {diags |> List.map _.Message}"
 
               Expect.isFalse
