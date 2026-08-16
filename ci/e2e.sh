@@ -373,16 +373,29 @@ if [ -e "$scriptdir/proof-file" ]; then
 fi
 echo "e2e ok: whole-file check runs nothing on error"
 
+# #loose is REMOVED (PLAN-dx-review D1): files are always strict, the
+# directive is unknown, and fmt --qualify went with the mode. The gate
+# is pointed at what CHANGED, not at a probe that passed on the
+# untouched tree.
 cat > "$scriptdir/loose.weir" <<'WEOF'
 #loose
-[2; 1] |> where (fun x -> x > 0) |> map (fun x -> x * 3) |> first 1 |> sum |> print
+[2; 1] |> where (fun x -> x > 0) |> Seq.iter (fun x -> print (show x))
 WEOF
-$BIN fmt --qualify "$scriptdir/loose.weir" 2>/dev/null
-out=$($BIN "$scriptdir/loose.weir")
-expect "fmt --qualify graduates loose to strict-clean" "6" "$out"
-grep -q "Seq.map" "$scriptdir/loose.weir" || fail "fmt did not qualify"
-if grep -q "#loose" "$scriptdir/loose.weir"; then fail "fmt left the #loose directive"; fi
-echo "e2e ok: fmt --qualify roundtrip"
+if $BIN fmt --qualify "$scriptdir/loose.weir" 2>/dev/null; then
+    fail "fmt --qualify must be an unknown flag now"
+fi
+before=$(cat "$scriptdir/loose.weir")
+$BIN fmt "$scriptdir/loose.weir" >/dev/null 2>&1 || true
+after=$(cat "$scriptdir/loose.weir")
+grep -q "#loose" "$scriptdir/loose.weir" || fail "fmt must not strip the unknown directive"
+echo "$after" | grep -q "Seq.where" && fail "fmt must not rewrite bare names"
+out=$($BIN "$scriptdir/loose.weir" 2>&1 || true)
+echo "$out" | grep -q "unknown or misplaced directive" || fail "a #loose file must hit the generic directive error: $out"
+out=$($BIN check "$scriptdir/loose.weir" 2>&1 || true)
+echo "$out" | grep -q "spell it 'Seq.where'" || fail "the bare-name teaching must name the qualified spelling: $out"
+out=$($BIN -e '[1] |> where (fun n -> n > 0)' 2>&1 || true)
+echo "$out" | grep -q "Seq.where" || fail "-e is strict and must teach the qualified spelling: $out"
+echo "e2e ok: #loose removed — strict everywhere, fmt --qualify gone, bare names teach"
 cat > "$scriptdir/multi.weir" <<'WEOF'
 type Verdict =
     | Pass of int

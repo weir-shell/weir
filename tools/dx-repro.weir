@@ -30,6 +30,12 @@ let cli = Args.load Cli
 
 // ---- probes -----------------------------------------------------------------
 
+// D1 RE-POINTED at the removal (the plan's own instruction: the old
+// mustCheckClean could only go green if the mode were IMPLEMENTED, and
+// its inverse passed on an untouched tree). What actually changes:
+// fmt --qualify is an unknown flag; fmt leaves a #loose file's
+// directive and names alone; a bare name in a strict file TEACHES the
+// qualified spelling.
 let d1Loose =
     [ @"#loose"
       @"let xs = [1; 2; 3]"
@@ -58,6 +64,14 @@ let controlError = [ @"print (show thisNameIsNotBound)" ]
 
 let checkRun path =
     let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete
+    r
+
+let fmtQualifyRun path =
+    let r = sh -c $"'{cli.bin}' fmt --qualify '{path}' 2>&1" | complete
+    r
+
+let fmtRun path =
+    let r = sh -c $"'{cli.bin}' fmt '{path}' 2>&1" | complete
     r
 
 let writeProbe d name lines =
@@ -112,7 +126,26 @@ within tmp d
     print ""
     print "DX findings (fixed = the cell moved):"
 
-    let d1 = mustCheckClean d "D1-loose-bare-names" d1Loose
+    let d1qualifyPath = writeProbe d "D1-qualify-flag" d1Loose
+    let d1qr = fmtQualifyRun d1qualifyPath
+    let d1a = d1qr.exitCode <> 0
+    let d1aWord = if d1a then "fixed (unknown flag)" else "REPRODUCES (fmt --qualify still accepted)"
+    print $"  D1-qualify-flag-gone: {d1aWord}"
+
+    let d1fmtPath = writeProbe d "D1-fmt-keeps-directive" d1Loose
+    let _ = fmtRun d1fmtPath
+    let kept = File.read d1fmtPath
+    let d1b = kept |> Seq.exists (fun l -> l == "#loose")
+    let d1bWord = if d1b then "fixed (fmt leaves the directive)" else "REPRODUCES (fmt stripped #loose)"
+    print $"  D1-fmt-keeps-directive: {d1bWord}"
+
+    let d1barePath = writeProbe d "D1-bare-teaches" d1Loose
+    let d1br = checkRun d1barePath
+    let d1c = d1br.stdout |> Seq.exists (fun l -> Str.contains "Seq.where" l)
+    let d1cWord = if d1c then "fixed (bare name teaches the qualified spelling)" else "REPRODUCES (no qualified-spelling teaching)"
+    print $"  D1-bare-teaches: {d1cWord}"
+
+    let d1 = d1a && d1b && d1c
     let d2 = mustDiagnose d "D2-ampersand-silent" d2Amp
     let d3 = mustSay d "D3-equals-teaches" d3Eq "=="
     let d4 = mustNotSay d "D4-while-as-command" d4While "command not found on PATH: while"

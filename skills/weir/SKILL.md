@@ -8,7 +8,7 @@ stops being true fails the build.
 
 - Shebang `#!/usr/bin/env weir`; extension `.weir`; run `weir file.weir [args]`.
 - `weir fmt file.weir` canonicalizes indentation (4 per block depth);
-  `--check` for CI; `--qualify` converts `#loose` scripts to strict.
+  `--check` for CI.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
 - Comments are `//`, full-line or TRAILING (`let x = 5 // note`) —
@@ -27,14 +27,25 @@ stops being true fails the build.
   hover can't drift. Statements end at column 0 (the next col-0
   line) — blank lines and comment lines are both transparent inside
   a statement, so blocks group freely with gaps.
-- Scripts are STRICT: every module member is qualified —
+- Scripts and `-e` are STRICT: every module member is qualified —
   `Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read` — including in
   command pipelines (`|> Seq.map Str.trim`). Bare names (`map`,
-  `where`, `sortBy`) exist only in the REPL and `#loose` scripts, and
-  the rule is DERIVED [D:bare-partition]: every single-home member of
-  `Seq`/`Str` is bare; a name with two homes is qualified-only on
-  BOTH sides — `contains` and `length`, the whole list. If unsure,
-  qualify: the qualified spelling always works.
+  `where`, `sortBy`) exist in the REPL session ONLY, and the REPL's
+  set is DERIVED [D:bare-partition]: every single-home member of
+  `Seq`/`Str` is bare there; a name with two homes is qualified-only
+  everywhere — `contains` and `length`, the whole list. The qualified
+  spelling always works. A bare name in a file errors naming the
+  qualified spelling, and the LSP offers the rewrite as a code action.
+
+```weir-error
+let xs = [1; 2; 3] |> map (fun n -> n * 2)
+print (show (Seq.length xs))
+```
+
+```weir-error
+#loose
+print (show 1)
+```
 - The `Self` module groups a script's own facts, script-only (absent
   in the REPL and `-e`): `Self.args : seq<string>`,
   `Self.stdin : seq<string>`, `Self.pid : int` (the process id), and

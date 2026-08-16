@@ -7,7 +7,7 @@ open Weir.Types
 let private evalOnce (input: string) : int =
     // -e agrees with scripts and the REPL [D:trailing-comments]
     let input = Script.stripComment input
-    let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv
+    let typeEnv, valueEnv = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
 
     let resolver = Script.resolver typeEnv
 
@@ -155,11 +155,11 @@ let main argv =
     | [ "check"; "--can"; "--strict"; path ] -> Can.run false true path
     | [ "check"; "--can"; "--strict"; "--json"; path ] -> Can.run true true path
     | [ "check"; "--can"; "--json"; "--strict"; path ] -> Can.run true true path
-    | [ "fmt"; "--qualify"; path ] -> Fmt.qualifyFile path
+
     | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
     | [ "fmt"; path ] -> Fmt.formatFile false path
     | "fmt" :: _ ->
-        Console.Error.WriteLine "usage: weir fmt [--check|--qualify] <script>"
+        Console.Error.WriteLine "usage: weir fmt [--check] <script>"
         2
     // external contracts [D:contracts-spine]: `add <kind>` is
     // KIND-AWARE (acquiring differs per kind); `restore`/`verify`
@@ -268,7 +268,7 @@ let main argv =
             + "       weir <script> [args...]                 run a script\n"
             + "       weir -e <expression>                    evaluate one expression\n"
             + "       weir check [--json] <script>            diagnostics only (no evaluation)\n"
-            + "       weir fmt [--check|--qualify] <script>   canonical formatter\n"
+            + "       weir fmt [--check] <script>   canonical formatter\n"
             + "       weir lsp                                language server (stdio)\n"
             + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
             + "       weir restore                            re-materialize the lock's artifacts\n"

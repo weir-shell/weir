@@ -126,7 +126,8 @@ let private cmdResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
       IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
       IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
-      ExternalNames = fun () -> fakeExternals }
+      ExternalNames = (fun () -> fakeExternals)
+      BareHome = fun _ -> None }
 
 // Windows: parse-only fixtures resolve coreutils heads (echo, sh,
 // grep ...) through the REAL resolver, and those are cmd BUILTINS or
@@ -170,7 +171,8 @@ let private realResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
       IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
       IsExternal = Weir.Extern.exists
-      ExternalNames = fun () -> Weir.Extern.names () :> seq<string> }
+      ExternalNames = (fun () -> Weir.Extern.names () :> seq<string>)
+      BareHome = fun n -> Map.tryFind n Weir.Builtins.bareAliasHomes }
 
 let private parseCmd input =
     match Weir.Parser.parseLine cmdResolver input with
@@ -4357,7 +4359,8 @@ let blockLetCmdTests =
                   { IsKnown = fun n -> n <> "echo"
                     IsCommandCallable = fun _ -> false
                     IsExternal = fun n -> n = "echo"
-                    ExternalNames = fun () -> Seq.empty }
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = fun _ -> None }
 
               match Weir.Parser.parseLine r "let f x = let w = echo alpha \"in\" beta |> Seq.head in w" with
               | Ok _ -> ()
@@ -5750,7 +5753,8 @@ let multilineLambdaTests =
                   { IsKnown = (fun n -> n = "xs" || n = "Seq")
                     IsCommandCallable = (fun _ -> false)
                     IsExternal = (fun n -> n = "echo")
-                    ExternalNames = fun () -> Seq.empty }
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = fun _ -> None }
 
               match
                   Weir.Parser.parseLine r "let out = xs |> Seq.map (fun k -> let g = echo tag in g |> Seq.length)"
@@ -6214,22 +6218,49 @@ let scriptTests =
               | Error terr -> Expect.stringContains terr.Message "use Option.map or Secret.map or Seq.map" ""
               | Ok _ -> failtest "expected strict rejection"
           }
-          test "fmt qualifies bare uses span-precisely" {
-              let line, n =
-                  Weir.Fmt.qualifyLine realResolver "ls |> map _.name |> where (startsWith \"x\")"
+          test "#loose is GONE: the directive is unknown, files are always strict [D:bare-partition]" {
+              // no migration message — a mode that never executed gets
+              // whatever the generic stray-directive path does (a parse
+              // error under check, the directive error on run); the pin
+              // is that it ERRORS with no bespoke farewell
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "#loose"; "print (show 1)" ]
 
-              Expect.equal n 3 "three rewrites"
-              Expect.equal line "ls |> Seq.map _.name |> Seq.where (Str.startsWith \"x\")" ""
+              Expect.isNonEmpty
+                  (diags |> List.filter (fun d -> d.Severity = "error"))
+                  "a #loose file must not check clean"
+
+              Expect.isFalse
+                  (diags |> List.exists (fun d -> d.Message.Contains "removed"))
+                  "no migration message for a mode that never executed"
           }
-          test "fmt leaves splices and fields alone" {
-              let line, n = Weir.Fmt.qualifyLine realResolver "git checkout $map"
-              Expect.equal n 0 "splice untouched"
-              Expect.equal line "git checkout $map" ""
+          test "a bare module member in a strict pipe teaches the qualified spelling [D:bare-partition]" {
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "pin.weir"
+                      [ "let xs = [1] |> where (fun n -> n > 0)"; "print (show (Seq.length xs))" ]
+
+              Expect.exists
+                  diags
+                  (fun d -> d.Message.Contains "spell it 'Seq.where'" && d.Message.Contains "REPL session")
+                  $"the pipe path must teach, got: {diags |> List.map _.Message}"
           }
-          test "fmt leaves already-qualified lines alone" {
-              let line, n = Weir.Fmt.qualifyLine realResolver "ls |> Seq.map _.name"
-              Expect.equal n 0 ""
-              Expect.equal line "ls |> Seq.map _.name" ""
+          test "a bare module member at command head teaches, not 'install the tool' [D:bare-partition]" {
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "let xs = where (fun n -> n > 0) [1]"; "print (show 1)" ]
+
+              Expect.exists
+                  diags
+                  (fun d -> d.Message.Contains "spell it 'Seq.where'")
+                  $"the head path must teach, got: {diags |> List.map _.Message}"
+
+              Expect.isFalse
+                  (diags |> List.exists (fun d -> d.Message.Contains "install"))
+                  "a bare member is never an installable tool"
+          }
+          test "the REPL keeps bare names: typeEnv carries them, strict does not [D:bare-allowlist]" {
+              Expect.isTrue (Map.containsKey "where" Weir.Builtins.typeEnv.Values) "REPL env keeps bare where"
+              Expect.isFalse (Map.containsKey "where" Weir.Builtins.typeEnvStrict.Values) "strict env has no bare where"
           } ]
 
 
@@ -8400,7 +8431,8 @@ let offsideTests =
                   { IsKnown = fun _ -> true
                     IsCommandCallable = fun _ -> false
                     IsExternal = fun _ -> false
-                    ExternalNames = fun () -> Seq.empty }
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = fun _ -> None }
 
               match Weir.Parser.parseLineFull r "type P = | Pulled | upToDate | Join of string" with
               | Error f ->
@@ -8497,7 +8529,8 @@ let offsideTests =
                   { IsKnown = (fun _ -> false)
                     IsCommandCallable = (fun _ -> false)
                     IsExternal = (fun _ -> false)
-                    ExternalNames = fun () -> Seq.empty }
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = fun _ -> None }
 
               let rGit =
                   { rNone with

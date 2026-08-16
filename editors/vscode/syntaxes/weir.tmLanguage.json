@@ -120,7 +120,7 @@
       "name": "comment.line.shebang.weir"
     },
     "directive": {
-      "match": "^#loose\\b",
+      "match": "^#sig\\b",
       "name": "meta.preprocessor.weir"
     },
     "within-kind": {

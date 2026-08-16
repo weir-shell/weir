@@ -3932,7 +3932,7 @@ let renderBuiltinDoc (d: BuiltinDoc) : string =
     [ Some d.Summary; d.Example; d.Pointer ] |> List.choose id |> String.concat "\n"
 
 // the ALLOWLIST [D:bare-allowlist]: only these modules contribute bare
-// aliases to loose mode / the REPL. Inverted from a blocklist after
+// aliases to the REPL. Inverted from a blocklist after
 // three collisions (Secret.map stole bare `map` — 22 unrelated tests
 // failed naming a module they never mentioned; Http.head stole `head`;
 // Option/Float were earlier rounds): a blocklist made every NEW module

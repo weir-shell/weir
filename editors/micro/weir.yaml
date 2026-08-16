@@ -26,11 +26,11 @@ detect:
     header: "^#!.*\\bweir\\b"
 
 rules:
-    # ---- shebang + directives (#loose is the only directive) ----
+    # ---- shebang + directives (#sig is the only directive) ----
     # rule: shebang
     - preproc: "^#!.*$"
     # rule: directive
-    - preproc: "^#loose\\b"
+    - preproc: "^#sig\\b"
 
     # ---- keywords (the parser's set, verified) ----
     # rule: keywords

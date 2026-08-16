@@ -118,7 +118,8 @@ let weirVerdict (src: string) : Verdict =
             { IsKnown = fun n -> Map.containsKey n typeEnv0.Values || Map.containsKey n typeEnv0.Modules
               IsCommandCallable = Weir.Builtins.commandCallable.Contains
               IsExternal = fun _ -> false
-              ExternalNames = fun () -> Seq.empty }
+              ExternalNames = (fun () -> Seq.empty)
+              BareHome = fun _ -> None }
 
         let step env (ll: Weir.Script.LogicalLine) =
             match env with

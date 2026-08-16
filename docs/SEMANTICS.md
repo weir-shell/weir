@@ -857,15 +857,14 @@ quantity semantics now.
   escape hatch is running the POSIX shell as an ordinary external
   (`sh -c "thing ..."`): the head resolves at check time, the string's
   contents at runtime. Errors report `path:line: [line:col] ...`.
-- **Strict by default**: scripts resolve module members qualified-only;
-  `#loose` at file head (line one, or two after a shebang) opts into
-  REPL-style bare names. Any other `#`-directive placement is an error. The
-  REPL is always loose. Rationale: bare-name resolution is a moving target
-  and scripts are durable artifacts — qualified names mean the same thing
-  forever. `weir fmt --qualify <script>` is the graduation bridge: a
-  span-precise AST-driven rewrite of bare names to their homes (single-home
-  guarantee holds while trial resolution stays deferred), dropping `#loose`
-  when done; splices and field accesses untouched. **`weir fmt <script>`**
+- **Strict, always** (2026-08-16, supersedes the `#loose` opt-in — the
+  mode never executed and was removed, PLAN-dx-review D1): scripts and
+  `-e` resolve module members qualified-only; bare names live in the
+  REPL session only. Rationale: bare-name resolution is a moving target
+  and scripts are durable artifacts — qualified names mean the same
+  thing forever. A bare name in a file errors naming the qualified
+  spelling, and the LSP offers the rewrite as a quickfix code action
+  (plus a fix-all-in-file variant). **`weir fmt <script>`**
   (2026-07-18) is the canonical formatter, v1: structural indentation
   normalized to 4 spaces per block depth (computed from the same
   pending-let structure the assembler tracks), trailing whitespace
@@ -1143,8 +1142,7 @@ quantity semantics now.
   (2026-07-18) by removing the `sh` builtin outright — see "Processes
   and the session" — after which POSIX one-liners are command-mode
   `sh -c "..."` lines: exempt, streaming, `| complete`-able.
-  `let`/`type` statements print nothing, as before. `#loose` does not
-  loosen this — resolution mode and output semantics are different axes.
+  `let`/`type` statements print nothing, as before.
 - **`for`/`do` — the general effect loop** [D:for-do]: F#'s own forms,
   desugared AT PARSE (the reifier precedent — the typed tree never sees
   `for`, so checking, hover, and eval ride existing machinery).
@@ -1322,7 +1320,7 @@ quantity semantics now.
   `Module.member` syntax; members are schemes instantiated per use; runtime
   sees mangled flat names. Resolution precedence on the shared syntax:
   value shadow, then module, then ordinary field access (`let Seq = ...`
-  wins and behaves as a record — pinned). Bare aliases exist in loose mode
+  wins and behaves as a record — pinned). Bare aliases exist in the REPL
   for the pipeline hot path and common string ops; `Option` members are
   qualified-only in both modes (bare names are the data plane, Option is
   the control plane); `length` is qualified-only in both homes
@@ -1331,8 +1329,8 @@ quantity semantics now.
   exact member names hint their home ("use 'Seq.groupBy'"); renamed ones
   (`strLen`, `substring`, `mapOption`, `tryIndexOf`) are plain unbound —
   accepted. Member-access-on-primitives (`s.Length`) stays a logged
-  candidate. Strict/loose script modes and trial resolution:
-  dev/plans/PLAN-modules-and-scripts.md (trial resolution deferred, design on file).
+  candidate. Trial resolution:
+  dev/plans/PLAN-modules-and-scripts.md (deferred, design on file).
 - **The yaml boundary** [D:yaml-v1] — `from yaml T` / `to yaml`, the
   typed-boundary family's TREE member (json is a row stream; yaml is a
   document format, so its law is recursive): fields are scalars,
@@ -1669,7 +1667,7 @@ IEEE semantics nowhere else.
 
 ## Command signatures — contracts customer two [D:command-signatures]
 
-`#sig <tool>` (file head, beside `#loose`; or `#sig <tool> "path"` to
+`#sig <tool>` (file head; or `#sig <tool> "path"` to
 override) declares that a tool's command lines are checked against
 `.weir/sigs/<tool>.weir` — found by the same walk schemas use (up to
 the first `.weir/`, never past `.git`; absence is a LOUD check error

@@ -51,7 +51,10 @@ type Resolver =
     { IsKnown: string -> bool
       IsCommandCallable: string -> bool
       IsExternal: string -> bool
-      ExternalNames: unit -> seq<string> }
+      ExternalNames: unit -> seq<string>
+      // a bare module member's home (where -> Seq) [D:bare-partition]:
+      // the strict-context teaching names the qualified spelling
+      BareHome: string -> string option }
 
 // Sigil interiors ($(...) / !(...)) need the resolver inside the
 // expression grammar, which is otherwise resolver-free. parseLine sets
@@ -61,7 +64,8 @@ let private ambientResolver =
         { IsKnown = (fun _ -> true)
           IsCommandCallable = (fun _ -> false)
           IsExternal = (fun _ -> false)
-          ExternalNames = fun () -> Seq.empty })
+          ExternalNames = (fun () -> Seq.empty)
+          BareHome = fun _ -> None })
 
 // Block-let command RHS [D:block-let-cmd]: TRUE only along the
 // statement spine a block assembles into (topLet RHS + its let-in
@@ -3252,7 +3256,8 @@ let private noExternals =
     { IsKnown = fun _ -> true
       IsCommandCallable = fun _ -> false
       IsExternal = fun _ -> false
-      ExternalNames = fun () -> Seq.empty }
+      ExternalNames = (fun () -> Seq.empty)
+      BareHome = fun _ -> None }
 
 // Structured failure: the position travels as DATA
 // [D:structured-parse-failure]. Message text is unchanged; Col is
@@ -3319,10 +3324,16 @@ let private stmtExprs (s: Stmt) : Expr list =
 // PROGRAM (its RHS is headed by an external command). foldChain catches the
 // command-CHAIN mismatches; this catches the value-headed operator form,
 // anchored on the offending program name.
-let private pipeToCommand (r: Resolver) (root: Expr) : Span option =
+let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) option =
     let rec cmdHead (e: Expr) =
         match e.Kind with
-        | EVar n when r.IsExternal n && not (r.IsKnown n) -> Some e.Span
+        | EVar n when r.IsExternal n && not (r.IsKnown n) ->
+            let teach =
+                r.BareHome n
+                |> Option.map (fun home ->
+                    $"'{n}' is a bare module member — spell it '{home}.{n}' (bare names live in the REPL session)")
+
+            Some(e.Span, teach)
         | EApp(f, _) -> cmdHead f
         | _ -> None
 
@@ -3353,11 +3364,11 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                           Col = col }
                 | None ->
                     match s |> stmtExprs |> List.tryPick (pipeToCommand r) with
-                    | Some span ->
+                    | Some(span, teach) ->
                         let col = if span.Start.Line = 1 then Some span.Start.Col else None
 
                         Result.Error
-                            { Message = "'|>' applies functions; feed a program with '|'"
+                            { Message = teach |> Option.defaultValue "'|>' applies functions; feed a program with '|'"
                               Col = col }
                     | None -> Result.Ok s
             | Failure(msg, err, _) ->
