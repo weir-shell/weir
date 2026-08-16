@@ -3614,7 +3614,10 @@ echo "e2e ok: NUL refuses at the spawn boundary (argv and env), naming the trunc
 # echo (the record echo leaked what the seq echo refused); the -e echo
 # wears the same guard. Needs a pty — `script` — and SKIPs by name
 # where absent (absence is never a pass).
-if command -v script >/dev/null 2>&1; then
+# the pty instrument is PROBED, not assumed (the `timeout` precedent):
+# macOS ships BSD script, whose syntax has no -e/-c — command -v passes
+# and the invocation dies. A failing probe is a named SKIP.
+if command -v script >/dev/null 2>&1 && script -qec true /dev/null >/dev/null 2>&1; then
     bindir=$(mkweirtmp)
     cat > "$bindir/repl-in.txt" <<'RINEOF'
 let b = sh -c "printf \"x\\0y\"" | complete
@@ -3644,7 +3647,7 @@ RUNEOF
     rm -rf "$bindir"
     echo "e2e ok: binary echo refuses containers and -e at a tty; redirected stays raw"
 else
-    echo "e2e SKIP: binary-echo pty cells — no 'script' on this runner"
+    echo "e2e SKIP: binary-echo pty cells — no util-linux 'script -e -c' on this runner (BSD script differs)"
 fi
 
 # scalar mid-word splice mirrors the splat's fatal [D:argv-splat]: the
