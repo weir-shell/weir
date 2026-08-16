@@ -155,3 +155,12 @@ skill lines and targeted hints).
   GUIDE). All bicep receipts now dispositioned: 1 shipped, 2 GUIDE
   idiom, 3 shipped (Exit.code), 4 parked-with-idiom, 5-7 shipped in
   the consolidation session.
+- 2026-08-16 | canary-corpus.weir | the upgrade review's corpus reported
+  ZERO silent changes on its first run, and that was an artifact: the ls
+  canary used `f.isDirectory`, a field added mid-window, so it errored on
+  the OLD binary and bucketed `additive` — and `additive` can never
+  report `silent`. Rewritten in the old subset it found the change
+  immediately (count 2->3, order unsorted->ordinal). The rule is now in
+  the tool header: a canary must be written in the language the OLD
+  build understands, and an `additive` bucket needs checking for whether
+  it is the finding or the instrument giving up.

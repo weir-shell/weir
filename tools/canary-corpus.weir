@@ -1,0 +1,193 @@
+#!/usr/bin/env weir
+// The canary corpus for dev/plans/PLAN-upgrade-review.md — the durable
+// artifact. Every canary exercises a DOCUMENTED surface and asserts what it
+// PRINTS, which is the property `ci/skill-doc.sh` does not check (that harness
+// runs every fenced block and compares nothing).
+//
+//     weir tools/canary-corpus.weir --bin ./new/weir --against ./old/weir
+//
+// It does not merely diff. Each canary runs under BOTH binaries and is
+// classified into the review's own taxonomy:
+//
+//   same      identical output and exit status — no upgrade signal
+//   additive  errors on OLD, works on NEW — new surface, no script affected
+//   loud      works on OLD, errors on NEW — the user is TOLD at check time
+//   silent    works on BOTH, output DIFFERS — checks clean, behaves differently
+//
+// `silent` is the class the review exists to find, so the run exits nonzero
+// when any canary lands there. A silent canary is not necessarily a defect —
+// most are correct fixes — it is a change that owes the release notes a line.
+//
+// PROVENANCE, per the plan's instrument-honesty rule: these canaries were
+// written FROM THE DOCS (SKILL.md's surface inventory and GUIDE.md), not from
+// the implementation, so a canary CAN catch the docs and the binary
+// disagreeing. Where a canary encodes an expectation the docs state outright,
+// the doc's words are quoted in a comment beside it.
+//
+// Determinism: no canary prints a time, a pid, a temp path, or a file size
+// that the harness did not create. A canary that cannot be made deterministic
+// does not belong here.
+//
+// THE OLD-SUBSET RULE, learned the hard way: a canary must be written in the
+// language the OLD build understands. A canary using surface newer than the
+// window errors on OLD and buckets `additive`, so it can NEVER report
+// `silent` — it silently stops measuring. The first draft of the ls canary
+// read `f.isDirectory` (added mid-window) and therefore missed BOTH silent
+// changes on the very surface it was written for. When a canary turns
+// `additive`, check whether that is the finding or the instrument giving up.
+//
+// Shape note: command-running helpers are TOP-LEVEL (PLAN-adversarial-review F3).
+
+type Cli = {
+    /// the newer binary (the one under test)
+    [<Default "weir">]
+    bin: string
+    /// the older binary to compare against
+    against: string
+}
+
+let cli = Args.load Cli
+
+// ---- the corpus: (name, source lines) --------------------------------------
+// probes print through `show` so the corpus never nests quotes three deep
+
+let canaries =
+    [ // record field ORDER at every renderer — SKILL: "record fields render
+      // alphabetically"; the read-modify-write byte-diff class
+      ("show-record-order",
+      [ @"type R = { zeta: int; alpha: string }"
+        @"print (show { zeta = 1; alpha = ""x"" })" ])
+      ("json-record-order",
+      [ @"type R = { zeta: int; alpha: string }"
+        @"[{ zeta = 1; alpha = ""x"" }] |> to json |> Seq.iter print" ])
+      ("yaml-record-order",
+      [ @"type R = { zeta: int; alpha: string }"
+        @"{ zeta = 1; alpha = ""x"" } |> to yaml |> Seq.iter print" ])
+
+      // typed scalars — SKILL: show = binary units, one truncated decimal;
+      // `show 90500ms` = "1m30.5s"; `show 1.0` = "1.0"
+      ("size-render", [ @"print (show 1536B)"; @"print (show 1KiB)"; @"print (show 3MiB)" ])
+      ("duration-render", [ @"print (show 90500ms)"; @"print (show 30s)"; @"print (show 1h)" ])
+      ("float-render", [ @"print (show 1.0)"; @"print (show 0.5)"; @"print (show 100.0)" ])
+      ("int-div", [ @"print (show (3 / 2))"; @"print (show (7 / 2))" ])
+
+      // the seq surface — ordering is the silent-change vector
+      ("seq-sort", [ @"[3; 1; 2] |> Seq.sort |> Seq.iter (fun n -> print (show n))" ])
+      ("seq-distinct-order", [ @"[3; 1; 3; 2] |> Seq.distinct |> Seq.iter (fun n -> print (show n))" ])
+      ("seq-sortby-desc",
+      [ @"[1; 3; 2] |> Seq.sortByDescending (fun n -> n) |> Seq.iter (fun n -> print (show n))" ])
+      ("seq-groupby-count",
+      [ @"print (show ([1; 2; 3; 4] |> Seq.groupBy (fun n -> n / 2) |> Seq.length))" ])
+
+      // string/encoding law — SKILL: sha256 lowercase hex, base64 one line
+      ("str-sha256", [ @"print (Str.sha256 ""abc"")" ])
+      ("str-base64", [ @"print (Str.toBase64 ""hello world"")" ])
+      ("str-split-join", [ @"print (""a,b,c"" |> Str.split "","" |> Str.join ""|"")" ])
+
+      // rendering of composites — the Secret marker is a stated guarantee
+      ("secret-mask", [ @"print (show (Secret.of ""hunter2""))" ])
+      ("option-render", [ @"print (show (Some 1))"; @"print (show 1)" ])
+      ("tuple-render", [ @"print (show (1, ""a""))" ])
+
+      // exit codes are data — SKILL: complete gives { exitCode; stdout; stderr }
+      ("complete-record",
+      [ @"let r = sh -c ""echo out; exit 3"" | complete"
+        @"print (show r.exitCode)"
+        @"print (r.stdout |> Str.join ""|"")" ])
+      ("succeeds-is-zero-exactly",
+      [ @"let a = sh -c ""exit 0"" | succeeds"
+        @"let b = sh -c ""exit 1"" | succeeds"
+        @"print (show a)"
+        @"print (show b)" ])
+
+      // path law — SKILL: extension keeps the dot, "" when none
+      ("path-fns",
+      [ @"print (Path.extension ""a.txt"")"
+        @"print (Path.stem ""a.txt"")"
+        @"print (Path.fileName ""/x/a.txt"")"
+        @"print (Path.combine ""/safe"" ""/etc/x"")" ])
+
+      // the Regex pattern — groups bind as strings
+      ("regex-extract",
+      [ @"let v = match ""v12 ready"" with | Regex @""v(\d+)"" n -> n | _ -> ""none"""
+        @"print v" ])
+
+      // json roundtrip — the adapter's shape law
+      ("json-roundtrip",
+      [ @"type R = { a: int; b: string }"
+        @"let r = [""{\""a\"": 1, \""b\"": \""x\""}""] |> from json R"
+        @"print (show r.a)"
+        @"print r.b" ])
+
+      // ls: BOTH kinds, sorted by name, ordinal — the surface where two silent
+      // changes landed (directories omitted; ordering unstated then stated)
+      ("ls-count-and-order",
+      [ @"within tmp d"
+        @"    within cd d"
+        @"        [""x""] |> File.write ""B.txt"""
+        @"        [""x""] |> File.write ""a.txt"""
+        @"        Dir.create ""sub"""
+        @"        print (show (ls |> Seq.length))"
+        @"        ls |> Seq.iter (fun f -> print f.name)" ])
+
+      // interpolation renders typed values directly
+      ("interp-types", [ @"print $""{1} {true} {1.5} {30s} {1KiB}""" ]) ]
+
+// ---- runners (top-level: see the shape note) --------------------------------
+
+let runUnder binPath path =
+    let r = sh -c $"'{binPath}' '{path}' 2>&1" | complete
+    r
+
+let classify d entry =
+    let name = fst entry
+    let path = $"{d}/{name}.weir"
+    File.write path (snd entry)
+
+    let newRun = runUnder cli.bin path
+    let oldRun = runUnder cli.against path
+    let newOut = newRun.stdout |> Str.join " | "
+    let oldOut = oldRun.stdout |> Str.join " | "
+    let newOk = newRun.exitCode == 0
+    let oldOk = oldRun.exitCode == 0
+
+    let bucket =
+        if newOk && not oldOk then "additive"
+        elif oldOk && not newOk then "loud"
+        elif newOk && oldOk && newOut <> oldOut then "silent"
+        elif not newOk && not oldOk then "both-error"
+        else "same"
+
+    if bucket == "silent" then
+        print $"  {name}: SILENT"
+        print $"      old: {oldOut}"
+        print $"      new: {newOut}"
+    elif bucket == "loud" then
+        print $"  {name}: loud (now errors — the user is told)"
+    elif bucket == "additive" then
+        print $"  {name}: additive (new surface)"
+    elif bucket == "both-error" then
+        print $"  {name}: both-error (canary does not run on either build)"
+    else
+        print $"  {name}: same"
+
+    bucket
+
+within tmp d
+    print $"new: {cli.bin}"
+    print $"old: {cli.against}"
+    print ""
+
+    let buckets = canaries |> Seq.map (fun c -> classify d c) |> Seq.force
+    let count b = buckets |> Seq.where (fun x -> x == b) |> Seq.length
+
+    print ""
+
+    print $"same {count "same"} / additive {count "additive"} / loud {count "loud"} / silent {count "silent"} / both-error {count "both-error"}   (n={buckets |> Seq.length})"
+
+    let silent = count "silent"
+
+    if silent > 0 then
+        fail $"{silent} silent change(s): a script checks clean on both builds and behaves differently — each owes the release notes a line"
+
+    print "no silent changes across this window"
