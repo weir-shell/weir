@@ -39,17 +39,33 @@ let count = $"{cli.count}"
 
 let strict = Env.get "WEIR_FUZZ_STRICT_SPANS" |> Option.defaultValue "1"
 
-print $"deep fuzz: seed={seed} count={count} (WEIR_FUZZ_STRICT_SPANS={strict})"
+print $"deep fuzz requested: seed={seed} count={count} (WEIR_FUZZ_STRICT_SPANS={strict})"
 
-let fenv = Env.ofPairs [("WEIR_FUZZ_SEED", seed); ("WEIR_FUZZ_COUNT", count)]
+within tmp d
+    let report = $"{d}/observed.txt"
 
-// orFail streams the test output live AND carries the reproduce
-// line on failure [D:exit-reifiers]
-within env fenv
-    dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj | orFail $"deep fuzz FAILED — reproduce with: tools/fuzz.weir --seed {seed} --count {count}"
+    let fenv =
+        Env.ofPairs
+            [ ("WEIR_FUZZ_SEED", seed)
+              ("WEIR_FUZZ_COUNT", count)
+              ("WEIR_FUZZ_REPORT", report) ]
 
-// on failure orFail raised above and this never runs — the lock goes
-// stale (this process exits) and publish clears it by liveness
-ci/deep-lock.sh release
+    // orFail streams the test output live AND carries the reproduce
+    // line on failure [D:exit-reifiers]
+    within env fenv
+        dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj | orFail $"deep fuzz FAILED — reproduce with: tools/fuzz.weir --seed {seed} --count {count}"
 
-print $"deep fuzz clean: seed={seed} count={count}"
+    // the instrument reports what it MEASURED [D:observed-report]: the
+    // harness writes back the config it actually read; missing or
+    // mismatched means the run did NOT execute the requested fuzz —
+    // fail LOUD (the silent-defaults window is the receipt)
+    let observed = File.read report |> Seq.head
+
+    if observed <> $"seed={seed} count={count}" then
+        fail $"deep fuzz config MISMATCH — requested seed={seed} count={count}, harness observed: {observed}"
+
+    // on failure orFail/fail raised above and this never runs — the lock
+    // goes stale (this process exits) and publish clears it by liveness
+    ci/deep-lock.sh release
+
+    print $"deep fuzz clean: {observed} (observed)"

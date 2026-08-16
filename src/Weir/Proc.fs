@@ -23,6 +23,13 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
     for a in s.Args do
         psi.ArgumentList.Add a
 
+    // ambient `within env` layers apply OUTER-FIRST under the explicit
+    // spec env, so inner and explicit keys win [D:within-scopes] — at
+    // the starter, so EVERY spawn (reifiers, cmd/into, feed) obeys the
+    // one law, not just the Eval command paths
+    for k, v in Session.envOverlay () |> List.rev |> List.collect id do
+        psi.Environment[k] <- v
+
     for k, v in s.Env do
         psi.Environment[k] <- v
 
@@ -373,6 +380,10 @@ let startSpilled
 
     for a in args do
         psi.ArgumentList.Add a
+
+    // same ambient-under-explicit law as the one starter [D:within-scopes]
+    for k, v in Session.envOverlay () |> List.rev |> List.collect id do
+        psi.Environment[k] <- v
 
     for k, v in overlay do
         psi.Environment[k] <- v

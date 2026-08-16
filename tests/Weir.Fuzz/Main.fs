@@ -41,6 +41,16 @@ let private count = envInt "WEIR_FUZZ_COUNT" 200
 // off-switch only
 let private strictSpans = envInt "WEIR_FUZZ_STRICT_SPANS" 1 = 1
 
+// the observed-config report [D:observed-report]: an instrument
+// reports what it measured, never what it was asked for — the driver
+// (tools/fuzz.weir) reads this back and fails LOUD on any mismatch
+// with its requested values (the deep runs that silently ran the
+// defaults are the receipt)
+match Environment.GetEnvironmentVariable "WEIR_FUZZ_REPORT" with
+| null
+| "" -> ()
+| path -> System.IO.File.WriteAllText(path, $"seed={seed} count={count}")
+
 type Arbs =
     static member Program() : Arbitrary<Program> =
         Arb.fromGenShrink (genProgram, shrinkProgram)
