@@ -1235,7 +1235,10 @@ gating, a platform behavior worth knowing when a server is
 mysteriously up-but-not-listening.)
 
 `watch=` is the quality move — a child that crashes at startup fails
-the poll IMMEDIATELY with its own last output in the error, and a
+the poll at the NEXT INTERVAL TICK, carrying its own last output in
+the error (the watch is sampled with the poll, not awaited — prompt
+detection would be more machinery for a difference that only matters
+at long intervals), and a
 plain timeout reports whether the watched process was still running.
 Both the child's streams spill to files (bounded by disk, not
 memory) — never the parent's terminal or its stdout data channel, so

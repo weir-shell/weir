@@ -391,7 +391,7 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   reaped; there is no `&` — an unscoped child is unrepresentable.
   The readiness
   wait is `poll timeout=10s watch=srv` + `Net.portOpen <port>` as the
-  body — `watch=` fails fast if the child dies (its last output rides
+  body — `watch=` fails at the next interval tick if the child dies (its last output rides
   the error) and stamps the child's state on a timeout. The handle is
   data: `Proc.pid`/`running`/`tail`; `Proc.wait` lets it finish
   naturally (exit code as data); `Proc.stop` tears down early. BOTH
