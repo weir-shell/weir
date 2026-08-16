@@ -218,12 +218,43 @@ print $"""tok {s}"""
   hashing/encoding: `Str.sha256` (lowercase hex of UTF-8 bytes),
   `Str.toBase64` (one unwrapped line), `Str.fromBase64` /
   `Str.tryFromBase64` (raise/None on malformed AND on non-text bytes —
-  NUL included: a NUL-bearing decode is binary, and binary has no
-  string route).
+  NUL included: a NUL-bearing decode is binary, and binary's home is
+  `Bytes.fromBase64`).
 
 ```weir-error
 let v = Str.fromBase64 "YQBi"
 print v
+```
+
+- `Bytes` — the non-text value [D:bytes], an in-memory byte array,
+  OPT-IN at both ends: nothing becomes byte-typed by default (commands
+  still produce `seq<string>`, `File.read` still decodes). Sources:
+  `File.readBytes` (no decode, no line split — the byte-faithful
+  read), `Bytes.fromBase64`/`tryFromBase64` (malformed raises/None; NO
+  text gate — that is the point), `Str.toUtf8`. Sinks:
+  `File.writeBytes`, `Bytes.toBase64`, `Str.fromUtf8`/`tryFromUtf8`
+  (the encoding law's gate: non-UTF-8 or NUL-bearing bytes raise/None).
+  Operations: `Bytes.sha256`, `Bytes.length : Size`, and
+  `File.sha256 path` (streams internally — hash a file without loading
+  it). The capture law scopes the type: bounded and in-memory (~2GB
+  cap); a gigabyte artifact is not a value. Laws: `==` is byte
+  equality; no ordering; `print`, `to json`/`to yaml`, argv splices
+  and `Args.load`/`Env.load` all REFUSE, each naming `Bytes.toBase64`
+  or `File.writeBytes` as the exit; a hole or `show` renders a SUMMARY
+  (`<1.4 MiB>`), never content — raw bytes wreck terminals.
+
+```weir
+let b = Str.toUtf8 "hello"
+print (Bytes.sha256 b)
+print (Bytes.toBase64 b)
+print $"{b}"
+let png = Bytes.fromBase64 "iVBORw0KGgo="
+print (show (Bytes.length png))
+print (show (Str.tryFromUtf8 png))
+```
+
+```weir-error
+print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
 ```
   patterns live on the expression side: `Str.isMatch pat s` (bool),
   `Str.rmatch pat s` (Option<seq<string>>) — any string, and raw
@@ -1115,7 +1146,7 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `move` `read` `readSecret` `size` `write`
+- `File`: `append` `copy` `delete` `exists` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeBytes`
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
@@ -1129,5 +1160,6 @@ not the teaching.
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exists` `find` `first` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
+- `Bytes`: `fromBase64` `length` `sha256` `toBase64` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `sha256` `split` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryIndexOf` `tryToInt`
+- `Str`: `contains` `endsWith` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `sha256` `split` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryToInt` `fromUtf8`

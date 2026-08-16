@@ -224,6 +224,7 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                                 | _ -> None
                             | TDur -> Some("Duration" :: typedBindings TDur)
                             | TSize -> Some("Size" :: typedBindings TSize)
+                            | TBytes -> Some("Bytes" :: typedBindings TBytes)
                             | TSecret -> Some("Secret" :: typedBindings TSecret)
                             | _ -> None)
 

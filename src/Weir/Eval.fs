@@ -31,6 +31,10 @@ type Value =
     | VDur of ms: int64
     | VInstant of ms: int64
     | VSize of bytes: int64
+    // the non-text value [D:bytes]: renders as a SUMMARY everywhere a
+    // renderer can reach it (raw bytes wreck terminals — the gzip
+    // receipt); Bytes.toBase64 is the deliberate text exit
+    | VBytes of byte[]
     | VStr of string
     // a Secret wraps a plain string [D:secret]; the renderers show *** —
     // Secret.reveal is the only unwrap
@@ -66,6 +70,8 @@ type Value =
             | VDur a, VDur b -> a = b
             | VInstant a, VInstant b -> a = b
             | VSize a, VSize b -> a = b
+            // F# array equality is structural — byte equality, the Eq law
+            | VBytes a, VBytes b -> a = b
             | VStr a, VStr b -> a = b
             | VSecret a, VSecret b -> a = b
             | VBool a, VBool b -> a = b
@@ -98,6 +104,7 @@ type Value =
         | VDur n -> hash ("dur", n)
         | VInstant n -> hash ("instant", n)
         | VSize b -> hash ("size", b)
+        | VBytes b -> hash ("bytes", b.Length)
         | VStr s -> hash s
         | VSecret s -> hash ("secret", s)
         | VBool b -> hash b
@@ -162,6 +169,9 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VDur n -> formatDuration n
         | VInstant n -> formatInstant n
         | VSize b -> formatSize b
+        // a SUMMARY, never content [D:bytes]: raw bytes on a terminal
+        // is the gzip failure; Bytes.toBase64 is the deliberate exit
+        | VBytes b -> $"<{formatSize (int64 b.Length)}>"
         // the load-bearing render [D:secret]: *** ALWAYS, and because this
         // is the one recursive renderer, a Secret inside a shown record /
         // union / tuple / seq renders *** too (sub calls back here)
@@ -393,6 +403,7 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VInt _
     | VFloat _
     | VSize _
+    | VBytes _
     | VDur _ -> Some(formatWith echoLimits 0 v, true)
     // fixed-width ISO, text-aligned — a timestamp column reads as a
     // label, not a magnitude [D:instant]
