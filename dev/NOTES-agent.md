@@ -184,3 +184,17 @@ skill lines and targeted hints).
   correction direction was the same all three times: every fix to the
   instrument made the score WORSE, which is the expected sign when an
   instrument starts out lenient.
+- 2026-08-16 | ci/concurrency-flake.sh | FALLBACK (bash, not weir): the
+  orphan ledger must run AFTER weir exits, and a process that outlives
+  the script is by definition invisible to the script — weir cannot
+  referee its own orphans. Same forcing shape as the yaml interop
+  oracle. The forcing gap is structural, not a missing member.
+- 2026-08-16 | ci/concurrency-flake.sh | friction: three self-match
+  failures in one session, all the genus PROCESS.md documents.
+  `pgrep -fc` counted its own shell (baseline 1); `ps -eo args= -C sleep`
+  silently ignored -C and matched the harness argv for two distinct
+  markers; `pkill -f` KILLED THE HARNESS SHELL, which read as two silent
+  no-output runs plus a phantom orphan count. Filtering on comm via awk
+  fixes all three structurally. The rule exists and is written down —
+  what was missing was a control that fires, since all three failed
+  toward a pass.
