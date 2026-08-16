@@ -1,5 +1,35 @@
 # Spike Notes
 
+## parallel ladder: bounded at spawn, receipted before fixed (2026-08-16)
+
+The plan's own discipline did the work. The prerequisite gap was real —
+the review had measured that `pmapWith 1` serialises but never that 64
+is the base, and the new base probe was the first thing to run (64 arms
+one round at 416ms, 65 arms two rounds at 813ms — the cap is real and
+exactly 64). The receipt then beat the reserve-math: 512 concurrent
+LongRunning arms (the 64x8 shape) cost 444ms wall and 26.4MB peak RSS,
+not 512MB — .NET commits thread stacks lazily, so the ladder's
+constants stood as proposed without a fight.
+
+Two details worth their sentences. The depth counter needed exactly
+zero new plumbing in the workers: set the AsyncLocal before StartNew,
+restore after the join, and ExecutionContext capture does the rest —
+enterWorker/exitWorker never touch it, which also means pfirst's losers
+that outlive the winner keep the deeper context they should have. And
+the best verification came free from an existing instrument: the env-
+overlay finding's exact-match property (kept items == worker count)
+moved 64 -> 8 the moment the ladder landed, corroborating the inner
+ceiling from a probe written before the feature existed.
+
+pfirst kept pmap's numbers after the consideration the plan asked for:
+a race does want width more than a map, but a NESTED race wide enough
+to feel 8 has no receipt, and pfirstWith is the author's escape if one
+appears — recorded in the row rather than uniformed for tidiness.
+Nothing nested through a path enterWorker does not see; the one known
+AsyncLocal asymmetry remains F1's (env cleared, never restored), which
+is the rider's own item and out of this plan's scope.
+
+
 ## bytes: the capture law grows a second customer (2026-08-16)
 
 Phase 0's trace turned up the sharpest fact of the session: the capture

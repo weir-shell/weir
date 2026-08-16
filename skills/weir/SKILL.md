@@ -370,8 +370,13 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   model. A task that truly needs async belongs in full F#, not weir.
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
   ordered results) / `Seq.piter` for effects — sized for I/O-BOUND
-  arms (spawns/waits/sleeps): up to 64 concurrent arms regardless of
-  cores; `Seq.pmapWith n` / `piterWith n` set the ceiling explicitly.
+  arms (spawns/waits/sleeps): the DEFAULT ceiling is PER FAN-OUT and
+  shrinks with nesting — 64 at top level, 8 inside a worker, serial
+  past two levels — so nested fan-outs cannot multiply into a width
+  nobody chose (64 outer x 8 inner caps the product at 512).
+  `Seq.pmapWith n` / `piterWith n` / `pfirstWith n` set the ceiling
+  explicitly and are NEVER reduced: a written number is the author's
+  decision, nesting included.
   Every arm runs even if one fails; the first error BY INPUT ORDER
   rethrows after the join. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force

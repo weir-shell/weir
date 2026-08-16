@@ -933,7 +933,68 @@ let private rangeImpl: Value =
 // the fan-out ceiling [D:tasks-underneath]: 64, stated — well above any
 // core count because arms are I/O-bound by domain; the cap exists so an
 // unbounded fan-out over 10k items is not a well-mannered fork bomb
+// WEIR_LOG (trace|debug|info|warn|off), read ONCE at startup; it
+// changes what is PRINTED, never what the script computes. There is
+// deliberately NO Log.error: an error silenced by WEIR_LOG=off is the
+// one message a user needs — unconditional messages are `printerr`,
+// stopping is `fail`; `warn` is the TOP of the filterable range.
+
+let logLevelNames = [ "trace"; "debug"; "info"; "warn"; "off" ]
+
+let parseLogLevel (s: string) : Result<int, string> =
+    match logLevelNames |> List.tryFindIndex ((=) s) with
+    | Some i -> Ok i
+    | None -> Error $"WEIR_LOG={s}: unknown log level (one of trace|debug|info|warn|off)"
+
+// default info (ruled): Log.info is useful without ceremony,
+// debug/trace are opt-in, WEIR_LOG=off is genuine silence
+let mutable private logThreshold = 2
+
+/// read WEIR_LOG once; Program calls this before dispatch so an
+/// invalid value is a loud startup error, never a silent fallback
+let initLogLevel () : Result<unit, string> =
+    match System.Environment.GetEnvironmentVariable "WEIR_LOG" with
+    | null
+    | "" -> Ok()
+    | v -> parseLogLevel v |> Result.map (fun i -> logThreshold <- i)
+
+let private logTint (code: string) (label: string) =
+    if Types.Color.onStderr.Value then
+        $"\x1b[{code}m{label}\x1b[0m"
+    else
+        label
+
+let private logAt (level: int) (code: string) (label: string) (msg: string) =
+    if level >= logThreshold then
+        System.Console.Error.WriteLine(logTint code label + " " + msg)
+
+
 let private parallelCeiling = 64
+
+// the DEFAULT ceiling is a LADDER over nesting depth [D:parallel-ladder]:
+// 64 / 8 / 1 — a fan-out inside a worker gets a smaller ceiling, and
+// past two levels runs serially, so the product is <= 512 at any depth
+// (two reasonable call sites in different files can no longer compose
+// into a width nobody chose). Measured before the constants were
+// fixed: the 64x8 shape runs 512 arms in one round at ~26MB peak RSS
+// (.NET commits thread stacks lazily — the 512MB reserve-math worst
+// case does not materialise). An EXPLICIT `With n` is the author's
+// number and is never reduced — nesting pmapWith 64 in pmapWith 64
+// stays possible and stays the author's decision.
+let private parallelLadder = [| parallelCeiling; 8; 1 |]
+
+let private defaultParallelCeiling (label: string) : int =
+    let d = Session.parallelDepthNow ()
+    let c = parallelLadder[min d (parallelLadder.Length - 1)]
+
+    if d > 0 then
+        // diagnostics, not a warning: reducing a ceiling changes
+        // timing, never meaning (order and first-error-by-input-order
+        // are structural) — this line exists for whoever asks why a
+        // nested fan-out is slower than they expected
+        logAt 1 "36" "debug" $"{label}: nested fan-out (depth {d}) — default ceiling reduced to {c}"
+
+    c
 
 let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value array =
     if degree < 1 then
@@ -971,10 +1032,18 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
             i <- System.Threading.Interlocked.Increment &next
 
-    let tasks =
-        Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+    // arms are one level deeper [D:parallel-ladder]: set before
+    // StartNew so the workers capture depth+1, restored after the join
+    let depth = Session.parallelDepthNow ()
+    Session.setParallelDepth (depth + 1)
 
-    Task.WaitAll(tasks: Task[])
+    try
+        let tasks =
+            Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+
+        Task.WaitAll(tasks: Task[])
+    finally
+        Session.setParallelDepth depth
 
     if not errors.IsEmpty then
         raise errors[Seq.min errors.Keys]
@@ -1036,8 +1105,17 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
             i <- System.Threading.Interlocked.Increment &next
 
-    for _ in 1..workers do
-        Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning) |> ignore
+    // arms are one level deeper [D:parallel-ladder] — losers that
+    // outlive the winner keep the deeper context, which is correct:
+    // they are still arms
+    let depth = Session.parallelDepthNow ()
+    Session.setParallelDepth (depth + 1)
+
+    try
+        for _ in 1..workers do
+            Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning) |> ignore
+    finally
+        Session.setParallelDepth depth
 
     try
         outcome.Task.Result
@@ -1048,7 +1126,7 @@ let private pfirstImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> runRaceWith parallelCeiling f items
+            | VSeq items -> runRaceWith (defaultParallelCeiling "pfirst") f items
             | v -> unreachable $"the checker rejects 'pfirst' on {formatValue v}"))
 
 let private pfirstWithImpl: Value =
@@ -1063,7 +1141,7 @@ let private pmapImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(runParallelWith parallelCeiling f items :> seq<Value>)
+            | VSeq items -> VSeq(runParallelWith (defaultParallelCeiling "pmap") f items :> seq<Value>)
             | v -> unreachable $"the checker rejects 'pmap' on {formatValue v}"))
 
 let private pmapWithImpl: Value =
@@ -1089,7 +1167,7 @@ let private piterImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                runParallelWith parallelCeiling f items |> ignore
+                runParallelWith (defaultParallelCeiling "piter") f items |> ignore
                 VUnit
             | v -> unreachable $"the checker rejects 'piter' on {formatValue v}"))
 
@@ -2065,41 +2143,6 @@ let private exitImpl: Value =
 // Levelled diagnostics that respect the pipeline: EVERY member writes
 // to STDERR, unconditionally — stdout is DATA (what pipes carry, what
 // $() captures), and that is a law, not a default. Level control is
-// WEIR_LOG (trace|debug|info|warn|off), read ONCE at startup; it
-// changes what is PRINTED, never what the script computes. There is
-// deliberately NO Log.error: an error silenced by WEIR_LOG=off is the
-// one message a user needs — unconditional messages are `printerr`,
-// stopping is `fail`; `warn` is the TOP of the filterable range.
-
-let logLevelNames = [ "trace"; "debug"; "info"; "warn"; "off" ]
-
-let parseLogLevel (s: string) : Result<int, string> =
-    match logLevelNames |> List.tryFindIndex ((=) s) with
-    | Some i -> Ok i
-    | None -> Error $"WEIR_LOG={s}: unknown log level (one of trace|debug|info|warn|off)"
-
-// default info (ruled): Log.info is useful without ceremony,
-// debug/trace are opt-in, WEIR_LOG=off is genuine silence
-let mutable private logThreshold = 2
-
-/// read WEIR_LOG once; Program calls this before dispatch so an
-/// invalid value is a loud startup error, never a silent fallback
-let initLogLevel () : Result<unit, string> =
-    match System.Environment.GetEnvironmentVariable "WEIR_LOG" with
-    | null
-    | "" -> Ok()
-    | v -> parseLogLevel v |> Result.map (fun i -> logThreshold <- i)
-
-let private logTint (code: string) (label: string) =
-    if Types.Color.onStderr.Value then
-        $"\x1b[{code}m{label}\x1b[0m"
-    else
-        label
-
-let private logAt (level: int) (code: string) (label: string) (msg: string) =
-    if level >= logThreshold then
-        System.Console.Error.WriteLine(logTint code label + " " + msg)
-
 let private logMember (level: int) (code: string) (label: string) : Value =
     VBuiltin(fun v ->
         match v with
