@@ -7,8 +7,9 @@ review, D9 measured while answering rider 2. Gate:
     weir tools/dx-repro.weir --bin ./path/to/weir
 
 AMENDED BY TWO RIDERS. Rider 1 (D1): `#loose` is DISPOSED AS A REMOVAL, not a
-fix, and `weir fmt --qualify` goes with it. Rider 2 (D9): `-e` takes a PROGRAM
-and is STRICT — which closes rider 1's open `Program.fs:10` question. Neither
+fix, and `weir fmt --qualify` goes with it. Rider 2 (D9): `-e` takes MULTIPLE
+STATEMENTS (reading (b) — a lone declaration is still refused) and is STRICT,
+which closes rider 1's open `Program.fs:10` question. Neither
 rider's work is done here; both are recorded for the executing session. Read
 D1's disposition before touching the gate — **the committed `D1-loose-bare-names` probe is mis-pointed under that
 disposition** (it asserts `mustCheckClean`, which can only go green if the
@@ -126,7 +127,7 @@ defensible; the current state, where three components support a mode the
 checker rejects, is not. A fixture that checks and runs a loose script
 without converting it first is the acceptance.
 
-## D9 — `-e` parses as a program, and is strict (rider 2)
+## D9 — `-e` takes multiple statements, and is strict (rider 2)
 
 Amends rider 1, which left `-e` open after `Program.fs:10` turned out to take
 the bare env.
@@ -134,7 +135,8 @@ the bare env.
 TWO DECISIONS, AND THE ORDER MATTERS.
 
 1. **`-e` takes a program**, not a single statement. Newlines are statement
-   boundaries exactly as in a file.
+   boundaries exactly as in a file. (Scoped by reading (b) below — a LONE
+   declaration is still refused.)
 2. **`-e` is therefore strict** — no bare module members. `Builtins.typeEnv`
    stays for the REPL; `-e` moves to `typeEnvStrict` alongside files.
 
@@ -143,33 +145,73 @@ it is the REPL's non-interactive twin and anything complex should be a script.
 That reasoning depended on `-e` input being trivially small. It isn't, and
 never was.
 
-WHY (1) — measured, and reconfirmed for this amendment:
+### Why (1) — amended after reconnaissance
+
+The first draft of this rider guessed the multi-line failure was a routing
+artifact and argued from ecosystem convention (`python -c`, `perl -e`, `node
+-e` all take whole programs). **Both were wrong. Struck, and not to be
+repeated in the ledger row** — see the divergence note under the scope call.
+
+This is a REVERSAL OF A DELIBERATE DESIGN. `Program.fs:22` calls
+`Script.singleLine`, wrapping the whole input as one logical line, where files
+go through `analyzeLines` (column-0 boundaries, block-let joining). And
+`Program.fs:60-70` rejects by statement kind with four dedicated teachings —
+`KType`, `KLet`, `KLetPat`, `KModule` — plus help text at `Program.fs:262` and
+`GUIDE.md:74`. Nobody writes four kind-specific messages by accident.
+
+WHAT IS STILL WRONG IS NARROWER, AND REAL. The contract is defended where it
+is stated and silently violated where it is not:
+
+    weir -e 'let x = 1'
+    -e takes an expression, not a let statement        # good teaching
 
     weir -e 'let x = 1
     print $"{x}"'
-    type error: this expression is not a function taking 2 argument(s);
-    it has type int
+    type error: this expression is not a function taking 2 argument(s)
 
-    (the identical bytes in a file print `1`)
+Two statements arriving as one line are concatenated and mis-parsed. The error
+points at the application; nothing points at the line break. (The identical
+bytes in a file print `1`.) No fixture has ever fed `-e` a newline, which is
+why it survived.
 
-The two lines are read as `let x = 1 print $"{x}"` and the arity error lands
-on the application. Nothing points at the line break, so a reader who does not
-already suspect the cause goes looking at `print`.
+### THE SCOPE CALL — reading (b)
 
-The convention is uniform across the ecosystem and weir is the outlier:
-`sh -c`, `perl -e`, `python -c`, `ruby -e`, `node -e` and PowerShell
-`-Command` all take a whole program with working newlines, and users arrive
-from every one of them. F# offers no counter-precedent — `dotnet fsi` has no
-direct `-e` equivalent. Internally it should already work: the statement rule
-is "a statement ends at the next column-0 line", which a string containing a
-column-0 line satisfies whether the bytes came from a file or from argv.
+"A program, not a single statement" taken literally retires all four
+rejections, making `weir -e 'let x = 1'` legal and silent. Three
+non-equivalent readings; **(b) is the recommendation**:
 
-WHY (2). Once `-e` takes programs, "ephemeral like the REPL" stops being true.
-A multi-line `-e` in a Makefile, a CI step or a systemd unit is source in
-every sense that matters — read repeatedly, by people who did not write it,
-with no completion and no editor. The rule stays sayable in one sentence:
-**bare names live in the REPL session; everything else is strict.** No list,
-no clause about argv strings.
+- (a) full program, four teachings retire
+- **(b) multiple statements parse, a LONE declaration is still refused, all
+  four messages survive** ← recommended
+- (c) newlines only, no other change
+
+Reasoning: those four teachings are good, and (a) trades them for a slogan —
+`weir -e 'let x = 1'` producing nothing and teaching nothing is worse than
+today. (c) is too narrow: once newlines work, a `type` declaration followed by
+a use is a natural thing to write.
+
+So the property is not "`-e` takes a program" but **"`-e` evaluates something
+and shows you the result."** Declarations alone produce no result;
+declarations followed by an expression do. The existing messages stay pointed
+at exactly the case they were written for.
+
+THIS IS A DELIBERATE DIVERGENCE FROM THE ECOSYSTEM AND MUST BE RECORDED AS
+ONE. `python -c 'x = 1'` is legal and silent; so are the others. The first
+draft's conformance argument does not survive reading (b), and repeating it in
+the ledger row would misrepresent the decision as convergence when it is a
+considered departure.
+
+The reading is a bless-note call. Do not let it be settled during
+implementation.
+
+### Why (2)
+
+Once `-e` takes programs, "ephemeral like the REPL" stops being true. A
+multi-line `-e` in a Makefile, a CI step or a systemd unit is source in every
+sense that matters — read repeatedly, by people who did not write it, with no
+completion and no editor. The rule stays sayable in one sentence: **bare names
+live in the REPL session; everything else is strict.** No list, no clause
+about argv strings.
 
 The counterargument, recorded so it is not rediscovered as an inconsistency:
 `weir -e 'ls | where ...'` typed at a shell prompt is genuinely ad-hoc, and
@@ -177,79 +219,59 @@ strictness there is friction with no editor to help. The decision is made
 knowing that. The mitigation is free — the bare-name diagnostic already names
 the qualified spelling.
 
-WHAT THIS CHANGES IN RIDER 1: `Program.fs:10` moves from `Builtins.typeEnv` to
-`typeEnvStrict` and is no longer an open question — it is part of the removal.
-Rider 1's report-back item "does `-e` keep bare names" is answered: no.
-SKILL.md's `-e` mentions (currently only that `Self.*` and `import` are
-absent) gain the strictness fact, and the REPL-only sentence for bare names
-stops needing an `-e` caveat.
+### What this changes in rider 1
+
+`Program.fs:10` moves from `Builtins.typeEnv` to `typeEnvStrict` and is no
+longer an open question — it is part of the removal. Rider 1's report-back
+item "does `-e` keep bare names" is answered: no. SKILL.md's `-e` mentions
+(currently only that `Self.*` and `import` are absent) gain the strictness
+fact, and the REPL-only sentence for bare names stops needing an `-e` caveat.
 
 SCOPE NOTE: do NOT fold this into the `#loose` deletion commit. The mode
 removal and the `-e` parsing fix are separate changes that happen to touch
 adjacent lines. Strictness for `-e` belongs with the mode removal; the
 program-parsing fix is its own commit.
 
-VERIFICATION: `weir -e` with a two-statement program produces the same result
-as the same text in a file — pin both AND pin that they agree, since the
-agreement is the property, not either alone; a `-e` program with an indented
-block (`if` body, `for` body) parses; a `-e` program with a bare module member
-errors naming the qualified spelling; the REPL still accepts bare names (the
-thing most likely to break while narrowing the entry point); and if the fix is
-routing, check what ELSE differs between the two paths.
+### Verification
+
+`weir -e` with a two-statement program produces the same result as the same
+text in a file — pin both AND pin that they agree, since the agreement is the
+property, not either alone; a `-e` program with an indented block (`if` body,
+`for` body) parses; a `-e` program with a bare module member errors naming the
+qualified spelling; a LONE declaration still errors with its existing teaching
+(reading (b)'s acceptance — it is what distinguishes (b) from (a), so it is
+the pin that must exist); the REPL still accepts bare names (the thing most
+likely to break while narrowing the entry point); and if the fix is routing,
+check what ELSE differs between the two paths.
 
 ### Report-back, answered (read-only; nothing changed)
 
-**1. Routing artifact or deliberate design? DELIBERATE — so this is a
-reversal, not a bug fix.** `Program.fs:22` calls `Script.singleLine`, which
-wraps the whole input as ONE logical line (`Head = 1`, a single segment),
-where files go through `analyzeLines` — the assembly layer that implements
-column-0 statement boundaries and block-let joining. And the contract is not
-merely implied: `Program.fs:60-70` rejects by statement KIND with four
-dedicated teachings —
+Items 1's evidence is folded into "Why (1)" above; what remains is where it
+was decided, and the two questions the rider body does not cover.
 
-    KType    -> "-e takes an expression, not a declaration"
-    KLet     -> "-e takes an expression, not a let statement"
-    KLetPat  -> "-e evaluates one expression; use 'let (x, y) = ... in ...'"
-    KModule  -> "-e takes an expression, not a module declaration"
+**Where the single-expression contract was decided: nowhere keyed.** There is
+no `[D:]` row for it — the contract lives only in the help text, `GUIDE.md:74`
+and the four kind messages. Per the append-only ledger rule a reversal "gets a
+new entry naming the old key", and here there is no old key to name. That
+absence belongs in the new row rather than passed over, and it is the reason
+the design read as accidental on first look.
 
-`weir -e 'let x = 1'` errors today with the second of those, and the `let ...
-in ...` workaround the third points at works. So the single-EXPRESSION model
-was built on purpose, taught in four messages, and documented (`Program.fs:262`
-help text and `docs/GUIDE.md:74`, both "one expression").
+**Other `-e` / file-path differences.** Besides `singleLine` vs `analyzeLines`
+and the four kind-rejections: `-e` passes `Script.scriptOnlyImport`, so
+`import` is unavailable; `Self.*` is absent (documented); and `-e` calls
+`Script.stripComment` on the input up front `[D:trailing-comments]`, where
+files strip inside assembly. Whether that last behaves identically on
+multi-line input is untested, and is the likeliest second divergence hiding
+behind the first.
 
-WHERE IT WAS DECIDED: nowhere keyed. There is no `[D:]` row for it — the
-contract lives only in the help text, GUIDE:74, and those four messages. Per
-the append-only ledger rule a reversal "gets a new entry naming the old key",
-and here there is no old key to name; that absence is worth stating in the new
-row rather than passing over.
-
-**SCOPE QUESTION THIS RAISES, needing an answer before implementation.**
-Decision (1) says "a program, not a single statement". Taken literally that
-retires all four rejections above, because a program may contain `let`, `type`
-and `module` declarations at top level — `weir -e 'let x = 1'` becomes legal
-and prints nothing. That is a substantially larger change than "newlines
-work", and the rider's motivating example (`let x = 1` then `print`) needs
-only the `KLet`-in-a-multi-statement case, not `type`/`module`. Three readings
-are available and they are not equivalent: (a) full program, all four
-teachings retire; (b) program of statements but declarations still refused
-alone, so the messages survive for single-declaration input; (c) newlines only.
-The plan does not choose — this belongs in the bless note.
-
-**2. Other `-e` / file-path differences.** Besides `singleLine` vs
-`analyzeLines` and the four kind-rejections: `-e` passes
-`Script.scriptOnlyImport`, so `import` is unavailable; `Self.*` is absent
-(documented); and `-e` calls `Script.stripComment` on the input up front
-`[D:trailing-comments]`, which files do inside assembly instead. Whether that
-last one behaves identically on a multi-line input is untested and is the
-likeliest second divergence hiding behind the first.
-
-**3. Anything depending on `-e` being single-statement?** 117 `-e`
-invocations across `ci/e2e.sh` and `tests/` — all expression-shaped, so all
-survive the widening. No test asserts the "one expression" help text or any of
-the four kind messages (the only textual match is an unrelated test name at
-`tests/Weir.Tests/Tests.fs:6379`). So the test-breakage risk is low and sits
-in the messages, not the invocations — which is also why nothing caught the
-multi-line mis-parse: there is no fixture that feeds `-e` a newline.
+**Anything depending on `-e` being single-statement?** 117 `-e` invocations
+across `ci/e2e.sh` and `tests/` — all expression-shaped, so all survive the
+widening. No test asserts the "one expression" help text or any of the four
+kind messages (the only textual match is an unrelated test name at
+`tests/Weir.Tests/Tests.fs:6379`). Under reading (b) the four messages are
+kept anyway, so the message-side risk goes to zero and the remaining exposure
+is the help text and `GUIDE.md:74`, both of which say "one expression" and
+both of which become wrong.
 
 ## D2 — `&&` and `||` are silently accepted (HIGH)
 
