@@ -269,5 +269,126 @@ ctlgood=$("$BIN" "$work/envctl.weir" 2>/dev/null | grep -cF "[top]")
 printf "  %-30s %s/20  CONTROL: must be 20\n" "top-level: overlay per item" "$ctlgood"
 [ "$ctlgood" -eq 20 ] || { echo "CONTROL FAILED: the top-level overlay path is broken too — probe suspect" >&2; exit 1; }
 
+# ---- ceilings: the base cap and the nesting ladder [D:parallel-ladder] ------
+# Width is asserted through WALL TIME under forced sleeps (the review's
+# 0.4 method): K arms at ceiling C over a T-sleep take ceil(K/C) rounds.
+# Thresholds sit between rounds with wide margins, so load skews toward
+# EXTRA rounds (a fail-toward-red instrument, per the harness rule).
+
+cat > "$work/ceil64.weir" <<'WEOF'
+[1..64] |> Seq.piter (fun _ -> Duration.sleep 400ms)
+WEOF
+cat > "$work/ceil65.weir" <<'WEOF'
+[1..65] |> Seq.piter (fun _ -> Duration.sleep 400ms)
+WEOF
+cat > "$work/nest1212.weir" <<'WEOF'
+// 12x12 through the LADDER: outer 12 (under 64), inner ceiling 8, so
+// each arm's 12 items take TWO rounds — the review measured this exact
+// shape running 144-wide in ONE round before the ladder
+[1..12] |> Seq.piter (fun _ ->
+    [1..12] |> Seq.piter (fun _ -> Duration.sleep 400ms))
+WEOF
+cat > "$work/depth3.weir" <<'WEOF'
+// depth 3 reaches the ladder's 1: the innermost 3 items run SERIALLY
+[1] |> Seq.piter (fun _ ->
+    [1] |> Seq.piter (fun _ ->
+        [1..3] |> Seq.piter (fun _ -> Duration.sleep 300ms)))
+WEOF
+cat > "$work/with32top.weir" <<'WEOF'
+[1..32] |> Seq.piterWith 32 (fun _ -> Duration.sleep 400ms)
+WEOF
+cat > "$work/with32nested.weir" <<'WEOF'
+// an explicit With is NEVER reduced: nested must match the top shape
+[1] |> Seq.piter (fun _ ->
+    [1..32] |> Seq.piterWith 32 (fun _ -> Duration.sleep 400ms))
+WEOF
+cat > "$work/c1nested.weir" <<'WEOF'
+// C1 re-run NESTED: input order under a REDUCED ceiling, forced skew
+[1] |> Seq.piter (fun _ ->
+    let out =
+        [1; 2; 3; 4; 5]
+        |> Seq.pmap (fun n ->
+            Duration.sleep (Duration.ms ((6 - n) * 40))
+            n)
+
+    print (out |> Seq.map show |> Str.join ","))
+WEOF
+cat > "$work/c2nested.weir" <<'WEOF'
+// C2 re-run NESTED: first error by INPUT order under a reduced ceiling
+[1] |> Seq.piter (fun _ ->
+    [1; 2; 3; 4; 5]
+    |> Seq.piter (fun n ->
+        if n == 1 then
+            Duration.sleep 250ms
+            fail "arm-1"
+        elif n == 5 then
+            fail "arm-5"
+        else
+            print ()))
+WEOF
+cat > "$work/c5nested.weir" <<'WEOF'
+// C5 re-run NESTED: a pfirst LOSER tree-kills under a reduced ceiling
+[1] |> Seq.piter (fun _ ->
+    [1; 2]
+    |> Seq.pfirst (fun n ->
+        if n == 1 then
+            !(sh -c "sleep 51337 & sleep 51337")
+            0
+        else
+            Duration.sleep 60ms
+            1)
+    |> show
+    |> print)
+WEOF
+
+wall() { # script -> ms
+    local s e
+    s=$(date +%s%N)
+    "$BIN" "$work/$1" >/dev/null 2>&1
+    e=$(date +%s%N)
+    echo $(((e - s) / 1000000))
+}
+
+echo
+echo "ceilings (wall-time width assertions; leaf sleep 400ms):"
+w64=$(wall ceil64.weir)
+w65=$(wall ceil65.weir)
+printf "  %-30s %sms vs %sms
+" "base: 64 arms vs 65 arms" "$w64" "$w65"
+[ "$w64" -lt 700 ] || { echo "PROBE FAILED: 64 arms took >1 round — base ceiling below 64 (or box overloaded)" >&2; exit 1; }
+[ "$w65" -ge 700 ] || { echo "PROBE FAILED: 65 arms ran 65-wide — the base ceiling of 64 is not real" >&2; exit 1; }
+
+wn=$(wall nest1212.weir)
+printf "  %-30s %sms (two rounds expected; was ONE at 144-wide)
+" "12x12 nested via ladder" "$wn"
+[ "$wn" -ge 700 ] || { echo "PROBE FAILED: 12x12 ran one round — the inner default was not reduced" >&2; exit 1; }
+
+wd=$(wall depth3.weir)
+printf "  %-30s %sms (>=3 serial rounds of 300ms expected)
+" "depth 3 reaches 1" "$wd"
+[ "$wd" -ge 800 ] || { echo "PROBE FAILED: depth-3 arms ran concurrently — the ladder never reached 1" >&2; exit 1; }
+
+wt=$(wall with32top.weir)
+wnw=$(wall with32nested.weir)
+printf "  %-30s %sms top vs %sms nested (must match: With is never reduced)
+" "explicit With-32, nested" "$wt" "$wnw"
+[ "$wnw" -lt $((wt * 2)) ] || { echo "PROBE FAILED: nested pmapWith slower than 2x top — the explicit ceiling was reduced" >&2; exit 1; }
+
+echo
+echo "semantics under the reduced ceiling (C1/C2/C5 re-run nested):"
+rate "C1 nested input order" c1nested.weir 40 "1,2,3,4,5"
+rate "C2 nested first error" c2nested.weir 40 "arm-1"
+
+reap 51337 >/dev/null 2>&1
+nleaked=0
+i=0
+while [ "$i" -lt 10 ]; do
+    "$BIN" "$work/c5nested.weir" >/dev/null 2>&1
+    [ "$(ledger 51337)" -gt 0 ] && { nleaked=$((nleaked + 1)); reap 51337; }
+    i=$((i + 1))
+done
+printf "  %-30s %d/10 runs leaked
+" "C5 nested loser tree-kill" "$nleaked"
+
 echo
 echo "all probes reported with rates; controls held"

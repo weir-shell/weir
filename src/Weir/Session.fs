@@ -63,6 +63,17 @@ let popEnvOverlay () : unit =
         | [] -> ()
 
 // worker lifecycle (Seq.pmap / Seq.piter)
+// nesting-aware parallel ceilings [D:parallel-ladder]: the fan-out
+// DEPTH rides AsyncLocal beside cwd/env/raceGroup — read at spawn time
+// to pick the DEFAULT ceiling, so arms are bounded at creation and
+// nothing ever waits on a slot another arm holds (the global-semaphore
+// deadlock is unrepresentable)
+let private parallelDepth = System.Threading.AsyncLocal<int>()
+
+let parallelDepthNow () : int = parallelDepth.Value
+
+let setParallelDepth (d: int) : unit = parallelDepth.Value <- d
+
 let enterWorker (parentCwd: string) : unit = localCwd.Value <- Some parentCwd
 
 let exitWorker () : unit =
