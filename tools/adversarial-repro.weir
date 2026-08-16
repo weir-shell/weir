@@ -40,7 +40,6 @@ type Cli = {
 }
 
 let cli = Args.load Cli
-let q = "\""
 
 // ---- probes whose verdict weir can reach on its own ------------------------
 
@@ -77,7 +76,7 @@ let probeF4construct =
       @"print (show (Str.length v))" ]
 
 let probeF4argv nulPath =
-    [ $"let v = File.read {q}{nulPath}{q} |> Seq.head"
+    [ $"""let v = File.read "{nulPath}" |> Seq.head"""
       @"python3 -c ""import sys; print(len(sys.argv[1]))"" $v" ]
 
 // F5: the POST-PARSE seam. Parse depth here is ~1 — no parse-depth guard can
@@ -116,7 +115,7 @@ let checker =
 
 let emitProbe b64 =
     [ @"type Doc = { k: string }"
-      $"let v = Str.fromBase64 {q}{b64}{q}"
+      $"""let v = Str.fromBase64 "{b64}" """
       @"{ k = v } |> to yaml |> Seq.iter print" ]
 
 // instrument availability — probed, never assumed. `timeout` is GNU coreutils
