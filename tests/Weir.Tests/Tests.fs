@@ -13081,8 +13081,15 @@ let echoBinaryTests =
         [ test "containers carrying NUL are binary: record, tuple, union, map, nested seq" {
               let vSeq = Weir.Eval.VSeq [ Weir.Eval.VStr nul ]
               Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VRecord("R", [ "out", vSeq ]))) "record"
-              Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VTuple [ Weir.Eval.VInt 1L; Weir.Eval.VStr nul ])) "tuple"
-              Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VUnion("Some", Some(Weir.Eval.VStr nul)))) "union"
+
+              Expect.isTrue
+                  (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VTuple [ Weir.Eval.VInt 1L; Weir.Eval.VStr nul ]))
+                  "tuple"
+
+              Expect.isTrue
+                  (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VUnion("Some", Some(Weir.Eval.VStr nul))))
+                  "union"
+
               Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VMap(Map [ "k", Weir.Eval.VStr nul ]))) "map"
           }
           test "clean containers are not binary; mask/summary renderers are never probed" {

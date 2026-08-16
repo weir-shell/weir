@@ -161,10 +161,7 @@ let private evalOnce (input: string) : int =
                                     // — it was the one echo path without it
                                     let v = Eval.echoPrep v
 
-                                    if
-                                        not Console.IsOutputRedirected
-                                        && Eval.echoBinary Eval.echoPipedCap v
-                                    then
+                                    if not Console.IsOutputRedirected && Eval.echoBinary Eval.echoPipedCap v then
                                         Console.WriteLine
                                             $": {formatTy te.Ty} (binary output — the echo refuses a terminal; redirect to a file, or print deliberately)"
                                     else
