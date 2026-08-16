@@ -153,6 +153,10 @@ let private totality (lines: string list) =
 // input must DIAGNOSE (an error, not silent acceptance) within the
 // hang bound and without crashing the process — a segfault here takes
 // the whole test runner down, so survival IS the no-crash pin.
+// 15s, not 5: the biggest seed is ~0.6s of real work, but these run
+// in PARALLEL with the process-spawning metamorphic properties and a
+// loaded runner multiplies wall-clock several-fold; a real hang is
+// infinite, so the wider bound loses no detection.
 let private depthDiagnoses (label: string) (line: string) =
     let work =
         System.Threading.Tasks.Task.Run(fun () ->
@@ -161,12 +165,35 @@ let private depthDiagnoses (label: string) (line: string) =
 
     let finished =
         try
-            work.Wait 5000
+            work.Wait 15000
         with :? AggregateException as ae ->
             failtestf "%s: pipeline THREW %s: %s" label (ae.InnerException.GetType().Name) ae.InnerException.Message
 
     if not finished then
-        failtestf "%s: exceeded 5s (hang)" label
+        failtestf "%s: exceeded 15s (hang)" label
+
+    match work.Result |> List.filter (fun d -> d.Severity = "error") with
+    | [] -> failtestf "%s: expected an error diagnostic, got none" label
+    | _ -> ()
+
+// the TIME axis of invariant 2 [D:depth-guard]: ANY non-termination is
+// the failure — a hang and a crash are different failures, and exit
+// codes cannot see the first. Same detector as depthDiagnoses, lines
+// instead of a line.
+let private diagnosesWithinBound (label: string) (boundMs: int) (lines: string list) =
+    let work =
+        System.Threading.Tasks.Task.Run(fun () ->
+            let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" lines
+            diags)
+
+    let finished =
+        try
+            work.Wait boundMs
+        with :? AggregateException as ae ->
+            failtestf "%s: pipeline THREW %s: %s" label (ae.InnerException.GetType().Name) ae.InnerException.Message
+
+    if not finished then
+        failtestf "%s: exceeded %dms (hang)" label boundMs
 
     match work.Result |> List.filter (fun d -> d.Severity = "error") with
     | [] -> failtestf "%s: expected an error diagnostic, got none" label
@@ -294,6 +321,141 @@ let tests =
           test "long operator spine diagnoses-or-bound (was SEGV in check)" { depthDiagnoses "opspine" (opSpine 50000) }
           test "nested brackets diagnose-or-bound (was O(2^n))" { depthDiagnoses "brackets" (deepNest "[" "]" 2000) }
           test "nested records diagnose-or-bound" { depthDiagnoses "records" (deepNest "{a=" "}" 2000) }
+
+          // the TYPE and PATTERN axes, plus the axes the coverage gate
+          // surfaced (index/let-in/fun/elif/field/sigil) — every
+          // constructor that nests, per the fuzzer-grammar-membership
+          // rule [D:depth-guard]
+          test "deep seq<> type diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "ty-seq"
+                  ("type T = { x: "
+                   + String.replicate 20000 "seq<"
+                   + "int"
+                   + String.replicate 20000 ">"
+                   + " }")
+          }
+          test "deep Option<> type diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "ty-opt"
+                  ("type T = { x: "
+                   + String.replicate 20000 "Option<"
+                   + "int"
+                   + String.replicate 20000 ">"
+                   + " }")
+          }
+          test "deep Map<string,> type diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "ty-map"
+                  ("type T = { x: "
+                   + String.replicate 20000 "Map<string, "
+                   + "int"
+                   + String.replicate 20000 ">"
+                   + " }")
+          }
+          test "deep anon-shape type diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "ty-anon"
+                  ("type T = { x: "
+                   + String.replicate 20000 "{| a: "
+                   + "int"
+                   + String.replicate 20000 " |}"
+                   + " }")
+          }
+          test "deep paren pattern diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "pat-paren"
+                  ("let v = match 1 with | "
+                   + String.replicate 20000 "("
+                   + "0"
+                   + String.replicate 20000 ")"
+                   + " -> 0 | _ -> 1")
+          }
+          test "deep tuple pattern diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "pat-tuple"
+                  ("let v = match (1, 1) with | "
+                   + String.replicate 20000 "(1, "
+                   + "(a, b)"
+                   + String.replicate 20000 ")"
+                   + " -> a | _ -> 1")
+          }
+          test "deep constructor pattern diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "pat-ctor"
+                  ("let v = match 1 with | "
+                   + String.replicate 20000 "Some ("
+                   + "x"
+                   + String.replicate 20000 ")"
+                   + " -> 1 | _ -> 0")
+          }
+          test "deep list pattern diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "pat-list"
+                  ("let v = match [1] with | "
+                   + String.replicate 20000 "["
+                   + "0"
+                   + String.replicate 20000 "]"
+                   + " -> 0 | _ -> 1")
+          }
+          test "long cons-chain pattern diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "pat-cons"
+                  ("let v = match [1] with | "
+                   + String.replicate 20000 "a :: "
+                   + "_"
+                   + " -> 1 | _ -> 0")
+          }
+          test "deep let-binder pattern diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses "pat-let" ("let " + String.replicate 20000 "(" + "x" + String.replicate 20000 ")" + " = 1")
+          }
+          test "deep lambda-param pattern diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses
+                  "pat-lambda"
+                  ("let f = fun "
+                   + String.replicate 20000 "("
+                   + "x"
+                   + String.replicate 20000 ")"
+                   + " -> x")
+          }
+          test "deep index chain diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses "index" ("let x = " + String.replicate 20000 "a[" + "0" + String.replicate 20000 "]")
+          }
+          test "long let-in chain diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses "letin" ("let x = " + String.replicate 20000 "let a = 1 in " + "1")
+          }
+          test "long fun chain diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses "fun" ("let x = " + String.replicate 20000 "fun a -> " + "1")
+          }
+          test "long elif chain diagnoses-or-bounds (was SEGV)" {
+              // 5000 clauses: 10x the ceiling; each clause pays the full
+              // stmtElem alternative cost, and 20000 ran into the hang
+              // bound under parallel test load without adding coverage
+              depthDiagnoses "elif" ("let x = if true then 1 " + String.replicate 5000 "elif true then 1 " + "else 2")
+          }
+          test "long field chain diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses "field" ("let x = a" + String.replicate 50000 ".b")
+          }
+          test "deep sigil nest diagnoses-or-bounds (was SEGV)" {
+              depthDiagnoses "sigil" ("let x = " + String.replicate 5000 "$(echo " + "hi" + String.replicate 5000 ")")
+          }
+
+          // the post-parse seam [D:depth-guard]: parse depth ~1, but each
+          // line DOUBLES the inferred type — the inference budget must
+          // convert "no answer, forever" into a located diagnostic
+          test "the inference bomb diagnoses inside the budget (was: hang, forever)" {
+              diagnosesWithinBound
+                  "infer-bomb"
+                  30000
+                  [ "let f0 x = (x, x)"
+                    "let f1 x = f0 (f0 x)"
+                    "let f2 x = f1 (f1 x)"
+                    "let f3 x = f2 (f2 x)"
+                    "let f4 x = f3 (f3 x)"
+                    "let f5 x = f4 (f4 x)"
+                    "let v = f5 1"
+                    "print \"done\"" ]
+          }
 
           testPropertyWithConfig cfg "arbitrary over-ceiling depth diagnoses-or-bounds"
           <| fun (NonNegativeInt s) ->

@@ -226,7 +226,29 @@ type private Ctx =
       // statement boundary [D:splice-default-last]: defaulting fired
       // early once and rejected `1 |> (fun k -> $"{k}")` — order, not
       // rule; the shape check defers with it
-      mutable PendingSplices: (string * Span * SpliceSite) list }
+      mutable PendingSplices: (string * Span * SpliceSite) list
+      // the inference budget [D:depth-guard]'s post-parse sibling:
+      // HM inference is DEXPTIME (a 7-line file can double its type
+      // per line), and "no answer, forever" is as wrong as a crash —
+      // resolution work is counted and exhaustion becomes a located
+      // diagnostic. The ceiling is a COST bound, orders of magnitude
+      // above any real program, re-askable on a receipt
+      mutable Work: int
+      // the span the exhaustion diagnostic anchors on — the innermost
+      // unification site's, kept current by bind (resolve has no span)
+      mutable WorkSpan: Span
+      // the innermost bind's operands, for the evidence probe: at
+      // exhaustion these are the types whose SIZE is or is not the story
+      mutable WorkTys: Ty * Ty }
+
+// exhaustion carries whether type SIZE is actually in evidence — the
+// message must not claim "your type grew too large" merely because the
+// budget ran out (a future second non-termination shape gets an honest
+// generic answer, not a confidently wrong specific one)
+exception private BudgetExceeded of Span * sizeEvidenced: bool
+
+let private workBudget = 5_000_000
+let private sizeEvidenceFloor = 50_000
 
 let private newCtx () =
     { Fresh = 0
@@ -234,23 +256,74 @@ let private newCtx () =
       Rows = Map.empty
       RowOrigins = Map.empty
       Cons = Map.empty
-      PendingSplices = [] }
+      PendingSplices = []
+      Work = 0
+      WorkSpan =
+        { Start = { Line = 1; Col = 1 }
+          End = { Line = 1; Col = 1 } }
+      WorkTys = TUnit, TUnit }
 
 let private freshName (ctx: Ctx) (prefix: string) : string =
     ctx.Fresh <- ctx.Fresh + 1
     $"{prefix}{ctx.Fresh}"
 
-let rec private resolve (ctx: Ctx) (ty: Ty) : Ty =
+// resolve is the step every type walk pays (occurs, finalTy, bind,
+// row merges), so it is where the budget TICKS; the raise site
+// disarms the counter first so the evidence probe below can walk
+// without re-triggering
+let rec private resolveNoTick (ctx: Ctx) (ty: Ty) : Ty =
     match ty with
     | TVar v ->
         match Map.tryFind v ctx.Subst with
-        | Some t -> resolve ctx t
+        | Some t -> resolveNoTick ctx t
         | None -> ty
     | TRowVar(r, _) ->
         match Map.tryFind r ctx.Subst with
-        | Some t -> resolve ctx t
+        | Some t -> resolveNoTick ctx t
         | None -> ty
     | t -> t
+
+// a BOUNDED size probe for the budget's evidence check: walks at most
+// `floor` nodes and answers "is this type at least that big" — never
+// O(actual size), because at exhaustion the actual size can be 2^n
+let private typeAtLeast (ctx: Ctx) (floor: int) (ty: Ty) : bool =
+    let stack = System.Collections.Generic.Stack<Ty>()
+    stack.Push ty
+    let mutable count = 0
+
+    while count < floor && stack.Count > 0 do
+        count <- count + 1
+
+        match resolveNoTick ctx (stack.Pop()) with
+        | TFun(a, b) ->
+            stack.Push a
+            stack.Push b
+        | TSeq t -> stack.Push t
+        | TTuple ts -> ts |> List.iter stack.Push
+        | TNamed(_, args) -> args |> List.iter stack.Push
+        | TRowVar(_, fields) -> fields |> List.iter (snd >> stack.Push)
+        | _ -> ()
+
+    count >= floor
+
+let private budgetRaise (ctx: Ctx) (ty: Ty) : 'a =
+    ctx.Work <- System.Int32.MinValue // disarm: the probe walks freely
+    let l, r = ctx.WorkTys
+
+    let sized =
+        typeAtLeast ctx sizeEvidenceFloor ty
+        || typeAtLeast ctx sizeEvidenceFloor l
+        || typeAtLeast ctx sizeEvidenceFloor r
+
+    raise (BudgetExceeded(ctx.WorkSpan, sized))
+
+let private resolve (ctx: Ctx) (ty: Ty) : Ty =
+    ctx.Work <- ctx.Work + 1
+
+    if ctx.Work > workBudget then
+        budgetRaise ctx ty
+    else
+        resolveNoTick ctx ty
 
 let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
     let rec go (seen: Set<string>) ty =
@@ -518,6 +591,11 @@ let private dischargeCons (ctx: Ctx) (env: TypeEnv) (v: string) (t: Ty) : Result
         allOk ps (fun p -> demand ctx env p t)
 
 let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actual: Ty) : Result<unit, TypeError> =
+    // the budget ticks in resolve (the step every walk pays); bind
+    // keeps the ANCHOR and the evidence operands current so exhaustion
+    // deep in a walk points at the innermost unification site
+    ctx.WorkSpan <- span
+    ctx.WorkTys <- expected, actual
     let expected = resolve ctx expected
     let actual = resolve ctx actual
 
@@ -3513,7 +3591,28 @@ let private withDefList (env: TypeEnv) (defs: (string * TypeDef) list) : TypeEnv
 let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
     withDefList env (anonDefs expr @ pendingAnonRecords ())
 
-let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExpr * (string * Scheme) list, TypeError> =
+// budget exhaustion surfaces as an ordinary located TypeError; the
+// text names what the author can act on, never the internal counter
+let private budgetError (span: Span) (sized: bool) : TypeError =
+    { Span = span
+      Message =
+        (if sized then
+             "this expression's type grew too large to infer — split the expression into smaller bindings, or annotate the intended type"
+         else
+             "type inference ran out of budget on this expression — split it into smaller bindings")
+      Origin = None }
+
+let private catchBudget (f: unit -> Result<'a, TypeError>) : Result<'a, TypeError> =
+    try
+        f ()
+    with BudgetExceeded(span, sized) ->
+        Error(budgetError span sized)
+
+let typecheckBinderCore
+    (env: TypeEnv)
+    (pat: Pattern)
+    (expr: Expr)
+    : Result<TypedExpr * (string * Scheme) list, TypeError> =
     let env = withAnonDefs env expr
     let ctx = newCtx ()
 
@@ -3552,7 +3651,10 @@ let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExp
                             "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
                     | None -> Ok(te, schemes)
 
-let typecheckWith
+let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExpr * (string * Scheme) list, TypeError> =
+    catchBudget (fun () -> typecheckBinderCore env pat expr)
+
+let typecheckWithCore
     (env: TypeEnv)
     (expr: Expr)
     : Result<TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list>, TypeError> =
@@ -3665,6 +3767,12 @@ let childExprs (te: TypedExpr) : TypedExpr list =
             | IExpr e -> Some e
             | IStr _ -> None)
     | TEYaml(tpl, _) -> yamlTplTypedExprs tpl
+
+let typecheckWith
+    (env: TypeEnv)
+    (expr: Expr)
+    : Result<TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list>, TypeError> =
+    catchBudget (fun () -> typecheckWithCore env expr)
 
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _) -> te)

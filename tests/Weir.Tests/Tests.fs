@@ -1153,6 +1153,44 @@ let boundaryTests =
                     VStr "g: plain" ]
                   "a YAML reader cannot mis-type any of these"
           }
+          test "to yaml: the float specials quote — a reader would type .inf/.nan as floats [D:yaml-v1]" {
+              Expect.equal
+                  (run "[(\"a\", \".inf\"); (\"b\", \".nan\"); (\"c\", \"-.INF\")] |> to yaml"
+                   |> forceSeq)
+                  [ VStr "a: \".inf\""; VStr "b: \".nan\""; VStr "c: \"-.INF\"" ]
+                  "the .inf/.nan family joins the reverse-Norway set"
+          }
+          test "to yaml: CR/NEL/LS/PS and controls ESCAPE in quoted scalars — raw they are line breaks [D:yaml-v1]" {
+              Expect.equal
+                  (run "[(\"a\", Str.fromBase64 \"eA15\"); (\"b\", Str.fromBase64 \"YcKFYg==\")] |> to yaml"
+                   |> forceSeq)
+                  [ VStr "a: \"x\\ry\""; VStr "b: \"a\\Nb\"" ]
+                  "a YAML reader must see the escape, not the raw byte"
+          }
+          test
+              "to yaml: a leading-whitespace content line FALLS BACK to quotes — block form there needs the rejected indicator [D:block-scalars]" {
+              Expect.equal
+                  (run "[(\"a\", \" lead\\nrest\")] |> to yaml" |> forceSeq)
+                  [ VStr "a: \" lead\\nrest\"" ]
+                  "weir must not write block YAML weir refuses to read"
+          }
+          test "from yaml: a whitespace-bearing block line beyond the indent is CONTENT, not dropped [D:block-scalars]" {
+              // "a\n " under |- : the 3-space line carries one space past
+              // the 2-space indent (PyYAML agrees byte-for-byte)
+              let env2 = env |> declare "type KV = { k: string }"
+              let prog = "([\"k: |-\"; \"  a\"; \"   \"] |> from yaml KV).k"
+
+              match Weir.Parser.parseStmt prog with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck env2 e with
+                  | Ok te ->
+                      Expect.equal
+                          (Weir.Eval.eval valueEnv te)
+                          (VStr "a\n ")
+                          "the read side must not lose bytes the write side kept"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
           test "to yaml: YMap preserves order; record fields render alphabetically [D:yaml-v1]" {
               Expect.equal
                   (run "YMap [(\"zeta\", YStr \"z\"); (\"alpha\", YInt 1)] |> to yaml" |> forceSeq)
@@ -2731,6 +2769,17 @@ let stringTests =
 
               expectValue "Str.tryFromBase64 \"!!!\"" (VUnion("None", None))
               expectValue "Str.tryFromBase64 \"//79\"" (VUnion("None", None))
+          }
+          test "fromBase64: NUL is non-text — valid UTF-8, but the byte the binary detector keys on [D:encoding-law]" {
+              // YQBi = "a NUL b"; AAA= = two NULs — the gate must agree
+              // with [D:binary-echo]'s NUL probe about what binary means
+              let ex = Expect.throwsC (fun () -> run "Str.fromBase64 \"YQBi\"" |> ignore) id
+              Expect.stringContains ex.Message "it contains NUL bytes" "NUL raises with the reason"
+              expectValue "Str.tryFromBase64 \"YQBi\"" (VUnion("None", None))
+              expectValue "Str.tryFromBase64 \"AAA=\"" (VUnion("None", None))
+
+              // a real PNG header still refuses (the case that already worked)
+              expectValue "Str.tryFromBase64 \"iVBORw0KGgo=\"" (VUnion("None", None))
           }
           test "contains, startsWith, endsWith are data-last" {
               // bare `contains` retired [D:bare-rule]: two homes, one
@@ -7027,6 +7076,49 @@ let agentFindingsTests =
               match Weir.Parser.parseLine cmdResolver "git log |> Seq.first 1 | exitCode" with
               | Error msg -> Expect.stringContains msg "single external command segment" ""
               | Ok _ -> failtest "exitCode must keep the family's segment rule"
+          }
+          test "the fifth refusal cell: off-spine reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
+              // 4 reifiers x 3 off-spine positions (if-body, within-body,
+              // lambda-body): the marker cannot match there, and the
+              // fallback must be the reifier teaching — a stage that
+              // resolves the keyword on PATH is the degradation F3 found
+              let positions =
+                  [ "if-body", [ "if true then"; "    let r = sh -c \"echo x\" | %s"; "    print \"z\"" ]
+                    "within-body", [ "within tmp d"; "    let r = sh -c \"echo x\" | %s"; "    print \"z\"" ]
+                    "lambda-body",
+                    [ "[1] |> Seq.iter (fun _ ->"
+                      "    let r = sh -c \"echo x\" | %s"
+                      "    print \"z\")" ] ]
+
+              for name, spelled in
+                  [ "complete", "complete"
+                    "succeeds", "succeeds"
+                    "exitCode", "exitCode"
+                    "orFail", "orFail \"m\"" ] do
+                  for posName, tpl in positions do
+                      let lines = tpl |> List.map (fun l -> l.Replace("%s", spelled))
+                      let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+
+                      Expect.exists
+                          diags
+                          (fun d -> d.Message.Contains $"'{name}' is a reifier, not a PATH program")
+                          $"{name} in {posName}: the fifth cell must teach"
+
+                      Expect.isFalse
+                          (diags |> List.exists (fun d -> d.Message.Contains "not found on PATH"))
+                          $"{name} in {posName}: no PATH resolution for a reifier name"
+
+              // the ^ escape stays: a real tool of that name is reachable
+              let escaped, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "pin.weir"
+                      [ "if true then"
+                        "    let r = sh -c \"echo x\" | ^complete"
+                        "    print \"z\"" ]
+
+              Expect.isFalse
+                  (escaped |> List.exists (fun d -> d.Message.Contains "is a reifier"))
+                  "^complete asks for the PATH tool explicitly"
           }
           test "a discarded exit code errors with the bind-or-match hint" {
               let lines = [ "git push | exitCode" ]

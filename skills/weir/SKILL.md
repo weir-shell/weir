@@ -182,7 +182,14 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   convert in the arm. Regex arms never complete a match. Computed
   hashing/encoding: `Str.sha256` (lowercase hex of UTF-8 bytes),
   `Str.toBase64` (one unwrapped line), `Str.fromBase64` /
-  `Str.tryFromBase64` (raise/None on malformed AND on non-text bytes).
+  `Str.tryFromBase64` (raise/None on malformed AND on non-text bytes —
+  NUL included: a NUL-bearing decode is binary, and binary has no
+  string route).
+
+```weir-error
+let v = Str.fromBase64 "YQBi"
+print v
+```
   patterns live on the expression side: `Str.isMatch pat s` (bool),
   `Str.rmatch pat s` (Option<seq<string>>) — any string, and raw
   literals read best: `Seq.where (Str.isMatch @"\.md$")`.
@@ -793,11 +800,26 @@ if clean then !(sh -c "echo acting")
   binds `seq<string>`; `let r = git status | complete` binds the
   record. Externals only — builtins stay functions there
   (`let w = cd target` applies the BINDING target). BLOCK lets inside
-  bodies (and lambda bodies) take the same command RHS along a
-  top-level let's spine; the single-line `let ... in` spelling stays
-  expression-only — there use `$(git status)`. A
-  bareword `in` on a let RHS ends the command grammar; quote `"in"`
-  to pass it.
+  bodies take the same command RHS ONLY along a top-level let's spine —
+  a lambda body qualifies exactly when the lambda itself sits on that
+  spine; off the spine (a statement-level `Seq.iter`, for example) a
+  reifier on a block-let RHS is a teaching error, never a PATH lookup.
+  The single-line `let ... in` spelling stays expression-only — there
+  use `$(git status)`. A bareword `in` on a let RHS ends the command
+  grammar; quote `"in"` to pass it.
+
+```weir
+let codes = [1] |> Seq.map (fun _ ->
+    let r = sh -c "echo ok" | complete
+    r.exitCode)
+print (codes |> Seq.head)
+```
+
+```weir-error
+[1] |> Seq.iter (fun _ ->
+    let r = sh -c "echo x" | complete
+    print r.exitCode)
+```
 - Tuples: `(a, b)` literals, `int * string` types, `| (x, y) ->`
   patterns (arity 2+). `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.
   Destructure ANYWHERE irrefutable: `let x, y = pair`,

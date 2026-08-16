@@ -1,5 +1,55 @@
 # Spike Notes
 
+## adversarial review fixes: the coverage question keeps paying (2026-08-16)
+
+The session's biggest finding wasn't in the plan — the plan predicted
+it. F1's fix shape argued for a mechanical coverage check over a third
+patch, and the check's first run found FIVE more unguarded axes beyond
+the review's eleven constructors: index interiors (`a[a[…]]` — the
+suffix loop re-enters expr without touching atom), block-form chains
+(`fun…->`/`let…in`/elif — their bodies nest through seqExpr, atom
+never on the stack), sigil nests through command args, the
+yaml-district block walker (`let rec`, not even an FParsec parser),
+and three SPINES that parse shallow (field chains, bare cons, elif —
+plus the parser's own construction recursion in `build`, which had to
+go iterative before the post-parse gate could ever see the tree). The
+formulation that made it mechanical: the parser's reference graph
+minus deepen-guarded nodes must be ACYCLIC — a feedback-vertex
+property, not a constructor list. The guard set was chosen off the
+499-paren counting path, so the boundary pin never moved.
+[D:depth-coverage]
+
+F5's diagnosis had its own correction: bind-entry counting missed the
+blowup entirely (the bomb burns in the resolution WALKS — occurs,
+finalTy, the structural compares — not in bind entries), so the budget
+ticks in `resolve`, the one step every walk pays. And the plan's
+"n=4 checks in 0.23s" denominator had already rotted: at HEAD, n=4
+runs >60s — the cliff moved between e961984 and now, unnoticed, which
+rather proves the budget's point. [D:inference-budget]
+
+F3's mechanism turned out to be the in-stop: `reifierEnd`'s `in`
+lookahead is spine-gated, so off-spine the marker can never match and
+the segment path resolves the keyword on PATH. The fix teaches (fifth
+cell, `^name` the escape) — and promptly caught THIS SESSION's own
+harness edits, which had put `sh -c … | complete` block-lets inside
+`within` (the harness header literally warns about it). A guard that
+bites its own author on landing day is a guard aimed right.
+[D:reifier-fifth-cell]
+
+F4 took both fixes per the review recommendation; the argv guard's
+worth showed immediately — File.read is a live NUL route TODAY, not a
+future-BYTES hypothetical, so the boundary refusal (argv AND env,
+naming the truncation) is load-bearing, not belt-and-braces.
+[D:nul-boundary]
+
+F2's four instances plus the symmetric-json gap got the external
+referee (~100 payloads, PyYAML + json, in e2e); the whitespace-only
+block-line semantics were pinned against PyYAML byte-for-byte before
+writing the read-side fix — beyond-indent whitespace is content,
+at-or-below is an empty line. Both re-point rules from the acceptance
+section were honored, and both probes now assert the
+rejection/teaching rather than the old behavior. [D:yaml-interop]
+
 ## check --can: the constraint pays out visibly (2026-08-15)
 
 The feature was a walk, not an analysis — Phase 0 established that

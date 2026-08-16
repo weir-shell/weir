@@ -1027,6 +1027,11 @@ PYEOF
     # source, so the cross-repo half can trust it
     python3 "$(dirname "$0")/grammar-manifest.py" --check || fail "grammar manifest stale"
 
+    # depth coverage [D:depth-guard]: every recursive parser cycle
+    # routes through deepen — enumerated from the source, not from a
+    # remembered list of constructors
+    python3 "$(dirname "$0")/depth-coverage.py" || fail "depth coverage gate"
+
     # within-kind inventory [D:within-kinds]: the kinds are a CLOSED SET
     # in ONE table (src/Weir/Ast.fs withinKinds); the IN-REPO grammars
     # hard-code the same set by necessity — this pins them together
@@ -3482,6 +3487,30 @@ echo $@s
 echo "$errout" | grep -qF "one value? use \$x" || fail "scalar teaching: $errout"
 echo "e2e ok: splat teaches head, mid-word, and both type directions"
 
+# the argv boundary refuses NUL on its own [D:encoding-law] — never
+# silent truncation. fromBase64 rejects NUL as non-text, but NUL still
+# arrives via File.read of a NUL-bearing file; the spawn hand-off is
+# where the byte would truncate, so the refusal lives THERE.
+nuldir=$(mkweirtmp)
+printf 'a\0b' > "$nuldir/nul.bin"
+cat > "$nuldir/nul-argv.weir" <<WEOF
+let v = File.read "$nuldir/nul.bin" |> Seq.head
+python3 -c "import sys; print(len(sys.argv[1]))" \$v
+WEOF
+out=$($BIN "$nuldir/nul-argv.weir" 2>&1 || true)
+echo "$out" | grep -qF "contains a NUL byte" || fail "the argv NUL refusal is missing: $out"
+echo "$out" | grep -qF "would silently truncate" || fail "the diagnostic must name the truncation: $out"
+echo "$out" | grep -qxF "1" && fail "the child saw a truncated word — the refusal did not fire"
+cat > "$nuldir/nul-env.weir" <<WEOF
+let v = File.read "$nuldir/nul.bin" |> Seq.head
+let e = Env.ofPairs [("X", v)]
+!e(printenv X)
+WEOF
+out=$($BIN "$nuldir/nul-env.weir" 2>&1 || true)
+echo "$out" | grep -qF "contains a NUL byte" || fail "the env NUL refusal is missing: $out"
+rm -rf "$nuldir"
+echo "e2e ok: NUL refuses at the spawn boundary (argv and env), naming the truncation"
+
 # scalar mid-word splice mirrors the splat's fatal [D:argv-splat]: the
 # glued prefix would silently drop, so name the space/interp spellings
 errout=$(printf 'let f = "x"
@@ -3899,6 +3928,18 @@ expect "|- strips the trailing newline through the round trip" '"no trailing new
 expect "the multiline value renders back as a block" "run.sh: |" "$out"
 expect "the no-trailing-newline value renders inline (form follows value)" "note: no trailing newline" "$out"
 echo "e2e ok: district block scalars — ConfigMap workload on the AOT binary"
+
+# the interop REFEREE [D:yaml-v1]: `to yaml`/`to json` round-trip
+# through parsers weir did not write, over the hostile corpus — the
+# adversarial review's F2 durable fix (weir refereeing itself let four
+# emitter defects through). PyYAML absent is a NAMED SKIP, never a
+# silent pass; the linux CI image carries it, so the gate always runs
+# at least there.
+if python3 -c 'import yaml' 2>/dev/null; then
+    python3 "$(dirname "$0")/interop-referee.py" "$BIN" || fail "interop referee"
+else
+    echo "e2e SKIP: interop referee — python3+PyYAML absent on this runner (the linux CI image runs it)"
+fi
 
 # a rejected header inside a district errors AT THE HEADER under check
 cat > "$yddir/fold.weir" <<'WEOF'

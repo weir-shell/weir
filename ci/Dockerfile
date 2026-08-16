@@ -8,4 +8,5 @@ RUN apt-get update \
         git \
         procps \
         python3 \
+        python3-yaml \
     && rm -rf /var/lib/apt/lists/*
