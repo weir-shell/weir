@@ -1760,7 +1760,8 @@ weir orchestrates processes, so a `pmap`/`piter` arm typically
 SPAWNS and WAITS — I/O-bound, not CPU-bound. The workers are
 dedicated threads up to a DEFAULT ceiling that is per-fan-out and
 nesting-aware [D:parallel-ladder] (2026-08-16): **64 / 8 / 1** by
-depth — 64 at top level, 8 inside a worker, serial past two levels —
+depth — 64 at top level, 8 inside a worker, serial from the second
+nested level —
 so the product of nested defaults is bounded (≤ 512) and two
 reasonable call sites cannot compose into a width nobody chose; an
 explicit `pmapWith n` is never reduced (a written number is the

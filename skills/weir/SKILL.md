@@ -371,8 +371,8 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
   ordered results) / `Seq.piter` for effects — sized for I/O-BOUND
   arms (spawns/waits/sleeps): the DEFAULT ceiling is PER FAN-OUT and
-  shrinks with nesting — 64 at top level, 8 inside a worker, serial
-  past two levels — so nested fan-outs cannot multiply into a width
+  shrinks with nesting — 64 at top level, 8 inside a worker, and a
+  fan-out nested twice runs serially — so nested fan-outs cannot multiply into a width
   nobody chose (64 outer x 8 inner caps the product at 512).
   `Seq.pmapWith n` / `piterWith n` / `pfirstWith n` set the ceiling
   explicitly and are NEVER reduced: a written number is the author's

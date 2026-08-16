@@ -977,7 +977,8 @@ let private parallelCeiling = 64
 
 // the DEFAULT ceiling is a LADDER over nesting depth [D:parallel-ladder]:
 // 64 / 8 / 1 — a fan-out inside a worker gets a smaller ceiling, and
-// past two levels runs serially, so the product is <= 512 at any depth
+// one nested TWICE runs serially (depth 2 and beyond hit the ladder's
+// 1), so the product is <= 512 at any depth
 // (two reasonable call sites in different files can no longer compose
 // into a width nobody chose). Measured before the constants were
 // fixed: the 64x8 shape runs 512 arms in one round at ~26MB peak RSS
