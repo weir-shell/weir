@@ -144,7 +144,11 @@ print $"branches: {branches}"
   [D:wire-keys]: reserved words (`type`, `to`, `from` — ordinary
   JSON/YAML keys) and future illegal identifiers ride it; `from`/`to
   json`/`jsonl`/`yaml` all read and write the wire key (the roundtrip
-  holds), Args/Env stay on the FIELD name (documented verbatim), and
+  holds), `Env.load` HONOURS it too (an env var name is no more the
+  author's to choose than a JSON key — a leading digit, a dash or a
+  reserved word are all legal there), `Args.load` REJECTS it (argv is
+  weir's own boundary, so there is no wire to match — flags DERIVE, and
+  `[<Short>]`/`[<NoShort>]` are the naming controls), and
   two fields resolving to one wire key refuse at the declaration. The name set is CLOSED — an unregistered name
   (`[<Positional>]` among them: dropped, scripts take flags) is a
   check error with a did-you-mean. Attributes attach to record
@@ -1112,10 +1116,20 @@ type Cmd = Go of string | Stop // payload must be a record: check error
 let c = Args.load Cmd
 ```
 
+```weir-error
+// argv is weir's OWN boundary — there is no wire to match, so a flag is
+// DERIVED and [<Short>]/[<NoShort>] are the naming controls
+type Cli = { [<Wire "MY_FLAG">] flag: string }
+let c = Args.load Cli
+print c.flag
+```
+
 - Environment: `Env.get "NAME"` (Option<string>) for one var;
   `Env.load Config` for typed config — declare
   `type Config = { PORT: int; DEBUG: bool; TOKEN: Option<string> }`
-  (field names = env-var names VERBATIM; scalars, 0-arity-case enum
+  (field names = env-var names VERBATIM unless `[<Wire "NAME">]` says
+  otherwise — the name stays EXACT either way, since only enum VALUES
+  are case-insensitive; scalars, 0-arity-case enum
   unions, + Option of these; bool is exactly true/false), load once,
   typed thereafter; every missing/garbage field reported in ONE
   error. An ENUM field (`type Lvl = Debug | Info` + `LOG_LEVEL:

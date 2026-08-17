@@ -213,10 +213,30 @@ let private dupFlag (label: string) (def: RecordDef) : string option =
 
 /// Args.load field validation, chained in the arms' original order:
 /// Default cells, then field shapes, then flag collisions
+/// `[<Wire>]` is REJECTED at Args.load [D:wire-keys]: argv is weir's OWN
+/// boundary, not a foreign document's, so there is no wire to match. Flags are
+/// DERIVED (`dryRun` -> `--dry-run`) and the naming controls already exist —
+/// `[<Short "C">]` and `[<NoShort>]`. A Wire here would be a fourth naming
+/// mechanism for a surface that has three. Refused at the CALL SITE, not the
+/// declaration: a Wire-carrying record is perfectly legal (Env.load and the
+/// adapters honour it), using it with Args.load is not.
+let private wireAtArgs (label: string) (def: RecordDef) : string option =
+    def.Fields
+    |> List.tryPick (fun (name, _) ->
+        match Map.tryFind name def.Attrs with
+        | Some specs when specs |> List.exists (fun (n, _) -> n = "Wire") ->
+            Some
+                $"{label}'{name}' carries [<Wire>], which Args.load does not take — a flag is DERIVED from the field name; name it with [<Short \"c\">] or suppress it with [<NoShort>]"
+        | _ -> None)
+
 let fieldProblems (label: string) (def: RecordDef) : string option =
-    match badArgsDefault label def with
+    match wireAtArgs label def with
     | Some m -> Some m
     | None ->
-        match badArgsShape label def with
+
+        match badArgsDefault label def with
         | Some m -> Some m
-        | None -> dupFlag label def
+        | None ->
+            match badArgsShape label def with
+            | Some m -> Some m
+            | None -> dupFlag label def
