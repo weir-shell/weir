@@ -323,14 +323,9 @@ let private appendHistory (entry: string) =
 // completion's wordStartAt) so field chains hop segment by segment
 let private isWordChar (c: char) = Char.IsLetterOrDigit c || c = '_'
 
-let private wordStartAt (text: string) (pos: int) =
-    let mutable i = pos
-
-    while i > 0
-          && (Char.IsLetterOrDigit text[i - 1] || text[i - 1] = '_' || text[i - 1] = '.') do
-        i <- i - 1
-
-    i
+// completion's word rule is Complete's, never a copy — the copy is how the
+// two drifted from filesystemComplete when argv paths landed
+let private wordStartAt (text: string) (pos: int) = Complete.wordStartAt text pos
 
 // ---- history search [D:repl-quality]: fzf when present (the good path,
 // its spawn-and-restore proven), a minimal built-in otherwise. NEVER a

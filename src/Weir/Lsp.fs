@@ -2059,14 +2059,8 @@ let run (debug: bool) : int =
                                 let lineText = if line - 1 < lines.Length then lines[line - 1] else ""
                                 let upto = lineText.Substring(0, min (col - 1) lineText.Length)
 
-                                let wordStart =
-                                    let mutable i = upto.Length
-
-                                    while i > 0
-                                          && (Char.IsLetterOrDigit upto[i - 1] || upto[i - 1] = '_' || upto[i - 1] = '.') do
-                                        i <- i - 1
-
-                                    i
+                                // Complete's rule, not a copy of it
+                                let wordStart = Complete.wordStartAt upto upto.Length
 
                                 let word = upto.Substring wordStart
 

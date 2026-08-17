@@ -1725,7 +1725,49 @@ let private suggest text (wordStart: int) =
 let completionTests =
     testList
         "Completion"
-        [ test "name completion from values in scope" {
+        [ test "argv path completion keeps the directory prefix [D:complete-argv]" {
+              // the WORD RULE is where this lived: both callers cut the word AT
+              // the slash, so `micro ci/e` completed against the CWD and
+              // `micro ci/` listed it whole. filesystemComplete was always
+              // correct — the directory half never reached it.
+              Expect.equal (Weir.Complete.wordStartAt "micro ci/e" 10) 6 "a path is ONE word, slash included"
+
+              Expect.equal
+                  (Weir.Complete.wordStartAt "micro ci/check-f" 16)
+                  6
+                  "a hyphen is ordinary in a filename, not a word break"
+
+              let d =
+                  System.IO.Path.Combine(
+                      System.IO.Path.GetTempPath(),
+                      "weir-comp-" + System.Guid.NewGuid().ToString "N"
+                  )
+
+              System.IO.Directory.CreateDirectory d |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "e2e.sh"), "")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "check-fresh.sh"), "")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".hidden"), "")
+              let dir = d.Replace("\\", "/")
+
+              // absolute, so the pin does not depend on the runner's cwd
+              let ask (w: string) =
+                  let text = "micro " + w
+                  suggest text (Weir.Complete.wordStartAt text text.Length)
+
+              Expect.equal (ask (dir + "/e")) [ dir + "/e2e.sh" ] "a directory prefix scopes the search"
+
+              Expect.equal (ask (dir + "/check-")) [ dir + "/check-fresh.sh" ] "a hyphen does not restart the word"
+
+              // the dotfile law, mirrored from Path.glob: a leading '.' is TYPED
+              Expect.isFalse
+                  (ask (dir + "/") |> List.exists (fun s -> s.EndsWith ".hidden"))
+                  "a bare Tab does not bury entries under dotfiles"
+
+              Expect.equal (ask (dir + "/.")) [ dir + "/.hidden" ] "a typed dot offers them"
+              System.IO.Directory.Delete(d, true)
+          }
+
+          test "name completion from values in scope" {
               // gained "when" when keyword suggestions began deriving
               // from the full parser set [D:keyword-completion]
               Expect.equal (suggest "ls |> whe" 6) [ "when"; "where" ] ""
@@ -1842,16 +1884,12 @@ let completionTests =
 
               // bound-but-UNRESOLVED keeps the declared-fields fallback:
               // the rule is about BINDING, not resolution
-              Expect.isTrue
-                  (sug "fun q -> q." |> List.contains "q.bytes")
-                  "a lambda param keeps the high-signal union"
+              Expect.isTrue (sug "fun q -> q." |> List.contains "q.bytes") "a lambda param keeps the high-signal union"
 
               // the positive twin from the same instrument: a bound,
               // RESOLVED record still completes its own fields (the
               // where-lambda pins above assert the exact list)
-              Expect.isTrue
-                  (sug "ls |> where (fun f -> f." |> List.contains "f.kind")
-                  "resolved fields still fire"
+              Expect.isTrue (sug "ls |> where (fun f -> f." |> List.contains "f.kind") "resolved fields still fire"
           }
           test "keyword completion inventory: every grammar keyword offered or excluded, decided [D:keyword-completion]" {
               // the PINNED split — a new grammar keyword fails here until

@@ -100,7 +100,12 @@ let private filesystemComplete (word: string) : string list =
 
     try
         System.IO.Directory.GetFileSystemEntries dir
-        |> Array.filter (fun e -> (System.IO.Path.GetFileName e).StartsWith prefix)
+        |> Array.filter (fun e ->
+            let name = System.IO.Path.GetFileName e
+            // the dotfile law, mirrored from Path.glob: a leading `.` must be
+            // TYPED to be offered, so a bare Tab does not bury real entries
+            // under .git/.DS_Store
+            name.StartsWith prefix && (prefix.StartsWith "." || not (name.StartsWith ".")))
         |> Array.map (fun e ->
             // the candidate must EXTEND the typed word — the editor
             // replaces the word with it, so a shape the user never
@@ -120,6 +125,30 @@ let private filesystemComplete (word: string) : string list =
         |> Array.toList
     with _ ->
         []
+
+/// where the completion WORD starts, scanning back from the cursor. ONE rule,
+/// consulted by the REPL and the LSP alike: each had a verbatim copy, and when
+/// argv path completion landed only `filesystemComplete` learned about `/` —
+/// the callers kept cutting the word AT the slash, so `micro ci/e` completed
+/// against the CWD and `micro ci/` listed it whole. A path separator is part
+/// of the word; `~` leads a home path; `-` is ordinary in real filenames
+/// (`ci/check-fresh.sh` is in this repo, and without it the word restarts at
+/// the hyphen and the bug returns for every hyphenated name).
+let wordStartAt (text: string) (pos: int) : int =
+    let isWordChar (c: char) =
+        System.Char.IsLetterOrDigit c
+        || c = '_'
+        || c = '.'
+        || c = '/'
+        || c = '~'
+        || c = '-'
+
+    let mutable i = min pos text.Length
+
+    while i > 0 && isWordChar text[i - 1] do
+        i <- i - 1
+
+    i
 
 // a word in command ARGV completes as a PATH [D:complete-argv]: after
 // a literal command head everything is an argv word — fields, members,
