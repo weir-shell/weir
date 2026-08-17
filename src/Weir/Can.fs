@@ -500,7 +500,7 @@ let run (json: bool) (strict: bool) (path: string) : int =
         let diags, pairs, _, _ = analyzeLines path rawLines
 
         if diags |> List.exists (fun d -> d.Severity = "error") then
-            printDiags json diags
+            printDiags json (not (List.isEmpty pairs)) diags
             1
         else
             let caps = collect path (ofChecked pairs)
