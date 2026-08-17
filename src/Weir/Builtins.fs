@@ -257,7 +257,8 @@ let private cdImpl: Value =
                 failwith $"cd: no such directory: {resolved}"
 
             Session.setCwd resolved
-            VStr resolved
+            // return what was STORED, so cd and pwd cannot disagree on shape
+            VStr(Session.Cwd())
         | v -> unreachable $"the checker rejects 'cd' on {formatValue v}")
 
 let private pwdImpl: Value =
