@@ -4667,7 +4667,7 @@ out=$($BIN check --can "$candir/cap.weir" 2>&1) || canrc=$?
 [ "$canrc" = "0" ] || fail "--can must not change a valid check's exit (got $canrc): $out"
 echo "$out" | grep -qF "capability, not behaviour" || fail "the model is the first line: $out"
 echo "$out" | grep -qF "this report is incomplete: 1 opaque site" || fail "the loud incomplete header: $out"
-echo "$out" | grep -qE "sh takes a program as its argument" || fail "sh -c is a first-class unknown: $out"
+echo "$out" | grep -qF "sh (opaque)" || fail "opacity marks the runs line inline (F5): $out"
 echo "$out" | grep -qF "rg" || fail "an untaken branch still counts (capability, not behaviour): $out"
 echo "$out" | grep -qF "File.write out.txt" || fail "the literal path is named: $out"
 echo "$out" | grep -qF "Http.fetch https://api.example.com/items" || fail "the literal url is named: $out"
@@ -4682,14 +4682,50 @@ echo "$out" | grep -qF "lib.weir" || fail "the module site carries the module's 
 # shift it)
 cat > "$candir/reify.weir" <<'WEOF'
 let n = 7
+let ev = [Env.pair "K" "v"]
 sh -c "true" | orFail "a lock is already live — wait or kill"
 git status | orFail $"round {n} failed"
+let c = $(date -u | complete)
+let ok = $(uname -s | succeeds)
+let code = hostname | exitCode
+let xs = ["x"]
+let fed = xs | sort | complete
+$ev(tty -s | orFail "env twin")
+print $"{c.exitCode} {ok} {code} {fed.exitCode}"
 WEOF
 rout=$($BIN check --can "$candir/reify.weir" 2>&1) || fail "reify --can errored"
-echo "$rout" | grep -qF "sh" || fail "orFail with a literal msg reports the program: $rout"
-echo "$rout" | grep -qF "git" || fail "orFail with an interpolated msg reports the program: $rout"
-echo "$rout" | grep -qF "already live" && fail "the orFail MESSAGE must never appear as a command: $rout"
-echo "e2e ok: --can reads the reifier desugar's program slot (orFail msg never a command)"
+for prog in sh git date uname hostname sort tty; do
+    echo "$rout" | grep -qF "$prog" || fail "the $prog member's program must appear in runs: $rout"
+done
+echo "$rout" | grep -qF "already live" && fail "an orFail MESSAGE must never appear as a command: $rout"
+echo "$rout" | grep -qF "env twin" && fail "an Env-twin orFail MESSAGE must never appear as a command: $rout"
+echo "e2e ok: --can reads every reifier member's program slot (orFail/complete/succeeds/exitCode, In and Env twins; messages never commands)"
+
+# F3: overlay NAMES when literal (direct, ofPairs, let-bound); honest
+# form when computed. F4: identical entries group with a count. F6:
+# weir on the interpreter list — the report is honest about the
+# largest thing a self-shelling script does.
+cat > "$candir/envnames.weir" <<'WEOF'
+let ov = Env.ofPairs [("SEED", "1"); ("COUNT", "2")]
+within env ov
+    sh -c "true"
+within env [Env.pair "TOKEN_A" "x"]
+    sh -c "true"
+let dyn () = [Env.pair (Env.get "K" |> Option.defaultValue "D") "v"]
+within env (dyn ())
+    sh -c "true"
+weir --version
+weir --version
+WEOF
+nout=$($BIN check --can "$candir/envnames.weir" 2>&1) || fail "envnames --can errored"
+echo "$nout" | grep -qF "sets SEED, COUNT for children (within env)" || fail "ofPairs names resolve through the let (F3): $nout"
+echo "$nout" | grep -qF "sets TOKEN_A for children (within env)" || fail "Env.pair literals name themselves (F3): $nout"
+echo "$nout" | grep -qF "names not statically known" || fail "a computed overlay stays honest (F3): $nout"
+echo "$nout" | grep -qF "sh (opaque) × 3" || fail "identical entries group with a count (F4): $nout"
+echo "$nout" | grep -qF "weir (opaque) × 2" || fail "weir is an interpreter — opaque, grouped (F6): $nout"
+echo "$nout" | grep -qF "this report is incomplete: 5 opaque site" || fail "the header carries the opaque count (F5/F6): $nout"
+echo "$nout" | grep -qF "takes a program as its argument" && fail "the opaque section is json-only now (F5): $nout"
+echo "e2e ok: --can names literal env overlays, groups identical entries, sees through nothing weir-shaped"
 
 # --strict: opaque sites become a distinct nonzero for CI's choosing
 strictrc=0

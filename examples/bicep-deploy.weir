@@ -23,7 +23,9 @@ type Env = {
 }
 
 type TokenEnv = {
-    ACTIONS_ID_TOKEN_REQUEST_TOKEN: string
+    // an OIDC bearer token IS a secret — declared so the renderers
+    // refuse it and `check --can` reports the load [D:secret]
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: Secret
     ACTIONS_ID_TOKEN_REQUEST_URL: string
 }
 
@@ -78,7 +80,7 @@ let azureLogin t =
     header "azure login"
     let tok = Env.load TokenEnv
     let oidc =
-        curl -sS -f -H $"Authorization: Bearer {tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange"
+        curl -sS -f -H $"Authorization: Bearer {Secret.reveal tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange"
         |> from json Oidc
     let e = targetEnv t
     within env e

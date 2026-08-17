@@ -32,7 +32,7 @@ type Fact =
     | CwdChange
     | Network of member_: string * url: string option
     | EnvRead of what: string
-    | EnvWrite of via: string
+    | EnvWrite of via: string * names: string list option
     | SecretLoad of what: string
     | SecretArgv of prog: string
     | ProcScope
@@ -64,7 +64,12 @@ let private interpreters =
           "nohup"
           "timeout"
           "watch"
-          "eval" ]
+          "eval"
+          // weir itself [D:can-report]: `weir file.weir` takes a program
+          // as its argument in exactly sh -c's sense — the report cannot
+          // see through it, and 22 unmarked self-invocations in the
+          // showcase were the receipt
+          "weir" ]
 
 // module-member classification: what a REFERENCE to each member means
 // for the report. Pure members (Path.fileName, Http.get the
@@ -88,9 +93,43 @@ let private networkMembers = Set [ "Http.send"; "Http.fetch"; "Net.portOpen" ]
 
 let private procMembers = Set [ "Proc.stop"; "Proc.wait" ]
 
+// overlay NAMES, when literal [D:can-report]: Env.pair lists and
+// Env.ofPairs tuple lists carry their keys statically; a let-bound
+// overlay resolves through the binds map (top-level and expression
+// lets both register). Anything else is honestly unknown.
+let rec private envNamesOf
+    (binds: System.Collections.Generic.Dictionary<string, string list>)
+    (e: TypedExpr)
+    : string list option =
+    let allSome (xs: 'a option list) =
+        if xs |> List.forall Option.isSome then
+            Some(xs |> List.map Option.get)
+        else
+            None
+
+    let pairKey (item: TypedExpr) =
+        match item.Kind with
+        | TEApp({ Kind = TEApp({ Kind = TEVar "Env.pair" }, { Kind = TEStr k }) }, _) -> Some k
+        | TETuple [ { Kind = TEStr k }; _ ] -> Some k
+        | _ -> None
+
+    match e.Kind with
+    | TEVar n ->
+        match binds.TryGetValue n with
+        | true, ns -> Some ns
+        | _ -> None
+    | TEApp({ Kind = TEVar "Env.ofPairs" }, inner) -> envNamesOf binds inner
+    | TEList items -> items |> List.map pairKey |> allSome
+    | _ -> None
+
 /// walk one typed expression, mapping spans through the logical line's
 /// segment table (the same translation every diagnostic uses)
-let rec private walkExpr (site: Span -> Site) (acc: ResizeArray<Cap>) (te: TypedExpr) : unit =
+let rec private walkExpr
+    (binds: System.Collections.Generic.Dictionary<string, string list>)
+    (site: Span -> Site)
+    (acc: ResizeArray<Cap>)
+    (te: TypedExpr)
+    : unit =
     let add fact (span: Span) =
         acc.Add { Fact = fact; Site = site span }
 
@@ -114,15 +153,22 @@ let rec private walkExpr (site: Span -> Site) (acc: ResizeArray<Cap>) (te: Typed
              | TSecret -> add (SecretArgv prog) a.Span
              | _ -> ()
 
-         if envO.IsSome then
-             add (EnvWrite "env sigil") te.Span
-     | TEWithin(kind, _, _, _, _) ->
+         match envO with
+         | Some ov -> add (EnvWrite("env sigil", envNamesOf binds ov)) te.Span
+         | None -> ()
+     | TELet(n, _, v, _) ->
+         (match envNamesOf binds v with
+          | Some ns -> binds[n] <- ns
+          | None -> ())
+     | TEWithin(kind, _, arg, _, _) ->
          (match kind with
           | "tmp" -> add (TempWrite "within tmp (a temporary directory)") te.Span
           | "proc" ->
               add ProcScope te.Span
               add (TempWrite "the proc scope's spill files") te.Span
-          | "env" -> add (EnvWrite "within env") te.Span
+          | "env" ->
+              let names = arg |> Option.bind (envNamesOf binds)
+              add (EnvWrite("within env", names)) te.Span
           | "cd" -> add CwdChange te.Span
           | _ -> ())
      | TEEnvLoad(def, _) ->
@@ -186,7 +232,7 @@ let rec private walkExpr (site: Span -> Site) (acc: ResizeArray<Cap>) (te: Typed
                   add (EnvRead "a named variable (Env.get)") te.Span)
 
          // the fn side is fully handled; walk only the ARGUMENT
-         walkExpr site acc arg
+         walkExpr binds site acc arg
          skipChildren <- true
      | TEApp({ Kind = TEVar "exit" }, _) -> add (Terminates "exit") te.Span
      | TEApp({ Kind = TEVar "fail" }, _) -> add (Terminates "fail") te.Span
@@ -231,21 +277,28 @@ let rec private walkExpr (site: Span -> Site) (acc: ResizeArray<Cap>) (te: Typed
      | _ -> ())
 
     if not skipChildren then
-        childExprs te |> List.iter (walkExpr site acc)
+        childExprs te |> List.iter (walkExpr binds site acc)
 
 /// walk a checked file: the script's (line, statement) pairs plus every
 /// imported module's, transitively — the import graph IS the tree
 let rec private walkStmts (file: string) (acc: ResizeArray<Cap>) (pairs: (LogicalLine * CheckedStmt) list) : unit =
+    let binds = System.Collections.Generic.Dictionary<string, string list>()
+
     for ll, stmt in pairs do
         let site (span: Span) =
             let line, col = translate ll span.Start.Col
             { File = file; Line = line; Col = col }
 
         match stmt with
-        | CLet(_, te) -> walkExpr site acc te
-        | CLetPat(_, te) -> walkExpr site acc te
-        | CExpr te -> walkExpr site acc te
-        | CCmd te -> walkExpr site acc te
+        | CLet(n, te) ->
+            (match envNamesOf binds te with
+             | Some ns -> binds[n] <- ns
+             | None -> ())
+
+            walkExpr binds site acc te
+        | CLetPat(_, te) -> walkExpr binds site acc te
+        | CExpr te -> walkExpr binds site acc te
+        | CCmd te -> walkExpr binds site acc te
         | CType _ -> ()
         | CNoop -> ()
         | CImport lm -> walkStmts lm.AbsPath acc lm.Body
@@ -262,26 +315,27 @@ let collect (file: string) (pairs: (LogicalLine * CheckedStmt) list) : Cap list 
 let private siteStr (s: Site) = $"{s.File}:{s.Line}:{s.Col}"
 
 let private factLine (c: Cap) : string * string =
-    // (section, line)
+    // (section, message) — the site renders separately so identical
+    // messages GROUP [D:can-report]
     match c.Fact with
-    | Runs p -> "runs", $"{p}  {siteStr c.Site}"
-    | OpaqueArg i -> "opaque", $"{i} takes a program as its argument — not analyzed  {siteStr c.Site}"
-    | FsRead(m, Some p) -> "reads", $"{m} {p}  {siteStr c.Site}"
-    | FsRead(m, None) -> "reads", $"{m} (path not statically known)  {siteStr c.Site}"
-    | FsWrite(m, Some p) -> "writes", $"{m} {p}  {siteStr c.Site}"
-    | FsWrite(m, None) -> "writes", $"{m} (path not statically known)  {siteStr c.Site}"
-    | TempWrite w -> "writes", $"{w}  {siteStr c.Site}"
-    | CwdChange -> "filesystem", $"changes the working directory (within cd)  {siteStr c.Site}"
-    | Network(m, Some u) -> "network", $"{m} {u}  {siteStr c.Site}"
-    | Network(m, None) -> "network", $"{m} (url not statically known)  {siteStr c.Site}"
-    | EnvRead w -> "environment", $"reads {w}  {siteStr c.Site}"
-    | EnvWrite via -> "environment", $"sets variables for children ({via})  {siteStr c.Site}"
-    | SecretLoad w -> "secrets", $"loads {w}  {siteStr c.Site}"
-    | SecretArgv p ->
-        "secrets", $"a Secret reaches the argv of {p} (ps-visible — the stated non-claim)  {siteStr c.Site}"
-    | ProcScope -> "processes", $"a scoped background process (within proc)  {siteStr c.Site}"
-    | ProcCtl m -> "processes", $"{m}  {siteStr c.Site}"
-    | Terminates via -> "terminates", $"{via}  {siteStr c.Site}"
+    | Runs p -> "runs", p
+    | OpaqueArg i -> "opaque", $"{i} takes a program as its argument — not analyzed"
+    | FsRead(m, Some p) -> "reads", $"{m} {p}"
+    | FsRead(m, None) -> "reads", $"{m} (path not statically known)"
+    | FsWrite(m, Some p) -> "writes", $"{m} {p}"
+    | FsWrite(m, None) -> "writes", $"{m} (path not statically known)"
+    | TempWrite w -> "writes", w
+    | CwdChange -> "filesystem", "changes the working directory (within cd)"
+    | Network(m, Some u) -> "network", $"{m} {u}"
+    | Network(m, None) -> "network", $"{m} (url not statically known)"
+    | EnvRead w -> "environment", $"reads {w}"
+    | EnvWrite(via, Some ns) -> "environment", $"""sets {ns |> String.concat ", "} for children ({via})"""
+    | EnvWrite(via, None) -> "environment", $"sets variables for children ({via}; names not statically known)"
+    | SecretLoad w -> "secrets", $"loads {w}"
+    | SecretArgv p -> "secrets", $"a Secret reaches the argv of {p} (ps-visible — the stated non-claim)"
+    | ProcScope -> "processes", "a scoped background process (within proc)"
+    | ProcCtl m -> "processes", m
+    | Terminates via -> "terminates", via
 
 let private sectionOrder =
     [ "runs"
@@ -315,16 +369,49 @@ let renderHuman (script: string) (caps: Cap list) : string =
             $"  ⚠ this report is incomplete: {opaque} opaque site(s) — an interpreter's argument cannot be analyzed"
         |> ignore
 
-    let grouped = caps |> List.map factLine |> List.groupBy fst |> Map.ofList
+    // opacity marks its runs line INLINE (the header carries the count;
+    // a separate section said the same thing twice) — the opaque section
+    // itself renders only in --json [D:can-report]
+    let opaqueSites =
+        caps
+        |> List.choose (fun c ->
+            match c.Fact with
+            | OpaqueArg i -> Some(i, c.Site)
+            | _ -> None)
+        |> Set.ofList
+
+    let entries =
+        caps
+        |> List.choose (fun c ->
+            match c.Fact with
+            | OpaqueArg _ -> None
+            | Runs p when opaqueSites.Contains(p, c.Site) -> Some(("runs", $"{p} (opaque)"), c.Site)
+            | _ -> Some(factLine c, c.Site))
+
+    // identical messages group with a count, sites kept — 22 lines of
+    // `weir` carry one line of information [D:can-report]. Distinct
+    // sites stay visible, so a genuine same-line pair reads as one.
+    let grouped =
+        entries
+        |> List.groupBy fst
+        |> List.map (fun ((section, msg), hits) -> section, msg, hits |> List.map snd)
 
     for section in sectionOrder do
-        match Map.tryFind section grouped with
-        | Some lines ->
+        let lines = grouped |> List.filter (fun (sec, _, _) -> sec = section)
+
+        if not lines.IsEmpty then
             sb.AppendLine $"  {section}:" |> ignore
 
-            for _, l in lines do
-                sb.AppendLine $"    {l}" |> ignore
-        | None -> ()
+            for _, msg, sites in lines do
+                let siteList = sites |> List.map siteStr |> String.concat " "
+
+                let line =
+                    if List.length sites > 1 then
+                        $"{msg} × {List.length sites}  {siteList}"
+                    else
+                        $"{msg}  {siteList}"
+
+                sb.AppendLine $"    {line}" |> ignore
 
     if caps.IsEmpty then
         sb.AppendLine "  nothing — no commands, no filesystem, no network, no environment"
@@ -361,7 +448,12 @@ let renderJson (script: string) (caps: Cap list) : string =
             | CwdChange -> "cwd", "within cd"
             | Network(m, u) -> "network", m + (u |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
             | EnvRead x -> "env-read", x
-            | EnvWrite v -> "env-write", v
+            | EnvWrite(v, ns) ->
+                "env-write",
+                v
+                + (ns
+                   |> Option.map (fun xs -> ": " + String.concat ", " xs)
+                   |> Option.defaultValue "")
             | SecretLoad x -> "secret-load", x
             | SecretArgv p -> "secret-argv", p
             | ProcScope -> "proc-scope", "within proc"
