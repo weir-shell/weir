@@ -719,12 +719,13 @@ print x
 ls |> Seq.where _.isDirectory |> Seq.iter (fun f -> print f.name)
 ```
 ```weir
-// a symlink carries its target; everything else says None (the
-// where+iter shape runs clean even where ln -s cannot link)
+// a symlink carries its target; everything else says None. The link
+// step's exit is DATA (ln cannot link everywhere), and relative
+// paths keep the command line platform-clean
 within tmp d
-    File.write $"{d}/plain.txt" ["x"]
-    sh -c $"ln -s plain.txt {d}/link"
     within cd d
+        File.write "plain.txt" ["x"]
+        let _ = sh -c "ln -s plain.txt link 2>/dev/null" | exitCode
         ls |> Seq.where (fun f -> f.kind == Symlink) |> Seq.iter (fun f -> print $"{f.name} -> {f.target |> Option.defaultValue "?"}")
         let plain = ls |> Seq.find (fun f -> f.name == "plain.txt")
         print (show plain.target)
