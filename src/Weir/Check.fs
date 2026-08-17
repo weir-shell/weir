@@ -120,7 +120,7 @@ and TypedKind =
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
     // the RESOLVED target tree (the [D:env-enums] precedent)
     | TEFromYaml of tyName: string * shape: Yaml.Shape
-    | TETo of format: string
+    | TETo of format: string * renames: Map<string, Map<string, string>>
     | TEList of items: TypedExpr list
     | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
     | TESplat of TypedExpr
@@ -1106,7 +1106,29 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
 // the defs a shape reaches, for the reader [D:recursive-fields]: eval
 // converts nested objects without an env, so the closure rides the
 // typed node (the yamlShape pattern, by table instead of by tree)
-let rec private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty) : Map<string, RecordDef> =
+// the write-side rename table [D:wire-keys]: attrs are erased from
+// VALUES, so `to json`/`to yaml` carry their record->field->wire map
+// on the NODE, computed here at check (the adapter consumed the
+// attribute at consumption — the attribute law's shape)
+let rec wireRenamesOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, string>> =
+    let defs = jsonDefsClosure env Map.empty ty
+
+    defs
+    |> Map.toList
+    |> List.choose (fun (n, def) ->
+        let renamed =
+            def.Fields
+            |> List.choose (fun (f, _) ->
+                let w = wireName def f
+                if w <> f then Some(f, w) else None)
+
+        if renamed.IsEmpty then
+            None
+        else
+            Some(n, Map.ofList renamed))
+    |> Map.ofList
+
+and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty) : Map<string, RecordDef> =
     match ty with
     | TNamed("Option", [ inner ]) -> jsonDefsClosure env acc inner
     | TSeq elem -> jsonDefsClosure env acc elem
@@ -1158,7 +1180,8 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
                     (fun acc (fname, fty) ->
                         acc
                         |> Result.bind (fun fs ->
-                            yamlShape span env (seen.Add n) fty |> Result.map (fun s -> (fname, s) :: fs)))
+                            yamlShape span env (seen.Add n) fty
+                            |> Result.map (fun s -> (fname, wireName def fname, s) :: fs)))
                     (Ok [])
                 |> Result.map (fun fs -> Yaml.SRec(n, List.rev fs))
             | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
@@ -2427,7 +2450,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 do! jsonableElem toExpr.Span env (resolve ctx elem)
 
                 let tto =
-                    { Kind = TETo fmt
+                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -2449,7 +2472,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     | ty -> yamlableOut toExpr.Span env Set.empty ty
 
                 let tto =
-                    { Kind = TETo "yaml"
+                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -4075,7 +4098,47 @@ let private attrRegistry: Map<string, AttrArg option -> string option> =
           "Default",
           (function
           | Some(AStr _ | AInt _ | ABool _ | ADur _ | AFloat _ | ASize _) -> None
-          | None -> Some "expects a literal (string, int, float, bool, duration, or size), e.g. [<Default 10>]") ]
+          | None -> Some "expects a literal (string, int, float, bool, duration, or size), e.g. [<Default 10>]")
+          // the wire key [D:wire-keys]: reserved words and illegal
+          // identifiers are ordinary JSON/YAML keys — the field keeps a
+          // weir name, the attribute names the wire
+          "Wire",
+          (function
+          | Some(AStr s) when s <> "" -> None
+          | _ -> Some "expects the wire key as a string, e.g. [<Wire \"type\">] kind: string") ]
+
+// two fields resolving to ONE wire key is nonsense on every adapter —
+// refused at the declaration, not discovered at the boundary
+// [D:wire-keys]
+let private validateWireCollisions (recName: string) (fields: (string * Ty * AttrSpec list) list) =
+    // a collision always involves at least one [<Wire>] (field names
+    // are unique), so ONE side carries a span — report there
+    let wireOf (name: string, _: Ty, specs: AttrSpec list) =
+        specs
+        |> List.tryPick (fun a ->
+            match a.AName, a.AArg with
+            | "Wire", Some(AStr s) -> Some(s, Some a.ASpan)
+            | _ -> None)
+        |> Option.defaultValue (name, None)
+
+    let rec go (seen: Map<string, string * Span option>) rest =
+        match rest with
+        | [] -> Ok()
+        | f :: tail ->
+            let name, _, _ = f
+            let wire, spanO = wireOf f
+
+            match Map.tryFind wire seen with
+            | Some(prior, priorSpanO) ->
+                match spanO |> Option.orElse priorSpanO with
+                | Some span ->
+                    err
+                        span
+                        $"two fields of {recName} share the wire key '{wire}' ('{prior}' and '{name}') — wire identity must be unambiguous"
+                | None -> Ok() // two plain fields cannot share a name
+            | None -> go (Map.add wire (name, spanO) seen) tail
+
+    go Map.empty fields
 
 let private validateFieldAttrs (recName: string) (field: string, _: Ty, specs: AttrSpec list) =
     let conflicts a b (seen: Set<string>) (spec: AttrSpec) = spec.AName = a && Set.contains b seen
@@ -4162,6 +4225,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                         do! allOk plain (snd >> validateTy env decl.Name selfArity allowed decl.Span)
                         do! allOk fields (validateFieldAttrs decl.Name)
                         do! validateShortCollisions fields
+                        do! validateWireCollisions decl.Name fields
 
                         let attrs =
                             fields

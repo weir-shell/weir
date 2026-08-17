@@ -1,5 +1,35 @@
 # Spike Notes
 
+## wire keys: the attribute that reads the world's JSON (2026-08-17)
+
+Phase 0 settled the mechanism question fast: roughly half the
+reserved words are realistic wire keys (type, to, from, in, when,
+until near-certain), so this was never a special-case list. The
+baseline was worse than expected — the documented Map workaround has
+a hole (`from json Map<string, string>` fails to PARSE in the
+adapter slot while `Map<string, R>` parses; logged for the
+broken-spellings sweep, which keeps accumulating receipts).
+
+One attribute, named Wire rather than the rider's placeholder Json,
+because yaml shares it today and csv inherits it later — the CSV
+plan's [<Column "Total Amount">] is this attribute. The interesting
+implementation seam was the WRITE side: attributes are erased from
+values by law, so `to json` cannot look at the record it holds — the
+rename table rides the TETo node instead, computed at check. That is
+the attribute law's own shape (consumers bind at consumption) and it
+kept the erasure ruling intact rather than bending it.
+
+Two things the pins caught before CI could: the wire-collision
+refusal crashed on a zero span when the PLAIN field was the second
+collider (translate cannot take line 0 — report at whichever side
+carries the attribute), and the missing-field message needed to cite
+the wire key only when it differs. The keyword teaching finally has
+a repair to name, which was the rider's quiet best point: the error
+was always good; it just had nowhere to send you.
+
+Parser.fs changed message-text only (no grammar movement), so the
+deep-seed obligation was judged not triggered; the pinned smoke ran.
+
 ## the echo learns to stream, and buys an instrument (2026-08-17)
 
 The invisible-prompt diagnosis survived contact; the architecture
