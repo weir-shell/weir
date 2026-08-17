@@ -2293,7 +2293,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              if not (System.IO.File.Exists r || System.IO.Directory.Exists r) then
+              if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
                   failwith $"File.mode: no such path: {r}"
 
               try
@@ -2313,8 +2313,18 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                       + bit System.IO.UnixFileMode.OtherExecute "x"
 
                   VUnion("Some", Some(VStr text))
-              with :? System.PlatformNotSupportedException ->
-                  VUnion("None", None)
+              with
+              | :? System.PlatformNotSupportedException -> VUnion("None", None)
+              | :? System.IO.FileNotFoundException
+              | :? System.IO.DirectoryNotFoundException ->
+                  // the READ follows; existence does not
+                  // [D:mode-existence]: a path with a row (File.stat/ls
+                  // describe the LINK) fails here for the honest reason,
+                  // never as absent
+                  if isNull (FileInfo(r).LinkTarget) then
+                      failwith $"File.mode: no such path: {r}"
+                  else
+                      failwith $"File.mode: dangling symlink: {r} — no target to read a mode from"
           | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
       "readBytes",
       // the byte-faithful read [D:bytes]: File.read decodes leniently

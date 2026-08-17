@@ -1727,6 +1727,11 @@ WEOF
     echo "$frout" | grep -qF "plain-ok" || fail "a plain file is Regular with target None: $frout"
     echo "$frout" | grep -qF "stat-agrees-link" || fail "File.stat and ls must agree on the symlink row: $frout"
     echo "$frout" | grep -qF "dangle-ok missing" || fail "File.stat on a dangling link is a row carrying its target: $frout"
+    # File.mode agrees with File.stat about EXISTENCE [D:mode-existence]:
+    # the dangling case raises its own honest message, never "no such path"
+    mdout=$( cd "$frdir" && $BIN -e 'File.mode "z-dangle"' 2>&1 ) && fail "File.mode on a dangling link must raise: $mdout" || true
+    echo "$mdout" | grep -qF "dangling symlink" || fail "the dangling case names the dangle: $mdout"
+    echo "$mdout" | grep -qF "no such path" && fail "a path File.stat describes must not read as absent: $mdout"
     statmode=$( stat -c %A "$frdir/plain.txt" 2>/dev/null || stat -f %Sp "$frdir/plain.txt" 2>/dev/null )
     weirmode=$( echo "$frout" | tail -1 )
     [ "$weirmode" = "$(echo "$statmode" | cut -c2-10)" ] || fail "File.mode vs stat referee: weir=$weirmode stat=$statmode"

@@ -710,7 +710,10 @@ print x
   `File.mode p` gives `Some "rw-r--r--"` (`None` on Windows — the
   platform limit stated, never invented), so the 0600 check that
   should precede `File.readSecret` is
-  `File.mode p == Some "rw-------"`. Rows come back SORTED by name — ordinal, like
+  `File.mode p == Some "rw-------"`. The mode READ follows a symlink
+  (the `File.*` rule); existence does not — a dangling link raises
+  naming the dangle, agreeing with `File.stat`/`ls` about what
+  exists. Rows come back SORTED by name — ordinal, like
   `Dir.list`/`Path.glob` (case-sensitive, uppercase first; never the
   locale — coreutils inherits LC_COLLATE, weir does not), and
   `Env.vars` sorts the same way. `name` is for MATCHING and display,
