@@ -2222,6 +2222,12 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     // is a BACKTRACK position — drop those and FParsec's EOF note, and the
     // "The parser backtracked after:" opener empties and dropEmptyOpeners
     // takes it.
+    //
+    // KEPT UNDER WEIR_LOG=debug, deliberately: `go` retained these on
+    // purpose ("only BACKTRACK positions stay"), and the reason — they tell
+    // weir's own developers where the grammar gave up — is still true. What
+    // was wrong was the AUDIENCE, not the information, so this hides it
+    // rather than deleting it. The smaller reversal keeps the capability.
     let isBacktrackNoise (l: string) =
         let t = l.Trim()
 
@@ -2232,7 +2238,7 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     |> rebuildExpecting
     |> List.filter (fun l ->
         not (l.Contains Parser.internalLabelMarker || l.Contains "\\u0006")
-        && not (isBacktrackNoise l)
+        && not (not (Builtins.debugEnabled ()) && isBacktrackNoise l)
         && l.Trim() <> "")
     |> dropEmptyOpeners
     |> String.concat "\n"

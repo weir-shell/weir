@@ -1810,9 +1810,15 @@ for w in while return try def; do
         && fail "D3: reserved teaching word '$w' leaked into an expecting-list"
 done
 
-# D5: FParsec's backtracking trace is the parser talking to its author
+# D5: FParsec's backtracking trace is the parser talking to its author —
+# HIDDEN from users, not deleted: it still tells weir's own developers where
+# the grammar gave up, so WEIR_LOG=debug keeps it. Both halves are pinned,
+# because "absent by default" alone would pass if the capability were dropped.
 echo "$nw" | grep -qF "The parser backtracked after" && fail "D5: backtracking note reached the user"
 echo "$nw" | grep -qF "end of the input stream" && fail "D5: FParsec EOF note reached the user"
+nwdbg=$(WEIR_LOG=debug $BIN check "$(dirname "$0")/../weir.slnx" 2>&1) || true
+echo "$nwdbg" | grep -qF "The parser backtracked after" \
+    || fail "D5: WEIR_LOG=debug must KEEP the backtrace — hiding it is not deleting it"
 
 # D4 NEGATIVE CONTROL — without this the trigger is untested: a REAL weir
 # script whose FIRST line is broken must keep its located diagnostic and must
