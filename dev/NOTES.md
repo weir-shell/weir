@@ -1,5 +1,59 @@
 # Spike Notes
 
+## the File.stat rider: an existence lie and eleven silent members (2026-08-17)
+
+F1's premise needed correcting before its fix: the rider predicted
+File.mode raised "no such path" off a following File.Exists, but
+.NET's File.Exists is already lstat-true for a dangling link on
+Unix — so the guard PASSED and GetUnixFileMode surfaced the raw BCL
+"Could not find file". Less honest than assumed, same defect class.
+Ruling (a) landed: existence is not a mode question, so the dangling
+case now fails at the READ with its own message (link-vs-absent split
+on LinkTarget), while the mode read keeps following — the File.*
+group's consistent reading, and (b) would have prejudged the parked
+mode-on-the-row question. [D:mode-existence]
+
+F2's count was the finding: ELEVEN members with no builtinDocs entry,
+and the shape of the eleven is the argument for the check — not a
+scattering but the entire Log module (8 members, a whole module
+shipped without a single hover) plus the pmapWith/piterWith twins and
+File.mode. The check is a unit pin, not a fourth harness: the subject
+is two in-process maps (env.Modules x builtinDocs), where
+skill-surface must shell out through #help because SKILL.md is prose
+outside the binary. Shown failing at 11 before the entries landed;
+enumeration must exceed 100 before zero-missing can pass.
+[D:docs-coverage]
+
+## File.stat: the bridge, and the agreement that came free (2026-08-17)
+
+Phase 0 reshaped nothing, which is its own finding. `ls` cannot take
+a path — it is a typed VALUE, not a function, so `ls <path>` is a
+value/function overload the surface does not do (and `within cd`
+already lists elsewhere); the bridge was the right first fix, not the
+narrow one. The enumeration question answered with a probe: one
+lstat per entry, cached on the FileSystemInfo, Length/LinkTarget/
+UnixFileMode all served from it — so `mode` on the row is now
+cost-free, but it stays a query: [D:filerow]'s recorded reason was
+"narrow facts are queries, not columns", never cost, so nothing
+dissolved and nothing landed.
+
+The implementation IS the agreement argument: File.stat is lsRow over
+one resolved path, and the probe settled the construction split —
+FileInfo.Exists is lstat-true (a dangling symlink is a row, not an
+absence), directories and links-to-them take the DirectoryInfo shape
+exactly as the enumeration does. The agreement pin passed
+byte-identical on the FIRST run, all four shapes (plain, dir, live
+link, dangling) — the report-back item closes as "nothing in FileRow
+construction assumed the enumeration path", because after the reuse
+there was no second construction path to assume anything.
+
+One instrument scar, F#-side this time: the BCL probe printed nothing
+for its first run — printfn with nine format specifiers and eight
+arguments partially applies and the loop discarded the function
+silently. The suite's own parallelism caught the real hazard: a
+second setCwd test races the first (17 collateral failures in one
+run), so fileStatTests is sequenced with the reason in the comment.
+
 ## wire keys: the attribute that reads the world's JSON (2026-08-17)
 
 Phase 0 settled the mechanism question fast: roughly half the

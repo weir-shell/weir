@@ -1709,20 +1709,33 @@ if [ "$IS_WINDOWS" != "1" ]; then
     frdir=$(mkweirtmp)
     echo x > "$frdir/plain.txt"
     ln -s plain.txt "$frdir/link"
+    # z-dangle: sorts AFTER link, so the find-by-kind below still lands
+    # on the live one; a dangling link is a row, not an absence
+    ln -s missing "$frdir/z-dangle"
     cat > "$frdir/fr.weir" <<'WEOF'
 let link = ls |> Seq.find (fun f -> f.kind == Symlink)
 print $"kind-ok {link.name} {link.target |> Option.defaultValue "MISSING"}"
 let plain = ls |> Seq.find (fun f -> f.name == "plain.txt")
 if plain.target == None && plain.kind == Regular then print "plain-ok"
+if show (File.stat "link") == show link then print "stat-agrees-link"
+let dg = File.stat "z-dangle"
+if show dg == show (ls |> Seq.find (fun f -> f.name == "z-dangle")) && dg.kind == Symlink then print $"dangle-ok {dg.target |> Option.defaultValue "MISSING"}"
 print (File.mode "plain.txt" |> Option.defaultValue "none")
 WEOF
     frout=$( cd "$frdir" && $BIN fr.weir )
     echo "$frout" | grep -qF "kind-ok link plain.txt" || fail "a symlink carries kind=Symlink and its target: $frout"
     echo "$frout" | grep -qF "plain-ok" || fail "a plain file is Regular with target None: $frout"
+    echo "$frout" | grep -qF "stat-agrees-link" || fail "File.stat and ls must agree on the symlink row: $frout"
+    echo "$frout" | grep -qF "dangle-ok missing" || fail "File.stat on a dangling link is a row carrying its target: $frout"
+    # File.mode agrees with File.stat about EXISTENCE [D:mode-existence]:
+    # the dangling case raises its own honest message, never "no such path"
+    mdout=$( cd "$frdir" && $BIN -e 'File.mode "z-dangle"' 2>&1 ) && fail "File.mode on a dangling link must raise: $mdout" || true
+    echo "$mdout" | grep -qF "dangling symlink" || fail "the dangling case names the dangle: $mdout"
+    echo "$mdout" | grep -qF "no such path" && fail "a path File.stat describes must not read as absent: $mdout"
     statmode=$( stat -c %A "$frdir/plain.txt" 2>/dev/null || stat -f %Sp "$frdir/plain.txt" 2>/dev/null )
     weirmode=$( echo "$frout" | tail -1 )
     [ "$weirmode" = "$(echo "$statmode" | cut -c2-10)" ] || fail "File.mode vs stat referee: weir=$weirmode stat=$statmode"
-    echo "e2e ok: FileRow kind/target over a real symlink; File.mode agrees with stat"
+    echo "e2e ok: FileRow kind/target over a real symlink; File.stat agrees with ls (live + dangling); File.mode agrees with stat"
 else
     echo "e2e skip: FileRow symlink + mode referee (POSIX rows)"
 fi

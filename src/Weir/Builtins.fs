@@ -2293,7 +2293,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              if not (System.IO.File.Exists r || System.IO.Directory.Exists r) then
+              if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
                   failwith $"File.mode: no such path: {r}"
 
               try
@@ -2313,8 +2313,18 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                       + bit System.IO.UnixFileMode.OtherExecute "x"
 
                   VUnion("Some", Some(VStr text))
-              with :? System.PlatformNotSupportedException ->
-                  VUnion("None", None)
+              with
+              | :? System.PlatformNotSupportedException -> VUnion("None", None)
+              | :? System.IO.FileNotFoundException
+              | :? System.IO.DirectoryNotFoundException ->
+                  // the READ follows; existence does not
+                  // [D:mode-existence]: a path with a row (File.stat/ls
+                  // describe the LINK) fails here for the honest reason,
+                  // never as absent
+                  if isNull (FileInfo(r).LinkTarget) then
+                      failwith $"File.mode: no such path: {r}"
+                  else
+                      failwith $"File.mode: dangling symlink: {r} — no target to read a mode from"
           | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
       "readBytes",
       // the byte-faithful read [D:bytes]: File.read decodes leniently
@@ -2404,7 +2414,33 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   failwith $"File.size: no such file: {r}"
 
               VSize (System.IO.FileInfo r).Length
-          | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}") ]
+          | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}")
+      "stat",
+      // the bridge from paths to rows [D:file-stat]: ls's OWN
+      // constructor over one resolved path, so the two producers cannot
+      // diverge. Describes the LINK, not its target (the ls agreement);
+      // raises when absent — a dangling symlink is a row, not an absence
+      TFun(TStr, TNamed(fileRow.Name, [])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              // FileInfo.Exists is the path's OWN fact (true for a
+              // dangling link); a directory — or a link to one — takes
+              // the DirectoryInfo shape, as the enumeration does
+              let fi = FileInfo r
+
+              if fi.Exists then
+                  lsRow fi
+              else
+                  let di = DirectoryInfo r
+
+                  if di.Exists then
+                      lsRow di
+                  else
+                      failwith $"File.stat: no such path: {r}"
+          | v -> unreachable $"the checker rejects 'File.stat' on {formatValue v}") ]
 
 let private dirMembers: (string * Ty * Value) list =
     [ "create",
@@ -3676,6 +3712,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "[1; 2; 3] |> Seq.piter (fun x -> ())")
               (Some "workers fork the session (worker-local cd, dies at join).")
           |> named [ "f"; "xs" ]
+          "Seq.pmapWith",
+          bd
+              "Seq.pmap with an explicit worker count — the sizing knob for rate-limited or memory-heavy arms."
+              (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.force")
+              (Some "an explicit n is never reduced by nesting; pmap's default ladder is.")
+          |> named [ "n"; "f"; "xs" ]
+          "Seq.piterWith",
+          bd
+              "Seq.piter with an explicit worker count."
+              (Some "[1; 2; 3] |> Seq.piterWith 2 (fun x -> ())")
+              (Some "an explicit n is never reduced by nesting; piter's default ladder is.")
+          |> named [ "n"; "f"; "xs" ]
           "Seq.pfirst",
           bd
               "Race an arm over every element; the FIRST SUCCESS wins. Losers' spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm's failure is DISCARDED — if only one arm can succeed, the others' errors are hidden, so a misconfigured fan-out still looks healthy."
@@ -3849,6 +3897,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Path.combine",
           (bd "Join two path segments." (Some "Path.combine \"a\" \"b\"") None
            |> named [ "a"; "b" ])
+          "Path.under",
+          (bd
+              "The confining join: combine, normalise, then RAISE if the result escapes base — segment-wise, so uploads-evil is not under uploads. combine is for paths you control; under is for paths you do not. Purely textual (never follows symlinks or touches the disk); absolute and Windows-shaped second arguments refuse on every platform."
+              (Some "Path.under (Path.tempRoot ()) \"a/b\"")
+              None
+           |> named [ "base"; "name" ])
           "Path.tempRoot",
           (bd
               "The system temp directory (a pure query; no trailing separator, platform-native)."
@@ -3898,6 +3952,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "The file's size as a Size — compare directly (File.size p > 10MiB); Size.toBytes for the int. Raises when absent (the plain name asserts; a trySize is a park)."
               (Some
                   "let d = Path.newTempDir () in let f = $\"{d}/a.txt\" in ([\"x\"] |> File.write f) ; print $\"{File.size f}\" ; Dir.deleteAll d")
+              None
+           |> named [ "path" ])
+          "File.stat",
+          (bd
+              "The path's FileRow — ls's own row for ONE path, so `Path.glob ... |> Seq.map File.stat` turns strings into rows. Describes a symlink ITSELF (kind Symlink, target Some), not what it points at. Raises when absent — and a glob hit can vanish before stat reaches it (the glob TIMING seam)."
+              (Some
+                  "let d = Path.newTempDir () in let f = $\"{d}/a.txt\" in ([\"x\"] |> File.write f) ; print (File.stat f).name ; Dir.deleteAll d")
               None
            |> named [ "path" ])
           "Dir.create",
@@ -3969,6 +4030,62 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "File.append",
           (bd "Append a sequence of lines to a file." None None
            |> named [ "path"; "lines" ])
+          "File.mode",
+          (bd
+              "The path's permissions as rwxr-xr-x-shaped text, an Option — None on Windows (the platform limit stated, never invented). The READ follows a symlink (the File.* rule); existence does not — a dangling link raises naming the dangle. The receipt: the 0600 check before File.readSecret is File.mode p == Some \"rw-------\"."
+              (Some "File.mode \".\" |> Option.defaultValue \"none\"")
+              None
+           |> named [ "path" ])
+
+          // ---- Log [D:log-module]: STDERR always — stdout is DATA ----
+          "Log.trace",
+          (bd
+              "Write a TRACE line to stderr — the innermost-detail level, hidden unless WEIR_LOG=trace."
+              (Some "Log.trace \"entering the retry loop\"")
+              None
+           |> named [ "message" ])
+          "Log.debug",
+          (bd
+              "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is DATA — every Log member writes to stderr, a law with no stream knob."
+              (Some "Log.debug \"cache miss\"")
+              None
+           |> named [ "message" ])
+          "Log.info",
+          (bd
+              "Write an INFO line to stderr — shown by default (WEIR_LOG=level moves the threshold, case-insensitive; off silences)."
+              (Some "Log.info \"deploy starting\"")
+              None
+           |> named [ "message" ])
+          "Log.warn",
+          (bd
+              "Write a WARN line to stderr — the highest level, shown unless WEIR_LOG=off."
+              (Some "Log.warn \"lockfile missing, regenerating\"")
+              None
+           |> named [ "message" ])
+          "Log.traceWith",
+          (bd
+              "Log.trace's thunk twin: the message computes ONLY when the level passes (weir has no lazy argument position — the Option.defaultWith precedent for the expensive argument)."
+              (Some "Log.traceWith (fun () -> \"expensive detail\")")
+              None
+           |> named [ "thunk" ])
+          "Log.debugWith",
+          (bd
+              "Log.debug's thunk twin: the message computes ONLY when the level passes."
+              (Some "Log.debugWith (fun () -> \"expensive detail\")")
+              None
+           |> named [ "thunk" ])
+          "Log.infoWith",
+          (bd
+              "Log.info's thunk twin: the message computes ONLY when the level passes."
+              (Some "Log.infoWith (fun () -> \"expensive detail\")")
+              None
+           |> named [ "thunk" ])
+          "Log.warnWith",
+          (bd
+              "Log.warn's thunk twin: the message computes ONLY when the level passes."
+              (Some "Log.warnWith (fun () -> \"expensive detail\")")
+              None
+           |> named [ "thunk" ])
 
           // ---- Env ----
           "Env.get",
