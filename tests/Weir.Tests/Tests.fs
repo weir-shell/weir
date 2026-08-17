@@ -9485,7 +9485,23 @@ let envLoadTests =
                   let eCase = env |> declare "type WCase = { [<Wire \"wt_wire_zz\">] token: string }"
 
                   match Weir.Check.typecheck eCase (parse "Env.load WCase") with
-                  | Ok te2 -> Expect.throws (fun () -> eval valueEnv te2 |> ignore) "lowercase must NOT match"
+                  | Ok te2 ->
+                      // env lookup case-sensitivity is the PLATFORM's, not weir's: weir does
+                      // an EXACT lookup and never case-maps, but the Windows environment block
+                      // is itself case-insensitive, so the same exact lookup finds WT_WIRE_ZZ
+                      // there. Pinned TWO-SIDED so neither half can be 'fixed' away.
+                      if System.OperatingSystem.IsWindows() then
+                          match eval valueEnv te2 with
+                          | VRecord(_, fs) ->
+                              Expect.equal
+                                  (Weir.Eval.recGet "token" fs)
+                                  (VStr "hello")
+                                  "the Windows env block is case-insensitive"
+                          | v -> failtest $"unexpected {formatValue v}"
+                      else
+                          Expect.throws
+                              (fun () -> eval valueEnv te2 |> ignore)
+                              "on POSIX a lowercase wire must NOT match"
                   | Error terr -> failtest (formatError terr)
 
                   // the miss names the VARIABLE, not the field — the defect itself

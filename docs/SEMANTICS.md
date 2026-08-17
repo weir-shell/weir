@@ -1009,7 +1009,9 @@ quantity semantics now.
 - **`Env.load T`** (2026-07-20) — the third typed-boundary instance
   (from json, env; the porcelain adapter, since retired): declare a monomorphic record whose
   field names are env-var names VERBATIM unless `[<Wire "NAME">]` names
-  the variable instead [D:wire-keys] (no case mapping either way —
+  the variable instead [D:wire-keys] (weir applies no case mapping either
+  way; the Windows environment block is itself case-insensitive, so a
+  differently-cased name resolves there and not on POSIX —
   conventions guess at deployments; verbatim is inspectable), fields
   scalars or Option-of-scalar (bool is EXACTLY true/false — 1/yes
   rejected; Option: absent = None, garbage = still an error). Reads

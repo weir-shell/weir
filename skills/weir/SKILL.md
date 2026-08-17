@@ -1128,8 +1128,10 @@ print c.flag
   `Env.load Config` for typed config — declare
   `type Config = { PORT: int; DEBUG: bool; TOKEN: Option<string> }`
   (field names = env-var names VERBATIM unless `[<Wire "NAME">]` says
-  otherwise — the name stays EXACT either way, since only enum VALUES
-  are case-insensitive; scalars, 0-arity-case enum
+  otherwise — weir never case-maps the name, since only enum VALUES are
+  case-insensitive; note the WINDOWS environment block is itself
+  case-insensitive, so a differently-cased name resolves there and not
+  on POSIX — that difference is the platform's, not weir's; scalars, 0-arity-case enum
   unions, + Option of these; bool is exactly true/false), load once,
   typed thereafter; every missing/garbage field reported in ONE
   error. An ENUM field (`type Lvl = Debug | Info` + `LOG_LEVEL:
