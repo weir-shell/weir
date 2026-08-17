@@ -2151,7 +2151,10 @@ let run (debug: bool) : int =
                                 let items =
                                     match repaired with
                                     | Some fields when not fields.IsEmpty -> fields
-                                    | _ -> Complete.suggest env upto wordStart
+                                    | _ ->
+                                        // binders may sit on EARLIER lines —
+                                        // the whole doc is the binder scope
+                                        Complete.suggestScoped env text upto wordStart
 
                                 // line-head position: PATH commands join (the
                                 // command-mode classifier's territory)

@@ -107,7 +107,78 @@ let private filesystemComplete (word: string) : string list =
     with _ ->
         []
 
-let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
+// a word in command ARGV completes as a PATH [D:complete-argv]: after
+// a literal command head everything is an argv word — fields, members,
+// and the keyword pool are expression furniture (`micro publish.`
+// offered every record field weir knows, unioned). The head test is
+// the resolver's own approximation: an identifier- or path-shaped
+// first token that no binding, builtin, or module claims — or a ^
+// forced external.
+let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
+    let stmt =
+        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+        (if i >= 0 then before.Substring(i + 1) else before).TrimStart()
+
+    // |> and a spaced = are expression furniture — `xs |> from` is a
+    // pipeline whose head happens to be unbound, not a command
+    // an unclosed '(' puts the cursor in EXPRESSION position — a
+    // command's parenthesized argument is the interior grammar
+    let parenDepth =
+        stmt
+        |> Seq.fold
+            (fun d c ->
+                if c = '(' then d + 1
+                elif c = ')' then d - 1
+                else d)
+            0
+
+    if stmt.Contains "|>" || stmt.Contains " = " || parenDepth > 0 then
+        false
+    else
+        match
+            stmt.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
+            |> Array.tryHead
+        with
+        | None -> false
+        | Some h when h.StartsWith "^" -> true
+        | Some h when h.StartsWith "./" || h.StartsWith "/" -> true
+        | Some h ->
+            h.Length > 0
+            && (System.Char.IsLetter h[0] || h[0] = '_')
+            && not (h.Contains '.')
+            && not (Weir.Parser.keywords.Contains h)
+            && not (Map.containsKey h env.Values)
+            && not (Map.containsKey h env.Modules)
+
+// binder evidence in the raw TEXT [D:complete-argv]: lambda params,
+// let/for/within binders are lexically visible even when no typed tree
+// exists — the declared-fields fallback keys on THIS, so an unbound
+// scrutinee offers nothing (a wrong suggestion is worse than none, the
+// D5 rule) while a mid-edit param keeps the high-signal union
+let private lexicallyBound (name: string) (text: string) : bool =
+    let re (pat: string) =
+        [ for m in System.Text.RegularExpressions.Regex.Matches(text, pat) -> m.Groups[1].Value ]
+
+    let funParams =
+        re @"\bfun\s+([A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*)"
+        |> List.collect (fun g -> g.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList)
+
+    // a let's PARAMS are binders too: `let quality t =` binds t
+    let letParams =
+        re @"\blet\s+[A-Za-z_]\w*((?:\s+[A-Za-z_]\w*)+)\s*="
+        |> List.collect (fun g -> g.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList)
+
+    funParams
+    @ letParams
+    @ re @"\blet\s+([A-Za-z_]\w*)"
+    @ re @"\bfor\s+([A-Za-z_]\w*)"
+    @ re @"\bwithin\s+\w+\s+([A-Za-z_]\w*)"
+    |> List.contains name
+
+// the binder SCOPE can be wider than the completion text: the LSP
+// completes one line but its binders (a let's params two lines up)
+// live in the whole document [D:complete-argv]
+let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart: int) : string list =
     let word =
         if wordStart >= text.Length then
             ""
@@ -259,10 +330,16 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                             | Error _ -> None
                             | Ok te ->
                                 match te.Ty with
-                                | TVar _ ->
+                                | TVar _ when
+                                    not (
+                                        System.Text.RegularExpressions.Regex.IsMatch(slice.Trim(), @"^[A-Za-z_]\w*$")
+                                        && not (lexicallyBound (slice.Trim()) binderScope)
+                                    )
+                                    ->
                                     // unresolved source — the declared-fields
-                                    // fallback, the dotted arm's precedent
-                                    // [D:declared-fields-fallback]
+                                    // fallback, the dotted arm's precedent;
+                                    // a bare UNBOUND identifier source gets
+                                    // nothing instead [D:complete-argv]
                                     env.Types
                                     |> Map.toList
                                     |> List.collect (fun (_, def) ->
@@ -271,6 +348,7 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                                         | Union _ -> [])
                                     |> List.distinct
                                     |> Some
+                                | TVar _ -> Some []
                                 | ty ->
                                     match recordFields env ty with
                                     | Some fields -> Some(fields |> List.map fst)
@@ -282,6 +360,10 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
 
         if word.StartsWith "~" || word.Contains '/' then
             // an explicit path word — filesystem entries [D:repl-quality]
+            filesystemComplete word
+        elif commandArgvPosition env before then
+            // argv position [D:complete-argv]: paths, nothing else — the
+            // pool, fields, and members are expression furniture
             filesystemComplete word
         elif word.Contains '.' then
             let segments = word.Split '.'
@@ -342,10 +424,10 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                     match recordFields env ty with
                     | Some fields -> render (fields |> List.map fst)
                     | None -> []
-                | None ->
-                    // UNRESOLVABLE head: lambda/function params are never in
-                    // the env, and a mid-edit statement has no typed tree.
-                    // Nominal records make the fallback high-signal — offer
+                | None when lexicallyBound head binderScope ->
+                    // UNRESOLVABLE but lexically BOUND head (a lambda
+                    // param, a mid-edit binder): no typed tree, but the
+                    // nominal records keep the fallback high-signal —
                     // every declared record's fields
                     // [D:declared-fields-fallback]
                     env.Types
@@ -356,6 +438,11 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
                         | Union _ -> [])
                     |> List.distinct
                     |> render
+                | None ->
+                    // UNBOUND head: no binding, no type, no basis for any
+                    // candidate — nothing beats the union of everything
+                    // [D:complete-argv]
+                    []
         elif valueSlotCandidates.IsSome then
             valueSlotCandidates.Value
             |> List.filter (fun c -> c.StartsWith word && c <> word)
@@ -467,6 +554,10 @@ let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list =
 // text — holes for stragglers — then reads the head identifier's
 // INFERRED type at its column. Row types from the statement's other
 // uses of the param surface here.
+/// the single-text entry: the completion text IS the binder scope
+/// (the REPL's one logical line)
+let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list = suggestScoped env text text wordStart
+
 let fieldsAtRepaired
     (parse: string -> Result<Weir.Ast.Stmt, string>)
     (env: TypeEnv)

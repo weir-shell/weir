@@ -1,5 +1,32 @@
 # Spike Notes
 
+## the completer meets argv (2026-08-17)
+
+The union-of-every-field repro decomposed exactly as the rider
+predicted: no command-position gate anywhere in the completer, and a
+declared-fields fallback that fired on any unresolved head. Path
+completion already existed (filesystemComplete) — it was just never
+wired for argv words, so the fix was a gate, not a feature. The
+membership sweep answer: every other thing the completer offers is
+expression furniture, and argv gated none of it; one early branch now
+covers the class rather than the instance.
+
+The binding-vs-resolution question came out on the binding side: a
+lambda or let param that types to nothing keeps the high-signal
+union (that was always the fallback's purpose), an unbound name gets
+nothing. The subtlety was WHERE the binder evidence lives — the LSP
+completes one line, but `let quality t =` sits two lines up, so
+suggest split into suggestScoped(binderScope, text); the REPL's
+logical line is both texts at once. The e2e LSP probe (bicep lint
+(t. — a param, a command head, AND an unclosed paren in one line)
+forced both refinements the unit pins missed: let-params as binders,
+and unclosed parens as expression interior.
+
+One tooling scar for the log: a python-heredoc \b became a literal
+BACKSPACE in an F# regex — the word boundary silently never matched,
+and only cat -A showed it. Escape-sensitive strings do not survive
+python string literals; write them raw or check the bytes.
+
 ## FileRow: one row, and the table learns two tricks (2026-08-17)
 
 The ruling did the shaping: no -la dichotomy, so the session was two
