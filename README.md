@@ -8,11 +8,11 @@ instead of halfway through its side effects.
 
 ```
 weir> ls |> Seq.sortByDescending _.bytes
-   age     bytes  hidden  isDirectory  name       path              readOnly
-──────  ────────  ──────  ───────────  ─────────  ────────────────  ────────
- 956ms     4 MiB  false   false        core.dump  /tmp/w/core.dump  false
- 827ms  88.8 KiB  false   false        build.log  /tmp/w/build.log  false
-2.131s       0 B  false   true         logs       /tmp/w/logs       false
+name       kind          bytes  modified  hidden  path
+─────────  ─────────  ────────  ────────  ──────  ────────────────
+core.dump  Regular       4 MiB  just now  false   /tmp/w/core.dump
+build.log  Regular    88.7 KiB  just now  false   /tmp/w/build.log
+logs       Directory       0 B  just now  false   /tmp/w/logs
 : seq<FileRow>
 
 weir> ls |> where (fun f -> f.bytse > 10MiB)

@@ -353,7 +353,7 @@ let evalTests =
                   (VSeq [ Weir.Builtins.file "c.log" 1048576 false ])
           }
           test "where by bool field" {
-              expectValue "ls |> where (fun f -> f.readOnly)" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
+              expectValue "ls |> where (fun f -> f.hidden)" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "first truncates" {
               expectValue
@@ -424,12 +424,12 @@ let evalTests =
           test "closure captures environment" { expectValue "let y = 40 in (fun x -> x + y) 2" (VInt 42) }
           test "partially applied polymorphic builtin stays polymorphic" {
               expectValue
-                  "let firstTwo = first 2 in ls |> firstTwo |> where (fun f -> f.readOnly)"
+                  "let firstTwo = first 2 in ls |> firstTwo |> where (fun f -> f.hidden)"
                   (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "lambda in polymorphic position without data now checks via rows" {
               expectValue
-                  "let staged = where (fun f -> f.readOnly) in ls |> staged"
+                  "let staged = where (fun f -> f.hidden) in ls |> staged"
                   (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "shadowing" { expectValue "let x = 1 in let x = 2 in x" (VInt 2) }
@@ -891,7 +891,7 @@ let polymorphismTests =
     testList
         "Pipe-directed instantiation"
         [ test "where instantiates from the piped seq" {
-              Expect.equal (checkOk "ls |> where (fun f -> f.readOnly)").Ty Weir.Builtins.seqFileRow ""
+              Expect.equal (checkOk "ls |> where (fun f -> f.hidden)").Ty Weir.Builtins.seqFileRow ""
           }
           test "map changes the element type" {
               Expect.equal (checkOk "ls |> map (fun f -> f.bytes)").Ty (TSeq TSize) ""
@@ -903,7 +903,7 @@ let polymorphismTests =
               Expect.equal (run "nats |> map double |> take 3" |> forceSeq) [ VInt 0; VInt 2; VInt 4 ] ""
           }
           test "full application instantiates from the trailing data argument" {
-              expectValue "where (fun f -> f.readOnly) ls |> first 1" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
+              expectValue "where (fun f -> f.hidden) ls |> first 1" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "instantiation mismatch is reported" {
               Expect.stringContains
@@ -945,10 +945,9 @@ let boundaryTests =
               // change is a wire-boundary change, stated and pinned
               let m = (checkErr "ls |> to json").Message
 
-              Expect.stringContains
-                  m
-                  "is not representable in JSON"
-                  "the refusal names a unit type (age precedes bytes alphabetically)"
+              // the first refusing field moved with the reshape: kind's
+              // union now leads (declaration order) [D:filerow]
+              Expect.stringContains m "'FileKind' is a union, which is not admitted" "the refusal names the union field"
           }
           test "json roundtrip preserves rows (the jsonable stand-in)" {
               let src =
@@ -1687,7 +1686,7 @@ let shorthandTests =
               expectParse "where _.readOnly" "(where (fun _ _.readOnly))"
           }
           test "where with shorthand filters" {
-              expectValue "ls |> where _.readOnly" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
+              expectValue "ls |> where _.hidden" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "map with shorthand projects" {
               Expect.equal (checkOk "ls |> map _.bytes").Ty (TSeq TSize) ""
@@ -1878,11 +1877,11 @@ let completionTests =
                   (suggest text (text.Length - 2))
                   [ "f.bytes"
                     "f.hidden"
-                    "f.isDirectory"
+                    "f.kind"
                     "f.modified"
                     "f.name"
                     "f.path"
-                    "f.readOnly" ]
+                    "f.target" ]
                   ""
           }
           test "lambda param completes inside a record literal (the user receipt)" {
@@ -1892,11 +1891,11 @@ let completionTests =
                   (suggest text (text.Length - 2))
                   [ "x.bytes"
                     "x.hidden"
-                    "x.isDirectory"
+                    "x.kind"
                     "x.modified"
                     "x.name"
                     "x.path"
-                    "x.readOnly" ]
+                    "x.target" ]
                   ""
           }
           test "mid-line cursor: callers truncate at the cursor (the contract)" {
@@ -1913,11 +1912,11 @@ let completionTests =
                   (suggest upto ws)
                   [ "x.bytes"
                     "x.hidden"
-                    "x.isDirectory"
+                    "x.kind"
                     "x.modified"
                     "x.name"
                     "x.path"
-                    "x.readOnly" ]
+                    "x.target" ]
                   "truncated: fields"
 
               Expect.equal (suggest full ws) [] "untruncated would kill every match"
@@ -1987,7 +1986,7 @@ let rowTests =
           }
           test "row-typed filter discharges against FileRow" {
               expectValue
-                  "let staged = where _.readOnly in ls |> staged"
+                  "let staged = where _.hidden in ls |> staged"
                   (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "one row-polymorphic projection reused across two record types" {
@@ -6170,7 +6169,7 @@ let optionSweepTests =
           }
           test "Seq.tryFind is data-last and Option-returning" {
               expectValue
-                  "ls |> Seq.tryFind _.readOnly |> Option.map _.name |> Option.defaultValue \"none\""
+                  "ls |> Seq.tryFind _.hidden |> Option.map _.name |> Option.defaultValue \"none\""
                   (VStr "b.bin")
 
               expectValue
@@ -6206,7 +6205,7 @@ let moduleTests =
                   (VInt 7)
           }
           test "bare hot-path aliases still bind" {
-              expectValue "ls |> where _.readOnly |> map _.name |> head" (VStr "b.bin")
+              expectValue "ls |> where _.hidden |> map _.name |> head" (VStr "b.bin")
               expectValue "split \",\" \"a,b\" |> join \";\"" (VStr "a;b")
           }
           test "the bare-alias ALLOWLIST: a new module CANNOT steal a bare alias [D:bare-allowlist]" {
@@ -6854,10 +6853,10 @@ let boolBranchTests =
               Expect.stringContains (formatError terr) "add an else" "names the fix"
           }
           test "row constraints merge across branches" {
-              let te = checkOk "fun f -> if f.readOnly then f.bytes else 0B"
+              let te = checkOk "fun f -> if f.hidden then f.bytes else 0B"
 
               Expect.equal
-                  (Weir.Check.typecheck env (parse "ls |> Seq.map (fun f -> if f.readOnly then f.bytes else 0B)")
+                  (Weir.Check.typecheck env (parse "ls |> Seq.map (fun f -> if f.hidden then f.bytes else 0B)")
                    |> Result.isOk)
                   true
                   "discharges against FileRow"
@@ -6868,15 +6867,14 @@ let boolBranchTests =
           }
           test "branch-merged row constraints conflict at discharge, not before" {
               // pre-discharge: both fields legally share one row variable
-              let te = checkOk "fun f -> if f.readOnly then f.name else f.bytes"
+              let te = checkOk "fun f -> if f.hidden then f.name else f.bytes"
 
               match te.Ty with
               | TFun(TRowVar _, TVar _) -> ()
               | t -> failtest $"expected a row-constrained function, got {formatTy t}"
 
               // discharge against FileRow exposes the Name/bytes conflict
-              let terr =
-                  checkErr "ls |> Seq.map (fun f -> if f.readOnly then f.name else f.bytes)"
+              let terr = checkErr "ls |> Seq.map (fun f -> if f.hidden then f.name else f.bytes)"
 
               Expect.stringContains (formatError terr) "expected" "conflict surfaces at discharge"
           }
@@ -7523,7 +7521,7 @@ let showTests =
               expectValue
                   "show (ls |> Seq.head)"
                   (VStr
-                      "{ name = \"a.txt\"; bytes = 0 B; modified = 1970-01-01T00:00:00Z; isDirectory = false; hidden = false; readOnly = false; path = \"a.txt\" }")
+                      "{ name = \"a.txt\"; kind = Regular; target = None; bytes = 0 B; modified = 1970-01-01T00:00:00Z; hidden = false; path = \"a.txt\" }")
           }
           test "unions, seqs, scalars" {
               expectValue "show (Some 3)" (VStr "Some 3")
@@ -9207,9 +9205,7 @@ let operatorTests =
           test "not builtin" {
               expectValue "not true" (VBool false)
 
-              expectValue
-                  "ls |> where (fun f -> not f.readOnly) |> first 1"
-                  (VSeq [ Weir.Builtins.file "a.txt" 0 false ])
+              expectValue "ls |> where (fun f -> not f.hidden) |> first 1" (VSeq [ Weir.Builtins.file "a.txt" 0 false ])
           }
           test "and-or require bools" {
               Expect.stringContains (checkErr "1 && 2").Message "'&&' is not defined for int" ""
@@ -10397,7 +10393,7 @@ let fileRowSizeTests =
               expectValue
                   "show (ls |> where (fun f -> f.name == \"b.bin\") |> Seq.head)"
                   (VStr
-                      "{ name = \"b.bin\"; bytes = 5 MiB; modified = 1970-01-01T00:00:00Z; isDirectory = false; hidden = false; readOnly = true; path = \"b.bin\" }")
+                      "{ name = \"b.bin\"; kind = Regular; target = None; bytes = 5 MiB; modified = 1970-01-01T00:00:00Z; hidden = true; path = \"b.bin\" }")
           }
           test "sortBy crosses the class boundary: Ord admits Size" {
               expectValue "ls |> Seq.sortByDescending _.bytes |> first 1 |> map _.name" (VSeq [ VStr "b.bin" ])
@@ -10506,7 +10502,9 @@ let lsSortTests =
               | Some(header :: _, _) ->
                   Expect.isTrue (header.StartsWith "name") "name leads"
 
-                  for col in [ "bytes"; "hidden"; "isDirectory"; "modified"; "name"; "path"; "readOnly" ] do
+                  // target is absent BY THE HIDING RULE (all fixture rows
+                  // carry None) [D:filerow] — its reappearance is its own pin
+                  for col in [ "bytes"; "hidden"; "kind"; "modified"; "name"; "path" ] do
                       Expect.stringContains header col $"column present: {col}"
 
                   Expect.isTrue
@@ -10515,6 +10513,68 @@ let lsSortTests =
                        && header.IndexOf "readOnly" < header.IndexOf "path")
                       "declaration order holds"
               | other -> failtest $"expected a table, got {other}"
+          } ]
+
+let fileRowReshapeTests =
+    // the FileRow reshape [D:filerow]: kind not isDirectory, target for
+    // symlinks, readOnly retired, relative table cell, all-None hiding
+    testList
+        "FileRow reshape"
+        [ test "the retired fields TEACH, not 'no field'" {
+              Expect.stringContains
+                  (checkErr "ls |> Seq.map _.isDirectory").Message
+                  "replaced by 'kind'"
+                  "isDirectory teaches its replacement"
+
+              Expect.stringContains
+                  (checkErr "ls |> Seq.map _.readOnly").Message
+                  "File.mode"
+                  "readOnly names the query that superseded it"
+          }
+          test "kind compares against the union cases; target is an Option" {
+              expectValue "ls |> where (fun f -> f.kind == Regular) |> Seq.length" (VInt 4L)
+              expectValue "ls |> Seq.map _.target |> Seq.choose (fun t -> t) |> Seq.length" (VInt 0L)
+          }
+          test "the table renders modified RELATIVELY while show keeps ISO — one pin, both halves" {
+              // the Duration split's twin [D:filerow]: assert together or
+              // the split is not pinned
+              let nowMs = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+              let row = Weir.Builtins.file "a.txt" 0 false
+
+              match Weir.Eval.echoTable None None (VSeq [ row ]) with
+              | Some(header :: _ :: body :: _, _) ->
+                  Expect.stringContains header "modified" "the column is shown"
+                  Expect.stringContains body "years ago" "epoch-modified renders relatively in the CELL"
+              | other -> failtest $"no table: {other}"
+
+              match runWith [] "show (ls |> Seq.head)" with
+              | VStr shown -> Expect.stringContains shown "1970-01-01T00:00:00Z" "show keeps ISO"
+              | v -> failtest $"show: {v}"
+
+              Expect.equal (Weir.Eval.relativeInstant nowMs (nowMs - 5000L)) "just now" "seconds"
+              Expect.equal (Weir.Eval.relativeInstant nowMs (nowMs - 300_000L)) "5 minutes ago" "minutes"
+              Expect.equal (Weir.Eval.relativeInstant nowMs (nowMs - 7L * 86_400_000L)) "a week ago" "the nushell line"
+              Expect.equal (Weir.Eval.relativeInstant nowMs (nowMs + 3L * 86_400_000L)) "in 3 days" "the future mirrors"
+          }
+          test "an all-None optional column HIDES; one Some brings it back" {
+              let plain = Weir.Builtins.file "a.txt" 0 false
+
+              let linked =
+                  Weir.Eval.recSet
+                      "target"
+                      (Weir.Eval.VUnion("Some", Some(Weir.Eval.VStr "/etc/hostname")))
+                      (match plain with
+                       | Weir.Eval.VRecord(_, fs) -> fs
+                       | _ -> failtest "fixture")
+                  |> fun fs -> Weir.Eval.VRecord("FileRow", fs)
+
+              match Weir.Eval.echoTable None None (VSeq [ plain ]) with
+              | Some(header :: _, _) -> Expect.isFalse (header.Contains "target") "all-None hides"
+              | other -> failtest $"no table: {other}"
+
+              match Weir.Eval.echoTable None None (VSeq [ plain; linked ]) with
+              | Some(header :: _, _) -> Expect.stringContains header "target" "one Some restores the column"
+              | other -> failtest $"no table: {other}"
           } ]
 
 let lsTruthTests =
@@ -10545,11 +10605,14 @@ let lsTruthTests =
                       | Error terr -> failtest (formatError terr)
 
                   try
-                      match runLive "ls |> Seq.where _.isDirectory |> Seq.map _.name" |> forceSeq with
+                      match
+                          runLive "ls |> Seq.where (fun f -> f.kind == Directory) |> Seq.map _.name"
+                          |> forceSeq
+                      with
                       | [ VStr "sub" ] -> ()
                       | other -> failtest $"the subdirectory must list: {other}"
 
-                      match runLive "(ls |> Seq.where _.isDirectory |> Seq.head).bytes" with
+                      match runLive "(ls |> Seq.where (fun f -> f.kind == Directory) |> Seq.head).bytes" with
                       | VSize 0L -> ()
                       | other -> failtest $"a directory's bytes is 0 B, honestly: {other}"
 
@@ -13435,6 +13498,7 @@ let allTests =
           lspCrossFileTests
           withinKindsTests
           withinAlwaysLockTests
+          fileRowReshapeTests
           adapterFormTests
           hoverResidueTests
           schemaHoverTests

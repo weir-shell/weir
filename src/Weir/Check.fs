@@ -48,6 +48,18 @@ let private retiredMember (m: string) (field: string) : string option =
     | "Seq", "filter" -> Some "weir's filter is 'Seq.where' — one name per operation"
     | _ -> None
 
+// retired FIELDS teach their replacement at the access site
+// [D:filerow] — "no field" on a renamed field is the wrong lesson
+let private retiredField (record: string) (field: string) : string option =
+    match record, field with
+    | "FileRow", "isDirectory" ->
+        Some
+            "replaced by 'kind' — a FileKind fact, not a bool answer: f.kind == Directory (cases: Regular | Directory | Symlink)"
+    | "FileRow", "readOnly" ->
+        Some
+            "removed — it was one permission bit dressed as a column; File.mode p gives the whole string (rw-r--r--), None on Windows"
+    | _ -> None
+
 let private retiredBare (name: string) : string option =
     match name with
     | "toList" -> Some "weir has no list type; 'force' is the materializer"
@@ -691,8 +703,11 @@ and private dischargeRow
                     // re-anchored at the access like its no-field sibling
                     | Error e -> atAccess field fspan e.Message
                 | None ->
-                    let hint = didYouMean field (List.map fst def.Fields)
-                    atAccess field fspan $"{name} has no field '{field}'{hint}"))
+                    match retiredField name field with
+                    | Some teach -> atAccess field fspan $"'{field}' is retired: {teach}"
+                    | None ->
+                        let hint = didYouMean field (List.map fst def.Fields)
+                        atAccess field fspan $"{name} has no field '{field}'{hint}"))
     | Some(Union _) -> err span $"{name} is a union; only records have fields"
     | None -> err span $"unknown type '{name}'"
 
@@ -2557,8 +2572,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                               Ty = substParams def.Params targs fieldTy
                               Span = expr.Span }
                     | None ->
-                        let hint = didYouMean field (List.map fst def.Fields)
-                        return! err fieldSpan $"{typeName} has no field '{field}'{hint}"
+                        match retiredField typeName field with
+                        | Some teach -> return! err fieldSpan $"'{field}' is retired: {teach}"
+                        | None ->
+                            let hint = didYouMean field (List.map fst def.Fields)
+                            return! err fieldSpan $"{typeName} has no field '{field}'{hint}"
                 | Some(Union _) ->
                     return! err fieldSpan $"{typeName} is a union; match on it instead of accessing fields"
                 | None -> return! err target.Span $"unknown type '{typeName}'"

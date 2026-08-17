@@ -398,6 +398,47 @@ let echoValue (cap: int option) (v: Value) : string * string option =
 // except strings, which drop their quotes (a display, not a literal);
 // columns are alphabetical (show's own field law); numeric-ish columns
 // right-align. Widths are char counts (the wrap math's assumption).
+/// "a week ago" — the table's rendering of an Instant [D:filerow];
+/// show/interpolation keep ISO (assert BOTH or the split is unpinned)
+let relativeInstant (nowMs: int64) (ms: int64) : string =
+    let past = ms <= nowMs
+    let s = abs (nowMs - ms) / 1000L
+
+    let phrase =
+        if s < 45L then
+            "moments"
+        elif s < 90L then
+            "a minute"
+        elif s < 2700L then
+            $"{(s + 30L) / 60L} minutes"
+        elif s < 5400L then
+            "an hour"
+        elif s < 79200L then
+            $"{(s + 1800L) / 3600L} hours"
+        elif s < 129600L then
+            "a day"
+        elif s < 604800L then
+            $"{(s + 43200L) / 86400L} days"
+        elif s < 907200L then
+            "a week"
+        elif s < 2629800L then
+            $"{(s + 302400L) / 604800L} weeks"
+        elif s < 3944700L then
+            "a month"
+        elif s < 31557600L then
+            $"{(s + 1314900L) / 2629800L} months"
+        elif s < 47336400L then
+            "a year"
+        else
+            $"{(s + 15778800L) / 31557600L} years"
+
+    if phrase = "moments" then
+        (if past then "just now" else "moments away")
+    elif past then
+        $"{phrase} ago"
+    else
+        $"in {phrase}"
+
 let rec private tableCell (v: Value) : (string * bool) option =
     // (text, numericish) — numericish drives right-alignment
     match v with
@@ -413,9 +454,10 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VSize _
     | VBytes _
     | VDur _ -> Some(formatWith echoLimits 0 v, true)
-    // fixed-width ISO, text-aligned — a timestamp column reads as a
-    // label, not a magnitude [D:instant]
-    | VInstant _ -> Some(formatWith echoLimits 0 v, false)
+    // RELATIVE in the table, ISO everywhere else [D:filerow]: the
+    // Duration split (lossless show, abbreviated cell) — no staleness,
+    // the row carries the absolute Instant and this renders at echo
+    | VInstant ms -> Some(relativeInstant (System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) ms, false)
     | VBool b -> Some((if b then "true" else "false"), false)
     | VSecret _ -> Some("***", false)
     | VUnion("None", None) -> Some("", false)
@@ -462,10 +504,26 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
 
             let keys0 = f0 |> List.map fst
 
+            // an all-None optional column HIDES [D:filerow]: a column
+            // that says nothing on every shown row costs width saying
+            // it — general table rule, not a FileRow special case; one
+            // Some anywhere and the column is back
+            let allNone k =
+                visible
+                |> List.forall (fun r ->
+                    match r with
+                    | VRecord(_, f) ->
+                        match recTryGet k f with
+                        | Some(VUnion("None", None)) -> true
+                        | _ -> false
+                    | _ -> false)
+
+            let showKeys = keys0 |> List.filter (allNone >> not)
+
             let cellsOf (r: Value) =
                 match r with
                 | VRecord(n, f) when n = n0 && (f |> List.map fst) = keys0 ->
-                    keys0
+                    showKeys
                     |> List.map (fun k -> tableCell (recGet k f))
                     |> List.fold
                         (fun acc c ->
@@ -485,7 +543,7 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                 let truncated = clipped
 
                 let numeric =
-                    [ 0 .. keys0.Length - 1 ]
+                    [ 0 .. showKeys.Length - 1 ]
                     |> List.map (fun i ->
                         rows
                         |> List.forall (fun r ->
@@ -493,8 +551,8 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                             num || t = ""))
 
                 let widths =
-                    [ 0 .. keys0.Length - 1 ]
-                    |> List.map (fun i -> rows |> List.fold (fun w r -> max w (fst r[i]).Length) keys0[i].Length)
+                    [ 0 .. showKeys.Length - 1 ]
+                    |> List.map (fun i -> rows |> List.fold (fun w r -> max w (fst r[i]).Length) showKeys[i].Length)
 
                 // terminal-width clamping [D:table-polish]: the WIDEST
                 // column above its floor absorbs the clip (path,
@@ -504,8 +562,8 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                 let widths =
                     match width with
                     | Some termW ->
-                        let sep = 2 * (keys0.Length - 1)
-                        let floorOf i = max 5 keys0[i].Length
+                        let sep = 2 * (showKeys.Length - 1)
+                        let floorOf i = max 5 showKeys[i].Length
 
                         let rec shrink (ws: int list) =
                             let total = List.sum ws + sep
@@ -547,7 +605,7 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                 let line (cells: string list) =
                     (cells |> List.mapi pad |> String.concat "  ").TrimEnd()
 
-                let header = line keys0
+                let header = line showKeys
                 let rule = line (widths |> List.map (fun w -> System.String('\u2500', w)))
                 let body = rows |> List.map (fun r -> line (r |> List.map fst))
                 let ellipsisRow = if truncated then [ "…" ] else []

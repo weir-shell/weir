@@ -17,16 +17,29 @@ let fileRow: RecordDef =
         // name leads (the ls-rider's ask), path trails (the widest
         // column reads best at the edge)
         [ "name", TStr
+          // kind, not isDirectory [D:filerow]: a fact, not an answer —
+          // and it extends (Symlink needed no new column). `type` is a
+          // keyword; `kind` is the fallback the plan named
+          "kind", TNamed("FileKind", [])
+          // the one fact no File.* query can answer [D:filerow]
+          "target", TNamed("Option", [ TStr ])
           "bytes", TSize
           // the file's OWN fact [D:instant]: replaced age (derived,
           // snapshotted per pull, stale after binding)
           "modified", TInstant
-          "isDirectory", TBool
           "hidden", TBool
-          "readOnly", TBool
           "path", TStr ]
       Attrs = Map.empty
       Docs = Map.empty }
+
+// the row's kind axis [D:filerow]: module names are load-bearing
+// (`File`/`Dir` as cases would turn Dir.create into field access on a
+// union), so the cases are Regular (POSIX's own term), Directory,
+// Symlink
+let fileKind: UnionDef =
+    { Name = "FileKind"
+      Params = []
+      Cases = [ "Regular", None; "Directory", None; "Symlink", None ] }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
@@ -40,17 +53,19 @@ let recordOf (def: RecordDef) (values: Value list) : Value =
 
     VRecord(def.Name, List.map2 (fun (name, _) v -> name, v) def.Fields values)
 
-let file (name: string) (bytes: int64) (readOnly: bool) : Value =
+let file (name: string) (bytes: int64) (hidden: bool) : Value =
     // the fixture-friendly constructor: test rows are plain files at
     // the cwd, modified at the epoch — real rows come from lsRow below
+    // (readOnly retired with the row's reshape [D:filerow]; hidden is
+    // the fixture's filterable bool now)
     recordOf
         fileRow
         [ VStr name
+          VUnion("Regular", None)
+          VUnion("None", None)
           VSize bytes
           VInstant 0L
-          VBool false
-          VBool(name.StartsWith ".")
-          VBool readOnly
+          VBool hidden
           VStr name ]
 
 let private lsRow (info: FileSystemInfo) : Value =
@@ -68,14 +83,24 @@ let private lsRow (info: FileSystemInfo) : Value =
         // convention) OR the attribute (Windows's real bit)
         info.Name.StartsWith "." || info.Attributes.HasFlag FileAttributes.Hidden
 
+    let kind =
+        // LinkTarget is the honest symlink probe (net6+): non-null even
+        // when the target dangles; the reparse-point attribute alone
+        // also matches junctions, which is what we want on Windows
+        if not (isNull info.LinkTarget) then "Symlink"
+        elif isDir then "Directory"
+        else "Regular"
+
     recordOf
         fileRow
         [ VStr info.Name
+          VUnion(kind, None)
+          (match info.LinkTarget with
+           | null -> VUnion("None", None)
+           | t -> VUnion("Some", Some(VStr t)))
           VSize bytes
           VInstant(System.DateTimeOffset(info.LastWriteTimeUtc, System.TimeSpan.Zero).ToUnixTimeMilliseconds())
-          VBool isDir
           VBool hidden
-          VBool(info.Attributes.HasFlag FileAttributes.ReadOnly)
           VStr info.FullName ]
 
 let private realLs: Value =
@@ -2199,7 +2224,41 @@ let private fsStr2 (name: string) (f: string -> string -> unit) : Value =
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
 let private fsMoreFileMembers: (string * Ty * Value) list =
-    [ "readBytes",
+    [ "mode",
+      // the narrow fact stays a QUERY, not a column [D:filerow]:
+      // rwxr-xr-x shaped; None on Windows — the platform limit stated,
+      // never invented [D:ls-truth]. The receipt: the 0600 check that
+      // should precede File.readSecret
+      TFun(TStr, TNamed("Option", [ TStr ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.File.Exists r || System.IO.Directory.Exists r) then
+                  failwith $"File.mode: no such path: {r}"
+
+              try
+                  let m = System.IO.File.GetUnixFileMode r
+
+                  let bit (flag: System.IO.UnixFileMode) (ch: string) = if m.HasFlag flag then ch else "-"
+
+                  let text =
+                      bit System.IO.UnixFileMode.UserRead "r"
+                      + bit System.IO.UnixFileMode.UserWrite "w"
+                      + bit System.IO.UnixFileMode.UserExecute "x"
+                      + bit System.IO.UnixFileMode.GroupRead "r"
+                      + bit System.IO.UnixFileMode.GroupWrite "w"
+                      + bit System.IO.UnixFileMode.GroupExecute "x"
+                      + bit System.IO.UnixFileMode.OtherRead "r"
+                      + bit System.IO.UnixFileMode.OtherWrite "w"
+                      + bit System.IO.UnixFileMode.OtherExecute "x"
+
+                  VUnion("Some", Some(VStr text))
+              with :? System.PlatformNotSupportedException ->
+                  VUnion("None", None)
+          | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
+      "readBytes",
       // the byte-faithful read [D:bytes]: File.read decodes leniently
       // and line-splits; this one does neither
       TFun(TStr, TBytes),
@@ -4117,7 +4176,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
           "FileRow",
           bd
-              "A directory entry: name, path, bytes (0 B for a directory), isDirectory, hidden, readOnly, modified (the last-write Instant — the file's own fact, stable under binding). From `ls` — files AND subdirectories, SORTED by name (ordinal: case-sensitive, uppercase first; never the locale). name is for MATCHING and display; path is for handing to File.* - name derives from path, never the reverse."
+              "A directory entry: name, kind (Regular | Directory | Symlink — a fact, not an answer), target (Some for a symlink, None otherwise — the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant — the file's own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From `ls` — files AND subdirectories, SORTED by name (ordinal: case-sensitive, uppercase first; never the locale). name is for MATCHING and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions."
               None
               None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
@@ -4466,6 +4525,11 @@ let typeEnv: TypeEnv =
         entries @ internalAliases
         |> List.map (fun (n, ty, _) -> n, generalize ty)
         |> Map.ofList
+        // FileKind's constructors [D:filerow] — values like any user
+        // union's cases, NOT bare members (no alias machinery)
+        |> fun vs ->
+            fileKind.Cases
+            |> List.fold (fun acc (c, _) -> Map.add c (generalize (TNamed(fileKind.Name, []))) acc) vs
         |> fun vs ->
             seqSchemeOverrides
             |> List.fold (fun acc (n, sch) -> (if bareAliases.Contains n then Map.add n sch acc else acc)) vs
@@ -4484,6 +4548,7 @@ let typeEnv: TypeEnv =
       Types =
         Map
             [ fileRow.Name, Record fileRow
+              fileKind.Name, Union fileKind
               completedDef.Name, Record completedDef
               groupDef.Name, Record groupDef
               envVarDef.Name, Record envVarDef ]
@@ -4500,7 +4565,10 @@ let valueEnv: Env =
         moduleTable
         |> List.collect (fun (m, members) -> members |> List.map (fun (n, _, v) -> $"{m}.{n}", v))
 
-    ("print", printImpl)
+    ("Regular", VUnion("Regular", None))
+    :: ("Directory", VUnion("Directory", None))
+    :: ("Symlink", VUnion("Symlink", None))
+    :: ("print", printImpl)
     :: ("printerr", printerrImpl)
     :: ("show", showImpl)
     :: ("|print", printImpl)
