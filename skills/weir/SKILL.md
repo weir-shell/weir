@@ -725,7 +725,7 @@ ls |> Seq.where _.isDirectory |> Seq.iter (fun f -> print f.name)
 within tmp d
     within cd d
         File.write "plain.txt" ["x"]
-        let _ = sh -c "ln -s plain.txt link 2>/dev/null" | exitCode
+        let linked = $(sh -c "ln -s plain.txt link 2>/dev/null" | complete)
         ls |> Seq.where (fun f -> f.kind == Symlink) |> Seq.iter (fun f -> print $"{f.name} -> {f.target |> Option.defaultValue "?"}")
         let plain = ls |> Seq.find (fun f -> f.name == "plain.txt")
         print (show plain.target)
