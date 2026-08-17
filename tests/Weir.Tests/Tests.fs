@@ -2329,6 +2329,65 @@ let session2Tests =
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
+          test "completion follows cd, and an offered path opens [F1]" {
+              skipOnWindows ()
+              // completion resolved relative paths against the PROCESS cwd, which weir
+              // never chdir's — so it froze at the startup directory and vouched for
+              // paths File.read immediately rejected.
+              let root =
+                  Path.Combine(Path.GetTempPath(), "weir-cwd-" + System.Guid.NewGuid().ToString "N")
+
+              let a = Path.Combine(root, "a")
+              let bdir = Path.Combine(root, "b")
+              Directory.CreateDirectory a |> ignore
+              Directory.CreateDirectory bdir |> ignore
+              File.WriteAllText(Path.Combine(a, "marker-a.txt"), "A")
+              File.WriteAllText(Path.Combine(bdir, "marker-b.txt"), "B")
+
+              let offer () =
+                  let text = "File.read \"./m"
+                  Weir.Complete.suggest Weir.Builtins.typeEnvStrict text (Weir.Complete.wordStartAt text text.Length)
+
+              try
+                  // the positive twin: correct BEFORE any cd, so the fix is not
+                  // "disable relative completion"
+                  Weir.Session.setCwd a
+                  Expect.equal (offer ()) [ "./marker-a.txt" ] "completion reads the session cwd"
+
+                  // the transcript's failing half, inverted
+                  Weir.Session.setCwd bdir
+                  let after = offer ()
+                  Expect.equal after [ "./marker-b.txt" ] "completion follows cd"
+
+                  // the property no existing completion pin asserts: an offered path OPENS
+                  Expect.isTrue
+                      (File.Exists(Weir.Session.resolve (List.head after)))
+                      "an offered path resolves to a real file"
+              finally
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
+                  Directory.Delete(root, true)
+          }
+
+          test "the stored cwd is normalised, so cd and pwd agree [F2]" {
+              skipOnWindows ()
+
+              try
+                  // normalised AT ASSIGNMENT, so no reader ever sees the spelling of
+                  // the argument — Path.GetFullPath preserves a trailing separator
+                  Weir.Session.setCwd "/tmp/"
+                  Expect.equal (Weir.Session.Cwd()) "/tmp" "a trailing separator is trimmed"
+                  Weir.Session.setCwd "/"
+                  Expect.equal (Weir.Session.Cwd()) "/" "the root keeps its separator"
+
+                  for spelling in [ "/tmp"; "/tmp/"; "/tmp/./"; "/usr/../tmp" ] do
+                      Expect.equal (runReal $"cd \"{spelling}\"") (VStr "/tmp") $"cd {spelling} normalises"
+
+                  // two builtins reporting one fact must not disagree on shape
+                  Expect.equal (runReal "let c = cd \"/tmp/\" in pwd" |> forceSeq) [ VStr "/tmp" ] "pwd agrees with cd"
+              finally
+                  Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
+          }
+
           test "pwd builtin tracks Session.Cwd lazily" {
               skipOnWindows ()
 

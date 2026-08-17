@@ -99,7 +99,17 @@ let private filesystemComplete (word: string) : string list =
     let prefix = expanded.Substring(slash + 1)
 
     try
-        System.IO.Directory.GetFileSystemEntries dir
+        // the SESSION cwd, not the process cwd [F1]: weir never chdir's the
+        // process, so a relative dir here resolves against the STARTUP
+        // directory and goes stale the moment a script or the REPL cd's —
+        // completion then vouches for a path File.read immediately rejects.
+        // Session.resolve is what File.read and Path.glob already use.
+        System.IO.Directory.GetFileSystemEntries(
+            if System.IO.Path.IsPathRooted dir then
+                dir
+            else
+                Session.resolve dir
+        )
         |> Array.filter (fun e ->
             let name = System.IO.Path.GetFileName e
             // the dotfile law, mirrored from Path.glob: a leading `.` must be
@@ -550,7 +560,8 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             // MARKER-LOCAL, deliberately not a Parser.keywords member (that
             // would reserve the identifier); the district marker context
             // offers it and its completions instead
-            match Weir.Contracts.findWeirDir "." with
+            // the session cwd, as above — `.` here is the startup dir forever
+            match Weir.Contracts.findWeirDir (Session.Cwd()) with
             | Ok weirDir ->
                 let dir = System.IO.Path.Combine(weirDir, "schemas")
 
@@ -581,7 +592,7 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             // [D:repl-quality]
             let cwdEntries () =
                 try
-                    System.IO.Directory.GetFileSystemEntries "."
+                    System.IO.Directory.GetFileSystemEntries(Session.Cwd())
                     |> Array.map (fun e ->
                         let n = System.IO.Path.GetFileName e
                         if System.IO.Directory.Exists e then n + "/" else n)

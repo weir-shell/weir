@@ -6,7 +6,8 @@ module Weir.Session
 // worker is worker-local and dies at the join. Spawns and File ops read
 // the ambient session at force time, unchanged.
 
-let mutable private rootCwd: string = System.IO.Directory.GetCurrentDirectory()
+let mutable private rootCwd: string =
+    System.IO.Path.TrimEndingDirectorySeparator(System.IO.Directory.GetCurrentDirectory())
 
 // AsyncLocal, not ThreadLocal [D:tasks-underneath]: session scopes
 // belong to the LOGICAL context (an arm's scope follows the arm across
@@ -23,6 +24,15 @@ let Cwd: unit -> string =
         | None -> rootCwd
 
 let setCwd (path: string) : unit =
+    // NORMALISED AT ASSIGNMENT, not at cd's return: `cd gh` and `cd gh/` name
+    // ONE directory, but Path.GetFullPath PRESERVES a trailing separator, so
+    // the spelling of the argument leaked into a value scripts compare, store
+    // and interpolate. Normalising here means every relative resolution and
+    // every render inherits one shape — the return value is only the first
+    // reader. The ROOT keeps its separator: TrimEndingDirectorySeparator
+    // trims only beyond the root.
+    let path = System.IO.Path.TrimEndingDirectorySeparator path
+
     match localCwd.Value with
     | Some _ -> localCwd.Value <- Some path
     | None -> rootCwd <- path
