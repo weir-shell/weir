@@ -3897,6 +3897,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Path.combine",
           (bd "Join two path segments." (Some "Path.combine \"a\" \"b\"") None
            |> named [ "a"; "b" ])
+          "Path.under",
+          (bd
+              "The confining join: combine, normalise, then RAISE if the result escapes base — segment-wise, so uploads-evil is not under uploads. combine is for paths you control; under is for paths you do not. Purely textual (never follows symlinks or touches the disk); absolute and Windows-shaped second arguments refuse on every platform."
+              (Some "Path.under (Path.tempRoot ()) \"a/b\"")
+              None
+           |> named [ "base"; "name" ])
           "Path.tempRoot",
           (bd
               "The system temp directory (a pure query; no trailing separator, platform-native)."
