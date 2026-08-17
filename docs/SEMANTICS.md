@@ -1317,7 +1317,7 @@ quantity semantics now.
   `substring start len subject`. The idiom's other half:
   `Option.defaultValue` (eager; `Option.defaultWith` takes a thunk) and
   `Option.map`, so an Option in a pipeline does not force a match —
-  `ls |> Seq.tryFind _.readOnly |> Option.map _.name |> Option.defaultValue "none"`. The
+  `ls |> Seq.tryFind _.hidden |> Option.map _.name |> Option.defaultValue "none"`. The
   interim 0-or-1-seq idiom is retired (it never became case law, as
   intended). The singleton extraction is `pwd |> head : string`.
 - **String builtins are data-last, curried — needle/pattern first, subject

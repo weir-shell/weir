@@ -692,17 +692,43 @@ print x
   like any nonzero exit, aborting the script at the fault.
 - Bareword heads run externals: `git status` works at a statement head.
   Builtins shadow PATH (`ls` is typed rows — files AND
-  subdirectories: name, path, bytes (`0 B` for a directory),
-  isDirectory, hidden, readOnly, modified (the last-write `Instant` —
-  the file's own fact, stable under binding) — so `where _.isDirectory`
-  and `where (fun f -> Instant.now () - f.modified < 1h)` are the
-  spellings). Rows come back SORTED by name — ordinal, like
+  subdirectories: name, kind (`Regular | Directory | Symlink` — a
+  fact, not an answer; `where (fun f -> f.kind == Directory)`),
+  target (`Some` for a symlink — the one fact no `File.*` query
+  answers; `None` otherwise, and the table hides an all-`None`
+  column), bytes (`0 B` for a directory), modified (the last-write
+  `Instant` — the file's own fact, stable under binding; the TABLE
+  renders it relatively ("a week ago"), `show`/interpolation keep
+  ISO), hidden, path — so
+  `where (fun f -> Instant.now () - f.modified < 1h)` is the
+  spelling). Narrow facts are QUERIES, not columns:
+  `File.mode p` gives `Some "rw-r--r--"` (`None` on Windows — the
+  platform limit stated, never invented), so the 0600 check that
+  should precede `File.readSecret` is
+  `File.mode p == Some "rw-------"`. Rows come back SORTED by name — ordinal, like
   `Dir.list`/`Path.glob` (case-sensitive, uppercase first; never the
   locale — coreutils inherits LC_COLLATE, weir does not), and
   `Env.vars` sorts the same way. `name` is for MATCHING and display,
   `path` for handing to `File.*` — name derives from path, never the
   reverse (a later `cd` makes name→path ambiguous), which is why both
   ride the row. `^ls` forces the external.
+
+```weir-error
+// isDirectory retired with the kind reshape — the error teaches
+// the replacement, not "unknown field"
+ls |> Seq.where _.isDirectory |> Seq.iter (fun f -> print f.name)
+```
+```weir
+// a symlink carries its target; everything else says None (the
+// where+iter shape runs clean even where ln -s cannot link)
+within tmp d
+    File.write $"{d}/plain.txt" ["x"]
+    sh -c $"ln -s plain.txt {d}/link"
+    within cd d
+        ls |> Seq.where (fun f -> f.kind == Symlink) |> Seq.iter (fun f -> print $"{f.name} -> {f.target |> Option.defaultValue "?"}")
+        let plain = ls |> Seq.find (fun f -> f.name == "plain.txt")
+        print (show plain.target)
+```
 
 ```weir
 ["x"] |> File.write "lssort-B.txt"

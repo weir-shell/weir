@@ -1602,6 +1602,31 @@ else
     echo "e2e skip: within lock matrix (POSIX rows)"
 fi
 
+# ---- FileRow reshape [D:filerow] --------------------------------------------
+# kind/target over a REAL symlink, and File.mode against the platform's
+# own stat — an external referee [D:yaml-interop]'s rule
+if [ "$IS_WINDOWS" != "1" ]; then
+    frdir=$(mkweirtmp)
+    echo x > "$frdir/plain.txt"
+    ln -s plain.txt "$frdir/link"
+    cat > "$frdir/fr.weir" <<'WEOF'
+let link = ls |> Seq.find (fun f -> f.kind == Symlink)
+print $"kind-ok {link.name} {link.target |> Option.defaultValue "MISSING"}"
+let plain = ls |> Seq.find (fun f -> f.name == "plain.txt")
+if plain.target == None && plain.kind == Regular then print "plain-ok"
+print (File.mode "plain.txt" |> Option.defaultValue "none")
+WEOF
+    frout=$( cd "$frdir" && $BIN fr.weir )
+    echo "$frout" | grep -qF "kind-ok link plain.txt" || fail "a symlink carries kind=Symlink and its target: $frout"
+    echo "$frout" | grep -qF "plain-ok" || fail "a plain file is Regular with target None: $frout"
+    statmode=$( stat -c %A "$frdir/plain.txt" 2>/dev/null || stat -f %Sp "$frdir/plain.txt" 2>/dev/null )
+    weirmode=$( echo "$frout" | tail -1 )
+    [ "$weirmode" = "$(echo "$statmode" | cut -c2-10)" ] || fail "File.mode vs stat referee: weir=$weirmode stat=$statmode"
+    echo "e2e ok: FileRow kind/target over a real symlink; File.mode agrees with stat"
+else
+    echo "e2e skip: FileRow symlink + mode referee (POSIX rows)"
+fi
+
 # ---- filesystem members [D:fs-members] -------------------------------------
 fsdir=$(mkweirtmp)
 cat > "$fsdir/glob.weir" <<'WEOF'

@@ -1,5 +1,36 @@
 # Spike Notes
 
+## FileRow: one row, and the table learns two tricks (2026-08-17)
+
+The ruling did the shaping: no -la dichotomy, so the session was two
+field changes and a rendering layer, not a flag. `type` collided with
+the keyword exactly as the plan suspected (record field declarations
+refuse keywords), so `kind` — and then the interesting collision: the
+natural case names File and Dir would have broken File.*/Dir.*
+resolution entirely (a constructor in scope turns `Dir.create` into
+field access on a union — probed, pinned in the row). Regular |
+Directory | Symlink dodges the module namespace and Regular is
+POSIX's own word.
+
+The display work generalized past FileRow twice. The relative
+timestamp is the Duration split again — lossless show, abbreviated
+cell — and it lands in tableCell, so every Instant column everywhere
+now reads "a week ago" at echo. The all-None column hiding is a
+table-renderer rule, not a FileRow special case: any record seq with
+an Option column that says nothing on every shown row saves the
+width; one Some restores it. target is just the first customer.
+
+File.mode landed with the stat referee agreeing on the first run;
+owner/group deferred for want of a receipt (uid/gid portable but
+unreadable, names need passwd machinery .NET does not expose). The
+migration was 31 pins, nearly all of them using readOnly as an
+arbitrary filterable bool — hidden serves identically, which says
+readOnly was never load-bearing even in the tests. The doc-block
+symlink demonstration had to soften to a where+iter shape (ln -s
+copies on Windows Git Bash; the fence machinery has no
+platform-scoped variant — noted if a posix-fence receipt ever
+arrives); the Some-assertion lives in the POSIX e2e row instead.
+
 ## the owed small fixes, batched — and a masked flake, recorded (2026-08-16)
 
 Five one-liners from four reviews' findings, each its own commit —
