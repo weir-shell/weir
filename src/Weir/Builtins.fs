@@ -987,6 +987,11 @@ let initLogLevel () : Result<unit, string> =
     | "" -> Ok()
     | v -> parseLogLevel v |> Result.map (fun i -> logThreshold <- i)
 
+/// is DEBUG (or trace) enabled? Public so a diagnostic renderer can keep
+/// parser-internal detail reachable by weir's own developers without putting
+/// it in front of users — the alternative to deleting the capability.
+let debugEnabled () : bool = logThreshold <= 1
+
 let private logTint (code: string) (label: string) =
     if Types.Color.onStderr.Value then
         $"\x1b[{code}m{label}\x1b[0m"

@@ -1787,6 +1787,58 @@ echo "$scout" | grep -qF "showcase complete" || fail "the showcase completes: ${
 echo "$scout" | grep -qF 'weir.dev/switch: "on"' || fail "the district auto-quote demo holds"
 echo "e2e ok: the showcase runs end to end (the tour is a build gate now)"
 
+# ---- what weir says when the file ISN'T weir (rider D1/D3/D4/D5) ----------
+# weir.slnx is the reported case and a deliberate fixture choice: XML, in the
+# repo, and not going to change shape. No extension rule is involved — the
+# heuristic is about SHAPE, so it also covers shebang files and stdin.
+nw=$($BIN check "$(dirname "$0")/../weir.slnx" 2>&1) || true
+
+# D4: one sentence, and it comes FIRST — before the detail, never instead of it
+echo "$nw" | head -1 | grep -qF "does not look like a weir script" \
+    || fail "D4: the not-weir heuristic must lead the output: ${nw:0:200}"
+echo "$nw" | grep -qF "error [parse]" || fail "D4: the detail must survive the heuristic"
+
+# D1: diagnostics in POSITION order — the parse error at line 1 precedes the
+# assembly errors at 4/5/7, which is the whole point (a reader went to line 4)
+first_line_no=$(echo "$nw" | grep -oE "weir\.slnx:[0-9]+" | head -1 | cut -d: -f2)
+[ "$first_line_no" = "1" ] || fail "D1: first diagnostic must be line 1, got $first_line_no"
+
+# D3: words reserved ONLY to teach that weir lacks them must never be offered
+# as tokens the parser expects
+for w in while return try def; do
+    echo "$nw" | grep -qE "Expecting:.*'$w'" \
+        && fail "D3: reserved teaching word '$w' leaked into an expecting-list"
+done
+
+# D5: FParsec's backtracking trace is the parser talking to its author —
+# HIDDEN from users, not deleted: it still tells weir's own developers where
+# the grammar gave up, so WEIR_LOG=debug keeps it. Both halves are pinned,
+# because "absent by default" alone would pass if the capability were dropped.
+echo "$nw" | grep -qF "The parser backtracked after" && fail "D5: backtracking note reached the user"
+echo "$nw" | grep -qF "end of the input stream" && fail "D5: FParsec EOF note reached the user"
+nwdbg=$(WEIR_LOG=debug $BIN check "$(dirname "$0")/../weir.slnx" 2>&1) || true
+echo "$nwdbg" | grep -qF "The parser backtracked after" \
+    || fail "D5: WEIR_LOG=debug must KEEP the backtrace — hiding it is not deleting it"
+
+# D4 NEGATIVE CONTROL — without this the trigger is untested: a REAL weir
+# script whose FIRST line is broken must keep its located diagnostic and must
+# NOT be told it isn't weir (other statements parsed, so the shape is fine)
+# own temp dir: $scriptdir is rm -rf'd at line ~869, ~950 lines above here,
+# and this block was its only consumer that late
+nwdir=$(mkweirtmp)
+printf 'let x = (((\nprint "ok"\n' > "$nwdir/neg1.weir"
+neg=$($BIN check "$nwdir/neg1.weir" 2>&1) || true
+echo "$neg" | grep -qF "does not look like a weir script" \
+    && fail "D4 control: a real script with a line-1 syntax error must NOT trip the heuristic"
+echo "$neg" | grep -qF "error [parse]" || fail "D4 control: the located diagnostic must survive"
+
+# --json is for gates, not humans: the heuristic must not appear there
+njson=$($BIN check --json "$(dirname "$0")/../weir.slnx" 2>&1) || true
+echo "$njson" | grep -qF "does not look like" && fail "D4: the heuristic must not appear in --json"
+
+rm -rf "$nwdir"
+echo "e2e ok: a non-weir file says so once, in position order, without parser internals"
+
 # --- the casing law (2026-07-21) ---------------------------------------
 
 errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)

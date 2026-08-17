@@ -1323,7 +1323,18 @@ let rec private loop (state: State) =
                                 Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
                             )
 
-                            Console.WriteLine(if d.Parse then d.Message else $"type error: {d.Message}")
+                            // LABEL BOTH KINDS [D:not-weir-shape]: a bare parse message was the one
+                            // place in weir that shows an error without saying it is one (check says
+                            // `error [parse]`, the runner says `parse error:`). It hid because
+                            // FParsec's backtrack note carried the word "error", so the pin meaning
+                            // "the error shows" passed on parser noise; removing that noise surfaced it.
+                            Console.WriteLine(
+                                if d.Parse then
+                                    $"parse error: {d.Message}"
+                                else
+                                    $"type error: {d.Message}"
+                            )
+
                             st
                         | Ok chk -> evalChecked st chk)
                     state
@@ -1349,7 +1360,8 @@ let rec private loop (state: State) =
                     Types.Color.red Types.Color.onStdout.Value (String(' ', prompt.Length + d.PhysCol - 1) + "^")
                 )
 
-                Console.WriteLine d.Message
+                // labelled, like every other parse diagnostic weir prints
+                Console.WriteLine $"parse error: {d.Message}"
                 printHint state line
                 state
             | Error d ->

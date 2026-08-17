@@ -2517,6 +2517,12 @@ let private seqSep = (str_ws ";" <|> str_ws sibSepStr) <?> "';'"
 // positions (PLAN-dx-review D4) — reserved words, so they can never
 // resolve as identifiers or PATH programs; the guard dominates the
 // expecting-list [D:anchor-before-read]
+/// the foreign words' KEYS, public so the diagnostic funnel can strip them
+/// from expecting-lists — a word reserved only to say "weir does not have
+/// this" must never be offered as something the parser expects. One source:
+/// this list, never a second copy.
+let foreignKeywordWords = [ "while"; "return"; "try"; "def" ]
+
 let private foreignKeywordTeachings =
     [ "while", "'while' is not a weir word — a bounded loop is 'retry'/'poll'; iterate a seq with 'for x in xs do'"
       "return", "'return' is not a weir word — a function's last expression is its value"

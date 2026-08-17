@@ -2160,9 +2160,85 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
             else
                 h :: kept
 
+    // rider D3: the foreign words (`while`/`return`/`try`/`def`) are reserved
+    // ONLY to teach that weir lacks them, so offering them as tokens the
+    // parser EXPECTS is backwards. Strip them, consulting Parser's ONE list.
+    // FParsec wraps a long list across lines, so rejoin first — otherwise a
+    // token straddling the break is missed, and the list reads better whole.
+    let bannedTokens =
+        Parser.foreignKeywordWords |> List.map (fun w -> "'" + w + "'") |> Set.ofList
+
+    let rebuildExpecting (ls: string list) : string list =
+        // FParsec wraps the list at whatever width it likes — sometimes
+        // comma-first, sometimes token-first — so a prefix test misses
+        // continuations and the banned words survive on the tail line (found
+        // by D4's negative control). A continuation is instead any following
+        // line that is NOT a section opener: openers end with ':'.
+        let isCont (l: string) =
+            l.Trim() <> "" && not (l.TrimEnd().EndsWith ":")
+
+        let rec walk acc rest =
+            match rest with
+            | [] -> List.rev acc
+            | (l: string) :: tail when l.Contains "Expecting:" ->
+                let conts = tail |> List.takeWhile isCont
+                let after = tail |> List.skip (List.length conts)
+
+                let joined =
+                    String.concat " " (l :: (conts |> List.map (fun (c: string) -> c.Trim())))
+                // normalise the seam so ", " splitting works wherever it wrapped
+                let whole =
+                    System.Text.RegularExpressions.Regex.Replace(joined, @"\s+", " ").Replace(" ,", ",")
+
+                let idx = whole.IndexOf "Expecting:"
+                let head = whole.Substring(0, idx + "Expecting:".Length)
+                let body = whole.Substring(idx + "Expecting:".Length)
+
+                let toks =
+                    body.Split([| ", "; " or " |], System.StringSplitOptions.RemoveEmptyEntries)
+                    |> Array.map (fun (t: string) -> t.Trim())
+                    |> Array.filter (fun t -> t <> "" && not (bannedTokens.Contains t))
+                    |> List.ofArray
+
+                let rendered =
+                    match toks with
+                    | [] -> head
+                    | [ one ] -> head + " " + one
+                    | many ->
+                        head
+                        + " "
+                        + String.concat ", " (List.truncate (many.Length - 1) many)
+                        + " or "
+                        + List.last many
+
+                walk (rendered :: acc) after
+            | l :: tail -> walk (l :: acc) tail
+
+        walk [] ls
+
+    // rider D5: FParsec's backtracking trace is the parser talking to its
+    // author. `go` already dropped the diagnostic's OWN position (consumers
+    // render that with the source line), so any position line still standing
+    // is a BACKTRACK position — drop those and FParsec's EOF note, and the
+    // "The parser backtracked after:" opener empties and dropEmptyOpeners
+    // takes it.
+    //
+    // KEPT UNDER WEIR_LOG=debug, deliberately: `go` retained these on
+    // purpose ("only BACKTRACK positions stay"), and the reason — they tell
+    // weir's own developers where the grammar gave up — is still true. What
+    // was wrong was the AUDIENCE, not the information, so this hides it
+    // rather than deleting it. The smaller reversal keeps the capability.
+    let isBacktrackNoise (l: string) =
+        let t = l.Trim()
+
+        t.StartsWith "Note: The error occurred"
+        || System.Text.RegularExpressions.Regex.IsMatch(t, @"^at line \d+, col \d+:$")
+
     go true [] lines
+    |> rebuildExpecting
     |> List.filter (fun l ->
         not (l.Contains Parser.internalLabelMarker || l.Contains "\\u0006")
+        && not (not (Builtins.debugEnabled ()) && isBacktrackNoise l)
         && l.Trim() <> "")
     |> dropEmptyOpeners
     |> String.concat "\n"
@@ -3881,19 +3957,31 @@ let analyzeLines
 
         (let sigLoadDiags, sigInfos = loadSigs path sigDecls
 
+         // POSITION ORDER, not accumulation order (rider D1): assembly
+         // diagnostics are gathered before parsing, so unsorted output led
+         // with "line 4" for a file that was not plausible from byte one.
+         // Sorted at the ONE return, so check / --json / --can / the LSP
+         // all inherit it [D:one-pipeline]; stable, so same-position
+         // diagnostics keep their emission order.
          List.ofSeq assemblyDiags
          @ List.ofSeq diags
          @ docMisalignments path rawLines
          @ schemaDiagnostics path (List.ofSeq stmts)
          @ sigLoadDiags
-         @ sigCmdDiagnostics path sigInfos (List.ofSeq stmts)),
+         @ sigCmdDiagnostics path sigInfos (List.ofSeq stmts)
+         |> List.sortWith (fun a b ->
+             let byLine = compare a.Line b.Line
+             if byLine <> 0 then byLine else compare a.Col b.Col)),
         List.ofSeq stmts,
         typeEnv0,
         logicalLines
 
 /// diagnostic rendering shared by `check` and `check --can`
 /// [D:can-report] — one spelling for both consumers
-let printDiags (json: bool) (diags: Diagnostic list) : unit =
+/// `parsedAny` is "did ANY statement parse" — the conservative half of the
+/// not-weir heuristic (rider D4). Without it a real script with a broken
+/// first line would be told it is not weir at all.
+let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
     if json then
         Console.WriteLine(
             jsonBuild (fun w ->
@@ -3903,6 +3991,28 @@ let printDiags (json: bool) (diags: Diagnostic list) : unit =
         )
     else
         let c = Color.onStdout.Value
+
+        // rider D4: a file that failed at its FIRST statement and produced NO
+        // parsed statement anywhere is probably not a weir script — say so
+        // ONCE instead of leaving the reader to infer it from a list. It
+        // PRECEDES the detail rather than replacing it (a reader who wants
+        // the parse errors keeps them), and never appears in --json, where a
+        // gate wants real diagnostics and not a human affordance. No
+        // extension rule: this also covers shebang files, stdin and
+        // extensionless fixtures, which an extension check cannot.
+        let notWeir =
+            not parsedAny
+            && diags
+               |> List.exists (fun d -> d.Line = 1 && d.Code = "parse" && d.Severity = "error")
+
+        if notWeir then
+            match diags with
+            | d :: _ ->
+                Console.WriteLine(
+                    Color.bold c $"{d.File}"
+                    + ": this does not look like a weir script — the first statement could not be parsed"
+                )
+            | [] -> ()
 
         for d in diags do
             let sev =
@@ -3921,8 +4031,8 @@ let checkOnly (json: bool) (path: string) : int =
         2
     else
         let rawLines = IO.File.ReadAllLines path |> Array.toList
-        let diags, _, _, _ = analyzeLines path rawLines
-        printDiags json diags
+        let diags, stmts, _, _ = analyzeLines path rawLines
+        printDiags json (not (List.isEmpty stmts)) diags
 
         if diags |> List.exists (fun d -> d.Severity = "error") then
             1

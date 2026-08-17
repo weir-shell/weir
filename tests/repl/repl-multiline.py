@@ -257,7 +257,11 @@ if "10 : int" not in t:
     failures.append(f"a blank Enter must close a pending buffer: {t[-300:]!r}")
 # the KEEPS-THE-INPUT half [D:windows-s3]: the buffer was SUBMITTED (its
 # parse error shows), not discarded the way Ctrl+C discards
-if "match" not in t or "error" not in t:
+# asserts the LABEL, not the bare word: this pin passed on FParsec's
+# "Note: The error occurred..." noise rather than on weir saying anything,
+# and only failed once that noise was removed [D:not-weir-shape].
+# "parse error" can only come from weir.
+if "match" not in t or "parse error" not in t:
     failures.append(f"the escaped buffer must submit and show its error: {t[-300:]!r}")
 
 # --- 9d. ...but Ctrl+J's DELIBERATE blank line stays composing
