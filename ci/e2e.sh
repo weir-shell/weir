@@ -1823,8 +1823,11 @@ echo "$nwdbg" | grep -qF "The parser backtracked after" \
 # D4 NEGATIVE CONTROL — without this the trigger is untested: a REAL weir
 # script whose FIRST line is broken must keep its located diagnostic and must
 # NOT be told it isn't weir (other statements parsed, so the shape is fine)
-printf 'let x = (((\nprint "ok"\n' > "$scriptdir/neg1.weir"
-neg=$($BIN check "$scriptdir/neg1.weir" 2>&1) || true
+# own temp dir: $scriptdir is rm -rf'd at line ~869, ~950 lines above here,
+# and this block was its only consumer that late
+nwdir=$(mkweirtmp)
+printf 'let x = (((\nprint "ok"\n' > "$nwdir/neg1.weir"
+neg=$($BIN check "$nwdir/neg1.weir" 2>&1) || true
 echo "$neg" | grep -qF "does not look like a weir script" \
     && fail "D4 control: a real script with a line-1 syntax error must NOT trip the heuristic"
 echo "$neg" | grep -qF "error [parse]" || fail "D4 control: the located diagnostic must survive"
@@ -1833,6 +1836,7 @@ echo "$neg" | grep -qF "error [parse]" || fail "D4 control: the located diagnost
 njson=$($BIN check --json "$(dirname "$0")/../weir.slnx" 2>&1) || true
 echo "$njson" | grep -qF "does not look like" && fail "D4: the heuristic must not appear in --json"
 
+rm -rf "$nwdir"
 echo "e2e ok: a non-weir file says so once, in position order, without parser internals"
 
 # --- the casing law (2026-07-21) ---------------------------------------
