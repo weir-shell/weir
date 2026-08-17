@@ -2404,7 +2404,33 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   failwith $"File.size: no such file: {r}"
 
               VSize (System.IO.FileInfo r).Length
-          | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}") ]
+          | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}")
+      "stat",
+      // the bridge from paths to rows [D:file-stat]: ls's OWN
+      // constructor over one resolved path, so the two producers cannot
+      // diverge. Describes the LINK, not its target (the ls agreement);
+      // raises when absent — a dangling symlink is a row, not an absence
+      TFun(TStr, TNamed(fileRow.Name, [])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              // FileInfo.Exists is the path's OWN fact (true for a
+              // dangling link); a directory — or a link to one — takes
+              // the DirectoryInfo shape, as the enumeration does
+              let fi = FileInfo r
+
+              if fi.Exists then
+                  lsRow fi
+              else
+                  let di = DirectoryInfo r
+
+                  if di.Exists then
+                      lsRow di
+                  else
+                      failwith $"File.stat: no such path: {r}"
+          | v -> unreachable $"the checker rejects 'File.stat' on {formatValue v}") ]
 
 let private dirMembers: (string * Ty * Value) list =
     [ "create",
@@ -3898,6 +3924,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "The file's size as a Size — compare directly (File.size p > 10MiB); Size.toBytes for the int. Raises when absent (the plain name asserts; a trySize is a park)."
               (Some
                   "let d = Path.newTempDir () in let f = $\"{d}/a.txt\" in ([\"x\"] |> File.write f) ; print $\"{File.size f}\" ; Dir.deleteAll d")
+              None
+           |> named [ "path" ])
+          "File.stat",
+          (bd
+              "The path's FileRow — ls's own row for ONE path, so `Path.glob ... |> Seq.map File.stat` turns strings into rows. Describes a symlink ITSELF (kind Symlink, target Some), not what it points at. Raises when absent — and a glob hit can vanish before stat reaches it (the glob TIMING seam)."
+              (Some
+                  "let d = Path.newTempDir () in let f = $\"{d}/a.txt\" in ([\"x\"] |> File.write f) ; print (File.stat f).name ; Dir.deleteAll d")
               None
            |> named [ "path" ])
           "Dir.create",

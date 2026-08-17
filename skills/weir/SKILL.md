@@ -744,6 +744,29 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
 
   (prints `lssort-B.txt` then `lssort-a.txt` — ordinal order, the
   uppercase name first.)
+- Discovery has two surfaces with two shapes: `ls` gives rows,
+  `Path.glob` gives strings. `File.stat p` is the bridge — `ls`'s OWN
+  row for one path, so `Path.glob ... |> Seq.map File.stat` filters a
+  glob on any row field. It describes a symlink ITSELF (`kind ==
+  Symlink`, `target Some` — a dangling link is a row, not an absence),
+  matching `ls` — a stated third position beside `**`'s
+  skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does.
+  Raises when absent, naming the resolved path — and a glob hit can
+  vanish before `stat` reaches it, the same TIMING seam `Seq.force`
+  documents for glob.
+
+```weir
+// the bridge: glob's strings become ls's rows — filter on any field
+let d = Path.newTempDir ()
+["x"] |> File.write $"{d}/a.md"
+Path.glob $"{d}/*.md" |> Seq.map File.stat |> Seq.where (fun f -> Instant.now () - f.modified < 1h) |> Seq.iter (fun f -> print f.name)
+Dir.deleteAll d
+```
+
+```weir-error
+// 'File' alone is a module, not the row-maker — that is File.stat
+Path.glob "*" |> Seq.map (File)
+```
 - Splice values into commands: `$x` is ONE word; `$@xs` (and
   `$@(expr)`) is N words — the argv splat, each `seq<string>` element
   one word, never re-split, never re-joined (no injection either

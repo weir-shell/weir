@@ -1,5 +1,35 @@
 # Spike Notes
 
+## File.stat: the bridge, and the agreement that came free (2026-08-17)
+
+Phase 0 reshaped nothing, which is its own finding. `ls` cannot take
+a path — it is a typed VALUE, not a function, so `ls <path>` is a
+value/function overload the surface does not do (and `within cd`
+already lists elsewhere); the bridge was the right first fix, not the
+narrow one. The enumeration question answered with a probe: one
+lstat per entry, cached on the FileSystemInfo, Length/LinkTarget/
+UnixFileMode all served from it — so `mode` on the row is now
+cost-free, but it stays a query: [D:filerow]'s recorded reason was
+"narrow facts are queries, not columns", never cost, so nothing
+dissolved and nothing landed.
+
+The implementation IS the agreement argument: File.stat is lsRow over
+one resolved path, and the probe settled the construction split —
+FileInfo.Exists is lstat-true (a dangling symlink is a row, not an
+absence), directories and links-to-them take the DirectoryInfo shape
+exactly as the enumeration does. The agreement pin passed
+byte-identical on the FIRST run, all four shapes (plain, dir, live
+link, dangling) — the report-back item closes as "nothing in FileRow
+construction assumed the enumeration path", because after the reuse
+there was no second construction path to assume anything.
+
+One instrument scar, F#-side this time: the BCL probe printed nothing
+for its first run — printfn with nine format specifiers and eight
+arguments partially applies and the loop discarded the function
+silently. The suite's own parallelism caught the real hazard: a
+second setCwd test races the first (17 collateral failures in one
+run), so fileStatTests is sequenced with the reason in the comment.
+
 ## wire keys: the attribute that reads the world's JSON (2026-08-17)
 
 Phase 0 settled the mechanism question fast: roughly half the

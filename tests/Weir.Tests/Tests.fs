@@ -10871,6 +10871,63 @@ let lsTruthTests =
                   System.IO.Directory.Delete(d, true)
           } ]
 
+let fileStatTests =
+    // the bridge from paths to rows [D:file-stat]: ls's own constructor
+    // over one path — the agreement between the two producers IS the
+    // property, so it is pinned directly. SEQUENCED: the session cwd is
+    // ambient and lsTruthTests moves it too
+    testSequenced
+    <| testList
+        "File.stat [D:file-stat]"
+        [ test "the agreement pin: ls and File.stat produce identical rows" {
+              let d =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-stat-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub")) |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
+
+              try
+                  let saved = Weir.Session.Cwd()
+                  Weir.Session.setCwd d
+
+                  // the shared valueEnv shadows ls with fakeFiles — the
+                  // agreement needs the REAL prelude ls
+                  let runLive input =
+                      match typecheck env (parse input) with
+                      | Ok te -> eval Weir.Builtins.valueEnv te
+                      | Error terr -> failtest (formatError terr)
+
+                  try
+                      match
+                          runLive "show (ls |> Seq.find (fun f -> f.name == \"f.txt\")) == show (File.stat \"f.txt\")"
+                      with
+                      | VBool true -> ()
+                      | other -> failtest $"the file rows must be identical: {other}"
+
+                      match
+                          runLive "show (ls |> Seq.find (fun f -> f.name == \"sub\")) == show (File.stat \"sub\")"
+                      with
+                      | VBool true -> ()
+                      | other -> failtest $"the directory rows must be identical: {other}"
+
+                      // a RELATIVE argument resolves against the session
+                      // cwd and yields the documented ABSOLUTE path
+                      match runLive "(File.stat \"f.txt\").path" with
+                      | VStr p when p.StartsWith d && p.EndsWith "f.txt" -> ()
+                      | other -> failtest $"a relative argument must yield an absolute path: {other}"
+                  finally
+                      Weir.Session.setCwd saved
+              finally
+                  System.IO.Directory.Delete(d, true)
+          }
+          test "raises when absent, naming the member and the resolved path" {
+              let ex =
+                  Expect.throwsC (fun () -> run "File.stat \"weir-stat-no-such-path-xyz\"" |> ignore) id
+
+              Expect.stringContains ex.Message "File.stat: no such path:" "the family's raise shape"
+              Expect.stringContains ex.Message "weir-stat-no-such-path-xyz" "names the path"
+          } ]
+
 let recordKeysTests =
     // builtin record keys derive from the declaration [D:record-keys]:
     // a mismatch is impossible to write and an arity slip is loud at
@@ -13671,6 +13728,7 @@ let allTests =
           fileRowSizeTests
           replTableTests
           lsTruthTests
+          fileStatTests
           lsSortTests
           recordKeysTests
           yamlSeqTests
