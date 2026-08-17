@@ -1659,6 +1659,49 @@ else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi
 
+# ---- wire keys [D:wire-keys] ------------------------------------------------
+# reserved words as adapter keys, refereed EXTERNALLY [D:yaml-interop]:
+# python writes a document whose keys are weir keywords, weir reads it
+# under [<Wire>] fields, modifies one, writes back — python verifies the
+# wire keys and values survived the roundtrip
+if command -v python3 >/dev/null 2>&1; then
+    wkdir=$(mkweirtmp)
+    python3 -c 'import json; print(json.dumps({"type":"user","to":"a@b.c","from":"noreply","in":"inbox","do":"send","match":7}))' > "$wkdir/doc.json"
+    cat > "$wkdir/wk.weir" <<'WEOF'
+type Msg = {
+    [<Wire "type">]
+    kind: string
+    [<Wire "to">]
+    dest: string
+    [<Wire "from">]
+    sender: string
+    [<Wire "in">]
+    box: string
+    [<Wire "do">]
+    action: string
+    [<Wire "match">]
+    hits: int
+}
+let m = File.read "doc.json" |> from json Msg
+let m2 = { m with hits = m.hits + 1 }
+[m2] |> to json |> File.write "out.json"
+print m.kind
+WEOF
+    wkout=$( cd "$wkdir" && $BIN wk.weir )
+    [ "$wkout" = "user" ] || fail "wire-key read: $wkout"
+    python3 - "$wkdir/out.json" <<'PYEOF2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert set(d) == {"type", "to", "from", "in", "do", "match"}, f"wire keys mangled: {sorted(d)}"
+assert d["type"] == "user" and d["match"] == 8, f"values wrong: {d}"
+print("referee ok")
+PYEOF2
+    [ $? -eq 0 ] || fail "wire-key roundtrip referee"
+    echo "e2e ok: wire keys — six reserved-word keys read, modified, and written back; python refereed the roundtrip"
+else
+    echo "e2e skip: wire-key referee (python3 absent)"
+fi
+
 # ---- FileRow reshape [D:filerow] --------------------------------------------
 # kind/target over a REAL symlink, and File.mode against the platform's
 # own stat — an external referee [D:yaml-interop]'s rule

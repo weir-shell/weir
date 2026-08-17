@@ -708,7 +708,7 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<>", a, b -> VBool(a <> b)
     | _ -> unreachable $"the checker rejects '{op}' on {formatValue l} and {formatValue r}"
 
-let private jsonLine (v: Value) : string =
+let private jsonLine (renames: Map<string, Map<string, string>>) (v: Value) : string =
     let buffer = new System.Buffers.ArrayBufferWriter<byte>()
     use writer = new System.Text.Json.Utf8JsonWriter(buffer)
 
@@ -742,8 +742,13 @@ let private jsonLine (v: Value) : string =
                 write kv.Value
 
             writer.WriteEndObject()
-        | VRecord(_, fields) ->
+        | VRecord(rname, fields) ->
             writer.WriteStartObject()
+
+            // the wire key comes back on WRITE [D:wire-keys] — the
+            // roundtrip's other half; the rename table rides the TETo
+            // node (attrs never reach values)
+            let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
 
             for kv in fields do
                 // THE FORK [D:json-option]: a None field OMITS its key — a
@@ -753,7 +758,7 @@ let private jsonLine (v: Value) : string =
                 match snd kv with
                 | VUnion("None", None) -> ()
                 | _ ->
-                    writer.WritePropertyName(fst kv)
+                    writer.WritePropertyName(Map.tryFind (fst kv) rens |> Option.defaultValue (fst kv))
                     write (snd kv)
 
             writer.WriteEndObject()
@@ -879,8 +884,11 @@ let private jsonDoc
     and objRow (prefix: string) (rdef: RecordDef) (root: System.Text.Json.JsonElement) =
         let readField (name: string, ty: Ty) =
             let shownName = prefix + name
+            // the WIRE key [D:wire-keys]: [<Wire "type">] kind reads the
+            // document's "type"; paths keep the weir field name
+            let wire = Types.wireName rdef name
             let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
-            let present = root.TryGetProperty(name, &prop)
+            let present = root.TryGetProperty(wire, &prop)
             let isNull = present && prop.ValueKind = System.Text.Json.JsonValueKind.Null
 
             let value =
@@ -895,7 +903,9 @@ let private jsonDoc
                 // a required field: missing or null both fail — null names
                 // the fix (a missing ARRAY is an error too: absence is
                 // Option's job, [] is not guessed)
-                | _ when not present -> failwith $"{who}: missing field '{shownName}' in: {shown}"
+                | _ when not present ->
+                    let wireNote = if wire <> name then $" (wire key \"{wire}\")" else ""
+                    failwith $"{who}: missing field '{shownName}'{wireNote} in: {shown}"
                 | _ when isNull ->
                     failwith
                         $"{who}: field '{shownName}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"
@@ -1096,12 +1106,17 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
 
         let fieldValues =
             fields
-            |> List.map (fun (fname, fshape) ->
-                match get fname, fshape with
+            |> List.map (fun (fname, wire, fshape) ->
+                // the WIRE key matches the document; the FIELD names the
+                // record (and the message cites both when they differ)
+                // [D:wire-keys]
+                let wireNote = if wire <> fname then $" (wire key \"{wire}\")" else ""
+
+                match get wire, fshape with
                 | None, Yaml.SOpt _ -> fname, VUnion("None", None)
                 | None, Yaml.SSeq _ -> fname, VSeq Seq.empty
                 | None, Yaml.SPairs _ -> fname, VSeq Seq.empty
-                | None, _ -> failwith $"from yaml: line {line}: missing field '{fname}' in '{name}'"
+                | None, _ -> failwith $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}'"
                 | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SRec _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
@@ -1218,7 +1233,7 @@ let private renderString (s: string) : Rendered =
     else
         Inline(Yaml.renderScalar s)
 
-let rec private yamlRender (v: Value) : Rendered =
+let rec private yamlRender (renames: Map<string, Map<string, string>>) (v: Value) : Rendered =
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
@@ -1230,7 +1245,7 @@ let rec private yamlRender (v: Value) : Rendered =
             | _ ->
                 let key = Yaml.renderScalar k
 
-                match yamlRender v with
+                match yamlRender renames v with
                 | Inline "" -> [ $"{key}:" ]
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
@@ -1239,7 +1254,7 @@ let rec private yamlRender (v: Value) : Rendered =
     let renderSeq (items: Value list) : string list =
         items
         |> List.collect (fun item ->
-            match yamlRender item with
+            match yamlRender renames item with
             | Inline "" -> [ "- null" ]
             | Inline s -> [ $"- {s}" ]
             | Block lines ->
@@ -1272,9 +1287,18 @@ let rec private yamlRender (v: Value) : Rendered =
                 |> List.ofSeq
             )
         )
-    | VUnion("Some", Some inner) -> yamlRender inner
+    | VUnion("Some", Some inner) -> yamlRender renames inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
-    | VRecord(_, fields) -> Block(renderMap fields)
+    | VRecord(rname, fields) ->
+        // wire keys on the yaml wire too [D:wire-keys]
+        let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
+
+        Block(
+            renderMap (
+                fields
+                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv)
+            )
+        )
     | VSeq items ->
         let items = List.ofSeq items
 
@@ -1292,13 +1316,13 @@ let rec private yamlRender (v: Value) : Rendered =
             Block(renderSeq items)
     | v -> unreachable $"the checker rejects 'to yaml' on {formatValue v}"
 
-let private yamlToLines (v: Value) : string list =
-    match yamlRender v with
+let private yamlToLines (renames: Map<string, Map<string, string>>) (v: Value) : string list =
+    match yamlRender renames v with
     | Inline s -> [ s ]
     | Block lines -> lines
     | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
 
-let private yamlToImpl: Value =
+let private yamlToImpl (renames: Map<string, Map<string, string>>) : Value =
     VBuiltin(fun v ->
         match v with
         // a top-level SEQ is `---`-separated DOCUMENTS — except a
@@ -1313,9 +1337,9 @@ let private yamlToImpl: Value =
                     | VTuple [ VStr _; _ ] -> true
                     | _ -> false))
             ->
-            VSeq(yamlToLines v |> List.map VStr |> List.toSeq)
+            VSeq(yamlToLines renames v |> List.map VStr |> List.toSeq)
         | VSeq items ->
-            let docs = items |> Seq.map yamlToLines |> List.ofSeq
+            let docs = items |> Seq.map (yamlToLines renames) |> List.ofSeq
 
             let lines =
                 match docs with
@@ -1323,7 +1347,7 @@ let private yamlToImpl: Value =
                 | first :: rest -> first @ (rest |> List.collect (fun d -> "---" :: d))
 
             VSeq(lines |> List.map VStr |> List.toSeq)
-        | v -> VSeq(yamlToLines v |> List.map VStr |> List.toSeq))
+        | v -> VSeq(yamlToLines renames v |> List.map VStr |> List.toSeq))
 
 let scalarString (what: string) (v: Value) : string =
     match v with
@@ -2274,11 +2298,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEFrom(fmt, def, defs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf def defs
     | TEFromYaml(_, shape) -> yamlFromImpl shape
     | TEYaml(tpl, _) -> evalYamlTpl env tpl
-    | TETo "yaml" -> yamlToImpl
-    | TETo _ ->
+    | TETo("yaml", renames) -> yamlToImpl renames
+    | TETo(_, renames) ->
         VBuiltin(fun v ->
             match v with
-            | VSeq items -> VSeq(items |> Seq.map (jsonLine >> VStr))
+            | VSeq items -> VSeq(items |> Seq.map (jsonLine renames >> VStr))
             | v -> unreachable $"the checker rejects 'to json' on {formatValue v}")
     | TEMatch(scrutinee, arms) ->
         let v0 = eval env scrutinee

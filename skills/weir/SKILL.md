@@ -137,10 +137,15 @@ print $"branches: {branches}"
   indent — `type Cli = {` / four-space fields / `}`. The aligned
   style (`{ x` with column-aligned fields) stays accepted.
 - Record fields take attributes, F#'s syntax: `[<Short "c">]`,
-  `[<NoShort>]`, `[<Default v>]` — `;`-separated
+  `[<NoShort>]`, `[<Default v>]`, `[<Wire "type">]` — `;`-separated
   lists, literal args only (string/int/bool). Attributes are
   check-time data, fully erased: an attributed record is the same
-  type as a bare one. The name set is CLOSED — an unregistered name
+  type as a bare one. `[<Wire "…">]` names a field's ADAPTER key
+  [D:wire-keys]: reserved words (`type`, `to`, `from` — ordinary
+  JSON/YAML keys) and future illegal identifiers ride it; `from`/`to
+  json`/`jsonl`/`yaml` all read and write the wire key (the roundtrip
+  holds), Args/Env stay on the FIELD name (documented verbatim), and
+  two fields resolving to one wire key refuse at the declaration. The name set is CLOSED — an unregistered name
   (`[<Positional>]` among them: dropped, scripts take flags) is a
   check error with a did-you-mean. Attributes attach to record
   fields only.
@@ -827,6 +832,20 @@ let x = ["{\"a\": {\"b\": 1}}"] |> from json {| a: {| b: int |} |}
 print (show x.a.b)
 ```
 
+```weir
+// a reserved word is an ordinary wire key — the field carries it
+type Blob = {
+    [<Wire "type">]
+    kind: string
+}
+let b = ["{\"type\": \"user\"}"] |> from json Blob
+print b.kind
+[b] |> to json |> Seq.iter print
+```
+```weir-error
+// bare, the keyword refuses — and the error names the attribute
+type Bad = { type: string }
+```
   `from json T` reads ONE DOCUMENT -> `T` (any number of lines — a
   pretty-printed body pipes straight in); `from json seq<T>` reads a
   top-level ARRAY document -> `seq<T>` (the list-endpoint shape);

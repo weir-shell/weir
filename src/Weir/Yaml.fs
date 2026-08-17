@@ -17,7 +17,9 @@ type Shape =
     | SStr
     | SBool
     | SOpt of Shape
-    | SRec of name: string * fields: (string * Shape) list
+    // (field, WIRE key, shape) [D:wire-keys] — matching reads the wire,
+    // construction writes the field
+    | SRec of name: string * fields: (string * string * Shape) list
     | SSeq of Shape
     // seq<string * X> — an open mapping (labels/annotations)
     | SPairs of Shape

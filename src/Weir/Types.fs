@@ -254,6 +254,21 @@ type RecordDef =
       // Same check-time-erased nature as Attrs.
       Docs: Map<string, string> }
 
+/// the wire-key attribute's ONE reader [D:wire-keys]: a field carrying
+/// [<Wire "…">] uses that string as its ADAPTER key (json/jsonl/yaml —
+/// and csv when it lands); everywhere else the attribute is inert
+/// (Args/Env derive from the field name, documented verbatim)
+let wireName (def: RecordDef) (field: string) : string =
+    match Map.tryFind field def.Attrs with
+    | Some specs ->
+        specs
+        |> List.tryPick (fun (n, a) ->
+            match n, a with
+            | "Wire", Some(AStr s) -> Some s
+            | _ -> None)
+        |> Option.defaultValue field
+    | None -> field
+
 type UnionDef =
     { Name: string
       Params: string list

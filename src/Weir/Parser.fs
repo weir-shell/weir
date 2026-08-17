@@ -3270,7 +3270,11 @@ let private fieldNameDecl: Parser<string, unit> =
     getPosition .>>. spanned rawWord .>> ws
     >>= fun (at, (w, _)) ->
         if keywords.Contains w then
-            failFatallyAt at $"'{w}' is a keyword"
+            // the repair has a name now [D:wire-keys]: a wire key that
+            // is a keyword rides the attribute on a DECLARED record
+            failFatallyAt
+                at
+                $"'{w}' is a keyword — for a wire key spelled '{w}', name the field and carry the key: [<Wire \"{w}\">] {w}Field: …"
         else
             preturn w
 

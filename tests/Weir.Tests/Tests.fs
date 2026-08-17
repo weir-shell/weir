@@ -4683,6 +4683,47 @@ let withinKindsTests =
                   "within in a comment"
           } ]
 
+let wireKeyTests =
+    // [<Wire "…">] — reserved words and illegal identifiers as adapter
+    // keys [D:wire-keys]
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "wk.weir" lines
+        diags
+
+    let mustSay lines (needle: string) label =
+        Expect.exists
+            (diagsOf lines)
+            (fun d -> d.Message.Contains needle)
+            $"{label}: expected '{needle}', got {diagsOf lines |> List.map _.Message}"
+
+    let clean lines label =
+        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "wire keys"
+        [ test "the keyword teaching names the repair" {
+              mustSay [ "type B = { type: string }" ] "[<Wire" "the attribute is the named fix"
+          }
+          test "declaration with Wire checks clean; json and yaml admission hold" {
+              clean
+                  [ "type B = { [<Wire \"type\">] kind: string }"
+                    "let b = [\"{}\"] |> from json B"
+                    "print b.kind" ]
+                  "json admission"
+          }
+          test "wire collisions refuse at the declaration, naming both fields" {
+              mustSay [ "type C = { [<Wire \"x\">] a: string; x: string }" ] "share the wire key 'x'" "attr-vs-plain"
+
+              mustSay
+                  [ "type D = { [<Wire \"k\">] a: string; [<Wire \"k\">] b: string }" ]
+                  "share the wire key 'k'"
+                  "attr-vs-attr"
+          }
+          test "Wire demands a nonempty string; unknown attrs did-you-mean it" {
+              mustSay [ "type E = { [<Wire>] kind: string }" ] "expects the wire key as a string" "no arg"
+              mustSay [ "type F = { [<Wier \"x\">] kind: string }" ] "Wire" "did-you-mean reaches it"
+          } ]
+
 let withinAlwaysLockTests =
     // the bare scope and the lock kind [D:within-always][D:within-lock]
     let diagsOf lines =
@@ -13585,6 +13626,7 @@ let allTests =
           lspCrossFileTests
           withinKindsTests
           withinAlwaysLockTests
+          wireKeyTests
           fileRowReshapeTests
           adapterFormTests
           hoverResidueTests

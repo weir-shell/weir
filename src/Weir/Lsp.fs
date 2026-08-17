@@ -1465,7 +1465,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 | Check.TEArgsLoad _ when word = Some "load" -> Some "Args.load"
                 | Check.TEFrom(fmt, _, _, _, _) when word = Some "from" || word = Some fmt -> Some $"from {fmt}"
                 | Check.TEFromYaml _ when word = Some "from" || word = Some "yaml" -> Some "from yaml"
-                | Check.TETo fmt when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
+                | Check.TETo(fmt, _) when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
                 | _ -> None)
             |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)
 
