@@ -2,7 +2,9 @@
 
 ## the owed small fixes, batched — and a masked flake, recorded (2026-08-16)
 
-Six one-liners from four reviews' findings, each its own commit: WEIR_LOG
+Five one-liners from four reviews' findings, each its own commit —
+A6 is the batch's sixth item but outgrew the class, so it gets its own
+paragraph below: WEIR_LOG
 went case-insensitive (the env-enum rule applied to weir's own channel);
 the ladder prose was off by one in FOUR places, not the three the finding
 named (SEMANTICS too — "nested twice runs serially", since depth 2 hits
