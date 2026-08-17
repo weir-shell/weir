@@ -3712,6 +3712,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "[1; 2; 3] |> Seq.piter (fun x -> ())")
               (Some "workers fork the session (worker-local cd, dies at join).")
           |> named [ "f"; "xs" ]
+          "Seq.pmapWith",
+          bd
+              "Seq.pmap with an explicit worker count — the sizing knob for rate-limited or memory-heavy arms."
+              (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.force")
+              (Some "an explicit n is never reduced by nesting; pmap's default ladder is.")
+          |> named [ "n"; "f"; "xs" ]
+          "Seq.piterWith",
+          bd
+              "Seq.piter with an explicit worker count."
+              (Some "[1; 2; 3] |> Seq.piterWith 2 (fun x -> ())")
+              (Some "an explicit n is never reduced by nesting; piter's default ladder is.")
+          |> named [ "n"; "f"; "xs" ]
           "Seq.pfirst",
           bd
               "Race an arm over every element; the FIRST SUCCESS wins. Losers' spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm's failure is DISCARDED — if only one arm can succeed, the others' errors are hidden, so a misconfigured fan-out still looks healthy."
@@ -4012,6 +4024,62 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "File.append",
           (bd "Append a sequence of lines to a file." None None
            |> named [ "path"; "lines" ])
+          "File.mode",
+          (bd
+              "The path's permissions as rwxr-xr-x-shaped text, an Option — None on Windows (the platform limit stated, never invented). The READ follows a symlink (the File.* rule); existence does not — a dangling link raises naming the dangle. The receipt: the 0600 check before File.readSecret is File.mode p == Some \"rw-------\"."
+              (Some "File.mode \".\" |> Option.defaultValue \"none\"")
+              None
+           |> named [ "path" ])
+
+          // ---- Log [D:log-module]: STDERR always — stdout is DATA ----
+          "Log.trace",
+          (bd
+              "Write a TRACE line to stderr — the innermost-detail level, hidden unless WEIR_LOG=trace."
+              (Some "Log.trace \"entering the retry loop\"")
+              None
+           |> named [ "message" ])
+          "Log.debug",
+          (bd
+              "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is DATA — every Log member writes to stderr, a law with no stream knob."
+              (Some "Log.debug \"cache miss\"")
+              None
+           |> named [ "message" ])
+          "Log.info",
+          (bd
+              "Write an INFO line to stderr — shown by default (WEIR_LOG=level moves the threshold, case-insensitive; off silences)."
+              (Some "Log.info \"deploy starting\"")
+              None
+           |> named [ "message" ])
+          "Log.warn",
+          (bd
+              "Write a WARN line to stderr — the highest level, shown unless WEIR_LOG=off."
+              (Some "Log.warn \"lockfile missing, regenerating\"")
+              None
+           |> named [ "message" ])
+          "Log.traceWith",
+          (bd
+              "Log.trace's thunk twin: the message computes ONLY when the level passes (weir has no lazy argument position — the Option.defaultWith precedent for the expensive argument)."
+              (Some "Log.traceWith (fun () -> \"expensive detail\")")
+              None
+           |> named [ "thunk" ])
+          "Log.debugWith",
+          (bd
+              "Log.debug's thunk twin: the message computes ONLY when the level passes."
+              (Some "Log.debugWith (fun () -> \"expensive detail\")")
+              None
+           |> named [ "thunk" ])
+          "Log.infoWith",
+          (bd
+              "Log.info's thunk twin: the message computes ONLY when the level passes."
+              (Some "Log.infoWith (fun () -> \"expensive detail\")")
+              None
+           |> named [ "thunk" ])
+          "Log.warnWith",
+          (bd
+              "Log.warn's thunk twin: the message computes ONLY when the level passes."
+              (Some "Log.warnWith (fun () -> \"expensive detail\")")
+              None
+           |> named [ "thunk" ])
 
           // ---- Env ----
           "Env.get",

@@ -5450,6 +5450,41 @@ let semanticTokenTests =
                   | Ok out2 -> Expect.equal out2 out "fmt is idempotent on nested districts"
                   | Error e -> failtestf "second fmt failed: %s" e
           }
+          test "builtin docs: every module member has an entry — hover coverage is CHECKED [D:docs-coverage]" {
+              // the skill-surface rule applied to builtinDocs: a member
+              // the binary ships that hover/completion cannot explain is
+              // the same class as one SKILL.md does not mention — found
+              // by accident three times before this check existed
+              let omitted: Map<string, string> = Map []
+
+              let members =
+                  env.Modules
+                  |> Map.toList
+                  |> List.collect (fun (m, mems) -> mems |> Map.toList |> List.map (fun (name, _) -> $"{m}.{name}"))
+
+              // the enumeration must be REAL before zero-missing can pass
+              Expect.isGreaterThan (List.length members) 100 "the enumeration broke, not the docs"
+
+              let missing =
+                  members
+                  |> List.filter (fun q ->
+                      not (Map.containsKey q Weir.Builtins.builtinDocs)
+                      && not (Map.containsKey q omitted))
+
+              Expect.equal
+                  missing
+                  []
+                  "every module member has a builtinDocs entry (or an explicit omission with its reason)"
+
+              // the omissions list sweeps both ways: documented or
+              // vanished = stale, fails too (the skill-omitted rule)
+              for KeyValue(q, _) in omitted do
+                  Expect.isFalse
+                      (Map.containsKey q Weir.Builtins.builtinDocs)
+                      $"'{q}' is omitted but documented — stale"
+
+                  Expect.contains members q $"'{q}' is omitted but not shipped — stale"
+          }
           test "builtin docs: every doc example runs clean [D:builtin-docs]" {
               // D1 = (a) EXECUTABLE, weir-side: the Example is registry DATA
               // run through the same check+eval path, not prose parsed from
