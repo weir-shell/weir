@@ -79,56 +79,66 @@ let areaOfOther p =
 
 let checkCommit c =
     let subject = git log -1 --format=%s $c |> Seq.head
-    let files = git show --format= --name-only $c |> Seq.where (fun f -> Str.trim f <> "") |> Seq.force
-    let srcAreas = files |> Seq.choose (fun f -> areaOfSrc f) |> Seq.force
-    let unmapped = srcAreas |> Seq.where (fun a -> a == "UNMAPPED") |> Seq.force
+    // merge commits SKIP [D:commit-areas]: their subjects are
+    // GitHub-generated and their diffs are resolutions, not work — the
+    // area lives on the commits being merged (rev-list --no-merges
+    // covers ranges; this covers --commit)
+    let parents = git rev-list --parents -n 1 $c |> Seq.head |> Str.split " " |> Seq.length
 
-    if not (Seq.isEmpty unmapped) then
-        let names =
-            files |> Seq.where (fun f -> areaOfSrc f == Some "UNMAPPED") |> Str.join " "
-
-        printerr $"commit-area FAIL: {c} touches unmapped src file(s): {names} — a new src file is an AREA DECISION; add its map entry to ci/commit-area.weir in this commit"
-        false
+    if parents > 2 then
+        print $"commit-area SKIP: {c} is a merge ({subject})"
+        true
     else
-        let derived =
-            if Seq.isEmpty srcAreas then
-                files |> Seq.map (fun f -> areaOfOther f) |> Seq.distinct |> Seq.sort |> Str.join ","
-            else
-                srcAreas |> Seq.distinct |> Seq.sort |> Str.join ","
+        let files = git show --format= --name-only $c |> Seq.where (fun f -> Str.trim f <> "") |> Seq.force
+        let srcAreas = files |> Seq.choose (fun f -> areaOfSrc f) |> Seq.force
+        let unmapped = srcAreas |> Seq.where (fun a -> a == "UNMAPPED") |> Seq.force
 
-        if derived == "" then
-            print $"commit-area SKIP: {c} has no files ({subject})"
-            true
+        if not (Seq.isEmpty unmapped) then
+            let names =
+                files |> Seq.where (fun f -> areaOfSrc f == Some "UNMAPPED") |> Str.join " "
+
+            printerr $"commit-area FAIL: {c} touches unmapped src file(s): {names} — a new src file is an AREA DECISION; add its map entry to ci/commit-area.weir in this commit"
+            false
         else
-            match Str.rmatch "^([a-z][a-z,]*): " subject with
-            | None ->
-                printerr $"commit-area FAIL: {c} has no area prefix — subject should start '{derived}: ' ({subject})"
-                false
-            | Some groups ->
-                let declaredRaw = groups |> Seq.head
-
-                // type prefixes RETIRED [D:commit-areas]: the area
-                // answers WHERE and the diff can verify it; what-kind
-                // lives in prose
-                if declaredRaw == "add" || declaredRaw == "fix" || declaredRaw == "chore" || declaredRaw == "feat" || declaredRaw == "refactor" then
-                    printerr $"commit-area FAIL: {c} uses the retired type prefix '{declaredRaw}:' — areas replaced types; subject should start '{derived}: ' ({subject})"
-                    false
+            let derived =
+                if Seq.isEmpty srcAreas then
+                    files |> Seq.map (fun f -> areaOfOther f) |> Seq.distinct |> Seq.sort |> Str.join ","
                 else
-                    let declared = Str.split "," declaredRaw |> Seq.distinct |> Seq.sort |> Str.join ","
+                    srcAreas |> Seq.distinct |> Seq.sort |> Str.join ","
 
-                    if declared <> derived then
-                        printerr $"commit-area FAIL: {c} declares '{declared}' but the diff derives '{derived}' ({subject})"
+            if derived == "" then
+                print $"commit-area SKIP: {c} has no files ({subject})"
+                true
+            else
+                match Str.rmatch "^([a-z][a-z,]*): " subject with
+                | None ->
+                    printerr $"commit-area FAIL: {c} has no area prefix — subject should start '{derived}: ' ({subject})"
+                    false
+                | Some groups ->
+                    let declaredRaw = groups |> Seq.head
+
+                    // type prefixes RETIRED [D:commit-areas]: the area
+                    // answers WHERE and the diff can verify it; what-kind
+                    // lives in prose
+                    if declaredRaw == "add" || declaredRaw == "fix" || declaredRaw == "chore" || declaredRaw == "feat" || declaredRaw == "refactor" then
+                        printerr $"commit-area FAIL: {c} uses the retired type prefix '{declaredRaw}:' — areas replaced types; subject should start '{derived}: ' ({subject})"
                         false
                     else
-                        print $"commit-area ok: {c} {declared}"
-                        true
+                        let declared = Str.split "," declaredRaw |> Seq.distinct |> Seq.sort |> Str.join ","
+
+                        if declared <> derived then
+                            printerr $"commit-area FAIL: {c} declares '{declared}' but the diff derives '{derived}' ({subject})"
+                            false
+                        else
+                            print $"commit-area ok: {c} {declared}"
+                            true
 
 if cli.range == None && cli.commit == None then
     fail "usage: commit-area.weir --range A..B | --commit SHA"
 
 let commits =
     match cli.range with
-    | Some r -> $(git rev-list $r) |> Seq.force
+    | Some r -> $(git rev-list --no-merges $r) |> Seq.force
     | None -> [cli.commit |> Option.defaultValue ""]
 
 let results = commits |> Seq.map (fun c -> checkCommit c) |> Seq.force
