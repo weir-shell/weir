@@ -911,6 +911,26 @@ within env vars
     sh -c "echo committing as $GIT_AUTHOR_NAME"
 ```
 
+Two more kinds complete the discipline. A bare `within` holds no
+resource at all — just the body and a trailing `always` block that
+runs on EVERY exit (normal, raise, `exit n`, SIGINT/SIGTERM; `kill
+-9` is the standing carve-out) [D:within-always]. When both the body
+and the cleanup fail, the ORIGINAL error propagates and the cleanup's
+failure goes to stderr with a marker; teardown always continues
+outward. And `within lock "path"` holds an advisory file lock for the
+block [D:within-lock] — blocking by default, `timeout=30s` raises on
+exhaustion, safe across processes and `pmap` arms alike, and released
+by the kernel on any death, `kill -9` included:
+
+```weir
+within tmp d
+    within lock $"{d}/demo.lock" timeout=10s
+        within
+            print "one holder at a time"
+        always
+            print "released either way"
+```
+
 A scratch TREE composes the family [D:fs-members]: `Dir.create` for
 structure, `Path.glob` to find, `Dir.deleteAll` (the visibly-named
 destructive one) to end it — all inside `within tmp`, whose exit

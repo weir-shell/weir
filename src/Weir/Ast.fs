@@ -58,7 +58,12 @@ let withinKinds: WithinKind list =
       // the no-orphan law [D:scoped-procs]: the scope IS the lifetime
       { Name = "proc"
         Binds = true
-        Doc = "a background process, tree-killed and reaped when the block exits" } ]
+        Doc = "a background process, tree-killed and reaped when the block exits" }
+      // advisory file lock [D:within-lock] — the one kind whose
+      // guarantee survives kill -9 (the kernel releases it)
+      { Name = "lock"
+        Binds = false
+        Doc = "an advisory file lock, held for the block, released on every exit (kill -9 included)" } ]
 
 /// "tmp, cd, or env" — the teaching list, derived so a new kind
 /// cannot miss the message
@@ -127,7 +132,10 @@ and ExprKind =
     // The kinds are ASYMMETRIC by design: tmp PRODUCES a path (binder,
     // no arg); cd and env CONSUME one (arg, no binder) — which is why
     // the form is `within <kind> <args…>`, not one fixed shape
-    | EWithin of kind: string * binder: (string * Span) option * arg: Expr option * body: Expr
+    | EWithin of kind: string * binder: (string * Span) option * arg: Expr option * opts: Expr option * body: Expr
+    // the bare scope [D:within-always]: no resource, just the exit
+    // discipline — body, then the always block on EVERY exit path
+    | EAlways of body: Expr * cleanup: Expr
     // the $() capture assertion [D:district-retirement]: $() means
     // CAPTURE in every position — the wrapper marks the chain so
     // statement arming never touches it; erased at check
@@ -278,7 +286,8 @@ let exprChildren (e: Expr) : Expr list =
     | ELetPat(_, v, b) -> [ v; b ]
     | ELambda(_, _, b) -> [ b ]
     | ELambdaPat(_, b) -> [ b ]
-    | EWithin(_, _, arg, b) -> Option.toList arg @ [ b ]
+    | EWithin(_, _, arg, opts, b) -> Option.toList arg @ Option.toList opts @ [ b ]
+    | EAlways(b, c) -> [ b; c ]
     | ECapture e -> [ e ]
     | EApp(f, x) -> [ f; x ]
     | EPipe(x, f) -> [ x; f ]
@@ -361,11 +370,16 @@ let rec sexpr (e: Expr) : string =
     | ELetPat(p, v, b) -> $"(letpat {sexprPat p} {sexpr v} {sexpr b})"
     | ELambda(p, _, b) -> $"(fun {p} {sexpr b})"
     | ELambdaPat(p, b) -> $"(funpat {sexprPat p} {sexpr b})"
-    | EWithin(k, binder, arg, b) ->
+    | EWithin(k, binder, arg, opts, b) ->
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""
-        let ba = [ bn; av ] |> List.filter ((<>) "") |> String.concat " "
+
+        let ov =
+            opts |> Option.map (fun o -> $"timeout={sexpr o}") |> Option.defaultValue ""
+
+        let ba = [ bn; av; ov ] |> List.filter ((<>) "") |> String.concat " "
         $"(within {k} {ba} {sexpr b})"
+    | EAlways(b, c) -> $"(within {sexpr b} (always {sexpr c}))"
     | ECapture e -> $"(capture {sexpr e})"
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"

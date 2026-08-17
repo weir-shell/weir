@@ -307,6 +307,8 @@ let classifyPiece (piece: string) : PieceClass =
             // `until` extends retry/poll the same way [D:retry-poll]
             || piece = "until"
             || piece.StartsWith "until "
+            // `always` extends a bare within the same way [D:within-always]
+            || piece = "always"
         then
             PieceKind.ElseHead
         elif piece.StartsWith "let " then
@@ -469,6 +471,8 @@ let dangleOpensBlock (piece: string) : bool =
     || t = "poll"
     || t.StartsWith "poll "
     || t.StartsWith "until "
+    // the bare within's teardown segment dangles too [D:within-always]
+    || t = "always"
 
 /// A line-end district marker of ANY kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.
@@ -1021,6 +1025,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             // the col-0 `|` arm precedent [D:retry-poll]
                             || raw.StartsWith "until "
                             || raw.TrimEnd() = "until"
+                            // a col-0 `always` continues its bare within
+                            // [D:within-always]
+                            || raw.TrimEnd() = "always"
                             || inOpenBrace
                             || inOpenLambda
                         then
@@ -1319,6 +1326,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     // must ALIGN, and a shallower arm offside-closes
                                                     // deeper compounds [D:pipe-alignment]
                                                     let isUntil = piece = "until" || piece.StartsWith "until "
+                                                    let isAlways = piece = "always"
 
                                                     match p.Lets with
                                                     | (k, letLine) :: _ when indent <= k && not isUntil ->
@@ -1393,7 +1401,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     { p with
                                                                         LL =
                                                                             applyJoin
-                                                                                (if endsInProcHead ll.Text then
+                                                                                // until/always join at the SENTINEL:
+                                                                                // a space would feed the keyword to a
+                                                                                // command body's argv (cmdWord stops
+                                                                                // at the sentinel) [D:within-always]
+                                                                                (if
+                                                                                     endsInProcHead ll.Text
+                                                                                     || isUntil
+                                                                                     || isAlways
+                                                                                 then
                                                                                      JStmtSibling
                                                                                  else
                                                                                      JSpace)
@@ -1407,7 +1423,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         ParenDepth = depth
                                                                         Lambdas = lambdas
                                                                         PipeGroups = groups
-                                                                        LastWasPipe = not isUntil
+                                                                        LastWasPipe = not (isUntil || isAlways)
                                                                         Compounds =
                                                                             compounds
                                                                             |> List.filter (fun (_, _, d) ->

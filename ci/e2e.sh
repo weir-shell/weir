@@ -1471,6 +1471,137 @@ else
     echo "e2e skip: fuzz observed-count loop (Linux + dotnet only)"
 fi
 
+# ---- bare within + always [D:within-always] --------------------------------
+# the exit discipline alone: the always block runs on normal exit, fail,
+# exit n (an ExitRequest raise — Phase 0's measured answer: exit unwinds
+# through finally, no carve-out), SIGINT and SIGTERM (the exit hook runs
+# pending cleanups LIFO). kill -9 stays the stated carve-out.
+aldir=$(mkweirtmp)
+cat > "$aldir/al.weir" <<'WEOF'
+let mode = Self.args |> Seq.head
+within
+    print "body"
+    if mode == "fail" then fail "boom"
+    if mode == "exit" then exit 3
+    if mode == "sleep" then Duration.sleep 30s
+always
+    File.append "MARKER" ["cleanup"]
+WEOF
+( cd "$aldir" && rm -f MARKER && $BIN al.weir normal >/dev/null 2>&1 ); [ "$(cat "$aldir/MARKER" 2>/dev/null)" = "cleanup" ] || fail "always on normal exit"
+rc=0; ( cd "$aldir" && rm -f MARKER && $BIN al.weir fail >/dev/null 2>&1 ) || rc=$?; [ "$rc" != "0" ] || fail "fail must propagate"; [ "$(cat "$aldir/MARKER" 2>/dev/null)" = "cleanup" ] || fail "always on fail"
+rc=0; ( cd "$aldir" && rm -f MARKER && $BIN al.weir exit >/dev/null 2>&1 ) || rc=$?; [ "$rc" = "3" ] || fail "exit code must propagate through always (got $rc)"; [ "$(cat "$aldir/MARKER" 2>/dev/null)" = "cleanup" ] || fail "always on exit n"
+if [ "$IS_WINDOWS" != "1" ]; then
+    for sig in TERM INT; do
+        ( cd "$aldir" && rm -f MARKER && exec $BIN al.weir sleep >/dev/null 2>&1 ) & alpid=$!
+        sleep 2; kill -$sig $alpid 2>/dev/null || true; wait $alpid 2>/dev/null || true
+        [ "$(cat "$aldir/MARKER" 2>/dev/null)" = "cleanup" ] || fail "always on SIG$sig"
+    done
+fi
+echo "e2e ok: always runs on normal exit, fail, exit n, SIGINT, SIGTERM"
+
+# Phase 0's measured answer, pinned [D:within-always]: exit n is an
+# ExitRequest RAISE — it unwinds through every scope finally (the tmp
+# dir is removed by the scope itself, not the hook), so always and exit
+# compose with no carve-out
+cat > "$aldir/exittmp.weir" <<'WEOF'
+within tmp d
+    print d
+    exit 0
+WEOF
+exdir=$( cd "$aldir" && $BIN exittmp.weir )
+[ -n "$exdir" ] || fail "exit-vs-tmp: no dir printed"
+[ ! -d "$exdir" ] || fail "exit must run the tmp teardown (dir survived: $exdir)"
+echo "e2e ok: exit n unwinds through scope teardown (Phase 0, pinned)"
+
+# the raise rulings [D:within-always]: the original error wins, the
+# cleanup's own failure reaches stderr with the marker; an inner failed
+# cleanup does not strand the outer scope (LIFO under failure)
+cat > "$aldir/rulings.weir" <<'WEOF'
+within
+    within
+        fail "original"
+    always
+        fail "inner cleanup boom"
+always
+    File.append "OUTER" ["outer ran"]
+WEOF
+rout_rc=0
+rout=$( cd "$aldir" && rm -f OUTER && $BIN rulings.weir 2>&1 ) || rout_rc=$?
+[ "$rout_rc" != "0" ] || fail "the original raise must propagate"
+echo "$rout" | grep -qF "error: original" || fail "the ORIGINAL error surfaces: $rout"
+echo "$rout" | grep -qF "the cleanup ALSO failed" || fail "the cleanup failure reaches stderr with its marker: $rout"
+[ "$(cat "$aldir/OUTER" 2>/dev/null)" = "outer ran" ] || fail "the outer always still runs (LIFO under failure)"
+echo "e2e ok: always raise rulings — original wins, marker on stderr, teardown continues outward"
+
+# ---- within lock [D:within-lock] -------------------------------------------
+# advisory file lock: mutual exclusion across processes AND pmap arms
+# (flock(2) is per-open-file-description — probe-pinned), blocking by
+# default, timeout= raises, kill -9 releases (the kernel's guarantee).
+# The no-lock control is the same instrument observing contention —
+# every zero needs its non-zero.
+if [ "$IS_WINDOWS" != "1" ]; then
+    lkdir=$(mkweirtmp)
+    cat > "$lkdir/lk.weir" <<'WEOF'
+within lock "probe.lock"
+    File.append "LOG" ["enter"]
+    Duration.sleep 400ms
+    File.append "LOG" ["exit"]
+WEOF
+    cat > "$lkdir/nolock.weir" <<'WEOF'
+File.append "LOG" ["enter"]
+Duration.sleep 400ms
+File.append "LOG" ["exit"]
+WEOF
+    ( cd "$lkdir" && rm -f LOG && { $BIN lk.weir & $BIN lk.weir & wait; } )
+    [ "$(cat "$lkdir/LOG" | tr '\n' ' ')" = "enter exit enter exit " ] || fail "two-process exclusion (got: $(cat "$lkdir/LOG" | tr '\n' ' '))"
+    ( cd "$lkdir" && rm -f LOG && { $BIN nolock.weir & $BIN nolock.weir & wait; } )
+    [ "$(cat "$lkdir/LOG" | tr '\n' ' ')" != "enter exit enter exit " ] || fail "the no-lock control must interleave — the instrument observed no contention"
+    cat > "$lkdir/arms.weir" <<'WEOF'
+[1; 2] |> Seq.pmap (fun i ->
+    within lock "probe.lock"
+        File.append "LOG" ["enter"]
+        Duration.sleep 400ms
+        File.append "LOG" ["exit"]
+    i) |> Seq.iter (fun _ -> ())
+WEOF
+    ( cd "$lkdir" && rm -f LOG && $BIN arms.weir )
+    [ "$(cat "$lkdir/LOG" | tr '\n' ' ')" = "enter exit enter exit " ] || fail "pmap arms exclusion (flock per-open-fd, got: $(cat "$lkdir/LOG" | tr '\n' ' '))"
+    cat > "$lkdir/nodir.weir" <<'WEOF'
+within lock "no-such-dir-xyz/l.lock" timeout=10s
+    print "unreachable"
+WEOF
+    nd_rc=0; nd=$( cd "$lkdir" && $BIN nodir.weir 2>&1 ) || nd_rc=$?
+    [ "$nd_rc" != "0" ] || fail "a missing lock parent must fail"
+    echo "$nd" | grep -qF "no such directory" || fail "missing parent fails NOW, not as a timeout (got: $nd)"
+    cat > "$lkdir/tmo.weir" <<'WEOF'
+within lock "probe.lock" timeout=300ms
+    print "acquired"
+WEOF
+    if command -v flock >/dev/null 2>&1; then
+        ( flock "$lkdir/probe.lock" -c "sleep 3" ) & fpid=$!
+        sleep 0.4
+        tmo_rc=0; tmo=$( cd "$lkdir" && $BIN tmo.weir 2>&1 ) || tmo_rc=$?
+        [ "$tmo_rc" != "0" ] || fail "timeout exhaustion must raise"
+        echo "$tmo" | grep -qF "within lock: timed out" || fail "the timeout error names itself: $tmo"
+        wait $fpid
+        cat > "$lkdir/hold.weir" <<'WEOF'
+within lock "probe.lock"
+    print "held"
+    Duration.sleep 30s
+WEOF
+        ( cd "$lkdir" && exec $BIN hold.weir >/dev/null 2>&1 ) & hpid=$!
+        sleep 1.5
+        flock -n "$lkdir/probe.lock" -c true && fail "flock must be excluded while weir holds (interop)"
+        kill -9 $hpid 2>/dev/null || true; wait $hpid 2>/dev/null || true; sleep 0.5
+        flock -n "$lkdir/probe.lock" -c true || fail "the kernel must release on kill -9"
+        echo "e2e ok: within lock — 2-process + pmap-arm exclusion (control interleaved), timeout raises, flock interop, kill -9 releases"
+    else
+        echo "e2e ok: within lock — 2-process + pmap-arm exclusion (control interleaved); flock absent, interop/kill-9 rows skipped"
+    fi
+else
+    echo "e2e skip: within lock matrix (POSIX rows)"
+fi
+
 # ---- filesystem members [D:fs-members] -------------------------------------
 fsdir=$(mkweirtmp)
 cat > "$fsdir/glob.weir" <<'WEOF'

@@ -151,10 +151,29 @@ let mutable private hookRoots: obj list = []
 let private liveProcs =
     System.Collections.Concurrent.ConcurrentDictionary<int, System.Diagnostics.Process>()
 
+// pending `always` cleanups [D:within-always]: LIFO, run by the exit
+// hook on signals/hard exits; a completed scope deregisters (its own
+// finally already ran the cleanup). Entries are REMOVED before running
+// so a second hook firing (SIGTERM then ProcessExit) cannot run one
+// twice.
+let private liveAlways =
+    System.Collections.Concurrent.ConcurrentDictionary<int, unit -> unit>()
+
+let private alwaysCounter = ref 0
+
 let private sweepLiveTmpDirs () =
     // runs at exit while finallys may also be running: a vanished dir is
     // benign (the double-delete pin's territory), and the hook must
     // never throw during exit
+    for id in liveAlways.Keys |> Seq.sortDescending do
+        match liveAlways.TryRemove id with
+        | true, cleanup ->
+            try
+                cleanup ()
+            with _ ->
+                ()
+        | _ -> ()
+
     for kv in liveProcs do
         try
             kv.Value.Kill true
@@ -207,3 +226,13 @@ let registerProc (p: System.Diagnostics.Process) : unit =
     liveProcs[p.Id] <- p
 
 let deregisterProc (p: System.Diagnostics.Process) : unit = liveProcs.TryRemove p.Id |> ignore
+
+let registerAlways (cleanup: unit -> unit) : int =
+    if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
+        installExitHook ()
+
+    let id = System.Threading.Interlocked.Increment alwaysCounter
+    liveAlways[id] <- cleanup
+    id
+
+let deregisterAlways (id: int) : unit = liveAlways.TryRemove id |> ignore

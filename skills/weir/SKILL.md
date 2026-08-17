@@ -403,6 +403,28 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   raise-by-default does not apply — failure becomes visible through
   `watch=` or `Proc.wait`, nowhere else. Nested scopes release LIFO.
   The command position takes splices and env sigils like any command;
+- A bare `within` (no kind) + `always` is the exit discipline alone
+  [D:within-always]: the indented body runs, then the `always` block
+  runs on EVERY exit — normal, `fail`, `exit n`, SIGINT/SIGTERM (not
+  `kill -9`, the standing carve-out). The rulings: a cleanup raise on
+  a CLEAN exit propagates (always is never where a raise disappears);
+  when already unwinding, the ORIGINAL error wins and the cleanup's
+  own failure goes to stderr with a marker; a failed inner cleanup
+  never strands the outer scopes (teardown continues LIFO). `exit`
+  inside `always` is a check error (teardown must finish); retry/poll
+  inside are fine. There is no kinded `within proc … always` yet —
+  nest a bare within inside the proc scope.
+- `within lock "path"` holds an ADVISORY file lock for the block
+  [D:within-lock]: created if missing, nothing bound (there is
+  nothing to ask a lock). Blocking by default; `timeout=30s` bounds
+  the wait and exhaustion raises, retry-style. Excludes across
+  processes AND across `pmap` arms (flock semantics, per open file —
+  probe-pinned), and interoperates with `flock(1)`. The one scope
+  whose guarantee survives `kill -9`: the KERNEL releases the lock on
+  any death. Advisory means a non-cooperating process can ignore it;
+  on NFS and network filesystems advisory locking is unreliable — use
+  a local path. Re-acquiring a lock you already hold (nested, or via
+  a function) waits like any contender: give it a timeout.
   pipelines and reifiers refuse (`| complete` WAITS — the opposite of
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
@@ -718,6 +740,16 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
 within tmp d
     echo redirected |> File.write $"{d}/out.txt"
     File.read $"{d}/out.txt" |> Seq.iter print
+```
+```weir
+// the exit discipline alone, and a held lock — both release on every
+// exit path (the lock even on kill -9: the kernel lets go)
+within tmp d
+    within lock $"{d}/demo.lock" timeout=10s
+        within
+            print "guarded work"
+        always
+            print "teardown, every path"
 ```
 - Nonzero exit RAISES when the stream is forced. The exit-code
   reifiers (complete's family, single external segment, one law:
@@ -1065,12 +1097,13 @@ let c = Args.load Cmd
   covers what WEIR does; any external can itself do anything.
 - `exit n` exits with code n silently (propagation:
   `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
-  the message-carrying exit-1. No try/finally — for cleanup-always,
-  make failure data with `| complete`, clean up, then propagate.
   the message-carrying exit-1. No GENERAL try/finally — cleanup-always
-  is RESOURCE-SCOPED (`within tmp/cd/env/proc` release on every exit,
-  raise included); for a fallible middle that is not a resource, make it
-  data with `| complete`, clean up, then propagate.
+  is SCOPED: resource kinds release on every exit
+  (`within tmp/cd/env/proc/lock`, raise included), and a bare
+  `within` + `always` carries the exit discipline with no resource
+  [D:within-always] (see the scopes section). For a fallible middle
+  that is neither, make it data with `| complete`, clean up, then
+  propagate.
 - Blank lines are TRANSPARENT while a statement is open — bodies,
   arms, brackets, districts group freely with gaps. A statement ends
   at the next column-0 line (or EOF), nowhere else.

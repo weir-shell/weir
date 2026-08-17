@@ -166,6 +166,7 @@ computation expressions, no `let rec`, no implicit widening.
 | `if x = y then` | `if x == y then` — `=` is for `let` and record fields only |
 | `printfn "%d files" n` | `print $"{n} files"` — no printf family, interpolation is the mechanism |
 | `try … with` | no catching: `fail "msg"` raises; `cmd \| complete` makes failure data |
+| `try … finally` | bare `within` + `always` — cleanup on every exit (normal, raise, `exit`, signals); resource cleanup is a kind (`within tmp/proc/lock`) |
 | `while` / `let rec` | `retry`/`poll` for condition loops (bounded); pipelines/`Seq.fold` to transform/accumulate; `for … do` ≡ `Seq.iter` for effects |
 | `open Seq` | no `open` — access is always qualified; `import "./lib/x.weir" as X` shares code |
 | `$@"…"` / `$$"""…"""` | `$"""…{hole}…"""` only — ONE raw interpolated spelling; no multi-`$` brace scheme (a literal brace belongs to `$"…"`'s `{{`); all string kinds are single-line |

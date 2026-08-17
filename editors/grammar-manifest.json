@@ -12,6 +12,7 @@
     ]
   },
   "keywords": [
+    "always",
     "def",
     "do",
     "elif",
@@ -47,6 +48,7 @@
   "withinKinds": [
     "cd",
     "env",
+    "lock",
     "proc",
     "tmp"
   ]

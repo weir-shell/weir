@@ -2335,110 +2335,211 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TESeq(a, b) ->
         eval env a |> ignore
         eval env b
-    | TEWithin(kind, binder, targ, body) ->
+    | TEAlways(body, cleanup) ->
+        // the bare scope [D:within-always], the raise rulings:
+        //  1. normal exit + cleanup raises -> the scope raises (always
+        //     is never the one place a raise disappears)
+        //  2. already unwinding + cleanup raises -> the ORIGINAL wins;
+        //     the cleanup failure goes to stderr with a marker (the
+        //     diagnosis outranks its consequence)
+        //  3. teardown continues outward regardless — one failed
+        //     cleanup must not strand the enclosing scopes' LIFO.
+        // exit n is a raise (ExitRequest) and unwinds the same way;
+        // signals run the pending cleanups via the exit hook, LIFO.
+        let runCleanup () = eval env cleanup |> ignore
+        let hooked = Session.registerAlways runCleanup
+
+        match
+            (try
+                Ok(eval env body)
+             with e ->
+                 Error e)
+        with
+        | Ok v ->
+            Session.deregisterAlways hooked
+            // case 1: a cleanup raise propagates as the scope's raise
+            runCleanup ()
+            v
+        | Error original ->
+            Session.deregisterAlways hooked
+
+            (try
+                runCleanup ()
+             with
+             | :? ExitRequest ->
+                 // the checker refuses exit inside always; a raise here
+                 // would swap the original for a code — unreachable
+                 ()
+             | ce -> eprintfn "within/always: the cleanup ALSO failed — %s (the original error wins)" ce.Message)
+
+            raise original
+    | TEWithin(kind, binder, targ, topts, body) ->
         match kind, binder, targ with
-        | "cd", _, Some pathE ->
-            // cd CONSUMES a path [D:within-scopes]: resolved against the
-            // current cwd (so nested relative scopes compose), verified
-            // BEFORE the block runs, restored on every managed exit
+        | "lock", _, Some pathE ->
+            // advisory file lock [D:within-lock]: FileShare.None maps to
+            // flock(2) on Unix (probe-pinned: per-open-file-description,
+            // so pmap arms exclude each other; interoperates with
+            // flock(1)) and native share modes on Windows. Blocking by
+            // default, timeout= bounds the wait; the kernel releases on
+            // ANY death, kill -9 included — the one kind whose guarantee
+            // survives the hard-exit carve-out. Advisory only: a
+            // non-cooperating process ignores it (stated non-claim).
             let path =
                 match eval env pathE with
                 | VStr s -> s
-                | v -> unreachable $"the checker rejects a cd path of {formatValue v}"
+                | v -> unreachable $"the checker rejects a lock path of {formatValue v}"
 
             let resolved = Session.resolve path
 
-            if not (System.IO.Directory.Exists resolved) then
-                failwith $"within cd: no such directory: {resolved}"
+            let timeoutMs =
+                topts
+                |> Option.map (fun o ->
+                    match eval env o with
+                    | VDur ms -> ms
+                    | v -> unreachable $"the checker rejects a lock timeout of {formatValue v}")
 
-            let saved = Session.Cwd()
-            Session.setCwd resolved
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+
+            let rec acquire () =
+                match
+                    (try
+                        Some(
+                            new System.IO.FileStream(
+                                resolved,
+                                System.IO.FileMode.OpenOrCreate,
+                                System.IO.FileAccess.ReadWrite,
+                                System.IO.FileShare.None
+                            )
+                        )
+                     with
+                     // DirectoryNotFound IS an IOException — a missing
+                     // parent must fail NOW, not spin as "held elsewhere"
+                     // (the Windows C:\tmp lesson)
+                     | :? System.IO.DirectoryNotFoundException ->
+                         failwith $"within lock: no such directory for {resolved} — the lock file's parent must exist"
+                     | :? System.IO.IOException -> None)
+                with
+                | Some fs -> fs
+                | None ->
+                    match timeoutMs with
+                    | Some ms when sw.ElapsedMilliseconds >= ms ->
+                        failwith
+                            $"within lock: timed out after {formatDuration ms} waiting for {resolved} (held elsewhere)"
+                    | _ ->
+                        System.Threading.Thread.Sleep 25
+                        acquire ()
+
+            let fs = acquire ()
 
             try
                 eval env body
             finally
-                Session.setCwd saved
-        | "env", _, Some varsE ->
-            // env pushes an ambient overlay CHILD SPAWNS see; weir's own
-            // Env.load is untouched [D:within-scopes]
-            Session.pushEnvOverlay (envPairsOf (eval env varsE))
+                fs.Dispose()
+        | _ ->
 
-            try
-                eval env body
-            finally
-                Session.popEnvOverlay ()
-        | "proc", Some binderName, Some cmdNode ->
-            // the scoped process [D:scoped-procs]: spawn with both
-            // streams spilling, bind the handle, and at EVERY exit —
-            // normal and raise alike — tree-kill and reap. The scope IS
-            // the lifetime; the exit hook is the hard-exit backstop.
-            let prog, argv, overlay =
-                match cmdNode.Kind with
-                | TECmd(prog, args, cenvO) -> prog, argvOf env args, overlayOf env cenvO
-                | _ -> unreachable "the parser guarantees a command in the proc slot"
+            match kind, binder, targ with
+            | "cd", _, Some pathE ->
+                // cd CONSUMES a path [D:within-scopes]: resolved against the
+                // current cwd (so nested relative scopes compose), verified
+                // BEFORE the block runs, restored on every managed exit
+                let path =
+                    match eval env pathE with
+                    | VStr s -> s
+                    | v -> unreachable $"the checker rejects a cd path of {formatValue v}"
 
-            let spill =
-                System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-proc-{System.Guid.NewGuid():N}")
+                let resolved = Session.resolve path
 
-            System.IO.Directory.CreateDirectory spill |> ignore
-            Session.registerTmpDir spill
+                if not (System.IO.Directory.Exists resolved) then
+                    failwith $"within cd: no such directory: {resolved}"
 
-            let p, drain =
-                Proc.startSpilled
-                    overlay
-                    (Proc.resolveProg prog)
-                    argv
-                    (System.IO.Path.Combine(spill, "out.log"))
-                    (System.IO.Path.Combine(spill, "err.log"))
+                let saved = Session.Cwd()
+                Session.setCwd resolved
 
-            Session.registerProc p
+                try
+                    eval env body
+                finally
+                    Session.setCwd saved
+            | "env", _, Some varsE ->
+                // env pushes an ambient overlay CHILD SPAWNS see; weir's own
+                // Env.load is untouched [D:within-scopes]
+                Session.pushEnvOverlay (envPairsOf (eval env varsE))
 
-            let handle =
-                { Proc = p
-                  OutPath = System.IO.Path.Combine(spill, "out.log")
-                  ErrPath = System.IO.Path.Combine(spill, "err.log")
-                  SpillDir = spill
-                  Drain = drain }
+                try
+                    eval env body
+                finally
+                    Session.popEnvOverlay ()
+            | "proc", Some binderName, Some cmdNode ->
+                // the scoped process [D:scoped-procs]: spawn with both
+                // streams spilling, bind the handle, and at EVERY exit —
+                // normal and raise alike — tree-kill and reap. The scope IS
+                // the lifetime; the exit hook is the hard-exit backstop.
+                let prog, argv, overlay =
+                    match cmdNode.Kind with
+                    | TECmd(prog, args, cenvO) -> prog, argvOf env args, overlayOf env cenvO
+                    | _ -> unreachable "the parser guarantees a command in the proc slot"
 
-            try
-                eval (Map.add binderName (VProc handle) env) body
-            finally
-                Proc.stopTree p
-                Session.deregisterProc p
-                // pumps settle before the spill dir goes (Windows would
-                // refuse the delete under a live write handle)
-                drain ()
+                let spill =
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-proc-{System.Guid.NewGuid():N}")
 
-                (try
-                    System.IO.Directory.Delete(spill, true)
-                 with _ ->
-                     ())
+                System.IO.Directory.CreateDirectory spill |> ignore
+                Session.registerTmpDir spill
 
-                Session.deregisterTmpDir spill
-        | _, Some binderName, _ ->
-            // kind "tmp" [D:within-scopes]: a fresh unique directory,
-            // bound as the binder for the block; removed on EVERY exit —
-            // normal and raise alike (the raise-path is the load-bearing
-            // pin). The delete is best-effort (a vanished dir is fine).
-            let dir =
-                System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
+                let p, drain =
+                    Proc.startSpilled
+                        overlay
+                        (Proc.resolveProg prog)
+                        argv
+                        (System.IO.Path.Combine(spill, "out.log"))
+                        (System.IO.Path.Combine(spill, "err.log"))
 
-            System.IO.Directory.CreateDirectory dir |> ignore
-            // the exit hook's backstop registration [D:exit-hook]: a hard
-            // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
-            // could not; the clean path deregisters and the hook is idle
-            Session.registerTmpDir dir
+                Session.registerProc p
 
-            try
-                eval (Map.add binderName (VStr dir) env) body
-            finally
-                (try
-                    System.IO.Directory.Delete(dir, true)
-                 with _ ->
-                     ())
+                let handle =
+                    { Proc = p
+                      OutPath = System.IO.Path.Combine(spill, "out.log")
+                      ErrPath = System.IO.Path.Combine(spill, "err.log")
+                      SpillDir = spill
+                      Drain = drain }
 
-                Session.deregisterTmpDir dir
-        | _ -> unreachable "within kinds are closed at parse"
+                try
+                    eval (Map.add binderName (VProc handle) env) body
+                finally
+                    Proc.stopTree p
+                    Session.deregisterProc p
+                    // pumps settle before the spill dir goes (Windows would
+                    // refuse the delete under a live write handle)
+                    drain ()
+
+                    (try
+                        System.IO.Directory.Delete(spill, true)
+                     with _ ->
+                         ())
+
+                    Session.deregisterTmpDir spill
+            | _, Some binderName, _ ->
+                // kind "tmp" [D:within-scopes]: a fresh unique directory,
+                // bound as the binder for the block; removed on EVERY exit —
+                // normal and raise alike (the raise-path is the load-bearing
+                // pin). The delete is best-effort (a vanished dir is fine).
+                let dir =
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
+
+                System.IO.Directory.CreateDirectory dir |> ignore
+                // the exit hook's backstop registration [D:exit-hook]: a hard
+                // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
+                // could not; the clean path deregisters and the hook is idle
+                Session.registerTmpDir dir
+
+                try
+                    eval (Map.add binderName (VStr dir) env) body
+                finally
+                    (try
+                        System.IO.Directory.Delete(dir, true)
+                     with _ ->
+                         ())
+
+                    Session.deregisterTmpDir dir
+            | _ -> unreachable "within kinds are closed at parse"
     | TEIf(cond, thn, els) ->
         match eval env cond, els with
         | VBool true, _ -> eval env thn
