@@ -1802,6 +1802,57 @@ let private pathCombineImpl: Value =
             | VStr x, VStr y -> VStr(Path.Combine(x, y))
             | _ -> unreachable "the checker rejects 'Path.combine' on these arguments"))
 
+/// `Path.under` [D:path-under] — the CONFINING join. `Path.combine` keeps BCL
+/// semantics (an absolute second argument WINS; `..` is not normalised) and is
+/// the primitive for paths you control; `under` is the one to reach for with
+/// input you do not. PURELY TEXTUAL by design: it confines the PATH, never the
+/// resolved target, so a symlink inside the base pointing out is textually
+/// under and is NOT confined. Following links would mean touching the disk,
+/// which makes the check impure, racy (TOCTOU) and dependent on the path
+/// existing — the same register as `Secret` being a rendering marker.
+let private absoluteShaped (p: string) : bool =
+    // refused on EVERY platform, not only where the host OS agrees: a script
+    // must confine identically on Linux and Windows, and refusing the SHAPE is
+    // the safe direction. Covers /x and \x, a drive root or drive-RELATIVE
+    // `C:x` (the BCL treats both as rooted), and UNC `\\server\share`.
+    p.StartsWith "/"
+    || p.StartsWith "\\"
+    || (p.Length >= 2 && System.Char.IsLetter p[0] && p[1] = ':')
+
+let private pathUnderImpl: Value =
+    VBuiltin(fun a ->
+        VBuiltin(fun b ->
+            match a, b with
+            | VStr basePath, VStr name ->
+                // the base is normalised FIRST, and a RELATIVE base resolves
+                // against the session cwd at call time — Path.glob's
+                // resolve-at-use rule, and the cwd every runtime surface reads
+                let root = Path.TrimEndingDirectorySeparator(Session.resolve basePath)
+
+                let escape () : Value =
+                    failwith
+                        $"Path.under: '{name}' escapes '{root}' — under confines a path to its base; Path.combine is the unconfined join"
+
+                if absoluteShaped name then
+                    escape ()
+                else
+                    // normalise THEN confine: rejecting literal `..` segments is
+                    // neither sufficient (separators and encodings get past a
+                    // textual scan) nor necessary (`a/b/../c` is legitimately
+                    // inside). GetFullPath is lexical — it never touches disk.
+                    let joined = Path.GetFullPath(Path.Combine(root, name))
+                    let sep = string Path.DirectorySeparatorChar
+                    let prefix = if root.EndsWith sep then root else root + sep
+
+                    // SEGMENT-WISE, not prefix-string-wise: `/safe/uploads-evil`
+                    // starts with `/safe/uploads` as a string and is not under
+                    // it — the classic bug in every hand-rolled version
+                    if joined = root || joined.StartsWith prefix then
+                        VStr joined
+                    else
+                        escape ()
+            | _ -> unreachable "the checker rejects 'Path.under' on these arguments"))
+
 let private pathMembers: (string * Ty * Value) list =
     [ "extension", TFun(TStr, TStr), str1 "extension" Path.GetExtension
       "fileName", TFun(TStr, TStr), str1 "fileName" Path.GetFileName
@@ -1813,6 +1864,7 @@ let private pathMembers: (string * Ty * Value) list =
           | null -> ""
           | d -> d)
       "combine", TFun(TStr, TFun(TStr, TStr)), pathCombineImpl
+      "under", TFun(TStr, TFun(TStr, TStr)), pathUnderImpl
       "glob", TFun(TStr, TSeq TStr), globImpl
       // the QUERY (pure): the system temp root, no trailing separator
       "tempRoot",

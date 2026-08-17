@@ -986,9 +986,19 @@ print (codes |> Seq.head)
   `Path.combine dir name` — System.IO semantics, with the two BCL
   gotchas that come with them: an ABSOLUTE second arg WINS
   (`Path.combine "/safe" "/etc/x"` = `/etc/x`, not nested), and `..`
-  is NOT normalized. Path functions don't confine — building a path
-  from hostile data can escape a directory you imagined as a bound;
-  that check is the script's. And `File.*`/explicit paths FOLLOW
+  is NOT normalized. `Path.combine` does not confine — building a path
+  from hostile data can escape a directory you imagined as a bound.
+  **`Path.under base name` is the confining join**: same shape, so it
+  substitutes at the call site, but it normalizes and then requires the
+  result to be inside `base`, RAISING otherwise (an absolute or
+  drive/UNC-shaped `name` never joins; interior `..` like `a/../b` is
+  fine; the boundary is segment-wise, so `/safe/uploads-evil` is not
+  under `/safe/uploads`). One line to choose between them: **combine for
+  paths you control, under for paths you do not.** `under` is purely
+  TEXTUAL — it confines the PATH, never the resolved target, so a
+  symlink inside `base` pointing out is textually under and is NOT
+  confined; following links would mean touching the disk, which makes
+  the check impure, racy, and dependent on the path existing. And `File.*`/explicit paths FOLLOW
   symlinked dirs that `Path.glob`'s `**` deliberately skips — each is
   correct in isolation (glob skips for loop-immunity, explicit access
   follows as a shell does), but they are not the same rule.
@@ -1243,7 +1253,7 @@ not the teaching.
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
 - `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse`
-- `Path`: `combine` `dir` `extension` `fileName` `glob` `newTempDir` `stem` `tempRoot`
+- `Path`: `combine` `dir` `extension` `fileName` `glob` `newTempDir` `stem` `tempRoot` `under`
 - `Poll`: `defaults`
 - `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Retry`: `defaults`
