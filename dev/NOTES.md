@@ -1,5 +1,29 @@
 # Spike Notes
 
+## the File.stat rider: an existence lie and eleven silent members (2026-08-17)
+
+F1's premise needed correcting before its fix: the rider predicted
+File.mode raised "no such path" off a following File.Exists, but
+.NET's File.Exists is already lstat-true for a dangling link on
+Unix — so the guard PASSED and GetUnixFileMode surfaced the raw BCL
+"Could not find file". Less honest than assumed, same defect class.
+Ruling (a) landed: existence is not a mode question, so the dangling
+case now fails at the READ with its own message (link-vs-absent split
+on LinkTarget), while the mode read keeps following — the File.*
+group's consistent reading, and (b) would have prejudged the parked
+mode-on-the-row question. [D:mode-existence]
+
+F2's count was the finding: ELEVEN members with no builtinDocs entry,
+and the shape of the eleven is the argument for the check — not a
+scattering but the entire Log module (8 members, a whole module
+shipped without a single hover) plus the pmapWith/piterWith twins and
+File.mode. The check is a unit pin, not a fourth harness: the subject
+is two in-process maps (env.Modules x builtinDocs), where
+skill-surface must shell out through #help because SKILL.md is prose
+outside the binary. Shown failing at 11 before the entries landed;
+enumeration must exceed 100 before zero-missing can pass.
+[D:docs-coverage]
+
 ## File.stat: the bridge, and the agreement that came free (2026-08-17)
 
 Phase 0 reshaped nothing, which is its own finding. `ls` cannot take
