@@ -4675,6 +4675,22 @@ echo "$out" | grep -qF "a Secret reaches the argv of curl" || fail "the ps-visib
 echo "$out" | grep -qF "git" || fail "an imported module's externals appear transitively: $out"
 echo "$out" | grep -qF "lib.weir" || fail "the module site carries the module's own file: $out"
 
+# the reifier desugar's slots [D:can-report]: orFail's msg rides ahead
+# of the program and the Env twins lead with the overlay — the report
+# once printed an orFail MESSAGE as a command; the prog slot is
+# positional, literalness checked after (an interpolated msg must not
+# shift it)
+cat > "$candir/reify.weir" <<'WEOF'
+let n = 7
+sh -c "true" | orFail "a lock is already live — wait or kill"
+git status | orFail $"round {n} failed"
+WEOF
+rout=$($BIN check --can "$candir/reify.weir" 2>&1) || fail "reify --can errored"
+echo "$rout" | grep -qF "sh" || fail "orFail with a literal msg reports the program: $rout"
+echo "$rout" | grep -qF "git" || fail "orFail with an interpolated msg reports the program: $rout"
+echo "$rout" | grep -qF "already live" && fail "the orFail MESSAGE must never appear as a command: $rout"
+echo "e2e ok: --can reads the reifier desugar's program slot (orFail msg never a command)"
+
 # --strict: opaque sites become a distinct nonzero for CI's choosing
 strictrc=0
 $BIN check --can --strict "$candir/cap.weir" >/dev/null 2>&1 || strictrc=$?
