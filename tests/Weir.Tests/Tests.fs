@@ -7562,6 +7562,51 @@ let agentFindingsTests =
               let terr = checkErr "fst (1, 2, 3)"
               Expect.stringContains terr.Message "int * int * int" ""
           }
+          test "Path.under confines; Path.combine does not [D:path-under]" {
+              skipOnWindows () // the Windows shapes have their own e2e row
+
+              // the POSITIVE TWIN, first: "raises on escape" is satisfied by a member
+              // that raises on everything, so the legitimate joins are the real pins
+              expectValue "Path.under \"/safe\" \"report.pdf\"" (VStr "/safe/report.pdf")
+              expectValue "Path.under \"/safe\" \"a/b/c.txt\"" (VStr "/safe/a/b/c.txt")
+              // interior `..` is legitimate — rejecting the SEGMENT would be wrong
+              expectValue "Path.under \"/safe\" \"a/../b\"" (VStr "/safe/b")
+              // rule 6: empty and dot-only yield the base
+              expectValue "Path.under \"/safe\" \"\"" (VStr "/safe")
+              expectValue "Path.under \"/safe\" \".\"" (VStr "/safe")
+
+
+              // rule 1: an absolute second argument never joins
+              Expect.throws (fun () -> runReal "Path.under \"/safe\" \"/etc/passwd\"" |> ignore) "absolute rhs escapes"
+              // rule 2: normalise THEN confine
+              Expect.throws (fun () -> runReal "Path.under \"/safe\" \"../etc/passwd\"" |> ignore) "traversal escapes"
+
+              Expect.throws
+                  (fun () -> runReal "Path.under \"/safe\" \"a/../../etc\"" |> ignore)
+                  "interior traversal that leaves escapes"
+              // rule 7: drive- and UNC-shaped names are refused on EVERY platform
+              Expect.throws (fun () -> runReal "Path.under \"/safe\" \"C:/x\"" |> ignore) "drive-shaped escapes"
+
+              // rule 4, THE reason this member exists: a sibling whose name EXTENDS
+              // the base is not under it, and a prefix-string test says it is
+              Expect.throws
+                  (fun () -> runReal "Path.under \"/safe/uploads\" \"../uploads-evil/x\"" |> ignore)
+                  "a name-extending sibling is NOT under the base"
+
+              // the diagnostic is security-shaped: it names the base, the attempted
+              // path, and the word escape
+              let msg =
+                  try
+                      runReal "Path.under \"/safe\" \"/etc/passwd\"" |> ignore
+                      ""
+                  with e ->
+                      e.Message
+
+              Expect.isTrue (msg.Contains "/safe") "the message names the base"
+              Expect.isTrue (msg.Contains "/etc/passwd") "the message names the attempt"
+              Expect.isTrue (msg.Contains "escape") "the message says escape"
+          }
+
           test "Path members: extension/fileName/stem/dir/join" {
               expectValue "Path.extension \"ci/run.Dockerfile\"" (VStr ".Dockerfile")
               expectValue "Path.extension \"ci/Dockerfile\"" (VStr "")

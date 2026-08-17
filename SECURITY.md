@@ -20,11 +20,23 @@ The scope line above is the headline; these are its corollaries,
 each verified (a script CAN do the risky thing — weir does not stop
 it, by design):
 
-- **Path functions do not confine.** `Path.glob "../../**"` escapes
+- **Most path functions do not confine.** `Path.glob "../../**"` escapes
   any directory a script imagined as a boundary, and `Path.combine`
   follows .NET's rule — an absolute second argument WINS
   (`Path.combine "/safe" "/etc/x"` → `/etc/x`), and `..` is not
-  normalized away. Confinement is the script's job, not weir's.
+  normalized away. Confinement is the script's job — but it now has a
+  member for it: **`Path.under base name`** normalizes and then requires
+  the result to be inside `base`, raising otherwise, with a segment-wise
+  boundary (`/safe/uploads-evil` is not under `/safe/uploads`). Combine
+  for paths you control, under for paths you do not. Its own non-claim,
+  stated: **`Path.under` is purely TEXTUAL — it confines the PATH, not
+  the resolved target.** A symlink inside `base` pointing out is
+  textually under and is not confined; following links would mean
+  touching the disk, which makes the check impure, racy (TOCTOU) and
+  dependent on the path existing. Same register as `Secret` being a
+  rendering marker, and consistent with the asymmetry already named
+  below: `Path.glob`'s `**` skips symlinked dirs, `File.*` follows
+  them.
 - **Word integrity is not flag safety.** weir guarantees a value —
   including `Path.glob` output — reaches a command as exactly one
   argv word. It does NOT guarantee the command won't interpret that
