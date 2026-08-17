@@ -53,6 +53,66 @@ arguments partially applies and the loop discarded the function
 silently. The suite's own parallelism caught the real hazard: a
 second setCwd test races the first (17 collateral failures in one
 run), so fileStatTests is sequenced with the reason in the comment.
+## the commit-area rider: loud beats plausible (2026-08-17)
+
+Post-rider, the check itself got the treatment the repo's own policy
+demanded from the start: it is a WEIR script now (ci/commit-area.weir
+— the bash version was an unlogged fallback, which is exactly the
+kind of drift the policy line exists to catch; the user caught it).
+The rewrite was also a fair ergonomics probe: the offside rule
+refuses F#'s dedented guard-else (full nesting instead), and a
+command in a match ARM needs the $() capture — both already
+documented, both hit anyway. The CI step moved after publish since
+the check needs the binary; the price of dogfood, paid where it
+shows.
+
+
+
+The follow-up's audit vindicated R1 immediately: the cli catch-all
+was already covering seven files — six that belonged there and one
+(the fsproj) that was never a semantic area at all, just build infra
+that should ride. A fallback that produces plausible answers had
+been producing one wrong one since the map was written, which is the
+whole argument in a sentence. Unmapped src now stops loud with the
+file named; unmapped root files fall back to docs and say so.
+
+Two rules minted while the reasoning was fresh: derived checks print
+their derivation (the autocomplete-with-a-gate property, stated
+before the next gate-shaped thing gets built without it), and there
+is ONE commit-message harness — ruled before a second existed,
+which is the cheapest a fourth-harness question will ever be.
+
+## commit areas: the taxonomy was already in the log (2026-08-17)
+
+Phase 0 did what it was told and the answer reshaped the design
+twice. The vocabulary extraction was easy — the sessions describe
+themselves by file, and the counts confirmed every candidate area
+except none. The number that mattered was 53/60 multi-area: not
+because commits are sloppy but because this project's whole ritual
+lands a feature WITH its pins, docs, and ledger rows in one commit.
+A convention that fights that loses; the riding rule (src areas ARE
+the set; everything else rides) encodes the ritual instead, and the
+effective multi rate falls to sets of 1-3 that read like the prose
+already does.
+
+The informal-format answer was "yes, two of them, at war": type
+prefixes (add/fix/chore, 27 of 60) and area prefixes (repl/ledger/
+notes, ~8). The area shape carries information the diff can VERIFY;
+the type shape carries what the prose already says. Types retire.
+
+The confession the plan demanded up front: the path map could not be
+derived from directory structure — src/Weir is flat and the areas
+are semantic groupings — so it is a hand-maintained membership list,
+the thing this project has learned to distrust. Priced accordingly:
+ONE copy (the check script), PROCESS documents the shape and points
+at it, and the check's own failure mode when the map drifts is loud
+(a new src file falls to `cli`, a new root file to `docs` — visible
+in the first commit that touches them, not silent).
+
+The self-repair property fell out of the derivation: since CI knows
+the right answer, the rejection prints it — `subject should start
+'checker,parser: '` — and the fix is a copy-paste. A remembered
+convention nags; a derived one autocompletes.
 
 ## wire keys: the attribute that reads the world's JSON (2026-08-17)
 
