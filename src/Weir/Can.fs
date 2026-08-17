@@ -201,21 +201,30 @@ let rec private walkExpr (site: Span -> Site) (acc: ResizeArray<Cap>) (te: Typed
 
          match headOf te with
          | TEVar h when h.StartsWith "|" ->
-             let rec firstStr (e: TypedExpr) =
+             // the program's POSITION in the desugar, then literalness:
+             // base twins take (prog, args); orFail's msg rides ahead;
+             // the Env twins lead with the overlay; orFailedEnv has both.
+             // Filtering to literal strings FIRST mis-slots whenever the
+             // msg is interpolated — slot 0 once reported the MESSAGE as
+             // a command
+             let rec argsOf (e: TypedExpr) =
                  match e.Kind with
-                 | TEApp(g, a) ->
-                     match firstStr g with
-                     | Some s -> Some s
-                     | None -> literalStr a
-                 | _ -> None
+                 | TEApp(g, a) -> argsOf g @ [ a ]
+                 | _ -> []
 
-             match firstStr te with
-             | Some prog when f.Ty = f.Ty ->
+             let progSlot =
+                 if h.StartsWith "|orFailedEnv" then 2
+                 elif h.StartsWith "|orFailed" then 1
+                 elif h.EndsWith "Env" then 1
+                 else 0
+
+             match argsOf te |> List.tryItem progSlot |> Option.bind literalStr with
+             | Some prog ->
                  add (Runs prog) te.Span
 
                  if interpreters.Contains prog then
                      add (OpaqueArg prog) te.Span
-             | _ -> ()
+             | None -> ()
          | _ -> ()
 
          ignore args
