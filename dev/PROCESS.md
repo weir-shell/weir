@@ -88,6 +88,23 @@ teaching REACHES the user (text present + neither burial marker), not
 just "no crash". Sightings: arm-commit, the depth guard, the
 reserved-word gate (LEXICON).
 
+Corollary — **a teaching guard ADVERTISES the vocabulary it refuses**.
+The same `attempt`/`choice` shape bites from the other side: a guard
+built as `choice [ attempt (pstring w) >>= teach; … ]` contributes
+every alternative's LABEL to FParsec's expected-set when NONE of them
+matches. So the guard whose whole purpose is to say "weir has no
+`while`" offers `'while'` as a token the parser EXPECTS — backwards,
+and visible in every unrelated parse failure, not just the one the
+guard was written for. `foreignKeywordGuard` is the first instance;
+any future teaching guard with this shape inherits it by
+construction, which is why it belongs here and not only in its own
+row. The remedy is a strip at the ONE diagnostic funnel
+(`cleanParseDump`), reading the guard's own keyed table rather than a
+second copy of the word list — but the shape is the thing to notice
+at BUILD time, because the leak is silent and reads as a longer
+suggestion list rather than as a bug. Sighting: the non-weir-file
+report [D:not-weir-shape].
+
 ## Done-when intent rule
 
 Done-when clauses bind to INTENT. When a session's work dissolves a
