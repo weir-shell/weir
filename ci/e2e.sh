@@ -1639,9 +1639,11 @@ WEOF
     echo "$bout" | grep -F "b'text" && fail "the refusal must not leak the prefix: $bout"
 
     # tty/redirected divergence is TIMING ONLY — redirected bytes are
-    # the batched path's, byte-identical
-    rbytes=$( "$BIN" "$sedir/sp.weir" | od -An -c | tr -s ' ' )
-    [ "$rbytes" = " P A R T I A L - d o n e \n" ] || fail "redirected content unchanged (got:$rbytes)"
+    # the batched path's, byte-identical (od's format differs GNU/BSD,
+    # so assert content + exact byte count instead)
+    rcontent=$( "$BIN" "$sedir/sp.weir" )
+    rcount=$( "$BIN" "$sedir/sp.weir" | wc -c | tr -d ' ' )
+    [ "$rcontent" = "PARTIAL-done" ] && [ "$rcount" = "13" ] || fail "redirected content unchanged (got '$rcontent' / $rcount bytes)"
 
     # reifiers do NOT stream — | complete is in-memory capture by law
     cat > "$sedir/rc.weir" <<WEOF
