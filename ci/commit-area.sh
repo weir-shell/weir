@@ -22,6 +22,11 @@
 # non-src map (ci / docs / ledger / tests).
 set -euo pipefail
 
+# an UNMAPPED src file is a FAILURE, not a fallback [D:commit-areas]:
+# src areas are semantic groupings, so a new file is a decision — the
+# map line lands in the same commit (a plausible-but-wrong fallback is
+# the failure mode the canary/completion/orFail bugs share). The
+# fsproj is build infra and RIDES (the non-src map's ci).
 area_of_src() {
     case "$1" in
         src/Weir/Parser.fs|src/Weir/Script.fs|src/Weir/Ast.fs) echo parser ;;
@@ -32,7 +37,9 @@ area_of_src() {
         src/Weir/Lsp.fs) echo lsp ;;
         src/Weir/Fmt.fs) echo fmt ;;
         src/Weir/Yaml.fs|src/Weir/Http.fs) echo adapters ;;
-        src/Weir/*) echo cli ;;   # Program/Can/Argv/Extern/Contracts/Diagnose/fsproj — the command surface
+        src/Weir/Program.fs|src/Weir/Can.fs|src/Weir/Argv.fs|src/Weir/Extern.fs|src/Weir/Contracts.fs|src/Weir/Diagnose.fs) echo cli ;;
+        src/Weir/*.fsproj) echo "" ;;
+        src/Weir/*) echo UNMAPPED ;;
         *) echo "" ;;
     esac
 }
@@ -43,7 +50,13 @@ area_of_other() {
         ci/*|.github/*|tools/*|tests/pty/*|publish.*|install.*|weir.slnx|.gitignore|.dockerignore) echo ci ;;
         tests/*) echo tests ;;
         docs/*|skills/*|examples/*|editors/*|README.md|SECURITY.md|NOTICE|LICENSE|CONTRIBUTING.md|CODE_OF_CONDUCT.md|THIRD-PARTY-NOTICES.txt|CLAUDE.md) echo docs ;;
-        *) echo docs ;;   # anything new at the root reads as docs until the map learns it
+        src/Weir/*.fsproj|weir.slnx) echo ci ;;   # build infra rides
+        *)
+            # an unmapped NON-src path keeps a fallback, said aloud —
+            # .editorconfig should not block a commit [D:commit-areas]
+            echo "commit-area note: '$1' is unmapped — fallback: docs" >&2
+            echo docs
+            ;;
     esac
 }
 
@@ -65,6 +78,15 @@ check_commit() {
         fi
     done <<< "$files"
 
+    if echo "$src_areas" | grep -qw UNMAPPED; then
+        local culprit
+        culprit=$(echo "$files" | grep '^src/Weir/' | while IFS= read -r f; do
+            [ "$(area_of_src "$f")" = "UNMAPPED" ] && echo "$f"
+        done | paste -sd' ' -)
+        echo "commit-area FAIL: $c touches unmapped src file(s): $culprit — a new src file is an AREA DECISION; add its map entry to ci/commit-area.sh in this commit" >&2
+        return 1
+    fi
+
     if [ -n "${src_areas// /}" ]; then
         derived=$(echo "$src_areas" | tr ' ' '\n' | grep -v '^$' | sort -u | paste -sd, -)
     else
@@ -82,6 +104,15 @@ check_commit() {
         echo "commit-area FAIL: $c has no area prefix — subject should start '$derived: ' ($subject)" >&2
         return 1
     fi
+
+    case "$declared" in
+        add|fix|chore|feat|refactor|docs-only)
+            # type prefixes RETIRED [D:commit-areas]: the area answers
+            # WHERE and the diff can verify it; what-kind lives in prose
+            echo "commit-area FAIL: $c uses the retired type prefix '$declared:' — areas replaced types; subject should start '$derived: ' ($subject)" >&2
+            return 1
+            ;;
+    esac
 
     declared=$(echo "$declared" | tr ',' '\n' | sort -u | paste -sd, -)
 

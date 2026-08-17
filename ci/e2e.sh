@@ -1701,6 +1701,34 @@ rc=0; ( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_none" ) >/dev/null 2>&1 || r
 [ "$rc" != "0" ] || fail "a missing prefix must FAIL"
 echo "e2e ok: commit-area check — correct passes, wrong/subset/missing fail, the error names the derived prefix, pins ride"
 
+# the rider's fixtures [D:commit-areas]: an unmapped SRC file FAILS
+# naming itself (a new src file is an area decision — plausible
+# fallbacks are the canary/completion/orFail failure mode); an unmapped
+# ROOT file falls back to docs, said aloud; a retired type prefix
+# teaches the areas
+(
+    cd "$cadir"
+    echo e > .editorconfig
+    git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "docs: an unmapped root file"
+    echo f >> docs/GUIDE.md
+    git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "fix: a retired type prefix"
+    echo n > src/Weir/Csv.fs
+    git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "adapters: an unmapped src file"
+) >/dev/null 2>&1
+h_unsrc=$(git -C "$cadir" log --format=%h --grep "unmapped src" -1)
+h_unroot=$(git -C "$cadir" log --format=%h --grep "unmapped root" -1)
+h_type=$(git -C "$cadir" log --format=%h --grep "retired type" -1)
+rc=0; unout=$( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_unsrc" 2>&1 ) || rc=$?
+[ "$rc" != "0" ] || fail "an unmapped src file must FAIL"
+echo "$unout" | grep -qF "src/Weir/Csv.fs" || fail "the unmapped-src failure names the file: $unout"
+rc=0; rootout=$( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_unroot" 2>&1 ) || rc=$?
+[ "$rc" = "0" ] || fail "an unmapped root file must PASS on the fallback: $rootout"
+echo "$rootout" | grep -qF "fallback: docs" || fail "the fallback says its name: $rootout"
+rc=0; tyout=$( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_type" 2>&1 ) || rc=$?
+[ "$rc" != "0" ] || fail "a retired type prefix must FAIL"
+echo "$tyout" | grep -qF "retired type prefix" || fail "the type-prefix failure teaches: $tyout"
+echo "e2e ok: commit-area rider — unmapped src stops loud, unmapped root falls back aloud, type prefixes teach their retirement"
+
 # ---- wire keys [D:wire-keys] ------------------------------------------------
 # reserved words as adapter keys, refereed EXTERNALLY [D:yaml-interop]:
 # python writes a document whose keys are weir keywords, weir reads it

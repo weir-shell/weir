@@ -1,5 +1,6 @@
 # Spike Notes
 
+<<<<<<< HEAD
 ## the File.stat rider: an existence lie and eleven silent members (2026-08-17)
 
 F1's premise needed correcting before its fix: the rider predicted
@@ -53,6 +54,23 @@ arguments partially applies and the loop discarded the function
 silently. The suite's own parallelism caught the real hazard: a
 second setCwd test races the first (17 collateral failures in one
 run), so fileStatTests is sequenced with the reason in the comment.
+=======
+## the commit-area rider: loud beats plausible (2026-08-17)
+
+The follow-up's audit vindicated R1 immediately: the cli catch-all
+was already covering seven files — six that belonged there and one
+(the fsproj) that was never a semantic area at all, just build infra
+that should ride. A fallback that produces plausible answers had
+been producing one wrong one since the map was written, which is the
+whole argument in a sentence. Unmapped src now stops loud with the
+file named; unmapped root files fall back to docs and say so.
+
+Two rules minted while the reasoning was fresh: derived checks print
+their derivation (the autocomplete-with-a-gate property, stated
+before the next gate-shaped thing gets built without it), and there
+is ONE commit-message harness — ruled before a second existed,
+which is the cheapest a fourth-harness question will ever be.
+>>>>>>> 72fb585 (ci,ledger: the commit-area rider — unmapped src stops loud (the fsproj was mis-bucketed all along), fallbacks speak, type prefixes teach their retirement; derived-prints and one-message-harness ruled [D:derived-prints])
 
 ## commit areas: the taxonomy was already in the log (2026-08-17)
 

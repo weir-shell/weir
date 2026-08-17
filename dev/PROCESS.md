@@ -465,3 +465,26 @@ put-the-property-where-every-path-passes-through pattern is real
 (Proc.start, tableCell, echoTable) but it is PROCESS's business, and
 a second axis before the first has run for a month would be invented,
 not derived; reopen on a felt gap [D:commit-areas].
+
+## A check that derives an expected value prints it in the failure
+
+The commit-area check's best property was emergent and is now the
+rule: since CI computes the right answer to reject you, the rejection
+PRINTS it (`subject should start 'checker,parser: '`) and the
+ceremony autocompletes. This inverts the cost of a convention — a
+remembered rule nags; a derived one is autocomplete with a gate
+attached. The observed-report rule's other side: that one says report
+what you MEASURED, this one says report what you COMPUTED
+[D:derived-prints]. Anything gate-shaped built after this follows it.
+
+## One commit-message harness
+
+`ci/commit-area.sh` is THE commit-message check. Future rules that
+parse the message — the discipline plan's opt-out token (C3), the
+historical-row-edit marker (C2), whatever arrives third — land as
+rules INSIDE it, not as sibling scripts; if its name stops fitting,
+rename the file, do not fork the parser. Tree-checking harnesses
+(skill-surface, skill-doc, depth-coverage) stay separate — they read
+different inputs, so the split is real. Ruled with the fourth-harness
+question in view, before the second harness existed
+[D:derived-prints].
