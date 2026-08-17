@@ -1825,9 +1825,15 @@ let completionTests =
 
               // paths DO complete there (the fallback exists): the test
               // bin dir is the cwd and its own dll is a stable entry
+              let paths: string list = sug "micro Weir.Tests."
+              Expect.isTrue (paths |> List.contains "Weir.Tests.dll") "a real relative path completes in argv"
+
+              // every candidate EXTENDS the typed word — the editor
+              // replaces the word, so a ./-prefixed shape the user never
+              // typed re-prepends on each tab (the ././././ bug)
               Expect.isTrue
-                  (sug "micro Weir.Tests." |> List.exists (fun c -> c.EndsWith "Weir.Tests.dll"))
-                  "a real relative path completes in argv"
+                  (paths |> List.forall (fun c -> c.StartsWith "Weir.Tests."))
+                  $"candidates extend the typed word: {paths |> List.truncate 3}"
 
               // unbound scrutinee in EXPRESSION position: nothing beats
               // the union of everything (the D5 rule)

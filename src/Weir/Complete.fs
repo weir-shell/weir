@@ -101,7 +101,21 @@ let private filesystemComplete (word: string) : string list =
     try
         System.IO.Directory.GetFileSystemEntries dir
         |> Array.filter (fun e -> (System.IO.Path.GetFileName e).StartsWith prefix)
-        |> Array.map (fun e -> if System.IO.Directory.Exists e then e + "/" else e)
+        |> Array.map (fun e ->
+            // the candidate must EXTEND the typed word — the editor
+            // replaces the word with it, so a shape the user never
+            // typed (./x for a bare name) re-prepends on every tab
+            // [D:complete-argv]
+            let shaped =
+                if slash < 0 then
+                    System.IO.Path.GetFileName e
+                else
+                    word.Substring(0, word.Length - prefix.Length) + System.IO.Path.GetFileName e
+
+            if System.IO.Directory.Exists e then
+                shaped + "/"
+            else
+                shaped)
         |> Array.sort
         |> Array.toList
     with _ ->
