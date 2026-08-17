@@ -4928,6 +4928,94 @@ let adapterFormTests =
               Expect.equal (Weir.Lsp.hoverType [ "let x = 1 // from json T"; "print x" ] 1 15) None "from in a comment"
           } ]
 
+let pathParamCompletionTests =
+    // path-parameter positions [D:path-param-completion]: the registry
+    // is builtinDocs' named params (path/src/dst; base within Path) —
+    // paths and string BINDINGS offer, keywords and bare members do
+    // not. SEQUENCED: the fixture moves the ambient session cwd
+    testSequenced
+    <| testList
+        "path-parameter completion [D:path-param-completion]"
+        [ test "the registry positions offer paths, bindings, and nothing else" {
+              let d =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-ppc-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "weir-sub"))
+              |> ignore
+
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "tool.txt"), "x")
+
+              try
+                  let saved = Weir.Session.Cwd()
+                  Weir.Session.setCwd d
+
+                  let sug env (line: string) =
+                      Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length)
+
+                  try
+                      // the repro: cd offers the one real candidate, and
+                      // none of `when where windowed with within`
+                      let got = sug Weir.Builtins.typeEnvStrict "cd w"
+                      Expect.equal got [ "weir-sub/" ] "the path, alone"
+
+                      // the positive twin hard-filtering would break:
+                      // `cd target` applies the BINDING, so a string
+                      // binding offers beside the matching path
+                      let envT =
+                          { Weir.Builtins.typeEnvStrict with
+                              Values = Map.add "target" (mono TStr) Weir.Builtins.typeEnvStrict.Values }
+
+                      let withBinding = sug envT "cd t"
+                      Expect.contains withBinding "target" "the binding offers"
+                      Expect.contains withBinding "tool.txt" "the path offers"
+
+                      for bad in [ "when"; "where"; "windowed"; "with"; "within" ] do
+                          Expect.isFalse (List.contains bad withBinding) $"'{bad}' is not a path argument"
+
+                      // a SECOND-argument position: File.copy's dst
+                      Expect.equal
+                          (sug Weir.Builtins.typeEnvStrict "File.copy tool.txt w")
+                          [ "weir-sub/" ]
+                          "dst is a path"
+
+                      // the position is param-KEYED, not member-keyed:
+                      // File.write's second param is lines, so the
+                      // general pool (keywords included) returns
+                      Expect.contains
+                          (sug Weir.Builtins.typeEnvStrict "File.write tool.txt wh")
+                          "when"
+                          "lines is not a path"
+
+                      // within cd — the one path-typed within kind
+                      Expect.equal
+                          (sug Weir.Builtins.typeEnvStrict "within cd w")
+                          [ "weir-sub/" ]
+                          "within cd is a path position"
+
+                      // keywords still complete where they SHOULD — the
+                      // standing rule: 'keywords removed' must not be
+                      // satisfiable by removing them everywhere
+                      Expect.contains (sug Weir.Builtins.typeEnvStrict "wh") "when" "statement start keeps keywords"
+
+                      // "when", not "where": bare module members are
+                      // partitioned out of the strict pool [D:bare-partition]
+                      Expect.contains
+                          (sug Weir.Builtins.typeEnvStrict "xs |> wh")
+                          "when"
+                          "a pipeline elem keeps the pool"
+
+                      // the quoted context keeps working — the regression
+                      // guard (string-literal path completion predates this)
+                      Expect.contains
+                          (sug Weir.Builtins.typeEnvStrict "File.read \"./")
+                          "./tool.txt"
+                          "quoted paths unchanged"
+                  finally
+                      Weir.Session.setCwd saved
+              finally
+                  System.IO.Directory.Delete(d, true)
+          } ]
+
 let hoverResidueTests =
     // the form-word rule's remaining customers + the type-argument leak
     // [D:form-word-hover] — reported-not-fixed by the adapter session,
@@ -13855,6 +13943,7 @@ let allTests =
           wireKeyTests
           fileRowReshapeTests
           adapterFormTests
+          pathParamCompletionTests
           hoverResidueTests
           schemaHoverTests
           pipeAlignTests

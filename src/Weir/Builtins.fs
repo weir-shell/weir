@@ -3774,6 +3774,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
            |> named [ "value" ])
           "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
+          "cd",
+          (bd
+              "Change the session's directory, returning the OLD one (restore by binding: `let prev = cd \"/tmp\"`). A bare name applies a BINDING (`cd target`); `~` expands; `within cd` is the scoped spelling."
+              (Some "cd \".\"")
+              None
+           |> named [ "path" ])
           "force",
           (bd "Materialize a lazy sequence, caching it (the bare Seq.force)." (Some "[1; 2; 3] |> force") None
            |> named [ "xs" ])
