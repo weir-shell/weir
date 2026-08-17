@@ -1,5 +1,34 @@
 # Spike Notes
 
+## the echo learns to stream, and buys an instrument (2026-08-17)
+
+The invisible-prompt diagnosis survived contact; the architecture
+claim did not. The seq<string> abstraction cannot carry a partial
+line — ReadLine upstream holds it — so no amount of consumer-side
+cleverness streams a prompt; the fix had to be a chunk relay under
+the line splitter (streamSegmentsOf, ReadLine's exact split with
+immediacy). Three consumers, three different hooks: the script
+runner's CCmd prints via its own printResult (not a desugar — the
+first attempted TEApp/TEPipe arm was dead code for scripts and only
+serves effect sigils), the REPL's statement echo needed the
+threshold machinery, and redirected output stays batched untouched.
+
+The blessed threshold needed a second dimension discovered by the
+first probe: 4 KiB alone holds a 20-byte prompt forever — the
+guarantee window is size AND time (100ms flush timer), and the
+SECURITY non-claim states both. The raise ruling implemented as
+blessed: unflushed suppression matches the batched path exactly, so
+the divergence surface is only what was already shown.
+
+The pty instrument (tests/pty/pty-run.py) is the session's durable
+purchase: scripted input, millisecond-stamped output chunks, one
+command under a real pty. Built general per the ruling — C14 and the
+REPL SIGINT split are now testable when someone picks them up. Two
+python-heredoc escape scars in one session (\n became a newline in a
+char literal; \000 typed as a literal NUL tripped the tool's own
+control-character guard) — the raw-bytes lesson from the completer
+session, relearned same-day.
+
 ## the completer meets argv (2026-08-17)
 
 The union-of-every-field repro decomposed exactly as the rider

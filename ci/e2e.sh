@@ -1602,6 +1602,63 @@ else
     echo "e2e skip: within lock matrix (POSIX rows)"
 fi
 
+# ---- streaming statement echo [D:stream-echo] -------------------------------
+# the general pty instrument (tests/pty/pty-run.py — built for these
+# pins, deliberately general: C14 TTY-contention and the REPL SIGINT
+# split were parked for want of it). Timestamped chunks make "appeared
+# BEFORE exit" an assertion, not a claim.
+if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
+    sedir=$(mkweirtmp)
+    printf '#!/bin/sh\nprintf PARTIAL-\nsleep 1\necho done\n' > "$sedir/pp.sh"
+    printf '#!/bin/sh\nprintf "text\\0binary"\n' > "$sedir/pb.sh"
+    chmod +x "$sedir/pp.sh" "$sedir/pb.sh"
+    ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
+
+    # REPL: the partial line (an interactive prompt's shape) appears
+    # BEFORE the command exits — the micro-refusal invisibility, closed
+    rout=$(printf 'SLEEP 500\nSEND sh %s/pp.sh\\r\nSLEEP 2500\nSEND #quit\\r\n' "$sedir" | python3 "$ptyrun" 8 "$BIN")
+    pline=$(echo "$rout" | grep -F "b'PARTIAL-'" | head -1 | awk '{print $1}')
+    dline=$(echo "$rout" | grep -F "done" | head -1 | awk '{print $1}')
+    [ -n "$pline" ] || fail "REPL: the partial line must flush on its own: $rout"
+    [ -n "$dline" ] && [ "$pline" -lt "$dline" ] || fail "REPL: partial precedes the completing line: $rout"
+
+    # script mode: same, via the CCmd relay
+    cat > "$sedir/sp.weir" <<WEOF
+sh $sedir/pp.sh
+WEOF
+    sout=$(printf 'SLEEP 100\n' | python3 "$ptyrun" 5 "$BIN" "$sedir/sp.weir")
+    echo "$sout" | grep -qF "b'" || fail "script pty run produced nothing: $sout"
+    spline=$(echo "$sout" | grep -F "PARTIAL-" | head -1 | awk '{print $1}')
+    sdline=$(echo "$sout" | grep -F "done" | head -1 | awk '{print $1}')
+    [ -n "$spline" ] && [ -n "$sdline" ] && [ "$spline" -lt "$sdline" ] || fail "script: partial precedes completion: $sout"
+
+    # the binary guard's whole-guarantee under the threshold: a small
+    # NUL-bearing output refuses with NOTHING leaked
+    bout=$(printf 'SLEEP 500\nSEND sh %s/pb.sh\\r\nSLEEP 800\nSEND #quit\\r\n' "$sedir" | python3 "$ptyrun" 5 "$BIN")
+    echo "$bout" | grep -qF "binary output" || fail "small binary refuses at the REPL: $bout"
+    echo "$bout" | grep -F "b'text" && fail "the refusal must not leak the prefix: $bout"
+
+    # tty/redirected divergence is TIMING ONLY — redirected bytes are
+    # the batched path's, byte-identical (od's format differs GNU/BSD,
+    # so assert content + exact byte count instead)
+    rcontent=$( "$BIN" "$sedir/sp.weir" )
+    rcount=$( "$BIN" "$sedir/sp.weir" | wc -c | tr -d ' ' )
+    [ "$rcontent" = "PARTIAL-done" ] && [ "$rcount" = "13" ] || fail "redirected content unchanged (got '$rcontent' / $rcount bytes)"
+
+    # reifiers do NOT stream — | complete is in-memory capture by law
+    cat > "$sedir/rc.weir" <<WEOF
+let r = \$(sh $sedir/pp.sh | complete)
+print (r.stdout |> Seq.head)
+WEOF
+    cout=$(printf 'SLEEP 100\n' | python3 "$ptyrun" 5 "$BIN" "$sedir/rc.weir")
+    cpline=$(echo "$cout" | grep -F "PARTIAL-done" | head -1 | awk '{print $1}')
+    [ -n "$cpline" ] && [ "$cpline" -gt 900 ] || fail "a captured reifier must not stream (appeared at ${cpline}ms): $cout"
+
+    echo "e2e ok: streaming echo — partials flush live (REPL + script), small binary refuses whole, redirected byte-identical, reifiers capture"
+else
+    echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
+fi
+
 # ---- FileRow reshape [D:filerow] --------------------------------------------
 # kind/target over a REAL symlink, and File.mode against the platform's
 # own stat — an external referee [D:yaml-interop]'s rule

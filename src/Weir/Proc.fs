@@ -122,6 +122,55 @@ let linesOf (s: Spec) : seq<string> =
             reap p
     }
 
+// the chunk-level relay [D:stream-echo]: onText receives content the
+// moment it arrives — PARTIALS included, so an interactive prompt shows
+// before its newline — and onBreak marks each terminator (\n, \r,
+// \r\n: exactly ReadLine's split, so the segment stream is linesOf's
+// lines with immediacy). Raises nonzero like every forced spawn.
+let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) : unit =
+    use p = start true false s
+
+    try
+        let out = p.StandardOutput
+        let buf = Array.zeroCreate<char> 4096
+        let seg = System.Text.StringBuilder()
+
+        let flushSeg () =
+            if seg.Length > 0 then
+                onText (seg.ToString())
+                seg.Clear() |> ignore
+
+        let mutable pendingCR = false
+        let mutable n = out.Read(buf, 0, buf.Length)
+
+        while n > 0 do
+            for i in 0 .. n - 1 do
+                let c = buf[i]
+
+                if c = '\r' then
+                    flushSeg ()
+                    onBreak ()
+                    pendingCR <- true
+                elif c = '\n' then
+                    if pendingCR then
+                        pendingCR <- false
+                    else
+                        flushSeg ()
+                        onBreak ()
+                else
+                    pendingCR <- false
+                    seg.Append c |> ignore
+
+            flushSeg ()
+            n <- out.Read(buf, 0, buf.Length)
+
+        p.WaitForExit()
+
+        if p.ExitCode <> 0 then
+            raiseNonzero s p.ExitCode
+    finally
+        reap p
+
 // stdout relayed to the console as it arrives; the code as the result
 // [D:exit-reifiers]: output goes to the human, the code is the meaning
 let streamCodeOf (s: Spec) : int =

@@ -202,6 +202,14 @@ let mutable private echoCap: int option =
 
 let private historyFile = config.HistoryPath
 
+// the streaming echo's stop reasons [D:stream-echo]
+type internal EchoStopReason =
+    | CleanBinary
+    | MidBinary
+    | Clipped
+
+exception internal EchoStop of EchoStopReason
+
 // the table's tint is POSITIONAL [D:table-polish]: echoTable's lines
 // stay plain (one law, tests untouched) — the printer knows line 0 is
 // the header, line 1 the rule, a trailing "…" the clip row. Cells are
@@ -1062,52 +1070,167 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
     | Script.KCmd te ->
         printWarnings state te
 
-        (try
-            let v = Eval.eval state.Values te
+        // the bare command statement STREAMS its echo [D:stream-echo]:
+        // chunks flush as they arrive — a partial line (an interactive
+        // prompt) shows before its newline. The binary guard buffers
+        // the first 4 KiB before emitting anything, so small outputs
+        // keep the never-leak guarantee whole; past the threshold each
+        // chunk is still checked and the stream STOPS on a NUL — a
+        // BOUNDED leak, the stated residue (SECURITY's register). The
+        // cap clips as before; a mid-stream raise suppresses the
+        // footer and the error carries the echoed-line count.
+        // Reifiers/captures are unaffected by law (| complete is
+        // in-memory capture; $() never streams).
+        match te.Kind with
+        | Check.TECmd _ when not Console.IsOutputRedirected && te.Ty = TSeq TStr ->
+            let cap = echoCap |> Option.defaultValue System.Int32.MaxValue
+            let threshold = 4096
+            let events = ResizeArray<Choice<string, unit>>()
+            // one lock for buffer, writes, and the flush TIMER: the
+            // guard's buffer is bounded in bytes AND time (an
+            // interactive prompt is 20 bytes and then silence — a
+            // size-only threshold would hold it forever)
+            let sync = obj ()
+            let mutable flushed = false
+            let mutable bufferedBytes = 0
+            let mutable emitted = 0
+            let mutable totalBreaks = 0
+            let mutable atLineStart = true
 
-            if v <> Eval.VUnit then
-                // ONE enumeration for the whole echo [D:echo-once]
-                let v = Eval.echoPrep v
+            let writeText (t: string) =
+                Console.Out.Write t
+                Console.Out.Flush()
+                atLineStart <- false
 
-                let cap =
-                    if Console.IsOutputRedirected then
-                        Eval.echoPipedCap
+            let writeBreak () =
+                Console.Out.Write '\n'
+                Console.Out.Flush()
+                atLineStart <- true
+                emitted <- emitted + 1
+
+            let flush () =
+                if not flushed then
+                    flushed <- true
+
+                    for e in events do
+                        match e with
+                        | Choice1Of2 t -> writeText t
+                        | Choice2Of2() -> writeBreak ()
+
+                    events.Clear()
+
+            let onText (t: string) =
+                lock sync (fun () ->
+                    if t.Contains '\000' then
+                        raise (EchoStop(if flushed then MidBinary else CleanBinary))
+                    elif flushed then
+                        writeText t
                     else
-                        echoCap
+                        events.Add(Choice1Of2 t)
+                        bufferedBytes <- bufferedBytes + t.Length
 
-                match
-                    (if Console.IsOutputRedirected then
-                         None
-                     elif Eval.echoBinary cap v then
-                         Some(
-                             [],
-                             Some
-                                 "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
-                         )
-                     elif te.Ty = TSeq TStr then
-                         Eval.echoLines cap v
+                        if bufferedBytes >= threshold then
+                            flush ())
+
+            let onBreak () =
+                lock sync (fun () ->
+                    totalBreaks <- totalBreaks + 1
+
+                    if flushed then writeBreak () else events.Add(Choice2Of2())
+
+                    if totalBreaks >= cap then
+                        flush ()
+                        raise (EchoStop Clipped))
+
+            use _timer =
+                new System.Threading.Timer((fun _ -> lock sync flush), null, 100, System.Threading.Timeout.Infinite)
+
+            (try
+                (try
+                    Eval.streamCommandStatement state.Values te onText onBreak
+                    lock sync flush
+
+                    if not atLineStart then
+                        Console.Out.Write '\n'
+
+                    echoMeta $": {formatTy te.Ty}"
+                 with
+                 | EchoStop CleanBinary ->
+                     echoMeta
+                         ": seq<string> = binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
+                 | EchoStop MidBinary ->
+                     if not atLineStart then
+                         Console.Out.Write '\n'
+
+                     echoMeta
+                         $": seq<string> = binary mid-stream — the echo stopped after {emitted} line(s); redirect to a file"
+                 | EchoStop Clipped -> echoMeta $": seq<string> ={Eval.echoTail (Some(Eval.unforcedHint cap))}")
+
+                state
+             with
+             | Eval.ExitRequest _ -> reraise ()
+             | ex ->
+                 lastErrored <- true
+
+                 // the mid-stream raise ruling [D:stream-echo]: footer
+                 // suppressed, the error names how much the human saw
+                 let seen =
+                     if emitted > 0 then
+                         $" (stream raised after {emitted} echoed line(s))"
                      else
-                         Eval.echoTable cap (termWidth ()) v)
-                with
-                | Some(lines, hint) ->
-                    (if te.Ty = TSeq TStr then
-                         lines |> List.iter Console.WriteLine
-                     else
-                         printTable lines)
+                         ""
 
-                    echoMeta $": {formatTy te.Ty}{Eval.echoTail hint}"
-                | None ->
-                    let rendered, hint = Eval.echoValue cap v
-                    let tail = Eval.echoTail hint
-                    Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
+                 Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}{seen}")
 
-            state
-         with
-         | Eval.ExitRequest _ -> reraise ()
-         | ex ->
-             lastErrored <- true
-             Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
-             state)
+                 state)
+        | _ ->
+
+            (try
+                let v = Eval.eval state.Values te
+
+                if v <> Eval.VUnit then
+                    // ONE enumeration for the whole echo [D:echo-once]
+                    let v = Eval.echoPrep v
+
+                    let cap =
+                        if Console.IsOutputRedirected then
+                            Eval.echoPipedCap
+                        else
+                            echoCap
+
+                    match
+                        (if Console.IsOutputRedirected then
+                             None
+                         elif Eval.echoBinary cap v then
+                             Some(
+                                 [],
+                                 Some
+                                     "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
+                             )
+                         elif te.Ty = TSeq TStr then
+                             Eval.echoLines cap v
+                         else
+                             Eval.echoTable cap (termWidth ()) v)
+                    with
+                    | Some(lines, hint) ->
+                        (if te.Ty = TSeq TStr then
+                             lines |> List.iter Console.WriteLine
+                         else
+                             printTable lines)
+
+                        echoMeta $": {formatTy te.Ty}{Eval.echoTail hint}"
+                    | None ->
+                        let rendered, hint = Eval.echoValue cap v
+                        let tail = Eval.echoTail hint
+                        Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
+
+                state
+             with
+             | Eval.ExitRequest _ -> reraise ()
+             | ex ->
+                 lastErrored <- true
+                 Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
+                 state)
     | Script.KModule _ ->
         Console.WriteLine "the REPL has no file to be a module of; 'module' belongs at the top of a script file"
 

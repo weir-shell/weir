@@ -4403,7 +4403,32 @@ let run (path: string) (scriptArgs: string list) : int =
                                     1
                             | CCmd te ->
                                 try
-                                    printResult (Eval.eval venv te)
+                                    // the bare command statement STREAMS at a
+                                    // tty [D:stream-echo]: partials flush as
+                                    // they arrive (an interactive prompt shows
+                                    // before its newline); redirected output
+                                    // keeps the batched path — byte-identical,
+                                    // timing is the only divergence
+                                    (match te.Kind with
+                                     | Check.TECmd _ when not Console.IsOutputRedirected ->
+                                         let mutable atLineStart = true
+
+                                         Eval.streamCommandStatement
+                                             venv
+                                             te
+                                             (fun t ->
+                                                 Console.Out.Write t
+                                                 Console.Out.Flush()
+                                                 atLineStart <- false)
+                                             (fun () ->
+                                                 Console.Out.Write '\n'
+                                                 Console.Out.Flush()
+                                                 atLineStart <- true)
+
+                                         if not atLineStart then
+                                             Console.Out.Write '\n'
+                                     | _ -> printResult (Eval.eval venv te))
+
                                     exec venv tail
                                 with
                                 | Eval.ExitRequest code -> code
