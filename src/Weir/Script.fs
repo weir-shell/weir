@@ -1404,7 +1404,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                                 // until/always join at the SENTINEL:
                                                                                 // a space would feed the keyword to a
                                                                                 // command body's argv (cmdWord stops
-                                                                                // at the sentinel) [D:within-always]
+                                                                                // at the sentinel) [D:until-argv-join]
                                                                                 (if
                                                                                      endsInProcHead ll.Text
                                                                                      || isUntil

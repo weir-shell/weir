@@ -2593,7 +2593,7 @@ seqExprRef.Value <-
     // …EXCEPT when the next segment is a trailing `until`/`always`
     // keyword: the separator backs out so the OWNING parser (retry, the
     // bare within) consumes it — commands in the body already stopped
-    // at the sentinel [D:within-always]
+    // at the sentinel [D:until-argv-join]
     stmtElem
     .>>. many (
         attempt (seqSep .>> notFollowedBy (keyword "until" <|> keyword "always"))
