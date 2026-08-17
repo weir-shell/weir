@@ -1726,16 +1726,17 @@ let completionTests =
     testList
         "Completion"
         [ test "argv path completion keeps the directory prefix [D:complete-argv]" {
-              // the WORD RULE is where this lived: both callers cut the word AT
-              // the slash, so `micro ci/e` completed against the CWD and
-              // `micro ci/` listed it whole. filesystemComplete was always
-              // correct — the directory half never reached it.
+              // the WORD RULE is where this lived: both callers cut the word AT the
+              // slash, so `micro ci/e` completed against the CWD and `micro ci/`
+              // listed it whole. filesystemComplete was always correct — the
+              // directory half never reached it.
               Expect.equal (Weir.Complete.wordStartAt "micro ci/e" 10) 6 "a path is ONE word, slash included"
-
-              Expect.equal
-                  (Weir.Complete.wordStartAt "micro ci/check-f" 16)
-                  6
-                  "a hyphen is ordinary in a filename, not a word break"
+              Expect.equal (Weir.Complete.wordStartAt "micro ci/check-f" 16) 6 "a hyphen is part of a filename"
+              // a Windows drive prefix belongs to its path — the CI runner's temp dir
+              // is C:/…, which is how this surfaced. `:` elsewhere must NOT glue, or a
+              // yaml key would swallow its value.
+              Expect.equal (Weir.Complete.wordStartAt "micro C:/Users/x/e" 18) 6 "a drive letter leads its path"
+              Expect.equal (Weir.Complete.wordStartAt "key:value" 9) 4 "a colon after a word is a separator"
 
               let d =
                   System.IO.Path.Combine(
@@ -1748,22 +1749,28 @@ let completionTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "check-fresh.sh"), "")
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".hidden"), "")
               let dir = d.Replace("\\", "/")
-
               // absolute, so the pin does not depend on the runner's cwd
               let ask (w: string) =
                   let text = "micro " + w
                   suggest text (Weir.Complete.wordStartAt text text.Length)
+              // asserted as (one match, prefix preserved, right entry) rather than
+              // string equality: that still fails on the bug — completing against the
+              // CWD gives many matches and drops the prefix — while surviving platform
+              // separator variance, which equality does not.
+              let one (label: string) (w: string) (name: string) =
+                  let got = ask w
+                  Expect.equal (List.length got) 1 (label + ": exactly one match")
+                  Expect.isTrue (got.Head.StartsWith w) (label + ": prefix preserved")
+                  Expect.isTrue (got.Head.EndsWith name) (label + ": right entry")
 
-              Expect.equal (ask (dir + "/e")) [ dir + "/e2e.sh" ] "a directory prefix scopes the search"
-
-              Expect.equal (ask (dir + "/check-")) [ dir + "/check-fresh.sh" ] "a hyphen does not restart the word"
-
+              one "a directory prefix scopes the search" (dir + "/e") "e2e.sh"
+              one "a hyphen does not restart the word" (dir + "/check-") "check-fresh.sh"
               // the dotfile law, mirrored from Path.glob: a leading '.' is TYPED
               Expect.isFalse
                   (ask (dir + "/") |> List.exists (fun s -> s.EndsWith ".hidden"))
                   "a bare Tab does not bury entries under dotfiles"
 
-              Expect.equal (ask (dir + "/.")) [ dir + "/.hidden" ] "a typed dot offers them"
+              one "a typed dot offers them" (dir + "/.") ".hidden"
               System.IO.Directory.Delete(d, true)
           }
 

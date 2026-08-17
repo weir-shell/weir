@@ -148,7 +148,21 @@ let wordStartAt (text: string) (pos: int) : int =
     while i > 0 && isWordChar text[i - 1] do
         i <- i - 1
 
-    i
+    // a Windows DRIVE PREFIX belongs to the path it introduces: `:` is not a
+    // word char (it separates a record field from its type, and a yaml key
+    // from its value), so the scan stops after `C:` and leaves a driveless
+    // `/Users/…` that resolves nowhere. Extend across exactly the drive
+    // shape — ONE letter, itself preceded by a non-word char — so `key:value`
+    // and `{ a: 1 }` are untouched.
+    if
+        i >= 2
+        && text[i - 1] = ':'
+        && System.Char.IsLetter text[i - 2]
+        && (i = 2 || not (isWordChar text[i - 3]))
+    then
+        i - 2
+    else
+        i
 
 // a word in command ARGV completes as a PATH [D:complete-argv]: after
 // a literal command head everything is an argv word — fields, members,
