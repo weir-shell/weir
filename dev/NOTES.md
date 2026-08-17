@@ -57,6 +57,19 @@ run), so fileStatTests is sequenced with the reason in the comment.
 =======
 ## the commit-area rider: loud beats plausible (2026-08-17)
 
+Post-rider, the check itself got the treatment the repo's own policy
+demanded from the start: it is a WEIR script now (ci/commit-area.weir
+— the bash version was an unlogged fallback, which is exactly the
+kind of drift the policy line exists to catch; the user caught it).
+The rewrite was also a fair ergonomics probe: the offside rule
+refuses F#'s dedented guard-else (full nesting instead), and a
+command in a match ARM needs the $() capture — both already
+documented, both hit anyway. The CI step moved after publish since
+the check needs the binary; the price of dogfood, paid where it
+shows.
+
+
+
 The follow-up's audit vindicated R1 immediately: the cli catch-all
 was already covering seven files — six that belonged there and one
 (the fsproj) that was never a semantic area at all, just build infra

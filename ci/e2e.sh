@@ -1684,20 +1684,20 @@ cadir=$(mkweirtmp)
     echo q >> docs/GUIDE.md
     git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "no prefix at all"
 ) >/dev/null 2>&1
-cascript="$(dirname "$0")/commit-area.sh"
+cascript="$(dirname "$0")/commit-area.weir"
 h_ok=$(git -C "$cadir" log --format=%h --grep "a guide line" -1)
 h_wrong=$(git -C "$cadir" log --format=%h --grep "mislabeled" -1)
 h_subset=$(git -C "$cadir" log --format=%h --grep "subset" -1)
 h_ride=$(git -C "$cadir" log --format=%h --grep "pins ride" -1)
 h_none=$(git -C "$cadir" log --format=%h --grep "no prefix" -1)
-( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_ok" ) >/dev/null 2>&1 || fail "a correct area must PASS"
-rc=0; ( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_wrong" ) >/dev/null 2>&1 || rc=$?
+( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_ok" ) >/dev/null 2>&1 || fail "a correct area must PASS"
+rc=0; ( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_wrong" ) >/dev/null 2>&1 || rc=$?
 [ "$rc" != "0" ] || fail "a mislabeled area must FAIL"
-rc=0; caout=$( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_subset" 2>&1 ) || rc=$?
+rc=0; caout=$( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_subset" 2>&1 ) || rc=$?
 [ "$rc" != "0" ] || fail "a SUBSET of the derived set must FAIL (equality, not intersect)"
 echo "$caout" | grep -qF "checker,parser" || fail "the failure prints the derived prefix (self-repair): $caout"
-( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_ride" ) >/dev/null 2>&1 || fail "pins/ci files RIDE a src change"
-rc=0; ( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_none" ) >/dev/null 2>&1 || rc=$?
+( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_ride" ) >/dev/null 2>&1 || fail "pins/ci files RIDE a src change"
+rc=0; ( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_none" ) >/dev/null 2>&1 || rc=$?
 [ "$rc" != "0" ] || fail "a missing prefix must FAIL"
 echo "e2e ok: commit-area check — correct passes, wrong/subset/missing fail, the error names the derived prefix, pins ride"
 
@@ -1718,13 +1718,13 @@ echo "e2e ok: commit-area check — correct passes, wrong/subset/missing fail, t
 h_unsrc=$(git -C "$cadir" log --format=%h --grep "unmapped src" -1)
 h_unroot=$(git -C "$cadir" log --format=%h --grep "unmapped root" -1)
 h_type=$(git -C "$cadir" log --format=%h --grep "retired type" -1)
-rc=0; unout=$( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_unsrc" 2>&1 ) || rc=$?
+rc=0; unout=$( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_unsrc" 2>&1 ) || rc=$?
 [ "$rc" != "0" ] || fail "an unmapped src file must FAIL"
 echo "$unout" | grep -qF "src/Weir/Csv.fs" || fail "the unmapped-src failure names the file: $unout"
-rc=0; rootout=$( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_unroot" 2>&1 ) || rc=$?
+rc=0; rootout=$( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_unroot" 2>&1 ) || rc=$?
 [ "$rc" = "0" ] || fail "an unmapped root file must PASS on the fallback: $rootout"
 echo "$rootout" | grep -qF "fallback: docs" || fail "the fallback says its name: $rootout"
-rc=0; tyout=$( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_type" 2>&1 ) || rc=$?
+rc=0; tyout=$( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_type" 2>&1 ) || rc=$?
 [ "$rc" != "0" ] || fail "a retired type prefix must FAIL"
 echo "$tyout" | grep -qF "retired type prefix" || fail "the type-prefix failure teaches: $tyout"
 echo "e2e ok: commit-area rider — unmapped src stops loud, unmapped root falls back aloud, type prefixes teach their retirement"

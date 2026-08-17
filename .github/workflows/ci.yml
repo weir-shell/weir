@@ -61,6 +61,14 @@ jobs:
         run: |
           ./publish.sh
           ./ci/check-fresh.sh
+      # commit areas are DERIVED, not remembered [D:commit-areas]: every
+      # PR commit's area prefix must equal what its diff touches. PR
+      # titles keep the prefix too — the squash commit inherits it.
+      # Forward-only; runs after publish because the check is a weir
+      # script (the scripting policy's own dogfood).
+      - name: commit-area check (PRs only)
+        if: github.event_name == 'pull_request'
+        run: ~/.local/bin/weir ci/commit-area.weir --range "${{ github.event.pull_request.base.sha }}..HEAD"
       - name: e2e battery (conflict-marker gate at its top)
         run: ./ci/e2e.sh
       - name: fuzz smoke (pinned seed)
