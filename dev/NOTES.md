@@ -1,5 +1,24 @@
 # Spike Notes
 
+## the referee ran a different string universe (2026-08-17)
+
+The membership sweep the rider asked for came back with a number too
+big to audit (196 culture-sensitive StartsWith/EndsWith sites, 9
+string-arg IndexOf/LastIndexOf) and a fact that dissolved it: the
+shipped binary has run InvariantGlobalization=true all along, and
+invariant mode IS ordinal — production was never exposed. The real
+finding is that the test hosts were not: dotnet test ran under ICU,
+where U+001F, NUL, ZWJ and the soft hyphen are ignorable
+("a<US>b".StartsWith "ab" is true, String.Compare calls them equal,
+LastIndexOf lands past the end). So the completion crash could ONLY
+ever fire in tests, and the language surface (Str.startsWith is
+s.StartsWith verbatim) was being refereed under semantics the binary
+does not have. The mode landed in all three host fsprojs; the
+ignorables pin was shown failing in the culture host first, and the
+1354 existing tests all held under invariant — nothing in weir
+wanted culture. The class fix is one property per host, not 205
+annotations; explicit Ordinal stays reserved for crash sites.
+
 ## path completion learns what a parameter wants (2026-08-17)
 
 The rider priced its own recommendation on a hand-maintained registry

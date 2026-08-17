@@ -11080,6 +11080,29 @@ let fileStatTests =
               Expect.stringContains ex.Message "weir-stat-no-such-path-xyz" "names the path"
           } ]
 
+let invariantModeTests =
+    // the string semantics the SHIPPED binary runs [D:invariant-strings]:
+    // Weir.fsproj sets InvariantGlobalization, where every culture
+    // comparison is ordinal; the test hosts must match or the referee
+    // tests DIFFERENT semantics than the subject. Under ICU culture
+    // rules U+001F — and NUL, ZWJ, the soft hyphen — are IGNORABLE:
+    // "a<US>b".StartsWith "ab" is TRUE, and LastIndexOf "matches" past
+    // the end (the [D:path-param-completion] crash, tests-only). Str's
+    // startsWith/endsWith are these very calls, so this pins the
+    // language surface too.
+    testList
+        "globalization-invariant hosts [D:invariant-strings]"
+        [ test "ignorable characters do not vanish from comparisons" {
+              let sib = "\u001F"
+              let hay = "a" + sib + "b"
+              Expect.isFalse (hay.StartsWith "ab") "U+001F is not ignorable at StartsWith"
+              Expect.isFalse (hay.EndsWith "ab") "nor at EndsWith"
+              Expect.equal ("abc".LastIndexOf sib) -1 "an absent sentinel is ABSENT, never past-the-end"
+              Expect.isFalse ("a\u0000b".StartsWith "ab") "NUL is not ignorable"
+              Expect.isFalse ("a\u200Db".StartsWith "ab") "ZWJ is not ignorable"
+              Expect.isFalse ("a\u00ADb".StartsWith "ab") "the soft hyphen is not ignorable"
+          } ]
+
 let recordKeysTests =
     // builtin record keys derive from the declaration [D:record-keys]:
     // a mismatch is impossible to write and an arity slip is loud at
@@ -13881,6 +13904,7 @@ let allTests =
           replTableTests
           lsTruthTests
           fileStatTests
+          invariantModeTests
           lsSortTests
           recordKeysTests
           yamlSeqTests
