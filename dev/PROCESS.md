@@ -435,3 +435,33 @@ had quietly absorbed the narration, against the ledger's own
 no-history-narration rule. Backfilled 2026-08-11. The check is
 mechanical: `git show --stat` of a session's commit should touch
 dev/NOTES.md or say why not.
+
+## Commit areas are derived, not remembered
+
+A commit subject starts with its AREA — `parser: …`, or the sorted
+comma-set when a feature spans the pipeline (`checker,eval,parser: …`).
+CI derives the expected set from the diff's paths and fails on any
+mismatch, including a SUBSET (declaring `docs` while touching the
+parser is the exact lie the check exists to prevent); the failure
+prints the derived prefix, so the repair is a copy-paste. The path
+map's one copy lives in `ci/commit-area.sh` — this section documents
+the shape, not the membership [D:commit-areas].
+
+The riding rule keeps feature commits one-line: if any `src/Weir`
+file moved, the area set is the src areas ONLY — tests, e2e/skill
+pins, docs, and ledger entries ride the feature they verify or
+record. A commit with no src changes derives from the non-src map
+(`ci` / `docs` / `ledger` / `tests`). Phase 0 measured why: 53 of 60
+recent commits were multi-area under a naive map, because a feature's
+pins and rows land with it — the riding rule reflects how this
+project actually commits (one item, verified, recorded) instead of
+fighting it.
+
+Type prefixes (`add:` / `fix:` / `chore:`) retire — the area answers
+WHERE; what kind of change it was belongs in the subject's prose,
+which already says it better. PR titles carry the prefix (the squash
+commit inherits the title). No cross-cutting tag axis in v1 — the
+put-the-property-where-every-path-passes-through pattern is real
+(Proc.start, tableCell, echoTable) but it is PROCESS's business, and
+a second axis before the first has run for a month would be invented,
+not derived; reopen on a felt gap [D:commit-areas].

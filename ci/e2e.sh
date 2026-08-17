@@ -1659,6 +1659,48 @@ else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi
 
+# ---- commit areas [D:commit-areas] ------------------------------------------
+# the derived-area check, pinned BOTH ways (a check that rejects
+# everything satisfies "rejects bad areas") — a scratch repo, three
+# commits: correct area passes, wrong area fails, missing prefix fails,
+# and a SUBSET of a multi-area derivation fails (equality, not
+# intersection)
+cadir=$(mkweirtmp)
+(
+    cd "$cadir"
+    git init -q .
+    git -c user.email=ci@ci -c user.name=ci commit -q --allow-empty -m "seed"
+    mkdir -p docs src/Weir ci
+    echo x > docs/GUIDE.md
+    git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "docs: a guide line"
+    echo y > src/Weir/Parser.fs
+    git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "docs: mislabeled parser change"
+    echo z > src/Weir/Check.fs
+    echo w >> src/Weir/Parser.fs
+    git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "parser: declares a subset of parser+checker"
+    echo p >> src/Weir/Parser.fs
+    echo t > ci/x.sh
+    git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "parser: pins ride — ci file with a src change"
+    echo q >> docs/GUIDE.md
+    git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "no prefix at all"
+) >/dev/null 2>&1
+cascript="$(dirname "$0")/commit-area.sh"
+h_ok=$(git -C "$cadir" log --format=%h --grep "a guide line" -1)
+h_wrong=$(git -C "$cadir" log --format=%h --grep "mislabeled" -1)
+h_subset=$(git -C "$cadir" log --format=%h --grep "subset" -1)
+h_ride=$(git -C "$cadir" log --format=%h --grep "pins ride" -1)
+h_none=$(git -C "$cadir" log --format=%h --grep "no prefix" -1)
+( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_ok" ) >/dev/null 2>&1 || fail "a correct area must PASS"
+rc=0; ( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_wrong" ) >/dev/null 2>&1 || rc=$?
+[ "$rc" != "0" ] || fail "a mislabeled area must FAIL"
+rc=0; caout=$( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_subset" 2>&1 ) || rc=$?
+[ "$rc" != "0" ] || fail "a SUBSET of the derived set must FAIL (equality, not intersect)"
+echo "$caout" | grep -qF "checker,parser" || fail "the failure prints the derived prefix (self-repair): $caout"
+( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_ride" ) >/dev/null 2>&1 || fail "pins/ci files RIDE a src change"
+rc=0; ( cd "$cadir" && bash "$OLDPWD/$cascript" "$h_none" ) >/dev/null 2>&1 || rc=$?
+[ "$rc" != "0" ] || fail "a missing prefix must FAIL"
+echo "e2e ok: commit-area check — correct passes, wrong/subset/missing fail, the error names the derived prefix, pins ride"
+
 # ---- wire keys [D:wire-keys] ------------------------------------------------
 # reserved words as adapter keys, refereed EXTERNALLY [D:yaml-interop]:
 # python writes a document whose keys are weir keywords, weir reads it
