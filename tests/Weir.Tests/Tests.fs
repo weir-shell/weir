@@ -1811,6 +1811,42 @@ let completionTests =
               suggest "cd" 0 |> ignore
               Expect.isFalse (System.IO.File.Exists marker) "completion must not execute"
           }
+          test "command argv completes paths, never fields — and an unbound scrutinee offers NOTHING [D:complete-argv]" {
+              let sug (t: string) =
+                  // the word under completion runs from after the last
+                  // space to the cursor
+                  suggest t (t.LastIndexOf ' ' + 1)
+
+              // the repro: `micro publish.` offered every record field
+              // weir knows, unioned — argv is not an expression
+              let argv: string list = sug "micro publish."
+              Expect.isFalse (argv |> List.exists (fun c -> c.EndsWith ".attempts")) "no Retry fields in argv"
+              Expect.isFalse (argv |> List.exists (fun c -> c.EndsWith ".bytes")) "no FileRow fields in argv"
+
+              // paths DO complete there (the fallback exists): the test
+              // bin dir is the cwd and its own dll is a stable entry
+              Expect.isTrue
+                  (sug "micro Weir.Tests." |> List.exists (fun c -> c.EndsWith "Weir.Tests.dll"))
+                  "a real relative path completes in argv"
+
+              // unbound scrutinee in EXPRESSION position: nothing beats
+              // the union of everything (the D5 rule)
+              Expect.equal (sug "let x = publish.") [] "unbound head after ="
+              Expect.equal (sug "publish.") [] "unbound head, statement position"
+
+              // bound-but-UNRESOLVED keeps the declared-fields fallback:
+              // the rule is about BINDING, not resolution
+              Expect.isTrue
+                  (sug "fun q -> q." |> List.contains "q.bytes")
+                  "a lambda param keeps the high-signal union"
+
+              // the positive twin from the same instrument: a bound,
+              // RESOLVED record still completes its own fields (the
+              // where-lambda pins above assert the exact list)
+              Expect.isTrue
+                  (sug "ls |> where (fun f -> f." |> List.contains "f.kind")
+                  "resolved fields still fire"
+          }
           test "keyword completion inventory: every grammar keyword offered or excluded, decided [D:keyword-completion]" {
               // the PINNED split — a new grammar keyword fails here until
               // its completion decision is recorded (added below as
