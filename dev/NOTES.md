@@ -1,6 +1,5 @@
 # Spike Notes
 
-<<<<<<< HEAD
 ## the File.stat rider: an existence lie and eleven silent members (2026-08-17)
 
 F1's premise needed correcting before its fix: the rider predicted
@@ -54,7 +53,6 @@ arguments partially applies and the loop discarded the function
 silently. The suite's own parallelism caught the real hazard: a
 second setCwd test races the first (17 collateral failures in one
 run), so fileStatTests is sequenced with the reason in the comment.
-=======
 ## the commit-area rider: loud beats plausible (2026-08-17)
 
 Post-rider, the check itself got the treatment the repo's own policy
@@ -83,7 +81,6 @@ their derivation (the autocomplete-with-a-gate property, stated
 before the next gate-shaped thing gets built without it), and there
 is ONE commit-message harness — ruled before a second existed,
 which is the cheapest a fourth-harness question will ever be.
->>>>>>> 72fb585 (ci,ledger: the commit-area rider — unmapped src stops loud (the fsproj was mis-bucketed all along), fallbacks speak, type prefixes teach their retirement; derived-prints and one-message-harness ruled [D:derived-prints])
 
 ## commit areas: the taxonomy was already in the log (2026-08-17)
 
