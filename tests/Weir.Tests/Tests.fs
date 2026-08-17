@@ -7598,48 +7598,77 @@ let agentFindingsTests =
               Expect.stringContains terr.Message "int * int * int" ""
           }
           test "Path.under confines; Path.combine does not [D:path-under]" {
-              skipOnWindows () // the Windows shapes have their own e2e row
+              // RUNS ON EVERY PLATFORM. An earlier skipOnWindows left this member with
+              // ZERO Windows coverage and pointed at an e2e row that does not exist —
+              // Windows CI runs the unit suite only. The logic is pure string work; only
+              // the EXPECTED strings were POSIX-shaped, so both sides are built from the
+              // same BCL call and the drive/UNC shapes assert everywhere.
+              let root =
+                  System.IO.Path.Combine(
+                      System.IO.Path.GetTempPath(),
+                      "weir-under-" + System.Guid.NewGuid().ToString "N"
+                  )
 
-              // the POSITIVE TWIN, first: "raises on escape" is satisfied by a member
-              // that raises on everything, so the legitimate joins are the real pins
-              expectValue "Path.under \"/safe\" \"report.pdf\"" (VStr "/safe/report.pdf")
-              expectValue "Path.under \"/safe\" \"a/b/c.txt\"" (VStr "/safe/a/b/c.txt")
-              // interior `..` is legitimate — rejecting the SEGMENT would be wrong
-              expectValue "Path.under \"/safe\" \"a/../b\"" (VStr "/safe/b")
-              // rule 6: empty and dot-only yield the base
-              expectValue "Path.under \"/safe\" \"\"" (VStr "/safe")
-              expectValue "Path.under \"/safe\" \".\"" (VStr "/safe")
+              System.IO.Directory.CreateDirectory root |> ignore
+              let bse = root.Replace("\\", "/")
 
+              let full (rel: string) =
+                  System.IO.Path.GetFullPath(System.IO.Path.Combine(root, rel))
 
-              // rule 1: an absolute second argument never joins
-              Expect.throws (fun () -> runReal "Path.under \"/safe\" \"/etc/passwd\"" |> ignore) "absolute rhs escapes"
-              // rule 2: normalise THEN confine
-              Expect.throws (fun () -> runReal "Path.under \"/safe\" \"../etc/passwd\"" |> ignore) "traversal escapes"
+              let under (name: string) =
+                  runReal $"Path.under \"{bse}\" \"{name}\""
 
-              Expect.throws
-                  (fun () -> runReal "Path.under \"/safe\" \"a/../../etc\"" |> ignore)
-                  "interior traversal that leaves escapes"
-              // rule 7: drive- and UNC-shaped names are refused on EVERY platform
-              Expect.throws (fun () -> runReal "Path.under \"/safe\" \"C:/x\"" |> ignore) "drive-shaped escapes"
+              let escapes (name: string) =
+                  Expect.throws (fun () -> under name |> ignore)
 
-              // rule 4, THE reason this member exists: a sibling whose name EXTENDS
-              // the base is not under it, and a prefix-string test says it is
-              Expect.throws
-                  (fun () -> runReal "Path.under \"/safe/uploads\" \"../uploads-evil/x\"" |> ignore)
-                  "a name-extending sibling is NOT under the base"
+              try
+                  // the POSITIVE TWIN first: "raises on escape" is satisfied by a member
+                  // that raises on everything, so the legitimate joins are the real pins
+                  Expect.equal (under "report.pdf") (VStr(full "report.pdf")) "a plain name joins"
+                  Expect.equal (under "a/b/c.txt") (VStr(full "a/b/c.txt")) "a nested name joins"
+                  // interior `..` is legitimate — rejecting the SEGMENT would be wrong
+                  Expect.equal (under "a/../b") (VStr(full "b")) "interior .. stays inside"
+                  // rule 6: empty and dot-only yield the base
+                  Expect.equal
+                      (under "")
+                      (VStr(System.IO.Path.TrimEndingDirectorySeparator root))
+                      "empty yields the base"
 
-              // the diagnostic is security-shaped: it names the base, the attempted
-              // path, and the word escape
-              let msg =
-                  try
-                      runReal "Path.under \"/safe\" \"/etc/passwd\"" |> ignore
-                      ""
-                  with e ->
-                      e.Message
+                  Expect.equal
+                      (under ".")
+                      (VStr(System.IO.Path.TrimEndingDirectorySeparator root))
+                      "dot yields the base"
 
-              Expect.isTrue (msg.Contains "/safe") "the message names the base"
-              Expect.isTrue (msg.Contains "/etc/passwd") "the message names the attempt"
-              Expect.isTrue (msg.Contains "escape") "the message says escape"
+                  // rule 1 + rule 2: absolute, and traversal that leaves
+                  escapes "/etc/passwd" "an absolute rhs escapes"
+                  escapes "../etc/passwd" "traversal escapes"
+                  escapes "a/../../etc" "interior traversal that leaves escapes"
+
+                  // rule 7: drive- and UNC-shaped names are refused on EVERY platform,
+                  // which is exactly what the old skip stopped anyone from checking
+                  escapes "C:/x" "a drive root escapes"
+                  escapes "C:x" "a drive-RELATIVE name escapes"
+                  escapes "\\\\server\\share" "a UNC name escapes"
+
+                  // rule 4, THE reason the member exists: a sibling whose name EXTENDS
+                  // the base is not under it, and a prefix-string test says it is
+                  let leaf =
+                      System.IO.Path.GetFileName(System.IO.Path.TrimEndingDirectorySeparator root)
+
+                  escapes $"../{leaf}-evil/x" "a name-extending sibling is NOT under the base"
+
+                  // the diagnostic is security-shaped: base, attempt, and the word escape
+                  let msg =
+                      try
+                          under "/etc/passwd" |> ignore
+                          ""
+                      with ex ->
+                          ex.Message
+
+                  Expect.isTrue (msg.Contains "/etc/passwd") "the message names the attempt"
+                  Expect.isTrue (msg.Contains "escape") "the message says escape"
+              finally
+                  System.IO.Directory.Delete(root, true)
           }
 
           test "Path members: extension/fileName/stem/dir/join" {
