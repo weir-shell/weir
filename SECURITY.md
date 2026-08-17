@@ -132,6 +132,19 @@ it, by design):
     protection, and weir does not notice, warn, or infer. A heuristic
     on field names would be exactly the guessing this type replaces.
 
+- **The streaming echo's binary guard is bounded, not absolute**
+  [D:stream-echo]. The batched echo saw a command's whole output
+  before showing anything, so "binary never reaches the terminal" was
+  a whole-buffer guarantee. The echo now streams — an interactive
+  prompt shows before its newline — and the guard holds the FIRST
+  4 KiB or 100 ms (whichever ends first) before emitting; within that
+  window the guarantee is whole. Past it, every chunk is still
+  checked and the stream stops at the first NUL — but the bytes
+  already shown cannot be unshown. A stream that turns binary late (a
+  tar with a text header, output that switches format mid-run) leaks
+  its clean-looking prefix to the terminal. Bounded, stated, and
+  tty-only: redirected output never had the guard and still does not.
+
 - **`within lock` is advisory, not access control** [D:within-lock].
   The lock excludes only COOPERATING processes — anything that opens
   the file without asking for the lock (or ignores flock semantics)

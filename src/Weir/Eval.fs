@@ -2163,6 +2163,41 @@ and eval (env: Env) (te: TypedExpr) : Value =
             Seq.delay (fun () -> Proc.linesWith (overlayOf env cenvO) (Proc.resolveProg prog) argv (Some stdin))
             |> Seq.map VStr
         )
+    // the armed statement command STREAMS at a tty [D:stream-echo]:
+    // |print(linesOf) held a partial line (an interactive prompt) until
+    // its newline — the chunk relay flushes as bytes arrive. Content is
+    // byte-identical to the batched path (same segment split, trailing
+    // newline ensured); ONLY timing differs, and only at a tty —
+    // redirected output keeps the linesOf path untouched. Reifiers and
+    // captures are unaffected by law (| complete is in-memory capture).
+    | TEPipe({ Kind = TECmd(prog, args, cenvO) }, { Kind = TEVar "|print" }) when
+        not (System.Console.IsOutputRedirected)
+        ->
+        let argv = argvOf env args
+
+        let spec: Proc.Spec =
+            { Prog = Proc.resolveProg prog
+              Args = argv
+              Env = overlayOf env cenvO
+              Input = None }
+
+        let mutable atLineStart = true
+
+        Proc.streamSegmentsOf
+            spec
+            (fun txt ->
+                System.Console.Out.Write txt
+                System.Console.Out.Flush()
+                atLineStart <- false)
+            (fun () ->
+                System.Console.Out.Write '\n'
+                System.Console.Out.Flush()
+                atLineStart <- true)
+
+        if not atLineStart then
+            System.Console.Out.Write '\n'
+
+        VUnit
     | TEPipe(arg, fn) -> apply (eval env fn) (eval env arg)
     | TEField(target, field) ->
         match eval env target with
@@ -2609,6 +2644,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     // stray splat is a clear internal error, not a MatchFailureException.
     | TESplat _ -> unreachable "$@ splat outside command arguments (checker confines it to argv)"
 
+
 // the yaml district's evaluator [D:yaml-district]: build Yaml NODES —
 // the lift is VALUE-driven (the checker already enforced the liftable
 // law), a None SPLICE omits its entry/item, `for` instantiates its body
@@ -2740,6 +2776,22 @@ and apply (fn: Value) (arg: Value) : Value =
         eval (bindings |> List.fold (fun m (n, v) -> Map.add n v m) closureEnv) body
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
+
+/// the REPL's streaming statement echo [D:stream-echo] — spawns the
+/// bare command via the chunk relay instead of eval'ing to a VSeq (a
+/// seq<string> cannot carry a partial line). The caller owns rendering;
+/// this owns the spawn (argv, overlay, nonzero raise).
+let streamCommandStatement (env: Env) (te: Check.TypedExpr) (onText: string -> unit) (onBreak: unit -> unit) : unit =
+    match te.Kind with
+    | Check.TECmd(prog, args, cenvO) ->
+        let spec: Proc.Spec =
+            { Prog = Proc.resolveProg prog
+              Args = argvOf env args
+              Env = overlayOf env cenvO
+              Input = None }
+
+        Proc.streamSegmentsOf spec onText onBreak
+    | _ -> unreachable "streamCommandStatement takes the bare-command statement only"
 
 let constructorValues (cases: (string * Ty option) list) : (string * Value) list =
     cases
