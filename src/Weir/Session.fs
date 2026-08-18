@@ -201,6 +201,11 @@ let private sweepLiveTmpDirs () =
         with _ ->
             ()
 
+/// the REPL survives SIGINT (set once by Repl.run) [D:repl-isig]: the
+/// exit-hook sweep must not fire for a signal the session outlives —
+/// it deletes LIVE within-tmp dirs, which is correct only when dying
+let replSurvivesSigint = ref false
+
 let private installExitHook () =
     // NORMAL process exit — the pfirst exit-race customer: a background
     // loser killed mid-finally no longer leaks its dir
@@ -215,7 +220,19 @@ let private installExitHook () =
             [ System.Runtime.InteropServices.PosixSignal.SIGINT
               System.Runtime.InteropServices.PosixSignal.SIGTERM ] do
             let reg =
-                System.Runtime.InteropServices.PosixSignalRegistration.Create(posixSig, fun _ -> sweepLiveTmpDirs ())
+                System.Runtime.InteropServices.PosixSignalRegistration.Create(
+                    posixSig,
+                    fun ctx ->
+                        // a SIGINT the REPL cancels is not a death —
+                        // the dirs stay live [D:repl-isig]
+                        if
+                            not (
+                                replSurvivesSigint.Value
+                                && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
+                            )
+                        then
+                            sweepLiveTmpDirs ()
+                )
 
             hookRoots <- (reg :> obj) :: hookRoots
     else

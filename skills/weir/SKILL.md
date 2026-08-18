@@ -699,6 +699,12 @@ print x
 - Interactive TTY tools (fzf-class) work in command pipelines — they
   draw on /dev/tty while stdio pipes; a user cancel (exit 130) RAISES
   like any nonzero exit, aborting the script at the fault.
+- At the REPL, `^C` during a foreground child is a group SIGINT
+  [D:repl-isig]: the child dies, the error names exit 130 (the script
+  path's exact message), and the SESSION returns to the prompt. At an
+  idle prompt `^C` clears the line. `^C` during a pure computation (no
+  child) interrupts nothing — the byte waits and clears the next
+  prompt.
 - A REPL foreground child hung reading stdin ends with `^D^D`: the
   first `^D` delivers the partial line (icanon's delimiter — a
   mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.
