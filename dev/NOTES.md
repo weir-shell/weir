@@ -1,5 +1,31 @@
 # Spike Notes
 
+## the split closes, and .NET has opinions about terminals (2026-08-18)
+
+Ruling (a) held, but the diagnosis needed one more layer than the
+review recorded: restoring the cooked termios around eval WORKED
+(tcsetattr rc=0, read-back isig on) and the child still saw -isig ten
+milliseconds later — .NET re-applies its own terminal notion when a
+child spawns, so the real fix is telling .NET (TreatControlCAsInput
+off around eval), with the termios restore as the immediate half.
+The debug prints that found this were three lines and worth more
+than any amount of theorising about ConsolePal.
+
+The transition-window question the plan flagged dissolved rather
+than resolved: the cancel registration means no ^C timing can kill
+the session, so the windows were probed (6/6 benign, byte adjacent
+to Enter and aimed at child-exit time) but the safety is structural,
+not empirical. The sweep gate is the subtle dependency — both signal
+handlers run and Cancel only stops termination, so without the gate
+a survived ^C would have deleted live within-tmp dirs mid-session.
+
+Two deliberate fate changes rode along: a delivered SIGINT at the
+prompt now survives (bash parity; the review measured death), and
+^C during a pure computation does nothing until the next prompt —
+weir has no cooperative cancellation and the honest doc line says
+so. Linux-verified only; the e2e pins carry the claim to macOS when
+CI runs there.
+
 ## the pty items: one byte explains the incident, two more instruments die (2026-08-18)
 
 Phase 0 paid for itself before the first probe ran: the gzip incident
