@@ -23,6 +23,12 @@ for line in sys.stdin.read().splitlines():
 
 pid, fd = pty.fork()
 if pid == 0:
+    # the subject starts with DEFAULT dispositions: a non-interactive
+    # caller's `&` bequeaths SIGINT/SIGQUIT=SIG_IGN through exec, and a
+    # signal probe against an ignoring-by-inheritance subject reports
+    # "survived" for the harness's own reason (caught by the B3 bisect)
+    for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM):
+        signal.signal(sig, signal.SIG_DFL)
     os.execvp(cmd[0], cmd)
 
 start = time.monotonic()
@@ -50,9 +56,13 @@ for kind, arg in steps:
     else:
         os.write(fd, arg)
 
+# reap even when the output side already closed: a child that exits
+# DURING the scenario used to fall through to "EXIT timeout" with its
+# real status collected and DISCARDED (caught by this harness's own
+# control: gzip refuses a tty stdout and exits at 1ms). Signal deaths
+# report as negative codes (waitstatus_to_exitcode: -2 = SIGINT).
 deadline = time.monotonic() + timeout
-while alive and time.monotonic() < deadline:
-    alive = pump(time.monotonic() + 0.1)
+while time.monotonic() < deadline:
     done, status = os.waitpid(pid, os.WNOHANG)
     if done:
         pump(time.monotonic() + 0.3)
@@ -60,6 +70,10 @@ while alive and time.monotonic() < deadline:
             print(ms, repr(chunk))
         print("EXIT", os.waitstatus_to_exitcode(status))
         sys.exit(0)
+    if alive:
+        alive = pump(time.monotonic() + 0.1)
+    else:
+        time.sleep(0.02)
 
 try:
     os.kill(pid, signal.SIGKILL)

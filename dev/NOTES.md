@@ -1,5 +1,39 @@
 # Spike Notes
 
+## the pty items: one byte explains the incident, two more instruments die (2026-08-18)
+
+Phase 0 paid for itself before the first probe ran: the gzip incident
+is three source lines seen from the tty's side. TreatControlCAsInput
+clears ISIG and nothing restores it around eval; a bare command
+inherits the pty as stdin; the child od's its read and there it is —
+03 68 69, the ^C as data. The rider's framing held exactly: C14's
+cancel claim and the SIGINT observation are one mechanism, and the
+script path (isig on, group delivery, abort-at-the-fault 10/10) is
+the working half that shows the REPL half is a MODE, not a law.
+Nothing was fixed; the fix shape is obvious from 0.2 (restore ISIG
+around eval, or forward from the editor) but it is its own session.
+
+C14 itself: single-arm verified, both paths. The concurrent case is
+the finding — the kernel distributes the BYTES of one typed line
+across simultaneous readers (one arm printed PICKED-oe, the other
+PICKED-ntwo; "one" split o/n/e). Not degradation, interleaving at
+the character level, 4/10. The docs' single-arm claim should stay
+single-arm.
+
+The instrument ledger grew by two, both toward a pass, both caught
+by this review's own controls. pty-run.py reported "EXIT timeout"
+for a child that died at 1ms — the reap loop keyed on the OUTPUT
+side staying open, and gzip's tty-refusal closed it first; the real
+status was collected and discarded. Then B3 reported "weir survives
+a direct SIGINT" ten times straight — bisected to the harness
+preamble: a non-interactive shell's `&` bequeaths SIGINT=SIG_IGN
+through exec, so the probe was signalling a process born deaf. The
+instrument now resets dispositions in the child, and the same probe
+says died 10/10. Between the two: weir honours an inherited SIG_IGN
+(the nohup courtesy) — a denominator fact found by instrument
+autopsy. The editor-echo self-match (type "alive", grep ALIVE) and
+Enter-is-CR joined the harness header as standing rules.
+
 ## the referee ran a different string universe (2026-08-17)
 
 The membership sweep the rider asked for came back with a number too
