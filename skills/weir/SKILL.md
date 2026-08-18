@@ -738,7 +738,23 @@ print x
   `Env.vars` sorts the same way. `name` is for MATCHING and display,
   `path` for handing to `File.*` — name derives from path, never the
   reverse (a later `cd` makes name→path ambiguous), which is why both
-  ride the row. `^ls` forces the external.
+  ride the row. `^ls` forces the external. Builtins WITHOUT a
+  qualified spelling (`ls`, `cd`, `pwd`, `print`, `printerr`, `show`,
+  `exit`, `fail`, `into`, `not`, `fst`, `snd`, `nats`) are RESERVED
+  binder names [D:reserve-builtins] — a binding would shadow them for
+  the whole file with no way back, so the checker refuses; bare
+  aliases (`max`, `find`, `item`…) stay bindable because the
+  qualified member survives.
+
+```weir-error
+// a no-home builtin cannot be bound — the capability has no way back
+let ls x = Dir.list x
+print (show (ls "."))
+```
+```weir-error
+// params reserve too
+[1; 2] |> Seq.map (fun print -> print)
+```
 
 ```weir-error
 // isDirectory retired with the kind reshape — the error teaches

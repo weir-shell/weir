@@ -765,16 +765,20 @@ quantity semantics now.
   through records/unions/seqs/rows ("show cannot render functions" —
   a `Some (fun ...)` is caught in the payload). Bespoke checker arm on
   the print-family sentinel discipline; bare-value `show` defaults to
-  `string -> string`; a `let show = ...` shadows it entirely.
+  `string -> string`; `let show = ...` is a check error — reserved, like every no-home builtin [D:reserve-builtins].
 - **`print`** is the typed output builtin (bespoke checker rule, same
   species as `to json`): argument is a splice-family scalar — rendered by
   the same shared renderer as command splices — or `seq<string>`,
   streamed line-per-element with strict enumeration; returns `unit`;
   pipeable (`xs |> print`). As a bare value (`Seq.iter print`) it is the
   defaulted `string -> unit`. Not command-callable: `echo` owns bareword
-  ergonomics in command mode. A `let print = ...` shadows it entirely
-  (values shadow builtins, the standing rule). `Seq.iter` is the strict
-  effectful traversal, qualified-only in both modes.
+  ergonomics in command mode. `let print = ...` is a check error
+  [D:reserve-builtins]: a builtin with no qualified spelling is a
+  reserved binder name — shadowing it would remove the capability for
+  the whole file with no way back. Bare ALIASES keep the old shadow
+  rule (their qualified home is the way back: `let max = …` leaves
+  `Seq.max` reachable). `Seq.iter` is the strict effectful traversal,
+  qualified-only in both modes.
 
 ## Command mode
 

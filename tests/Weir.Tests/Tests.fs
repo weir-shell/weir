@@ -4742,6 +4742,35 @@ let withinKindsTests =
                   "within in a comment"
           } ]
 
+let reserveBuiltinTests =
+    // builtins with no qualified spelling are reserved binders
+    // [D:reserve-builtins]; bare ALIASES keep the standing shadow rule
+    testList
+        "reserved builtins"
+        [ test "the message, verbatim — every binding position" {
+              let expected =
+                  "'ls' is a builtin with no qualified spelling — a binding would shadow it for the whole file with no way back; pick another name"
+
+              Expect.equal (checkErr "let ls = 1 in ls").Message expected "let"
+
+              Expect.stringContains
+                  (checkErr "[1] |> Seq.map (fun pwd -> pwd)").Message
+                  "'pwd' is a builtin"
+                  "lambda param"
+
+              Expect.stringContains
+                  (checkErr "match (1, 2) with | (cd, _) -> cd").Message
+                  "'cd' is a builtin"
+                  "pattern binder"
+          }
+          test "the positive twins: ordinary and module-shaped names bind; aliases keep their escape" {
+              expectValue "let file = 1 in file" (VInt 1L)
+              expectValue "let seq = 2 in seq" (VInt 2L)
+              // the alias distinction IS the ruling's edge: Seq.max is
+              // the way back, so `max` stays bindable
+              expectValue "let max = 3 in max + Seq.max [1; 2]" (VInt 5L)
+          } ]
+
 let wireKeyTests =
     // [<Wire "…">] — reserved words and illegal identifiers as adapter
     // keys [D:wire-keys]
@@ -6983,7 +7012,12 @@ let unitPrintTests =
               | Error terr -> Expect.stringContains (formatError terr) "Seq.iter" "points at the module home"
               | Ok _ -> failtest "strict mode must not resolve bare iter"
           }
-          test "a let shadows the print builtin" { expectValue "let print = fun s -> s in print \"x\"" (VStr "x") }
+          test "print is reserved — the shadow pin FLIPPED [D:reserve-builtins]" {
+              Expect.stringContains
+                  (checkErr "let print = fun s -> s in print \"x\"").Message
+                  "'print' is a builtin with no qualified spelling"
+                  "no way back, so no binding"
+          }
           test "unit renders in a hole (the class is the law) [D:interp-show]" {
               expectValue "$\"a{()}b\"" (VStr "a()b")
           }
@@ -7947,7 +7981,12 @@ let showTests =
               | TFun(TSeq(TVar _), TSeq TStr) -> ()
               | ty -> failtest $"expected generic Show mapping, got {formatTy ty}"
           }
-          test "a let shadows the show builtin" { expectValue "let show = fun x -> x in show 9" (VInt 9L) } ]
+          test "show is reserved — the shadow pin FLIPPED [D:reserve-builtins]" {
+              Expect.stringContains
+                  (checkErr "let show = fun x -> x in show 9").Message
+                  "'show' is a builtin with no qualified spelling"
+                  "no way back, so no binding"
+          } ]
 
 let parallelTests =
     testSequenced
@@ -14060,6 +14099,7 @@ let allTests =
           withinKindsTests
           withinAlwaysLockTests
           wireKeyTests
+          reserveBuiltinTests
           fileRowReshapeTests
           adapterFormTests
           pathParamCompletionTests
