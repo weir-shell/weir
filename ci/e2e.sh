@@ -1659,6 +1659,42 @@ else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi
 
+# ---- the REPL SIGINT split, closed [D:repl-isig] ---------------------------
+# eval runs under the shell's tty disposition (ISIG on), so ^C is a
+# group SIGINT: the child dies with the script path's exact message and
+# the SESSION survives (the cancel registration). The needle rule: the
+# editor echoes typed lines, so needles derive by case transform.
+if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
+    ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
+
+    # the incident, fixed: gzip + ^C -> the child dies naming 130, the
+    # prompt returns usable
+    rsout=$(printf 'SLEEP 700\nSEND gzip\\r\nSLEEP 400\nSEND \\x03\nSLEEP 500\nSEND print (Str.toUpper "revived")\\r\nSLEEP 400\nSEND #quit\\r\n' \
+        | python3 "$ptyrun" 10 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+    echo "$rsout" | grep -q "exit code 130" || fail "a REPL ^C must kill the foreground child naming 130: $rsout"
+    echo "$rsout" | grep -q "REVIVED" || fail "the session must survive its child's ^C: $rsout"
+    echo "$rsout" | grep -q "^EXIT 0" || fail "the session must end clean after a ^C'd child: $rsout"
+
+    # the positive twin: ^C at an IDLE prompt stays an editor key — the
+    # line clears and the session continues (two fates, both pinned)
+    twout=$(printf 'SLEEP 700\nSEND \\x03\nSLEEP 300\nSEND print (Str.toUpper "alive")\\r\nSLEEP 400\nSEND #quit\\r\n' \
+        | python3 "$ptyrun" 8 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+    echo "$twout" | grep -q '\^C' || fail "an idle-prompt ^C clears the line, never kills: $twout"
+    echo "$twout" | grep -q "ALIVE" || fail "the session continues after an idle-prompt ^C: $twout"
+
+    # the agreement's other half: the SCRIPT path still dies with the
+    # group (C8's shape — weir aborts at the fault alongside the child)
+    ssdir=$(mkweirtmp)
+    printf 'sh -c "read x"\nprint (Str.toUpper "after")\n' > "$ssdir/sig.weir"
+    ssout=$(printf 'SLEEP 500\nSEND \\x03\n' | python3 "$ptyrun" 6 "$BIN" "$ssdir/sig.weir")
+    echo "$ssout" | awk '/^EXIT/{exit ($2 == -2 ? 0 : 1)}' || fail "a script ^C still kills weir with the group: $ssout"
+    echo "$ssout" | grep -q "AFTER" && fail "a script must abort at the fault on ^C: $ssout"
+
+    echo "e2e ok: REPL SIGINT — ^C kills the child (130) and the session survives; idle ^C clears the line; scripts die with the group"
+else
+    echo "e2e skip: REPL SIGINT pty pins (POSIX + python3)"
+fi
+
 # ---- commit areas [D:commit-areas] ------------------------------------------
 # the derived-area check, pinned BOTH ways (a check that rejects
 # everything satisfies "rejects bad areas") — a scratch repo, three

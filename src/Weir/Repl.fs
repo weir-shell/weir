@@ -52,6 +52,27 @@ module private Term =
             | Some buf -> tcsetattr (0, 0, buf) |> ignore
             | None -> ()
 
+    // the SHELL's cooked termios, captured at run() before the editor's
+    // first raw entry — ISIG included. Eval runs under THIS disposition
+    // [D:repl-isig], so a ^C is a group SIGINT and a foreground child
+    // dies the way it does in a script; the editor's raw config (ISIG
+    // alone cleared — TreatControlCAsInput's footprint) re-asserts at
+    // the eval boundary and at each editor entry.
+    let mutable private cooked: byte[] option = None
+
+    let snapshotCooked () =
+        if not (System.OperatingSystem.IsWindows()) && cooked.IsNone then
+            let buf = Array.zeroCreate<byte> 128
+
+            if tcgetattr (0, buf) = 0 then
+                cooked <- Some buf
+
+    let restoreCooked () =
+        if not (System.OperatingSystem.IsWindows()) then
+            match cooked with
+            | Some buf -> tcsetattr (0, 0, buf) |> ignore
+            | None -> ()
+
     /// the editor-active gate for the watchdog below — children run
     /// during EVAL, when this is false, so the watchdog never fights an
     /// interactive child (fzf, an editor) for the terminal
@@ -903,8 +924,40 @@ let private readLineTty () : string option =
     activeRedraw.Value <- None
     result |> Option.defaultValue None
 
+// ROOTED: a collected PosixSignalRegistration disposes and stops
+// cancelling — the sweep-hook roots set the precedent [D:exit-hook]
+let mutable private sigintSurvival: obj option = None
+
+// TRUE only when the tty editor exists [D:repl-isig]: the eval-boundary
+// toggle is that editor's un-doing, and the TreatControlCAsInput SETTER
+// throws on Windows with redirected input ("the handle is invalid" — a
+// piped REPL has no console). POSIX-scoped like the rest of the split.
+let mutable private ttyEval = false
+
 let private setupLineEditor () =
+    // the shell's cooked termios FIRST — the editor's raw config has
+    // not been established yet, so this is the one moment the
+    // surrounding disposition (ISIG included) is knowable [D:repl-isig]
+    Term.snapshotCooked ()
+
     Console.TreatControlCAsInput <- true // Ctrl+C is a KEY (cancel line), not SIGINT
+
+    // the REPL survives SIGINT (bash parity) [D:repl-isig]: with ISIG
+    // restored around eval, a ^C is a GROUP signal — the child dies,
+    // the session must not. Cancel suppresses default termination; the
+    // exit-hook sweep skips the survived case (Session.replSurvivesSigint).
+    if not (OperatingSystem.IsWindows()) then
+        ttyEval <- true
+        Session.replSurvivesSigint.Value <- true
+
+        sigintSurvival <-
+            Some(
+                Runtime.InteropServices.PosixSignalRegistration.Create(
+                    Runtime.InteropServices.PosixSignal.SIGINT,
+                    fun ctx -> ctx.Cancel <- true
+                )
+                :> obj
+            )
     // full repaint on SIGWINCH [D:repl-multiline] — best-effort (the climb
     // to the region top uses pre-resize wrap math). No SIGWINCH on
     // Windows; Create throws there, so the guard is load-bearing
@@ -963,7 +1016,7 @@ let private printHint (state: State) (line: string) =
 
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
-let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
+let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : State =
     lastErrored <- false
 
     match chk.Kind with
@@ -1246,6 +1299,28 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
 // (#help, #quit) executed now — one glyph, two lifetimes.
 
 // simple flow-wrap for name lists
+// eval runs under the SHELL's tty disposition [D:repl-isig]: ISIG on,
+// so ^C reaches the foreground child as a group SIGINT (the script
+// path's exact behaviour) — weir itself survives via the cancel
+// registration in setupLineEditor. The finally closes the eval->prompt
+// window; both no-op when there is no tty (piped REPL, Windows).
+let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
+    // the PROPERTY is the load-bearing half [D:repl-isig]: .NET re-applies
+    // ITS OWN terminal notion when a child spawns (probed: a raw tcsetattr
+    // sticks for ~10ms and the child still sees -isig), so the notion must
+    // change — TreatControlCAsInput=false makes .NET's spawn-time config
+    // agree with the cooked termios the restore sets now
+    if ttyEval then
+        Console.TreatControlCAsInput <- false
+        Term.restoreCooked ()
+
+    try
+        evalCheckedBody state chk
+    finally
+        if ttyEval then
+            Console.TreatControlCAsInput <- true
+            Term.reassert ()
+
 let private flowNames (indent: string) (width: int) (words: string list) : string =
     let sb = Text.StringBuilder()
     let mutable col = indent.Length

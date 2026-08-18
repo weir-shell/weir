@@ -397,7 +397,12 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and
-  reaped; there is no `&` — an unscoped child is unrepresentable.
+  reaped; there is no `&` — an unscoped BACKGROUND child is
+  unrepresentable. A bare FOREGROUND command is synchronous (weir
+  waits for it), so the no-orphan claim's one gap is weir dying WHILE
+  it waits: the group signal or the controlling terminal's HUP reaps
+  the child then, and a child that refuses INT and HUP outlives weir
+  — the `kill -9` carve-out's register [D:pty-review].
   The readiness
   wait is `poll timeout=10s watch=srv` + `Net.portOpen <port>` as the
   body — `watch=` fails at the next interval tick if the child dies (its last output rides
@@ -699,6 +704,16 @@ print x
 - Interactive TTY tools (fzf-class) work in command pipelines — they
   draw on /dev/tty while stdio pipes; a user cancel (exit 130) RAISES
   like any nonzero exit, aborting the script at the fault.
+- At the REPL, `^C` during a foreground child is a group SIGINT
+  [D:repl-isig]: the child dies, the error names exit 130 (the script
+  path's exact message), and the SESSION returns to the prompt. At an
+  idle prompt `^C` clears the line. `^C` during a pure computation (no
+  child) interrupts nothing — the byte waits and clears the next
+  prompt.
+- A REPL foreground child hung reading stdin ends with `^D^D`: the
+  first `^D` delivers the partial line (icanon's delimiter — a
+  mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.
+  Works on every build.
 - Bareword heads run externals: `git status` works at a statement head.
   Builtins shadow PATH (`ls` is typed rows — files AND
   subdirectories: name, kind (`Regular | Directory | Symlink` — a

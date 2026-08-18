@@ -87,6 +87,27 @@ it, by design):
   because the failure looks like the child's bug, not the scope's
   semantics.
 
+- **Concurrent `/dev/tty` readers split a typed line** [D:pty-review].
+  Interactive tty tools are SINGLE-ARM: two parallel arms reading the
+  terminal share one input queue, and the kernel distributes the
+  BYTES of one typed line between them — measured: "one" arrived as
+  "oe" in one arm and "ntwo" in the other; 4/10 runs garbled, 5/10
+  whole by luck, 1/10 one arm got both lines. That is silent
+  corruption of a data channel with a distribution that survives
+  testing. weir cannot see that a child reads the tty, so this is
+  STATED, not detected — a `--can` warning for interactive-shaped
+  commands inside parallel arms is the future shape if detection is
+  ever wanted; refusing or serialising spawns was considered and
+  declined (both punish legitimate code for a property weir cannot
+  observe).
+- **Signal dispositions inherit, and weir honours an ignored one**
+  [D:pty-review]. A weir started with SIGINT ignored (nohup-style — a
+  non-interactive shell's `&` does this) stays ignoring it: the
+  courtesy is the platform's and weir does not override it. A bare
+  foreground child that itself refuses INT and HUP outlives a dying
+  weir (measured 10/10); at the REPL the controlling pty's HUP reaps
+  the foreground child even on `kill -9` (measured 0 orphans) — the
+  SIGKILL carve-out is tighter there than the general wording.
 - **Capture is unbounded by design.** `| complete` and `Seq.force`
   materialize their whole input in memory (`complete` holds one byte
   buffer + line offsets — ~2x the raw text in RSS, measured; a
