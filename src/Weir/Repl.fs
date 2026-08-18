@@ -928,6 +928,12 @@ let private readLineTty () : string option =
 // cancelling — the sweep-hook roots set the precedent [D:exit-hook]
 let mutable private sigintSurvival: obj option = None
 
+// TRUE only when the tty editor exists [D:repl-isig]: the eval-boundary
+// toggle is that editor's un-doing, and the TreatControlCAsInput SETTER
+// throws on Windows with redirected input ("the handle is invalid" — a
+// piped REPL has no console). POSIX-scoped like the rest of the split.
+let mutable private ttyEval = false
+
 let private setupLineEditor () =
     // the shell's cooked termios FIRST — the editor's raw config has
     // not been established yet, so this is the one moment the
@@ -941,6 +947,7 @@ let private setupLineEditor () =
     // the session must not. Cancel suppresses default termination; the
     // exit-hook sweep skips the survived case (Session.replSurvivesSigint).
     if not (OperatingSystem.IsWindows()) then
+        ttyEval <- true
         Session.replSurvivesSigint.Value <- true
 
         sigintSurvival <-
@@ -1303,14 +1310,16 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
     // sticks for ~10ms and the child still sees -isig), so the notion must
     // change — TreatControlCAsInput=false makes .NET's spawn-time config
     // agree with the cooked termios the restore sets now
-    Console.TreatControlCAsInput <- false
-    Term.restoreCooked ()
+    if ttyEval then
+        Console.TreatControlCAsInput <- false
+        Term.restoreCooked ()
 
     try
         evalCheckedBody state chk
     finally
-        Console.TreatControlCAsInput <- true
-        Term.reassert ()
+        if ttyEval then
+            Console.TreatControlCAsInput <- true
+            Term.reassert ()
 
 let private flowNames (indent: string) (width: int) (words: string list) : string =
     let sb = Text.StringBuilder()
