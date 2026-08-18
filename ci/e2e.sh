@@ -1615,14 +1615,17 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
 
     # REPL: the partial line (an interactive prompt's shape) appears
-    # BEFORE the command exits — the micro-refusal invisibility, closed
+    # BEFORE the command exits — under inheritance the child writes the
+    # pty itself, so the chunk BOUNDARY is the kernel's (the old exact
+    # b'PARTIAL-' chunk was the relay's flush shape); the ORDER stamp is
+    # the claim
     rout=$(printf 'SLEEP 500\nSEND sh %s/pp.sh\\r\nSLEEP 2500\nSEND #quit\\r\n' "$sedir" | python3 "$ptyrun" 8 "$BIN")
-    pline=$(echo "$rout" | grep -F "b'PARTIAL-'" | head -1 | awk '{print $1}')
+    pline=$(echo "$rout" | grep -F "PARTIAL-" | grep -vF "pp.sh" | head -1 | awk '{print $1}')
     dline=$(echo "$rout" | grep -F "done" | head -1 | awk '{print $1}')
-    [ -n "$pline" ] || fail "REPL: the partial line must flush on its own: $rout"
+    [ -n "$pline" ] || fail "REPL: the partial must appear: $rout"
     [ -n "$dline" ] && [ "$pline" -lt "$dline" ] || fail "REPL: partial precedes the completing line: $rout"
 
-    # script mode: same, via the CCmd relay
+    # script mode: same, inherited
     cat > "$sedir/sp.weir" <<WEOF
 sh $sedir/pp.sh
 WEOF
