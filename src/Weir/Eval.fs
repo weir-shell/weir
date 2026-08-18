@@ -2352,7 +2352,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let fields =
             def.Fields
-            |> List.map (fun (name, ty) ->
+            |> List.map (fun (field, ty) ->
+                // the env var this field READS [D:wire-keys]: verbatim unless
+                // [<Wire "NAME">] says otherwise. Env var names are not always
+                // legal weir field names either (a leading digit, a dash, a
+                // reserved word), and the author controls the environment no more
+                // than a JSON payload — the same wire-key problem as from json.
+                // `name` is the WIRE name from here on, so every message names the
+                // variable the author actually asked for.
+                let name = Types.wireName def field
                 let raw = System.Environment.GetEnvironmentVariable name
 
                 let value =
@@ -2361,7 +2369,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     | _, null ->
                         // the resting point sits BELOW the whole overlay
                         // stack [D:default-attr]: any set var wins
-                        match Argv.defaultOf def name with
+                        match Argv.defaultOf def field with // attributes are keyed by FIELD
                         | Some(AStr s) -> VStr s
                         | Some(AInt n) -> VInt n
                         | Some(AFloat fl) -> VFloat fl
@@ -2443,7 +2451,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                             VUnit
                     | _ -> unreachable "the checker rejects non-scalar Env.load fields"
 
-                name, value)
+                field, value) // the RECORD field keeps its weir name
 
         if problems.Count > 0 then
             failwith ($"Env.load {def.Name}: " + String.concat "; " problems)

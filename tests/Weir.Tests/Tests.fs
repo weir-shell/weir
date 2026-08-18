@@ -9464,6 +9464,95 @@ let envLoadTests =
                   for n in [ "WT_S"; "WT_I"; "WT_B" ] do
                       System.Environment.SetEnvironmentVariable(n, null)
           }
+          test "Env.load HONOURS [<Wire>]; Args.load rejects it [D:wire-keys]" {
+              // accepted at declaration and silently IGNORED at the boundary — and the
+              // miss named the FIELD, reinforcing the wrong model at the exact moment
+              // the author had just renamed the variable.
+              System.Environment.SetEnvironmentVariable("WT_WIRE_ZZ", "hello")
+
+              try
+                  let e = env |> declare "type WCfg = { [<Wire \"WT_WIRE_ZZ\">] token: string }"
+
+                  match Weir.Check.typecheck e (parse "Env.load WCfg") with
+                  | Ok te ->
+                      match eval valueEnv te with
+                      | VRecord(_, fs) ->
+                          Expect.equal (Weir.Eval.recGet "token" fs) (VStr "hello") "reads the wired variable"
+                      | v -> failtest $"unexpected {formatValue v}"
+                  | Error terr -> failtest (formatError terr)
+
+                  // exact-name: only enum VALUES are case-insensitive, never names
+                  let eCase = env |> declare "type WCase = { [<Wire \"wt_wire_zz\">] token: string }"
+
+                  match Weir.Check.typecheck eCase (parse "Env.load WCase") with
+                  | Ok te2 ->
+                      // env lookup case-sensitivity is the PLATFORM's, not weir's: weir does
+                      // an EXACT lookup and never case-maps, but the Windows environment block
+                      // is itself case-insensitive, so the same exact lookup finds WT_WIRE_ZZ
+                      // there. Pinned TWO-SIDED so neither half can be 'fixed' away.
+                      if System.OperatingSystem.IsWindows() then
+                          match eval valueEnv te2 with
+                          | VRecord(_, fs) ->
+                              Expect.equal
+                                  (Weir.Eval.recGet "token" fs)
+                                  (VStr "hello")
+                                  "the Windows env block is case-insensitive"
+                          | v -> failtest $"unexpected {formatValue v}"
+                      else
+                          Expect.throws
+                              (fun () -> eval valueEnv te2 |> ignore)
+                              "on POSIX a lowercase wire must NOT match"
+                  | Error terr -> failtest (formatError terr)
+
+                  // the miss names the VARIABLE, not the field — the defect itself
+                  let eMiss =
+                      env |> declare "type WMiss = { [<Wire \"WT_ABSENT_ZZ\">] token: string }"
+
+                  match Weir.Check.typecheck eMiss (parse "Env.load WMiss") with
+                  | Ok te3 ->
+                      let msg =
+                          try
+                              eval valueEnv te3 |> ignore
+                              ""
+                          with ex ->
+                              ex.Message
+
+                      Expect.isTrue (msg.Contains "WT_ABSENT_ZZ") "the miss names the VARIABLE"
+                      Expect.isFalse (msg.Contains "token") "the miss must not name the field"
+                  | Error terr -> failtest (formatError terr)
+
+                  // [<Default>] composes with [<Wire>]
+                  let eDef =
+                      env
+                      |> declare "type WDef = { [<Wire \"WT_ABSENT_ZZ\"; Default \"fb\">] token: string }"
+
+                  match Weir.Check.typecheck eDef (parse "Env.load WDef") with
+                  | Ok te4 ->
+                      match eval valueEnv te4 with
+                      | VRecord(_, fs) ->
+                          Expect.equal (Weir.Eval.recGet "token" fs) (VStr "fb") "Default fills a wired miss"
+                      | v -> failtest $"unexpected {formatValue v}"
+                  | Error terr -> failtest (formatError terr)
+
+                  // Args.load refuses the SAME shape — at the CALL SITE, so a
+                  // Wire-carrying record stays legal for Env.load and the adapters.
+                  // Script mode (Self present) or Args.load refuses for that reason first.
+                  let scriptEnv =
+                      { env with
+                          Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers }
+
+                  let eArgs = scriptEnv |> declare "type WArgs = { [<Wire \"X\">] flag: string }"
+
+                  match Weir.Check.typecheck eArgs (parse "Args.load WArgs") with
+                  | Ok _ -> failtest "Args.load must refuse [<Wire>]"
+                  | Error terr ->
+                      let m = formatError terr
+                      Expect.isTrue (m.Contains "Wire") "the teaching names the attribute"
+                      Expect.isTrue (m.Contains "NoShort") "the teaching names the argv naming controls"
+              finally
+                  System.Environment.SetEnvironmentVariable("WT_WIRE_ZZ", null)
+          }
+
           test "problems collect into ONE boundary error (incl. TRUE and 1 rejected)" {
               System.Environment.SetEnvironmentVariable("WT_I", "abc")
               System.Environment.SetEnvironmentVariable("WT_B", "TRUE")

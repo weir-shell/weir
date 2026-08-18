@@ -677,7 +677,7 @@ quantity semantics now.
   mini-session). Binders start lowercase at EVERY position — both let
   forms, lambda params, param sugar, pattern-binder components — with
   the hint naming the record-field escape (`let region =
-  cfg.AWS_REGION`; fields keep free casing for the Env.load verbatim
+  cfg.AWS_REGION`; fields keep free casing for the Env.load verbatim-or-`[<Wire>]`
   contract). Match patterns are deliberately untouched (uppercase
   remains a constructor there — the law's mirror half, standing since
   generics; module names complete the triple). Value-shadows-module
@@ -1008,7 +1008,10 @@ quantity semantics now.
   (splices and interpolation are the typed spellings).
 - **`Env.load T`** (2026-07-20) — the third typed-boundary instance
   (from json, env; the porcelain adapter, since retired): declare a monomorphic record whose
-  field names are env-var names VERBATIM (no case mapping —
+  field names are env-var names VERBATIM unless `[<Wire "NAME">]` names
+  the variable instead [D:wire-keys] (weir applies no case mapping either
+  way; the Windows environment block is itself case-insensitive, so a
+  differently-cased name resolves there and not on POSIX —
   conventions guess at deployments; verbatim is inspectable), fields
   scalars or Option-of-scalar (bool is EXACTLY true/false — 1/yes
   rejected; Option: absent = None, garbage = still an error). Reads
