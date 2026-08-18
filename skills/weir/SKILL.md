@@ -704,6 +704,20 @@ print x
 - Interactive TTY tools (fzf-class) work in command pipelines — they
   draw on /dev/tty while stdio pipes; a user cancel (exit 130) RAISES
   like any nonzero exit, aborting the script at the fault.
+- A bare STATEMENT command at a tty INHERITS stdout
+  [D:colour-inherit]: the child sees the terminal (isatty true), so
+  tools that colour for a tty colour under weir — and weir never
+  holds the bytes (no guard or cap on that path: the bytes are the
+  child's own, bash's posture; a child ending mid-line leaves its
+  wart, also bash's). Every VALUE form keeps the pipe — `cmd |>
+  print`, `$()`, `| complete`, reifiers — a value must DECODE and
+  decoding requires a pipe: the one deliberate path divergence,
+  chosen for colour. A redirected weir keeps the pipe everywhere
+  (byte laws intact — and the child would see a pipe in bash too).
+  For colour in a CAPTURED form, most tools honour their own env
+  convention: `let c = Env.ofPairs [("FORCE_COLOR", "1")]` then
+  `$c(cmd | complete)` — per-tool foreign conventions, deliberately
+  not a weir feature.
 - At the REPL, `^C` during a foreground child is a group SIGINT
   [D:repl-isig]: the child dies, the error names exit 130 (the script
   path's exact message), and the SESSION returns to the prompt. At an

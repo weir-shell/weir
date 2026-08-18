@@ -165,18 +165,21 @@ it, by design):
     protection, and weir does not notice, warn, or infer. A heuristic
     on field names would be exactly the guessing this type replaces.
 
-- **The streaming echo's binary guard is bounded, not absolute**
-  [D:stream-echo]. The batched echo saw a command's whole output
-  before showing anything, so "binary never reaches the terminal" was
-  a whole-buffer guarantee. The echo now streams — an interactive
-  prompt shows before its newline — and the guard holds the FIRST
-  4 KiB or 100 ms (whichever ends first) before emitting; within that
-  window the guarantee is whole. Past it, every chunk is still
-  checked and the stream stops at the first NUL — but the bytes
-  already shown cannot be unshown. A stream that turns binary late (a
-  tar with a text header, output that switches format mid-run) leaks
-  its clean-looking prefix to the terminal. Bounded, stated, and
-  tty-only: redirected output never had the guard and still does not.
+- **A bare statement command at a tty writes the terminal ITSELF**
+  [D:colour-inherit] — stdout is inherited (that is how colour works:
+  the child sees isatty true), so weir never holds the bytes and
+  there is NO binary guard on that path. bash's posture, and stated
+  as the deliberate trade: the child chose its bytes for a terminal
+  it can see, and the incident the old guard served (gzip through a
+  pipe believing it was safe) is removed at its cause — gzip refuses
+  a tty by itself. The VALUE echo keeps its guard unchanged: a bound
+  value, `| complete`'s record, and `-e`'s echo still refuse binary
+  at a terminal.
+- **`cmd |> print` streams raw, deliberately** [D:stream-echo]. It was
+  always the sanctioned spelling the old refusal pointed at ("print
+  deliberately"), and it keeps the chunk relay without a guard. The
+  bounded 4 KiB/100 ms guard existed only on the REPL statement echo,
+  whose path now inherits — that non-claim retires with its subject.
 
 - **`within lock` is advisory, not access control** [D:within-lock].
   The lock excludes only COOPERATING processes — anything that opens
