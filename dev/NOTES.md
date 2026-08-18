@@ -1,5 +1,51 @@
 # Spike Notes
 
+## the referee ran a different string universe (2026-08-17)
+
+The membership sweep the rider asked for came back with a number too
+big to audit (196 culture-sensitive StartsWith/EndsWith sites, 9
+string-arg IndexOf/LastIndexOf) and a fact that dissolved it: the
+shipped binary has run InvariantGlobalization=true all along, and
+invariant mode IS ordinal — production was never exposed. The real
+finding is that the test hosts were not: dotnet test ran under ICU,
+where U+001F, NUL, ZWJ and the soft hyphen are ignorable
+("a<US>b".StartsWith "ab" is true, String.Compare calls them equal,
+LastIndexOf lands past the end). So the completion crash could ONLY
+ever fire in tests, and the language surface (Str.startsWith is
+s.StartsWith verbatim) was being refereed under semantics the binary
+does not have. The mode landed in all three host fsprojs; the
+ignorables pin was shown failing in the culture host first, and the
+1354 existing tests all held under invariant — nothing in weir
+wanted culture. The class fix is one property per host, not 205
+annotations; explicit Ordinal stays reserved for crash sites.
+
+## path completion learns what a parameter wants (2026-08-17)
+
+The rider priced its own recommendation on a hand-maintained registry
+and the price was wrong in the good direction: builtinDocs' named
+params ARE the registry, and the docs-coverage pin from the previous
+session guarantees they exist — so `named ["path"]` marks the
+position and a future member enrols by documenting itself. The two
+sessions composed by accident: the coverage check was built for
+hover, and its first structural customer was the completer.
+
+The membership sweep answered wider than the rider's list again, in
+both directions: it missed Dir.copy, Path.under, and the four Path
+string queries; it wrongly included `within tmp`, which BINDS a
+fresh name — path-completing a binder position would vouch for
+collisions. `cd` needed its docs entry written (a bare builtin,
+outside the module sweep), which closed its hover gap as a side
+effect.
+
+The instrument scar is a BCL comparison default: culture-sensitive
+String.LastIndexOf treats U+001F as ignorable and "matches" past the
+end of the string, so the sibsep cut threw on every completion — 27
+collateral failures from one missing Ordinal. And the invisible-byte
+lesson recurred in its pettiest form yet: the comment EXPLAINING that
+trap briefly contained a literal U+001F, which then rode two
+tool-call round-trips before chr(31) could name it without carrying
+it.
+
 ## the File.stat rider: an existence lie and eleven silent members (2026-08-17)
 
 F1's premise needed correcting before its fix: the rider predicted

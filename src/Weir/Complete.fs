@@ -217,6 +217,51 @@ let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
             && not (Map.containsKey h env.Values)
             && not (Map.containsKey h env.Modules)
 
+// a word at a path PARAMETER position [D:path-param-completion]:
+// `cd w` offered keywords and bare members around the one real
+// candidate — cd is a builtin, so the argv gate correctly does not
+// apply; the question that generalises is "does this parameter want a
+// path?". The registry IS builtinDocs' named params — every module
+// member has an entry (the docs-coverage pin), so a param named
+// path/src/dst (base within Path) marks the position and a new
+// member's docs enrol it automatically. SUBSET, stated: flat calls
+// only — word-count resolves the argument index, so a quoted argument
+// containing spaces or a nested call miscounts and falls through to
+// the general pool.
+let private pathParamAt (before: string) : bool =
+    let seg =
+        let cutAfter (marker: string) (s: string) =
+            // Ordinal, load-bearing: culture-sensitive LastIndexOf
+            // treats the U+001F sibling separator as IGNORABLE and
+            // "matches" past the end
+            match s.LastIndexOf(marker, System.StringComparison.Ordinal) with
+            | -1 -> s
+            | i -> s.Substring(i + marker.Length)
+
+        before
+        |> cutAfter Weir.Parser.sibSepStr
+        |> cutAfter "\n"
+        |> cutAfter " = "
+        |> cutAfter "|>"
+        |> _.TrimStart()
+
+    match
+        seg.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
+        |> Array.toList
+    with
+    | [] -> false
+    // within cd <path-or-binding> — the one path-typed within kind
+    | "within" :: args -> args = [ "cd" ]
+    | head :: args ->
+        let head = head.TrimStart '('
+
+        match Map.tryFind head Weir.Builtins.builtinDocs with
+        | Some d when d.Params.Length > args.Length ->
+            match List.tryItem args.Length d.Params with
+            | Some p -> p = "path" || p = "src" || p = "dst" || (p = "base" && head.StartsWith "Path.")
+            | None -> false
+        | _ -> false
+
 // binder evidence in the raw TEXT [D:complete-argv]: lambda params,
 // let/for/within binders are lexically visible even when no typed tree
 // exists — the declared-fields fallback keys on THIS, so an unbound
@@ -432,6 +477,24 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             // argv position [D:complete-argv]: paths, nothing else — the
             // pool, fields, and members are expression furniture
             filesystemComplete word
+        elif pathParamAt before then
+            // a path position wants paths AND string bindings — `cd
+            // target` applies the binding, so hard-removing identifiers
+            // would break documented weir; keywords and bare members
+            // cannot be arguments here [D:path-param-completion]
+            let stringBindings =
+                env.Values
+                |> Map.toList
+                |> List.choose (fun (n, sch) ->
+                    if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = TStr then
+                        Some n
+                    else
+                        None)
+
+            (filesystemComplete word @ stringBindings)
+            |> List.filter (fun c -> c.StartsWith word && c <> word)
+            |> List.distinct
+            |> List.sort
         elif word.Contains '.' then
             let segments = word.Split '.'
             let head = segments[0]
