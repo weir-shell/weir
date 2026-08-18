@@ -1596,7 +1596,7 @@ WEOF
         flock -n "$lkdir/probe.lock" -c true || fail "the kernel must release on kill -9"
         echo "e2e ok: within lock — 2-process + pmap-arm exclusion (control interleaved), timeout raises, flock interop, kill -9 releases"
     else
-        echo "e2e ok: within lock — 2-process + pmap-arm exclusion (control interleaved); flock absent, interop/kill-9 rows skipped"
+        echo "e2e ok: within lock — 2-process + pmap-arm exclusion (control interleaved); flock(1) absent on this platform — the interop/kill-9 rows are UNTESTABLE here (macOS ships no flock; Windows locks via LockFileEx), not merely unrun"
     fi
 else
     echo "e2e skip: within lock matrix (POSIX rows)"
@@ -1691,9 +1691,86 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     echo "$ssout" | grep -q "AFTER" && fail "a script must abort at the fault on ^C: $ssout"
 
     echo "e2e ok: REPL SIGINT — ^C kills the child (130) and the session survives; idle ^C clears the line; scripts die with the group"
+
+    # the sweep gate, MEASURED [D:repl-isig]: a ^C the session outlives
+    # must not run the exit-hook sweep — the sweep deletes LIVE within-tmp
+    # dirs. The ^C lands mid-PURE-computation (a child would die and
+    # unwind the scope), the block then checks its own dir. Linux is the
+    # mechanism's platform; the cell runs wherever the pty pins do.
+    # multi-line body via Alt-Enter (\x1b\r): plain Enter SUBMITS the
+    # moment the block parses complete — one body line suffices
+    gatedir=$(mkweirtmp)
+    cat > "$gatedir/gate.scn" <<'SCN'
+SLEEP 700
+SEND within tmp d\x1b\r
+SLEEP 150
+SEND     ["x"] |> File.write $"{d}/probe.txt"\x1b\r
+SLEEP 150
+SEND     print d\x1b\r
+SLEEP 150
+SEND     let n = [1..8000000] |> Seq.fold (fun a x -> a + 1) 0\x1b\r
+SLEEP 150
+SEND     print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
+SLEEP 1200
+SEND \x03
+SLEEP 5000
+SEND print (Str.toUpper "still-here")\r
+SLEEP 400
+SEND #quit\r
+SCN
+    gout=$(python3 "$ptyrun" 18 "$BIN" < "$gatedir/gate.scn" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+    echo "$gout" | grep -q "KEPT" || fail "a survived ^C must not sweep a live within-tmp dir: $gout"
+    echo "$gout" | grep -q "STILL-HERE" || fail "the session survives the mid-eval ^C: $gout"
+    gdir=$(echo "$gout" | grep -oE '/[^[:space:]"]*weir-tmp-[^[:space:]"]*' | head -1)
+    # the positive twin: the scope's own exit removed the dir — or
+    # "survives the sweep" is satisfied by a gate that never sweeps
+    [ -n "$gdir" ] || fail "the probe must capture the tmp dir path: $gout"
+    [ ! -d "$gdir" ] || fail "the scope exit must still remove its dir: $gdir"
+    echo "e2e ok: the sweep gate — a survived ^C leaves the live tmp dir; the scope's own exit removes it"
 else
     echo "e2e skip: REPL SIGINT pty pins (POSIX + python3)"
 fi
+
+# ---- Path.under confines, at the binary [D:path-under] ---------------------
+# EVERY platform: rule 7 makes the drive/UNC shapes raise everywhere,
+# and the unit pin's old header claimed Windows ran units only — e2e
+# runs there now, so the shipped binary carries the spec too. The
+# POSITIVE TWIN leads: raises-on-escape is satisfiable by raising on
+# everything.
+pudir=$(mkweirtmp)
+cat > "$pudir/pu.weir" <<'WEOF'
+let bse = Path.combine (Path.tempRoot ()) "safe-uploads"
+let a = Path.under bse "a/b.txt"
+let b = Path.under bse "a/../b.txt"
+print (if Str.endsWith "b.txt" a && Str.endsWith "b.txt" b then "joins-ok" else $"BAD {a} {b}")
+WEOF
+out=$($BIN "$pudir/pu.weir") || fail "legitimate joins must succeed (the positive twin): $out"
+echo "$out" | grep -q "joins-ok" || fail "plain and interior-.. joins yield paths under the base: $out"
+
+purefuse() {
+    $BIN -e "$1" >/dev/null 2>&1 && fail "Path.under must raise on every platform: $1"
+    return 0
+}
+purefuse 'Path.under "/safe/uploads" "../uploads-evil/x"'
+purefuse 'Path.under "/safe/uploads" "/etc/passwd"'
+purefuse 'Path.under "/safe/uploads" "a/../../etc"'
+purefuse 'Path.under "/safe/uploads" "C:x"'
+purefuse 'Path.under "/safe/uploads" "C:/x"'
+# UNC and backslash-leading shapes: weir strings escape \\ only, so the
+# UNC VALUE \\server\share needs the doubled spelling — the single one
+# is a PARSE error and a refusal pin passing on it is vacuous (the unit
+# pin had exactly that; fixed alongside this cell)
+purefuse 'Path.under "/safe/uploads" "\\\\server\\share"'
+purefuse 'Path.under "/safe/uploads" "\\x"'
+# the rule-7 departure, BOTH sides: separators are not rewritten, so a
+# backslash NAME (not leading) is a legal single filename on POSIX and
+# the same text normalises-and-escapes on Windows
+if [ "$IS_WINDOWS" = "1" ]; then
+    purefuse 'Path.under "C:/safe" "..\\..\\etc"'
+else
+    $BIN -e 'Path.under "/safe" "..\\..\\etc"' >/dev/null 2>&1 || fail "a backslash name is one ordinary POSIX filename segment"
+fi
+echo "e2e ok: Path.under at the binary — twin joins, sibling/absolute/climb/drive/UNC refuse, the separator split holds per platform"
 
 # ---- commit areas [D:commit-areas] ------------------------------------------
 # the derived-area check, pinned BOTH ways (a check that rejects
@@ -4504,7 +4581,7 @@ echo "e2e ok: district block scalars — ConfigMap workload on the AOT binary"
 if python3 -c 'import yaml' 2>/dev/null; then
     python3 "$(dirname "$0")/interop-referee.py" "$BIN" || fail "interop referee"
 else
-    echo "e2e SKIP: interop referee — python3+PyYAML absent on this runner (the linux CI image runs it)"
+    echo "e2e SKIP: interop referee — python3+PyYAML absent on this runner (the linux AND macos CI images run it)"
 fi
 
 # a rejected header inside a district errors AT THE HEADER under check

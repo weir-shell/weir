@@ -7687,10 +7687,11 @@ let agentFindingsTests =
           }
           test "Path.under confines; Path.combine does not [D:path-under]" {
               // RUNS ON EVERY PLATFORM. An earlier skipOnWindows left this member with
-              // ZERO Windows coverage and pointed at an e2e row that does not exist —
-              // Windows CI runs the unit suite only. The logic is pure string work; only
-              // the EXPECTED strings were POSIX-shaped, so both sides are built from the
-              // same BCL call and the drive/UNC shapes assert everywhere.
+              // ZERO Windows coverage and pointed at an e2e row that did not exist; the
+              // e2e row exists now (Windows runs e2e too) and this pin stays — units
+              // referee the lib, the row referees the shipped binary. The logic is pure
+              // string work; both sides build from the same BCL call, so the drive/UNC
+              // shapes assert everywhere.
               let root =
                   System.IO.Path.Combine(
                       System.IO.Path.GetTempPath(),
@@ -7736,7 +7737,12 @@ let agentFindingsTests =
                   // which is exactly what the old skip stopped anyone from checking
                   escapes "C:/x" "a drive root escapes"
                   escapes "C:x" "a drive-RELATIVE name escapes"
-                  escapes "\\\\server\\share" "a UNC name escapes"
+                  // the weir-source spelling matters: weir strings escape
+                  // backslashes, so the UNC VALUE needs the doubled form —
+                  // the old single form was a PARSE error and the throws
+                  // pin passed VACUOUSLY on it, never testing rule 7
+                  escapes "\\\\\\\\server\\\\share" "a UNC name escapes"
+                  escapes "\\\\x" "a backslash-leading name escapes"
 
                   // rule 4, THE reason the member exists: a sibling whose name EXTENDS
                   // the base is not under it, and a prefix-string test says it is
