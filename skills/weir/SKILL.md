@@ -699,6 +699,10 @@ print x
 - Interactive TTY tools (fzf-class) work in command pipelines — they
   draw on /dev/tty while stdio pipes; a user cancel (exit 130) RAISES
   like any nonzero exit, aborting the script at the fault.
+- A REPL foreground child hung reading stdin ends with `^D^D`: the
+  first `^D` delivers the partial line (icanon's delimiter — a
+  mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.
+  Works on every build.
 - Bareword heads run externals: `git status` works at a statement head.
   Builtins shadow PATH (`ls` is typed rows — files AND
   subdirectories: name, kind (`Regular | Directory | Symlink` — a
