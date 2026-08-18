@@ -93,6 +93,8 @@ jobs:
         run: |
           ./publish.sh
           ./ci/check-fresh.sh
+      - name: PyYAML — the interop referee runs here too (weir refereeing itself missed four emitter defects; doubling the referee's platforms is one line)
+        run: python3 -m pip install --break-system-packages pyyaml || python3 -m pip install pyyaml
       - name: e2e battery — the GNU-ism sweep's real signal (reds are findings)
         run: ./ci/e2e.sh
       - name: doc-tests
