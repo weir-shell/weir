@@ -397,7 +397,12 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and
-  reaped; there is no `&` — an unscoped child is unrepresentable.
+  reaped; there is no `&` — an unscoped BACKGROUND child is
+  unrepresentable. A bare FOREGROUND command is synchronous (weir
+  waits for it), so the no-orphan claim's one gap is weir dying WHILE
+  it waits: the group signal or the controlling terminal's HUP reaps
+  the child then, and a child that refuses INT and HUP outlives weir
+  — the `kill -9` carve-out's register [D:pty-review].
   The readiness
   wait is `poll timeout=10s watch=srv` + `Net.portOpen <port>` as the
   body — `watch=` fails at the next interval tick if the child dies (its last output rides
