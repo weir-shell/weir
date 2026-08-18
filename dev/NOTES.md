@@ -1,5 +1,31 @@
 # Spike Notes
 
+## the coverage rider: a gate measured, a pin that tested nothing (2026-08-18)
+
+The sweep-gate probe needed one insight to be possible at all: a ^C
+during a CHILD dies-and-unwinds the scope, so the only way to hold a
+within-tmp scope open across a survived signal is a slow PURE body —
+the fold keeps the scope alive while the SIGINT arrives, cancels,
+and (the measured fact) does not sweep. En route the editor taught
+its own rule: plain Enter submits a block the moment it parses
+complete, so multi-line bodies enter via Alt-Enter — one more line
+in the harness header.
+
+The Path.under cell caught something better than a gap: the unit
+pin's UNC row was VACUOUS. Weir strings escape backslashes, so
+"\\server\share" as weir source is a PARSE error, and
+Expect.throws passed on it — the instrument-defect genus (fails
+toward a pass) living inside a test. The doubled spelling tests rule
+7 for real now, in the pin and the cell both, and the
+backslash-leading refusal neither had is pinned too.
+
+The rest was book-keeping the rider asked for by name: the macOS
+verification recorded (repl-isig's cell is green there — the stated
+divergence risk held), PyYAML onto the macOS image (one line,
+doubling the referee), and the within-lock skip now says UNTESTABLE
+rather than unrun — flock(1) does not exist off Linux, which is a
+different fact than nobody having tried.
+
 ## the split closes, and .NET has opinions about terminals (2026-08-18)
 
 Ruling (a) held, but the diagnosis needed one more layer than the
