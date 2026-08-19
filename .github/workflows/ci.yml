@@ -62,12 +62,25 @@ jobs:
       - name: commit-area check (PRs only)
         if: github.event_name == 'pull_request'
         run: ~/.local/bin/weir ci/commit-area.weir --range "${{ github.event.pull_request.base.sha }}..HEAD"
+      # the decision index resolves [D:decision-keys]: every [D:key] in
+      # src/, tests/ and the index itself names a real key-column row.
+      # Linux only — it reads git ls-files. A weir script, like the
+      # commit-area check above (the scripting policy's dogfood).
+      - name: decision-key check
+        run: ~/.local/bin/weir ci/decision-keys.weir
+
       - name: e2e battery (conflict-marker gate at its top)
         run: ./ci/e2e.sh
       - name: fuzz smoke (pinned seed)
         run: dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
       - name: doc-tests
         run: ./ci/skill-doc.sh
+      # the message census [D:census-first-diagnostic]: a REGRESSION baseline,
+      # so it has to run — it drifted 5 points unnoticed while nothing
+      # invoked it, and the drift turned out to be the instrument
+      - name: message census
+        run: ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir
+
       - name: F# oracle
         run: ./ci/fsharp-oracle.sh
       - name: timing

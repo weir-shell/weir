@@ -1,0 +1,63 @@
+#!/usr/bin/env weir
+// Every [D:key] must resolve to a key-column row in docs/DECISIONS.md
+// [D:decision-keys]. CLAUDE.md's rule is "New decision = new index row"; it
+// was a convention with no check, and a decision written into ANOTHER row's
+// body leaves its citations pointing at nothing.
+//
+// SCOPE, and the reason for each file: src/ and tests/ because a code comment
+// citing a key is the rule's main customer, and DECISIONS.md ITSELF because a
+// row body may cite a sibling key — the index has to be self-consistent or it
+// cannot be the thing the other files resolve against.
+//
+// Linux-only in CI: it reads `git ls-files`.
+
+let rowKeys =
+    File.read "docs/DECISIONS.md"
+    |> Seq.choose (function
+        | Regex @"^\| ([a-z0-9-]+) \|" k -> Some k
+        | _ -> None)
+    |> Seq.where (fun k -> k <> "key")
+    |> Seq.force
+
+let sources =
+    git ls-files
+    |> Seq.where (fun f ->
+        (Path.extension f == ".fs" && (Str.startsWith "src/" f || Str.startsWith "tests/" f))
+        || f == "docs/DECISIONS.md")
+    |> Seq.force
+
+// in the index itself only ROW lines count: the header explains the
+// convention using `[D:key]` as an illustration, which is prose about the
+// rule rather than a citation of a decision
+let citedLines f =
+    let lines = File.read f
+
+    if f == "docs/DECISIONS.md" then
+        lines |> Seq.where (Str.startsWith "| ")
+    else
+        lines
+
+let citations =
+    sources
+    |> Seq.collect (fun f ->
+        citedLines f
+        |> Seq.collect (fun line -> Str.rmatchAll @"\[D:([a-z0-9-]+)\]" line |> Seq.map Seq.head)
+        |> Seq.map (fun k -> (f, k)))
+    |> Seq.force
+
+let dangling =
+    citations
+    |> Seq.where (fun c -> not (rowKeys |> Seq.contains (snd c)))
+    |> Seq.force
+
+print $"rows: {rowKeys |> Seq.length}  citations: {citations |> Seq.length}  distinct keys: {citations |> Seq.map snd |> Seq.distinct |> Seq.length}  files: {sources |> Seq.length}"
+
+if (dangling |> Seq.length) > 0 then
+    dangling
+    |> Seq.distinct
+    |> Seq.iter (fun c -> printerr $"dangling [D:{snd c}] cited in {fst c}")
+
+    fail
+        $"{dangling |> Seq.map snd |> Seq.distinct |> Seq.length} decision key(s) cited with no DECISIONS.md row — give the decision its own key-column row, or cite the row that owns it"
+
+print "ok: every [D:key] resolves to a row"
