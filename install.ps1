@@ -1,17 +1,37 @@
-# weir installer (Windows) [D:releases] — detects the architecture,
-# downloads the latest release binary, VERIFIES its checksum against
-# the release's SHA256SUMS, and installs to
-# %LOCALAPPDATA%\Programs\weir\weir.exe (override: $env:WEIR_INSTALL_DIR).
+# weir installer (Windows) [D:releases][D:install-checksum-scope] — the
+# PINNED, two-origin form. This file is a TEMPLATE: the release workflow
+# substitutes @WEIR_TAG@ and @WEIR_SHA256SUMS@ and serves the result
+# from weir.sh, a DIFFERENT origin than the GitHub release binaries — so
+# an attacker who compromises the release assets alone cannot also
+# change the checksums the installer trusts. It installs ONE pinned
+# version, not always-newest.
 #
-#   irm https://raw.githubusercontent.com/weir-shell/weir/main/install.ps1 | iex
+#   irm https://weir.sh/install.ps1 | iex
 #
 # Unsigned binary: SmartScreen may warn on first run — More info ->
-# Run anyway; the checksum verification below is what stands in for
-# the signature (docs/INSTALL.md).
+# Run anyway. The embedded checksum below verifies the download against
+# a checksum served from a different origin than the binary — so it is
+# tamper-evident here, not merely integrity (docs/INSTALL.md). The repo
+# copy is the template; do not run it directly (its placeholders are
+# unsubstituted — it says so and stops). irm buffers the whole response
+# before iex sees it and throws on an incomplete read, so there is no
+# partial-script hazard — the install.sh main() truncation guard has no
+# ps1 equivalent to need.
 $ErrorActionPreference = "Stop"
 
 $repo = "weir-shell/weir"
 $dest = if ($env:WEIR_INSTALL_DIR) { $env:WEIR_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\weir" }
+$tag = "@WEIR_TAG@"
+# the release's SHA256SUMS, baked in — the two-origin property
+$sums = @"
+@WEIR_SHA256SUMS@
+"@
+
+# unsubstituted template detector: a real tag is v0.1.0-shaped and
+# never contains '@' — only the placeholder does
+if ($tag -like "*@*") {
+    throw "this is the install TEMPLATE — fetch the generated script: irm https://weir.sh/install.ps1 | iex"
+}
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
     "AMD64" { "x64" }
@@ -19,10 +39,6 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
     default { throw "unsupported architecture: $env:PROCESSOR_ARCHITECTURE — download from https://github.com/$repo/releases" }
 }
 $rid = "win-$arch"
-
-$release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
-$tag = $release.tag_name
-if (-not $tag) { throw "could not resolve the latest release tag" }
 
 $name = "weir-$tag-$rid.exe"
 $base = "https://github.com/$repo/releases/download/$tag"
@@ -32,17 +48,26 @@ New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 try {
     Write-Host "downloading $name ($tag)..."
     Invoke-WebRequest -Uri "$base/$name" -OutFile (Join-Path $tmp $name)
-    Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile (Join-Path $tmp "SHA256SUMS")
 
-    # verify BEFORE installing — an installer that skips this is worse
-    # than no installer
-    $expected = (Get-Content (Join-Path $tmp "SHA256SUMS") |
+    # verify BEFORE installing against the EMBEDDED checksum
+    # [D:install-checksum-scope]: nothing is fetched from the binary's
+    # origin to verify it, so compromising the release assets alone
+    # yields no code execution. A missing entry is NAMED.
+    $expected = ($sums -split "`n" |
         Where-Object { $_ -match [regex]::Escape($name) + "$" }) -split "\s+" |
         Select-Object -First 1
-    if (-not $expected) { throw "no checksum for $name in SHA256SUMS" }
+    if (-not $expected) { throw "no embedded checksum for $name (unsupported platform for $tag?)" }
     $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $name)).Hash.ToLower()
     if ($actual -ne $expected.ToLower()) {
         throw "CHECKSUM MISMATCH for $name — refusing to install (expected $expected, got $actual)"
+    }
+
+    # signed build provenance, best-effort: if the GitHub CLI is present,
+    # confirm this repo's Actions built the binary. Not required.
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        gh attestation verify (Join-Path $tmp $name) --repo $repo *> $null
+        if ($LASTEXITCODE -eq 0) { Write-Host "provenance: verified (gh attestation)" }
+        else { Write-Host "note: gh present but provenance not verified — the checksum stands" }
     }
 
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
@@ -50,8 +75,12 @@ try {
     $installed = Join-Path $dest "weir.exe"
     Write-Host "installed: $installed ($(& $installed --version))"
 
+    # segment match, not substring [D:install-checksum-scope]: a Path
+    # entry that merely has $dest as a PREFIX would falsely suppress the
+    # note (the segment-vs-prefix class Path.under rule 4 guards)
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$dest*") {
+    $onPath = ($userPath -split ';') -contains $dest
+    if (-not $onPath) {
         Write-Host "note: $dest is not on your PATH — add it once:"
         Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"$userPath;$dest`", 'User')"
     }

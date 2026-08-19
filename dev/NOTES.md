@@ -52,6 +52,73 @@ correct code unreachable. So binder rejection, match composition, and
 dead-arm detection all just started working — three report-back
 questions that answered themselves.
 
+## the installer goes two-origin and pinned — decided before the tag (2026-08-19)
+
+The deferred half of the install rider came back a "take it, before the
+first tag." The reasoning is timing, not security: retrofitting two-origin
+is unrecoverable once people have bookmarked a URL — flipping always-newest
+to pinned after the fact is a silent behavior change — so it's a decision to
+make while nobody depends on it, or not cleanly at all.
+
+The shape that fell out is nicer than expected. install.sh/install.ps1
+become TEMPLATES (`@WEIR_TAG@`/`@WEIR_SHA256SUMS@`); a weir script,
+ci/gen-install.weir, substitutes the tag and embeds that release's
+SHA256SUMS to produce the artifact weir.sh serves. The dogfood is that the
+just-built RELEASE BINARY generates its own installer in the publish job —
+no second weir build, and the generator is the scripting policy in its own
+release path. Because the served script's checksums arrive from a different
+origin than the binaries, verification never touches the binary's origin:
+tamper-evident, not just integrity.
+
+Two template traps, both caught before they shipped. The generator does a
+blanket `@WEIR_TAG@`→tag replace, so a template guard keyed on the literal
+`"@WEIR_TAG@"` would be substituted along with everything else and always
+fire (or never) — the guard keys on `*@*` instead, since a real tag never
+contains '@'. And the SUMS placeholder had to move into a heredoc so BOTH
+the template and the generated artifact `sh -n`-parse; the first draft put
+it in a plain double-quoted string and the whole-line expansion ate the
+`SUMS="` prefix. Offline e2e generates against a synthetic SHA256SUMS and
+checks parse + no-leftover-placeholders + embedded-checksum-matches-binary;
+the actual download→install path stays untestable until a real release and
+weir.sh serving the asset, said plainly rather than papered over.
+
+gh attestation rode the same pass (one workflow line + a best-effort verify
+in the installer), and osx-x64 turned out to be a build-matrix omission, not
+a decision — the AOT publish is native on a macos-13 runner, so it's one
+matrix line and INSTALL's "stated gap" paragraph goes away. The canonical
+URL moved to weir.sh/install.{sh,ps1} everywhere; raw.githubusercontent was
+a third copy of "where the script lives" that the site would never serve.
+
+## install-script hardening: the truncation trick and an honest checksum (2026-08-19)
+
+Six findings against install.sh/ps1; the install work split cleanly
+into implement-now and decide-first. The one real defect was the
+curl|sh truncation hazard: a dropped connection leaves a shorter but
+COMPLETE script that runs up to the cut, and set -eu is blind to it
+(nothing failed). Wrapping the body in main() invoked on the last line
+turns a truncated fetch into an unclosed-function syntax error —
+defines nothing, runs nothing. It's the canonical curl|sh objection
+and the canonical one-trick answer. install.ps1 needs no equivalent:
+irm buffers and throws on an incomplete read, so iex never sees a
+partial (confirmed, not assumed). The pin is offline — no published
+release needed — because it's a `sh -n` parse property.
+
+The honest-comment fix mattered more than it looks: the checksum
+verification catches truncation and CDN corruption but NOT tampering
+(SHA256SUMS shares the release origin), and the old comment ("worse
+than no installer") oversold it. Corrected in both scripts, the ps1
+header, and INSTALL.md. The two-origin option (bake per-release
+checksums into a script served from weir.sh) is a real workflow change
+that pins the script to a version — deferred to a decision before the
+first tag, not made unilaterally.
+
+The gate that outranks all six: releases/latest excludes drafts, and
+[D:releases] produces drafts, so tagging alone leaves the installers
+404ing with no hint the fix is a publish click. A weir script
+(release-published.weir, wired into CI) fails loud on exactly that
+state. A check, not a reminder — it keeps working when nobody reads
+the workflow output.
+
 ## the metamorphic red was the generator all along (2026-08-19)
 
 Followed the width crash's unmasked signal and it landed somewhere

@@ -1,0 +1,42 @@
+#!/usr/bin/env weir
+// Generates a PINNED install script [D:install-checksum-scope] from its
+// template: substitutes the release tag and expands the embedded
+// SHA256SUMS block in place. install.sh and install.ps1 are TEMPLATES;
+// this emits the ARTIFACT weir.sh serves — a script whose trusted
+// checksums arrive from a DIFFERENT origin than the binaries it
+// verifies, so compromising the release assets alone yields no code
+// execution. Deterministic text expansion: release.yml runs it per
+// release; ci/e2e.sh runs it offline against a synthetic SHA256SUMS to
+// prove the generated script parses and verifies.
+//
+//   ci/gen-install.weir --template install.sh --sums dist/SHA256SUMS --tag v0.1.0 --out dist/install.sh
+
+type Cli = {
+    /// the install.sh / install.ps1 template
+    template: string
+    /// the release SHA256SUMS whose lines to embed
+    sums: string
+    /// the release tag to pin (e.g. v0.1.0)
+    tag: string
+    /// where to write the generated script
+    out: string
+}
+
+let cli = Args.load Cli
+
+// the SHA256SUMS lines replace the placeholder line wholesale; every
+// other line has @WEIR_TAG@ substituted. A line is EITHER the sums
+// anchor or ordinary text — never both (the anchor sits alone).
+let sumLines = File.read cli.sums |> Seq.force
+
+let expand line =
+    if Str.contains "@WEIR_SHA256SUMS@" line then
+        sumLines
+    else
+        [ line |> Str.replace "@WEIR_TAG@" cli.tag ]
+
+File.read cli.template
+|> Seq.collect expand
+|> File.write cli.out
+
+print $"generated {cli.out}: tag {cli.tag}, {sumLines |> Seq.length} checksum line(s) embedded"
