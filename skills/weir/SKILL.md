@@ -1054,6 +1054,54 @@ print (codes |> Seq.head)
   Destructure ANYWHERE irrefutable: `let x, y = pair`,
   `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
   params). Refutable patterns in binders are errors — use match.
+- Irrefutable RECORD patterns [D:record-patterns] destructure at every
+  binding position — `let { names = n } = c`, params (bare, no parens
+  needed), lambdas, match arms (the `when` guard does the testing),
+  `for` binders. The literal's spelling exactly; PARTIAL field mention
+  is the point. A param destructuring types by ROW: it accepts ANY
+  record carrying the fields (copy-and-update's generality). Match
+  scrutinees need a KNOWN record type (the constructor-pattern law);
+  binder positions carry the row power. Anonymous shapes destructure
+  with the same spelling — there is deliberately NO `{| |}` pattern
+  form, and `{ id = id }` over `{| id: string |}` is legal if
+  odd-reading (fields and binders are different namespaces; punning
+  does not exist). No refutable field literals (`{ state = "up" }` as
+  a pattern errors toward match), duplicate and unknown fields teach,
+  `{ }` refuses (it binds nothing). `until`/`within` binders stay
+  plain names.
+
+```weir
+// one destructuring serves ANY record carrying the field — the row
+type Crew = { names: string; size: int }
+type Fleet = { names: string; flag: bool }
+let label { names = n } = n
+let { names = c; size = k } = { names = "kestrel"; size = 3 }
+print (label { names = c; size = k } + label { names = "gull"; flag = true })
+for { names = n } in [{ names = "a"; size = 1 }] do print n
+```
+
+```weir-error
+// refutable field literals are the OTHER feature (exhaustiveness over
+// field values) — a record pattern is irrefutable
+type St = { state: string }
+match { state = "up" } with
+| { state = "up" } -> print "x"
+| _ -> print "y"
+```
+
+```weir-error
+// no punning: fields keep their declared case, binders are lowercase
+type Pn = { names: string }
+let { names } = { names = "x" }
+print "unreachable"
+```
+
+```weir-error
+// no {| |} PATTERN form — a pattern matches a VALUE, and the shape is
+// the same brace spelling whether the type was declared or anonymous
+let f {| id = i |} = i
+print (f 1)
+```
   Bare `a, b` is a tuple at F#'s precedence (`f x, y` is `(f x), y`).
   `fst`/`snd` project PAIRS (wider tuples are a type error, as F#).
 - Paths: `Path.extension` (keeps the dot; `""` when none),

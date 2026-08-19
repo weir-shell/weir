@@ -1209,6 +1209,19 @@ echo "$out" | grep -qF '"endCol":24' || fail "provenance covers the field word: 
 echo "$out" | grep -qF "(the value becomes a T at 5:1)" || fail "the meet note: $out"
 echo "e2e ok: row provenance points at the access, meet in the note"
 
+# the same note for a PATTERN-introduced field [D:record-patterns]: the
+# field-name span in the pattern is the access, provenance inherited
+cat > "$ckdir/provpat.weir" <<'WEOF'
+type T = { BicepPath: string; Name: string }
+let quality { BicepPath2 = b } = b
+let mk = { BicepPath = "b"; Name = "n" }
+quality mk
+WEOF
+out=$($BIN check --json "$ckdir/provpat.weir" || true)
+echo "$out" | grep -qF "no field 'BicepPath2'" || fail "a pattern field misses like an access: $out"
+echo "$out" | grep -qF "(the value becomes a T at" || fail "the meet note rides the pattern miss: $out"
+echo "e2e ok: pattern-introduced fields inherit row provenance"
+
 # FLIPPED by [D:interior-arming]: a command-first body now CHECKS —
 # the interior command ARMS as an effect instead of seq-unit-erroring.
 # The at-the-head/no-EOF-dump quality property moves to a NON-command

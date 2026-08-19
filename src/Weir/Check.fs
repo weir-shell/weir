@@ -1289,6 +1289,41 @@ let casingError (span: Span) (name: string) : Result<'a, TypeError> =
 // at construction: the DERIVED no-home set, never a hand copy.
 let reservedBinderNames: Set<string> ref = ref Set.empty
 
+let rec private isIrrefutablePat (p: Pattern) =
+    match p.PKind with
+    | PWildcard
+    | PVar _
+    | PUnit -> true
+    | PTuple ps -> ps |> List.forall isIrrefutablePat
+    // sub-patterns are checked irrefutable at the pattern's own arms,
+    // so the kind is irrefutable wholesale [D:record-patterns]
+    | PRecord fields -> fields |> List.forall (snd >> isIrrefutablePat)
+    | PBool _
+    | PInt _
+    | PStr _
+    | PRegex _
+    | PSeqNil
+    | PCons _
+    | PSeqList _
+    | PCase _ -> false
+
+let private recordPatDups (span: Span) (fields: ((string * Span) * Pattern) list) : Result<unit, TypeError> =
+    if List.isEmpty fields then
+        err span "a record pattern must name at least one field — { } binds nothing"
+    else
+
+    let dup =
+        fields
+        |> List.map (fst >> fst)
+        |> List.countBy id
+        |> List.tryFind (fun (_, n) -> n > 1)
+
+    match dup with
+    | Some(f, _) ->
+        let span = fields |> List.find (fun ((n, _), _) -> n = f) |> fst |> snd
+        err span $"duplicate field '{f}' in a record pattern"
+    | None -> Ok()
+
 let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
     if name.Length > 0 && System.Char.IsUpper name[0] then
         casingError span name
@@ -1393,6 +1428,52 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
         match ty with
         | TUnit -> Ok []
         | ty -> err p.PSpan $"'()' patterns need a unit value; this one has type {formatTy ty}"
+    | PRecord fields ->
+        // irrefutable record patterns [D:record-patterns]: partial field
+        // mention is the point; refutable SUB-patterns are a different
+        // feature (field-value exhaustiveness) and refuse here
+        result {
+            do! recordPatDups p.PSpan fields
+
+            do!
+                fields
+                |> List.tryFind (fun (_, sub) -> not (isIrrefutablePat sub))
+                |> function
+                    | Some((f, fspan), _) ->
+                        err
+                            fspan
+                            $"record patterns are irrefutable — the pattern under '{f}' can fail; match on the field itself"
+                    | None -> Ok()
+
+            match ty with
+            | TNamed(typeName, targs) ->
+                match Map.tryFind typeName env.Types with
+                | Some(Record def) ->
+                    return!
+                        fields
+                        |> List.fold
+                            (fun acc ((f, fspan), sub) ->
+                                acc
+                                |> Result.bind (fun bs ->
+                                    match def.Fields |> List.tryFind (fun (fd, _) -> fd = f) with
+                                    | Some(_, fieldTy) ->
+                                        checkPattern env (substParams def.Params targs fieldTy) sub
+                                        |> Result.map (fun b -> bs @ b)
+                                    | None ->
+                                        match retiredField typeName f with
+                                        | Some teach -> err fspan $"'{f}' is retired: {teach}"
+                                        | None ->
+                                            let hint = didYouMean f (List.map fst def.Fields)
+                                            err fspan $"{typeName} has no field '{f}'{hint}"))
+                            (Ok [])
+                | Some(Union _) -> return! err p.PSpan $"{typeName} is a union; match on its cases, not fields"
+                | None -> return! err p.PSpan $"unknown type '{typeName}'"
+            | ty ->
+                return!
+                    err
+                        p.PSpan
+                        $"record patterns need a record value with a KNOWN type; this one has type {formatTy ty}"
+        }
     | PTuple ps ->
         match ty with
         | TTuple ts when List.length ps = List.length ts ->
@@ -1474,6 +1555,34 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
                 |> Result.bind (fun (ts, bs) -> binderShape ctx env sub |> Result.map (fun (t, b) -> t :: ts, bs @ b)))
             (Ok([], []))
         |> Result.map (fun (ts, bs) -> TTuple(List.rev ts), bs)
+    | PRecord fields ->
+        // the row seat [D:record-patterns]: the pattern's fields become
+        // row constraints keyed by the FIELD-NAME span — the exact map a
+        // field ACCESS writes (EField's TVar arm), so unification,
+        // generalization, and [D:row-provenance] are all inherited; a
+        // param destructuring { Names = n } generalizes to ANY record
+        // carrying the field, like `fun c -> c.Names` does
+        result {
+            do! recordPatDups p.PSpan fields
+
+            let! shaped =
+                fields
+                |> List.fold
+                    (fun acc ((f, fspan), sub) ->
+                        acc
+                        |> Result.bind (fun rows ->
+                            binderShape ctx env sub
+                            |> Result.map (fun (t, b) -> ((f, fspan, t), b) :: rows)))
+                    (Ok [])
+                |> Result.map List.rev
+
+            let r = freshName ctx "r"
+
+            ctx.Rows <-
+                Map.add r (shaped |> List.map (fun ((f, fspan, t), _) -> f, (t, fspan)) |> Map.ofList) ctx.Rows
+
+            return TRowVar(r, []), shaped |> List.collect snd
+        }
     | PCase(ctor, _) when not (Map.containsKey ctor env.Values) ->
         // an unknown uppercase name in a binder is the casing law's
         // case (a function/name spelled uppercase), not refutability
@@ -1543,21 +1652,6 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
 // per name from the shared ctx) — generalizeLet's per-name sibling
 let private generalizeBinding (ctx: Ctx) (env: TypeEnv) (name: string, ty: Ty) : string * Scheme =
     name, generalizeLet ctx env (finalTy ctx ty)
-
-let rec private isIrrefutablePat (p: Pattern) =
-    match p.PKind with
-    | PWildcard
-    | PVar _
-    | PUnit -> true
-    | PTuple ps -> ps |> List.forall isIrrefutablePat
-    | PBool _
-    | PInt _
-    | PStr _
-    | PRegex _
-    | PSeqNil
-    | PCons _
-    | PSeqList _
-    | PCase _ -> false
 
 // Exhaustiveness [D:exhaustiveness-hard-error]. Only unguarded arms
 // count — a guarded arm can fail at runtime. Coverage is RECURSIVE

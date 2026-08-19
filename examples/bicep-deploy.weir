@@ -52,7 +52,9 @@ let onUnmanage = env.ACTION_ON_UNMANAGE
 
 let header t = printerr $"== {t} =="
 
-let targetEnv t = Env.fromFile $"bicep/envs/{t.Stack}-{t.Env}.env"
+// the record-pattern param [D:record-patterns]: reads its two fields
+// in the signature, and types by row (any record with Stack + Env)
+let targetEnv { Stack = s; Env = e } = Env.fromFile $"bicep/envs/{s}-{e}.env"
 
 let envVal t name =
     targetEnv t |> Seq.where (fun e -> e.name == name) |> Seq.map _.value |> Seq.head

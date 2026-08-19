@@ -1224,6 +1224,7 @@ let private lambdaBody =
                         match pt.PKind with
                         | PVar n -> [ n ]
                         | PTuple pts -> pts |> List.collect leafNames
+                        | PRecord fields -> fields |> List.map snd |> List.collect leafNames
                         | _ -> []
 
                     let names = ps |> List.collect leafNames |> Set.ofList
@@ -1405,11 +1406,28 @@ let private patSeq =
         | [] -> { PKind = PSeqNil; PSpan = span }
         | ps -> { PKind = PSeqList ps; PSpan = span }
 
+// irrefutable record patterns [D:record-patterns]: the literal's field
+// spelling (`Name = pat`, ;-separated) at a pattern position — `{` was
+// a parse error in every pattern position, so the arm is unambiguous.
+// {} parses and the CHECKER refuses it (a parse-time fatal is
+// swallowed by enclosing attempts [D:anchor-residue-ab]); refutability
+// and duplicate fields are the checker's too (did-you-mean, spans).
+let private patRecordArm =
+    spanned (
+        pchar '{'
+        >>. ws
+        >>. sepBy (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=') .>>. pat) (str_ws ";")
+        .>> pchar '}'
+    )
+    .>> ws
+    |>> fun (fields, span) -> { PKind = PRecord fields; PSpan = span }
+
 let private patAtom =
     choice
         [ patLit
           patParens
           patSeq
+          patRecordArm
           patWord
           |>> fun (w, span) ->
               let kind =
@@ -1438,6 +1456,7 @@ let private patCore =
         [ patLit
           patParens
           patSeq
+          patRecordArm
           patWord
           >>= fun (w, span) ->
               if w = "_" then
@@ -1496,6 +1515,9 @@ binderParamRef.Value <-
           spanned (pstring "()") .>> ws
           |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
           identSpanned |>> fun (n, span) -> { PKind = PVar n; PSpan = span }
+          // a bare record pattern as a param [D:record-patterns] — the
+          // plan's motivating position; parens stay legal around it
+          patRecordArm
           patParens ]
 
 binderPatRef.Value <- commaPats
@@ -1577,6 +1599,7 @@ let rec private patLeafNames (p: Pattern) : string list =
     match p.PKind with
     | PVar n -> [ n ]
     | PTuple ps -> ps |> List.collect patLeafNames
+    | PRecord fields -> fields |> List.map snd |> List.collect patLeafNames
     | PCase(_, arg) -> arg |> Option.map patLeafNames |> Option.defaultValue []
     | PCons(h, t) -> patLeafNames h @ patLeafNames t
     | PRegex(_, _, _, binder) -> patLeafNames binder
@@ -3350,6 +3373,7 @@ let private topLet (r: Resolver) =
                     match p.PKind with
                     | PVar n -> [ n ]
                     | PTuple ps -> ps |> List.collect leafNames
+                    | PRecord fields -> fields |> List.map snd |> List.collect leafNames
                     | _ -> []
 
                 let paramNames = ps |> List.collect leafNames |> Set.ofList

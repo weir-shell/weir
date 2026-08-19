@@ -1373,6 +1373,20 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     | PStr s, VStr v -> if s = v then Some [] else None
     | PStr _, v -> unreachable $"the checker rejects string patterns on {formatValue v}"
     | PUnit, _ -> Some []
+    | PRecord fields, VRecord(_, vfields) ->
+        // irrefutable by checker law [D:record-patterns]: every field
+        // exists (checked) and every sub-pattern binds — the fold can
+        // only ever produce Some
+        fields
+        |> List.fold
+            (fun acc ((f, _), sub) ->
+                acc
+                |> Option.bind (fun bs ->
+                    match recTryGet f vfields with
+                    | Some v -> tryBind sub v |> Option.map (fun b -> bs @ b)
+                    | None -> unreachable $"the checker guarantees record-pattern field '{f}'"))
+            (Some [])
+    | PRecord _, v -> unreachable $"the checker rejects record patterns on {formatValue v}"
     | PTuple ps, VTuple vs when List.length ps = List.length vs ->
         List.zip ps vs
         |> List.fold
@@ -2317,6 +2331,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | Weir.Ast.PCons _
             | Weir.Ast.PSeqList _ -> true
             | Weir.Ast.PTuple ps -> ps |> List.exists hasSeqPat
+            | Weir.Ast.PRecord fields -> fields |> List.exists (snd >> hasSeqPat)
             | Weir.Ast.PCase(_, Some a) -> hasSeqPat a
             | _ -> false
 
