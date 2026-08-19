@@ -39,6 +39,10 @@ jobs:
           ./ci/check-fresh.sh
       - name: deep run (three seeds, 10k each)
         run: |
+          # 4242 is the pattern-width regression seed [D:pattern-width]:
+          # the run exercises the deterministic pat-* depth fixtures on a
+          # constrained (Task.Run 1MB) stack, where patLeafNames overflowed
+          ~/.local/bin/weir tools/fuzz.weir --seed 4242 --count 10000
           ~/.local/bin/weir tools/fuzz.weir --seed 1789001 --count 10000
           ~/.local/bin/weir tools/fuzz.weir --seed $(( GITHUB_RUN_NUMBER * 7919 )) --count 10000
           ~/.local/bin/weir tools/fuzz.weir --seed $(( GITHUB_RUN_NUMBER * 104729 + 13 )) --count 10000
