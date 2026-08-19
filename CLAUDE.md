@@ -8,6 +8,10 @@
   history narration (retired/died/was/found-by/probe-caught — that is
   NOTES' job), no verification credits (FCS-verdict-pinned — pins
   live in tests). New decision = new index row.
+- History lives in the ledger; code points at it with a `[D:]` citation.
+  Dead code kept by a ruling carries the ruling's citation — never a
+  narrated label, never silence (the comment-sweep found both forms of
+  that gap, [D:comment-sweep]).
 
 ## Scripting policy
 

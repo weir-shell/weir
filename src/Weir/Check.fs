@@ -1002,20 +1002,6 @@ let rec private spine (e: Expr) : Expr * Expr list =
         head, args @ [ arg ]
     | _ -> e, []
 
-// the JSON boundary field law [D:json-option], the ONE list both
-// directions share: a scalar (int/string/bool) or an Option of one.
-// A missing key or an explicit null reads as None (a key is missing-or-
-// null in the format, unlike env's absence-only or argv's flag). NOT
-// Option<Option<_>>, NOT Option of a record or seq — the boundary needs
-// a flat row.
-let private jsonScalar (ty: Ty) : bool =
-    match ty with
-    | TInt
-    | TFloat
-    | TStr
-    | TBool -> true
-    | _ -> false
-
 // the RECURSIVE json field law [D:recursive-fields]: a field is
 // admitted if it is a scalar (int, float, string, bool), an Option of
 // an admitted type, a record whose fields are all admitted, or a seq
@@ -1312,17 +1298,17 @@ let private recordPatDups (span: Span) (fields: ((string * Span) * Pattern) list
         err span "a record pattern must name at least one field — { } binds nothing"
     else
 
-    let dup =
-        fields
-        |> List.map (fst >> fst)
-        |> List.countBy id
-        |> List.tryFind (fun (_, n) -> n > 1)
+        let dup =
+            fields
+            |> List.map (fst >> fst)
+            |> List.countBy id
+            |> List.tryFind (fun (_, n) -> n > 1)
 
-    match dup with
-    | Some(f, _) ->
-        let span = fields |> List.find (fun ((n, _), _) -> n = f) |> fst |> snd
-        err span $"duplicate field '{f}' in a record pattern"
-    | None -> Ok()
+        match dup with
+        | Some(f, _) ->
+            let span = fields |> List.find (fun ((n, _), _) -> n = f) |> fst |> snd
+            err span $"duplicate field '{f}' in a record pattern"
+        | None -> Ok()
 
 let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
     if name.Length > 0 && System.Char.IsUpper name[0] then
@@ -1527,7 +1513,12 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
                     match argPat with
                     | Some ap -> checkPattern env payloadTy ap
                     | None -> err p.PSpan $"'{ctor}' carries {formatTy payloadTy}; add a pattern for it"
-            | Some(Record _) -> err p.PSpan $"{typeName} is a record; only a name or '_' can match it"
+            | Some(Record _) ->
+                // stale-message casualty of [D:record-patterns]: a record
+                // now HAS a pattern form, so the repair names it
+                err
+                    p.PSpan
+                    $"{typeName} is a record; match it with a name, '_', or a record pattern ({{ field = binder }})"
             | None -> err p.PSpan $"unknown type '{typeName}'"
         | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
@@ -1571,15 +1562,13 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
                     (fun acc ((f, fspan), sub) ->
                         acc
                         |> Result.bind (fun rows ->
-                            binderShape ctx env sub
-                            |> Result.map (fun (t, b) -> ((f, fspan, t), b) :: rows)))
+                            binderShape ctx env sub |> Result.map (fun (t, b) -> ((f, fspan, t), b) :: rows)))
                     (Ok [])
                 |> Result.map List.rev
 
             let r = freshName ctx "r"
 
-            ctx.Rows <-
-                Map.add r (shaped |> List.map (fun ((f, fspan, t), _) -> f, (t, fspan)) |> Map.ofList) ctx.Rows
+            ctx.Rows <- Map.add r (shaped |> List.map (fun ((f, fspan, t), _) -> f, (t, fspan)) |> Map.ofList) ctx.Rows
 
             return TRowVar(r, []), shaped |> List.collect snd
         }
