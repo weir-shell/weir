@@ -3907,6 +3907,7 @@ let analyzeLines
                          match p.PKind with
                          | PVar n -> [ n ]
                          | PTuple ps -> ps |> List.collect patVars
+                         | PRecord fields -> fields |> List.map snd |> List.collect patVars
                          | PCase(_, Some inner) -> patVars inner
                          | _ -> []
 

@@ -19,6 +19,10 @@ and PatternKind =
     | PStr of string
     | PUnit
     | PTuple of Pattern list
+    // irrefutable record patterns [D:record-patterns]: field name +
+    // its span (the provenance anchor) + the sub-pattern; partial
+    // field mention is the point (the row's native semantics)
+    | PRecord of ((string * Span) * Pattern) list
     | PCase of ctor: string * arg: Pattern option
     // the bespoke Regex pattern [D:regex-pattern] — one pattern kind,
     // NOT a general active-pattern mechanism. The literal is kept
@@ -231,6 +235,7 @@ let patChildren (p: Pattern) : Pattern list =
     | PSeqNil -> []
     | PTuple ps
     | PSeqList ps -> ps
+    | PRecord fields -> fields |> List.map snd
     | PCase(_, arg) -> Option.toList arg
     | PRegex(_, _, _, binder) -> [ binder ]
     | PCons(h, t) -> [ h; t ]
@@ -340,6 +345,10 @@ let rec sexprPat (p: Pattern) : string =
     | PUnit -> "()"
     | PVar x -> x
     | PTuple ps -> "(" + (ps |> List.map sexprPat |> String.concat ", ") + ")"
+    | PRecord fields ->
+        "{ "
+        + (fields |> List.map (fun ((f, _), sub) -> $"{f} = {sexprPat sub}") |> String.concat "; ")
+        + " }"
     | PCase(c, None) -> c
     | PCase(c, Some arg) -> $"({c} {sexprPat arg})"
     | PRegex(pat, _, _, binder) -> $"(regex \"{pat}\" {sexprPat binder})"

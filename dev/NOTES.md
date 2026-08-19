@@ -1,5 +1,31 @@
 # Spike Notes
 
+## record patterns: the row seat pays for the whole feature (2026-08-19)
+
+The costing's shape survived contact almost untouched, which is rare
+enough to note. The one real design moment was recognising that the
+pattern's field list should become row constraints KEYED BY THE
+FIELD-NAME SPAN — after that, generality, provenance, and the meet
+note were all inheritance rather than work. The by-construction
+claims (casing law and builtin reservation reaching record binders
+through the PVar leaf) held on first run, which is what
+by-construction is supposed to buy.
+
+Two small lessons for the file. A parse-time fatal for `{ }` was
+swallowed by an enclosing attempt exactly as [D:anchor-residue-ab]
+warns, so the refusal moved to the checker where both binder paths
+already meet. And the hole-defaults teaching ([D:hole-defaults])
+surfaced twice during probing looking like a record-pattern bug —
+a binder used only in a bare interpolation hole defaults to string,
+and with a record param the row note rides the mismatch. Pre-existing,
+correct, and composing; it cost twenty minutes of suspicion anyway.
+
+until's binder turned out to be a plain identSpanned, so it did not
+come free and stays a name — recorded rather than forced. The
+feature ships on preference with the receipt scan re-run empty; the
+row says so in those words, so the park's trigger cannot be
+misremembered as having fired.
+
 ## colour by not being in the middle (2026-08-18)
 
 The plan's own reframing held: the expensive answer (a pty so isatty

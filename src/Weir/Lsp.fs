@@ -478,6 +478,7 @@ let rec private patScope (p: Ast.Pattern) (scope: Map<string, Span>) : Map<strin
     match p.PKind with
     | Ast.PVar n -> Map.add n p.PSpan scope
     | Ast.PTuple ps -> ps |> List.fold (fun s q -> patScope q s) scope
+    | Ast.PRecord fields -> fields |> List.fold (fun s (_, q) -> patScope q s) scope
     | Ast.PCase(_, Some inner) -> patScope inner scope
     | _ -> scope
 
@@ -855,6 +856,7 @@ let definitionTarget
             match p.PKind with
             | Ast.PCase(_, Some inner) -> patCaseAt jcol inner
             | Ast.PTuple ps -> ps |> List.tryPick (patCaseAt jcol)
+            | Ast.PRecord fields -> fields |> List.tryPick (snd >> patCaseAt jcol)
             | _ -> None
 
         match deeper with

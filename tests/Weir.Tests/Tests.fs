@@ -11157,6 +11157,115 @@ let lsTruthTests =
                   System.IO.Directory.Delete(d, true)
           } ]
 
+let recordPatternTests =
+    // irrefutable record patterns [D:record-patterns]: the row seat
+    // carries params (generality!), checkBinderName is reached by
+    // construction, and the refusals each have a shape
+    let renv =
+        env
+        |> declare "type RIn = { deep: int }"
+        |> declare "type ROut = { inner: RIn; pair: int * string }"
+
+    let runR input =
+        match typecheck renv (parse input) with
+        | Ok te -> eval valueEnv te
+        | Error terr -> failtest (formatError terr)
+
+    let errR input =
+        match typecheck renv (parse input) with
+        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
+        | Error terr -> terr
+
+    testList
+        "record patterns [D:record-patterns]"
+        [ test "the positions bind: let, param, lambda, match-with-guard" {
+              Expect.equal (runR "let { UpN = n; UpT = t } = { UpN = 3; UpT = \"x\" } in n") (VInt 3L) "let binder"
+
+              Expect.equal
+                  (runR "let f { UpN = n; UpT = t } = n + 1 in f { UpN = 7; UpT = \"y\" }")
+                  (VInt 8L)
+                  "the param position — the motivating case"
+
+              Expect.equal
+                  (runR "[{ UpN = 1; UpT = \"z\" }] |> Seq.map (fun { UpN = n } -> n) |> Seq.head")
+                  (VInt 1L)
+                  "lambda param"
+
+              Expect.equal
+                  (runR
+                      "match { UpN = 2; UpT = \"running\" } with | { UpT = s; UpN = k } when s == \"running\" -> k | _ -> 0")
+                  (VInt 2L)
+                  "match arm; the guard does the testing"
+          }
+          test "nesting: record-in-record, tuple-in-record, record-in-tuple" {
+              Expect.equal
+                  (runR
+                      "let { inner = { deep = d }; pair = (x, q) } = { inner = { deep = 9 }; pair = (1, \"s\") } in d + x")
+                  (VInt 10L)
+                  "record and tuple under the record"
+
+              Expect.equal (runR "let (a, { deep = d }) = (5, { deep = 2 }) in a + d") (VInt 7L) "record in a tuple"
+          }
+          test "the GENERALITY pin: one destructuring serves two unrelated records" {
+              // the row seat's capability — the same generality copy-and-
+              // update already has; no pre-existing spelling could say it
+              Expect.equal
+                  (runR "let f { UpN = n } = n in f { UpN = 1; UpT = \"t\" } + f { UpN = 2 }")
+                  (VInt 3L)
+                  "UpdP and UpdQ through one function"
+          }
+          test "anonymous records are FREE: the pattern never names a type" {
+              Expect.equal
+                  (runR "(fun { id = i } -> i) ([\"{\\\"id\\\": \\\"seven\\\"}\"] |> from json {| id: string |})")
+                  (VStr "seven")
+                  "a pattern over an anonymous shape"
+          }
+          test "the refusals: empty, duplicate, unknown field, refutable sub, row-in-match" {
+              Expect.stringContains
+                  (errR "let { } = { UpN = 1 } in 0" |> _.Message)
+                  "binds nothing"
+                  "empty refuses with the repair"
+
+              Expect.stringContains
+                  (errR "match { UpN = 1 } with | { UpN = a; UpN = b } -> a" |> _.Message)
+                  "duplicate field 'UpN'"
+                  "duplicates name the field"
+
+              Expect.stringContains
+                  (errR "let { UpM = n } = { UpN = 1 } in n" |> _.Message)
+                  "Did you mean 'UpN'"
+                  "unknown field reaches did-you-mean"
+
+              Expect.stringContains
+                  (errR "match { UpN = 3 } with | { UpN = 3 } -> \"x\" | _ -> \"y\"" |> _.Message)
+                  "irrefutable"
+                  "a refutable sub-pattern refuses toward the other feature"
+
+              Expect.stringContains
+                  (errR "fun x -> match x with | { UpN = n } -> n" |> _.Message)
+                  "KNOWN type"
+                  "match arms keep the ctor-pattern law; binder positions carry the row power"
+          }
+          test "checkBinderName is reached BY CONSTRUCTION: casing and the builtin reservation" {
+              Expect.stringContains
+                  (errR "let { UpN = Total } = { UpN = 1 } in 0" |> _.Message)
+                  "start lowercase"
+                  "the casing law reaches record-pattern binders"
+
+              Expect.stringContains
+                  (errR "let { UpN = ls } = { UpN = 1 } in 0" |> _.Message)
+                  "builtin with no qualified spelling"
+                  "the builtin reservation reaches record-pattern binders"
+          }
+          test "provenance: a pattern-introduced field anchors the meet note" {
+              // Phase 0's deliverable message: the wrong record names the
+              // missing field; the becomes-a NOTE needs the ambient
+              // physical translator (script-only — "empty when no
+              // translator is ambient"), so the note half is an e2e pin
+              let msg = errR "let g { deep = d } = d in g { UpN = 1 }" |> _.Message
+              Expect.stringContains msg "no field 'deep'" "names the missing field"
+          } ]
+
 let fileStatTests =
     // the bridge from paths to rows [D:file-stat]: ls's own constructor
     // over one path — the agreement between the two producers IS the
@@ -14038,6 +14147,7 @@ let allTests =
           replTableTests
           lsTruthTests
           fileStatTests
+          recordPatternTests
           invariantModeTests
           lsSortTests
           recordKeysTests
