@@ -800,45 +800,92 @@ let private genSafeWord: Gen<string> =
         return $"w{n}"
     }
 
-let rec genExpr (sc: Scope) (ty: VTy) (depth: int) : Gen<Expr> =
-    let atoms =
-        match ty with
-        | VInt ->
-            [ 3,
-              gen {
-                  let! n = Gen.choose (0, 99)
-                  return EInt n
-              } ]
-            @ (if sc.Ints.IsEmpty then
-                   []
-               else
-                   [ 4,
-                     gen {
-                         let! v = Gen.elements sc.Ints
-                         return EVar(v, VInt)
-                     } ])
-            @ (let intFields =
-                [ for (r, tyName) in sc.RecVals do
-                      match sc.Recs |> List.tryFind (fst >> (=) tyName) with
-                      | Some(_, fields) ->
-                          for (f, fty) in fields do
-                              if fty = VInt then
-                                  yield EField(r, f, VInt)
-                      | None -> () ]
+// generated int VALUES stay <= intCap by CONSTRUCTION [D:generator-overflow]:
+// a program reusing `let vN = v(N-1) * v(N-1)` across statements grows
+// 99^(2^N) and overflows int64 at runtime — weir's overflow detection then
+// rejects the base, and the metamorphic harness needs base rc=0. Bounding the
+// value keeps every generated program runnable; the assembler invariants care
+// about STRUCTURE, not magnitude, so `var * var` (excluded to hold the bound)
+// costs no coverage — its rendering is identical to any other EBin.
+let private intCap = 1_000_000_000L
 
-               if intFields.IsEmpty then
-                   []
-               else
-                   [ 2, Gen.elements intFields ])
-            @ (if sc.IntSeqs.IsEmpty && sc.StrSeqs.IsEmpty then
-                   []
-               else
-                   [ 1,
-                     gen {
-                         let! x = Gen.elements (sc.IntSeqs @ sc.StrSeqs)
-                         return ESeqLen x
-                     } ])
-        | VStr ->
+let rec genIntExpr (sc: Scope) (hi: int64) (depth: int) : Gen<Expr> =
+    let atoms =
+        [ 3,
+          gen {
+              let! n = Gen.choose (0, int (min hi 99L))
+              return EInt n
+          } ]
+        // a var/field holds <= intCap; usable only where the budget admits it
+        @ (if hi >= intCap && not sc.Ints.IsEmpty then
+               [ 4,
+                 gen {
+                     let! v = Gen.elements sc.Ints
+                     return EVar(v, VInt)
+                 } ]
+           else
+               [])
+        @ (let intFields =
+            [ for (r, tyName) in sc.RecVals do
+                  match sc.Recs |> List.tryFind (fst >> (=) tyName) with
+                  | Some(_, fields) ->
+                      for (f, fty) in fields do
+                          if fty = VInt then
+                              yield EField(r, f, VInt)
+                  | None -> () ]
+
+           if hi >= intCap && not intFields.IsEmpty then
+               [ 2, Gen.elements intFields ]
+           else
+               [])
+        // seq lengths are small (bounded by generation), always in budget
+        @ (if hi >= 1024L && not (sc.IntSeqs.IsEmpty && sc.StrSeqs.IsEmpty) then
+               [ 1,
+                 gen {
+                     let! x = Gen.elements (sc.IntSeqs @ sc.StrSeqs)
+                     return ESeqLen x
+                 } ]
+           else
+               [])
+
+    if depth <= 0 || hi < 4L then
+        Gen.frequency atoms
+    else
+        let compound =
+            [ 2,
+              gen {
+                  let! op = Gen.elements [ "+"; "*" ]
+
+                  if op = "+" then
+                      // sum of two <= hi/2 is <= hi
+                      let h = hi / 2L
+                      let! a = genIntExpr sc h (depth - 1)
+                      let! b = genIntExpr sc h (depth - 1)
+                      return EBin("+", a, b)
+                  else
+                      // product of two <= sqrt(hi) is <= hi
+                      let r = int64 (System.Math.Sqrt(float hi))
+                      let! a = genIntExpr sc r (depth - 1)
+                      let! b = genIntExpr sc r (depth - 1)
+                      return EBin("*", a, b)
+              } ]
+
+        let ifElse =
+            [ 1,
+              gen {
+                  let! c = genCond sc (depth - 1)
+                  let! a = genIntExpr sc hi (depth - 1)
+                  let! b = genIntExpr sc hi (depth - 1)
+                  return EIfElse(c, a, b)
+              } ]
+
+        Gen.frequency (atoms @ compound @ ifElse)
+
+and genExpr (sc: Scope) (ty: VTy) (depth: int) : Gen<Expr> =
+    match ty with
+    | VInt -> genIntExpr sc intCap depth
+    | VStr ->
+        let atoms =
             [ 3, Gen.map EStr genSafeWord ]
             @ (if sc.Strs.IsEmpty then
                    []
@@ -862,22 +909,12 @@ let rec genExpr (sc: Scope) (ty: VTy) (depth: int) : Gen<Expr> =
                else
                    [ 2, Gen.elements strFields ])
 
-    if depth <= 0 then
-        Gen.frequency atoms
-    else
-        let compound =
-            match ty with
-            | VInt ->
-                [ 2,
-                  gen {
-                      let! op = Gen.elements [ "+"; "*" ]
-                      let! a = genExpr sc VInt (depth - 1)
-                      let! b = genExpr sc VInt (depth - 1)
-                      return EBin(op, a, b)
-                  } ]
-            | VStr ->
-                // interp holes are int-typed by construction (a string
-                // literal inside a hole would nest quotes)
+        if depth <= 0 then
+            Gen.frequency atoms
+        else
+            // interp holes are int-typed by construction (a string literal
+            // inside a hole would nest quotes)
+            let compound =
                 [ 2,
                   gen {
                       let! e = genExpr sc VInt (depth - 1)
@@ -886,16 +923,16 @@ let rec genExpr (sc: Scope) (ty: VTy) (depth: int) : Gen<Expr> =
                       return EInterp([ t, e ], tail)
                   } ]
 
-        let ifElse =
-            [ 1,
-              gen {
-                  let! c = genCond sc (depth - 1)
-                  let! a = genExpr sc ty (depth - 1)
-                  let! b = genExpr sc ty (depth - 1)
-                  return EIfElse(c, a, b)
-              } ]
+            let ifElse =
+                [ 1,
+                  gen {
+                      let! c = genCond sc (depth - 1)
+                      let! a = genExpr sc VStr (depth - 1)
+                      let! b = genExpr sc VStr (depth - 1)
+                      return EIfElse(c, a, b)
+                  } ]
 
-        Gen.frequency (atoms @ compound @ ifElse)
+            Gen.frequency (atoms @ compound @ ifElse)
 
 and genCond (sc: Scope) (depth: int) : Gen<Cond> =
     Gen.frequency

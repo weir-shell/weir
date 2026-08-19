@@ -1,5 +1,40 @@
 # Spike Notes
 
+## the metamorphic red was the generator all along (2026-08-19)
+
+Followed the width crash's unmasked signal and it landed somewhere
+better than the hypothesis. The ~8/47 fresh-seed metamorphic failures
+weren't the assembler: filtering to the output-neutral invariants at
+seed 771349 count 10000 gave 8 "base program rejected: integer
+overflow" and ZERO "transform changed behavior". So the transforms
+are correct; the base PROGRAM overflows. The harness needs base rc=0
+because error-message line numbers shift under blank insertion, so it
+can't compare erroring bases — the generator is supposed to produce
+runnable programs and wasn't.
+
+The cause matched the shape of the guess without matching its target.
+"State accumulating across statements" — yes, but the state is
+generated VALUES, not assembler state: `let vN = v(N-1) * v(N-1)`
+squares each statement, 99^(2^N), and more statements (higher count →
+higher endSize) overflow int64. weir's overflow detection is doing
+its job; the fuzzer was handing it invalid programs and calling them
+valid. 1500 passes, 10000 fails, for exactly this reason.
+
+The fix bounds generated int values by construction (genIntExpr, cap
+1e9, + splits the budget, * takes its sqrt). It's structure-
+preserving — the assembler invariants test shape not magnitude — so
+the one casualty (var*var, dropped to hold the bound) renders
+identically to any other EBin and costs no coverage.
+
+Two ledger facts fell out. The 3-fresh-seed gate on the width fix was
+BLOCKED by this, not waived — a named blocker is auditable, a waiver
+invites the READ drift. And the generator has no nested-pattern arm at
+all, so record patterns shipped unfuzzed and the width crash was only
+ever reachable through a hand-written fixture; a wide-not-deep
+generator axis closes both. This is the fifth time this month a fix
+unmasked something the defect was hiding — the argument for chasing
+these promptly, before unexplained red gets normalised.
+
 ## the width axis: patLeafNames overflows on a wide pattern (2026-08-19)
 
 A Property-3 falsification the coverage machinery couldn't see. The
