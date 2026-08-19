@@ -1281,8 +1281,10 @@ let rec private isIrrefutablePat (p: Pattern) =
     | PVar _
     | PUnit -> true
     | PTuple ps -> ps |> List.forall isIrrefutablePat
-    // sub-patterns are checked irrefutable at the pattern's own arms,
-    // so the kind is irrefutable wholesale [D:record-patterns]
+    // by CHILDREN, the tuple rule [D:refutable-record-patterns]: one
+    // refutable field pattern makes the whole record pattern refutable,
+    // which is what keeps it out of binder positions and out of
+    // completing a match
     | PRecord fields -> fields |> List.forall (snd >> isIrrefutablePat)
     | PBool _
     | PInt _
@@ -1415,21 +1417,13 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
         | TUnit -> Ok []
         | ty -> err p.PSpan $"'()' patterns need a unit value; this one has type {formatTy ty}"
     | PRecord fields ->
-        // irrefutable record patterns [D:record-patterns]: partial field
-        // mention is the point; refutable SUB-patterns are a different
-        // feature (field-value exhaustiveness) and refuse here
+        // record patterns [D:record-patterns]: partial field mention is
+        // the point, and children may be REFUTABLE [D:refutable-record-
+        // patterns] — coverage needs no field-value analysis because a
+        // refutable child makes the whole pattern refutable, and a
+        // refutable pattern never completes a match (the literal rule)
         result {
             do! recordPatDups p.PSpan fields
-
-            do!
-                fields
-                |> List.tryFind (fun (_, sub) -> not (isIrrefutablePat sub))
-                |> function
-                    | Some((f, fspan), _) ->
-                        err
-                            fspan
-                            $"record patterns are irrefutable — the pattern under '{f}' can fail; match on the field itself"
-                    | None -> Ok()
 
             match ty with
             | TNamed(typeName, targs) ->
@@ -1681,6 +1675,11 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
 
                     uncovered)
                 |> List.map fst
+            // a RECORD scrutinee is a product like a tuple
+            // [D:refutable-record-patterns]: only an irrefutable arm
+            // completes it (the guard above already returned for those),
+            // so anything reaching here leaves the catch-all owing
+            | Some(Record _) -> [ "_" ]
             | _ -> []
         | TBool ->
             [ if not (pats |> List.exists (fun p -> p.PKind = PBool true)) then

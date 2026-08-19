@@ -11170,6 +11170,85 @@ let lsTruthTests =
                   System.IO.Directory.Delete(d, true)
           } ]
 
+let refutableRecordPatternTests =
+    // refutable children [D:refutable-record-patterns]: the park's reason
+    // was a mispricing — coverage over field VALUES is never asked,
+    // because a refutable child makes the pattern refutable and a
+    // refutable pattern never completes a match (the literal rule)
+    let renv =
+        env
+        |> declare "type RfIn = { deep: int }"
+        |> declare "type RfOut = { inner: RfIn; pair: int * string }"
+        |> declare "type RfS = { state: string; items: seq<int> }"
+        |> declare "type RfO = { t: Option<string> }"
+
+    let runR input =
+        match typecheck renv (parse input) with
+        | Ok te -> eval valueEnv te
+        | Error terr -> failtest (formatError terr)
+
+    let errR input =
+        match typecheck renv (parse input) with
+        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
+        | Error terr -> terr
+
+    testList
+        "refutable record patterns [D:refutable-record-patterns]"
+        [ test "every shape matches, each closed by a catch-all" {
+              Expect.equal
+                  (runR "match { state = \"running\"; items = [] } with | { state = \"running\" } -> 1 | _ -> 0")
+                  (VInt 1L)
+                  "a literal under a field"
+
+              Expect.equal
+                  (runR "match { t = Some \"jh\" } with | { t = Some \"jh\" } -> 1000 | _ -> 0")
+                  (VInt 1000L)
+                  "constructor + literal — the probe that started this"
+
+              Expect.equal
+                  (runR "match { state = \"s\"; items = [7; 8] } with | { items = x :: rest } -> x | _ -> 0")
+                  (VInt 7L)
+                  "a seq pattern under a field"
+
+              Expect.equal
+                  (runR
+                      "match { inner = { deep = 3 }; pair = (1, \"a\") } with | { inner = { deep = 3 } } -> 1 | _ -> 0")
+                  (VInt 1L)
+                  "a nested record with a literal"
+
+              Expect.equal
+                  (runR "match { inner = { deep = 0 }; pair = (1, \"a\") } with | { pair = (1, y) } -> y | _ -> \"no\"")
+                  (VStr "a")
+                  "a tuple with a literal"
+          }
+          test "a refutable record pattern NEVER completes a match — the coverage rule does the work" {
+              // the pin that proves the rule is carrying this feature: no
+              // field-value analysis exists, so the arm simply never exhausts
+              for src in
+                  [ "match { state = \"x\"; items = [] } with | { state = \"running\" } -> 1"
+                    "match { t = None } with | { t = Some \"jh\" } -> 1"
+                    "match { inner = { deep = 1 }; pair = (0, \"\") } with | { inner = { deep = 3 } } -> 1" ] do
+                  Expect.stringContains (errR src).Message "not exhaustive" $"'{src}' must not exhaust"
+          }
+          test "composition: a refutable arm then an irrefutable one completes" {
+              Expect.equal
+                  (runR "match { state = \"x\"; items = [] } with | { state = \"running\" } -> 1 | { state = s } -> 2")
+                  (VInt 2L)
+                  "no wildcard needed — the same reasoning as Some 1 / Some n"
+          }
+          test "binder positions still demand irrefutable — by children, no second site" {
+              for src in
+                  [ "let { state = \"running\" } = { state = \"x\"; items = [] } in 0"
+                    "let f { state = \"running\" } = 1 in f { state = \"x\"; items = [] }" ] do
+                  Expect.stringContains (errR src).Message "can fail" $"'{src}' rejects in a binder"
+
+              // the twin: the irrefutable binder still binds
+              Expect.equal
+                  (runR "let { state = s } = { state = \"ok\"; items = [] } in s")
+                  (VStr "ok")
+                  "an irrefutable record binder is untouched"
+          } ]
+
 let accessorTeachingTests =
     // the indexer's diagnostics [D:accessor-teaching] + weir owning its
     // runtime text [D:message-ownership] — the slicing costing's three
@@ -11323,11 +11402,6 @@ let recordPatternTests =
                   (errR "let { UpM = n } = { UpN = 1 } in n" |> _.Message)
                   "Did you mean 'UpN'"
                   "unknown field reaches did-you-mean"
-
-              Expect.stringContains
-                  (errR "match { UpN = 3 } with | { UpN = 3 } -> \"x\" | _ -> \"y\"" |> _.Message)
-                  "irrefutable"
-                  "a refutable sub-pattern refuses toward the other feature"
 
               Expect.stringContains
                   (errR "fun x -> match x with | { UpN = n } -> n" |> _.Message)
@@ -14243,6 +14317,7 @@ let allTests =
           lsTruthTests
           fileStatTests
           recordPatternTests
+          refutableRecordPatternTests
           accessorTeachingTests
           invariantModeTests
           lsSortTests

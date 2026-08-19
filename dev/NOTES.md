@@ -1,5 +1,29 @@
 # Spike Notes
 
+## the park that was priced wrong (2026-08-19)
+
+The rider's argument was the whole session: refutable record patterns
+were parked as "exhaustiveness over field values", and that burden
+never existed because weir already rules that literal arms never
+complete a match. The costing had leaned on that rule twice without
+noticing it answered the question it was pricing. One deletion.
+
+Except it wasn't quite, and the exception is the interesting part.
+Removing the filter exposed a hole that had been unreachable by
+construction: missingCases had no record case, so a record scrutinee
+reported nothing missing — fine while every record pattern was
+irrefutable (the early guard caught them), and a silent
+always-exhausts the moment one wasn't. The feature's own fence found
+it: the no-catch-all pin failed the way a missing rule fails, not the
+way a bug does. Records now answer like tuples.
+
+The other half of the original session's work turned out to be
+half-built rather than absent: isIrrefutablePat already judged record
+patterns BY CHILDREN, and the filter sitting above it made that
+correct code unreachable. So binder rejection, match composition, and
+dead-arm detection all just started working — three report-back
+questions that answered themselves.
+
 ## the metamorphic red was the generator all along (2026-08-19)
 
 Followed the width crash's unmasked signal and it landed somewhere
