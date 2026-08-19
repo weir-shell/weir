@@ -1704,7 +1704,10 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     # dies to ^C naming 130 with the session surviving [D:repl-isig]
     gzout=$(printf 'SLEEP 700\nSEND gzip\\r\nSLEEP 600\nSEND #quit\\r\n' \
         | python3 "$ptyrun" 8 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
-    echo "$gzout" | grep -q "not written to a terminal" || fail "gzip refuses its own tty now — the incident's cause removed: $gzout"
+    # GNU: "compressed data not written to a terminal"; Apple:
+    # "standard output is a terminal -- ignoring" — the CLAIM is the
+    # refusal, so the pin matches the word both spell
+    echo "$gzout" | grep -qi "is a terminal\|to a terminal" || fail "gzip refuses its own tty now — the incident's cause removed: $gzout"
     rsout=$(printf 'SLEEP 700\nSEND sh -c "read x"\\r\nSLEEP 400\nSEND \\x03\nSLEEP 500\nSEND print (Str.toUpper "revived")\\r\nSLEEP 400\nSEND #quit\\r\n' \
         | python3 "$ptyrun" 10 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
     echo "$rsout" | grep -q "exit code 130" || fail "a REPL ^C must kill the foreground child naming 130: $rsout"
