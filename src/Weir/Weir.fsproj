@@ -10,6 +10,12 @@
          warning has to bind. Clean at adoption; it does NOT reach the tuple
          matches that drifted, nor unused private values (F# emits nothing there) -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- ...but the ILC aggregates are about DEPENDENCIES, not this source
+         [D:host-strictness]: IL2104/IL3053 say "FSharp.Core produced trim
+         warnings" and nothing here can answer them, so promoting those
+         fails the publish on every OS while teaching nobody. They stay
+         VISIBLE as warnings; only the promotion is withdrawn. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
     <StripSymbols>true</StripSymbols>
     <OptimizationPreference>Speed</OptimizationPreference>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>

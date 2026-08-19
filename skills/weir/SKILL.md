@@ -1085,8 +1085,12 @@ print (codes |> Seq.head)
   with the same spelling — there is deliberately NO `{| |}` pattern
   form, and `{ id = id }` over `{| id: string |}` is legal if
   odd-reading (fields and binders are different namespaces; punning
-  does not exist). No refutable field literals (`{ state = "up" }` as
-  a pattern errors toward match), duplicate and unknown fields teach,
+  does not exist). Field patterns may be REFUTABLE
+  in a match (`{ state = "up" }`, `{ t = Some "x" }`, `{ items = h :: t }`)
+  — the pattern is then refutable too and never completes the match, so
+  a catch-all is owed exactly as for a bare literal arm; binder
+  positions (`let`, params, `for`) still demand irrefutable children.
+  Duplicate and unknown fields teach,
   `{ }` refuses (it binds nothing). `until`/`within` binders stay
   plain names.
 
@@ -1100,13 +1104,25 @@ print (label { names = c; size = k } + label { names = "gull"; flag = true })
 for { names = n } in [{ names = "a"; size = 1 }] do print n
 ```
 
+```weir
+// a field pattern may be REFUTABLE — the docker-ps shape, which had no
+// spelling before: filter and destructure in one arm
+type Container = { State: string; Names: string }
+let running =
+    [{ State = "running"; Names = "api" }; { State = "exited"; Names = "old" }]
+    |> Seq.choose (fun c ->
+        match c with
+        | { State = "running"; Names = n } -> Some n
+        | _ -> None)
+print (running |> Seq.force |> Seq.length)
+```
+
 ```weir-error
-// refutable field literals are the OTHER feature (exhaustiveness over
-// field values) — a record pattern is irrefutable
+// a refutable record pattern NEVER completes a match — the same rule a
+// bare literal arm has; the catch-all is not optional
 type St = { state: string }
 match { state = "up" } with
 | { state = "up" } -> print "x"
-| _ -> print "y"
 ```
 
 ```weir-error
