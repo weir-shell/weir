@@ -11351,6 +11351,80 @@ let refutableRecordPatternTests =
                   "an irrefutable record binder is untouched"
           } ]
 
+let recordPatternRowTests =
+    // match position gets the row [D:record-pattern-rows]: the ctor law
+    // was inherited, not justified — `Some` names a case from a closed
+    // set (nominal identity required); a field pattern names a FIELD
+    let renv =
+        env
+        |> declare "type RwA = { nm: string; ag: int }"
+        |> declare "type RwB = { nm: string; fl: bool }"
+
+    let runR input =
+        match typecheck renv (parse input) with
+        | Ok te -> eval valueEnv te
+        | Error terr -> failtest (formatError terr)
+
+    let errR input =
+        match typecheck renv (parse input) with
+        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
+        | Error terr -> terr
+
+    testList
+        "record patterns in match position [D:record-pattern-rows]"
+        [ test "a match on an unresolved param types by row, and GENERALISES" {
+              // the rider's motivating case: `h` does what `g` does, and
+              // the only difference was which side of `match` it sat on
+              Expect.equal
+                  (runR
+                      "let h p = match p with | { nm = n } -> n in h { nm = \"a\"; ag = 1 } + h { nm = \"b\"; fl = true }")
+                  (VStr "ab")
+                  "two unrelated records through one match"
+          }
+          test "refutable children work on a row scrutinee, and still never complete" {
+              Expect.equal
+                  (runR
+                      "let h p = match p with | { nm = \"johnson\" } -> \"him\" | { nm = n } -> n in h { nm = \"johnson\"; ag = 0 }")
+                  (VStr "him")
+                  "the literal arm"
+
+              Expect.equal
+                  (runR
+                      "let h p = match p with | { nm = \"johnson\" } -> \"him\" | { nm = n } -> n in h { nm = \"zed\"; ag = 0 }")
+                  (VStr "zed")
+                  "the binding arm"
+
+              // the coverage rule is still the thing doing the work
+              Expect.stringContains
+                  (errR "let h p = match p with | { nm = \"j\" } -> 1 in h { nm = \"j\"; ag = 0 }").Message
+                  "catch-all"
+                  "a refutable record arm alone never completes"
+          }
+          test "arms ACCUMULATE fields — intersection, not union" {
+              // the row gathers every mentioned field, exactly as a body
+              // reading p.nm and p.ag would
+              Expect.equal
+                  (runR "let h p = match p with | { nm = \"x\" } -> 1 | { ag = a } -> a in h { nm = \"y\"; ag = 3 }")
+                  (VInt 3L)
+                  "a record carrying both satisfies both arms"
+
+              let missing =
+                  errR "let h p = match p with | { nm = \"x\" } -> 1 | { ag = a } -> a in h { nm = \"y\"; fl = true }"
+
+              Expect.stringContains missing.Message "no field 'ag'" "a record missing one is refused"
+              // the becomes-a NOTE needs the ambient physical translator
+              // (script-only), so its half is an e2e pin [D:row-provenance]
+              Expect.stringContains missing.Message "Did you mean 'nm'" "with the field did-you-mean"
+          }
+          test "constructor patterns KEEP the law — the change did not widen" {
+              // `Some` names a case from a closed set: without the nominal
+              // type there is nothing to validate the constructor against
+              Expect.stringContains
+                  (errR "fun p -> match p with | Some 1 -> \"y\" | _ -> \"n\"").Message
+                  "constructor patterns need a union value"
+                  "the ctor law is untouched"
+          } ]
+
 let accessorTeachingTests =
     // the indexer's diagnostics [D:accessor-teaching] + weir owning its
     // runtime text [D:message-ownership] — the slicing costing's three
@@ -11505,10 +11579,13 @@ let recordPatternTests =
                   "Did you mean 'UpN'"
                   "unknown field reaches did-you-mean"
 
-              Expect.stringContains
-                  (errR "fun x -> match x with | { UpN = n } -> n" |> _.Message)
-                  "KNOWN type"
-                  "match arms keep the ctor-pattern law; binder positions carry the row power"
+              // the row-in-match refusal INVERTED [D:record-pattern-rows]:
+              // a field pattern needs a ROW, and match position now emits
+              // the one the binder position always did
+              Expect.equal
+                  (runR "(fun x -> match x with | { UpN = n } -> n) { UpN = 4 }")
+                  (VInt 4L)
+                  "a record pattern types an unresolved scrutinee by row"
 
               // the stale-message casualty: a ctor pattern on a record
               // now teaches the record-pattern repair
@@ -14420,6 +14497,7 @@ let allTests =
           fileStatTests
           recordPatternTests
           refutableRecordPatternTests
+          recordPatternRowTests
           accessorTeachingTests
           invariantModeTests
           lsSortTests

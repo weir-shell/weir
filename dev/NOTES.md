@@ -1,5 +1,33 @@
 # Spike Notes
 
+## the same mistake twice, and what it has in common (2026-08-19)
+
+Second amendment to the record-pattern rows in two days, same shape:
+a rule that correctly governs one pattern form was applied to record
+patterns without testing whether its reason transfers. Refutability
+first, then known-type. The rider's diagnosis is exact — `Some 1`
+needs nominal identity because it names a case from a closed set;
+`{ name = n }` names a field and needs a row. Two errors that read
+alike resting on different requirements, and the inheritance came
+from the reading rather than the requirement.
+
+The fix was threading ctx through checkPattern and copying EField's
+row arms, but it forced a second change that generalises past
+records: checkPattern's arms DEMANDED types rather than unifying, so
+a literal under a row-typed field failed. Patterns whose shape
+determines a type now bind an unresolved scrutinee first — which
+also makes `match p with | 1 -> ...` work on a bare param, the same
+principle one level up. Constructor patterns stay off that list
+deliberately; theirs is the shape that genuinely needs the nominal
+type.
+
+Two probe designs bit me the same way in one session: both my
+accumulation test and my e2e provenance fixture led with an
+irrefutable arm, so the second arm was unreachable and the harness
+correctly said so rather than answering the question I meant to ask.
+When testing accumulation across arms, the first arm has to be
+refutable or there is no second arm to accumulate from.
+
 ## the park that was priced wrong (2026-08-19)
 
 The rider's argument was the whole session: refutable record patterns

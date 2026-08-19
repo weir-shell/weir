@@ -1222,6 +1222,23 @@ echo "$out" | grep -qF "no field 'BicepPath2'" || fail "a pattern field misses l
 echo "$out" | grep -qF "(the value becomes a T at" || fail "the meet note rides the pattern miss: $out"
 echo "e2e ok: pattern-introduced fields inherit row provenance"
 
+# the same note from a MATCH-position pattern [D:record-pattern-rows]:
+# arms accumulate their fields into one row, so a record missing any of
+# them is refused with the meet naming where the value became nominal
+cat > "$ckdir/provmatch.weir" <<'WEOF'
+type T = { BicepPath: string; Name: string }
+let quality p =
+    match p with
+    | { BicepPath = "x" } -> "lit"
+    | { Missing = m } -> m
+let mk = { BicepPath = "b"; Name = "n" }
+quality mk
+WEOF
+out=$($BIN check --json "$ckdir/provmatch.weir" || true)
+echo "$out" | grep -qF "no field 'Missing'" || fail "match arms accumulate into the row: $out"
+echo "$out" | grep -qF "(the value becomes a T at" || fail "the meet note rides a match-position miss: $out"
+echo "e2e ok: match-position record patterns accumulate fields and keep provenance"
+
 # FLIPPED by [D:interior-arming]: a command-first body now CHECKS —
 # the interior command ARMS as an effect instead of seq-unit-erroring.
 # The at-the-head/no-EOF-dump quality property moves to a NON-command

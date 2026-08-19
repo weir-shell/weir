@@ -1322,199 +1322,269 @@ let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
     else
         Ok()
 
-let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
-    match p.PKind with
-    | PWildcard -> Ok []
-    | PVar name -> checkBinderName p.PSpan name |> Result.map (fun () -> [ name, ty ])
-    | PBool _ ->
-        match ty with
-        | TBool -> Ok []
-        | ty -> err p.PSpan $"bool patterns need a bool value; this one has type {formatTy ty}"
-    | PInt _ ->
-        match ty with
-        | TInt -> Ok []
-        | ty -> err p.PSpan $"int literal patterns need an int value; this one has type {formatTy ty}"
-    | PStr _ ->
-        match ty with
-        | TStr -> Ok []
-        | ty -> err p.PSpan $"string literal patterns need a string value; this one has type {formatTy ty}"
-    | PSeqNil ->
-        (match ty with
-         | TSeq _ -> Ok []
-         | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
-    | PCons(h, t) ->
-        (match ty with
-         | TSeq elem ->
-             result {
-                 let! hb = checkPattern env elem h
-                 let! tb = checkPattern env ty t
-                 return hb @ tb
-             }
-         | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
-    | PSeqList ps ->
-        (match ty with
-         | TSeq elem ->
-             ps
-             |> List.fold
-                 (fun acc sub ->
-                     acc
-                     |> Result.bind (fun bs -> checkPattern env elem sub |> Result.map (fun b -> bs @ b)))
-                 (Ok [])
-         | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
-    | PRegex(pat, litSpan, raw, binder) ->
-        // check-time compilation [D:regex-pattern]: an invalid literal
-        // is a check error, and the binder's arity must equal the
-        // engine's own capture count (non-capturing groups excluded by
-        // the engine's numbering) — the F# ParseRegex silent-non-match
-        // hole, closed statically
-        match ty with
-        | TStr when not raw ->
-            // the raw-only rider [D:raw-strings]: the double-escape
-            // footgun is unrepresentable at the one checked-regex
-            // position; the kind is rejected, casing-law-style
-            err litSpan "regex literals are raw: use @\"...\" (or \"\"\"...\"\"\" for patterns containing quotes)"
-        | TStr ->
-            match compileRegex pat with
-            | Error msg -> err litSpan $"invalid regex: {msg}"
-            | Ok rx ->
-                let arity = rx.GetGroupNumbers().Length - 1
+let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
+    // a pattern whose shape DETERMINES a type binds an unresolved
+    // scrutinee instead of demanding one [D:record-pattern-rows] — the
+    // arms unify against the row a record pattern emits, so a literal
+    // under a field works exactly as it does under a known record.
+    // CONSTRUCTOR patterns are absent by design: `Some` names a case
+    // from a closed set, which is the one requirement that needs the
+    // nominal type first.
+    let determined =
+        match p.PKind with
+        | PBool _ -> Some TBool
+        | PInt _ -> Some TInt
+        | PStr _
+        | PRegex _ -> Some TStr
+        | PUnit -> Some TUnit
+        | PSeqNil
+        | PCons _
+        | PSeqList _ -> Some(TSeq(TVar(freshName ctx "a")))
+        | _ -> None
 
-                let isLeaf (sp: Pattern) =
-                    match sp.PKind with
-                    | PVar _
-                    | PWildcard -> true
-                    | _ -> false
+    let pre =
+        match resolve ctx ty, determined with
+        | TVar _ as v, Some t -> bind ctx env p.PSpan t v
+        | _ -> Ok()
 
-                let leaves =
-                    match arity, binder.PKind with
-                    | 0, PUnit -> Ok []
-                    | 1, (PVar _ | PWildcard) -> Ok [ binder ]
-                    | n, PTuple ps when List.length ps = n && List.forall isLeaf ps -> Ok ps
-                    | n, _ ->
-                        let expected =
-                            match n with
-                            | 0 -> "'()'"
-                            | 1 -> "one lowercase name (or _)"
-                            | n -> $"a tuple of {n} names"
+    match pre with
+    | Error e -> Error e
+    | Ok() ->
 
-                        err binder.PSpan $"this regex has {n} capture group(s); the binder must be {expected}"
+        // the arms read the RESOLVED type: the prebind above lands in
+        // ctx.Subst, so the raw parameter would still read as a bare var
+        let ty = resolve ctx ty
 
-                leaves
-                |> Result.bind (fun ls ->
-                    let names =
-                        ls
-                        |> List.choose (fun sp ->
-                            match sp.PKind with
-                            | PVar n -> Some n
-                            | _ -> None)
+        match p.PKind with
+        | PWildcard -> Ok []
+        | PVar name -> checkBinderName p.PSpan name |> Result.map (fun () -> [ name, ty ])
+        | PBool _ ->
+            match ty with
+            | TBool -> Ok []
+            | ty -> err p.PSpan $"bool patterns need a bool value; this one has type {formatTy ty}"
+        | PInt _ ->
+            match ty with
+            | TInt -> Ok []
+            | ty -> err p.PSpan $"int literal patterns need an int value; this one has type {formatTy ty}"
+        | PStr _ ->
+            match ty with
+            | TStr -> Ok []
+            | ty -> err p.PSpan $"string literal patterns need a string value; this one has type {formatTy ty}"
+        | PSeqNil ->
+            (match ty with
+             | TSeq _ -> Ok []
+             | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
+        | PCons(h, t) ->
+            (match ty with
+             | TSeq elem ->
+                 result {
+                     let! hb = checkPattern ctx env elem h
+                     let! tb = checkPattern ctx env ty t
+                     return hb @ tb
+                 }
+             | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
+        | PSeqList ps ->
+            (match ty with
+             | TSeq elem ->
+                 ps
+                 |> List.fold
+                     (fun acc sub ->
+                         acc
+                         |> Result.bind (fun bs -> checkPattern ctx env elem sub |> Result.map (fun b -> bs @ b)))
+                     (Ok [])
+             | ty -> err p.PSpan $"seq patterns need a seq value; this one has type {formatTy ty}")
+        | PRegex(pat, litSpan, raw, binder) ->
+            // check-time compilation [D:regex-pattern]: an invalid literal
+            // is a check error, and the binder's arity must equal the
+            // engine's own capture count (non-capturing groups excluded by
+            // the engine's numbering) — the F# ParseRegex silent-non-match
+            // hole, closed statically
+            match ty with
+            | TStr when not raw ->
+                // the raw-only rider [D:raw-strings]: the double-escape
+                // footgun is unrepresentable at the one checked-regex
+                // position; the kind is rejected, casing-law-style
+                err litSpan "regex literals are raw: use @\"...\" (or \"\"\"...\"\"\" for patterns containing quotes)"
+            | TStr ->
+                match compileRegex pat with
+                | Error msg -> err litSpan $"invalid regex: {msg}"
+                | Ok rx ->
+                    let arity = rx.GetGroupNumbers().Length - 1
 
-                    match firstDup names with
-                    | Some d -> err binder.PSpan $"duplicate binder '{d}'"
-                    | None -> Ok(names |> List.map (fun n -> n, TStr)))
-        | ty -> err p.PSpan $"Regex patterns need a string value; this one has type {formatTy ty}"
-    | PUnit ->
-        match ty with
-        | TUnit -> Ok []
-        | ty -> err p.PSpan $"'()' patterns need a unit value; this one has type {formatTy ty}"
-    | PRecord fields ->
-        // record patterns [D:record-patterns]: partial field mention is
-        // the point, and children may be REFUTABLE [D:refutable-record-
-        // patterns] — coverage needs no field-value analysis because a
-        // refutable child makes the whole pattern refutable, and a
-        // refutable pattern never completes a match (the literal rule)
-        result {
-            do! recordPatDups p.PSpan fields
+                    let isLeaf (sp: Pattern) =
+                        match sp.PKind with
+                        | PVar _
+                        | PWildcard -> true
+                        | _ -> false
 
+                    let leaves =
+                        match arity, binder.PKind with
+                        | 0, PUnit -> Ok []
+                        | 1, (PVar _ | PWildcard) -> Ok [ binder ]
+                        | n, PTuple ps when List.length ps = n && List.forall isLeaf ps -> Ok ps
+                        | n, _ ->
+                            let expected =
+                                match n with
+                                | 0 -> "'()'"
+                                | 1 -> "one lowercase name (or _)"
+                                | n -> $"a tuple of {n} names"
+
+                            err binder.PSpan $"this regex has {n} capture group(s); the binder must be {expected}"
+
+                    leaves
+                    |> Result.bind (fun ls ->
+                        let names =
+                            ls
+                            |> List.choose (fun sp ->
+                                match sp.PKind with
+                                | PVar n -> Some n
+                                | _ -> None)
+
+                        match firstDup names with
+                        | Some d -> err binder.PSpan $"duplicate binder '{d}'"
+                        | None -> Ok(names |> List.map (fun n -> n, TStr)))
+            | ty -> err p.PSpan $"Regex patterns need a string value; this one has type {formatTy ty}"
+        | PUnit ->
+            match ty with
+            | TUnit -> Ok []
+            | ty -> err p.PSpan $"'()' patterns need a unit value; this one has type {formatTy ty}"
+        | PRecord fields ->
+            // record patterns [D:record-patterns]: partial field mention is
+            // the point, and children may be REFUTABLE [D:refutable-record-
+            // patterns] — coverage needs no field-value analysis because a
+            // refutable child makes the whole pattern refutable, and a
+            // refutable pattern never completes a match (the literal rule)
+            result {
+                do! recordPatDups p.PSpan fields
+
+                match ty with
+                | TNamed(typeName, targs) ->
+                    match Map.tryFind typeName env.Types with
+                    | Some(Record def) ->
+                        return!
+                            fields
+                            |> List.fold
+                                (fun acc ((f, fspan), sub) ->
+                                    acc
+                                    |> Result.bind (fun bs ->
+                                        match def.Fields |> List.tryFind (fun (fd, _) -> fd = f) with
+                                        | Some(_, fieldTy) ->
+                                            checkPattern ctx env (substParams def.Params targs fieldTy) sub
+                                            |> Result.map (fun b -> bs @ b)
+                                        | None ->
+                                            match retiredField typeName f with
+                                            | Some teach -> err fspan $"'{f}' is retired: {teach}"
+                                            | None ->
+                                                let hint = didYouMean f (List.map fst def.Fields)
+                                                err fspan $"{typeName} has no field '{f}'{hint}"))
+                                (Ok [])
+                    | Some(Union _) -> return! err p.PSpan $"{typeName} is a union; match on its cases, not fields"
+                    | None -> return! err p.PSpan $"unknown type '{typeName}'"
+                | ty ->
+                    // an UNRESOLVED scrutinee gets the row the binder position
+                    // already emits [D:record-pattern-rows]: a field pattern
+                    // names a FIELD, so the requirement is a row carrying it —
+                    // nominal identity is the CONSTRUCTOR pattern's need (a
+                    // closed case set to validate and cover against), and that
+                    // law does not transfer. Mirrors EField's TVar/TRowVar arms,
+                    // so unification and [D:row-provenance] are inherited.
+                    let r =
+                        match ty with
+                        | TRowVar(r, _) -> r
+                        | TVar v ->
+                            let r = freshName ctx "r"
+                            ctx.Subst <- Map.add v (TRowVar(r, [])) ctx.Subst
+                            r
+                        | _ -> ""
+
+                    if r = "" then
+                        return! err p.PSpan $"record patterns need a record value; this one has type {formatTy ty}"
+                    else
+                        let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
+
+                        // each mentioned field joins the row (an arm mentioning
+                        // a new field ACCUMULATES, exactly as a body reading
+                        // p.name and p.age does), keyed by the field-name span
+                        let fieldTys =
+                            fields
+                            |> List.map (fun ((f, fspan), _) ->
+                                match Map.tryFind f existing with
+                                | Some(t, _) -> f, (t, fspan)
+                                | None -> f, (TVar(freshName ctx "a"), fspan))
+
+                        ctx.Rows <- Map.add r (fieldTys |> List.fold (fun m (f, e) -> Map.add f e m) existing) ctx.Rows
+
+                        return!
+                            List.zip fields fieldTys
+                            |> List.fold
+                                (fun acc ((_, sub), (_, (ft, _))) ->
+                                    acc
+                                    |> Result.bind (fun bs ->
+                                        checkPattern ctx env ft sub |> Result.map (fun b -> bs @ b)))
+                                (Ok [])
+            }
+        | PTuple ps ->
+            match ty with
+            | TTuple ts when List.length ps = List.length ts ->
+                List.zip ps ts
+                |> List.fold
+                    (fun acc (subP, subTy) ->
+                        acc
+                        |> Result.bind (fun bs -> checkPattern ctx env subTy subP |> Result.map (fun b -> bs @ b)))
+                    (Ok [])
+            | TTuple ts ->
+                err p.PSpan $"this tuple pattern has {List.length ps} elements; the value has {List.length ts}"
+            | ty ->
+                // the bare-comma precedence footgun [D:user-language-messages]:
+                // `code, _ :: rest` parses as a TUPLE whose last element is a
+                // cons (`,` groups looser than `::`), so a seq value lands here,
+                // not a tuple. The repair IS the grouping, so NAME it — but only
+                // on the unambiguous shape (a trailing cons against a seq); any
+                // other tuple-vs-non-tuple keeps the plain message.
+                let hint =
+                    match ty, List.tryLast ps with
+                    | TSeq _, Some { PKind = PCons(h, t) } ->
+                        let front = ps |> List.take (List.length ps - 1)
+
+                        let loose =
+                            (front |> List.map sexprPat |> String.concat ", ")
+                            + ", "
+                            + sexprPat h
+                            + " :: "
+                            + sexprPat t
+
+                        let grouped = (front @ [ h ]) |> List.map sexprPat |> String.concat ", "
+                        $" — `,` groups looser than `::`, so `{loose}` is a tuple; did you mean `({grouped}) :: {sexprPat t}`?"
+                    | _ -> ""
+
+                err p.PSpan $"tuple patterns need a tuple value; this one has type {formatTy ty}{hint}"
+        | PCase(ctor, argPat) ->
             match ty with
             | TNamed(typeName, targs) ->
                 match Map.tryFind typeName env.Types with
-                | Some(Record def) ->
-                    return!
-                        fields
-                        |> List.fold
-                            (fun acc ((f, fspan), sub) ->
-                                acc
-                                |> Result.bind (fun bs ->
-                                    match def.Fields |> List.tryFind (fun (fd, _) -> fd = f) with
-                                    | Some(_, fieldTy) ->
-                                        checkPattern env (substParams def.Params targs fieldTy) sub
-                                        |> Result.map (fun b -> bs @ b)
-                                    | None ->
-                                        match retiredField typeName f with
-                                        | Some teach -> err fspan $"'{f}' is retired: {teach}"
-                                        | None ->
-                                            let hint = didYouMean f (List.map fst def.Fields)
-                                            err fspan $"{typeName} has no field '{f}'{hint}"))
-                            (Ok [])
-                | Some(Union _) -> return! err p.PSpan $"{typeName} is a union; match on its cases, not fields"
-                | None -> return! err p.PSpan $"unknown type '{typeName}'"
-            | ty ->
-                return!
+                | Some(Union def) ->
+                    match def.Cases |> List.tryFind (fun (c, _) -> c = ctor) with
+                    | None ->
+                        let hint = didYouMean ctor (List.map fst def.Cases)
+                        err p.PSpan $"{typeName} has no case '{ctor}'{hint}"
+                    | Some(_, None) ->
+                        match argPat with
+                        | None -> Ok []
+                        | Some ap -> err ap.PSpan $"'{ctor}' has no payload"
+                    | Some(_, Some payloadTy) ->
+                        let payloadTy = substParams def.Params targs payloadTy
+
+                        match argPat with
+                        | Some ap -> checkPattern ctx env payloadTy ap
+                        | None -> err p.PSpan $"'{ctor}' carries {formatTy payloadTy}; add a pattern for it"
+                | Some(Record _) ->
+                    // stale-message casualty of [D:record-patterns]: a record
+                    // now HAS a pattern form, so the repair names it
                     err
                         p.PSpan
-                        $"record patterns need a record value with a KNOWN type; this one has type {formatTy ty}"
-        }
-    | PTuple ps ->
-        match ty with
-        | TTuple ts when List.length ps = List.length ts ->
-            List.zip ps ts
-            |> List.fold
-                (fun acc (subP, subTy) ->
-                    acc
-                    |> Result.bind (fun bs -> checkPattern env subTy subP |> Result.map (fun b -> bs @ b)))
-                (Ok [])
-        | TTuple ts -> err p.PSpan $"this tuple pattern has {List.length ps} elements; the value has {List.length ts}"
-        | ty ->
-            // the bare-comma precedence footgun [D:user-language-messages]:
-            // `code, _ :: rest` parses as a TUPLE whose last element is a
-            // cons (`,` groups looser than `::`), so a seq value lands here,
-            // not a tuple. The repair IS the grouping, so NAME it — but only
-            // on the unambiguous shape (a trailing cons against a seq); any
-            // other tuple-vs-non-tuple keeps the plain message.
-            let hint =
-                match ty, List.tryLast ps with
-                | TSeq _, Some { PKind = PCons(h, t) } ->
-                    let front = ps |> List.take (List.length ps - 1)
-
-                    let loose =
-                        (front |> List.map sexprPat |> String.concat ", ")
-                        + ", "
-                        + sexprPat h
-                        + " :: "
-                        + sexprPat t
-
-                    let grouped = (front @ [ h ]) |> List.map sexprPat |> String.concat ", "
-                    $" — `,` groups looser than `::`, so `{loose}` is a tuple; did you mean `({grouped}) :: {sexprPat t}`?"
-                | _ -> ""
-
-            err p.PSpan $"tuple patterns need a tuple value; this one has type {formatTy ty}{hint}"
-    | PCase(ctor, argPat) ->
-        match ty with
-        | TNamed(typeName, targs) ->
-            match Map.tryFind typeName env.Types with
-            | Some(Union def) ->
-                match def.Cases |> List.tryFind (fun (c, _) -> c = ctor) with
-                | None ->
-                    let hint = didYouMean ctor (List.map fst def.Cases)
-                    err p.PSpan $"{typeName} has no case '{ctor}'{hint}"
-                | Some(_, None) ->
-                    match argPat with
-                    | None -> Ok []
-                    | Some ap -> err ap.PSpan $"'{ctor}' has no payload"
-                | Some(_, Some payloadTy) ->
-                    let payloadTy = substParams def.Params targs payloadTy
-
-                    match argPat with
-                    | Some ap -> checkPattern env payloadTy ap
-                    | None -> err p.PSpan $"'{ctor}' carries {formatTy payloadTy}; add a pattern for it"
-            | Some(Record _) ->
-                // stale-message casualty of [D:record-patterns]: a record
-                // now HAS a pattern form, so the repair names it
-                err
-                    p.PSpan
-                    $"{typeName} is a record; match it with a name, '_', or a record pattern ({{ field = binder }})"
-            | None -> err p.PSpan $"unknown type '{typeName}'"
-        | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
+                        $"{typeName} is a record; match it with a name, '_', or a record pattern ({{ field = binder }})"
+                | None -> err p.PSpan $"unknown type '{typeName}'"
+            | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
 // A binder pattern's SHAPE: fresh vars at the leaves, TUnit at (),
 // tuples composed — bound against the RHS type, so components resolve
@@ -3226,13 +3296,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             match arms with
             | [] -> return! err expr.Span "a match needs at least one arm"
             | (pat0, guard0, body0) :: rest ->
-                let! bindings0 = checkPattern env scrutTy pat0
+                let! bindings0 = checkPattern ctx env scrutTy pat0
                 let! tguard0 = checkGuard bindings0 guard0
                 let! tbody0 = infer ctx (bindParams env bindings0) body0
 
                 let checkArm (pat: Pattern, guard: Expr option, body: Expr) =
                     result {
-                        let! bindings = checkPattern env scrutTy pat
+                        let! bindings = checkPattern ctx env scrutTy pat
                         let! tguard = checkGuard bindings guard
                         let! tbody = check ctx (bindParams env bindings) body tbody0.Ty
                         return pat, tguard, tbody
