@@ -2141,6 +2141,26 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // word — the repair is the wrapper, so the rejection names it
             // (did-you-mean coexists; the specific teachings — module homes,
             // retirements, scriptPath — keep their own arms via fall-through)
+            // `m[k]` is refused, and the refusal TEACHES [D:accessor-teaching]:
+            // the doc promised Map.get here while the raw unification error
+            // arrived instead (`|seqItem`'s int index meets the KEY first, so
+            // the caret landed on the key and never mentioned Map). The
+            // target is inferred first, before the index can mis-report.
+            let mapIndexHint =
+                match head.Kind, args with
+                | EVar "|seqItem", [ _; target ] ->
+                    match infer ctx env target with
+                    | Ok t ->
+                        match resolve ctx t.Ty with
+                        | TNamed("Map", _) ->
+                            err
+                                expr.Span
+                                "no m[k] indexing on a Map — Map.get k m is the spelling (Map.tryGet for the asking form)"
+                        | _ -> Ok()
+                    // a broken target reports through the ordinary path
+                    | Error _ -> Ok()
+                | _ -> Ok()
+
             let wrapItHint =
                 match head.Kind with
                 | EVar n when
@@ -2158,7 +2178,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         $"unbound variable '{n}'{hint} — if you meant to run a command here, wrap it: $({n} …)"
                 | _ -> Ok()
 
-            match wrapItHint with
+            // the Map refusal is the more specific of the two, so it leads
+            match mapIndexHint |> Result.bind (fun () -> wrapItHint) with
             | Error e -> Error e
             | Ok() ->
 

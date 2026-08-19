@@ -1264,11 +1264,21 @@ let private distinctImpl: Value =
             )
         | v -> unreachable $"the checker rejects 'distinct' on {formatValue v}")
 
+// weir owns its runtime messages [D:message-ownership]: FSharp.Core's
+// text for these two is a composite template whose {0} is the generic
+// "insufficient elements" sentence, so the raw form reads as a spliced
+// fragment. Same wrapping the empty-seq family already has.
 let private itemImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
-            | VInt i, VSeq items -> items |> Seq.item (int i)
+            | VInt i, VSeq items ->
+                if i < 0L then
+                    failwith $"item: negative index {i}"
+                else
+                    match items |> Seq.tryItem (int i) with
+                    | Some v -> v
+                    | None -> failwith $"item: no element at index {i}"
             | _ -> unreachable "the checker rejects 'item' on these arguments"))
 
 let private tryItemImpl: Value =
@@ -1285,7 +1295,23 @@ let private skipImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
-            | VInt i, VSeq items -> VSeq(items |> Seq.skip (int i))
+            | VInt i, VSeq items ->
+                // LAZY still [D:message-ownership]: the count is checked as
+                // the seq is walked, not by probing its length up front
+                VSeq(
+                    seq {
+                        let mutable seen = 0L
+
+                        for x in items do
+                            if seen >= i then
+                                yield x
+
+                            seen <- seen + 1L
+
+                        if seen < i then
+                            failwith $"skip: fewer than {i} elements to skip (the seq had {seen})"
+                    }
+                )
             | _ -> unreachable "the checker rejects 'skip' on these arguments"))
 
 

@@ -1077,7 +1077,39 @@ let private postfixAtom =
     // one suffix step; the chain is a LOOP, not recursion — a long
     // field chain (a.b.b.…) must not grow the parser stack
     // [D:depth-guard]
+    // the accessor rule, taught at both attempts [D:accessor-teaching].
+    // DETECT inside the attempt, FATAL outside it — a fatal raised within
+    // an attempt is swallowed [D:anchor-residue-ab], so the shape test and
+    // the raise are separate steps (the keywordFieldGuard pattern).
+    let accessorRule =
+        "weir accessors are offset-and-length, never ranges: Str.sub start len, "
+        + "Seq.skip/Seq.take, xs[i] for one element — `..` builds sequences, it never indexes"
+
     let oneSuffix (target: Expr) : Parser<Expr, unit> =
+        let immediate (p: Position) =
+            int p.Line = target.Span.End.Line && int p.Column = target.Span.End.Col
+
+        // xs[a..b], xs[..b], xs[a..] — the interior is a general
+        // expression and `..` is not one, so without this the whole form
+        // silently backtracks to APPLICATION of the target to a list
+        // literal and reports a function-arity error on the target
+        let rangeIndexGuard =
+            attempt (
+                getPosition
+                >>= fun p ->
+                    if immediate p then
+                        pchar '[' >>. ws >>. opt indexExpr .>> str_ws ".." >>% p
+                    else
+                        ifail "whitespace before [ means application"
+            )
+            >>= fun at -> failFatallyAt at $"no range indexing — {accessorRule}"
+
+        // xs.[i] — F# 5's indexer spelling; the same muscle-memory
+        // population the while/return/try reservations serve
+        let dotBracketGuard =
+            attempt (getPosition .>> pchar '.' .>> followedBy (pchar '['))
+            >>= fun at -> failFatallyAt at "weir indexes without the dot: xs[i], not xs.[i]"
+
         let fieldNext =
             attempt fieldSuffix
             |>> fun (name, fspan) ->
@@ -1088,14 +1120,16 @@ let private postfixAtom =
             attempt (
                 getPosition
                 >>= fun p ->
-                    if int p.Line = target.Span.End.Line && int p.Column = target.Span.End.Col then
+                    if immediate p then
                         pchar '[' >>. ws >>. indexExpr .>> pchar ']' .>>. getPosition .>> ws
                         |>> fun (idx, endP) -> indexDesugar target idx (pos endP)
                     else
                         ifail "whitespace before [ means application"
             )
 
-        fieldNext <|> indexNext
+        // the guards lead: each detects a shape the ordinary suffixes
+        // would silently mis-parse, and only a fatal escapes them
+        dotBracketGuard <|> rangeIndexGuard <|> fieldNext <|> indexNext
 
     let suffixes (target: Expr) : Parser<Expr, unit> =
         fun stream ->
