@@ -1,8 +1,14 @@
 #!/usr/bin/env weir
-// Unreferenced `let private` bindings in src/Weir. An AUDIT script, never a
-// CI gate: the surviving set is DECIDED ([D:drop-command-builtins] keeps the
-// retired command tier's impls on purpose), so a red build here would assert
-// the opposite of a standing decision. Run it when pruning, read the list.
+// Unreferenced `let private` bindings in src/Weir — a GATE: the expected count
+// is ZERO and any survivor fails. It could not be one while the retired
+// command tier's impls were kept on purpose, which put the resting state at
+// 3-of-697; deleting them [D:drop-command-impls] took the baseline to zero and
+// a zero baseline is what makes an audit assertable.
+//
+// SCOPE, stated because the zero is narrower than it reads: `let private`
+// only. A dead PUBLIC binding is invisible here (Proc.complete is one — zero
+// callers anywhere), so green means "no dead private bindings", never "no
+// dead code".
 //
 // INSTRUMENT NOTE, stated because the first attempt at this got it wrong:
 // tokens are counted WITHOUT stripping comments or strings, so a name
@@ -38,4 +44,11 @@ let dead =
     |> Seq.force
 
 print $"private bindings: {defs |> Seq.length}   unreferenced: {dead |> Seq.length}"
-dead |> Seq.iter (fun d -> print $"  {fst d}: {snd d}")
+
+if (dead |> Seq.length) > 0 then
+    dead |> Seq.iter (fun d -> printerr $"unreferenced private: {fst d}: {snd d}")
+
+    fail
+        $"{dead |> Seq.length} unreferenced private binding(s) — delete them, or if one is kept by a ruling, cite the ruling and say so here"
+
+print "ok: no unreferenced private bindings"

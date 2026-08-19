@@ -78,6 +78,12 @@ jobs:
       # the message census [D:census-first-diagnostic]: a REGRESSION baseline,
       # so it has to run — it drifted 5 points unnoticed while nothing
       # invoked it, and the drift turned out to be the instrument
+      # dead private bindings [D:drop-command-impls]: expected count zero —
+      # assertable only since the retired command tier's impls went. Private
+      # only; a dead PUBLIC binding is out of its reach.
+      - name: dead-private check
+        run: ~/.local/bin/weir tools/dead-privates.weir
+
       - name: message census
         run: ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir
 

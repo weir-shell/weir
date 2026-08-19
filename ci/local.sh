@@ -23,4 +23,4 @@ ENGINE="${WEIR_CI_ENGINE:-docker}"
 "$ENGINE" run --rm \
     -v weir-nuget:/root/.nuget \
     weir-ci-run \
-    bash -ec 'dotnet test tests/Weir.Tests/Weir.Tests.fsproj && ./publish.sh && ~/.local/bin/weir ci/decision-keys.weir && ci/e2e.sh && dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj && ci/skill-doc.sh && ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir && ci/fsharp-oracle.sh && ci/timing.sh'
+    bash -ec 'dotnet test tests/Weir.Tests/Weir.Tests.fsproj && ./publish.sh && ~/.local/bin/weir ci/decision-keys.weir && ci/e2e.sh && dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj && ci/skill-doc.sh && ~/.local/bin/weir tools/dead-privates.weir && ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir && ci/fsharp-oracle.sh && ci/timing.sh'
