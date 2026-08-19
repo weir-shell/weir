@@ -1276,10 +1276,33 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
         with ex ->
             Error ex.Message
 
+let casingError (span: Span) (name: string) : Result<'a, TypeError> =
+    err
+        span
+        ($"binding names start lowercase; uppercase names are types, modules, and constructors"
+         + $" — bind '{name.ToLowerInvariant()}' (a record field keeps its name: let region = cfg.AWS_REGION)")
+
+// builtins WITHOUT a qualified spelling are reserved as binder names
+// [D:reserve-builtins]: shadowing one removes the capability for the
+// whole file with no way back — unlike a PATH command (^x forces) or a
+// bare alias (Seq.max survives `let max = …`). Populated by Builtins
+// at construction: the DERIVED no-home set, never a hand copy.
+let reservedBinderNames: Set<string> ref = ref Set.empty
+
+let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
+    if name.Length > 0 && System.Char.IsUpper name[0] then
+        casingError span name
+    elif (reservedBinderNames.Value).Contains name then
+        err
+            span
+            $"'{name}' is a builtin with no qualified spelling — a binding would shadow it for the whole file with no way back; pick another name"
+    else
+        Ok()
+
 let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     match p.PKind with
     | PWildcard -> Ok []
-    | PVar name -> Ok [ name, ty ]
+    | PVar name -> checkBinderName p.PSpan name |> Result.map (fun () -> [ name, ty ])
     | PBool _ ->
         match ty with
         | TBool -> Ok []
@@ -1433,17 +1456,6 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
 // located check error the plan's contract names.
 // The casing law [D:lowercase-binds] applies at every binder
 // position; fields and match patterns are deliberately untouched.
-let casingError (span: Span) (name: string) : Result<'a, TypeError> =
-    err
-        span
-        ($"binding names start lowercase; uppercase names are types, modules, and constructors"
-         + $" — bind '{name.ToLowerInvariant()}' (a record field keeps its name: let region = cfg.AWS_REGION)")
-
-let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
-    if name.Length > 0 && System.Char.IsUpper name[0] then
-        casingError span name
-    else
-        Ok()
 
 let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty * (string * Ty) list, TypeError> =
     match p.PKind with
@@ -1760,6 +1772,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { env with
                             Values = Map.add b (generalize bodyTy) env.Values }
 
+                    do!
+                        match until with
+                        | Some((n, bs), _) -> checkBinderName bs n
+                        | None -> Ok()
+
                     let! tpred = check ctx env' pred TBool
 
                     return
@@ -1855,6 +1872,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 match opts with
                 | Some o -> check ctx env o TDur |> Result.map Some
                 | None -> Ok None
+
+            do!
+                match binder with
+                | Some(n, bs) -> checkBinderName bs n
+                | None -> Ok()
 
             let benv =
                 match binder with
@@ -3408,6 +3430,11 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                 match opts with
                 | Some o -> check ctx env o TDur |> Result.map Some
                 | None -> Ok None
+
+            do!
+                match binder with
+                | Some(n, bs) -> checkBinderName bs n
+                | None -> Ok()
 
             let benv =
                 match binder with

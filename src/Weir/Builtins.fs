@@ -4757,3 +4757,17 @@ let valueEnv: Env =
     @ flat
     @ mangled
     |> Map.ofList
+
+// the reserved-binder set [D:reserve-builtins]: builtins with NO
+// qualified spelling — derived from the flat entries (bare ALIASES
+// keep the standing values-shadow-builtins rule: Seq.max is the
+// escape `let max = …` leaves open; these have none)
+Check.reservedBinderNames.Value <-
+    (entries |> List.map (fun (n, _, _) -> n)) @ [ "print"; "printerr"; "show" ]
+    |> List.filter (fun n ->
+        not (n.StartsWith "|")
+        && not (n.Contains ".")
+        // a bare ALIAS keeps the standing shadow rule — its qualified
+        // home is the way back (`let max = …` leaves Seq.max reachable)
+        && not (Map.containsKey n bareAliasHomes))
+    |> Set.ofList

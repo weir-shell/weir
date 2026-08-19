@@ -1,5 +1,29 @@
 # Spike Notes
 
+## reserving the names the language owns (2026-08-18)
+
+Phase 0 turned the plan's cleanest sentence into the actual design.
+There WAS a standing rule — values shadow builtins, stated in
+SEMANTICS and pinned twice — and deriving the builtin set showed why
+it existed: most bare names are aliases of qualified members, and
+reserving `max` or `item` or `find` would make ordinary scripts
+illegal. The rule survives for exactly those, because the qualified
+home is an escape in the same structural position as PATH's ^. The
+no-home set — thirteen names, derived from the flat entries minus
+the alias map, never hand-listed — is where the plan's no-way-back
+argument lands whole, and those are now reserved in every binding
+position.
+
+The implementation found the second disagreement the plan predicted:
+not just command-vs-binding (bare `ls` statements were already
+refused with the ^ls teaching while `let ls` bound silently), but
+two PATTERN paths — binderShape routed through the casing gate,
+checkPattern's PVar did not. One choke point now, which is what
+checkBinderName was always shaped to be. The two shadow pins flipped
+rather than retired: the same instrument now asserts the refusal,
+and the positive twins pin the alias distinction from both sides
+(`let max` binds AND Seq.max still answers).
+
 ## the coverage rider: a gate measured, a pin that tested nothing (2026-08-18)
 
 The sweep-gate probe needed one insight to be possible at all: a ^C
