@@ -1002,20 +1002,6 @@ let rec private spine (e: Expr) : Expr * Expr list =
         head, args @ [ arg ]
     | _ -> e, []
 
-// the JSON boundary field law [D:json-option], the ONE list both
-// directions share: a scalar (int/string/bool) or an Option of one.
-// A missing key or an explicit null reads as None (a key is missing-or-
-// null in the format, unlike env's absence-only or argv's flag). NOT
-// Option<Option<_>>, NOT Option of a record or seq — the boundary needs
-// a flat row.
-let private jsonScalar (ty: Ty) : bool =
-    match ty with
-    | TInt
-    | TFloat
-    | TStr
-    | TBool -> true
-    | _ -> false
-
 // the RECURSIVE json field law [D:recursive-fields]: a field is
 // admitted if it is a scalar (int, float, string, bool), an Option of
 // an admitted type, a record whose fields are all admitted, or a seq
