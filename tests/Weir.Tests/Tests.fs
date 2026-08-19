@@ -11157,6 +11157,81 @@ let lsTruthTests =
                   System.IO.Directory.Delete(d, true)
           } ]
 
+let accessorTeachingTests =
+    // the indexer's diagnostics [D:accessor-teaching] + weir owning its
+    // runtime text [D:message-ownership] — the slicing costing's three
+    // side findings, each independent of the parked feature
+    testList
+        "accessor teachings [D:accessor-teaching]"
+        [ test "range indexing teaches the offset-and-length rule, not an application error" {
+              // was: caret on the TARGET, "not a function taking 1 argument"
+              // (the interior backtracked into a list-literal application)
+              for src in
+                  [ "let xs = [1; 2; 3] in xs[1..2]"
+                    "let xs = [1; 2; 3] in xs[..2]"
+                    "let xs = [1; 2; 3] in xs[1..]" ] do
+                  match Weir.Parser.parseExpr src with
+                  | Ok _ -> failtest $"'{src}' must be refused"
+                  | Error m ->
+                      Expect.stringContains m "no range indexing" $"'{src}' names the refusal"
+                      Expect.stringContains m "offset-and-length" $"'{src}' names the rule"
+                      Expect.stringContains m "Str.sub" $"'{src}' names the string spelling"
+                      Expect.stringContains m "Seq.skip" $"'{src}' names the seq spelling"
+          }
+          test "the F# dotted indexer teaches the dotless spelling" {
+              match Weir.Parser.parseExpr "let xs = [1; 2; 3] in xs.[0]" with
+              | Ok _ -> failtest "xs.[0] must be refused"
+              | Error m ->
+                  Expect.stringContains m "without the dot" "names the repair"
+                  Expect.stringContains m "xs[i]" "shows the spelling"
+          }
+          test "the ordinary indexer is untouched — the guards only catch their shapes" {
+              // the positive twin: a teaching that fires on everything is
+              // indistinguishable from a broken indexer
+              expectValue "let xs = [1; 2; 3] in xs[1]" (VInt 2L)
+              expectValue "let xs = [1; 2; 3] in xs[1 + 1]" (VInt 3L)
+              expectValue "let f = fun x -> x[0] in f [7; 8]" (VInt 7L)
+              // a SPACE means application, still (the F# 6 whitespace rule)
+              Expect.equal (show (parse "f [1; 2]")) "(f [1; 2])" "spaced brackets stay an application"
+          }
+          test "m[k] teaches Map.get — the doc's promise, now real" {
+              // SKILL has said "no m[k] indexing — Map.get is the spelling"
+              // while the binary raised a raw unification error on the KEY
+              let msg = (checkErr "let m = Map.ofPairs [(\"a\", 1)] in m[\"a\"]").Message
+              Expect.stringContains msg "no m[k] indexing" "names the refusal"
+              Expect.stringContains msg "Map.get" "names the spelling"
+              Expect.stringContains msg "Map.tryGet" "and the asking form"
+
+              // the index TYPE must not decide it: an int index on a Map
+              // reaches the same teaching (the raw error fired here first)
+              Expect.stringContains
+                  (checkErr "let m = Map.ofPairs [(\"a\", 1)] in m[0]").Message
+                  "no m[k] indexing"
+                  "the target decides, not the index"
+          }
+          test "weir owns the seq runtime messages [D:message-ownership]" {
+              // FSharp.Core's own text reached users here: Seq.item's
+              // "seq was short by {1} {2}" and Seq.skip's composite
+              // "tried to skip {0} {1} past the end of the seq"
+              let msgOf src =
+                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
+
+              let item = msgOf "[1] |> Seq.item 5"
+              Expect.stringContains item "item: no element at index 5" "weir's text"
+              Expect.isFalse (item.Contains "insufficient") "not FSharp.Core's"
+
+              let skip = msgOf "[1] |> Seq.skip 5 |> Seq.force"
+              Expect.stringContains skip "skip: fewer than 5 elements" "weir's text"
+              Expect.isFalse (skip.Contains "tried to skip") "not FSharp.Core's"
+
+              Expect.equal (msgOf "1 / 0") "division by zero" "the int twin of the float message"
+
+              // the positive twins: the members still WORK, and skip stays
+              // LAZY (an infinite source must not be probed for length)
+              expectValue "[1; 2; 3] |> Seq.item 1" (VInt 2L)
+              expectValue "nats |> Seq.skip 2 |> Seq.head" (VInt 2L)
+          } ]
+
 let recordPatternTests =
     // irrefutable record patterns [D:record-patterns]: the row seat
     // carries params (generality!), checkBinderName is reached by
@@ -14155,6 +14230,7 @@ let allTests =
           lsTruthTests
           fileStatTests
           recordPatternTests
+          accessorTeachingTests
           invariantModeTests
           lsSortTests
           recordKeysTests

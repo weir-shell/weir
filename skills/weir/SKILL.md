@@ -771,6 +771,24 @@ print (show (ls "."))
 ```
 
 ```weir-error
+// no range indexing — accessors are offset-and-length
+let xs = [1; 2; 3]
+print $"{xs[1..2]}"
+```
+
+```weir-error
+// weir indexes without the dot
+let xs = [1; 2; 3]
+print $"{xs.[0]}"
+```
+
+```weir-error
+// a Map is not indexable — Map.get is the spelling
+let m = Map.ofPairs [("a", 1)]
+print $"{m["a"]}"
+```
+
+```weir-error
 // isDirectory retired with the kind reshape — the error teaches
 // the replacement, not "unknown field"
 ls |> Seq.where _.isDirectory |> Seq.iter (fun f -> print f.name)
@@ -1153,6 +1171,11 @@ print (f 1)
 - Element access: `xs[0]` (raises; = `Seq.item 0 xs`; F# 6 whitespace
   rule — `f [0]` WITH a space is applying a list) / `Seq.tryItem`
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
+  Accessors are **offset-and-length**, never ranges: `Str.sub start len`
+  for strings, `Seq.skip`/`Seq.take` for sequences, `xs[i]` for one
+  element. `..` builds sequences and never indexes, so `xs[1..4]` is
+  refused with that rule; `xs.[i]` (F#'s dotted indexer) is refused
+  naming the dotless spelling [D:accessor-teaching].
   Membership: `Seq.contains x xs` (equatable elements),
   `Seq.exists`/`Seq.forall` with predicates. Dedupe is
   `Seq.distinct` (lazy, first occurrence wins, equatable elements —
