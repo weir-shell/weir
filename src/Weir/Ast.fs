@@ -354,7 +354,9 @@ let rec sexprPat (p: Pattern) : string =
     | PTuple ps -> "(" + (ps |> List.map sexprPat |> String.concat ", ") + ")"
     | PRecord fields ->
         "{ "
-        + (fields |> List.map (fun ((f, _), sub) -> $"{f} = {sexprPat sub}") |> String.concat "; ")
+        + (fields
+           |> List.map (fun ((f, _), sub) -> $"{f} = {sexprPat sub}")
+           |> String.concat "; ")
         + " }"
     | PCase(c, None) -> c
     | PCase(c, Some arg) -> $"({c} {sexprPat arg})"
