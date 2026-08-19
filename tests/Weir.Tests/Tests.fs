@@ -7165,6 +7165,19 @@ let depthGuardTests =
               match Weir.Parser.parseExpr (nestDeep "[" "]" 800) with
               | Error m -> Expect.stringContains m "nested too deeply" "bracket depth caught"
               | Ok _ -> failtest "depth 800 brackets must be rejected"
+          }
+          test "a wide cons-chain pattern's name walk does not overflow the process [D:pattern-width]" {
+              // Property-3 on the WIDTH axis: patLeafNames recurses once
+              // per leaf; a `a :: a :: … :: _` chain is flat-reading but
+              // builds a deep right-spine, and the OLD recursive walk blew
+              // the stack DURING parse (in withPatNames) — a host crash,
+              // not a diagnostic. Reaching this line AT ALL is the pin: a
+              // stack overflow is uncatchable and would abort the runner.
+              let line =
+                  "let v = match [1] with | " + String.replicate 20000 "a :: " + "_ -> 1 | _ -> 0"
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+              Expect.isNonEmpty diags "the depth guard diagnoses; the iterative name walk never crashes"
           } ]
 
 let boolBranchTests =

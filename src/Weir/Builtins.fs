@@ -210,6 +210,10 @@ let private asString (v: Value) : string =
 
 let private argStrings (args: seq<Value>) : string list = args |> Seq.map asString |> List.ofSeq
 
+// the dead command-builtin cluster [D:drop-command-builtins]: cmd,
+// feed, cmdEnv, run, runEnv left the surface; the impls stay by that
+// row's own ruling (kept in place, no FS warning). Members: cmdImpl,
+// feedWith, cmdEnvImpl, runImpl, runEnvImpl.
 let private cmdImpl: Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
@@ -383,10 +387,8 @@ let private orFailedWith (overlay: (string * string) list) : Value =
                     VUnit
                 | _ -> unreachable "the checker rejects 'orFailed' on these arguments")))
 
-// feed = cmd + stdin [D:spawn-spec]: the family's first data-LAST
-// member, because its data is the pipeline's subject
-// (`snips |> feed "sha256sum" []`); lifecycle inherited from the one
-// spawn by construction
+// dead impl, kept by ruling — the cluster at cmdImpl
+// [D:drop-command-builtins]
 let private feedWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
@@ -4498,6 +4500,8 @@ let private envVarPairs (v: Value) : (string * string) list =
         |> List.ofSeq
     | v -> unreachable $"the checker rejects 'cmdEnv' on {formatValue v}"
 
+// dead impl, kept by ruling — the cluster at cmdImpl
+// [D:drop-command-builtins]
 let private cmdEnvImpl: Value =
     VBuiltin(fun envV ->
         VBuiltin(fun progV ->
@@ -4587,15 +4591,13 @@ let private printImpl: Value =
         | VUnit -> VUnit
         | v -> unreachable $"the checker rejects 'print' on {formatValue v}")
 
-// run p a IS cmd p a |> print — composed from the exact same impls, so
-// every lifecycle guarantee (tree-kill, raise-at-force, stderr
-// passthrough, streaming) is inherited, and byte-identity is by
-// construction (pinned anyway).
+// dead impl, kept by ruling — the cluster at cmdImpl
+// [D:drop-command-builtins]
 let private runImpl: Value =
     VBuiltin(fun prog -> VBuiltin(fun argv -> apply printImpl (apply (apply cmdImpl prog) argv)))
 
-// runEnv e p a IS cmdEnv e p a |> print — the run/cmd desugar
-// relationship applied verbatim (byte-identity pinned).
+// dead impl, kept by ruling — the cluster at cmdImpl
+// [D:drop-command-builtins]
 let private runEnvImpl: Value =
     VBuiltin(fun env ->
         VBuiltin(fun prog -> VBuiltin(fun argv -> apply printImpl (apply (apply (apply cmdEnvImpl env) prog) argv))))

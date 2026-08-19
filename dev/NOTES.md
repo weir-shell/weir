@@ -1,5 +1,36 @@
 # Spike Notes
 
+## the width axis: patLeafNames overflows on a wide pattern (2026-08-19)
+
+A Property-3 falsification the coverage machinery couldn't see. The
+depth-guard sessions closed the SEGV class by making axis N+1 a CI
+failure, but the gate reasons about recursion STRUCTURE (graph minus
+guarded nodes acyclic) — it is blind to unbounded recursion over a
+bounded-DEPTH structure. patLeafNames recursed once per leaf, so a
+`a :: a :: … :: _` cons chain (flat source, deep spine, like the
+opSpine SEGV but in a name walk) blew the stack during parse. Width,
+not depth.
+
+It hid behind stack size: the depthDiagnoses harness runs on a
+Task.Run 1MB thread, where a 20000-node walk overflows; the main
+thread's roomier stack does not — so #85 merged green (its CI ran the
+fixtures on whatever stack) while my tools/fuzz.weir path (→ 1MB
+thread) crashed, surfaced by the observed-count e2e row at seed 4242.
+That row earned its keep twice now.
+
+Two findings worth more than the fix. The membership sweep:
+checkPattern/binderShape/isIrrefutablePat are sibling per-element
+pattern walks, but the parse depth guard bounds pattern nesting — a
+width probe over seed 4242 found zero patterns exceeding 600 nodes
+reaching the name walk, and direct deep patterns hit the guard at
+~500. patLeafNames was the outlier only because it runs during the
+parse ATTEMPT, transiently exposed before the guard rejects. And the
+generator gap: Grammar.fs produces NO nested patterns at all — only
+name-binders and single-level Ctor arms — so record patterns (#85)
+shipped with zero generative fuzz coverage. The pattern axis is
+entirely the hand-written depthDiagnoses fixtures; a wide-not-deep
+generator arm is the real mechanical answer, filed.
+
 ## record patterns: the row seat pays for the whole feature (2026-08-19)
 
 The costing's shape survived contact almost untouched, which is rare
