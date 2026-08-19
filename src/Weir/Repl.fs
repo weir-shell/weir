@@ -1287,6 +1287,11 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
         $"{name} ({List.length members} members):\n  "
         + flowNames "  " 72 members
         + $"\n\n#help {name}.<member> shows one member's doc"
+    | name when (Check.ctorOwners te name |> List.length) > 1 ->
+        // the checker refuses this name [D:ambiguous-ctor]; answering with one
+        // candidate would be a confident wrong suggestion
+        let owners = Check.ctorOwners te name |> String.concat ", "
+        $"'{name}' is an ambiguous constructor; it is declared by: {owners} — rename one of the cases"
     | name ->
         match memberHelp te name with
         | Some h -> h

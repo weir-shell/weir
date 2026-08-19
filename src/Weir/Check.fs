@@ -1795,6 +1795,34 @@ let private lambdaCore
               Span = span }
     }
 
+/// the union types declaring a case of this name [D:ambiguous-ctor] — DERIVED
+/// from the type table and shared with #help, so a hover cannot answer
+/// confidently where the checker refuses
+/// from the declared types, so a later declaration cannot miss the collision.
+/// env.Values holds one entry per name, so by the time a bare use is resolved
+/// the earlier constructor is already overwritten; the ownership question has
+/// to be asked of the type table, not the value table.
+let ctorOwners (env: TypeEnv) (name: string) : string list =
+    // uppercase only: the casing law makes every constructor uppercase, so
+    // this skips the scan for ordinary bindings
+    if name.Length = 0 || not (System.Char.IsUpper name[0]) then
+        []
+    else
+        // IMPORTED types are excluded: they live flat in `Types` so signatures
+        // and field access resolve, but their cases are not in scope BARE
+        // (access is always qualified), so they are not candidates for this
+        // name and must not make a local declaration look ambiguous
+        let imported =
+            env.ModuleTypes |> Map.toList |> List.map snd |> List.fold Set.union Set.empty
+
+        env.Types
+        |> Map.toList
+        |> List.choose (fun (tn, d) ->
+            match d with
+            | Union u when not (imported.Contains tn) && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
+            | _ -> None)
+        |> List.sort
+
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
     | EInt n ->
@@ -1976,10 +2004,23 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EVar name ->
         match Map.tryFind name env.Values with
         | Some sch ->
-            Ok
-                { Kind = TEVar name
-                  Ty = instantiate ctx expr.Span sch
-                  Span = expr.Span }
+            // a bare constructor with two declarations is AMBIGUOUS, never
+            // last-wins [D:ambiguous-ctor] — the record-literal path's answer
+            // to the same question. Pattern positions need no twin: PCase
+            // resolves against the scrutinee's type, and an unresolved
+            // scrutinee is already refused.
+            match ctorOwners env name with
+            | _ :: _ :: _ as owners ->
+                let ownerList = String.concat ", " owners
+
+                err
+                    expr.Span
+                    $"ambiguous constructor '{name}'; it is declared by: {ownerList} — rename one of the cases"
+            | _ ->
+                Ok
+                    { Kind = TEVar name
+                      Ty = instantiate ctx expr.Span sch
+                      Span = expr.Span }
         | None ->
             if Map.containsKey name env.Modules then
                 let members = env.Modules[name] |> Map.keys |> Seq.truncate 5 |> String.concat ", "

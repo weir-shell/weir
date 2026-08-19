@@ -41,6 +41,16 @@ if "Seq.collect (f:" not in t:
 if "flatten" not in t:
     failures.append(f"#help member must render the hover doc text: {t[-200:]!r}")
 
+# a name the CHECKER would refuse must not get a confident hover: #help and
+# the checker read one ownership function [D:ambiguous-ctor]
+t = piped("type B = C\ntype Z = C\n#help C\n#quit\n")
+if "ambiguous constructor" not in t or "B, Z" not in t:
+    failures.append(f"#help must refuse an ambiguous case, naming both: {t[-200:]!r}")
+
+t = piped("type Z = C\n#help C\n#quit\n")
+if "C : Z" not in t:
+    failures.append(f"#help still answers an UNambiguous case: {t[-200:]!r}")
+
 t = piped("#help Seq.colect\n#quit\n")
 if "no member 'colect'" not in t or "collect" not in t:
     failures.append(f"a dotted typo must did-you-mean in its module: {t[-200:]!r}")

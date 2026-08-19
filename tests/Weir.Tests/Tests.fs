@@ -10024,6 +10024,108 @@ let durationTests =
               | Ok _ -> failtest "expected the literal-law rejection"
           } ]
 
+let ambiguousCtorTests =
+    let analyze (lines: string list) =
+        let p =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-amb-{System.Guid.NewGuid():N}.weir")
+
+        System.IO.File.WriteAllLines(p, lines)
+
+        try
+            let ds, _, _, _ =
+                Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+
+            ds |> List.filter (fun d -> d.Severity = "error")
+        finally
+            System.IO.File.Delete p
+
+    testList
+        "Ambiguous constructors [D:ambiguous-ctor]"
+        [ test "a bare case declared by two unions is refused, naming both" {
+              match analyze [ "type B = C"; "type Z = C"; "let x = C"; "print \"n\"" ] with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "the USE site, not the second declaration"
+
+                  Expect.equal
+                      d.Message
+                      "ambiguous constructor 'C'; it is declared by: B, Z — rename one of the cases"
+                      "exact text, both candidates, and a repair"
+              | other -> failtest $"expected one error, got {other.Length}"
+          }
+          // ARITY IS NOT A DISAMBIGUATOR: resolving a constructor by how it is
+          // applied is overload resolution, which this language declines. Both
+          // spellings are ambiguous, and the message does not vary with them.
+          test "arity does not disambiguate — bare or applied, both refuse" {
+              match analyze [ "type B = C of int"; "type Z = C"; "let x = C"; "print \"n\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "ambiguous constructor 'C'" "bare use"
+              | other -> failtest $"bare: expected one error, got {other.Length}"
+
+              match analyze [ "type B = C of int"; "type Z = C"; "let x = C 1"; "print \"n\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "ambiguous constructor 'C'" "applied use"
+              | other -> failtest $"applied: expected one error, got {other.Length}"
+          }
+          test "the repair works: renaming one case resolves the other" {
+              Expect.isEmpty (analyze [ "type B = D"; "type Z = C"; "let x = C"; "print \"n\"" ]) "renamed"
+          }
+          test "one declaration still resolves bare" {
+              Expect.isEmpty (analyze [ "type Z = C"; "let x = C"; "print \"n\"" ]) "single owner"
+          }
+          test "a collision that is never USED bare still checks" {
+              Expect.isEmpty (analyze [ "type B = C"; "type Z = C"; "print \"n\"" ]) "use-site rule"
+          }
+          // PATTERNS NEED NO TWIN: PCase resolves against the SCRUTINEE's type,
+          // never by name, and an unresolved scrutinee is already refused — so
+          // the ambiguity cannot arise there. Pinned so the claim is checked
+          // rather than remembered.
+          test "a pattern resolves by the scrutinee's type even with a live collision" {
+              Expect.isEmpty
+                  (analyze
+                      [ "type B = C"
+                        "type Z = C | Other"
+                        "let v = Other"
+                        "let s = match v with | C -> \"c\" | Other -> \"other\""
+                        "print s" ])
+                  "type-directed"
+          }
+          // THE HALF THAT ALREADY WORKED, guarded: imported types live FLAT in
+          // env.Types so signatures and field access resolve, but their cases
+          // are not in scope bare — so an import must not make a local
+          // declaration look ambiguous. The first cut of this check scanned
+          // every declared type and broke exactly this.
+          test "an imported union does not make a local case ambiguous" {
+              let dir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-ambx-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory dir |> ignore
+
+              try
+                  let lib = System.IO.Path.Combine(dir, "lib.weir")
+                  System.IO.File.WriteAllLines(lib, [ "module Lib"; "type Status = Ok | Failed" ])
+                  let main = System.IO.Path.Combine(dir, "main.weir")
+
+                  System.IO.File.WriteAllLines(
+                      main,
+                      [ "import \"./lib.weir\""
+                        "type Mine = Failed of int"
+                        "let s = Failed 1"
+                        "print \"n\"" ]
+                  )
+
+                  let ds, _, _, _ =
+                      Weir.Script.analyzeLines main (List.ofArray (System.IO.File.ReadAllLines main))
+
+                  Expect.isEmpty
+                      (ds |> List.filter (fun d -> d.Severity = "error"))
+                      "the local declaration wins; the imported case was never a bare candidate"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "an unresolved scrutinee stays refused for its own reason" {
+              match analyze [ "type Z = C"; "let f x = match x with | C -> 1"; "print \"n\"" ] with
+              | d :: _ -> Expect.stringContains d.Message "constructor patterns need a union value" ""
+              | [] -> failtest "expected the unresolved-scrutinee rejection"
+          } ]
+
 let dupTypeTests =
     let analyze (lines: string list) =
         let p =
@@ -14332,6 +14434,7 @@ let allTests =
           formatSurfaceTests
           secretTests
           httpTests
+          ambiguousCtorTests
           dupTypeTests
           trailingCommentTests
           interpShowTests

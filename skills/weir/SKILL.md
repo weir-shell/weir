@@ -170,7 +170,19 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
 ```
 
 - Union cases carry tuple payloads for multi-value: `Case of int * string`;
-  match with `| Case (n, s) ->`.
+  match with `| Case (n, s) ->`. A case name declared by TWO in-scope unions
+  is AMBIGUOUS at any bare use — a check error naming both types, never
+  last-wins [D:ambiguous-ctor]; rename one. Arity does not disambiguate
+  (applying it does not pick an overload), and PATTERNS are unaffected: a
+  case in a pattern resolves against the scrutinee's type. Imported unions
+  never collide — their cases are not in scope bare.
+
+```weir-error
+type Level = Warn
+type Signal = Warn
+let w = Warn
+print $"{w}"
+```
 - `let f x y = ...` defines a curried function (desugars to nested
   `fun`). Params are idents, `()`, or PARENTHESIZED irrefutable
   patterns (`let dist (x, y) = ...`) — no type annotations. A
