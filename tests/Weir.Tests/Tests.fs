@@ -11245,6 +11245,13 @@ let recordPatternTests =
                   (errR "fun x -> match x with | { UpN = n } -> n" |> _.Message)
                   "KNOWN type"
                   "match arms keep the ctor-pattern law; binder positions carry the row power"
+
+              // the stale-message casualty: a ctor pattern on a record
+              // now teaches the record-pattern repair
+              Expect.stringContains
+                  (errR "match { UpN = 1 } with | Running { UpN = n } -> n | _ -> 0" |> _.Message)
+                  "record pattern ({ field = binder })"
+                  "a ctor pattern on a record names the new repair"
           }
           test "checkBinderName is reached BY CONSTRUCTION: casing and the builtin reservation" {
               Expect.stringContains
