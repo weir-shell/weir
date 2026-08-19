@@ -1312,17 +1312,17 @@ let private recordPatDups (span: Span) (fields: ((string * Span) * Pattern) list
         err span "a record pattern must name at least one field — { } binds nothing"
     else
 
-    let dup =
-        fields
-        |> List.map (fst >> fst)
-        |> List.countBy id
-        |> List.tryFind (fun (_, n) -> n > 1)
+        let dup =
+            fields
+            |> List.map (fst >> fst)
+            |> List.countBy id
+            |> List.tryFind (fun (_, n) -> n > 1)
 
-    match dup with
-    | Some(f, _) ->
-        let span = fields |> List.find (fun ((n, _), _) -> n = f) |> fst |> snd
-        err span $"duplicate field '{f}' in a record pattern"
-    | None -> Ok()
+        match dup with
+        | Some(f, _) ->
+            let span = fields |> List.find (fun ((n, _), _) -> n = f) |> fst |> snd
+            err span $"duplicate field '{f}' in a record pattern"
+        | None -> Ok()
 
 let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
     if name.Length > 0 && System.Char.IsUpper name[0] then
@@ -1527,7 +1527,12 @@ let rec private checkPattern (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(stri
                     match argPat with
                     | Some ap -> checkPattern env payloadTy ap
                     | None -> err p.PSpan $"'{ctor}' carries {formatTy payloadTy}; add a pattern for it"
-            | Some(Record _) -> err p.PSpan $"{typeName} is a record; only a name or '_' can match it"
+            | Some(Record _) ->
+                // stale-message casualty of [D:record-patterns]: a record
+                // now HAS a pattern form, so the repair names it
+                err
+                    p.PSpan
+                    $"{typeName} is a record; match it with a name, '_', or a record pattern ({{ field = binder }})"
             | None -> err p.PSpan $"unknown type '{typeName}'"
         | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
@@ -1571,15 +1576,13 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
                     (fun acc ((f, fspan), sub) ->
                         acc
                         |> Result.bind (fun rows ->
-                            binderShape ctx env sub
-                            |> Result.map (fun (t, b) -> ((f, fspan, t), b) :: rows)))
+                            binderShape ctx env sub |> Result.map (fun (t, b) -> ((f, fspan, t), b) :: rows)))
                     (Ok [])
                 |> Result.map List.rev
 
             let r = freshName ctx "r"
 
-            ctx.Rows <-
-                Map.add r (shaped |> List.map (fun ((f, fspan, t), _) -> f, (t, fspan)) |> Map.ofList) ctx.Rows
+            ctx.Rows <- Map.add r (shaped |> List.map (fun ((f, fspan, t), _) -> f, (t, fspan)) |> Map.ofList) ctx.Rows
 
             return TRowVar(r, []), shaped |> List.collect snd
         }
