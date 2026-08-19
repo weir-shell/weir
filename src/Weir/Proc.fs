@@ -171,6 +171,23 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
     finally
         reap p
 
+// colour from the child [D:colour-inherit]: a bare statement command
+// at a tty spawns with stdout INHERITED — the child sees the terminal
+// (isatty true, colour on) and weir never holds the bytes, so the
+// relay's guard/threshold do not apply (bash's posture: the child
+// chose its bytes for a terminal it can see). Stderr was always
+// inherited on this path; the raise contract is every forced spawn's.
+let runInherited (s: Spec) : unit =
+    use p = start false false s
+
+    try
+        p.WaitForExit()
+
+        if p.ExitCode <> 0 then
+            raiseNonzero s p.ExitCode
+    finally
+        reap p
+
 // stdout relayed to the console as it arrives; the code as the result
 // [D:exit-reifiers]: output goes to the human, the code is the meaning
 let streamCodeOf (s: Spec) : int =

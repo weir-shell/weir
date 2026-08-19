@@ -2809,21 +2809,30 @@ and apply (fn: Value) (arg: Value) : Value =
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 
+/// the bare-statement spec (argv, overlay) — ONE builder for the relay
+/// and the inheriting spawn, so the two forms cannot drift
+let private commandStatementSpec (env: Env) (te: Check.TypedExpr) : Proc.Spec =
+    match te.Kind with
+    | Check.TECmd(prog, args, cenvO) ->
+        { Prog = Proc.resolveProg prog
+          Args = argvOf env args
+          Env = overlayOf env cenvO
+          Input = None }
+    | _ -> unreachable "a command-statement helper takes the bare-command statement only"
+
 /// the REPL's streaming statement echo [D:stream-echo] — spawns the
 /// bare command via the chunk relay instead of eval'ing to a VSeq (a
 /// seq<string> cannot carry a partial line). The caller owns rendering;
-/// this owns the spawn (argv, overlay, nonzero raise).
+/// this owns the spawn (argv, overlay, nonzero raise). The relay's
+/// remaining statement customer is the REDIRECTED-|print form; the
+/// bare statement at a tty inherits instead [D:colour-inherit].
 let streamCommandStatement (env: Env) (te: Check.TypedExpr) (onText: string -> unit) (onBreak: unit -> unit) : unit =
-    match te.Kind with
-    | Check.TECmd(prog, args, cenvO) ->
-        let spec: Proc.Spec =
-            { Prog = Proc.resolveProg prog
-              Args = argvOf env args
-              Env = overlayOf env cenvO
-              Input = None }
+    Proc.streamSegmentsOf (commandStatementSpec env te) onText onBreak
 
-        Proc.streamSegmentsOf spec onText onBreak
-    | _ -> unreachable "streamCommandStatement takes the bare-command statement only"
+/// colour from the child [D:colour-inherit]: the bare statement at a
+/// tty spawns with stdout INHERITED — isatty is true for the child
+let inheritCommandStatement (env: Env) (te: Check.TypedExpr) : unit =
+    Proc.runInherited (commandStatementSpec env te)
 
 let constructorValues (cases: (string * Ty option) list) : (string * Value) list =
     cases

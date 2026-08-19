@@ -223,14 +223,6 @@ let mutable private echoCap: int option =
 
 let private historyFile = config.HistoryPath
 
-// the streaming echo's stop reasons [D:stream-echo]
-type internal EchoStopReason =
-    | CleanBinary
-    | MidBinary
-    | Clipped
-
-exception internal EchoStop of EchoStopReason
-
 // the table's tint is POSITIONAL [D:table-polish]: echoTable's lines
 // stay plain (one law, tests untouched) — the printer knows line 0 is
 // the header, line 1 the rule, a trailing "…" the clip row. Cells are
@@ -1123,118 +1115,28 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
     | Script.KCmd te ->
         printWarnings state te
 
-        // the bare command statement STREAMS its echo [D:stream-echo]:
-        // chunks flush as they arrive — a partial line (an interactive
-        // prompt) shows before its newline. The binary guard buffers
-        // the first 4 KiB before emitting anything, so small outputs
-        // keep the never-leak guarantee whole; past the threshold each
-        // chunk is still checked and the stream STOPS on a NUL — a
-        // BOUNDED leak, the stated residue (SECURITY's register). The
-        // cap clips as before; a mid-stream raise suppresses the
-        // footer and the error carries the echoed-line count.
-        // Reifiers/captures are unaffected by law (| complete is
-        // in-memory capture; $() never streams).
+        // the bare command statement at a tty INHERITS stdout
+        // [D:colour-inherit]: the child writes the terminal itself —
+        // isatty true, colour on — and weir never holds the bytes, so
+        // the relay's guard/threshold/cap do not apply (bash's posture:
+        // the child chose its bytes for a terminal it can see; gzip
+        // refuses a tty by ITSELF, which is the incident's cause
+        // removed). The echo cap governs VALUE echoes, which keep the
+        // guard. Reifiers/captures are unaffected by law (| complete is
+        // in-memory capture; $() never streams); a redirected REPL
+        // keeps the batched value path.
         match te.Kind with
         | Check.TECmd _ when not Console.IsOutputRedirected && te.Ty = TSeq TStr ->
-            let cap = echoCap |> Option.defaultValue System.Int32.MaxValue
-            let threshold = 4096
-            let events = ResizeArray<Choice<string, unit>>()
-            // one lock for buffer, writes, and the flush TIMER: the
-            // guard's buffer is bounded in bytes AND time (an
-            // interactive prompt is 20 bytes and then silence — a
-            // size-only threshold would hold it forever)
-            let sync = obj ()
-            let mutable flushed = false
-            let mutable bufferedBytes = 0
-            let mutable emitted = 0
-            let mutable totalBreaks = 0
-            let mutable atLineStart = true
-
-            let writeText (t: string) =
-                Console.Out.Write t
-                Console.Out.Flush()
-                atLineStart <- false
-
-            let writeBreak () =
-                Console.Out.Write '\n'
-                Console.Out.Flush()
-                atLineStart <- true
-                emitted <- emitted + 1
-
-            let flush () =
-                if not flushed then
-                    flushed <- true
-
-                    for e in events do
-                        match e with
-                        | Choice1Of2 t -> writeText t
-                        | Choice2Of2() -> writeBreak ()
-
-                    events.Clear()
-
-            let onText (t: string) =
-                lock sync (fun () ->
-                    if t.Contains '\000' then
-                        raise (EchoStop(if flushed then MidBinary else CleanBinary))
-                    elif flushed then
-                        writeText t
-                    else
-                        events.Add(Choice1Of2 t)
-                        bufferedBytes <- bufferedBytes + t.Length
-
-                        if bufferedBytes >= threshold then
-                            flush ())
-
-            let onBreak () =
-                lock sync (fun () ->
-                    totalBreaks <- totalBreaks + 1
-
-                    if flushed then writeBreak () else events.Add(Choice2Of2())
-
-                    if totalBreaks >= cap then
-                        flush ()
-                        raise (EchoStop Clipped))
-
-            use _timer =
-                new System.Threading.Timer((fun _ -> lock sync flush), null, 100, System.Threading.Timeout.Infinite)
-
             (try
-                (try
-                    Eval.streamCommandStatement state.Values te onText onBreak
-                    lock sync flush
-
-                    if not atLineStart then
-                        Console.Out.Write '\n'
-
-                    echoMeta $": {formatTy te.Ty}"
-                 with
-                 | EchoStop CleanBinary ->
-                     echoMeta
-                         ": seq<string> = binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
-                 | EchoStop MidBinary ->
-                     if not atLineStart then
-                         Console.Out.Write '\n'
-
-                     echoMeta
-                         $": seq<string> = binary mid-stream — the echo stopped after {emitted} line(s); redirect to a file"
-                 | EchoStop Clipped -> echoMeta $": seq<string> ={Eval.echoTail (Some(Eval.unforcedHint cap))}")
-
+                Console.Out.Flush()
+                Eval.inheritCommandStatement state.Values te
+                echoMeta $": {formatTy te.Ty}"
                 state
              with
              | Eval.ExitRequest _ -> reraise ()
              | ex ->
                  lastErrored <- true
-
-                 // the mid-stream raise ruling [D:stream-echo]: footer
-                 // suppressed, the error names how much the human saw
-                 let seen =
-                     if emitted > 0 then
-                         $" (stream raised after {emitted} echoed line(s))"
-                     else
-                         ""
-
-                 Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}{seen}")
-
+                 Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
                  state)
         | _ ->
 

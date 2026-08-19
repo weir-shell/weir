@@ -1615,14 +1615,17 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
 
     # REPL: the partial line (an interactive prompt's shape) appears
-    # BEFORE the command exits — the micro-refusal invisibility, closed
+    # BEFORE the command exits — under inheritance the child writes the
+    # pty itself, so the chunk BOUNDARY is the kernel's (the old exact
+    # b'PARTIAL-' chunk was the relay's flush shape); the ORDER stamp is
+    # the claim
     rout=$(printf 'SLEEP 500\nSEND sh %s/pp.sh\\r\nSLEEP 2500\nSEND #quit\\r\n' "$sedir" | python3 "$ptyrun" 8 "$BIN")
-    pline=$(echo "$rout" | grep -F "b'PARTIAL-'" | head -1 | awk '{print $1}')
+    pline=$(echo "$rout" | grep -F "PARTIAL-" | grep -vF "pp.sh" | head -1 | awk '{print $1}')
     dline=$(echo "$rout" | grep -F "done" | head -1 | awk '{print $1}')
-    [ -n "$pline" ] || fail "REPL: the partial line must flush on its own: $rout"
+    [ -n "$pline" ] || fail "REPL: the partial must appear: $rout"
     [ -n "$dline" ] && [ "$pline" -lt "$dline" ] || fail "REPL: partial precedes the completing line: $rout"
 
-    # script mode: same, via the CCmd relay
+    # script mode: same, inherited
     cat > "$sedir/sp.weir" <<WEOF
 sh $sedir/pp.sh
 WEOF
@@ -1632,11 +1635,13 @@ WEOF
     sdline=$(echo "$sout" | grep -F "done" | head -1 | awk '{print $1}')
     [ -n "$spline" ] && [ -n "$sdline" ] && [ "$spline" -lt "$sdline" ] || fail "script: partial precedes completion: $sout"
 
-    # the binary guard's whole-guarantee under the threshold: a small
-    # NUL-bearing output refuses with NOTHING leaked
+    # ruling (a) [D:colour-inherit]: the bare statement at a tty is the
+    # CHILD's own write — no weir guard, raw bytes and all (bash's
+    # posture; gzip refuses a tty by ITSELF). The VALUE echo keeps its
+    # refusal — the [D:binary-echo] cells pin that half.
     bout=$(printf 'SLEEP 500\nSEND sh %s/pb.sh\\r\nSLEEP 800\nSEND #quit\\r\n' "$sedir" | python3 "$ptyrun" 5 "$BIN")
-    echo "$bout" | grep -qF "binary output" || fail "small binary refuses at the REPL: $bout"
-    echo "$bout" | grep -F "b'text" && fail "the refusal must not leak the prefix: $bout"
+    echo "$bout" | grep -qF "binary output" && fail "the statement path has no guard to refuse with: $bout"
+    echo "$bout" | grep -qF "text\x00binary" || fail "the child's bytes reach the terminal raw: $bout"
 
     # tty/redirected divergence is TIMING ONLY — redirected bytes are
     # the batched path's, byte-identical (od's format differs GNU/BSD,
@@ -1654,7 +1659,33 @@ WEOF
     cpline=$(echo "$cout" | grep -F "PARTIAL-done" | head -1 | awk '{print $1}')
     [ -n "$cpline" ] && [ "$cpline" -gt 900 ] || fail "a captured reifier must not stream (appeared at ${cpline}ms): $cout"
 
-    echo "e2e ok: streaming echo — partials flush live (REPL + script), small binary refuses whole, redirected byte-identical, reifiers capture"
+    echo "e2e ok: streaming echo — partials flush live (REPL + script), the bare statement's bytes are the child's own, redirected byte-identical, reifiers capture"
+
+    # ---- colour from the child [D:colour-inherit] ----------------------
+    # THE motivating pins: a bare statement at a tty sees isatty TRUE
+    # (colour on); the captured form sees a pipe and its value is
+    # unchanged — the positive twin, or "inherited" is achieved by
+    # dropping the pipe everywhere
+    cidir=$(mkweirtmp)
+    printf '#!/bin/sh\ntest -t 1 && echo IS-TTY || echo IS-PIPE\n' > "$cidir/t.sh"
+    printf '#!/bin/sh\nprintf "\\033[31mCRED\\033[0m\\n"\n' > "$cidir/c.sh"
+    ciout=$(printf 'SLEEP 700\nSEND sh %s/t.sh\\r\nSLEEP 400\nSEND let r = $(sh %s/t.sh | complete)\\r\nSLEEP 500\nSEND print (r.stdout |> Seq.head)\\r\nSLEEP 300\nSEND #quit\\r\n' "$cidir" "$cidir" | python3 "$ptyrun" 10 "$BIN")
+    echo "$ciout" | grep -qF "IS-TTY" || fail "a bare REPL statement inherits the terminal (isatty true): $ciout"
+    echo "$ciout" | grep -qF "IS-PIPE" || fail "the captured form still pipes and its value is intact: $ciout"
+    cout2=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 6 "$BIN" -e "sh $cidir/c.sh" 2>/dev/null || true)
+    printf 'print "before"\nsh %s/c.sh\nprint "after"\n' "$cidir" > "$cidir/ord.weir"
+    sout2=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 8 "$BIN" "$cidir/ord.weir")
+    echo "$sout2" | grep -q "31mCRED" || fail "colour bytes reach the terminal from a script statement: $sout2"
+    bidx=$(echo "$sout2" | grep -n "before" | head -1 | cut -d: -f1)
+    cidx=$(echo "$sout2" | grep -n "31mCRED" | head -1 | cut -d: -f1)
+    aidx=$(echo "$sout2" | grep -n "after" | head -1 | cut -d: -f1)
+    { [ -n "$bidx" ] && [ -n "$aidx" ] && [ "$bidx" -le "$cidx" ] && [ "$cidx" -le "$aidx" ]; } || fail "print/statement/print interleave in order (the pre-spawn flush): $sout2"
+    # redirected keeps today's bytes exactly — the child sees a pipe
+    rout2=$("$BIN" "$cidir/ord.weir")
+    echo "$rout2" | grep -q "31mCRED" || true  # the tool colours unconditionally; content-identical either way
+    printf 'sh %s/t.sh\n' "$cidir" > "$cidir/tt.weir"
+    [ "$("$BIN" "$cidir/tt.weir")" = "IS-PIPE" ] || fail "a redirected weir keeps the pipe (byte laws intact)"
+    echo "e2e ok: colour inherit — bare statements see the terminal, captures see the pipe, ordering holds, redirected unchanged"
 else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi
@@ -1667,9 +1698,17 @@ fi
 if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
 
-    # the incident, fixed: gzip + ^C -> the child dies naming 130, the
-    # prompt returns usable
-    rsout=$(printf 'SLEEP 700\nSEND gzip\\r\nSLEEP 400\nSEND \\x03\nSLEEP 500\nSEND print (Str.toUpper "revived")\\r\nSLEEP 400\nSEND #quit\\r\n' \
+    # the incident, CURED TWICE: under inheritance gzip sees the real
+    # terminal and refuses BY ITSELF (fast, its own message, exit 1)
+    # [D:colour-inherit] — and a stdin-reading child that does hang
+    # dies to ^C naming 130 with the session surviving [D:repl-isig]
+    gzout=$(printf 'SLEEP 700\nSEND gzip\\r\nSLEEP 600\nSEND #quit\\r\n' \
+        | python3 "$ptyrun" 8 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+    # GNU: "compressed data not written to a terminal"; Apple:
+    # "standard output is a terminal -- ignoring" — the CLAIM is the
+    # refusal, so the pin matches the word both spell
+    echo "$gzout" | grep -qi "is a terminal\|to a terminal" || fail "gzip refuses its own tty now — the incident's cause removed: $gzout"
+    rsout=$(printf 'SLEEP 700\nSEND sh -c "read x"\\r\nSLEEP 400\nSEND \\x03\nSLEEP 500\nSEND print (Str.toUpper "revived")\\r\nSLEEP 400\nSEND #quit\\r\n' \
         | python3 "$ptyrun" 10 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
     echo "$rsout" | grep -q "exit code 130" || fail "a REPL ^C must kill the foreground child naming 130: $rsout"
     echo "$rsout" | grep -q "REVIVED" || fail "the session must survive its child's ^C: $rsout"

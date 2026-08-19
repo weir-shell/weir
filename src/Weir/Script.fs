@@ -4403,30 +4403,21 @@ let run (path: string) (scriptArgs: string list) : int =
                                     1
                             | CCmd te ->
                                 try
-                                    // the bare command statement STREAMS at a
-                                    // tty [D:stream-echo]: partials flush as
-                                    // they arrive (an interactive prompt shows
-                                    // before its newline); redirected output
-                                    // keeps the batched path — byte-identical,
-                                    // timing is the only divergence
+                                    // the bare command statement at a tty
+                                    // INHERITS stdout [D:colour-inherit]: the
+                                    // child sees the terminal (isatty true,
+                                    // colour on) and weir never holds the
+                                    // bytes; redirected output keeps the
+                                    // batched path — byte-identical, decided
+                                    // at spawn
                                     (match te.Kind with
                                      | Check.TECmd _ when not Console.IsOutputRedirected ->
-                                         let mutable atLineStart = true
-
-                                         Eval.streamCommandStatement
-                                             venv
-                                             te
-                                             (fun t ->
-                                                 Console.Out.Write t
-                                                 Console.Out.Flush()
-                                                 atLineStart <- false)
-                                             (fun () ->
-                                                 Console.Out.Write '\n'
-                                                 Console.Out.Flush()
-                                                 atLineStart <- true)
-
-                                         if not atLineStart then
-                                             Console.Out.Write '\n'
+                                         // no mid-line tidy: a DSR query
+                                         // HANGS under a non-answering
+                                         // terminal (the pty harness proved
+                                         // it) — bash's posture, wart and all
+                                         Console.Out.Flush()
+                                         Eval.inheritCommandStatement venv te
                                      | _ -> printResult (Eval.eval venv te))
 
                                     exec venv tail

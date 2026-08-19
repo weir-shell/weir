@@ -1,5 +1,33 @@
 # Spike Notes
 
+## colour by not being in the middle (2026-08-18)
+
+The plan's own reframing held: the expensive answer (a pty so isatty
+lies truthfully) dissolved into not redirecting at all, and Phase 0
+kept shrinking the risk. Stderr was already inherited on the
+statement path, so the change extends a precedent by one fd; the
+byte-identity worry (0.4) vanished by gating on the |print arm's own
+existing tty test — a redirected weir keeps the pipe and every byte
+law with it. The guard ruling paid immediately: bare gzip at the
+REPL now refuses its own terminal, fast, with its own message — the
+incident that motivated the guard cannot be set up any more, and the
+e2e cell pins the cure where it used to pin the symptom.
+
+The one thing built and torn out the same hour: a DSR-based mid-line
+tidy. Console.CursorLeft hangs under any terminal that does not
+answer the cursor query — the pty harness ate three sessions
+silently before the cause surfaced. bash's wart (a mid-line tail
+overwritten by the next prompt) is the honest posture; a tidy that
+can hang a session to fix a cosmetic is the wrong trade.
+
+The relay kept exactly one customer — |print, which was always the
+sanctioned raw spelling — so the streaming-echo work survives with a
+narrower purpose, and the 4KiB/100ms bounded guard retired with its
+only subject. The divergence the row names (value paths pipe,
+statement paths inherit) is the first deliberate break of the
+agreement property this project keeps choosing; the reason — a value
+must decode, and decoding requires a pipe — is the whole argument.
+
 ## reserving the names the language owns (2026-08-18)
 
 Phase 0 turned the plan's cleanest sentence into the actual design.
