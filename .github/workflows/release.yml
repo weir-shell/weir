@@ -55,11 +55,19 @@ jobs:
             rid: linux-arm64
           - os: macos-latest
             rid: osx-arm64
+          - os: macos-13
+            rid: osx-x64
           - os: windows-latest
             rid: win-x64
           - os: windows-11-arm
             rid: win-arm64
     runs-on: ${{ matrix.os }}
+    # attestation needs OIDC + write to the attestation store; the build
+    # job otherwise only reads the repo (publish holds contents: write)
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     defaults:
       run:
         shell: bash
@@ -88,6 +96,13 @@ jobs:
             win-*) cp "$BIN" "weir-${{ github.ref_name }}-${{ matrix.rid }}.exe" ;;
             *)     cp "$BIN" "weir-${{ github.ref_name }}-${{ matrix.rid }}" ;;
           esac
+      # signed build provenance [D:install-checksum-scope]: the installer's
+      # embedded checksum is the primary trust anchor; this adds an
+      # independent, OIDC-signed record that THIS repo's Actions built the
+      # binary, which `gh attestation verify` checks best-effort.
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: weir-${{ github.ref_name }}-*
       - uses: actions/upload-artifact@v7
         with:
           name: weir-${{ matrix.rid }}
@@ -105,6 +120,20 @@ jobs:
           merge-multiple: true
       - name: checksums — not optional
         run: cd dist && sha256sum weir-* > SHA256SUMS && cat SHA256SUMS
+      # the PINNED installers [D:install-checksum-scope]: the just-built
+      # release binary generates its own installer — gen-install.weir pins
+      # this tag and embeds the SHA256SUMS above, so the script weir.sh
+      # serves trusts checksums from a DIFFERENT origin than the binaries.
+      # The repo install.sh/.ps1 are TEMPLATES; these dist/ copies are the
+      # artifacts. weir.sh serves them from here (the site copies the
+      # release assets); the repo templates are never fetched by users.
+      - name: generate the pinned installers (the release binary makes its own)
+        run: |
+          BIN="dist/weir-${{ github.ref_name }}-linux-x64"
+          chmod +x "$BIN"
+          "$BIN" ci/gen-install.weir --template install.sh  --sums dist/SHA256SUMS --tag "${{ github.ref_name }}" --out dist/install.sh
+          "$BIN" ci/gen-install.weir --template install.ps1 --sums dist/SHA256SUMS --tag "${{ github.ref_name }}" --out dist/install.ps1
+          sh -n dist/install.sh
       - name: draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -112,5 +141,5 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --draft \
             --title "weir ${{ github.ref_name }}" \
-            --notes "Draft — fill in what changed and WHAT BROKE (0.x breaks things; say so). Unsigned binaries: see docs/INSTALL.md for the macOS/Windows first-run steps." \
-            dist/weir-* dist/SHA256SUMS
+            --notes "Draft — fill in what changed and WHAT BROKE (0.x breaks things; say so). Unsigned binaries: see docs/INSTALL.md for the macOS/Windows first-run steps. The pinned install.sh/install.ps1 assets are what weir.sh serves." \
+            dist/weir-* dist/SHA256SUMS dist/install.sh dist/install.ps1

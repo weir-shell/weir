@@ -5980,27 +5980,57 @@ rm -rf "$sctdir"
 echo "e2e ok: showcase .weir tree (offline check, no restore; the typo the comment names is caught)"
 
 # ---- install.sh hardening [D:install-truncation][D:install-checksum-scope] --
+# install.sh is a TEMPLATE [D:install-checksum-scope]: ci/gen-install.weir
+# substitutes the tag and embeds the release SHA256SUMS to produce the PINNED
+# artifact weir.sh serves. This exercises BOTH — the template's guards and the
+# generation — offline, against a synthetic release.
+insdir=$(mkweirtmp)
+
 # the truncation guard: the whole body is main() invoked last, so a fetch cut
 # mid-body is an UNCLOSED FUNCTION — a syntax error that defines and runs
 # nothing (set -eu cannot catch a truncation; nothing failed). Parse-only
-# (sh -n), so no side effects even in the negative direction.
-insdir=$(mkweirtmp)
-head -c 900 "$ROOT/install.sh" > "$insdir/trunc.sh"
+# (sh -n), so no side effects. The cut is computed to land INSIDE main() —
+# past its opening brace, before the closing one — so it stays a mid-body cut
+# as the header comment grows.
+mainstart=$(grep -b -m1 '^main() {' "$ROOT/install.sh" | cut -d: -f1)
+[ -n "$mainstart" ] || fail "install.sh has no 'main() {' — the truncation guard is gone"
+head -c "$((mainstart + 300))" "$ROOT/install.sh" > "$insdir/trunc.sh"
 if sh -n "$insdir/trunc.sh" 2>/dev/null; then
     fail "a truncated install.sh must be a syntax error (main() left unclosed)"
 fi
-sh -n "$ROOT/install.sh" || fail "the full install.sh must parse clean"
-echo "e2e ok: install.sh truncation guard — truncated is a syntax error, full parses"
+sh -n "$ROOT/install.sh" || fail "the full install.sh template must parse clean"
+echo "e2e ok: install.sh truncation guard — mid-main cut is a syntax error, full template parses"
 
-# a missing SHA256SUMS entry is NAMED, not left to '$SUM -c' printing "no
-# properly formatted lines" — the exact grep-guard the script now runs
-printf 'abc123  weir-v1-linux-x64\n' > "$insdir/SHA256SUMS"
-missing="weir-v1-linux-arm64"
-imsg=$(grep -q " $missing\$" "$insdir/SHA256SUMS" || echo "no checksum for $missing in SHA256SUMS")
-[ "$imsg" = "no checksum for $missing in SHA256SUMS" ] || fail "a missing checksum entry must be named, got: $imsg"
-# the present entry still verifies through the same grep
-present="weir-v1-linux-x64"
-grep -q " $present\$" "$insdir/SHA256SUMS" || fail "a present checksum entry must be found"
-echo "e2e ok: install missing-checksum entry is named (not 'no properly formatted lines'); present entry found"
+# the template refuses to RUN unsubstituted: a real tag never contains '@', so
+# the placeholder trips the guard rather than fetching a bogus tag
+tout=$(sh "$ROOT/install.sh" 2>&1 || true)
+echo "$tout" | grep -qF "this is the install TEMPLATE" || fail "the unsubstituted template must refuse to run, got: $tout"
+echo "e2e ok: install.sh template refuses to run unsubstituted (@-sentinel guard)"
+
+# generation [D:install-checksum-scope]: gen-install.weir pins the tag and
+# embeds a REAL SHA256SUMS; the result must parse, carry no leftover
+# placeholders, and its embedded checksum must match the real binary (two-origin
+# verify — nothing fetched from the binary's origin to check it).
+gendir="$insdir/gen"; mkdir -p "$gendir"
+printf 'fake-x64\n'   > "$gendir/weir-v9.9.9-linux-x64"
+printf 'fake-arm64\n' > "$gendir/weir-v9.9.9-linux-arm64"
+( cd "$gendir" && sha256sum weir-v9.9.9-* > SHA256SUMS )
+"$BIN" "$ROOT/ci/gen-install.weir" --template "$ROOT/install.sh" --sums "$gendir/SHA256SUMS" --tag v9.9.9 --out "$gendir/install.sh" >/dev/null \
+    || fail "gen-install.weir failed"
+sh -n "$gendir/install.sh" || fail "the generated install.sh must parse"
+grep -q 'WEIR_TAG\|WEIR_SHA256SUMS' "$gendir/install.sh" && fail "the generated script still has unsubstituted placeholders"
+name=weir-v9.9.9-linux-x64
+gsums=$(awk "/<<'WEIR_SUMS'/{f=1;next} /^WEIR_SUMS\$/{f=0} f" "$gendir/install.sh")
+gexp=$(printf '%s\n' "$gsums" | grep " $name\$" | cut -d' ' -f1)
+gact=$(sha256sum "$gendir/$name" | cut -d' ' -f1)
+[ -n "$gexp" ] && [ "$gexp" = "$gact" ] || fail "embedded checksum ($gexp) must match the real binary ($gact)"
+echo "e2e ok: gen-install.weir — pins the tag, embeds SHA256SUMS, embedded checksum matches the binary"
+
+# a missing SHA256SUMS entry is NAMED, not left to a formatting error — the
+# exact grep-guard the generated script runs over its embedded SUMS
+missing="weir-v9.9.9-linux-riscv"
+imsg=$(printf '%s\n' "$gsums" | grep -q " $missing\$" || echo "no embedded checksum for $missing")
+[ "$imsg" = "no embedded checksum for $missing" ] || fail "a missing checksum entry must be named, got: $imsg"
+echo "e2e ok: install missing-checksum entry is named; present entry verifies"
 
 echo "e2e battery: all green"

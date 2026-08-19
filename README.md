@@ -66,13 +66,16 @@ HTTP and YAML — is in [docs/GUIDE.md](docs/GUIDE.md).
 ## Install
 
 ```
-curl -fsSL https://raw.githubusercontent.com/weir-shell/weir/main/install.sh | sh
+curl -fsSL https://weir.sh/install.sh | sh
 ```
 
-Windows: `irm https://raw.githubusercontent.com/weir-shell/weir/main/install.ps1 | iex`
+Windows: `irm https://weir.sh/install.ps1 | iex`
 
-One binary, no runtime — both installers verify checksums before
-installing. Or download your platform's binary from
+One binary, no runtime. These scripts are generated per release and
+served from `weir.sh` — a different origin than the binaries, with the
+release's checksums baked in, so verification is tamper-evident, not
+just an integrity check ([docs/INSTALL.md](docs/INSTALL.md) has the
+details). Or download your platform's binary from
 [releases](https://github.com/weir-shell/weir/releases); Windows and
 the unsigned-binary first-run dialogs are covered in
 [docs/INSTALL.md](docs/INSTALL.md). weir is `0.x` in the semver

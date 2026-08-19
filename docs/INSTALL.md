@@ -8,25 +8,37 @@ platform plus a `SHA256SUMS` file.
 Linux, macOS:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/weir-shell/weir/main/install.sh | sh
+curl -fsSL https://weir.sh/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```
-irm https://raw.githubusercontent.com/weir-shell/weir/main/install.ps1 | iex
+irm https://weir.sh/install.ps1 | iex
 ```
 
-Both detect your platform, download the latest release, **verify the
-checksum**, and install — `~/.local/bin/weir` on POSIX,
+Both detect your platform, download the **pinned** release, **verify
+the checksum**, and install — `~/.local/bin/weir` on POSIX,
 `%LOCALAPPDATA%\Programs\weir\weir.exe` on Windows (override with
 `WEIR_INSTALL_DIR`).
 
-The checksum defends against **truncated or corrupted downloads**, not
-tampering: `SHA256SUMS` ships from the same release as the binary, so
-it is an integrity check, not a signature. It is genuinely worth
-having — and it is what the SmartScreen note below leans on — but do
-not read it as tamper protection.
+These scripts are **generated per release and served from `weir.sh`** —
+a different origin than the GitHub release binaries. Each one pins one
+version and carries that release's checksums baked in, so verification
+never fetches anything from the binary's own origin. Compromising the
+release assets alone therefore can't feed the installer a matching
+checksum: the check is **tamper-evident here**, not merely an integrity
+check. (Where `gh` is present the installer also verifies GitHub's
+signed build provenance, best-effort — a second, independent origin.)
+
+A pinned script installs the version it was cut for. To move to a newer
+release, re-fetch the script from `weir.sh` (it always serves the
+latest) or grab the binary manually below.
+
+> The files named `install.sh` / `install.ps1` in the repo are
+> **templates** (`@WEIR_TAG@` / `@WEIR_SHA256SUMS@` placeholders);
+> `ci/gen-install.weir` fills them in at release time. Users fetch the
+> generated artifact from `weir.sh`, never the repo template.
 
 ## Manual download
 
@@ -38,11 +50,9 @@ Grab the binary for your platform from
 | Linux x64 | `weir-<tag>-linux-x64` |
 | Linux arm64 | `weir-<tag>-linux-arm64` |
 | macOS (Apple silicon) | `weir-<tag>-osx-arm64` |
+| macOS (Intel) | `weir-<tag>-osx-x64` |
 | Windows x64 | `weir-<tag>-win-x64.exe` |
 | Windows arm64 | `weir-<tag>-win-arm64.exe` |
-
-Not published: `osx-x64` (Intel Macs) — a stated gap, not an
-accident; it joins when someone needs it.
 
 Verify, then install:
 

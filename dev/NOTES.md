@@ -52,6 +52,43 @@ correct code unreachable. So binder rejection, match composition, and
 dead-arm detection all just started working — three report-back
 questions that answered themselves.
 
+## the installer goes two-origin and pinned — decided before the tag (2026-08-19)
+
+The deferred half of the install rider came back a "take it, before the
+first tag." The reasoning is timing, not security: retrofitting two-origin
+is unrecoverable once people have bookmarked a URL — flipping always-newest
+to pinned after the fact is a silent behavior change — so it's a decision to
+make while nobody depends on it, or not cleanly at all.
+
+The shape that fell out is nicer than expected. install.sh/install.ps1
+become TEMPLATES (`@WEIR_TAG@`/`@WEIR_SHA256SUMS@`); a weir script,
+ci/gen-install.weir, substitutes the tag and embeds that release's
+SHA256SUMS to produce the artifact weir.sh serves. The dogfood is that the
+just-built RELEASE BINARY generates its own installer in the publish job —
+no second weir build, and the generator is the scripting policy in its own
+release path. Because the served script's checksums arrive from a different
+origin than the binaries, verification never touches the binary's origin:
+tamper-evident, not just integrity.
+
+Two template traps, both caught before they shipped. The generator does a
+blanket `@WEIR_TAG@`→tag replace, so a template guard keyed on the literal
+`"@WEIR_TAG@"` would be substituted along with everything else and always
+fire (or never) — the guard keys on `*@*` instead, since a real tag never
+contains '@'. And the SUMS placeholder had to move into a heredoc so BOTH
+the template and the generated artifact `sh -n`-parse; the first draft put
+it in a plain double-quoted string and the whole-line expansion ate the
+`SUMS="` prefix. Offline e2e generates against a synthetic SHA256SUMS and
+checks parse + no-leftover-placeholders + embedded-checksum-matches-binary;
+the actual download→install path stays untestable until a real release and
+weir.sh serving the asset, said plainly rather than papered over.
+
+gh attestation rode the same pass (one workflow line + a best-effort verify
+in the installer), and osx-x64 turned out to be a build-matrix omission, not
+a decision — the AOT publish is native on a macos-13 runner, so it's one
+matrix line and INSTALL's "stated gap" paragraph goes away. The canonical
+URL moved to weir.sh/install.{sh,ps1} everywhere; raw.githubusercontent was
+a third copy of "where the script lives" that the site would never serve.
+
 ## install-script hardening: the truncation trick and an honest checksum (2026-08-19)
 
 Six findings against install.sh/ps1; the install work split cleanly
