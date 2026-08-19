@@ -2228,10 +2228,15 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     // weir's own developers where the grammar gave up — is still true. What
     // was wrong was the AUDIENCE, not the information, so this hides it
     // rather than deleting it. The smaller reversal keeps the capability.
+    // `Unknown Error(s)` is FParsec admitting it has nothing to say while
+    // claiming there is an error — the worst line in the dump, and the
+    // content that kept the backtrack section alive after D5 dropped its
+    // position lines (the opener survives while any child does)
     let isBacktrackNoise (l: string) =
         let t = l.Trim()
 
         t.StartsWith "Note: The error occurred"
+        || t = "Unknown Error(s)"
         || System.Text.RegularExpressions.Regex.IsMatch(t, @"^at line \d+, col \d+:$")
 
     go true [] lines

@@ -2198,6 +2198,31 @@ echo "$njson" | grep -qF "does not look like" && fail "D4: the heuristic must no
 rm -rf "$nwdir"
 echo "e2e ok: a non-weir file says so once, in position order, without parser internals"
 
+# D5's suppression covers a CLASS, not the paths it was written against
+# [D:accessor-teaching]: `Unknown Error(s)` is FParsec admitting it has
+# nothing to say while claiming an error, and it kept the backtrack
+# section alive after D5 dropped that section's position lines. Pinned
+# BOTH ways, like the D5 cell above — absent by default, present under
+# WEIR_LOG=debug (absence alone would pass if the capability were lost).
+ueout=$($BIN -e 'let r = 1..3 in 0' 2>&1 || true)
+echo "$ueout" | grep -qF "Unknown Error(s)" && fail "the parser must not print Unknown Error(s): $ueout"
+echo "$ueout" | grep -qF "backtracked after" && fail "the backtrack note stays hidden by default: $ueout"
+uedbg=$(WEIR_LOG=debug $BIN -e 'let r = 1..3 in 0' 2>&1 || true)
+echo "$uedbg" | grep -qF "backtracked after" || fail "WEIR_LOG=debug must KEEP the trace: $uedbg"
+echo "e2e ok: Unknown Error(s) joins the backtrack suppression (both ways)"
+
+# the accessor teachings at the binary [D:accessor-teaching] — the
+# costing found the range shape silently becoming an APPLICATION
+rgout=$($BIN -e 'let xs = [1; 2; 3] in xs[1..2]' 2>&1 || true)
+echo "$rgout" | grep -qF "no range indexing" || fail "range indexing teaches the rule: $rgout"
+echo "$rgout" | grep -qF "not a function" && fail "the application accident must not surface: $rgout"
+dtout=$($BIN -e 'let xs = [1; 2; 3] in xs.[0]' 2>&1 || true)
+echo "$dtout" | grep -qF "without the dot" || fail "the dotted indexer teaches: $dtout"
+mkout=$($BIN -e 'let m = Map.ofPairs [("a", 1)] in m["a"]' 2>&1 || true)
+echo "$mkout" | grep -qF "Map.get" || fail "m[k] teaches Map.get (the doc's promise): $mkout"
+[ "$($BIN -e 'let xs = [1; 2; 3] in xs[1]' 2>&1 | tail -1)" = "2 : int" ] || fail "the ordinary indexer still works"
+echo "e2e ok: accessor teachings (range, dotted, m[k]) — the ordinary indexer untouched"
+
 # --- the casing law (2026-07-21) ---------------------------------------
 
 errout=$($BIN -e 'let Foo = 1 in Foo' 2>&1 || true)

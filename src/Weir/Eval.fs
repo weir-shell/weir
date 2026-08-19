@@ -699,7 +699,13 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "+", VStr a, VStr b -> VStr(a + b)
     | "-", VInt a, VInt b -> checkedInt (fun () -> Checked.(-) a b)
     | "*", VInt a, VInt b -> checkedInt (fun () -> Checked.(*) a b)
-    | "/", VInt a, VInt b -> checkedInt (fun () -> a / b)
+    | "/", VInt a, VInt b ->
+        // weir's own text [D:message-ownership] — the float twin above
+        // already said it; the int side leaked the BCL's
+        if b = 0L then
+            failwith "division by zero"
+        else
+            checkedInt (fun () -> a / b)
     | ">", VInt a, VInt b -> VBool(a > b)
     | "<", VInt a, VInt b -> VBool(a < b)
     | ">=", VInt a, VInt b -> VBool(a >= b)
