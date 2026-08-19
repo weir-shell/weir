@@ -14,40 +14,56 @@ type Spec =
       Env: (string * string) list
       Input: seq<string> option }
 
-// the one starter: psi construction, env overlay, cwd, the not-found
-// mapping, and the stdin writer — which PULLS the input seq lazily as
-// the pipe accepts (laziness reaches inputs too)
-let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
-    let psi = ProcessStartInfo(s.Prog)
+// the ONE spawn [D:spawn-spec]: psi construction, the env law, cwd, the
+// not-found mapping, and the race-group registration every child owes
+// [D:seq-pfirst]. Redirection is the caller's — it is the only axis the
+// two starters differ on, so everything else lives here once.
+let private spawn
+    (redirectOut: bool)
+    (redirectErr: bool)
+    (redirectIn: bool)
+    (prog: string)
+    (args: string list)
+    (env: (string * string) list)
+    : Process =
+    let psi = ProcessStartInfo(prog)
 
-    for a in s.Args do
+    for a in args do
         psi.ArgumentList.Add a
 
     // ambient `within env` layers apply OUTER-FIRST under the explicit
     // spec env, so inner and explicit keys win [D:within-scopes] — at
-    // the starter, so EVERY spawn (reifiers, cmd/into, feed) obeys the
-    // one law, not just the Eval command paths
+    // the spawn, so EVERY child (reifiers, cmd/into, scoped procs) obeys
+    // the one law, not just the Eval command paths
     for k, v in Session.envOverlay () |> List.rev |> List.collect id do
         psi.Environment[k] <- v
 
-    for k, v in s.Env do
+    for k, v in env do
         psi.Environment[k] <- v
 
     psi.WorkingDirectory <- Session.Cwd()
     psi.UseShellExecute <- false
     psi.RedirectStandardOutput <- redirectOut
     psi.RedirectStandardError <- redirectErr
-    psi.RedirectStandardInput <- s.Input.IsSome
+    psi.RedirectStandardInput <- redirectIn
 
     let p =
         try
             Process.Start psi
         with :? System.ComponentModel.Win32Exception ->
-            failwith $"command not found or not executable: {s.Prog}"
+            failwith $"command not found or not executable: {prog}"
 
     // a racing arm's children join its group [D:seq-pfirst] — a no-op
-    // outside pfirst
+    // outside pfirst, and the SCOPED child owes it too: the spill path
+    // reached the exit-hook backstop without ever joining the group
     Session.registerChild p
+
+    p
+
+// the one starter: the shared spawn plus the stdin writer — which PULLS
+// the input seq lazily as the pipe accepts (laziness reaches inputs too)
+let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
+    let p = spawn redirectOut redirectErr s.Input.IsSome s.Prog s.Args s.Env
 
     match s.Input with
     | Some lines ->
@@ -442,30 +458,10 @@ let startSpilled
     (outPath: string)
     (errPath: string)
     : Process * (unit -> unit) =
-    let psi = ProcessStartInfo(prog)
+    let p = spawn true true true prog args overlay
 
-    for a in args do
-        psi.ArgumentList.Add a
-
-    // same ambient-under-explicit law as the one starter [D:within-scopes]
-    for k, v in Session.envOverlay () |> List.rev |> List.collect id do
-        psi.Environment[k] <- v
-
-    for k, v in overlay do
-        psi.Environment[k] <- v
-
-    psi.WorkingDirectory <- Session.Cwd()
-    psi.UseShellExecute <- false
-    psi.RedirectStandardOutput <- true
-    psi.RedirectStandardError <- true
-    psi.RedirectStandardInput <- true
-    let p = new Process(StartInfo = psi)
-
-    (try
-        p.Start() |> ignore
-     with :? System.ComponentModel.Win32Exception ->
-         failwith $"command not found or not executable: {prog}")
-
+    // stdin closed HERE, not through the writer task: a scoped child
+    // that reads must see EOF at once, with no thread between
     p.StandardInput.Close()
 
     // per-chunk flush: the spill must be READABLE while the child runs

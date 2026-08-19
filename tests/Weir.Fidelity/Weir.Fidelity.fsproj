@@ -6,6 +6,11 @@
     <!-- the SHIPPED binary runs invariant (Weir.fsproj); a culture-mode
          host would referee different string semantics [D:invariant-strings] -->
     <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- NU1608 only [D:host-strictness]: FCS 43.12.204 constrains FSharp.Core to
+         =10.1.204 and the [D:aot-warnings] pin is 10.1.302 — a version-pin
+         artifact, not code. Nothing else is suppressed -->
+    <NoWarn>NU1608</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

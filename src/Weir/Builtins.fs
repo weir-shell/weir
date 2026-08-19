@@ -210,22 +210,6 @@ let private asString (v: Value) : string =
 
 let private argStrings (args: seq<Value>) : string list = args |> Seq.map asString |> List.ofSeq
 
-// the dead command-builtin cluster [D:drop-command-builtins]: cmd,
-// feed, cmdEnv, run, runEnv left the surface; the impls stay by that
-// row's own ruling (kept in place, no FS warning). Members: cmdImpl,
-// feedWith, cmdEnvImpl, runImpl, runEnvImpl.
-let private cmdImpl: Value =
-    VBuiltin(fun progV ->
-        VBuiltin(fun argsV ->
-            match progV, argsV with
-            | VStr prog, VSeq args ->
-                if prog.Trim() = "" then
-                    failwith "cmd: empty program name"
-
-                let argv = argStrings args
-                VSeq(Proc.lines (Proc.resolveProg prog) argv None |> Seq.map VStr)
-            | _ -> unreachable "the checker rejects 'cmd' on these arguments"))
-
 let private intoImpl: Value =
     VBuiltin(fun c ->
         VBuiltin(fun sv ->
@@ -386,24 +370,6 @@ let private orFailedWith (overlay: (string * string) list) : Value =
 
                     VUnit
                 | _ -> unreachable "the checker rejects 'orFailed' on these arguments")))
-
-// dead impl, kept by ruling — the cluster at cmdImpl
-// [D:drop-command-builtins]
-let private feedWith (overlay: (string * string) list) : Value =
-    VBuiltin(fun progV ->
-        VBuiltin(fun argsV ->
-            VBuiltin(fun inputV ->
-                match progV, argsV, inputV with
-                | VStr prog, VSeq args, VSeq input ->
-                    let argv = argStrings args
-                    let inputLines = input |> Seq.map asString
-
-                    VSeq(
-                        Seq.delay (fun () ->
-                            Proc.linesWith overlay (Proc.resolveProg prog) argv (Some inputLines)
-                            |> Seq.map VStr)
-                    )
-                | _ -> unreachable "the checker rejects 'feed' on these arguments")))
 
 let private exitCodedWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
@@ -4474,25 +4440,6 @@ let private envVarPairs (v: Value) : (string * string) list =
         |> List.ofSeq
     | v -> unreachable $"the checker rejects 'cmdEnv' on {formatValue v}"
 
-// dead impl, kept by ruling — the cluster at cmdImpl
-// [D:drop-command-builtins]
-let private cmdEnvImpl: Value =
-    VBuiltin(fun envV ->
-        VBuiltin(fun progV ->
-            VBuiltin(fun argsV ->
-                match progV, argsV with
-                | VStr prog, VSeq args ->
-                    if prog.Trim() = "" then
-                        failwith "cmd: empty program name"
-
-                    let argv = argStrings args
-
-                    VSeq(
-                        Seq.delay (fun () -> Proc.linesWith (envVarPairs envV) (Proc.resolveProg prog) argv None)
-                        |> Seq.map VStr
-                    )
-                | _ -> unreachable "the checker rejects 'cmdEnv' on these arguments")))
-
 // fst/snd — F#'s pair projections; the pair-only typing (TTuple [a; b])
 // makes wider tuples a unification error, same as F#
 let private fstImpl: Value =
@@ -4564,17 +4511,6 @@ let private printImpl: Value =
         // desugar's interior may be unit (| orFail)
         | VUnit -> VUnit
         | v -> unreachable $"the checker rejects 'print' on {formatValue v}")
-
-// dead impl, kept by ruling — the cluster at cmdImpl
-// [D:drop-command-builtins]
-let private runImpl: Value =
-    VBuiltin(fun prog -> VBuiltin(fun argv -> apply printImpl (apply (apply cmdImpl prog) argv)))
-
-// dead impl, kept by ruling — the cluster at cmdImpl
-// [D:drop-command-builtins]
-let private runEnvImpl: Value =
-    VBuiltin(fun env ->
-        VBuiltin(fun prog -> VBuiltin(fun argv -> apply printImpl (apply (apply (apply cmdEnvImpl env) prog) argv))))
 
 let commandCallable: Set<string> = Set [ "cd" ]
 

@@ -1698,7 +1698,18 @@ WEOF
     echo "$rout2" | grep -q "31mCRED" || true  # the tool colours unconditionally; content-identical either way
     printf 'sh %s/t.sh\n' "$cidir" > "$cidir/tt.weir"
     [ "$("$BIN" "$cidir/tt.weir")" = "IS-PIPE" ] || fail "a redirected weir keeps the pipe (byte laws intact)"
-    echo "e2e ok: colour inherit — bare statements see the terminal, captures see the pipe, ordering holds, redirected unchanged"
+    # ONE GATE, BOTH CONSUMERS [D:colour-inherit]: the runner and the REPL
+    # ask Eval.inheritsStdout, never their own copy of the condition, so the
+    # 2x2 must be SYMMETRIC — same probe, both consumers, both stdout modes.
+    # The rows above pin one diagonal (REPL at a tty, script redirected);
+    # these are the other two. Pinning a diagonal lets the halves drift apart
+    # while every assertion still passes.
+    sttyout=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 8 "$BIN" "$cidir/tt.weir")
+    echo "$sttyout" | grep -qF "IS-TTY" || fail "a script statement at a tty inherits too: $sttyout"
+    rpipeout=$(printf 'sh %s/t.sh\n#quit\n' "$cidir" | "$BIN" 2>/dev/null || true)
+    echo "$rpipeout" | grep -qF "IS-PIPE" || fail "a redirected REPL keeps the pipe: $rpipeout"
+
+    echo "e2e ok: colour inherit — bare statements see the terminal, captures see the pipe, ordering holds, redirected unchanged, and the runner/REPL 2x2 agrees"
 else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi
@@ -3681,6 +3692,27 @@ rm -rf "$sfdir"
 
 rfdir=$(mkweirtmp)
 
+# the exit-code discard teaching is ONE string [D:exit-reifiers]: four
+# refusal sites, and the copies had drifted to two spellings of the dash
+# with nothing pinning any of them. Pinned VERBATIM and LEADING at the two
+# sites that lead with it — a tail-only assertion sees neither the dash nor
+# a demotion under a parser dump. Newlines fold first: the renderer wraps.
+edmsg="this discards the exit code — bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+
+printf 'if 1 == 1 then\n    git push | exitCode\n' > "$rfdir/ed-if.weir"
+out=$($BIN check "$rfdir/ed-if.weir" 2>&1) && fail "an else-less if must refuse a discarded exit code"
+printf '%s' "$out" | tr '\n' ' ' | grep -qF "error [check]: $edmsg" || fail "the if site must LEAD with the shared teaching: $out"
+
+printf 'let f () =\n    git push | exitCode\n    print "z"\n' > "$rfdir/ed-seq.weir"
+out=$($BIN check "$rfdir/ed-seq.weir" 2>&1) && fail "a non-final sibling must refuse a discarded exit code"
+printf '%s' "$out" | tr '\n' ' ' | grep -qF "error [parse]: $edmsg" || fail "the sequence site must LEAD with the shared teaching: $out"
+
+# the statement rule's own wording is deliberately NOT that string — it is
+# the discard family's sentence, and pinning it keeps the two distinct
+printf 'git push | exitCode\n' > "$rfdir/ed-st.weir"
+out=$($BIN check "$rfdir/ed-st.weir" 2>&1) && fail "a bare statement must refuse a discarded exit code"
+printf '%s' "$out" | tr '\n' ' ' | grep -qF "error [discard]: this statement computes the exit code and discards it" || fail "the statement site keeps the discard family's wording: $out"
+
 # orFail STREAMS (behavioral pin: the child's stdout reaches the user)
 cat > "$rfdir/of.weir" <<'WEOF'
 sh -c "echo build-step-one; echo build-step-two; exit 4" | orFail "build broke"
@@ -4264,7 +4296,11 @@ if [ "$IS_WINDOWS" = "1" ]; then
 else
     errout=$( (ulimit -s 512; $BIN check "$ddir/deep.weir") 2>&1 ) && fail "small-stack deep parse must diagnose"
     rc=$?
-    [ "$rc" -lt 128 ] || fail "small-stack deep parse crashed (rc=$rc) — the probe must fire first"
+    # the 512KB budget is calibrated against AOT frames — a JIT build's
+    # are larger and overflow before the guard fires, which reads as a
+    # SEGV in this assertion. Name the requirement rather than let a
+    # wrong-binary run masquerade as a depth-guard regression.
+    [ "$rc" -lt 128 ] || fail "small-stack deep parse crashed (rc=$rc) — the probe must fire first (this cell needs the PUBLISHED AOT binary; a dotnet-build/JIT \$BIN overflows 512KB on frame size alone — run ./publish.sh, or set WEIR_BIN to the published binary)"
     echo "$errout" | grep -qF "nested too deeply" || fail "probe diagnostic missing: $errout"
     echo "e2e ok: depth probe diagnoses on a 512KB stack (no SIGSEGV), full stack still parses 499"
 fi
@@ -5360,6 +5396,39 @@ out=$(cat "$pfdir/pf.out")
 [ "$took" -lt 1800 ] || fail "pfirst waited for the loser (took ${took}ms; marker=$([ -e "$pfdir/marker" ] && echo present || echo absent))"
 sleep 2.5
 [ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
+
+# a SCOPED child joins its arm's race group too [D:seq-pfirst]: the spill
+# path spawns through the one starter, so `within proc` obeys the same
+# kill. The bare-command case above proved the group works; this proves
+# the membership. BOTH directions — the loser's child must die, the
+# winner's must run to completion (a group that killed everything would
+# pass the first assertion alone).
+#
+# DO NOT COLLAPSE THE BRANCHES: the loser's scope sits in the `then` arm
+# and the winner's in `else`, which is not incidental — if/match INFER
+# their first branch and CHECK the rest, so this shape covers both type
+# directions of [D:within-scopes]'s scope contracts at the same time. A
+# tidy-up that moves both scopes to one branch, or hoists them out of the
+# if, silently drops half that coverage.
+cat > "$pfdir/pfproc.weir" <<'WEOF'
+let racer n =
+    if n == 1 then
+        within proc srv = sh -c "sleep 3 && touch loser-ran"
+            Duration.sleep 10s
+    else
+        within proc srv = sh -c "sleep 1 && touch winner-ran"
+            Duration.sleep 2s
+    n * 10
+
+let r = [1; 2] |> Seq.pfirst racer
+Duration.sleep 5s
+print $"winner: {r}"
+WEOF
+(cd "$pfdir" && $BIN pfproc.weir > pfproc.out 2>&1)
+grep -qF "winner: 20" "$pfdir/pfproc.out" || fail "pfirst+proc winner: $(cat "$pfdir/pfproc.out")"
+[ -e "$pfdir/winner-ran" ] || fail "the WINNER's scoped child must run to completion"
+[ ! -e "$pfdir/loser-ran" ] || fail "the loser's SCOPED child survived the race kill"
+
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
 echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
 # empty raises AND names the guard (reject-don't-guess full form) — pin the
@@ -5367,7 +5436,7 @@ echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
 out=$($BIN -e '[] |> Seq.pfirst (fun n -> n)' 2>&1) && fail "empty must raise" || true
 echo "$out" | grep -qF "a race needs at least one arm" || fail "empty names Seq.isEmpty: $out"
 rm -rf "$pfdir"
-echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed, first-by-order error, empty names the guard)"
+echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed — bare AND scoped, winner's scoped child survives, first-by-order error, empty names the guard)"
 
 # a loser's within-tmp cleanup DOES run — the `finally` executes on the
 # loser's own (un-aborted) thread once its killed child fails; here the
@@ -5536,8 +5605,42 @@ out=$($BIN "$spdir/esc.weir" 2>&1) || fail "the escaped handle must not crash: $
 printf '%s' "$out" | head -1 | grep -qF "false" || fail "escaped running must be false: $out"
 printf '%s' "$out" | tail -1 | grep -qF "0" || fail "escaped tail must be empty (spill gone): $out"
 
+# a proc scope spawns in a CHECKED position too [D:scoped-procs]: an
+# else branch and a non-first match arm are typed by the check direction,
+# not infer, and the two directions must agree on the scope's contracts.
+# The body deliberately never TOUCHES the binder — reading it as a Proc
+# raises a type error, so a body that ignores it is the only shape that
+# can observe a scope which types clean and spawns nothing.
+cat > "$spdir/branch.weir" <<'WEOF'
+let f n =
+    if n == 1 then
+        Duration.sleep 0ms
+    else
+        within proc srv = sh -c "sleep 1 && touch branch-ran"
+            Duration.sleep 3s
+    n
+print (show (f 2))
+WEOF
+(cd "$spdir" && $BIN branch.weir >/dev/null 2>&1) || fail "the branch-position proc scope must run"
+[ -e "$spdir/branch-ran" ] || fail "a proc scope in an if/else branch never spawned its child"
+
+# the match arm is the other checked position, and there the binder must
+# type as Proc — the loud half of the same agreement
+cat > "$spdir/arm.weir" <<'WEOF'
+let f n =
+    match n with
+    | 1 -> Duration.sleep 0ms
+    | _ ->
+        within proc srv = sh -c "sleep 5"
+            print (show (Proc.running srv))
+    n
+print (show (f 2))
+WEOF
+out=$($BIN "$spdir/arm.weir" 2>&1) || fail "the match-arm proc scope must run: $out"
+printf '%s' "$out" | head -1 | grep -qF "true" || fail "the match-arm binder must be a live Proc: $out"
+
 rm -rf "$spdir"
-echo "e2e ok: scoped processes (acceptance + no-orphan, watch died/timeout, retry refusal, raise + TERM sweeps, escaped handle graceful)"
+echo "e2e ok: scoped processes (acceptance + no-orphan, watch died/timeout, retry refusal, raise + TERM sweeps, escaped handle graceful, checked-position spawn)"
 
 # ---- command signatures [D:command-signatures] -----------------------------
 sgdir=$(mkweirtmp)

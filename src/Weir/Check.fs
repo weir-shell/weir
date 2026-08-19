@@ -1934,38 +1934,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Span = expr.Span }
         }
     | EWithin(kind, binder, arg, opts, body) ->
-        // tmp binds its path (a plain string, platform-native); cd
-        // consumes a string path; env consumes seq<EnvVar>; lock
-        // consumes a string path (+ timeout: Duration) — the arg
-        // types are the kinds' contracts [D:within-scopes]; the
-        // scope's type IS the body's type
+        // the arg types are the kinds' contracts [D:within-scopes] and live
+        // in withinContracts, shared with the check direction; the scope's
+        // type IS the body's type
         result {
-            let! targ =
-                match kind, arg with
-                | "cd", Some a -> check ctx env a TStr |> Result.map Some
-                | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
-                | "lock", Some a -> check ctx env a TStr |> Result.map Some
-                // proc's arg is the COMMAND node [D:scoped-procs] — typed
-                // as any command (the parser guarantees ECmd), evaluated
-                // by the scope as a spawn, never as a statement
-                | "proc", Some a -> infer ctx env a |> Result.map Some
-                | _ -> Ok None
-
-            let! topts =
-                match opts with
-                | Some o -> check ctx env o TDur |> Result.map Some
-                | None -> Ok None
-
-            do!
-                match binder with
-                | Some(n, bs) -> checkBinderName bs n
-                | None -> Ok()
-
-            let benv =
-                match binder with
-                | Some(n, _) -> bindParams env [ n, (if kind = "proc" then TNamed("Proc", []) else TStr) ]
-                | None -> env
-
+            let! targ, topts, benv = withinContracts ctx env kind binder arg opts
             let! tbody = infer ctx benv body
 
             return
@@ -3239,9 +3212,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 do!
                     if isExitCodeSpine (tailOf thn) then
-                        err
-                            (tailOf thn).Span
-                            "this discards the exit code — bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+                        err (tailOf thn).Span Ast.exitCodeDiscardMsg
                     else
                         Ok()
 
@@ -3453,6 +3424,48 @@ and private isExitCodeSpine (e: Expr) =
     | EVar n -> n.StartsWith "|exitCoded"
     | _ -> false
 
+/// the scope's ARG and BINDER contracts [D:within-scopes] — ONE resolver for
+/// both type directions. The kinds table is the membership; a kind resolved
+/// in one direction and not the other drops its node silently, and the eval
+/// side cannot tell a dropped node from a kind that never carries one.
+and private withinContracts
+    (ctx: Ctx)
+    (env: TypeEnv)
+    (kind: string)
+    (binder: (string * Span) option)
+    (arg: Expr option)
+    (opts: Expr option)
+    : Result<TypedExpr option * TypedExpr option * TypeEnv, TypeError> =
+    result {
+        let! targ =
+            match kind, arg with
+            | "cd", Some a -> check ctx env a TStr |> Result.map Some
+            | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
+            | "lock", Some a -> check ctx env a TStr |> Result.map Some
+            // proc's arg is the COMMAND node [D:scoped-procs] — typed as any
+            // command (the parser guarantees ECmd), evaluated by the scope as
+            // a spawn, never as a statement
+            | "proc", Some a -> infer ctx env a |> Result.map Some
+            | _ -> Ok None
+
+        let! topts =
+            match opts with
+            | Some o -> check ctx env o TDur |> Result.map Some
+            | None -> Ok None
+
+        do!
+            match binder with
+            | Some(n, bs) -> checkBinderName bs n
+            | None -> Ok()
+
+        let benv =
+            match binder with
+            | Some(n, _) -> bindParams env [ n, (if kind = "proc" then TNamed("Proc", []) else TStr) ]
+            | None -> env
+
+        return targ, topts, benv
+    }
+
 and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeError> =
     match expr.Kind, resolve ctx expected with
     // interior arming's check half [D:interior-arming]: a command chain
@@ -3502,28 +3515,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         }
     | EWithin(kind, binder, arg, opts, body), _ ->
         result {
-            let! targ =
-                match kind, arg with
-                | "cd", Some a -> check ctx env a TStr |> Result.map Some
-                | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
-                | "lock", Some a -> check ctx env a TStr |> Result.map Some
-                | _ -> Ok None
-
-            let! topts =
-                match opts with
-                | Some o -> check ctx env o TDur |> Result.map Some
-                | None -> Ok None
-
-            do!
-                match binder with
-                | Some(n, bs) -> checkBinderName bs n
-                | None -> Ok()
-
-            let benv =
-                match binder with
-                | Some(n, _) -> bindParams env [ n, TStr ]
-                | None -> env
-
+            let! targ, topts, benv = withinContracts ctx env kind binder arg opts
             let! tbody = check ctx benv body expected
 
             return

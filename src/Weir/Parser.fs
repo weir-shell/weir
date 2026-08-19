@@ -885,9 +885,12 @@ let private effectSigil =
         >>= fun envO ->
             ws >>. sigilChain envO
             >>= fun chain ->
+                // ANCHORED [D:anchor-before-read], like the sequence guard:
+                // the unanchored spelling leaves the competing "expected"
+                // errors at the drift position, which then LEAD and push the
+                // repair under "Other error messages"
                 (if exitCodeSpine chain then
-                     failFatally
-                         "this discards the exit code — bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+                     failFatallyAtCol chain.Span.Start.Col exitCodeDiscardMsg
                  else
                      preturn chain)
                 .>> (pchar ')'
@@ -1955,11 +1958,15 @@ let private forExprBody =
             // a MULTI-LINE body yields to seqExpr [D:interior-arming]:
             // eating only the first chain here stranded the siblings
             // outside the binder's scope
+            // the guard REJECTS but its message never surfaces: this whole
+            // parser sits inside `attempt`, so the failure backtracks and the
+            // expression alternative reports the line instead. Load-bearing
+            // as a rejection, invisible as a teaching — removing it accepts a
+            // discarded exit code in a single-line for body
             spanned (sigilChain None) .>> notFollowedBy seqSepAhead
             >>= fun (chain, span) ->
                 if exitCodeSpine chain then
-                    failFatally
-                        "this discards the exit code -- bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+                    failFatally exitCodeDiscardMsg
                 else
                     preturn
                         { Kind = EPipe(chain, { Kind = EVar "|print"; Span = span })
@@ -2618,10 +2625,7 @@ let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
             | Result.Error sp -> Some sp
             | _ -> None)
     with
-    | Some sp ->
-        failFatallyAtCol
-            sp.Start.Col
-            "this discards the exit code -- bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+    | Some sp -> failFatallyAtCol sp.Start.Col exitCodeDiscardMsg
     | None ->
         preturn (
             foldSeqExpr (

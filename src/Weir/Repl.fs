@@ -1126,7 +1126,7 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
         // in-memory capture; $() never streams); a redirected REPL
         // keeps the batched value path.
         match te.Kind with
-        | Check.TECmd _ when not Console.IsOutputRedirected && te.Ty = TSeq TStr ->
+        | _ when Eval.inheritsStdout te ->
             (try
                 Console.Out.Flush()
                 Eval.inheritCommandStatement state.Values te

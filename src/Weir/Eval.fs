@@ -2656,11 +2656,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
                          ())
 
                     Session.deregisterTmpDir spill
-            | _, Some binderName, _ ->
+            | "tmp", Some binderName, _ ->
                 // kind "tmp" [D:within-scopes]: a fresh unique directory,
                 // bound as the binder for the block; removed on EVERY exit —
                 // normal and raise alike (the raise-path is the load-bearing
                 // pin). The delete is best-effort (a vanished dir is fine).
+                // Matched by NAME, never a wildcard: a wildcard arm absorbs a
+                // malformed node of ANY kind instead of reaching the
+                // unreachable guard, which is what makes the guard worth having
                 let dir =
                     System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
 
@@ -2846,6 +2849,15 @@ let streamCommandStatement (env: Env) (te: Check.TypedExpr) (onText: string -> u
 
 /// colour from the child [D:colour-inherit]: the bare statement at a
 /// tty spawns with stdout INHERITED — isatty is true for the child
+/// the inherit GATE [D:colour-inherit] — one predicate, so the runner and the
+/// REPL cannot answer it differently. TECmd is built with Ty = seq<string> at
+/// its single site, so the type test is redundant TODAY and stated anyway: it
+/// is the property the spawn depends on, not an incidental fact about TECmd.
+let inheritsStdout (te: Check.TypedExpr) : bool =
+    match te.Kind with
+    | Check.TECmd _ -> not System.Console.IsOutputRedirected && te.Ty = TSeq TStr
+    | _ -> false
+
 let inheritCommandStatement (env: Env) (te: Check.TypedExpr) : unit =
     Proc.runInherited (commandStatementSpec env te)
 
