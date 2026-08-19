@@ -1092,8 +1092,13 @@ print (codes |> Seq.head)
   `for` binders. The literal's spelling exactly; PARTIAL field mention
   is the point. A param destructuring types by ROW: it accepts ANY
   record carrying the fields (copy-and-update's generality). Match
-  scrutinees need a KNOWN record type (the constructor-pattern law);
-  binder positions carry the row power. Anonymous shapes destructure
+  scrutinees do NOT need a known record type — a match arm emits the
+  same row a binder does, so `let h p = match p with | { name = n } -> n`
+  types and generalises like `let g { name = n } = n`, and arms
+  ACCUMULATE their fields (two arms naming different fields require
+  both). CONSTRUCTOR patterns still need the nominal type: `Some` names
+  a case from a closed set, which is the requirement a field name does
+  not carry [D:record-pattern-rows]. Anonymous shapes destructure
   with the same spelling — there is deliberately NO `{| |}` pattern
   form, and `{ id = id }` over `{| id: string |}` is legal if
   odd-reading (fields and binders are different namespaces; punning
