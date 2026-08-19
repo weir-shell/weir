@@ -52,6 +52,36 @@ correct code unreachable. So binder rejection, match composition, and
 dead-arm detection all just started working — three report-back
 questions that answered themselves.
 
+## install-script hardening: the truncation trick and an honest checksum (2026-08-19)
+
+Six findings against install.sh/ps1; the install work split cleanly
+into implement-now and decide-first. The one real defect was the
+curl|sh truncation hazard: a dropped connection leaves a shorter but
+COMPLETE script that runs up to the cut, and set -eu is blind to it
+(nothing failed). Wrapping the body in main() invoked on the last line
+turns a truncated fetch into an unclosed-function syntax error —
+defines nothing, runs nothing. It's the canonical curl|sh objection
+and the canonical one-trick answer. install.ps1 needs no equivalent:
+irm buffers and throws on an incomplete read, so iex never sees a
+partial (confirmed, not assumed). The pin is offline — no published
+release needed — because it's a `sh -n` parse property.
+
+The honest-comment fix mattered more than it looks: the checksum
+verification catches truncation and CDN corruption but NOT tampering
+(SHA256SUMS shares the release origin), and the old comment ("worse
+than no installer") oversold it. Corrected in both scripts, the ps1
+header, and INSTALL.md. The two-origin option (bake per-release
+checksums into a script served from weir.sh) is a real workflow change
+that pins the script to a version — deferred to a decision before the
+first tag, not made unilaterally.
+
+The gate that outranks all six: releases/latest excludes drafts, and
+[D:releases] produces drafts, so tagging alone leaves the installers
+404ing with no hint the fix is a publish click. A weir script
+(release-published.weir, wired into CI) fails loud on exactly that
+state. A check, not a reminder — it keeps working when nobody reads
+the workflow output.
+
 ## the metamorphic red was the generator all along (2026-08-19)
 
 Followed the width crash's unmasked signal and it landed somewhere

@@ -22,6 +22,12 @@ checksum**, and install — `~/.local/bin/weir` on POSIX,
 `%LOCALAPPDATA%\Programs\weir\weir.exe` on Windows (override with
 `WEIR_INSTALL_DIR`).
 
+The checksum defends against **truncated or corrupted downloads**, not
+tampering: `SHA256SUMS` ships from the same release as the binary, so
+it is an integrity check, not a signature. It is genuinely worth
+having — and it is what the SmartScreen note below leans on — but do
+not read it as tamper protection.
+
 ## Manual download
 
 Grab the binary for your platform from

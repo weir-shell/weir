@@ -68,6 +68,13 @@ jobs:
       # commit-area check above (the scripting policy's dogfood).
       - name: decision-key check
         run: ~/.local/bin/weir ci/decision-keys.weir
+      # the tag-without-publish gate [D:release-gate]: fails LOUD if a
+      # v* tag exists with no PUBLISHED release (releases/latest excludes
+      # drafts, so the installers 404). Passes pre-first-release and once
+      # the draft is published; red only in the tag->publish window,
+      # which is the missing-publish-click surfacing itself.
+      - name: release-published check
+        run: ~/.local/bin/weir ci/release-published.weir
 
       - name: e2e battery (conflict-marker gate at its top)
         run: ./ci/e2e.sh

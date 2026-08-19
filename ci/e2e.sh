@@ -5979,4 +5979,28 @@ echo "$out" | grep -qF "unknown flag '--porcelian' for git. Did you mean '--porc
 rm -rf "$sctdir"
 echo "e2e ok: showcase .weir tree (offline check, no restore; the typo the comment names is caught)"
 
+# ---- install.sh hardening [D:install-truncation][D:install-checksum-scope] --
+# the truncation guard: the whole body is main() invoked last, so a fetch cut
+# mid-body is an UNCLOSED FUNCTION — a syntax error that defines and runs
+# nothing (set -eu cannot catch a truncation; nothing failed). Parse-only
+# (sh -n), so no side effects even in the negative direction.
+insdir=$(mkweirtmp)
+head -c 900 "$ROOT/install.sh" > "$insdir/trunc.sh"
+if sh -n "$insdir/trunc.sh" 2>/dev/null; then
+    fail "a truncated install.sh must be a syntax error (main() left unclosed)"
+fi
+sh -n "$ROOT/install.sh" || fail "the full install.sh must parse clean"
+echo "e2e ok: install.sh truncation guard — truncated is a syntax error, full parses"
+
+# a missing SHA256SUMS entry is NAMED, not left to '$SUM -c' printing "no
+# properly formatted lines" — the exact grep-guard the script now runs
+printf 'abc123  weir-v1-linux-x64\n' > "$insdir/SHA256SUMS"
+missing="weir-v1-linux-arm64"
+imsg=$(grep -q " $missing\$" "$insdir/SHA256SUMS" || echo "no checksum for $missing in SHA256SUMS")
+[ "$imsg" = "no checksum for $missing in SHA256SUMS" ] || fail "a missing checksum entry must be named, got: $imsg"
+# the present entry still verifies through the same grep
+present="weir-v1-linux-x64"
+grep -q " $present\$" "$insdir/SHA256SUMS" || fail "a present checksum entry must be found"
+echo "e2e ok: install missing-checksum entry is named (not 'no properly formatted lines'); present entry found"
+
 echo "e2e battery: all green"

@@ -6,8 +6,9 @@
 #   irm https://raw.githubusercontent.com/weir-shell/weir/main/install.ps1 | iex
 #
 # Unsigned binary: SmartScreen may warn on first run — More info ->
-# Run anyway; the checksum verification below is what stands in for
-# the signature (docs/INSTALL.md).
+# Run anyway. The checksum below verifies the download is intact (not
+# truncated/corrupted); it is NOT a signature — SHA256SUMS shares the
+# release origin [D:install-checksum-scope] (docs/INSTALL.md).
 $ErrorActionPreference = "Stop"
 
 $repo = "weir-shell/weir"
@@ -34,8 +35,12 @@ try {
     Invoke-WebRequest -Uri "$base/$name" -OutFile (Join-Path $tmp $name)
     Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile (Join-Path $tmp "SHA256SUMS")
 
-    # verify BEFORE installing — an installer that skips this is worse
-    # than no installer
+    # verify BEFORE installing [D:install-checksum-scope]: catches
+    # truncation and CDN corruption. SHA256SUMS shares the release
+    # origin with the binary, so this is integrity, NOT tamper
+    # protection. (irm buffers the whole response before iex sees it and
+    # throws on an incomplete read, so there is no partial-script hazard
+    # — the install.sh main() guard has no ps1 equivalent to need.)
     $expected = (Get-Content (Join-Path $tmp "SHA256SUMS") |
         Where-Object { $_ -match [regex]::Escape($name) + "$" }) -split "\s+" |
         Select-Object -First 1
@@ -50,8 +55,12 @@ try {
     $installed = Join-Path $dest "weir.exe"
     Write-Host "installed: $installed ($(& $installed --version))"
 
+    # segment match, not substring [D:install-checksum-scope]: a Path
+    # entry that merely has $dest as a PREFIX would falsely suppress the
+    # note (the segment-vs-prefix class Path.under rule 4 guards)
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$dest*") {
+    $onPath = ($userPath -split ';') -contains $dest
+    if (-not $onPath) {
         Write-Host "note: $dest is not on your PATH — add it once:"
         Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"$userPath;$dest`", 'User')"
     }
