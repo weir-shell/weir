@@ -38,7 +38,11 @@ fi
 if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --short HEAD >/dev/null 2>&1; then
     head_hash=$(git -C "$repo_root" rev-parse --short HEAD)
     stamp=$("$BIN" --version 2>/dev/null || echo none)
-    case "$stamp" in
+    # the stamp is <tag>+<hash> [D:masking-mechanized]; the hash is the
+    # part after the LAST '+' (a bare hash or 'none' has no '+' and passes
+    # through unchanged, so the gate reads identically either way)
+    hash=${stamp##*+}
+    case "$hash" in
         "$head_hash"-dirty*)
             if [ -n "${WEIR_REQUIRE_CLEAN:-}" ]; then
                 echo "STALE BINARY: $BIN stamps '$stamp' (dirty tree) — WEIR_REQUIRE_CLEAN set, a clean build is required" >&2
@@ -48,7 +52,7 @@ if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --short HEAD 
             ;;
         "$head_hash"*) : ;;
         *)
-            echo "STALE BINARY: $BIN stamps '$stamp', HEAD is '$head_hash' — rebuild with ./publish.sh" >&2
+            echo "STALE BINARY: $BIN stamps '$stamp' (hash '$hash'), HEAD is '$head_hash' — rebuild with ./publish.sh" >&2
             exit 1
             ;;
     esac

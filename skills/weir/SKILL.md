@@ -192,7 +192,20 @@ print $"{w}"
   forces the binary), and a spliced param defaults to string at the
   statement boundary. Splices are WHOLE argv entries — a mid-word
   splice like `--file=$f` is a hard error (the prefix can't glue to
-  the value); spell `--file $f` or an interp arg `$"--file={f}"`.
+  the value); spell `--file $f` or an interp arg `$"--file={f}"`. A
+  PATH-shaped word (`./dir/$f`) leads you to interpolation or
+  `Path.combine` instead — a space there would split one path into two
+  arguments.
+
+```weir-error
+let f = "x"
+echo --file=$f // a splice cannot join a word under construction
+```
+
+```weir-error
+let build = "b"
+echo ./tt3/$build // a path: the hint leads with interpolation / Path.combine
+```
 - `+` on two unknown params cannot infer (int-or-string): anchor one
   side (`x + 0`) or take data in. All single-typing operators
   (`- * / > <`) default to int; `let rec` and `mutable` are reserved

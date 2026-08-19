@@ -208,18 +208,11 @@ let main argv =
     | [ "-e"; input ] -> evalOnce input
     | [] -> Weir.Repl.run ()
     | [ "--version" ] ->
-        // the build stamp [D:masking-mechanized] — harness gates
-        // compare this against git HEAD
-        let v =
-            match
-                System.Reflection.Assembly
-                    .GetEntryAssembly()
-                    .GetCustomAttributes(typeof<System.Reflection.AssemblyInformationalVersionAttribute>, false)
-            with
-            | [| :? System.Reflection.AssemblyInformationalVersionAttribute as a |] -> a.InformationalVersion
-            | _ -> "dev"
-
-        Console.WriteLine v
+        // the build stamp [D:masking-mechanized] — <tag>+<hash>; the
+        // harness gates read the hash (the part after the last '+') and
+        // compare it against git HEAD. The same source the LSP
+        // serverInfo.version reads, so the two cannot diverge.
+        Console.WriteLine Weir.Version.current
         0
     // LSP clients conventionally append transport argv (languageclient
     // v10 adds --stdio/--clientProcessId to Executables) — tolerated

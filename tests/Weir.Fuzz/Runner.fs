@@ -77,9 +77,16 @@ let stampGate =
          | None -> () // no git — the e2e gate skips too
          | Some head ->
              let stamp = (capture binPath [ "--version" ] 10000).Out.Trim()
+             // the stamp is <tag>+<hash>; the hash is the part after the
+             // last '+' (a bare stamp with no '+' passes through whole)
+             let hash =
+                 match stamp.LastIndexOf '+' with
+                 | -1 -> stamp
+                 | i -> stamp.Substring(i + 1)
 
-             if not (stamp.StartsWith head) then
-                 failwith $"STALE BINARY: {binPath} stamps '{stamp}', HEAD is '{head}' — rebuild with ./publish.sh"
+             if not (hash.StartsWith head) then
+                 failwith
+                     $"STALE BINARY: {binPath} stamps '{stamp}' (hash '{hash}'), HEAD is '{head}' — rebuild with ./publish.sh"
 
          match repoRoot with
          | Some root ->

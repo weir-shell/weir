@@ -1,5 +1,38 @@
 # Spike Notes
 
+## pre-tag code: the stamp gains a tag, the splice hint gains a path (2026-08-19)
+
+Two of the pre-tag items were pure code and independent of the site, so they
+went first.
+
+The version stamp was the more interesting one because the constraint was
+hidden. `--version` printed a bare hash, and the obvious fix — always print
+`tag+hash` — collides with the freshness gates, which prefix-matched the whole
+stamp against HEAD. Tag-first-for-humans and hash-first-for-gates cannot share
+one string. The reconciliation is to stop prefix-matching: the gates now read
+the hash as the part after the LAST `+`, which is backward-compatible (a bare
+stamp has no `+` and passes through), so the stamp can lead with the tag. The
+untagged tag is `0.0.0-dev` — an honest marker that sorts below any release;
+an empty tag would be dishonest, and untagged is what every dev build shows.
+The gates only ever run on untagged builds (the gate job never sets
+WeirRelease), so the release format was never the gate's concern — worth
+confirming before touching the load-bearing stamp mechanism rather than after.
+
+One source, two consumers: `Weir.Version.current`, read off Weir.dll itself
+(not GetEntryAssembly, which in-proc is the test runner), feeds both
+`--version` and the LSP `serverInfo.version`. The strongest pin is the
+lsp-e2e asserting the two are byte-equal — two lookups is the shape that
+drifts, so there is one, and equality proves it.
+
+The splice hint was smaller but sharper: the homepage hero is
+`rm -rf ./tt3/$build`, and the diagnostic's leading repair — "add a space" —
+produces `rm -rf ./tt3/ $build`, a directory and a separate operand, a worse
+command. Path-joining is not flag-joining. The fix detects a path separator in
+the word-under-construction (a backward peek over the already-read word) and
+leads with interpolation and Path.combine for paths, keeping the space repair
+for flags. Both branches are pinned in e2e and fenced in SKILL so neither is
+incidental.
+
 ## the same mistake twice, and what it has in common (2026-08-19)
 
 Second amendment to the record-pattern rows in two days, same shape:

@@ -14463,11 +14463,28 @@ let bytesTests =
                   System.IO.File.Delete out
           } ]
 
+let versionStampTests =
+    testList
+        "Version stamp"
+        [ test "current is <tag>+<hash>, dev-tagged when untagged [D:masking-mechanized]" {
+              let v = Weir.Version.current
+              // ALWAYS tag+hash — the tag leads for humans, the sha rides
+              Expect.stringContains v "+" "the stamp joins a tag and a hash with '+'"
+              // every dev/CI-gate build is untagged and tags 0.0.0-dev: an
+              // honest marker that sorts below any release, never an empty tag
+              Expect.isTrue (v.StartsWith "0.0.0-dev+") $"an untagged build tags 0.0.0-dev, got '{v}'"
+              // the hash rides after the LAST '+' — the exact substring the
+              // freshness gates read — and is never empty
+              let hash = v.Substring(v.LastIndexOf '+' + 1)
+              Expect.isFalse (System.String.IsNullOrEmpty hash) "the hash component is present"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
-        [ echoBinaryTests
+        [ versionStampTests
+          echoBinaryTests
           logLevelTests
           dxMessageTests
           bytesTests

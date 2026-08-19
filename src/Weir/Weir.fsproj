@@ -38,14 +38,20 @@
       <Output TaskParameter="ConsoleOutput" PropertyName="_WeirDirty" />
     </Exec>
     <PropertyGroup>
-      <_WeirStamp Condition="'$(_WeirShaExit)' == '0'">$(_WeirSha)</_WeirStamp>
-      <_WeirStamp Condition="'$(_WeirShaExit)' != '0'">nogit</_WeirStamp>
-      <_WeirStamp Condition="'$(_WeirDirty)' != '' and '$(_WeirShaExit)' == '0'">$(_WeirStamp)-dirty</_WeirStamp>
-      <!-- release opt-in [D:releases]: the tag leads, the sha rides —
-           every non-release path stamps exactly as before, so the
-           freshness gates' stamp==HEAD contract is untouched -->
-      <_WeirStamp Condition="'$(WeirRelease)' != ''">$(WeirRelease)+$(_WeirSha)</_WeirStamp>
-      <InformationalVersion>$(_WeirStamp)</InformationalVersion>
+      <!-- the HASH component: short sha, -dirty via porcelain, nogit fallback -->
+      <_WeirHash Condition="'$(_WeirShaExit)' == '0'">$(_WeirSha)</_WeirHash>
+      <_WeirHash Condition="'$(_WeirShaExit)' != '0'">nogit</_WeirHash>
+      <_WeirHash Condition="'$(_WeirDirty)' != '' and '$(_WeirShaExit)' == '0'">$(_WeirHash)-dirty</_WeirHash>
+      <!-- the TAG component [D:releases]: the release tag when building a
+           release, else an honest 0.0.0-dev marker that sorts BELOW any
+           release (an empty tag would be dishonest). The stamp is ALWAYS
+           <tag>+<hash> — the tag leads for humans and ordering, the sha
+           rides for exactness. The freshness gates (ci/check-fresh.sh,
+           the fuzz stampGate) read the hash as the part after the last
+           '+', so this format change keeps their stamp==HEAD contract. -->
+      <_WeirTag Condition="'$(WeirRelease)' != ''">$(WeirRelease)</_WeirTag>
+      <_WeirTag Condition="'$(WeirRelease)' == ''">0.0.0-dev</_WeirTag>
+      <InformationalVersion>$(_WeirTag)+$(_WeirHash)</InformationalVersion>
     </PropertyGroup>
   </Target>
 
@@ -57,6 +63,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="Version.fs" />
     <Compile Include="Types.fs" />
     <Compile Include="Ast.fs" />
     <Compile Include="Argv.fs" />

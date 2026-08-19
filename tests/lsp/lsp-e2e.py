@@ -77,6 +77,15 @@ send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
 init = read_msg()
 expect(init["result"]["capabilities"]["hoverProvider"], "capabilities missing")
 
+# serverInfo.version reads the SAME source as `--version` — an editor and
+# the CLI must report one stamp [D:masking-mechanized]. Pinned by equality,
+# so the two cannot silently diverge.
+srv = init["result"].get("serverInfo", {})
+expect(srv.get("name") == "weir", f"serverInfo.name: {srv}")
+cli_version = subprocess.check_output([BIN, "--version"]).decode().strip()
+expect(srv.get("version") == cli_version,
+       f"serverInfo.version {srv.get('version')!r} != --version {cli_version!r}")
+
 # open a doc with an error -> diagnostic with code
 send({"jsonrpc": "2.0", "method": "textDocument/didOpen",
       "params": {"textDocument": {"uri": URI, "text": "let Foo = 1\n"}}})

@@ -4286,6 +4286,14 @@ errout=$(printf 'let f = "x"
 echo --file=$f
 ' | checkPiped 2>&1) && fail "mid-word scalar splice must reject"
 echo "$errout" | grep -qF "cannot join a word under construction" || fail "mid-word scalar teaching: $errout"
+# a PATH-shaped word gets the PATH hint, not the flag hint [D:argv-splat]:
+# the space repair splits one path into two args, so the message leads with
+# interpolation and Path.combine (the homepage hero quotes this exact case)
+errout=$(printf 'let build = "b"
+rm -rf ./tt3/$build
+' | checkPiped 2>&1) && fail "mid-word path splice must reject"
+echo "$errout" | grep -qF "cannot join a path under construction" || fail "path splice says path, not word: $errout"
+echo "$errout" | grep -qF "Path.combine" || fail "path splice names Path.combine: $errout"
 # the spaced spelling stays legal (one argv word each)
 out=$(printf 'let f = "x.txt"
 echo --file $f

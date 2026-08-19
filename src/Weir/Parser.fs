@@ -2729,12 +2729,45 @@ let private notMidWord (teach: string) : Parser<unit, unit> =
      >>= fun at -> pchar '$' >>. failFatallyAt at teach)
     <|> preturn ()
 
+// does the word-under-construction (back to the last whitespace) contain a
+// path separator? [D:argv-splat] — a PATH splice wants interpolation or
+// Path.combine, NOT the space repair, which would split one path into two
+// arguments (`./dir/ $x` is a directory and a separate operand). Non-
+// consuming: peeks backward over the already-read word from the `$`.
+let private wordHasPathSep: Parser<bool, unit> =
+    fun stream ->
+        let mutable off = -1
+        let mutable found = false
+        let mutable scanning = true
+
+        while scanning do
+            let c = stream.Peek off
+
+            if c = FParsec.CharStream.EndOfStreamChar || c = ' ' || c = '\t' then
+                scanning <- false
+            elif c = '/' then
+                found <- true
+                scanning <- false
+            else
+                off <- off - 1
+
+        Reply found
+
 let private spliceVar =
     // gate the mid-word check behind the `$` (as splat gates behind `$@`)
-    // so it fires only on an actual splice, never on a plain bareword
+    // so it fires only on an actual splice, never on a plain bareword. The
+    // hint is context-sensitive [D:splice-path-hint]: a path-ish word leads with
+    // interpolation/Path.combine (the space repair is WRONG for a path), a
+    // flag-ish word leads with the space.
     lookAhead (pchar '$')
-    >>. notMidWord
-            "a splice cannot join a word under construction — spell it with a space (`--flag $x`) or an interpolated arg (`$\"--flag={x}\"`)"
+    >>. (wordHasPathSep
+         >>= fun isPath ->
+             notMidWord (
+                 if isPath then
+                     "a splice cannot join a path under construction — spell it as one interpolated arg (`$\"dir/{x}\"`), or `Path.combine dir name` for a filesystem path; a space (`dir/ $x`) would pass two arguments, not one path"
+                 else
+                     "a splice cannot join a word under construction — spell it with a space (`--flag $x`) or an interpolated arg (`$\"--flag={x}\"`)"
+             ))
     >>. spanned (pchar '$' >>. rawWord |>> EVar)
     |>> mkExpr
     .>> ws

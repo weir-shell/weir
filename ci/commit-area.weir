@@ -48,6 +48,7 @@ let areaOfSrc p =
     | "src/Weir/Fmt.fs" -> Some "fmt"
     | "src/Weir/Yaml.fs" -> Some "adapters"
     | "src/Weir/Http.fs" -> Some "adapters"
+    | "src/Weir/Version.fs" -> Some "cli"
     | "src/Weir/Program.fs" -> Some "cli"
     | "src/Weir/Can.fs" -> Some "cli"
     | "src/Weir/Argv.fs" -> Some "cli"

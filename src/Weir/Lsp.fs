@@ -1789,8 +1789,15 @@ let run (debug: bool) : int =
                         idStr
                         |> Option.iter (fun id ->
                             respond id (fun w ->
-                                w.WriteRawValue
-                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir"}}"""))
+                                // serverInfo.version reads Weir.Version.current — the
+                                // SAME source as `--version` [D:masking-mechanized], so an
+                                // editor and the CLI report one stamp. The value is
+                                // <tag>+<hash>, all JSON-safe chars, so the placeholder
+                                // splice needs no escaping.
+                                w.WriteRawValue(
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
+                                        .Replace("__WEIR_VERSION__", Weir.Version.current)
+                                )))
                     | "initialized" -> ()
                     | "shutdown" -> idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
                     | "exit" -> running <- false
