@@ -115,15 +115,42 @@ let classify d entry =
     // Grading the whole output let a CASCADING secondary error carry a teach
     // phrase and rescue a case whose real message was a dump (`1 = 1` did
     // exactly this: the dump on line 1, "Did you mean 'cd'?" on line 2).
-    let text = r.stdout |> Seq.tryHead |> Option.defaultValue ""
-    let hasDump = text |> Str.contains "Expecting:"
-    let teaches = saysAny text teachPhrases
+    // the first DIAGNOSTIC, not the first LINE: a file-level preamble can
+    // precede the diagnostics (the not-a-weir-script note), and grading the
+    // line under it graded the preamble — every displaced message read as
+    // `plain` and the total fell without a single message changing
+    let text =
+        r.stdout
+        |> Seq.tryFind (fun l -> Str.contains "error [" l || Str.contains "warning [" l)
+        |> Option.orElse (r.stdout |> Seq.tryHead)
+        |> Option.defaultValue ""
+
+    // POSITION, not presence: a repair phrase that arrives AFTER an
+    // expecting-list is not a teaching — the reader hits the token dump
+    // first, and the message the anchoring law wants on top is second
+    // [D:anchor-before-read]. Presence alone scored these `teaches` and
+    // the bucket could not see the demotion.
+    let dumpAt = Str.tryIndexOf "Expecting:" text
+
+    let teachAt =
+        teachPhrases
+        |> Seq.choose (fun p -> Str.tryIndexOf p text)
+        |> Seq.sort
+        |> Seq.tryHead
 
     let bucket =
-        if (r.stdout |> Seq.isEmpty) then "silent"
-        elif teaches then "teaches"
-        elif hasDump then "dump"
-        else "plain"
+        if (r.stdout |> Seq.isEmpty) then
+            "silent"
+        else
+            match teachAt with
+            | Some t ->
+                match dumpAt with
+                | Some d when t > d -> "dump"
+                | _ -> "teaches"
+            | None ->
+                match dumpAt with
+                | Some _ -> "dump"
+                | None -> "plain"
 
     print $"  {name}: {bucket}"
     bucket

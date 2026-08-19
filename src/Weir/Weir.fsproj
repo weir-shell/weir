@@ -5,6 +5,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- the host holds this source to the LANGUAGE's standard [D:host-strictness]:
+         weir makes a non-exhaustive match a hard error, F# only warns — so the
+         warning has to bind. Clean at adoption; it does NOT reach the tuple
+         matches that drifted, nor unused private values (F# emits nothing there) -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <StripSymbols>true</StripSymbols>
     <OptimizationPreference>Speed</OptimizationPreference>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>

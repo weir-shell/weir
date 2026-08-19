@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Run the full CI pipeline locally in the CI image (clean-room mirror of
-# .gitlab-ci.yml's test job). Post-stage ritual: run this before pushing.
+# .github/workflows/ci.yml's linux job). Post-stage ritual: run this before
+# pushing.
+#
+# PARTIAL, and stated rather than implied: the commit-area check is
+# PR-only in ci.yml (it needs a base sha) and is not run here; the macos
+# and windows jobs have no local mirror at all.
 #
 # The repo is COPIED into the image as build context, not bind-mounted:
 # bind mounts silently break with remote docker daemons (paths resolve on
@@ -18,4 +23,4 @@ ENGINE="${WEIR_CI_ENGINE:-docker}"
 "$ENGINE" run --rm \
     -v weir-nuget:/root/.nuget \
     weir-ci-run \
-    bash -ec 'dotnet test tests/Weir.Tests/Weir.Tests.fsproj && ./publish.sh && ci/e2e.sh && dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj && ci/skill-doc.sh && ci/fsharp-oracle.sh && ci/timing.sh'
+    bash -ec 'dotnet test tests/Weir.Tests/Weir.Tests.fsproj && ./publish.sh && ~/.local/bin/weir ci/decision-keys.weir && ci/e2e.sh && dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj && ci/skill-doc.sh && ~/.local/bin/weir tools/dead-privates.weir && ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir && ci/fsharp-oracle.sh && ci/timing.sh'

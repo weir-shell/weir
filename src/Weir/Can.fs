@@ -170,6 +170,10 @@ let rec private walkExpr
               let names = arg |> Option.bind (envNamesOf binds)
               add (EnvWrite("within env", names)) te.Span
           | "cd" -> add CwdChange te.Span
+          // the lock FILE is a write [D:within-lock]: the scope creates it
+          // when missing, so a report that omits it denies a write that
+          // happens
+          | "lock" -> add (FsWrite("within lock", arg |> Option.bind literalStr)) te.Span
           | _ -> ())
      | TEEnvLoad(def, _) ->
          for fname, fty in def.Fields do

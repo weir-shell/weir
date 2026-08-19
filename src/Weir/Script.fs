@@ -4417,7 +4417,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                     // batched path — byte-identical, decided
                                     // at spawn
                                     (match te.Kind with
-                                     | Check.TECmd _ when not Console.IsOutputRedirected ->
+                                     | _ when Eval.inheritsStdout te ->
                                          // no mid-line tidy: a DSR query
                                          // HANGS under a non-answering
                                          // terminal (the pty harness proved

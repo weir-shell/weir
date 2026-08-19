@@ -79,6 +79,13 @@ let withinKindList =
         let front = names |> List.take (names.Length - 1) |> String.concat ", "
         $"{front}, or {List.last names}"
 
+/// the exit-code discard teaching [D:exit-reifiers], ONE string for every
+/// site that refuses a discarded `| exitCode`: the parser's sigil and
+/// sequence guards and the checker's else-less if. Shared because the copies
+/// drifted — two spellings of the dash across four sites, none of them pinned
+let exitCodeDiscardMsg =
+    "this discards the exit code — bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
+
 // the adapter type slot's payload [D:anon-records]: a declared NAME,
 // or an anonymous field list `{| f: ty; … |}` (adapter slot only —
 // there is no anonymous literal, and tySyn does not nest it)
@@ -347,7 +354,9 @@ let rec sexprPat (p: Pattern) : string =
     | PTuple ps -> "(" + (ps |> List.map sexprPat |> String.concat ", ") + ")"
     | PRecord fields ->
         "{ "
-        + (fields |> List.map (fun ((f, _), sub) -> $"{f} = {sexprPat sub}") |> String.concat "; ")
+        + (fields
+           |> List.map (fun ((f, _), sub) -> $"{f} = {sexprPat sub}")
+           |> String.concat "; ")
         + " }"
     | PCase(c, None) -> c
     | PCase(c, Some arg) -> $"({c} {sexprPat arg})"

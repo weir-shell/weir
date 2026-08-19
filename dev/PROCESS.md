@@ -88,6 +88,26 @@ teaching REACHES the user (text present + neither burial marker), not
 just "no crash". Sightings: arm-commit, the depth guard, the
 reserved-word gate (LEXICON).
 
+Corollary — **a swallowed teaching is still a live REJECTION; deleting
+it opens a hole**. The corollary above says a fatal inside an `attempt`
+is invisible and misleading, which reads as "so remove it". It is the
+opposite. The backtrack discards the MESSAGE, not the refusal: the
+enclosing alternative still fails, the rule still holds, and the user
+simply sees a different error. So one site can be unreachable as a
+teaching AND load-bearing as a guard at the same time, and "its text
+can never be read" is not evidence that it is dead — which is exactly
+the reasoning that will delete it. Before removing such a site, test
+the RULE, not the message: delete it and check whether the program it
+used to refuse is now ACCEPTED. Sighting: the for-body exit-code guard
+(`forExprBody`'s `cmdBody`), whose text never appeared across a
+24-shape corpus and which was deleted on that evidence — the deletion
+made `for x in xs do <cmd> | exitCode` check clean and silently discard
+the code, a hole in the statement rule that lived four minutes and was
+caught only by a follow-up assertion, not by the suite. Restored with
+a comment naming its attempt boundary, per the corollary above. The
+general shape: `attempt` semantics bite a teaching from three sides —
+swallowed (above), advertised (below), and load-bearing-yet-mute here.
+
 Corollary — **a teaching guard ADVERTISES the vocabulary it refuses**.
 The same `attempt`/`choice` shape bites from the other side: a guard
 built as `choice [ attempt (pstring w) >>= teach; … ]` contributes

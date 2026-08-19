@@ -4,5 +4,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Weir.Tests/Weir.Tests.fsproj" />
+    <Project Path="tests/Weir.Fidelity/Weir.Fidelity.fsproj" />
+    <Project Path="tests/Weir.Fuzz/Weir.Fuzz.fsproj" />
   </Folder>
 </Solution>

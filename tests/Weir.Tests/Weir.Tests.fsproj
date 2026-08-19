@@ -6,6 +6,7 @@
     <!-- the SHIPPED binary runs invariant (Weir.fsproj); a culture-mode
          host would referee different string semantics [D:invariant-strings] -->
     <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>

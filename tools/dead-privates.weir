@@ -1,0 +1,54 @@
+#!/usr/bin/env weir
+// Unreferenced `let private` bindings in src/Weir — a GATE: the expected count
+// is ZERO and any survivor fails. It could not be one while the retired
+// command tier's impls were kept on purpose, which put the resting state at
+// 3-of-697; deleting them [D:drop-command-impls] took the baseline to zero and
+// a zero baseline is what makes an audit assertable.
+//
+// SCOPE, stated because the zero is narrower than it reads: `let private`
+// only. A dead PUBLIC binding is invisible here (Proc.complete is one — zero
+// callers anywhere), so green means "no dead private bindings", never "no
+// dead code".
+//
+// INSTRUMENT NOTE, stated because the first attempt at this got it wrong:
+// tokens are counted WITHOUT stripping comments or strings, so a name
+// mentioned in prose counts as a use. That makes the probe CONSERVATIVE —
+// it can under-report dead code, never invent it. The earlier python
+// version stripped strings with a regex, swallowed real code, and reported
+// 35 false positives.
+
+let files = Path.glob "src/Weir/*.fs" |> Seq.force
+
+let lines =
+    files
+    |> Seq.collect (fun f -> File.read f |> Seq.map (fun l -> (f, l)))
+    |> Seq.force
+
+// every identifier-shaped token in the tree, counted once
+let counts =
+    lines
+    |> Seq.collect (fun p -> Str.rmatchAll @"([A-Za-z_][A-Za-z0-9_']*)" (snd p) |> Seq.map Seq.head)
+    |> Seq.countBy (fun t -> t)
+    |> Map.ofPairs
+
+let defs =
+    lines
+    |> Seq.choose (function
+        | (f, Regex @"^let (?:rec )?private (?:rec |inline )?([A-Za-z_][A-Za-z0-9_']*)" n) -> Some(f, n)
+        | _ -> None)
+    |> Seq.force
+
+let dead =
+    defs
+    |> Seq.where (fun d -> (counts |> Map.tryGet (snd d) |> Option.defaultValue 0) <= 1)
+    |> Seq.force
+
+print $"private bindings: {defs |> Seq.length}   unreferenced: {dead |> Seq.length}"
+
+if (dead |> Seq.length) > 0 then
+    dead |> Seq.iter (fun d -> printerr $"unreferenced private: {fst d}: {snd d}")
+
+    fail
+        $"{dead |> Seq.length} unreferenced private binding(s) — delete them, or if one is kept by a ruling, cite the ruling and say so here"
+
+print "ok: no unreferenced private bindings"

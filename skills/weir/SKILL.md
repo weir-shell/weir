@@ -269,7 +269,9 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   `Str.rmatch pat s` (Option<seq<string>>) — any string, and raw
   literals read best: `Seq.where (Str.isMatch @"\.md$")`.
   `Str.rmatchAll pat s : seq<seq<string>>` is the plural — EVERY
-  match's groups, lazily; no Option (absence is the empty seq).
+  match's GROUPS, lazily; no Option (absence is the empty seq). Groups
+  ONLY: a pattern with no capturing group yields an EMPTY inner seq per
+  match, so `|> Seq.map Seq.head` raises — wrap what you want to read.
   `(?s)`/`(?m)` inline flags cover DOTALL/MULTILINE. The scrape idiom
   is one pipeline: `Str.rmatchAll pat text |> Seq.map Seq.head |>
   Seq.distinct` (all matches → contents → dedup); pipe a match through
