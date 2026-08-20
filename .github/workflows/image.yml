@@ -1,0 +1,71 @@
+# The container image [D:container-image] — one more release artifact,
+# built AFTER the binaries exist and ON THE PUBLISH EVENT, never the tag
+# (same reasoning as the site deploy: a draft's artifacts must not become
+# a :latest anyone can pull). The image tag IS the release tag — no
+# second version story — and :latest moves only on a published
+# NON-prerelease: a :latest pointing at a prerelease is the container
+# equivalent of the tag-without-publish bug. Registry: ghcr.io — same
+# account, GITHUB_TOKEN already has the permission, the image sits
+# beside the release it came from; Docker Hub would cost a secret and an
+# org for no gain.
+name: image
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # the binaries come FROM THE RELEASE that fired — the SHA256SUMS
+      # ones, no rebuild (a second build would be a second version story)
+      - name: fetch the release binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          mkdir -p dist/amd64 dist/arm64
+          gh release download "$tag" --repo "${{ github.repository }}" \
+            --pattern "weir-$tag-linux-x64" --pattern "weir-$tag-linux-arm64"
+          mv "weir-$tag-linux-x64"   dist/amd64/weir
+          mv "weir-$tag-linux-arm64" dist/arm64/weir
+          chmod 755 dist/amd64/weir dist/arm64/weir
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: login ghcr
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      # :latest ONLY on a non-prerelease — the negative pin the release
+      # flow already knows in another form (releases/latest excludes
+      # drafts and prereleases; so does :latest)
+      - name: build and push (amd64 + arm64 manifest)
+        id: push
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          image="ghcr.io/${{ github.repository }}"
+          tags="-t $image:$tag"
+          [ "${{ github.event.release.prerelease }}" = "false" ] && tags="$tags -t $image:latest"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            $tags \
+            --push \
+            --iidfile /tmp/iid \
+            --metadata-file /tmp/meta.json \
+            .
+          digest=$(python3 -c "import json; print(json.load(open('/tmp/meta.json'))['containerimage.digest'])")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      # provenance for the image, the shape the binaries already have
+      # [D:install-checksum-scope]: the same pass, one more subject
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
