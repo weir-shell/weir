@@ -22,56 +22,11 @@ Three properties, in the order they matter:
 
 ## Running weir
 
-- `weir` — the REPL: bare names allowed, values echo back, tab
-  completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits.
-  At a tty the echo PRESENTS: a record seq as a table (bold header,
-  dim rule, clamped to the terminal width — the widest column absorbs
-  the clip; `NO_COLOR` strips the dressing), a string seq
-  as its lines, anything else as the literal — the type footer (and
-  the unforced-seq sentence) rides below in every case
-  (`#quit` is the typed spelling). `#echo` moves the unforced-echo
-  cap for the session (`#echo 25`, `#echo all` — uncapped hangs on an
-  infinite seq; bare `#echo` reports; `echoElems` in the config seeds
-  it). A forced seq always echoes whole — the cap never clips it, and
-  piped output keeps its own fixed surface. `#help` lists the directives and
-  the modules; `#help Seq` lists a module's members — the form FSI
-  cannot answer — and `#help Seq.collect` shows one member's doc,
-  rendered from the same source hover uses. The `#` prefix means "a
-  line addressed to the tooling rather than the language": file
-  directives (`#sig`, `#schema`) are read at check time, session
-  directives (`#help`, `#quit`) run now — one glyph, two lifetimes.
-  The prompt itself reddens after an entry that ERRORS and clears on
-  the next success — a reified nonzero exit (`cmd | exitCode`,
-  `| complete`) is data, not an error, and stays quiet (weir has no
-  ambient `$?` to report; the tint tracks the error path only).
-  Input colors as you type (lexical: keywords, strings, comments,
-  numbers, sigils) and the HEAD word colors by live resolution —
-  bold = known binding/builtin, blue = found on PATH, red = would
-  fail; a red head is the typo caught before Enter. `NO_COLOR`
-  honored; piped sessions are plain text always.
-  Three output roles: the echo is a bounded GLANCE (100 unforced
-  elements by default — command-sized output fits without a
-  `Seq.force`; clipped strings, a hint naming the cap in effect), the
-  READ is `|> print`
-  for string seqs and `|> Seq.map show |> print` for the rest
-  (everything, line per element), and a bare command statement is
-  the STREAM (live, as the child produces it).
-  **Multi-line editing**: Enter submits when the statement is
-  complete and opens a continuation line when it is not (weir asks
-  its own parser, so `match x with` grows and `1 + 1` submits);
-  Up/Down move within the buffer; a recalled history entry returns
-  whole — a three-line match comes back as three lines and re-edits.
-  The fixed bindings (this is not a keybinding-config feature):
-
-  | key | in the buffer |
-  |---|---|
-  | `Enter` | submit if complete, else newline; on an empty final line, submit ANYWAY (the escape from a pending buffer — the error shows, the input is kept) |
-  | `Alt+Enter` / `Ctrl+J` | force a newline (formatting; an entry stays one statement). `Shift+Enter` is NOT bindable — terminals do not distinguish it from `Enter`. Windows Terminal claims LEFT-Alt+Enter for fullscreen: use `Ctrl+J` or right-Alt there |
-  | `Up` / `Down` | move between lines; `Up` on the first line recalls history |
-  | `Ctrl+R` | history search (fzf when installed; entries display one-line, ⏎-joined) |
-  | `Esc` / `Ctrl+C` | abandon the whole buffer |
-  | `Ctrl+D` | EOF on an empty buffer; delete/join otherwise |
+- `weir` — the interactive REPL; it has its own section below.
 - `weir -e '1 + 2'` — a program whose LAST statement is an
+  expression (newlines are statement boundaries, as in a file); the
+  result is echoed. A lone declaration is refused — `-e` evaluates
+  something and shows you the result. Strict like files.
   expression (newlines are statement boundaries, as in a file); the
   result is echoed. A lone declaration is refused — `-e` evaluates
   something and shows you the result. Strict like files.
@@ -84,6 +39,88 @@ Three properties, in the order they matter:
   scripts for uninstalled tools stay editable.
 - `weir fmt script.weir` — canonical formatter (`--check` for CI).
 - `weir lsp` — the language server (see Editor setup below).
+
+## The REPL
+
+`weir` with no arguments starts the REPL. Bare names work here
+(`map`, `where` — scripts require the qualified spellings), values
+echo back, and tab completion and history behave as you'd expect.
+`Ctrl+C` abandons the line; `Ctrl+D` exits, and `#quit` is the typed
+spelling of the same thing.
+
+### What the echo shows
+
+At a terminal, the echo presents a value by its shape:
+
+- a seq of records — as a table: bold header, dim rule, clamped to
+  the terminal width (the widest column absorbs the clip)
+- a seq of strings — as its lines
+- anything else — as the literal
+
+The type footer sits below in every case, along with a sentence
+noting when a seq is unforced. `NO_COLOR` strips the dressing.
+
+### The echo is a glance, not the output
+
+Three output roles, three spellings:
+
+- the **glance** is the echo: bounded at 100 unforced elements by
+  default, so command-sized output fits without a `Seq.force`; long
+  strings clip, and a hint names the cap in effect
+- the **read** is `|> print`: every element, one line each — for
+  non-string seqs, `|> Seq.map show |> print`
+- the **stream** is a bare command statement: live, as the child
+  produces it
+
+`#echo` moves the glance's cap for the session — `#echo 25`, or
+`#echo all` (uncapped: an infinite seq will hang). Bare `#echo`
+reports the current cap, and `echoElems` in the config seeds it. A
+forced seq always echoes whole; the cap only ever clips unforced
+ones. Piped output keeps its own fixed surface regardless.
+
+### Help
+
+`#help` lists the directives and the modules. `#help Seq` lists one
+module's members — a question FSI cannot answer. `#help Seq.collect`
+shows one member's doc, rendered from the same source hover uses, so
+the two cannot disagree.
+
+The `#` prefix marks a line addressed to the tooling rather than the
+language. File directives (`#sig`, `#schema`) are read at check
+time; session directives (`#help`, `#quit`) run now. One glyph, two
+lifetimes.
+
+### The prompt and the colors
+
+The prompt reddens after an entry that errors, and clears on the
+next success. A reified nonzero exit — `cmd | exitCode`,
+`| complete` — is data, not an error, so it stays quiet: weir has no
+ambient `$?`, and the tint tracks the error path only.
+
+Input colors as you type — keywords, strings, comments, numbers and
+sigils — and the head word colors by live resolution: bold for a
+known binding or builtin, blue for found on PATH, red for
+would-fail. A red head is the typo caught before Enter. `NO_COLOR`
+is honored, and piped sessions are always plain text.
+
+### Multi-line editing
+
+Enter submits when the statement is complete, and opens a
+continuation line when it is not — weir asks its own parser, so
+`match x with` grows and `1 + 1` submits. Up and Down move within
+the buffer, and a recalled history entry returns whole: a three-line
+match comes back as three lines and re-edits.
+
+The fixed bindings (this is not a keybinding-config feature):
+
+| key | in the buffer |
+|---|---|
+| `Enter` | submit if complete, else newline; on an empty final line, submit ANYWAY (the escape from a pending buffer — the error shows, the input is kept) |
+| `Alt+Enter` / `Ctrl+J` | force a newline (formatting; an entry stays one statement). `Shift+Enter` is NOT bindable — terminals do not distinguish it from `Enter`. Windows Terminal claims LEFT-Alt+Enter for fullscreen: use `Ctrl+J` or right-Alt there |
+| `Up` / `Down` | move between lines; `Up` on the first line recalls history |
+| `Ctrl+R` | history search (fzf when installed; entries display one-line, ⏎-joined) |
+| `Esc` / `Ctrl+C` | abandon the whole buffer |
+| `Ctrl+D` | EOF on an empty buffer; delete/join otherwise |
 
 ## First script
 
