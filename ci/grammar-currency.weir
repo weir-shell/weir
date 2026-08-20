@@ -1,0 +1,87 @@
+#!/usr/bin/env weir
+// The tree-sitter grammar currency gate [D:grammar-currency] — the check
+// in the repo that KNOWS the language moved. The grammar repo can only
+// compare itself against a target it chose; weir compares the grammar's
+// PUBLISHED main against its own gate-verified manifest, so a keyword
+// landing here without a grammar bump goes red where the release flow
+// sees it. CONTENT comparison, not SHA bookkeeping: it extracts the
+// keyword/within/adapter sets from grammar.js with the same shapes the
+// grammar repo's own ci/check.sh uses, so the two gates cannot disagree
+// about what agreement means. Public repo — a plain fetch, no token.
+// Runs at RELEASE and on the weekly schedule, never on PRs: a keyword
+// PR cannot fix this red (the grammar lives elsewhere), and
+// red-that-cannot-be-fixed-here trains people to ignore red.
+//
+//   ci/grammar-currency.weir                     fetch the grammar's main
+//   ci/grammar-currency.weir --gfile <path>      check a local grammar.js
+
+type Cli = {
+    /// a local grammar.js to check instead of fetching the grammar repo's main
+    gfile: Option<string>
+}
+
+type Adapters = {
+    [<Wire "from">]
+    fromAdapters: seq<string>
+    [<Wire "to">]
+    toAdapters: seq<string>
+}
+type Manifest = { keywords: seq<string>; withinKinds: seq<string>; adapters: Adapters }
+
+let cli = Args.load Cli
+
+let grammarText =
+    match cli.gfile with
+    | Some p -> File.read p |> Str.join "\n"
+    | None ->
+        Http.fetch "https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/main/grammar.js"
+        |> Str.join "\n"
+
+let manifest = File.read "editors/grammar-manifest.json" |> from json Manifest
+
+let words pattern label =
+    let hits = Str.rmatchAll pattern grammarText |> Seq.force
+
+    if Seq.isEmpty hits then
+        fail $"cannot find the {label} rule in grammar.js — the extraction shape drifted from the grammar repo's ci/check.sh"
+
+    let body = hits |> Seq.head |> Seq.head
+
+    Str.rmatchAll "([a-z]+)" body
+    |> Seq.map Seq.head
+    |> Seq.distinct
+    |> Seq.sort
+    |> Seq.force
+
+let gKinds = words "within_kind: _ => choice\\(([^)]+)\\)" "within_kind"
+let gAdapters = words "choice\\('to', 'from'\\), [^,]+, choice\\(([^)]+)\\)" "adapter"
+let gKeywords = words "(?s)keyword: _ =>\\s*choice\\(([^)]+)\\)" "keyword"
+
+// the same contracts the grammar repo asserts: kinds and adapters are
+// exact sets; the manifest's keywords minus true/false (booleans live in
+// their own grammar rule) must all be present
+let mKinds = manifest.withinKinds |> Seq.sort |> Seq.force
+let mAdapters =
+    Seq.append manifest.adapters.fromAdapters manifest.adapters.toAdapters
+    |> Seq.distinct
+    |> Seq.sort
+    |> Seq.force
+
+let mKeywords =
+    manifest.keywords
+    |> Seq.where (fun k -> k <> "true" && k <> "false")
+    |> Seq.force
+
+let missing =
+    mKeywords |> Seq.where (fun k -> not (gKeywords |> Seq.contains k)) |> Seq.force
+
+if Str.join "," gKinds <> Str.join "," mKinds then
+    fail $"GRAMMAR STALE: within kinds diverge — grammar has [{Str.join ", " gKinds}], weir's manifest has [{Str.join ", " mKinds}]. Refresh weir-shell/tree-sitter-weir (grammar.js + regenerate) and push"
+
+if Str.join "," gAdapters <> Str.join "," mAdapters then
+    fail $"GRAMMAR STALE: adapters diverge — grammar has [{Str.join ", " gAdapters}], weir's manifest has [{Str.join ", " mAdapters}]. Refresh weir-shell/tree-sitter-weir and push"
+
+if not (Seq.isEmpty missing) then
+    fail $"GRAMMAR STALE: keywords missing from the grammar: [{Str.join ", " missing}]. Refresh weir-shell/tree-sitter-weir (grammar.js + regenerate) and push"
+
+print $"grammar currency ok: {gKeywords |> Seq.length} keywords, kinds [{Str.join ", " gKinds}], adapters [{Str.join ", " gAdapters}] all agree with the manifest"

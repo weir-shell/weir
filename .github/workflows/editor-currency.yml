@@ -1,0 +1,43 @@
+# Editor-pin currency [D:grammar-currency] — scheduled, never per-PR: a
+# keyword PR cannot fix a stale grammar (it lives in another repo) or a
+# stale Zed rev (bumping it needs the grammar pushed first), and
+# red-that-cannot-be-fixed-here trains people to ignore red. The
+# dispatch (grammar-dispatch.yml) gives the fast signal on manifest
+# changes; this cron catches everything else, and release.yml's gate
+# runs the same two checks at the moment editor users arrive.
+name: editor-currency
+
+on:
+  schedule:
+    - cron: "43 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-linux-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-linux-
+      - name: AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: build weir (the checks are weir scripts)
+        run: ./publish.sh
+      - name: tree-sitter grammar is current
+        run: ~/.local/bin/weir ci/grammar-currency.weir
+      - name: zed rev + queries are current
+        run: ~/.local/bin/weir ci/zed-rev-current.weir

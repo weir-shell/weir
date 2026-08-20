@@ -1,5 +1,41 @@
 # Spike Notes
 
+## the grammar that was green and 70 commits stale (2026-08-20)
+
+The tree-sitter check asked "do I agree with the ref I chose?" — a
+question that cannot come back no. Third sighting of the frozen-subject
+instrument (fuzz driver reporting 10k while running 200; the census
+nobody invoked), and this one had a second frozen pin stacked on top:
+Zed pinning the grammar's ROOT commit while the grammar pinned a weir
+ref 70 commits old. Three links, two stale pins, and the coupling
+carried by a well-written comment nothing enforced.
+
+The root-cause framing did the design work: the check lived in the
+wrong repo. A grammar repo can only compare itself against a target it
+chose; the party that KNOWS weir moved is weir. So the new checks live
+weir-side (grammar-currency compares the grammar's PUBLISHED main
+against weir's own gate-verified manifest, content-to-content, same
+extraction shapes as the grammar's own gate so they cannot disagree),
+and the grammar repo's own instrument unfreezes by tracking a RELEASE —
+a number with ordering, the bare-hash --version finding wearing a
+different hat. Pre-first-release it tracks moving main, which is the
+honest transitional subject.
+
+The establishing question paid off: "tree-sitter via the manifest" in
+the e2e cell names turned out to mean only "the manifest is current so
+the OTHER repo can trust it" — the Zed rev and highlights.scm were
+fenced by ritual alone. So the zed check is two assertions, and the
+second (queried nodes exist at the pinned rev) caught its own
+extraction bug in testing: scm comment prose like "(a query override)"
+collects as node names unless ;-comments are stripped per line.
+
+The red tests cost nothing because the tree WAS the failing state:
+grammar-currency red against the pushed main is today's live gap, and
+zed-rev red against c333922 was free. Both went green against the
+refreshed clone — with the standing caveat that the new rev pins a
+LOCAL commit sha, so the grammar push must be fast-forward of exactly
+that commit.
+
 ## Http gains a default User-Agent, and the friction log paid out (2026-08-20)
 
 Yesterday's friction entry (Http sends no UA; GitHub 403s that with a
