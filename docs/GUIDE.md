@@ -22,56 +22,11 @@ Three properties, in the order they matter:
 
 ## Running weir
 
-- `weir` — the REPL: bare names allowed, values echo back, tab
-  completion, history, `Ctrl+C` cancels the line, `Ctrl+D` exits.
-  At a tty the echo PRESENTS: a record seq as a table (bold header,
-  dim rule, clamped to the terminal width — the widest column absorbs
-  the clip; `NO_COLOR` strips the dressing), a string seq
-  as its lines, anything else as the literal — the type footer (and
-  the unforced-seq sentence) rides below in every case
-  (`#quit` is the typed spelling). `#echo` moves the unforced-echo
-  cap for the session (`#echo 25`, `#echo all` — uncapped hangs on an
-  infinite seq; bare `#echo` reports; `echoElems` in the config seeds
-  it). A forced seq always echoes whole — the cap never clips it, and
-  piped output keeps its own fixed surface. `#help` lists the directives and
-  the modules; `#help Seq` lists a module's members — the form FSI
-  cannot answer — and `#help Seq.collect` shows one member's doc,
-  rendered from the same source hover uses. The `#` prefix means "a
-  line addressed to the tooling rather than the language": file
-  directives (`#sig`, `#schema`) are read at check time, session
-  directives (`#help`, `#quit`) run now — one glyph, two lifetimes.
-  The prompt itself reddens after an entry that ERRORS and clears on
-  the next success — a reified nonzero exit (`cmd | exitCode`,
-  `| complete`) is data, not an error, and stays quiet (weir has no
-  ambient `$?` to report; the tint tracks the error path only).
-  Input colors as you type (lexical: keywords, strings, comments,
-  numbers, sigils) and the HEAD word colors by live resolution —
-  bold = known binding/builtin, blue = found on PATH, red = would
-  fail; a red head is the typo caught before Enter. `NO_COLOR`
-  honored; piped sessions are plain text always.
-  Three output roles: the echo is a bounded GLANCE (100 unforced
-  elements by default — command-sized output fits without a
-  `Seq.force`; clipped strings, a hint naming the cap in effect), the
-  READ is `|> print`
-  for string seqs and `|> Seq.map show |> print` for the rest
-  (everything, line per element), and a bare command statement is
-  the STREAM (live, as the child produces it).
-  **Multi-line editing**: Enter submits when the statement is
-  complete and opens a continuation line when it is not (weir asks
-  its own parser, so `match x with` grows and `1 + 1` submits);
-  Up/Down move within the buffer; a recalled history entry returns
-  whole — a three-line match comes back as three lines and re-edits.
-  The fixed bindings (this is not a keybinding-config feature):
-
-  | key | in the buffer |
-  |---|---|
-  | `Enter` | submit if complete, else newline; on an empty final line, submit ANYWAY (the escape from a pending buffer — the error shows, the input is kept) |
-  | `Alt+Enter` / `Ctrl+J` | force a newline (formatting; an entry stays one statement). `Shift+Enter` is NOT bindable — terminals do not distinguish it from `Enter`. Windows Terminal claims LEFT-Alt+Enter for fullscreen: use `Ctrl+J` or right-Alt there |
-  | `Up` / `Down` | move between lines; `Up` on the first line recalls history |
-  | `Ctrl+R` | history search (fzf when installed; entries display one-line, ⏎-joined) |
-  | `Esc` / `Ctrl+C` | abandon the whole buffer |
-  | `Ctrl+D` | EOF on an empty buffer; delete/join otherwise |
+- `weir` — the interactive REPL; it has its own section below.
 - `weir -e '1 + 2'` — a program whose LAST statement is an
+  expression (newlines are statement boundaries, as in a file); the
+  result is echoed. A lone declaration is refused — `-e` evaluates
+  something and shows you the result. Strict like files.
   expression (newlines are statement boundaries, as in a file); the
   result is echoed. A lone declaration is refused — `-e` evaluates
   something and shows you the result. Strict like files.
@@ -84,6 +39,89 @@ Three properties, in the order they matter:
   scripts for uninstalled tools stay editable.
 - `weir fmt script.weir` — canonical formatter (`--check` for CI).
 - `weir lsp` — the language server (see Editor setup below).
+
+## The REPL
+
+`weir` with no arguments starts the REPL. Bare names work here
+(`map`, `where` — scripts require the qualified names), values
+echo back, and tab completion and history behave as you'd expect.
+`Ctrl+C` abandons the line; `Ctrl+D` exits, and typing `#quit` does
+the same.
+
+### What the echo shows
+
+At a terminal, the echo presents a value by its shape:
+
+- a seq of records — as a table: bold header, dim rule, clamped to
+  the terminal width (the widest column absorbs the clip)
+- a seq of strings — as its lines
+- anything else — as the literal
+
+The type footer sits below in every case, along with a sentence
+noting when a seq is unforced. `NO_COLOR` strips the dressing.
+
+### The echo is a glance, not the output
+
+Three output roles, three ways to ask:
+
+- the **glance** is the echo: bounded at 100 unforced elements by
+  default, so command-sized output fits without a `Seq.force`; long
+  strings clip, and a hint names the cap in effect
+- the **read** is `|> print`: every element, one line each — for
+  non-string seqs, `|> Seq.map show |> print`
+- the **stream** is a bare command statement: live, as the child
+  produces it
+
+`#echo` moves the glance's cap for the session — `#echo 25`, or
+`#echo all` (uncapped: an infinite seq will hang). Bare `#echo`
+reports the current cap, and `echoElems` in the config seeds it. A
+forced seq always echoes whole; the cap only ever clips unforced
+ones. Piped output keeps its own fixed surface regardless.
+
+### Help
+
+`#help` lists the directives and the modules. `#help Seq` lists one
+module's members — a question FSI cannot answer. `#help Seq.collect`
+shows one member's doc, rendered from the same source hover uses, so
+the two cannot disagree.
+
+The `#` prefix marks a line addressed to the tooling rather than the
+language. File directives (`#sig`, `#schema`) are read at check
+time; session directives (`#help`, `#quit`) run now. One glyph, two
+lifetimes.
+
+### The prompt and the colors
+
+The prompt reddens after an entry that errors, and clears on the
+next success. A nonzero exit you asked for as a value —
+`cmd | exitCode`, `| complete` — is data, not an error, so it stays
+quiet: weir has no ambient `$?`, and the tint tracks the error path
+only.
+
+Input colors as you type — keywords, strings, comments, numbers and
+the command markers — and the head word colors by live resolution: bold for a
+known binding or builtin, blue for found on PATH, red for
+would-fail. A red head is the typo caught before Enter. `NO_COLOR`
+is honored, and piped sessions are always plain text.
+
+### Multi-line editing
+
+Enter submits when the statement is complete, and opens a
+continuation line when it is not — weir asks its own parser, so
+`match x with` grows and `1 + 1` submits. Up and Down move within
+the buffer, and a recalled history entry returns whole: a three-line
+match comes back as three lines and re-edits.
+
+The fixed bindings (this is not a keybinding-config feature):
+
+| key | in the buffer |
+|---|---|
+| <kbd>Enter</kbd> | submit if complete, else newline; on an empty final line, submit ANYWAY (the escape from a pending buffer — the error shows, the input is kept) |
+| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | force a newline (formatting; an entry stays one statement). <kbd>Shift+Enter</kbd> is NOT bindable — terminals do not distinguish it from <kbd>Enter</kbd>. Windows Terminal claims left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
+| <kbd>Up</kbd> / <kbd>Down</kbd> | move between lines; <kbd>Up</kbd> on the first line recalls history |
+| <kbd>Ctrl+R</kbd> | history search (fzf when installed; entries display one-line, ⏎-joined) |
+| <kbd>Esc</kbd> / <kbd>Ctrl+C</kbd> | abandon the whole buffer |
+| <kbd>Ctrl+D</kbd> | EOF on an empty buffer; delete/join otherwise |
 
 ## First script
 
@@ -146,26 +184,28 @@ big |> print
 [1..10] |> Seq.where (fun n -> n > 7) |> Seq.iter (fun n -> print $"{n}")
 ```
 
-`_.name` is field-access shorthand, and composing it with a `Path`
-helper (`extension`, `fileName`, `stem`, `dir`, `combine`) is the
-house spelling for filename surgery in a pipeline.
+`_.name` is field-access shorthand; compose it with a `Path` helper
+(`extension`, `fileName`, `stem`, `dir`, `combine`) for filename
+surgery in a pipeline.
 
-The `Seq` surface is the F# core you'd expect — `map`/`where`/
-`collect`/`fold`/`reduce`/`scan`, `sort`/`sortBy`, `max`/`minBy`,
-`groupBy`/`countBy`/`distinctBy`, `indexed`, `chunkBySize`,
-`takeWhile`/`find`/`pick` and their `try` twins — lazy by default,
-with the forcing members named in the skill file. One deliberate
-split: `Seq.sum` is for ints, and `Float`/`Size`/`Duration` each own
-their `sum` and `average` (`ls |> Seq.map _.bytes |> Size.sum`).
+The `Seq` module is the F# core you'd expect, lazy by default:
 
-Tuples cover transient pairs — `(a, b)` literals (bare `a, b` works
-at F#'s precedence), `int * string` types, `| (x, y) ->` patterns,
-destructuring binders (`let host, port = target`,
-`Seq.map (fun (k, v) -> ...)`) — but the moment a shape needs NAMES,
-declare a record: `p.Host` reads, `let (h, _) = p` re-derives
-(`fst`/`snd` project pairs point-free). Records and unions are
-declared with exact field sets; union cases
-carry tuple payloads when multi-value:
+- transform: `map`, `where`, `collect`, `fold`, `reduce`, `scan`
+- order: `sort`, `sortBy`, `max`, `minBy`
+- group: `groupBy`, `countBy`, `distinctBy`
+- slice and search: `indexed`, `chunkBySize`, `takeWhile`, `find`,
+  `pick`, and their `try` variants
+
+One deliberate split: `Seq.sum` is for ints, and `Float`/`Size`/
+`Duration` each own their `sum` and `average`
+(`ls |> Seq.map _.bytes |> Size.sum`).
+
+Tuples cover transient pairs: `(a, b)` literals, `int * string`
+types, `| (x, y) ->` patterns, and destructuring binders
+(`let host, port = target`). The moment a shape needs NAMES, declare
+a record — `p.Host` says what it is where `let (h, _) = p` makes the
+reader re-derive it. Records and unions are declared with exact field
+sets, and union cases carry tuple payloads when multi-value:
 
 ```weir
 type Verdict =
@@ -188,9 +228,9 @@ print $"{v}"
 
 Derive, don't re-literal: `{ s with Points = 13 }` copies with the
 named fields changed (multi-field with `;`, nested `{ o with I.X = v }`),
-never adds fields, and leaves the source untouched. An updater over
-an open row — `let bump r = { r with N = r.N + 1 }` — generalizes to
-any record carrying the field.
+never adds fields, and leaves the source untouched. An updater
+function — `let bump r = { r with N = r.N + 1 }` — works on any
+record that has the field.
 
 ```weir-error
 type P = { N: int }
@@ -224,9 +264,9 @@ directly — same section.)
 
 ## File batches: glob is a function, not an expansion
 
-`Path.glob` returns matches as a typed seq — nothing ever expands
-inside argv (a bare `*.txt` in a command stays a literal word; that
-law is unchanged). Discovery composes like any seq:
+`Path.glob` returns matches as a typed seq. Nothing ever expands
+inside argv — a bare `*.txt` in a command stays a literal word, glob
+or no glob. Discovery composes like any seq:
 
 ```weir
 match Path.glob "*.md" with
@@ -236,12 +276,17 @@ match Path.glob "*.md" with
 let pinned = Path.glob "*.md" |> Seq.force
 ```
 
-A batch splats into a command with `$@` — N files, N words, nothing
-re-split: `git add $@(Path.glob "*.txt" |> Seq.force)`. Relative
-patterns resolve against the cwd at ENUMERATION — the lazy seam:
-`|> Seq.force` pins the batch before a `cd`. Script-relative batches
-ride `Self.scriptPath`:
-`Path.glob $"{Self.scriptPath |> Path.dir}/fixtures/**/*.txt"`.
+A batch splats into a command with `$@` — N files become N argv
+words, nothing re-split:
+
+`git add $@(Path.glob "*.txt" |> Seq.force)`
+
+The seq is lazy, so relative patterns resolve against the cwd at the
+moment the seq is READ — if a `cd` happens in between, `Seq.force`
+the batch first to fix it in place. For paths relative to the script
+itself rather than the cwd:
+
+`Path.glob $"{Self.scriptPath |> Path.dir}/fixtures/**/*.txt"`
 
 ## A script's own facts — the `Self` module
 
@@ -268,11 +313,12 @@ To resolve symlinks:
 Available in scripts only — the REPL and `-e` refuse each `Self`
 member by name, since neither has a file.
 
-## Defaults: the resting point moves
+## Defaults
 
-An ENUMERATED env value declares its set as a 0-arity union — the
-typo becomes a boundary error with candidates instead of a wrong
-branch three functions later:
+An env value with a fixed set of legal values declares that set as a
+union of bare cases. A typo then fails at the boundary, with the
+candidates listed — instead of selecting a wrong branch three
+functions later:
 
 ```weir
 type Level =
@@ -333,11 +379,13 @@ let cli = Args.load Cli
 print $"count={cli.count} seed={cli.seed}"
 ```
 
-## Secrets: the token-from-env idiom
+## Secrets: tokens that cannot leak into logs
 
-A `Secret` is a marker the renderers respect: `show` gives `***`,
-interpolation and the wire boundaries refuse, and `Secret.reveal` is
-the one place the value comes back out. It controls where a value
+A `Secret` is a marker the renderers respect:
+
+- `show` gives `***`
+- interpolation and the wire boundaries refuse it outright
+- `Secret.reveal` is the one place the value comes back out It controls where a value
 can flow at the boundaries weir itself renders; it is not storage
 and not memory protection ([SECURITY.md](../SECURITY.md) states
 those non-claims). The point is coverage: a token cannot slip into a
@@ -412,8 +460,8 @@ status as data.
 let item = Http.fetch $"{api}/items/1" |> from json Item
 ```
 
-When the shape is a foreign API's and read once, write it inline —
-an **anonymous record type**, the adapter slot's third form:
+When the shape belongs to a foreign API and you read it once, write
+the type inline — an **anonymous record type**:
 
 ```
 let ip = Http.fetch "https://api.ipify.org?format=json" |> from json {| ip: string |} |> _.ip
@@ -453,10 +501,14 @@ let hosts = ["[{\"host\": \"a\"}, {\"host\": \"b\"}]"] |> from json seq<Peer2> |
 hosts |> print
 ```
 
-Fields nest: the law is recursive. A field is a scalar (`int`,
-`float`, `string`, `bool`), an `Option` of an admitted type, a record
-whose fields are all admitted, or a `seq` of an admitted type — so a
-real API response types directly:
+Fields nest: the rule is recursive. A field is one of:
+
+- a scalar — `int`, `float`, `string`, `bool`
+- an `Option` of an admitted type
+- a record whose fields are all admitted
+- a `seq` of an admitted type
+
+So a real API response types directly:
 
 ```weir
 type Entity = { entityid: string }
@@ -481,29 +533,36 @@ let docs = ["{\"aaa\": {\"id\": \"1\"}, \"bbb\": {\"id\": \"2\"}}"] |> from json
 docs |> Map.pairs |> Seq.iter (fun (k, d) -> print $"{k}={d.id}")
 ```
 
-Keys are strings only (JSON object keys ARE strings — a `Map<int, …>`
-declaration teaches this); pairs walk key-sorted; duplicate keys
-last-win; `to json` writes the object back. The `Map` surface:
-`ofPairs` (last-wins) / `pairs` / `keys` / `values` (key-sorted) /
-`get` (raises, naming the key) / `tryGet` / `has` / `add` / `remove` /
-`count`. There is no `m[k]` indexing — `Map.get` is the spelling —
-and `==` is not defined for maps.
+Keys are strings only — JSON object keys ARE strings, and a
+`Map<int, …>` declaration is refused with that explanation. Pairs
+walk key-sorted; duplicate keys last-win; `to json` writes the
+object back. The `Map` members:
 
-`Http.query` is the QUERY method (RFC 10008): it is IDEMPOTENT by
-definition, so `retry attempts=5` around an `Http.query` is safe by the
-method's own guarantee — where the same wrapper around a POST is a
-correctness question you must answer. (Almost nothing serves QUERY yet,
-so expect 405 from most endpoints.) For query STRINGS, `base |> Http.withQuery
-[("q", term)]` percent-encodes — a space or `&` cannot break the
-url (that is the query half of the URL-construction non-claim; the path
-half still stands). TLS verification is on by default; `Http.send { …
-with insecure = true }` turns it off for ONE request (self-signed
-clusters) — a loud, per-call field, never global.
+- `ofPairs` (last key wins), `pairs`, `keys`, `values` (key-sorted)
+- `get` (raises, naming the key), `tryGet`, `has`
+- `add`, `remove`, `count`
+
+There is no `m[k]` indexing — use `Map.get` — and `==` is not
+defined for maps.
+
+`Http.query` is the QUERY method (RFC 10008). QUERY is idempotent by
+definition, so `retry attempts=5` around an `Http.query` is safe by
+the method's own guarantee — the same wrapper around a POST is a
+correctness question you must answer yourself. (Almost nothing serves
+QUERY yet, so expect 405 from most endpoints.)
+
+For query strings, `base |> Http.withQuery [("q", term)]`
+percent-encodes each key and value — a space or `&` cannot break the
+url. The PATH half of the url is still yours to build carefully.
+
+TLS verification is on by default. `Http.send { … with insecure =
+true }` turns it off for ONE request (self-signed clusters) — a loud,
+per-call field, never a global switch.
 
 **Status is data.** A 404 binds and you branch on it (`if resp.status
 >= 400`) exactly as `| complete` treats an exit code — only a
-transport failure (unreachable, TLS, timeout) raises. The health-check
-idiom falls out:
+transport failure (unreachable, TLS, timeout) raises. A health check
+is one line:
 
 ```
 let up = (Http.send { Http.defaults with url = $"{api}/health" }).status == 200
@@ -522,22 +581,25 @@ let github = { Http.defaults with
 let user = Http.send { github with url = $"{api}/user" }
 ```
 
-For a plain GET with no body or auth, `curl url |> from json T` stays
-the recommended read — `Http` earns its keep on the REQUEST side.
-Parallel fetches are `urls |> Seq.pmap (fun u -> Http.send {
-Http.defaults with url = u })`. The 30s timeout defaults (a request
-with none is the classic CI hang); `Http` types your request but does
-not vet your endpoint — SSRF and URL construction are yours (see
-[SECURITY.md](../SECURITY.md)).
+For a plain GET with no body or auth, `curl url |> from json T`
+stays a fine read — `Http` earns its keep on the request side.
+Parallel fetches compose from parts you already know:
 
-## Time: the timeout flag idiom
+`urls |> Seq.pmap (fun u -> Http.send { Http.defaults with url = u })`
+
+The timeout defaults to 30s — a request with no timeout is the
+classic CI hang. And `Http` types your request but does not vet your
+endpoint: SSRF and URL construction are yours
+([SECURITY.md](../SECURITY.md)).
+
+## Time: durations as values
 
 Time is a type, not a bare int whose unit lives in a comment.
 A `Duration` stores integer milliseconds; the literals are
 single-unit (`500ms`, `30s`, `2m`, `1h`) and `show` renders the
 compound shape (`90500ms` shows `1m30.5s`) that `Duration.parse`
-reads back. The idiom — a timeout flag that reads naturally at the
-call site and in `--help`:
+reads back. The common shape — a timeout flag that reads naturally
+at the call site and in `--help`:
 
 ```weir
 type Fetch = {
@@ -550,17 +612,21 @@ let cli = Args.load Fetch
 print $"budget {cli.timeout}, half {cli.timeout / 2}"
 ```
 
-`weir fetch.weir --timeout 90s` parses the text; absent, the field
-rests at `30s`, and `--help` shows `default: 30s`. The algebra is
-closed — add and subtract durations, scale by ints — and
-`Duration / Duration` is rejected naming the ratio spelling
-(`Duration.toMillis a / Duration.toMillis b`). `Duration.sleep 500ms`
-blocks; it is module-qualified so `sleep 5` keeps meaning
-coreutils sleep. In command position `30s` stays an ordinary argv
-word — `timeout 30s cmd` passes the text through untouched — and a
-SPLICED duration is rejected with the deliberate spellings
-(`Duration.toMillis d` or `show d`): the argv form is the program's
-business, not weir's guess.
+`weir fetch.weir --timeout 90s` parses the text. Absent, the field
+rests at `30s`, and `--help` shows `default: 30s`.
+
+Durations add, subtract, and scale by ints. `Duration / Duration` is
+rejected; the error shows how to get a ratio:
+`Duration.toMillis a / Duration.toMillis b`.
+
+`Duration.sleep 500ms` blocks. It is module-qualified so that bare
+`sleep 5` keeps meaning coreutils sleep.
+
+In command position, `30s` stays an ordinary argv word —
+`timeout 30s cmd` passes the text through untouched. A SPLICED
+duration is rejected, and the error names the explicit forms
+(`Duration.toMillis d`, or `show d`): what a program wants on its
+argv is the program's business, not weir's guess.
 
 ## Size thresholds: bytes as a type
 
@@ -574,9 +640,9 @@ if sz > 4B then print $"large: {sz}"
 File.delete "guide-sz.bin"
 ```
 
-Literals are binary units only (`10MiB`, never `10MB` — the SI
-suffixes are ambiguous in the wild and weir refuses to guess; the
-teaching error names the fix). `Size.parse` reads foreign text and
+Literals are binary units only: `10MiB`, never `10MB` — the SI
+suffixes are ambiguous in the wild, weir refuses to guess, and the
+error names the fix. `Size.parse` reads foreign text and
 accepts SI as powers of ten there, because the writer of that text
 chose the unit.
 
@@ -599,12 +665,12 @@ A float crosses every boundary: a `--rate 0.5` flag with
 `[<Default 0.5>]`, an `Env.load` field, a JSON `number` (integer-
 shaped values widen on read — JSON has one number type), a YAML
 scalar (`rate: 1.5` unquoted is the number; `"1.5"` quoted is a
-string — the quoting law tells them apart in both directions).
+string — quoting is what tells them apart, in both directions).
 
 Floats render shortest-form and round-trip through `Float.parse`;
 an integral float keeps its decimal (`show 1.0` is `"1.0"`).
 Equality is the one thing floats do not do: `==` is a check error
-(0.1 + 0.2 is not 0.3) and the error names the idiom —
+(0.1 + 0.2 is not 0.3), and the error tells you what to use instead —
 `Float.near a b 1e-9`, or compare after `Float.round`. Sorting
 works (`Seq.sortBy` takes float keys); timing ratios read naturally
 with `Duration.toSeconds`:
@@ -614,11 +680,11 @@ let ratio = Duration.toSeconds 90s / Duration.toSeconds 1m
 print $"{ratio}x the budget"
 ```
 
-## Exit codes: the reifier family
+## Exit codes: from command to value
 
-One law: **output goes where the meaning goes.**
+One rule: **output goes where the meaning goes.**
 
-| spelling | output | result |
+| form | output | result |
 |---|---|---|
 | `cmd \| succeeds` | silent | `bool` (`exitCode == 0`, exactly) |
 | `cmd \| complete` | captured | `{ exitCode; stdout; stderr }` |
@@ -640,8 +706,8 @@ match rc with
 
 `exitCode` refuses capturing/discarding positions with a teaching
 error (`$()` captures — use `| complete` there; a bare statement
-discards — bind or match). For codes-with-captured-output (fzf's
-selection AND its cancel code), `complete` is the cell.
+discards — bind or match). When you need the code AND the captured
+output — fzf's selection and its cancel code — use `complete`.
 
 ```weir-error
 sh -c "exit 3" | exitCode // a bare statement discards the code — bind or match it
@@ -649,22 +715,24 @@ sh -c "exit 3" | exitCode // a bare statement discards the code — bind or matc
 
 ## What the editor colors mean
 
-With the LSP attached, editors render weir's one novel boundary — the
-command/expression mode line — from the checker's own verdict:
-command heads color as callables, their argv as inert words
-(string-family), and splice markers (`$name`, the parens of an
-`(expr)` splice) as operators, while everything inside a splice keeps
-ordinary code coloring — the visual message "this island is code".
-If text you meant as an expression renders argv-colored (or a bound
-name you meant as a command doesn't), the coloring is not wrong — it
-is the parse, and it just told you before the checker did. The REPL
+With the LSP attached, editors color weir's one novel boundary — the
+line between command and expression — from the checker's own verdict.
+- command heads color as callables
+- their argv colors as inert words, string-like
+- splice markers (`$name`, the parens of an `(expr)` splice) color as
+  operators — and everything inside a splice keeps ordinary code
+  coloring, the visual message being "this island is code"
+
+If text you meant as an expression renders argv-colored, or a bound
+name you meant as a command doesn't, the coloring is not wrong: it is
+showing you the parse, before the checker gets a word in. The REPL
 carries the same three-way tint.
 
 ## Shared CLI flags: containment, not inheritance
 
 Flags every subcommand carries are declared ONCE, on a record that
-contains the subcommand union — where Argu spells `[<Inherit>]` per
-payload, weir deletes the repetition structurally:
+contains the subcommand union — containment does the sharing, so
+nothing is repeated per payload:
 
 ```weir
 type CloneArgs = { remote: string }
@@ -701,11 +769,11 @@ record (`Seq.fold (fun c x -> { c with Total = c.Total + x }) initial` —
 derive, don't mutate). Lambdas take several params (`fun acc x ->`),
 desugaring exactly like `let f a b =`.
 
-Multi-statement lambdas read best MULTILINE: a `(fun ... ->` dangling
-at line end opens a body block — block lets, siblings, compounds and
-districts all legal inside — closed by its own `)` (attached to the
-last body line, or alone). The single-line `;`-joined spelling is
-also legal.
+Multi-statement lambdas read best MULTILINE. A `(fun ... ->` dangling
+at line end opens a body block — any statements are legal inside,
+nested `let`s and commands included — and the block closes at its own
+`)`, attached to the last body line or alone. A single line with
+`;` between the statements is also legal.
 
 ```weir
 let sizes =
@@ -719,7 +787,7 @@ sizes |> Seq.iter print
 ```
 
 `>>` / `<<` compose functions — `Seq.map (Str.trim >> Str.toLower)`
-is the point-free spelling. One precedence rule to know (it is F#'s):
+is the point-free form. One precedence rule to know (it is F#'s):
 `|>` and `>>` share a level, so `xs |> f >> g` is `(xs |> f) >> g` —
 parenthesize the composition: `xs |> (f >> g)`.
 
@@ -733,8 +801,8 @@ let same x y = x == y
 print $"{same 1 1} {same "a" "b"}"
 ```
 
-Binding names start lowercase (the casing law): uppercase is for
-types, modules, and constructors. Two deliberate limits you will
+Binding names start lowercase; uppercase is for types, modules, and
+constructors. Two deliberate limits you will
 meet: a bare parameter cannot be *applied* as a function
 (polymorphism flows from typed builtins, not lambda guessing), and
 `+` on two unknowns cannot infer (int or string?) — anchor one side:
@@ -756,7 +824,7 @@ cleanup 5 // expected unit, got int
 ## Branching
 
 `if` is an expression; `else` is optional only when the then-branch is
-unit; `elif` chains (it is spelling for `else if`). `match` has literal patterns (`| 0 ->`, `| "yes" ->` — int/string
+unit; `elif` chains (it is short for `else if`). `match` has literal patterns (`| 0 ->`, `| "yes" ->` — int/string
 literals never complete a match alone; close with `_` or a var),
 bool patterns, constructor patterns, and `when`
 guards — and a non-exhaustive match is a hard error, not a warning.
@@ -820,8 +888,8 @@ kinds, single-line: `@"..."` (backslashes literal, `""` embeds a
 quote) and `"""..."""` (no escapes at all, bare `"` fine inside).
 Rawness is a property of the literal kind, never of position.
 
-`Str.isMatch` is the condition idiom — pipe the subject so the
-sentence reads subject-first:
+`Str.isMatch` is the yes/no test — pipe the subject in, so the line
+reads subject-first:
 
 ```weir
 let name = "test_parser"
@@ -832,8 +900,8 @@ if name |> Str.isMatch @"^test" then print "a test"
 For extraction, the `Regex` pattern matches and captures in one arm.
 The literal is checked before line one runs: an invalid regex is a
 check error, and the binder must carry exactly as many names as the
-pattern has capture groups — the mismatch that is a silent runtime
-non-match in F#'s ParseRegex idiom is a located check error here.
+pattern has capture groups. In F#, that mismatch is a silent runtime
+non-match; here it is a located check error.
 
 ```weir
 let line = "cache=42"
@@ -854,37 +922,53 @@ detour (map to `""`, filter empties later) never happens:
 ```
 
 `function` is the implicit-match lambda — `fun x -> match x with`
-in one word, F#'s own shorthand. Groups bind as strings (convert explicitly — `Str.tryToInt`). The
-`Regex` literal is RAW-ONLY — `@"..."`, or `"""..."""` for patterns
-containing quotes; an ordinary escaped string there is a check error,
-so the double-escape footgun cannot be written. Computed patterns
-live on the expression side (`Str.isMatch`, `Str.rmatch` — any
-string expression). And for structured command output,
-check the typed adapters first: `|> from json T` / `|> from yaml T`
-beat hand-rolled parsing every time.
+in one word. Groups bind as strings; convert explicitly
+(`Str.tryToInt`).
+
+The `Regex` literal is raw-only: `@"..."`, or `"""..."""` for
+patterns containing quotes. An ordinary escaped string there is a
+check error, so the double-escape footgun cannot be written. Computed
+patterns live on the expression side — `Str.isMatch`, `Str.rmatch`
+take any string expression.
+
+And for structured command output, check the typed adapters first:
+`|> from json T` / `|> from yaml T` beat hand-rolled parsing every
+time.
 
 ## Commands and processes
 
-Bareword heads run externals; builtins shadow PATH (`^ls` forces the
-real one). **The pipe glyph: the right-hand side decides.** `|` feeds
-a program or a reifier (`git log | grep x`, `git diff --quiet |
-succeeds`); `|>` applies a function (`git log |> Seq.head`,
-`["a"] |> Seq.length`). The operator tells you which direction to
-read — `|` means something is fed to a program, `|>` means a value is
-transformed; a mismatch errors naming the other spelling (the full
-table lives in SEMANTICS). A `let` takes a bare command RHS
-everywhere lets go — top level and inside bodies alike
-(`let tree = git rev-parse $c |> Seq.head` works in a function body
-now); `$()` remains the spelling for sub-expression positions (inside
-records, arguments, parens). Splice values with `$name` or `(expr)` —
-always single argv entries, never re-split, so there is no injection
-class. No glob expansion (`Path.glob` is the function spelling), no
-`&&`, no `$VAR` expansion, no redirects — `>` and `>>` pass through as
-literal argv with a warning naming the weir spelling
-(`cmd |> File.write "out.txt"` / `File.append` — the fenced example
-below runs in CI, because this exact spelling has failed twice as
-unchecked prose). For bash semantics, run bash:
-`sh -c "the bash line"`.
+A bareword at the head of a line runs the external program of that
+name. Builtins shadow PATH; `^ls` forces the real one.
+
+**The pipe glyph: the right-hand side decides.** `|` feeds a program
+(`git log | grep x`); `|>` applies a function
+(`git log |> Seq.head`). Read `|` as "fed to a program" and `|>` as
+"transformed by a function". Using the wrong one is an error naming
+the other operator, and the full table lives in
+[SEMANTICS.md](SEMANTICS.md).
+
+A `let` takes a bare command on its right-hand side anywhere a `let`
+goes — top level or inside a function body:
+
+`let tree = git rev-parse $c |> Seq.head`
+
+`$()` is for sub-expression positions — inside records, arguments,
+and parens.
+
+Splice values into argv with `$name` or `(expr)`. A spliced value is
+always exactly one argv entry, never re-split — which is why there is
+no injection class to defend against.
+
+What weir's command lines do NOT do:
+
+- no glob expansion — use the function `Path.glob`
+- no `&&` — write two statements
+- no `$VAR` expansion — splice weir bindings instead
+- no redirects — `>` and `>>` pass through as literal argv, with a
+  warning naming what to use instead (`cmd |> File.write "out.txt"`,
+  or `File.append`)
+
+For bash semantics, run bash: `sh -c "the bash line"`.
 
 ```weir
 // redirection: a function on the right takes |> (the pipe rule)
@@ -900,7 +984,7 @@ expands its own — usually empty — `w`, and the answer is silently
 wrong rather than an error. To splice a weir value into a bash line,
 interpolate it in before sh ever sees it (`sh -c $"echo got-{w}"`);
 when you don't need bash at all, the bare argv splice (`echo $w`)
-was the spelling all along.
+was what you wanted all along.
 
 ```weir
 let marker = "guide"
@@ -910,14 +994,15 @@ sh -c $"echo interpolated-{marker}"
 ```
 
 The effect loop is `for … do` — the shell shape, typed. A bare
-command body streams and raises per iteration (it is implicit
-`!(…)`), and a MULTI-LINE body needs no district — commands are
-legal statements inside any block [D:interior-arming]: `if force
-then` over two git lines, `fun f -> git add $f` under `Seq.iter`, a
-fetch line above a value in a block-let. The loop variable splices like
-any binding. Pipelines stay the spelling for TRANSFORMING values
-(`|> Seq.map …`); `for` is for doing things N times — same machine
-underneath (`for` desugars to `Seq.iter`).
+command body streams and raises per iteration. Commands are legal
+statements inside any block, so a multi-line body just works — two
+git lines under an `if`, `fun f -> git add $f` under `Seq.iter`, a
+fetch line above a value in a block-let. The loop variable splices
+like any binding.
+
+Pipelines remain the way to transform values (`|> Seq.map …`);
+`for` is for doing something N times. Underneath they are the same
+machine — `for` desugars to `Seq.iter`.
 
 ```weir
 for greeting in ["hello"; "again"] do
@@ -943,10 +1028,10 @@ let pod name pairs = yaml
 pod "web" [("app", "web")] |> to yaml |> print
 ```
 
-A scratch directory is a SCOPE, not a chore [D:within-scopes]:
+A scratch directory is a SCOPE, not a chore:
 `within tmp <name>` binds a fresh directory for the block and removes
 it on every exit — including the raise path, which is the half that
-matters. The block is an ordinary expression block: commands arm,
+matters. The block is an ordinary expression block: commands run,
 the last expression is the value.
 
 ```weir
@@ -956,12 +1041,13 @@ let digest = within tmp dir
 print (Str.sub 0 12 digest)
 ```
 
-An `if`/`elif` condition takes a command chain directly
-[D:if-succeeds]: `if test -f $path | succeeds then …` — the chain's
+An `if`/`elif` condition takes a command chain directly:
+`if test -f $path | succeeds then …` — the chain's
 argv stops at `then` (only there; `then` stays an ordinary argv word
 everywhere else — quote `"then"` to pass the literal word to a command
 from a condition). The checker still demands `bool`, so a streaming
-chain teaches (`expected bool, got seq<string>` — add `| succeeds`).
+chain is refused with the fix named (`expected bool, got
+seq<string>` — add `| succeeds`).
 Bind first when the verdict is used twice: `let ok = cmd | succeeds`
 then `if ok then …`.
 
@@ -982,11 +1068,11 @@ within env vars
 Two more kinds complete the discipline. A bare `within` holds no
 resource at all — just the body and a trailing `always` block that
 runs on EVERY exit (normal, raise, `exit n`, SIGINT/SIGTERM; `kill
--9` is the standing carve-out) [D:within-always]. When both the body
+-9` is the one exception). When both the body
 and the cleanup fail, the ORIGINAL error propagates and the cleanup's
 failure goes to stderr with a marker; teardown always continues
 outward. And `within lock "path"` holds an advisory file lock for the
-block [D:within-lock] — blocking by default, `timeout=30s` raises on
+block — blocking by default, `timeout=30s` raises on
 exhaustion, safe across processes and `pmap` arms alike, and released
 by the kernel on any death, `kill -9` included:
 
@@ -999,7 +1085,19 @@ within tmp d
             print "released either way"
 ```
 
-A scratch TREE composes the family [D:fs-members]: `Dir.create` for
+The whole family at a glance (`within proc`, the background-process
+form, is covered under Parallelism):
+
+| form | holds | on every exit |
+|---|---|---|
+| `within tmp d` | a fresh directory | removes it |
+| `within cd "path"` | the working directory | restores it |
+| `within env vars` | an env overlay for child spawns | drops it |
+| `within` … `always` | nothing — a body plus cleanup | runs the `always` block |
+| `within lock "path"` | an advisory file lock | releases it — the kernel does, even on `kill -9` |
+| `within proc h = cmd` | a background process | kills and reaps its tree |
+
+A scratch TREE composes the family: `Dir.create` for
 structure, `Path.glob` to find, `Dir.deleteAll` (the visibly-named
 destructive one) to end it — all inside `within tmp`, whose exit
 tolerates a block that already removed its own directory:
@@ -1011,14 +1109,14 @@ within tmp d
     print $"{Path.glob $"{d}/**/*.txt" |> Seq.length} artifact(s)"
 ```
 
-Copies and moves take (src, dst) and REFUSE an existing destination —
-`File.delete` first is the overwriting spelling. `Dir.create` alone
+Copies and moves take (src, dst) and REFUSE an existing
+destination — `File.delete` first if you mean to overwrite. `Dir.create` alone
 is idempotent: an existing directory is the post-condition it was
 asked for.
 
-Secret data is the base64 workload [D:encoding-law]: `Str.toBase64`
+Secret data is where base64 comes in: `Str.toBase64`
 encodes UTF-8 bytes as ONE unwrapped line (no 76-column MIME wrap, no
-`-w0` tax), so a token splices straight into the district:
+`-w0` tax), so a token splices straight into the template:
 
 ```weir
 let tok = Str.toBase64 "s3cr3t-token"
@@ -1035,10 +1133,10 @@ secret |> to yaml |> print
 Decoding is honest both ways: `Str.fromBase64` raises on malformed
 input AND on valid base64 of non-text (a PNG's bytes are not a
 string — corruption must not wear a success); `Str.tryFromBase64` is
-the Option twin for API- or attacker-supplied input. `Str.sha256`
+the `Option`-returning variant, for API- or attacker-supplied input. `Str.sha256`
 digests the UTF-8 bytes as lowercase hex, `sha256sum`-parity.
 
-Block scalars are the ConfigMap workload:Block scalars are the ConfigMap workload: a `key: |` (or `|-`)
+Block scalars are what a ConfigMap needs: a `key: |` (or `|-`)
 header opens LITERAL content — `$VAR` and `for` lines inside it are
 bytes, because embedded scripts are full of `$` and silently
 substituting into them is the one thing a template must never do.
@@ -1062,7 +1160,7 @@ let cm = yaml
 cm |> to yaml |> print
 ```
 
-A district can name a vendored JSON schema on its marker line
+A `yaml` block can name a vendored JSON schema on its marker line
 (`yaml schema=k8s-service` — add one with `weir add schema <url>
 --as <name>`; for k8s use the `-standalone-strict` variants, whose
 `additionalProperties: false` is what makes unknown-field checking
@@ -1099,17 +1197,17 @@ cannot drift.
 
 ## Per-child environment
 
-The env sigil injects variables into a child process — an overlay on
-the inherited environment (set those names, keep the rest, parent
-untouched). `Env.fromFile` reads the dotenv subset: `KEY=VALUE`,
+A command can run with extra environment variables — an overlay on
+the inherited environment: those names set, the rest kept, the
+parent untouched. `Env.fromFile` reads the dotenv subset: `KEY=VALUE`,
 optional quotes, `#` comments. It does not read `export` lines or
 expand `$VAR` references — those need a shell to evaluate them. If a
 file genuinely needs sourcing, run it in one:
 
 `sh -c "set -a; . ./file.env; your-command"`
 
-Bind the env once, then attach it to the sigil — `!e(...)` runs for
-effect, `$e(...)` captures:
+Bind the env once, then attach its name to the command marker —
+`!e(...)` runs for effect, `$e(...)` captures the output:
 
 ```weir
 ["GREETING=hello"] |> File.write "demo.env"
@@ -1122,8 +1220,8 @@ let e = Env.fromFile "demo.env"
 print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
 ```
 
-The env name sits inside the sigil, attached to the glyph:
-`$e(...)` or `!e(...)`. A `!name` at the end of a line does the same
+The env name attaches directly to the marker: `$e(...)` or
+`!e(...)`. A `!name` at the end of a line does the same
 for a whole command block — every command in the indented block below
 it runs with that environment:
 
@@ -1165,10 +1263,13 @@ explicitly, `[<NoShort>]` suppresses one, and `--help` prints the
 derived usage — flags, types, optionality, the short truth, and each
 field's `///` first line — even on otherwise-invalid invocations. `bool`
 fields are presence flags, `string`/`int` are required, `Option`
-makes them optional. Loading is STRICT and collected: unknown flags
-(with did-you-mean), unexpected arguments, missing requireds, and
-unparseable values all arrive in one boundary error, before any
-effect runs.
+makes them optional. Loading is strict and collected — all of these
+arrive together in one boundary error, before any effect runs:
+
+- unknown flags (with a did-you-mean)
+- unexpected arguments
+- missing required flags
+- unparseable values
 
 Subcommands are a union of record-payload cases — the first token
 picks the case, the rest parse as its flags, and the dispatch match
@@ -1185,22 +1286,22 @@ match Args.load Cmd with // no argv here: "missing subcommand; one of: clone, st
 ```
 
 There are no positionals — spell operands as flags (`pull --subdir
-libx`); named-over-positional is the house aesthetic (the
-records-over-tuples ruling, extended to argv). `[<Positional>]` is not
-a registered attribute; what is dropped is the typed, declared,
-help-generating path, NOT the ability to read operands. The untyped
-floor remains for hand-rolled shapes: `Args.flag "--clean" "-c"` and
-`Args.value "--out"` scan the raw `Self.args` seq, and multi-value options
-reshape as one flag per value (`--stack X --env Y`).
+libx`), for the same reason records beat tuples: a name at the call
+site beats a position you have to count. `[<Positional>]` is not a
+registered attribute. What is dropped is the typed, declared,
+help-generating path, not the ability to read operands: for
+hand-rolled shapes, `Args.flag "--clean" "-c"` and
+`Args.value "--out"` scan the raw `Self.args` seq, and a multi-value
+option reshapes as one flag per value (`--stack X --env Y`).
 
 ## Scraping text
 
-Pulling structure out of text is one pipeline. `Str.rmatchAll` yields
-every match's groups (lazily, no Option — the absence is the empty
-seq); `(?s)`/`(?m)` inline flags handle DOTALL/MULTILINE. Map each
-match to what you want, `Seq.distinct` to dedupe, and pipe a value
-through an external tool (`| sha256sum` — the bare spelling of `feed`)
-when you need one:
+Pulling structure out of text is one pipeline. `Str.rmatchAll`
+yields every match's capture groups — lazily, and with no `Option`:
+no match is simply an empty seq. The `(?s)` and `(?m)` inline flags
+cover DOTALL and MULTILINE. Map each match to what you want,
+`Seq.distinct` to dedupe, and pipe a value through an external tool
+(`| sha256sum`) when you need one:
 
 ```weir
 let text = "let a = 1\nlet b = 2\nlet a = 1"
@@ -1235,10 +1336,13 @@ only exist in CI.
 
 ## Retrying and polling
 
-The bounded loops are compound forms: a `key=value` head, a block
-body whose last statement is the value, and an `until` segment
-binding that value for the condition. A `bool` body is its own
-predicate and the form yields unit:
+The bounded loops share one shape:
+
+- a `key=value` head
+- a block body whose last statement is the value
+- an `until` section that binds the value for the condition
+
+A `bool` body is its own predicate, and the form then yields unit:
 
 ```weir
 retry attempts=3 delay=100ms
@@ -1323,31 +1427,34 @@ within proc srv = python3 -u -c "import socketserver,http.server as h; s=sockets
 print "scope closed, server gone"
 ```
 
-(In real scripts `python3 -m http.server` is the usual spelling; this
+(In real scripts `python3 -m http.server` is the usual choice; this
 block's inline server skips the reverse-DNS lookup `http.server` does
 at bind — on locked-down CI hosts that lookup can hang under privacy
 gating, a platform behavior worth knowing when a server is
 mysteriously up-but-not-listening.)
 
-`watch=` is the quality move — a child that crashes at startup fails
-the poll at the NEXT INTERVAL TICK, carrying its own last output in
-the error (the watch is sampled with the poll, not awaited — prompt
-detection would be more machinery for a difference that only matters
-at long intervals), and a
-plain timeout reports whether the watched process was still running.
-Both the child's streams spill to files (bounded by disk, not
-memory) — never the parent's terminal or its stdout data channel, so
-a chatty server cannot break `weir script | next`; `Proc.tail` reads
-the last ~100 spill lines — pass the child's unbuffered flag
-(python's `-u`) when you want them live: children block-buffer
-stdout when it is a pipe. A scoped child's own exit is DATA — the
-one place raise-by-default does not apply: failure surfaces through
-`watch=` or `Proc.wait` (which yields the exit code), nowhere else.
-`Proc.stop` tears down early; nested scopes release LIFO. The
-teardown guarantee, precisely: normal exit, raise, SIGINT and
-SIGTERM close every scope; `kill -9` of weir itself cannot, by
+`watch=` is worth reaching for every time. A child that crashes at
+startup fails
+the poll at the next interval tick, and the error carries the
+child's own last output. A plain timeout also reports whether the
+watched process was still running when time ran out.
+
+The child's streams spill to files — bounded by disk, not memory —
+and never reach the parent's terminal or its stdout data channel, so
+a chatty server cannot break `weir script | next`. `Proc.tail` reads
+the last ~100 spill lines. Pass the child's unbuffered flag
+(python's `-u`) when you want those lines live: children
+block-buffer stdout when it is a pipe.
+
+A scoped child's own exit is DATA — the one place raise-by-default
+does not apply. Failure surfaces through `watch=` or `Proc.wait`
+(which yields the exit code), nowhere else. `Proc.stop` tears a
+scope down early, and nested scopes release last-in, first-out.
+
+The teardown guarantee, precisely: normal exit, raise, SIGINT and
+SIGTERM all close every scope; `kill -9` of weir itself cannot, by
 definition. A process that must outlive the script is a daemon —
-that belongs to systemd/launchd, and weir deliberately has no
+that belongs to systemd or launchd, and weir deliberately has no
 `nohup`.
 
 ```weir
@@ -1382,26 +1489,29 @@ deploy.weir can (capability, not behaviour — an untaken branch still counts):
     a Secret reaches the argv of curl (ps-visible — the stated non-claim)  deploy.weir:9:9
 ```
 
-Three honesty rules: it reports capability, never behaviour — a
-command inside a branch that never runs still counts; `sh -c` and the
-other interpreters are first-class unknowns, counted in the header
-(`--strict` exits 2 when any exist, so a CI gate can refuse
-unanalysable scripts); and the claim covers what weir itself does —
-any external can do anything, and no static report closes that.
-Imports are walked transitively; a module's capabilities carry the
-module's own file:line. `--json` emits the same facts for machines.
+Three honesty rules:
+
+1. It reports **capability, never behaviour** — a command inside a
+   branch that never runs still counts.
+2. `sh -c` and the other interpreters are first-class unknowns,
+   counted in the header. `--strict` exits 2 when any exist, so a CI
+   gate can refuse unanalysable scripts.
+3. The claim covers what weir itself does — any external can do
+   anything, and no static report closes that.
+
+Imports are walked transitively, and a module's capabilities carry
+the module's own file:line. `--json` emits the same facts for
+machines.
 
 ## Failing and diagnosing
 
 `fail "reason"` stops the script with a located error and exit 1.
-`exit n` exits with a specific code, silently — the propagation
-spelling for a child's failure. There is no try/finally: to clean up
-whether a step failed or not, make the fallible middle data with
-`| complete`, run the cleanup, then propagate:
-spelling for a child's failure. There is no GENERAL try/finally:
-cleanup-always is resource-scoped — the `within` family releases on
-every exit, raise included — and for a fallible middle that is not a
-resource, make it data with `| complete`, run the cleanup, then propagate:
+`exit n` exits with a specific code, silently — how you pass a
+child's failure along. There is no general try/finally.
+Cleanup that guards a resource belongs to the `within` family, which
+releases on every exit, raise included. For a fallible middle step
+that is not a resource, make it data with `| complete`, run the
+cleanup, then propagate:
 
 ```weir
 let r = sh -c "exit 0" | complete
@@ -1423,17 +1533,18 @@ print (if onBranch then "on a branch" else "detached")
 ```
 
 `Log.info $"starting {n}"` (and `trace`/`debug`/`warn`) writes
-levelled diagnostics to stderr — `WEIR_LOG=debug weir script.weir`
-turns the detail on for one run without editing anything, and
-`WEIR_LOG=off` silences the log while `printerr` and `fail` still
-reach you (deliberately: there is no `Log.error`, because an error an
-env var can silence is the one message you needed). Stdout stays
-byte-identical at every level — logging never touches the data
-channel. `printerr` is `print` to stderr — diagnostics there, data on stdout.
-Effect steps sequence inside blocks — same-indent lines, each but the
-last unit-typed. The glyph law: weir has no `!`-negation — negation
-is the word `not`; `!` means DO IT. Command sigils bring full
-command chains into expressions: `$(...)` captures output, `!(...)`
+levelled diagnostics to stderr. `WEIR_LOG=debug weir script.weir`
+turns the detail on for one run without editing anything;
+`WEIR_LOG=off` silences the log. `printerr` and `fail` still reach
+you at every level — deliberately, there is no `Log.error`, because
+an error an env var can silence is the one message you needed.
+Stdout stays byte-identical at every level: logging never touches
+the data channel. `printerr` is `print` to stderr — diagnostics
+there, data on stdout.
+
+One rule to know about `!`: weir has no `!`-negation. Negation is the
+word `not`; `!` means DO IT. Two markers bring full command chains
+into expressions — `$(...)` captures the output, `!(...)`
 runs-and-streams (unit, raises on nonzero):
 
 ```weir
@@ -1453,16 +1564,22 @@ print $"at {latest}"
 let tagged = $"at {$(git log -1 "--format=%h") |> Seq.head}"
 ```
 
-A top-level `let` RHS takes a bare command chain directly — with or
-without params (`let branch = git rev-parse HEAD |> Seq.head`,
-`let revParse r = git rev-parse $r |> Seq.head`; params shadow PATH in
-their own RHS, so `let f x = x` stays the identity whatever is
-installed) — prefer bare when the whole RHS is the chain; `$()` is
-for everywhere the command is a SUB-expression (inside bodies, holes,
-nested splices). A computed program NAME has no head spelling —
-branch the whole command line (`if hot then rg pat else grep pat`). And do not bind an `if`-effect block to a
-`let`: the binding is eagerly evaluated unit — a bare `if` statement
-says what it means.
+A `let` takes a bare command chain on its right-hand side, with or
+without params:
+
+`let branch = git rev-parse HEAD |> Seq.head`
+`let revParse r = git rev-parse $r |> Seq.head`
+
+Params shadow PATH inside their own body, so `let f x = x` stays the
+identity whatever happens to be installed. Prefer the bare form
+when the whole right-hand side is the chain; `$()` is for everywhere
+the command is a sub-expression — inside bodies, holes, and nested
+splices.
+
+There is no syntax for a computed program NAME — branch the whole
+command line instead (`if hot then rg pat else grep pat`). And do not bind an
+`if`-effect block to a `let`: the binding is eagerly evaluated unit,
+and a bare `if` statement says what it means.
 
 ```weir
 printerr "starting"
@@ -1479,7 +1596,7 @@ Per-editor setup — Neovim, Helix, Emacs, VS Code, micro — lives in
 speaks stdio JSON-RPC and serves diagnostics (same codes as
 `weir check --json`), hover types, and completion from the same
 pipeline the runner uses. For agent loops and CI,
-`weir check --json file.weir` is the no-editor spelling.
+`weir check --json file.weir` is the no-editor route.
 
 ## Where weir ends
 
@@ -1487,15 +1604,24 @@ The complete border with F# — what is deliberately different, what is
 rejected by design, what is merely pending — lives in
 [tests/fidelity/divergences.md](../tests/fidelity/divergences.md),
 machine-verified against the real F#
-compiler in CI. The short version: no mutation, no exceptions (values
-and `fail`/`exit`), no OO, no async, no user type classes (the three
-built-in constraint families are closed). When a task
-outgrows a shell, the graduation path is full F# — weir points there
-on purpose.
+compiler in CI. The short version:
 
-For the language rulebook with rationale, read
-[SEMANTICS.md](SEMANTICS.md). For the exhaustive, agent-oriented rule
-file — every shipped member, every rule, CI-executed —
-[skills/weir/SKILL.md](../skills/weir/SKILL.md). Arriving with another
-language's reflexes — bash, PowerShell, Python, Make? The per-language
-translation tables live in [COMING-FROM.md](COMING-FROM.md).
+- no mutation
+- no exceptions — values, `fail` and `exit` instead
+- no OO
+- no async
+- no user type classes — the three built-in constraint families are
+  closed
+
+When a task outgrows a shell, the graduation path is full F# — weir
+points there on purpose.
+
+Where to next:
+
+- [SEMANTICS.md](SEMANTICS.md) — the language rulebook, with
+  rationale
+- [skills/weir/SKILL.md](../skills/weir/SKILL.md) — the exhaustive,
+  agent-oriented rule file: every shipped member, every rule,
+  CI-executed
+- [COMING-FROM.md](COMING-FROM.md) — per-language translation tables
+  for arrivals from bash, PowerShell, Python, or Make

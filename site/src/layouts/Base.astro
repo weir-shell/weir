@@ -54,6 +54,15 @@ const { title } = Astro.props;
         line-height: 1.55;
       }
       code { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+      kbd {
+        font: 0.78em ui-monospace, "SF Mono", Consolas, monospace;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-bottom-width: 2px;
+        border-radius: 4px;
+        padding: 0.1em 0.4em;
+        white-space: nowrap;
+      }
       /* inline code reads as an OBJECT in the sentence, not as the
          sentence in another typeface: smaller, bounded, tinted */
       :not(pre) > code {

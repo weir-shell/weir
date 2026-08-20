@@ -273,7 +273,7 @@ did-you-mean.
 - `$x` as a variable-that-also-does-properties — `$` in weir is a
   splice (into argv or a string); expressions use bare names.
 - `trap`/`try` — the reifier family:
-  [GUIDE.md](GUIDE.md#exit-codes-the-reifier-family).
+  [GUIDE.md](GUIDE.md#exit-codes-from-command-to-value).
 - On Windows: bare names resolve through the full `PATHEXT` list
   (platform parity), and the `.bat`/`.cmd` hazard is a stated
   non-claim — a batch interpreter re-parses its command line, so
