@@ -36,7 +36,9 @@ if rel.status <> 200 then
 let latest = (rel.body |> from json Release).tag_name
 
 // the site must serve an installer once a release exists — a 404 here IS
-// the dispatch-never-fired state, not a skippable condition
+// the dispatch-never-fired state, not a skippable condition. send, not
+// fetch: fetch's raise names only url+status, and this arm's job is the
+// DIAGNOSIS below (a raise cannot be caught to add it)
 let site = Http.get "https://weir.sh/install.sh" |> Http.send
 
 if site.status <> 200 then
