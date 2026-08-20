@@ -1,5 +1,22 @@
 # Spike Notes
 
+## the site went live and the first fetch found the gap (2026-08-20)
+
+weir.sh is up — docs render, changelog renders, install.sh serves
+text/plain at the edge (the _headers rule works; the content-type
+question from the runbook is answered). And the very first verification
+fetch surfaced the thing the rehearsal exists for: /install.sh answered
+200 with the HOMEPAGE. Cloudflare Pages without a 404.html serves
+index.html at 200 for every missing path, so the pre-release
+docs-only deploy made `curl -fsSL | sh` pipe HTML into sh instead of
+failing. A 404.astro page fixes it (Pages switches to real 404s the
+moment dist/404.html exists), and the staleness gate gained a worded
+arm for exactly this shape — red-tested against the LIVE fallback by
+pointing the check at a repo that has releases, so the site arm
+actually ran. Also learned the container's egress proxy needed weir.sh
+allowlisted, and `docker info` prints a Server: header even when the
+daemon dial fails — two instrument-reading traps in one day.
+
 ## the image is the binary with a digest (2026-08-20)
 
 The container rider's framing did all the work: an artifact, not a
