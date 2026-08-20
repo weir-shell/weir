@@ -19,6 +19,12 @@ skill lines and targeted hints).
 ## stranded
 
 ## friction
+- 2026-08-20 | Http sends NO default User-Agent, and github.com's API
+  403s such requests — a status that reads as an auth failure, not a
+  missing header. Every mainstream client sends a default UA (curl,
+  requests, Go). Worth considering a `weir/<version>` default (override
+  via headers) — until then every GitHub-API script needs the explicit
+  pair, and nothing teaches that.
 - 2026-07-24 | fuzz.sh -> fuzz.weir | stream-AND-reify has no
   spelling: `| orFail msg` swallows the chain's output (probed —
   the predicate-silence family), `| complete` captures it, so a

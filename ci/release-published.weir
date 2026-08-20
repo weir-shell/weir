@@ -17,13 +17,15 @@ if Seq.isEmpty tags then
     print "no v* tag yet — nothing to check (pre-first-release)"
     exit 0
 
-// status-as-data: no -f, so a 404 prints "404" and curl still exits 0
-let code =
-    sh -c $"curl -sS -o /dev/null -w '%{{http_code}}' https://api.github.com/repos/{repo}/releases/latest"
-    |> Seq.head
+// status is DATA — Http.send binds it, a 404 is a value not an error.
+// GitHub's API requires a User-Agent; weir's Http sends none by default.
+let rel =
+    Http.send
+        { Http.get $"https://api.github.com/repos/{repo}/releases/latest" with
+            headers = [ ("User-Agent", "weir-ci") ] }
 
-if code == "200" then
+if rel.status == 200 then
     print $"releases/latest resolves (200) — a published release exists for {tags |> Seq.length} tag(s)"
     exit 0
 
-fail $"releases/latest returned {code} but v* tag(s) exist — [D:releases] produces DRAFTS, which /latest excludes; the installers 404. PUBLISH THE DRAFT: gh release edit <tag> --draft=false (or the Releases page)"
+fail $"releases/latest returned {rel.status} but v* tag(s) exist — [D:releases] produces DRAFTS, which /latest excludes; the installers 404. PUBLISH THE DRAFT: gh release edit <tag> --draft=false (or the Releases page)"
