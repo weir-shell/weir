@@ -1,10 +1,5 @@
 # Changelog
 
-## v0.0.0-rc2
-
-- Rehearsal prerelease — exercises the release chain end to end. It
-  will be deleted; do not install from it.
-
 ## v0.0.1
 
 First release.
