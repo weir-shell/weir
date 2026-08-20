@@ -245,19 +245,28 @@ ride `Self.scriptPath`:
 
 ## A script's own facts — the `Self` module
 
-`Self` groups what a running script knows about itself: `Self.args`,
-`Self.stdin`, `Self.pid : int` (the process id — `acquire $"{Self.pid}"`
-replaces the `$(sh -c 'echo $PPID')` shell-out), and
-`Self.scriptPath : string`.
+`Self` groups what a running script knows about itself: `Self.args`
+(the arguments), `Self.stdin` (the input stream), `Self.pid` (the
+process id), and `Self.scriptPath`.
 
-`Self.scriptPath` is the running script's absolute path —
-resolved at startup against the invocation cwd, before any `cd`
-runs, symlinks left unresolved (bash's `$0` behavior). The
-dirname-$0 idiom is `Self.scriptPath |> Path.dir`; if you need
-symlinks resolved, the command spelling is
-`$(realpath $"{Self.scriptPath}") |> Seq.head`. Script-only, like the
-rest of `Self` —
-the REPL and `-e` refuse it by name.
+`Self.scriptPath` is the running script's absolute path. It is
+resolved when the script starts, against the directory you invoked it
+from, so a later `cd` does not change it. Symlinks are left
+unresolved — the path is where the script was *invoked*, not where
+the file lives.
+
+For the script's own directory:
+
+```weir
+let dir = Self.scriptPath |> Path.dir
+print $"has a directory: {Str.length dir > 0}"
+```
+
+To resolve symlinks:
+`$(realpath $"{Self.scriptPath}") |> Seq.head`
+
+Available in scripts only — the REPL and `-e` refuse each `Self`
+member by name, since neither has a file.
 
 ## Defaults: the resting point moves
 
@@ -284,17 +293,32 @@ Matching is case-insensitive (`=DEBUG`, `=debug`, `=Debug` all
 select `Debug`) because env convention is uppercase; a miss reports
 `expected one of: Debug, Info, Warn` with a did-you-mean.
 
-`[<Default v>]` on an `Args.load` field keeps the field non-Option
-and fills the literal when the flag is absent — `--help` shows it.
-On a bool, `[<Default true>]` mints the `--no-x` twin: resting
-point on, `--no-x` turns it off, and giving both polarities is an
-error naming both. `Env.load` consumes the same attribute — an absent env var fills
-the literal, any set var wins (the resting point sits below the
-whole overlay stack), and because env bools are TEXT rather than
-presence, `[<Default false>]` is legal there while Args rejects it
-— the same attribute, each consumer's own law. The boundary:
-LITERAL defaults take the attribute; COMPUTED defaults keep
-`Option` and a line of code — fuzz.weir carries both shapes:
+`[<Default v>]` on an `Args.load` field fills in the value when the
+flag is absent. The field stays non-`Option` — your code reads it
+directly — and `--help` shows the default.
+
+On a bool, `[<Default true>]` also mints the opposite flag: the
+field rests at true, `--no-x` turns it off, and passing both
+polarities is an error naming both. `[<Default false>]` is rejected
+on an `Args.load` bool, because a presence flag already rests at
+false without help:
+
+```weir-error
+type Cli = {
+    [<Default false>]
+    clean: bool
+}
+let c = Args.load Cli // [<Default false>] is redundant — presence already rests at false
+print $"{c.clean}"
+```
+
+`Env.load` reads the same attribute: an absent variable fills in the
+default, and any set variable wins. Env bools are text
+(`FLAG=false`), not presence, so `[<Default false>]` is legal there.
+
+The attribute takes literals only. A default you have to compute
+keeps the field `Option` plus one line of code — the record below
+carries both shapes:
 
 ```weir
 type Cli = {
@@ -313,11 +337,11 @@ print $"count={cli.count} seed={cli.seed}"
 
 A `Secret` is a marker the renderers respect: `show` gives `***`,
 interpolation and the wire boundaries refuse, and `Secret.reveal` is
-the one place the value comes back out. It is flow control at the
-boundaries weir owns — not storage, not memory protection (see
-[SECURITY.md](../SECURITY.md) for the non-claims). The point is
-coverage: a token cannot slip into a log line or a shown record by
-accident.
+the one place the value comes back out. It controls where a value
+can flow at the boundaries weir itself renders; it is not storage
+and not memory protection ([SECURITY.md](../SECURITY.md) states
+those non-claims). The point is coverage: a token cannot slip into a
+log line or a shown record by accident.
 
 The primary producer is `Env.load` — env is the standard CI secret
 channel (`secrets.GITHUB_TOKEN` becomes an env var), so a `Secret`
@@ -329,9 +353,9 @@ let cfg = Env.load Cfg
 git push https://$(Secret.reveal cfg.GITHUB_TOKEN)@github.com/…
 ```
 
-`Args.load` takes a `Secret` field too (`ps`-visible — a stated
-non-claim), and `File.readSecret` reads a mounted k8s/docker secret
-file. Every USE of the value is a deliberate `Secret.reveal`, so the
+`Args.load` takes a `Secret` field too — though anything passed as
+a flag is visible in the process list, which weir does not hide —
+and `File.readSecret` reads a mounted k8s/docker secret file. Every USE of the value is a deliberate `Secret.reveal`, so the
 audit is the call site. To keep a derived value secret, `Secret.map`
 stays inside the wrapper — `"Bearer " + reveal` would launder it:
 
@@ -1078,10 +1102,14 @@ cannot drift.
 The env sigil injects variables into a child process — an overlay on
 the inherited environment (set those names, keep the rest, parent
 untouched). `Env.fromFile` reads the dotenv subset: `KEY=VALUE`,
-optional quotes, `#` comments — no `export`, no `$VAR` references
-(sourcing is shell evaluation; for that, `sh -c "set -a; . file; ..."`
-remains the honest spelling). Bind the env once, then glue it to the
-sigil — `!e(...)` runs for effect, `$e(...)` captures:
+optional quotes, `#` comments. It does not read `export` lines or
+expand `$VAR` references — those need a shell to evaluate them. If a
+file genuinely needs sourcing, run it in one:
+
+`sh -c "set -a; . ./file.env; your-command"`
+
+Bind the env once, then attach it to the sigil — `!e(...)` runs for
+effect, `$e(...)` captures:
 
 ```weir
 ["GREETING=hello"] |> File.write "demo.env"
@@ -1094,9 +1122,10 @@ let e = Env.fromFile "demo.env"
 print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
 ```
 
-The env slot goes INSIDE the sigil — `$e(...)` /
-`!e(...)` with the name glued to the glyph — and a line-end `!name`
-turns a whole command block into an env-carrying district:
+The env name sits inside the sigil, attached to the glyph:
+`$e(...)` or `!e(...)`. A `!name` at the end of a line does the same
+for a whole command block — every command in the indented block below
+it runs with that environment:
 
 ```weir
 ["STAGE=prod"] |> File.write "stage.env"
@@ -1275,11 +1304,11 @@ not guess one.
 `Seq.pmap` / `Seq.piter` fan out over a seq: parallel execution,
 results in input order, first failure rethrown. Workers fork the
 session — `cd` inside a worker is worker-local and gone at the join.
-There is no async/await and never will be: processes and pipelines are
-the concurrency model of the LANGUAGE SURFACE (underneath, the fan-out
-members run arms on dedicated threads inside the weir process — worth
-knowing when reasoning about shared state or what a raise does), and a
-task that truly needs async belongs in full F#.
+There is no async/await, and there never will be. Processes and
+pipelines are weir's concurrency model. Under the hood the fan-out
+members run each arm on its own thread inside the weir process —
+worth knowing when you reason about shared state, or about where a
+raise lands. A task that truly needs async belongs in full F#.
 
 A background process gets a SCOPE, never a `&`: `within proc` binds a
 handle, and at every block exit — normal or raise — the process tree
