@@ -25,9 +25,9 @@ if Seq.isEmpty tags then
 // an unpublished latest release is [D:release-gate]'s finding, not this
 // script's — skip rather than double-report the same defect
 let rel =
-    Http.send
-        { Http.get $"https://api.github.com/repos/{repo}/releases/latest" with
-            headers = [ ("User-Agent", "weir-ci") ] }
+    { Http.get $"https://api.github.com/repos/{repo}/releases/latest" with
+        headers = [ ("User-Agent", "weir-ci") ] }
+    |> Http.send
 
 if rel.status <> 200 then
     print $"releases/latest returned {rel.status} — release-published.weir owns that state; skipping the staleness check"
@@ -37,7 +37,7 @@ let latest = (rel.body |> from json Release).tag_name
 
 // the site must serve an installer once a release exists — a 404 here IS
 // the dispatch-never-fired state, not a skippable condition
-let site = Http.send (Http.get "https://weir.sh/install.sh")
+let site = Http.get "https://weir.sh/install.sh" |> Http.send
 
 if site.status <> 200 then
     fail $"weir.sh/install.sh returned {site.status} but release {latest} is published — the site deploy never fired or failed; check the site workflow run for the release"
