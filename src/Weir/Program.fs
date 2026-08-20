@@ -207,6 +207,12 @@ let main argv =
     match Array.toList argv with
     | [ "-e"; input ] -> evalOnce input
     | [] -> Weir.Repl.run ()
+    // the reference dump [D:reference] — machine surface for the site's
+    // generated pages; the e2e currency gate diffs it against the
+    // committed site/src/data/reference.json
+    | [ "docs-json" ] ->
+        Console.WriteLine(Weir.Repl.docsJson ())
+        0
     | [ "--version" ] ->
         // the build stamp [D:masking-mechanized] — <tag>+<hash>; the
         // harness gates read the hash (the part after the last '+') and

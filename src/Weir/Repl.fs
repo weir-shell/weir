@@ -115,6 +115,78 @@ let private initial =
 
 let private currentEnv = ref initial.TypeEnv
 
+/// the reference dump [D:reference]: the SAME one source #help and hover
+/// read — builtinDocs plus the typed signatures — emitted as JSON for
+/// the site's generated reference pages (weir docs-json). Modules carry
+/// their members with signatures; the form heads (retry/poll/within…)
+/// are builtinDocs keys with no module and no scheme.
+let docsJson () : string =
+    let te = initial.TypeEnv
+    use ms = new MemoryStream()
+
+    use w =
+        new System.Text.Json.Utf8JsonWriter(ms, System.Text.Json.JsonWriterOptions(Indented = true))
+
+    let writeDocFields (d: Builtins.BuiltinDoc option) =
+        match d with
+        | Some d ->
+            w.WriteString("summary", d.Summary)
+
+            match d.Example with
+            | Some e -> w.WriteString("example", e)
+            | None -> w.WriteNull "example"
+
+            match d.Pointer with
+            | Some p -> w.WriteString("pointer", p)
+            | None -> w.WriteNull "pointer"
+        | None ->
+            w.WriteNull "summary"
+            w.WriteNull "example"
+            w.WriteNull "pointer"
+
+    w.WriteStartObject()
+    w.WriteStartArray "modules"
+
+    for KeyValue(m, members) in te.Modules do
+        w.WriteStartObject()
+        w.WriteString("name", m)
+        w.WriteStartArray "members"
+
+        for KeyValue(mem, sch) in members do
+            let q = $"{m}.{mem}"
+            let d = Map.tryFind q Builtins.builtinDocs
+            w.WriteStartObject()
+            w.WriteString("name", mem)
+
+            let ps = d |> Option.map (fun d -> d.Params) |> Option.defaultValue []
+
+            w.WriteString("signature", formatSignature q ps sch.Ty)
+            writeDocFields d
+            w.WriteEndObject()
+
+        w.WriteEndArray()
+        w.WriteEndObject()
+
+    w.WriteEndArray()
+    w.WriteStartArray "forms"
+
+    for KeyValue(k, d) in Builtins.builtinDocs do
+        if not (k.Contains '.') then
+            w.WriteStartObject()
+            w.WriteString("name", k)
+
+            match Map.tryFind k te.Values with
+            | Some sch -> w.WriteString("signature", formatSignature k d.Params sch.Ty)
+            | None -> w.WriteNull "signature"
+
+            writeDocFields (Some d)
+            w.WriteEndObject()
+
+    w.WriteEndArray()
+    w.WriteEndObject()
+    w.Flush()
+    Text.Encoding.UTF8.GetString(ms.ToArray())
+
 // ---- the REPL config [D:repl-quality]: INERT data (values that tune an
 // affordance, never anything that runs), read ONLY by the REPL. It lives in
 // THIS module by design — scripts never touch Repl.fs, so `weir script.weir`

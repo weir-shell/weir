@@ -15,6 +15,10 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 # e2e blocks' rule applied once at harness level (CI has no weir on PATH)
 export PATH="$(dirname "$BIN"):$PATH"
 DOCS=("$(dirname "$0")/../skills/weir/SKILL.md" "$(dirname "$0")/../docs/GUIDE.md" "$(dirname "$0")/../docs/COMING-FROM.md")
+# the written reference pages [D:reference]: every behaviour claim is a fence
+for refdoc in "$(dirname "$0")"/../docs/reference/*.md; do
+    [ -e "$refdoc" ] && DOCS+=("$refdoc")
+done
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

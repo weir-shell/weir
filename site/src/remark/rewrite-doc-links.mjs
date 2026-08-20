@@ -18,7 +18,6 @@ const GITHUB = "https://github.com/weir-shell/weir/blob/main";
 // deliberately absent from both
 const RENDERED = new Set([
   "docs/GUIDE.md",
-  "docs/SEMANTICS.md",
   "docs/INSTALL.md",
   "docs/COMING-FROM.md",
   "docs/LEXICON.md",
@@ -49,6 +48,8 @@ export function rewriteDocLinks() {
 
       if (RENDERED.has(repoPath)) {
         node.url = `/docs/${slugOf(repoPath)}/${suffix}`;
+      } else if (repoPath.startsWith("docs/reference/")) {
+        node.url = `/reference/${slugOf(repoPath.replace("docs/reference/", "docs/"))}/${suffix}`;
       } else if (repoPath === "CHANGELOG.md") {
         node.url = `/changelog/${suffix}`;
       } else if (!repoPath.startsWith("..")) {

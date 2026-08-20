@@ -8,9 +8,15 @@
 import { defineCollection } from "astro:content";
 import { glob } from "astro/loaders";
 
+// the WRITTEN half of the reference [D:reference]: language pages,
+// their behaviour claims fenced and CI-executed like GUIDE's
+const reference = defineCollection({
+  loader: glob({ pattern: "*.md", base: "../docs/reference" }),
+});
+
 const docs = defineCollection({
   loader: glob({
-    pattern: ["*.md", "!DECISIONS.md"],
+    pattern: ["*.md", "!DECISIONS.md", "!SEMANTICS.md"],
     base: "../docs",
   }),
 });
@@ -21,4 +27,4 @@ const changelog = defineCollection({
   loader: glob({ pattern: "CHANGELOG.md", base: ".." }),
 });
 
-export const collections = { docs, changelog };
+export const collections = { docs, changelog, reference };
