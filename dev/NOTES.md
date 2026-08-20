@@ -1,5 +1,49 @@
 # Spike Notes
 
+## the site lands as a skeleton, and the GUIDE was lying in two places (2026-08-20)
+
+The site scope call came back "build it," so site/ now holds an Astro
+skeleton whose whole design is reuse: Shiki eats the existing tmLanguage
+grammar (53 weir fences render through the grammar e2e already gates —
+no fourth grammar), the content loaders point at ../docs and the repo
+root (no copy, no sync step), and the one piece of real work was the
+remark plugin — three rewrite rules for relative .md links (rendered doc
+→ /docs/slug/#anchor, CHANGELOG → /changelog/, everything else → the
+GitHub blob URL). Frontmatter-free markdown went through as-is with no
+schema; titles derive from each file's first heading. The generator will
+not be written in weir — markdown→HTML needs a parser weir lacks, and
+shelling out is a dependency without the dogfood benefit — recorded in
+the row so it stays declined.
+
+The deploy insight worth keeping: the `release: published` event CARRIES
+the release, so the workflow fetches installers from the release that
+fired (never /latest, which races and excludes prereleases) and routes
+by `release.prerelease` — a prerelease deploys to the staging branch
+alias, a full release to production. The rc1 rehearsal therefore
+exercises the production chain against staging with zero workflow
+changes. Fail-loud is by construction, not host trust: direct upload
+only creates a deployment when wrangler runs, and the research turned up
+a community-reported Pages git-integration case where an exit-1 build
+still deployed — the exact failure mode the direct-upload choice removes.
+
+The GUIDE stranger-read caught two real defects, both the prose-not-
+executed shape the DX review named. The attributes section still called
+typed argv "a coming feature" — Args.load has shipped for weeks and is
+documented at length later in the SAME file. And the front-door
+section's own tail (flag derivation, subcommands, positionals) had been
+stranded inside "Scraping text", so a stranger reading about regex hit
+argv semantics mid-section. Seven behaviour claims became weir-error
+fences (dropped value, with-adds-fields, apply-a-param, unit-param
+arity, literal non-exhaustion, typo'd-constructor did-you-mean,
+discarded exitCode) — each verified failing with the documented message
+before landing; skill-doc went 134 → 141 blocks.
+
+The changelog gate's exact-match ruling is small but load-bearing: the
+workflow's awk and the weir gate must agree on one heading spelling, so
+the gate refuses stray whitespace BY NAME instead of letting the two
+parsers drift apart — the same one-source argument as the release body
+being extracted from the file rather than typed into a text box.
+
 ## pre-tag code: the stamp gains a tag, the splice hint gains a path (2026-08-19)
 
 Two of the pre-tag items were pure code and independent of the site, so they

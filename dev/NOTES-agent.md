@@ -6,6 +6,11 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-08-20 | site deploy verification (site.yml) -> inline workflow
+  bash | the deploy job has no weir binary (building the AOT compiler to
+  run three curl/grep checks would add minutes and a failure mode to the
+  most load-bearing deploy); the STANDING staleness check is weir
+  (ci/site-staleness.weir) in ci.yml, where the binary already exists.
 - 2026-07-29 | dedupe detector (maintenance sweep M2) -> awk | the
   token-window hash needs a 6-line sliding window with cross-file
   grouping; weir has no `Seq.windowed` (index-into-seq is the gap), so
