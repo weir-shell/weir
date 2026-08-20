@@ -13,9 +13,10 @@ languages = ["Weir"]
 # The grammar lives in its own repo (Zed clones a grammar from a repo
 # ROOT). REV RITUAL: bumping this rev and refreshing
 # languages/weir/highlights.scm are ONE motion — copy the queries
-# from the SAME grammar commit the rev pins.
-# rev = the first push of weir-shell/tree-sitter-weir; REFRESH after
-# pushing (the sha below is the local root commit).
+# from the SAME grammar commit the rev pins. The ritual is CHECKED, not
+# just stated [D:grammar-currency]: ci/zed-rev-current.weir asserts the
+# rev is the grammar's current main AND every queried node exists at
+# this rev — at release and on the weekly schedule.
 [grammars.weir]
 repository = "https://github.com/weir-shell/tree-sitter-weir"
-rev = "c333922"
+rev = "2e17691"
