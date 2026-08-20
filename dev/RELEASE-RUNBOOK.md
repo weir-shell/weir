@@ -32,23 +32,27 @@ installer generated for it pins a release that will be deleted —
 anyone who fetches it during the window holds a script pointing at
 nothing. **Keep the window short.**
 
-1. **Pre-flight.** CI green on all three platforms at the commit to
-   be tagged. The CHANGELOG carries a `## v0.0.0-rcN` section — the
-   changelog gate refuses a tag without one (that red was collected
-   live at rc1, which is also why rc1's tag exists with no release).
-2. **Tag.** `git tag v0.0.0-rcN && git push origin v0.0.0-rcN`.
+1. **CHANGELOG first.** Merge the `## v0.0.0-rcN` section to main
+   BEFORE cutting the tag — the gate checks out the TAG'S commit, so
+   a section merged after tagging cannot save that tag, and tags are
+   never re-pointed: the only repair is the next rc number. (rc1's
+   tag exists with no release for exactly this reason — the gate's
+   first live catch.)
+2. **Pre-flight.** CI green on all three platforms at the commit to
+   be tagged.
+3. **Tag.** `git tag v0.0.0-rcN && git push origin v0.0.0-rcN`.
    release.yml runs: gate (full battery + changelog check) → build
    (six platforms) → draft with binaries, SHA256SUMS, and the two
    generated installers. **Verify the asset list** — a missing
    platform is exactly what the draft step exists to catch.
-3. **Publish as prerelease.** Releases page → edit draft → check
+4. **Publish as prerelease.** Releases page → edit draft → check
    "pre-release" → publish. Now watch, in order:
    - the `site` workflow fires on the publish (the `release:
      published` dispatch — the coupling `push: tags` would have
      missed);
    - the `image` workflow fires too, and `:latest` does NOT move;
    - the site deploys to the **staging** branch (prerelease routing).
-4. **Verify staging**, the one-shot facts plus the install paths:
+5. **Verify staging**, the one-shot facts plus the install paths:
    - `curl -sI https://staging.weir.sh/install.sh` — HTTP 200 and
      `Content-Type: text/plain` (the `_headers` file at the edge; a
      browser must display the script, not download it);
@@ -58,7 +62,7 @@ nothing. **Keep the window short.**
    - the negative paths: a truncated fetch is a syntax error
      (`curl ... | head -c 900 | sh -n` fails), and a corrupted binary
      refuses (`CHECKSUM MISMATCH`) — flip a byte and re-verify.
-5. **Tear down.** Delete the RELEASE only
+6. **Tear down.** Delete the RELEASE only
    (`gh release delete v0.0.0-rcN --yes`) and remove the throwaway
    CHANGELOG section. The tag stays. Staging keeps serving the rc
    installer until the next deploy; that is staging's job.
@@ -67,13 +71,15 @@ nothing. **Keep the window short.**
 cannot trip it by design. It shows red in the real release's own
 tag→publish window (step 3 below), which every release walks through.
 
-Anything that surprises during 2-5 is what the rehearsal was for:
+Anything that surprises during 3-6 is what the rehearsal was for:
 record it in dev/NOTES.md and fix the chain before the real tag.
 
 ## The release — `v0.0.1` and after
 
-1. CHANGELOG.md has the release's `## <tag>` section (the gate refuses
-   otherwise; the body IS that section [D:changelog]).
+1. **CHANGELOG first**: the release's `## <tag>` section is merged
+   to main before the tag is cut (the gate checks out the tag's
+   commit and refuses without it; the release body IS that section
+   [D:changelog]).
 2. CI green on all three platforms at the tag commit.
 3. Tag and push. release.yml: gate → build → **draft**. In this
    window `release-published check` goes RED on main — a stable tag
