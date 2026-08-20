@@ -1,5 +1,33 @@
 # Spike Notes
 
+## the stylesheet that styled nothing, and the prose pass (2026-08-20)
+
+The typography question ("theme default, or did something remove it?")
+had the best possible answer: neither — the styles were written,
+shipped, and never matched anything. Astro scopes component styles,
+markdown content carries no scope attribute, so the entire content
+area — code, tables, blockquotes, leading — rendered browser-default
+while the stylesheet sat there compiled to pre[data-astro-cid-…]. One
+is:global fixed more than the rider asked for, because everything the
+rider diagnosed was downstream of the same miss.
+
+The register pass confirmed the screenshot was representative: 3 of 5
+sampled sections needed real work, and the failures were exactly the
+rider's four kinds — a cloned-repo cross-reference (fuzz.weir named as
+if the reader has the tree), lineage-as-rationale (bash's $0), rules
+bundled at density ("the same attribute, each consumer's own law"),
+and the purest form: "district" used five times, defined nowhere. The
+worked target's shape (facts into short sentences, spellings on their
+own lines, the why GIVEN) held up across all five rewrites without
+losing a fact, and two claims became fences on the way — the
+Default-false rejection's fence comment is the checker's own message,
+so the doc and the diagnostic cannot drift.
+
+The remaining ~30 sections at the sampled ratio are a multi-session
+pass; filed. skill-doc 141→143 green throughout — the examples could
+not silently break, which is what made a prose pass on a doc full of
+executing code safe to do at all.
+
 ## the site went live and the first fetch found the gap (2026-08-20)
 
 weir.sh is up — docs render, changelog renders, install.sh serves
