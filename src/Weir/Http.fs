@@ -121,6 +121,20 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                 | null -> ()
                 | c -> c.Headers.TryAddWithoutValidation(k, v) |> ignore
 
+        // the default User-Agent [D:http-ua]: weir/<stamp>, the same
+        // string --version prints — applied at SEND time, never a field
+        // in Http.defaults, so the request RECORD stays stable across
+        // releases (a pinned/shown request must not break on a version
+        // bump; the cost — show req omits a header the wire carries — is
+        // stated in the docs). A caller's User-Agent is already on the
+        // message (headers and secretHeaders both arrive merged in
+        // req.Headers) and BLOCKS this: header names compare
+        // case-insensitively, so exactly one is ever sent. A DEFAULT, not
+        // a fixed header — the explicit pair is the override spelling.
+        if not (msg.Headers.Contains "User-Agent") then
+            msg.Headers.TryAddWithoutValidation("User-Agent", $"weir/{Weir.Version.current}")
+            |> ignore
+
         use resp = client.SendAsync(msg).Result
 
         let headers =

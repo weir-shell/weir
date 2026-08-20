@@ -5809,7 +5809,9 @@ if command -v python3 >/dev/null 2>&1; then
     hport=$((21000 + RANDOM % 2000))
     hdir=$(mkweirtmp)
     # an echo server: returns the request body byte-exact, status from a
-    # header, and the Authorization header on /auth
+    # header, the Authorization header on /auth, and the User-Agent
+    # header(s) as "count|joined" on /ua (COUNT, because the duplicate-UA
+    # case is the likely bug [D:http-ua] — pairs append, they don't replace)
     cat > "$hdir/echo.py" <<'PYEOF2'
 import http.server, socketserver, sys
 class H(http.server.BaseHTTPRequestHandler):
@@ -5818,6 +5820,9 @@ class H(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(n) if n else b''
         if self.path == '/auth':
             body = self.headers.get('Authorization', 'NONE').encode()
+        if self.path == '/ua':
+            uas = self.headers.get_all('User-Agent') or []
+            body = f"{len(uas)}|{','.join(uas)}".encode()
         code = 404 if self.path == '/missing' else int(self.headers.get('X-Want-Status', '200'))
         self.send_response(code); self.end_headers(); self.wfile.write(body)
     do_GET = do_POST = do_PUT = _h
@@ -5890,6 +5895,32 @@ urls |> Seq.pmap (fun u -> Http.send { Http.defaults with url = u }) |> Seq.map 
 WEOF
     out=$($BIN "$hdir/pmap.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "pmap fetch failed: $out"; }
     [ "$(echo "$out" | grep -c '^200$')" -eq 3 ] || { kill $hsrv 2>/dev/null || true; fail "pmap did not fetch all: $out"; }
+
+    # the default User-Agent [D:http-ua]: weir/<stamp> — pinned as a
+    # RELATIONSHIP to --version (a literal would break every release).
+    # The /ua path reports count|value: exactly ONE must arrive in every
+    # case (pairs append — the duplicate-UA bug is the likely one), an
+    # explicit header WINS from both header paths (lowercase spelling
+    # included), and fetch rides the same default.
+    stamp=$("$BIN" --version)
+    cat > "$hdir/ua.weir" <<WEOF
+let r1 = Http.get "http://127.0.0.1:$hport/ua" |> Http.send
+print \$"default={r1.body |> Seq.head}"
+let r2 = { Http.get "http://127.0.0.1:$hport/ua" with headers = [("User-Agent", "custom-ua")] } |> Http.send
+print \$"explicit={r2.body |> Seq.head}"
+let r3 = { Http.get "http://127.0.0.1:$hport/ua" with headers = [("user-agent", "lower-ua")] } |> Http.send
+print \$"lowercase={r3.body |> Seq.head}"
+let r4 = { Http.get "http://127.0.0.1:$hport/ua" with secretHeaders = [("User-Agent", Secret.of "secret-ua")] } |> Http.send
+print \$"secret={r4.body |> Seq.head}"
+print \$"fetch={Http.fetch "http://127.0.0.1:$hport/ua" |> Seq.head}"
+WEOF
+    out=$($BIN "$hdir/ua.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "ua cell failed: $out"; }
+    echo "$out" | grep -qF "default=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "default UA must be weir/<--version stamp>, exactly one: $out"; }
+    echo "$out" | grep -qF "explicit=1|custom-ua" || { kill $hsrv 2>/dev/null || true; fail "an explicit User-Agent must win, exactly one: $out"; }
+    echo "$out" | grep -qF "lowercase=1|lower-ua" || { kill $hsrv 2>/dev/null || true; fail "a lowercase user-agent must still block the default: $out"; }
+    echo "$out" | grep -qF "secret=1|secret-ua" || { kill $hsrv 2>/dev/null || true; fail "a secretHeaders User-Agent must win, exactly one: $out"; }
+    echo "$out" | grep -qF "fetch=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "Http.fetch must send the default UA: $out"; }
+    echo "e2e ok: Http default User-Agent (weir/<stamp> == --version, explicit wins from both header paths, exactly one ever sent, fetch included)"
 
     kill $hsrv 2>/dev/null || true
 

@@ -9,7 +9,7 @@
 //
 // Status is DATA (Http.send binds it; only transport raises — and a
 // transport raise IS the loud failure here, naming the URL). GitHub's
-// API requires a User-Agent; weir's Http sends none by default.
+// API requires a User-Agent; the default one [D:http-ua] covers it.
 
 type Release = { tag_name: string }
 
@@ -25,8 +25,7 @@ if Seq.isEmpty tags then
 // an unpublished latest release is [D:release-gate]'s finding, not this
 // script's — skip rather than double-report the same defect
 let rel =
-    { Http.get $"https://api.github.com/repos/{repo}/releases/latest" with
-        headers = [ ("User-Agent", "weir-ci") ] }
+    Http.get $"https://api.github.com/repos/{repo}/releases/latest"
     |> Http.send
 
 if rel.status <> 200 then

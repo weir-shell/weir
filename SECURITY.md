@@ -222,6 +222,12 @@ it, by design):
     it. And a credential the author puts in a URL as a plain string is
     not a `Secret` at all — error messages redact userinfo
     (`user:pass@`), but a token in a query string is unprotected.
+  - **Every request announces the tool** [D:http-ua]: a default
+    `User-Agent: weir/<stamp>` (the `--version` string) goes to every
+    server contacted unless the caller sets one — a small, deliberate,
+    non-secret disclosure so operators can attribute traffic. The
+    explicit header is the override; that a target may demand some
+    other UA is the caller's choice to make and own.
   - **`Http` shares the BCL `HttpClient` with the contracts fetch** —
     deliberate and stated: the contracts fetch has a fetch-only fence
     (never `check`, completion, or run), `Http.send` is an ordinary
