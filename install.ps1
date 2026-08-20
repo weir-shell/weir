@@ -1,6 +1,6 @@
 # weir installer (Windows) [D:releases][D:install-checksum-scope] — the
 # PINNED, two-origin form. This file is a TEMPLATE: the release workflow
-# substitutes @WEIR_TAG@ and @WEIR_SHA256SUMS@ and serves the result
+# fills in the tag and checksum placeholders and serves the result
 # from weir.sh, a DIFFERENT origin than the GitHub release binaries — so
 # an attacker who compromises the release assets alone cannot also
 # change the checksums the installer trusts. It installs ONE pinned
