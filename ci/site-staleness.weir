@@ -15,11 +15,17 @@ type Release = { tag_name: string }
 
 let repo = "weir-shell/weir"
 
-// pre-first-release: nothing published, nothing served — nothing to check
-let tags = git tag -l "v*" |> Seq.force
+// pre-first-release: nothing published, nothing served — nothing to
+// check. Only STABLE tags count [D:tag-immutability]: prerelease tags
+// never reach releases/latest or the production site, and they are
+// never deleted, so they must not hold this gate red.
+let tags =
+    git tag -l "v*"
+    |> Seq.where (fun t -> not (Str.contains "-" t))
+    |> Seq.force
 
 if Seq.isEmpty tags then
-    print "no v* tag yet — nothing to check (pre-first-release)"
+    print "no stable v* tag yet — nothing to check (pre-first-release; prerelease tags are exempt)"
     exit 0
 
 // an unpublished latest release is [D:release-gate]'s finding, not this
