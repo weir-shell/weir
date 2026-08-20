@@ -43,6 +43,12 @@ jobs:
           ./ci/skill-doc.sh
           ./ci/fsharp-oracle.sh
           ./ci/timing.sh
+      # the tag-without-notes gate [D:changelog]: the release body is
+      # extracted from CHANGELOG.md's `## <tag>` section (publish job), so
+      # a tag with no section — or an empty one — must refuse HERE, before
+      # any binary is built
+      - name: changelog section exists for this tag
+        run: ~/.local/bin/weir ci/changelog-check.weir --tag "${{ github.ref_name }}"
 
   build:
     needs: gate
@@ -134,6 +140,20 @@ jobs:
           "$BIN" ci/gen-install.weir --template install.sh  --sums dist/SHA256SUMS --tag "${{ github.ref_name }}" --out dist/install.sh
           "$BIN" ci/gen-install.weir --template install.ps1 --sums dist/SHA256SUMS --tag "${{ github.ref_name }}" --out dist/install.ps1
           sh -n dist/install.sh
+      # the release body IS the changelog section [D:changelog]: one
+      # authored source, extracted here — the body cannot drift from the
+      # repo. The gate job already proved the section exists and is
+      # non-empty; the -s check is defense in depth, and the awk matches
+      # the heading EXACTLY (the gate refuses stray whitespace for
+      # precisely this agreement).
+      - name: extract the release body from CHANGELOG.md
+        run: |
+          awk -v tag="## ${{ github.ref_name }}" '
+            $0 == tag {hit=1; next}
+            hit && /^## / {exit}
+            hit {print}
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "empty changelog section for ${{ github.ref_name }} — the gate should have caught this" >&2; exit 1; }
       - name: draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -141,5 +161,5 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --draft \
             --title "weir ${{ github.ref_name }}" \
-            --notes "Draft — fill in what changed and WHAT BROKE (0.x breaks things; say so). Unsigned binaries: see docs/INSTALL.md for the macOS/Windows first-run steps. The pinned install.sh/install.ps1 assets are what weir.sh serves." \
+            --notes-file notes.md \
             dist/weir-* dist/SHA256SUMS dist/install.sh dist/install.ps1

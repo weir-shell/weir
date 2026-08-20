@@ -1,0 +1,45 @@
+#!/usr/bin/env weir
+// The tag-without-notes gate [D:changelog]: a release tag must have a
+// matching, non-empty `## <tag>` section in CHANGELOG.md — the release
+// workflow extracts that section as the GitHub release body, so a missing
+// or empty section would ship a release with no notes. Same class of
+// missing-step as the draft coupling [D:release-gate] catches: cheap to
+// check, silent to forget. Runs in release.yml's gate job (the tag being
+// released is only known there).
+//
+//   ci/changelog-check.weir --tag v0.0.1
+
+type Cli = {
+    /// the release tag whose CHANGELOG.md section must exist
+    tag: string
+}
+
+let cli = Args.load Cli
+
+let heading = $"## {cli.tag}"
+let lines = File.read "CHANGELOG.md" |> Seq.force
+
+// EXACT match, because the workflow's awk extraction matches the line
+// exactly — the gate and the extractor must agree on one spelling, so a
+// heading that only matches after trimming is named as the defect it is
+let exactHit = lines |> Seq.exists (fun l -> l == heading)
+let trimmedHit = lines |> Seq.exists (fun l -> Str.trim l == heading)
+
+if not exactHit && trimmedHit then
+    fail $"CHANGELOG.md has '{heading}' with stray whitespace — the release extraction matches the line EXACTLY; remove the whitespace"
+
+if not exactHit then
+    fail $"CHANGELOG.md has no '{heading}' section — author the release notes there before tagging; the release body is extracted from that section [D:changelog]"
+
+let section =
+    lines
+    |> Seq.skipWhile (fun l -> l <> heading)
+    |> Seq.skip 1
+    |> Seq.takeWhile (fun l -> not (Str.startsWith "## " l))
+    |> Seq.where (fun l -> Str.trim l <> "")
+    |> Seq.force
+
+if Seq.isEmpty section then
+    fail $"CHANGELOG.md '{heading}' section is EMPTY — a release with no notes is the tag-with-empty-notes state this gate exists to catch"
+
+print $"changelog ok: '{heading}' carries {section |> Seq.length} non-blank line(s)"
