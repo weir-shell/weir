@@ -1,0 +1,22 @@
+---
+// A REAL 404 [D:site-deploy]: without dist/404.html, Cloudflare Pages
+// falls back to index.html WITH STATUS 200 for every missing path — so
+// pre-first-release, `curl -fsSL weir.sh/install.sh | sh` piped the
+// HOMEPAGE into sh instead of failing. A missing path must fail like
+// one, most of all at the install line.
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="Not found">
+  <h1>404 — no such page</h1>
+  <p>
+    Nothing lives at this path. The <a href="/docs/guide/">guide</a>,
+    <a href="/docs/install/">install</a>, and the
+    <a href="/changelog/">changelog</a> are good places to restart from.
+  </p>
+  <p>
+    If you expected the installer here: it exists once a release is
+    published — see <a href="/docs/install/">install</a> for the manual
+    routes meanwhile.
+  </p>
+</Base>
