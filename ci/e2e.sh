@@ -4286,6 +4286,14 @@ errout=$(printf 'let f = "x"
 echo --file=$f
 ' | checkPiped 2>&1) && fail "mid-word scalar splice must reject"
 echo "$errout" | grep -qF "cannot join a word under construction" || fail "mid-word scalar teaching: $errout"
+# a PATH-shaped word gets the PATH hint, not the flag hint [D:argv-splat]:
+# the space repair splits one path into two args, so the message leads with
+# interpolation and Path.combine (the homepage hero quotes this exact case)
+errout=$(printf 'let build = "b"
+rm -rf ./tt3/$build
+' | checkPiped 2>&1) && fail "mid-word path splice must reject"
+echo "$errout" | grep -qF "cannot join a path under construction" || fail "path splice says path, not word: $errout"
+echo "$errout" | grep -qF "Path.combine" || fail "path splice names Path.combine: $errout"
 # the spaced spelling stays legal (one argv word each)
 out=$(printf 'let f = "x.txt"
 echo --file $f
@@ -6014,7 +6022,15 @@ echo "e2e ok: install.sh template refuses to run unsubstituted (@-sentinel guard
 gendir="$insdir/gen"; mkdir -p "$gendir"
 printf 'fake-x64\n'   > "$gendir/weir-v9.9.9-linux-x64"
 printf 'fake-arm64\n' > "$gendir/weir-v9.9.9-linux-arm64"
-( cd "$gendir" && sha256sum weir-v9.9.9-* > SHA256SUMS )
+# the fixture is the CANONICAL format release.yml's ubuntu sha256sum
+# emits — hash, TWO SPACES, name — spelled out rather than trusted to the
+# local tool: MSYS coreutils writes the binary marker (hash *name), which
+# broke the space-anchored greps below on Windows and is a fixture
+# infidelity, not the format under test. $HASHTOOL (declared beside the
+# File.sha256 cells) covers sha256sum-less macOS.
+( cd "$gendir" && for f in weir-v9.9.9-*; do
+    printf '%s  %s\n' "$($HASHTOOL "$f" | cut -d' ' -f1)" "$f"
+  done > SHA256SUMS )
 "$BIN" "$ROOT/ci/gen-install.weir" --template "$ROOT/install.sh" --sums "$gendir/SHA256SUMS" --tag v9.9.9 --out "$gendir/install.sh" >/dev/null \
     || fail "gen-install.weir failed"
 sh -n "$gendir/install.sh" || fail "the generated install.sh must parse"
@@ -6022,7 +6038,7 @@ grep -q 'WEIR_TAG\|WEIR_SHA256SUMS' "$gendir/install.sh" && fail "the generated 
 name=weir-v9.9.9-linux-x64
 gsums=$(awk "/<<'WEIR_SUMS'/{f=1;next} /^WEIR_SUMS\$/{f=0} f" "$gendir/install.sh")
 gexp=$(printf '%s\n' "$gsums" | grep " $name\$" | cut -d' ' -f1)
-gact=$(sha256sum "$gendir/$name" | cut -d' ' -f1)
+gact=$($HASHTOOL "$gendir/$name" | cut -d' ' -f1)
 [ -n "$gexp" ] && [ "$gexp" = "$gact" ] || fail "embedded checksum ($gexp) must match the real binary ($gact)"
 echo "e2e ok: gen-install.weir — pins the tag, embeds SHA256SUMS, embedded checksum matches the binary"
 

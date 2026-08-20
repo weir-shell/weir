@@ -98,6 +98,10 @@ let files = git ls-files
 print $"tracked: {files |> Seq.length}"
 ```
 
+```weir-error
+ls |> Seq.length // computes an int and discards it — bind it, or pipe it to print
+```
+
 `print` takes strings, ints, bools, or `seq<string>` (one line per
 element — `weir script | grep x` composes). For anything else there is
 a hole — interpolation renders any `Show` value, records included:
@@ -188,6 +192,13 @@ never adds fields, and leaves the source untouched. An updater over
 an open row — `let bump r = { r with N = r.N + 1 }` — generalizes to
 any record carrying the field.
 
+```weir-error
+type P = { N: int }
+let p = { N = 1 }
+let q = { p with Extra = 2 } // record update cannot add fields
+print $"{q}"
+```
+
 Record fields also take attributes, F#'s syntax:
 
 ```weir
@@ -205,11 +216,11 @@ print cli.Target
 They are check-time data, fully erased at runtime — `cli` above is
 indistinguishable from a bare `Cli`. The names are a closed registry
 (`Short`, `NoShort`, `Default`); a typo like `[<Shrot "c">]`
-is a check error with a did-you-mean. Their consumers — typed argv
-deriving `-C` from the declaration — are a coming
-feature; until then attributes are legal-and-inert documentation the
-checker validates. (Help text is not an attribute: the `///` doc's
-first line feeds `--help` directly — see below.)
+is a check error with a did-you-mean. Their consumer is typed argv —
+`Args.load` derives `-C` from the declaration above; see
+[The script's own front door](#the-scripts-own-front-door). (Help
+text is not an attribute: the `///` doc's first line feeds `--help`
+directly — same section.)
 
 ## File batches: glob is a function, not an expansion
 
@@ -608,6 +619,10 @@ error (`$()` captures — use `| complete` there; a bare statement
 discards — bind or match). For codes-with-captured-output (fzf's
 selection AND its cancel code), `complete` is the cell.
 
+```weir-error
+sh -c "exit 3" | exitCode // a bare statement discards the code — bind or match it
+```
+
 ## What the editor colors mean
 
 With the LSP attached, editors render weir's one novel boundary — the
@@ -697,11 +712,22 @@ print $"{same 1 1} {same "a" "b"}"
 Binding names start lowercase (the casing law): uppercase is for
 types, modules, and constructors. Two deliberate limits you will
 meet: a bare parameter cannot be *applied* as a function
-(`let apply f x = f x` is rejected — polymorphism flows from typed
-builtins, not lambda guessing), and `+` on two unknowns cannot infer
-(int or string?) — anchor one side: `x + 0`. Unit params make thunks:
-`let cleanup () = ...` runs at `cleanup ()`, and `cleanup 5` is a
-type error.
+(polymorphism flows from typed builtins, not lambda guessing), and
+`+` on two unknowns cannot infer (int or string?) — anchor one side:
+`x + 0`.
+
+```weir-error
+let apply f x = f x // a bare parameter cannot be applied as a function
+print (apply (fun n -> n) 1)
+```
+
+Unit params make thunks: `let cleanup () = ...` runs at
+`cleanup ()`, and `cleanup 5` is a type error:
+
+```weir-error
+let cleanup () = print "done"
+cleanup 5 // expected unit, got int
+```
 
 ## Branching
 
@@ -710,10 +736,28 @@ unit; `elif` chains (it is spelling for `else if`). `match` has literal patterns
 literals never complete a match alone; close with `_` or a var),
 bool patterns, constructor patterns, and `when`
 guards — and a non-exhaustive match is a hard error, not a warning.
+
+```weir-error
+let t =
+    match 1 with
+    | 0 -> "zero"
+    | 1 -> "one" // literals never complete a match: add a _ or var arm
+print t
+```
+
 So is its dual, an arm made unreachable by a catch-all above it:
 remember a lowercase pattern *binds*, so a typo'd constructor is a
 catch-all, and weir stops it with a did-you-mean instead of silently
 matching everything.
+
+```weir-error
+type V =
+    | Pass
+    | Failing
+match Pass with
+| pass -> print "ok" // 'pass' BINDS — did you mean 'Pass'? the next arm is unreachable
+| Failing -> print "no"
+```
 
 ```weir
 let n = [1; 2; 3] |> Seq.length
@@ -1086,24 +1130,6 @@ let cli = Args.load Cli
 print $"{cli.clean} {cli.port}"
 ```
 
-## Scraping text
-
-Pulling structure out of text is one pipeline. `Str.rmatchAll` yields
-every match's groups (lazily, no Option — the absence is the empty
-seq); `(?s)`/`(?m)` inline flags handle DOTALL/MULTILINE. Map each
-match to what you want, `Seq.distinct` to dedupe, and pipe a value
-through an external tool (`| sha256sum` — the bare spelling of `feed`)
-when you need one:
-
-```weir
-let text = "let a = 1\nlet b = 2\nlet a = 1"
-
-Str.rmatchAll @"let (\w+) = (\d+)" text
-|> Seq.map (fun g -> Str.join "=" g)
-|> Seq.distinct
-|> Seq.iter print
-```
-
 Field names derive kebab-case flags (`dryRun` becomes `--dry-run`)
 and unambiguous first-letter shorts; `[<Short "C">]` pins a short
 explicitly, `[<NoShort>]` suppresses one, and `--help` prints the
@@ -1137,6 +1163,24 @@ help-generating path, NOT the ability to read operands. The untyped
 floor remains for hand-rolled shapes: `Args.flag "--clean" "-c"` and
 `Args.value "--out"` scan the raw `Self.args` seq, and multi-value options
 reshape as one flag per value (`--stack X --env Y`).
+
+## Scraping text
+
+Pulling structure out of text is one pipeline. `Str.rmatchAll` yields
+every match's groups (lazily, no Option — the absence is the empty
+seq); `(?s)`/`(?m)` inline flags handle DOTALL/MULTILINE. Map each
+match to what you want, `Seq.distinct` to dedupe, and pipe a value
+through an external tool (`| sha256sum` — the bare spelling of `feed`)
+when you need one:
+
+```weir
+let text = "let a = 1\nlet b = 2\nlet a = 1"
+
+Str.rmatchAll @"let (\w+) = (\d+)" text
+|> Seq.map (fun g -> Str.join "=" g)
+|> Seq.distinct
+|> Seq.iter print
+```
 
 ## Declaring a tool: command signatures
 
@@ -1401,29 +1445,28 @@ print "done"
 
 ## Editor setup
 
-VS Code: `editors/vscode/` holds a sideloadable extension (client
-glue for `weir lsp` + a TextMate grammar ported rule-for-rule from
-the micro file; see its README for the build-and-install three-liner
-and the grammar maintenance rule).
-Syntax highlighting for micro lives in `editors/micro/weir.yaml`; the
-same directory's README wires `weir lsp` into micro's lsp plugin. Any
-LSP-capable editor works: `weir lsp` speaks stdio JSON-RPC and serves
-diagnostics (same codes as `weir check --json`), hover types, and
-completion from the same pipeline the runner uses. For agent loops
-and CI, `weir check --json file.weir` is the no-editor spelling.
+Per-editor setup — Neovim, Helix, Emacs, VS Code, micro — lives in
+[editors.md](editors.md). Any LSP-capable editor works: `weir lsp`
+speaks stdio JSON-RPC and serves diagnostics (same codes as
+`weir check --json`), hover types, and completion from the same
+pipeline the runner uses. For agent loops and CI,
+`weir check --json file.weir` is the no-editor spelling.
 
 ## Where weir ends
 
 The complete border with F# — what is deliberately different, what is
 rejected by design, what is merely pending — lives in
-`tests/fidelity/divergences.md`, machine-verified against the real F#
+[tests/fidelity/divergences.md](../tests/fidelity/divergences.md),
+machine-verified against the real F#
 compiler in CI. The short version: no mutation, no exceptions (values
 and `fail`/`exit`), no OO, no async, no user type classes (the three
 built-in constraint families are closed). When a task
 outgrows a shell, the graduation path is full F# — weir points there
 on purpose.
 
-For the language rulebook with rationale, read `SEMANTICS.md`. For the
-compressed agent rules, `skills/weir/SKILL.md`. Arriving with another
+For the language rulebook with rationale, read
+[SEMANTICS.md](SEMANTICS.md). For the exhaustive, agent-oriented rule
+file — every shipped member, every rule, CI-executed —
+[skills/weir/SKILL.md](../skills/weir/SKILL.md). Arriving with another
 language's reflexes — bash, PowerShell, Python, Make? The per-language
 translation tables live in [COMING-FROM.md](COMING-FROM.md).

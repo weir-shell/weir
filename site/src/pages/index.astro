@@ -1,0 +1,34 @@
+---
+// SKELETON landing page [D:site-skeleton]: enough to prove the pipeline
+// (an executable-true weir snippet through the shared grammar, the pinned
+// install line, the docs links). The real hero/homepage is its own later
+// work — content, not wiring.
+import Base from "../layouts/Base.astro";
+---
+
+<Base>
+  <h1>weir — a typed shell</h1>
+  <p>
+    A typed shell scripting language inspired by F#. Shell commands and
+    typed expressions share one syntax, and the whole file typechecks —
+    PATH lookups included — before anything runs: a broken script fails
+    up front instead of halfway through its side effects.
+  </p>
+
+  <h2>Install</h2>
+  <pre><code>curl -fsSL https://weir.sh/install.sh | sh</code></pre>
+  <p>
+    Windows: <code>irm https://weir.sh/install.ps1 | iex</code> — one
+    static binary, no runtime. The script is generated per release with
+    that release's checksums baked in;
+    <a href="/docs/install/">docs/INSTALL</a> has the details.
+  </p>
+
+  <h2>Learn more</h2>
+  <ul>
+    <li><a href="/docs/guide/">The guide</a> — start here; every example runs in CI.</li>
+    <li><a href="/docs/coming-from/">Coming from bash, PowerShell, Python…</a></li>
+    <li><a href="/docs/semantics/">The semantics rulebook</a></li>
+    <li><a href="/changelog/">Changelog</a></li>
+  </ul>
+</Base>

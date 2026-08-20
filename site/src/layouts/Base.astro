@@ -1,0 +1,75 @@
+---
+// the skeleton layout [D:site-skeleton]: structure and navigation only —
+// the homepage/hero content is its own later work
+const { title } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title ? `${title} · weir` : "weir — a typed shell"}</title>
+    <style>
+      :root {
+        --fg: #1a1a1a;
+        --muted: #6a737d;
+        --accent: #0b5fa5;
+        --code-bg: #f6f8fa;
+        --border: #e1e4e8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--fg);
+        font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        padding: 0.75rem 1.25rem;
+        display: flex;
+        gap: 1.25rem;
+        align-items: baseline;
+      }
+      header .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+      header nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
+      header nav a:hover { color: var(--accent); }
+      main { max-width: 46rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+      main a { color: var(--accent); }
+      pre {
+        padding: 0.9rem 1rem;
+        border-radius: 6px;
+        overflow-x: auto;
+        font-size: 0.88rem;
+        line-height: 1.5;
+      }
+      code { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+      :not(pre) > code {
+        background: var(--code-bg);
+        padding: 0.12em 0.35em;
+        border-radius: 4px;
+        font-size: 0.9em;
+      }
+      h1, h2, h3 { line-height: 1.25; }
+      h2 { margin-top: 2.2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+      table { border-collapse: collapse; }
+      th, td { border: 1px solid var(--border); padding: 0.35rem 0.65rem; }
+      blockquote { margin: 0; padding-left: 1rem; border-left: 3px solid var(--border); color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/">weir</a>
+      <nav>
+        <a href="/docs/guide/">Guide</a>
+        <a href="/docs/install/">Install</a>
+        <a href="/docs/coming-from/">Coming from…</a>
+        <a href="/changelog/">Changelog</a>
+        <a href="https://github.com/weir-shell/weir">GitHub</a>
+      </nav>
+    </header>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>
