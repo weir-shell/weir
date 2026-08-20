@@ -1,5 +1,28 @@
 # Spike Notes
 
+## the first real install found what no fixture could (2026-08-20)
+
+v0.0.2's `curl weir.sh/install.sh | sh` worked — and printed six
+"command not found" lines first. The template's header comment NAMED
+the sums placeholder, the generator's contains-match ate the comment
+and planted the six checksums bare at the top of the script, and every
+offline pin walked past it: bare hash-name lines parse, the
+leftover-placeholder grep was satisfied precisely because the mention
+got consumed, and the extraction read the real heredoc. The only
+reason it was noise and not a broken install is that the planted lines
+sat above set -eu. A defect with three green gates standing on it —
+found by the one check that cannot be faked, running the served
+artifact for real.
+
+The fix is the anchor rule stated properly (the line that IS the
+placeholder, trimmed-exact), templates that stop spelling their own
+placeholders, and an exactly-once-per-checksum pin that catches any
+second copy wherever it lands. The served v0.0.2 stays noisy — the
+release is immutable, GitHub-enforced — and the fix rides v0.0.3,
+which is exactly the economics the immutable-tags ruling bought.
+Also fixed in the pass: the post-deploy check that lost a race with
+edge propagation now polls before it accuses.
+
 ## v0.0.1 died queueing, and the recovery worked (2026-08-20)
 
 The osx-x64 job waited forever for a macos-13 runner GitHub retired in
