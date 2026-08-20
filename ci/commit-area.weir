@@ -68,7 +68,7 @@ let areaOfOther p =
         "site"
     elif Str.startsWith "ci/" p || Str.startsWith ".github/" p || Str.startsWith "tools/" p || Str.startsWith "tests/pty/" p then
         "ci"
-    elif Str.startsWith "publish." p || Str.startsWith "install." p || p == "weir.slnx" || p == ".gitignore" || p == ".dockerignore" then
+    elif Str.startsWith "publish." p || Str.startsWith "install." p || p == "Dockerfile" || p == "weir.slnx" || p == ".gitignore" || p == ".dockerignore" then
         "ci"
     elif Str.startsWith "tests/" p then
         "tests"
