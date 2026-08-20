@@ -43,10 +43,18 @@ let site = Http.get "https://weir.sh/install.sh" |> Http.send
 if site.status <> 200 then
     fail $"weir.sh/install.sh returned {site.status} but release {latest} is published — the site deploy never fired or failed; check the site workflow run for the release"
 
-let served =
+// a 200 that is NOT the installer gets its own diagnosis [D:site-deploy]:
+// a host serving an SPA fallback answers 200 with HTML for every missing
+// path — a Seq.pick raise would say "no match", not what happened
+let tagLines =
     site.body
-    |> Seq.pick (fun l -> Str.rmatch "TAG=\"([^\"]+)\"" l)
-    |> Seq.head
+    |> Seq.choose (fun l -> Str.rmatch "TAG=\"([^\"]+)\"" l)
+    |> Seq.force
+
+if Seq.isEmpty tagLines then
+    fail $"weir.sh/install.sh answers 200 but carries no TAG= line — the site is serving something that is not the installer (an SPA fallback page?) while release {latest} is published; check the deploy's installer fetch"
+
+let served = tagLines |> Seq.head |> Seq.head
 
 if served <> latest then
     fail $"weir.sh/install.sh pins '{served}' but releases/latest is '{latest}' — users are getting an older weir; redeploy the site (site.yml workflow_dispatch)"
