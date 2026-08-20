@@ -1,5 +1,27 @@
 # Spike Notes
 
+## Http gains a default User-Agent, and the friction log paid out (2026-08-20)
+
+Yesterday's friction entry (Http sends no UA; GitHub 403s that with a
+status that reads as auth failure) came back as a rider within a day —
+the telemetry loop doing what it exists for. The implementation point
+turned out to be one send-time check in Http.fs: Builtins merges auth,
+headers, and secretHeaders into one pair list before the transport leg
+sees them, so "explicit wins, from either path" needed no separate
+handling — the caller's UA is already on the message and blocks the
+default. Exactly-one held on the first run because .NET's header-name
+comparison is case-insensitive (a lowercase `user-agent` blocks too);
+the duplicate-UA bug the pairs shape invites never materialized, but
+the e2e /ua fixture counts arrivals anyway, in all five cases.
+
+Full stamp over tag-only: the UA is weir stating identity, and the
+stamp is already the one string weir states identity in — `--version`,
+serverInfo.version, now the wire. The e2e pins the relationship to
+`--version` output, never a literal, so releases don't break the pin.
+Send-time application (never a field of Http.defaults) keeps shown and
+pinned requests stable across releases; the cost — `show req` omits a
+header the wire carries — is stated in SKILL rather than discovered.
+
 ## the site lands as a skeleton, and the GUIDE was lying in two places (2026-08-20)
 
 The site scope call came back "build it," so site/ now holds an Astro

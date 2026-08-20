@@ -384,7 +384,13 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
   per-call field for self-signed clusters). `Http.defaults` is the
-  template (Get, 30s timeout, secure). `auth` is a UNION
+  template (Get, 30s timeout, secure). Every request sends
+  `User-Agent: weir/<stamp>` (the `--version` string) unless the
+  caller sets one — an explicit `User-Agent` WINS (via `headers` or
+  `secretHeaders`, any casing) and exactly one is ever sent. The
+  default is applied at SEND time, not a field of `Http.defaults` —
+  so a shown/pinned request stays stable across releases, and `show
+  req` does NOT display the UA the wire will carry [D:http-ua]. `auth` is a UNION
   (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=

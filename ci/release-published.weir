@@ -18,10 +18,9 @@ if Seq.isEmpty tags then
     exit 0
 
 // status is DATA — Http.send binds it, a 404 is a value not an error.
-// GitHub's API requires a User-Agent; weir's Http sends none by default.
+// GitHub's API requires a User-Agent; the default one [D:http-ua] covers it.
 let rel =
-    { Http.get $"https://api.github.com/repos/{repo}/releases/latest" with
-        headers = [ ("User-Agent", "weir-ci") ] }
+    Http.get $"https://api.github.com/repos/{repo}/releases/latest"
     |> Http.send
 
 if rel.status == 200 then
