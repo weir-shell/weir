@@ -116,12 +116,12 @@ The fixed bindings (this is not a keybinding-config feature):
 
 | key | in the buffer |
 |---|---|
-| `Enter` | submit if complete, else newline; on an empty final line, submit ANYWAY (the escape from a pending buffer — the error shows, the input is kept) |
-| `Alt+Enter` / `Ctrl+J` | force a newline (formatting; an entry stays one statement). `Shift+Enter` is NOT bindable — terminals do not distinguish it from `Enter`. Windows Terminal claims LEFT-Alt+Enter for fullscreen: use `Ctrl+J` or right-Alt there |
-| `Up` / `Down` | move between lines; `Up` on the first line recalls history |
-| `Ctrl+R` | history search (fzf when installed; entries display one-line, ⏎-joined) |
-| `Esc` / `Ctrl+C` | abandon the whole buffer |
-| `Ctrl+D` | EOF on an empty buffer; delete/join otherwise |
+| <kbd>Enter</kbd> | submit if complete, else newline; on an empty final line, submit ANYWAY (the escape from a pending buffer — the error shows, the input is kept) |
+| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | force a newline (formatting; an entry stays one statement). <kbd>Shift+Enter</kbd> is NOT bindable — terminals do not distinguish it from <kbd>Enter</kbd>. Windows Terminal claims left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
+| <kbd>Up</kbd> / <kbd>Down</kbd> | move between lines; <kbd>Up</kbd> on the first line recalls history |
+| <kbd>Ctrl+R</kbd> | history search (fzf when installed; entries display one-line, ⏎-joined) |
+| <kbd>Esc</kbd> / <kbd>Ctrl+C</kbd> | abandon the whole buffer |
+| <kbd>Ctrl+D</kbd> | EOF on an empty buffer; delete/join otherwise |
 
 ## First script
 
@@ -188,13 +188,17 @@ big |> print
 (`extension`, `fileName`, `stem`, `dir`, `combine`) for filename
 surgery in a pipeline.
 
-The `Seq` module is the F# core you'd expect — `map`/`where`/
-`collect`/`fold`/`reduce`/`scan`, `sort`/`sortBy`, `max`/`minBy`,
-`groupBy`/`countBy`/`distinctBy`, `indexed`, `chunkBySize`,
-`takeWhile`/`find`/`pick` and their `try` variants — lazy by default,
-with the forcing members named in the skill file. One deliberate
-split: `Seq.sum` is for ints, and `Float`/`Size`/`Duration` each own
-their `sum` and `average` (`ls |> Seq.map _.bytes |> Size.sum`).
+The `Seq` module is the F# core you'd expect, lazy by default:
+
+- transform: `map`, `where`, `collect`, `fold`, `reduce`, `scan`
+- order: `sort`, `sortBy`, `max`, `minBy`
+- group: `groupBy`, `countBy`, `distinctBy`
+- slice and search: `indexed`, `chunkBySize`, `takeWhile`, `find`,
+  `pick`, and their `try` variants
+
+One deliberate split: `Seq.sum` is for ints, and `Float`/`Size`/
+`Duration` each own their `sum` and `average`
+(`ls |> Seq.map _.bytes |> Size.sum`).
 
 Tuples cover transient pairs: `(a, b)` literals, `int * string`
 types, `| (x, y) ->` patterns, and destructuring binders
@@ -377,9 +381,11 @@ print $"count={cli.count} seed={cli.seed}"
 
 ## Secrets: tokens that cannot leak into logs
 
-A `Secret` is a marker the renderers respect: `show` gives `***`,
-interpolation and the wire boundaries refuse, and `Secret.reveal` is
-the one place the value comes back out. It controls where a value
+A `Secret` is a marker the renderers respect:
+
+- `show` gives `***`
+- interpolation and the wire boundaries refuse it outright
+- `Secret.reveal` is the one place the value comes back out It controls where a value
 can flow at the boundaries weir itself renders; it is not storage
 and not memory protection ([SECURITY.md](../SECURITY.md) states
 those non-claims). The point is coverage: a token cannot slip into a
@@ -495,10 +501,14 @@ let hosts = ["[{\"host\": \"a\"}, {\"host\": \"b\"}]"] |> from json seq<Peer2> |
 hosts |> print
 ```
 
-Fields nest: the rule is recursive. A field is a scalar (`int`,
-`float`, `string`, `bool`), an `Option` of an admitted type, a record
-whose fields are all admitted, or a `seq` of an admitted type — so a
-real API response types directly:
+Fields nest: the rule is recursive. A field is one of:
+
+- a scalar — `int`, `float`, `string`, `bool`
+- an `Option` of an admitted type
+- a record whose fields are all admitted
+- a `seq` of an admitted type
+
+So a real API response types directly:
 
 ```weir
 type Entity = { entityid: string }
@@ -527,10 +537,13 @@ Keys are strings only — JSON object keys ARE strings, and a
 `Map<int, …>` declaration is refused with that explanation. Pairs
 walk key-sorted; duplicate keys last-win; `to json` writes the
 object back. The `Map` members:
-`ofPairs` (last-wins) / `pairs` / `keys` / `values` (key-sorted) /
-`get` (raises, naming the key) / `tryGet` / `has` / `add` / `remove` /
-`count`. There is no `m[k]` indexing — use `Map.get` — and `==` is
-not defined for maps.
+
+- `ofPairs` (last key wins), `pairs`, `keys`, `values` (key-sorted)
+- `get` (raises, naming the key), `tryGet`, `has`
+- `add`, `remove`, `count`
+
+There is no `m[k]` indexing — use `Map.get` — and `==` is not
+defined for maps.
 
 `Http.query` is the QUERY method (RFC 10008). QUERY is idempotent by
 definition, so `retry attempts=5` around an `Http.query` is safe by
@@ -704,10 +717,11 @@ sh -c "exit 3" | exitCode // a bare statement discards the code — bind or matc
 
 With the LSP attached, editors color weir's one novel boundary — the
 line between command and expression — from the checker's own verdict.
-Command heads color as callables. Their argv colors as inert words,
-string-like. Splice markers (`$name`, the parens of an `(expr)`
-splice) color as operators, and everything inside a splice keeps
-ordinary code coloring — the visual message is "this island is code".
+- command heads color as callables
+- their argv colors as inert words, string-like
+- splice markers (`$name`, the parens of an `(expr)` splice) color as
+  operators — and everything inside a splice keeps ordinary code
+  coloring, the visual message being "this island is code"
 
 If text you meant as an expression renders argv-colored, or a bound
 name you meant as a command doesn't, the coloring is not wrong: it is
@@ -945,12 +959,16 @@ Splice values into argv with `$name` or `(expr)`. A spliced value is
 always exactly one argv entry, never re-split — which is why there is
 no injection class to defend against.
 
-What weir's command lines do NOT do: no glob expansion (use the
-function `Path.glob`), no `&&`, no `$VAR` expansion, and no
-redirects — `>` and `>>` pass through as literal argv, with a warning
-naming what to use instead (`cmd |> File.write "out.txt"`, or
-`File.append`). For bash semantics, run bash: `sh -c "the bash
-line"`.
+What weir's command lines do NOT do:
+
+- no glob expansion — use the function `Path.glob`
+- no `&&` — write two statements
+- no `$VAR` expansion — splice weir bindings instead
+- no redirects — `>` and `>>` pass through as literal argv, with a
+  warning naming what to use instead (`cmd |> File.write "out.txt"`,
+  or `File.append`)
+
+For bash semantics, run bash: `sh -c "the bash line"`.
 
 ```weir
 // redirection: a function on the right takes |> (the pipe rule)
@@ -1066,6 +1084,18 @@ within tmp d
         always
             print "released either way"
 ```
+
+The whole family at a glance (`within proc`, the background-process
+form, is covered under Parallelism):
+
+| form | holds | on every exit |
+|---|---|---|
+| `within tmp d` | a fresh directory | removes it |
+| `within cd "path"` | the working directory | restores it |
+| `within env vars` | an env overlay for child spawns | drops it |
+| `within` … `always` | nothing — a body plus cleanup | runs the `always` block |
+| `within lock "path"` | an advisory file lock | releases it — the kernel does, even on `kill -9` |
+| `within proc h = cmd` | a background process | kills and reaps its tree |
 
 A scratch TREE composes the family: `Dir.create` for
 structure, `Path.glob` to find, `Dir.deleteAll` (the visibly-named
@@ -1233,10 +1263,13 @@ explicitly, `[<NoShort>]` suppresses one, and `--help` prints the
 derived usage — flags, types, optionality, the short truth, and each
 field's `///` first line — even on otherwise-invalid invocations. `bool`
 fields are presence flags, `string`/`int` are required, `Option`
-makes them optional. Loading is STRICT and collected: unknown flags
-(with did-you-mean), unexpected arguments, missing requireds, and
-unparseable values all arrive in one boundary error, before any
-effect runs.
+makes them optional. Loading is strict and collected — all of these
+arrive together in one boundary error, before any effect runs:
+
+- unknown flags (with a did-you-mean)
+- unexpected arguments
+- missing required flags
+- unparseable values
 
 Subcommands are a union of record-payload cases — the first token
 picks the case, the rest parse as its flags, and the dispatch match
@@ -1303,10 +1336,13 @@ only exist in CI.
 
 ## Retrying and polling
 
-The bounded loops share one shape: a `key=value` head, a block body
-whose last statement is the value, and an `until` section that binds
-the value for the condition. A `bool` body is its own
-predicate and the form yields unit:
+The bounded loops share one shape:
+
+- a `key=value` head
+- a block body whose last statement is the value
+- an `until` section that binds the value for the condition
+
+A `bool` body is its own predicate, and the form then yields unit:
 
 ```weir
 retry attempts=3 delay=100ms
@@ -1453,14 +1489,19 @@ deploy.weir can (capability, not behaviour — an untaken branch still counts):
     a Secret reaches the argv of curl (ps-visible — the stated non-claim)  deploy.weir:9:9
 ```
 
-Three honesty rules: it reports capability, never behaviour — a
-command inside a branch that never runs still counts; `sh -c` and the
-other interpreters are first-class unknowns, counted in the header
-(`--strict` exits 2 when any exist, so a CI gate can refuse
-unanalysable scripts); and the claim covers what weir itself does —
-any external can do anything, and no static report closes that.
-Imports are walked transitively; a module's capabilities carry the
-module's own file:line. `--json` emits the same facts for machines.
+Three honesty rules:
+
+1. It reports **capability, never behaviour** — a command inside a
+   branch that never runs still counts.
+2. `sh -c` and the other interpreters are first-class unknowns,
+   counted in the header. `--strict` exits 2 when any exist, so a CI
+   gate can refuse unanalysable scripts.
+3. The claim covers what weir itself does — any external can do
+   anything, and no static report closes that.
+
+Imports are walked transitively, and a module's capabilities carry
+the module's own file:line. `--json` emits the same facts for
+machines.
 
 ## Failing and diagnosing
 
@@ -1563,15 +1604,24 @@ The complete border with F# — what is deliberately different, what is
 rejected by design, what is merely pending — lives in
 [tests/fidelity/divergences.md](../tests/fidelity/divergences.md),
 machine-verified against the real F#
-compiler in CI. The short version: no mutation, no exceptions (values
-and `fail`/`exit`), no OO, no async, no user type classes (the three
-built-in constraint families are closed). When a task
-outgrows a shell, the graduation path is full F# — weir points there
-on purpose.
+compiler in CI. The short version:
 
-For the language rulebook with rationale, read
-[SEMANTICS.md](SEMANTICS.md). For the exhaustive, agent-oriented rule
-file — every shipped member, every rule, CI-executed —
-[skills/weir/SKILL.md](../skills/weir/SKILL.md). Arriving with another
-language's reflexes — bash, PowerShell, Python, Make? The per-language
-translation tables live in [COMING-FROM.md](COMING-FROM.md).
+- no mutation
+- no exceptions — values, `fail` and `exit` instead
+- no OO
+- no async
+- no user type classes — the three built-in constraint families are
+  closed
+
+When a task outgrows a shell, the graduation path is full F# — weir
+points there on purpose.
+
+Where to next:
+
+- [SEMANTICS.md](SEMANTICS.md) — the language rulebook, with
+  rationale
+- [skills/weir/SKILL.md](../skills/weir/SKILL.md) — the exhaustive,
+  agent-oriented rule file: every shipped member, every rule,
+  CI-executed
+- [COMING-FROM.md](COMING-FROM.md) — per-language translation tables
+  for arrivals from bash, PowerShell, Python, or Make
