@@ -62,8 +62,15 @@ jobs:
           else
             # content redeploy: production, installers from the latest
             # PUBLISHED release; pre-first-release there is none and the
-            # site deploys docs-only (said aloud below, not hidden)
-            tag=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name 2>/dev/null || true)
+            # site deploys docs-only (said aloud below, not hidden).
+            # gh api prints the ERROR BODY to stdout on a 404 — capture
+            # by exit code, never `|| true` (which handed the JSON blob
+            # to $GITHUB_OUTPUT and broke the next step), and only a
+            # v-shaped value is a tag
+            if ! tag=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name 2>/dev/null); then
+              tag=""
+            fi
+            case "$tag" in v*) ;; *) tag="" ;; esac
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
             echo "branch=main" >> "$GITHUB_OUTPUT"
           fi
