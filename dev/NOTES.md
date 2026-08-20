@@ -1,5 +1,22 @@
 # Spike Notes
 
+## v0.0.1 died queueing, and the recovery worked (2026-08-20)
+
+The osx-x64 job waited forever for a macos-13 runner GitHub retired in
+December — the label we added back when the rider guessed the missing
+platform was an omission, verified against a matrix that was already
+dead. The interesting mechanics: a tag's workflow run is pinned to the
+workflow file AT THE TAG, so no main-side fix can rescue a tagged run —
+the immutable-tags recovery (cancel, fix, next number) is not just
+policy, it is the only mechanism that works. Two recoveries before
+anything shipped: rc1 for the changelog, v0.0.1 for the runner. Both
+tags stand as records.
+
+The fix kept the platform: macos-15-intel is the free x86_64 label,
+with GitHub's own sunset (Fall 2027, when Intel macOS goes entirely) —
+so the drop-Intel decision has a date instead of a debate, and the
+matrix comment carries it.
+
 ## the rehearsal dissolved into the release (2026-08-20)
 
 Once tags became immutable, the rc lost its reason to exist: its whole

@@ -3,8 +3,12 @@
 One procedure: the **release** — and the first one doubles as the
 rehearsal [D:first-release-rehearsal]. Everything that could be
 verified without a release has been; what remains is exercised by
-`v0.0.1` itself, watched, with a stated recovery (delete the release,
-never the tag, cut the next number).
+the first release itself, watched, with a stated recovery (delete the
+release, never the tag, cut the next number) — a recovery already used
+twice before anything shipped: rc1 (changelog section missing from the
+tagged commit) and v0.0.1 (the workflow at the tag named a retired
+runner; a tag's run is pinned to the tag's own workflow file, so a
+main-side fix cannot save it).
 
 ## One-time infrastructure (maintainer)
 
@@ -50,7 +54,7 @@ rather than implied tested. They run if an rc is ever cut for a
 genuinely risky change; staging remains reachable any time via the
 site workflow's manual channel.
 
-## The release — `v0.0.1` and after
+## The release
 
 1. **CHANGELOG first**: the release's `## <tag>` section is merged
    to main before the tag is cut (the gate checks out the tag's
@@ -74,7 +78,7 @@ site workflow's manual channel.
      stamp reports the tag
    - the negative paths: a truncated fetch is a syntax error, a
      corrupted binary refuses with `CHECKSUM MISMATCH`
-   - `docker run --rm ghcr.io/weir-shell/weir:v0.0.1 --version`, and
+   - `docker run --rm ghcr.io/weir-shell/weir:<tag> --version`, and
      `:latest` resolves to the same digest
 7. If any of it fails: delete the release, fix, cut the next number.
    The tag stays [D:tag-immutability].

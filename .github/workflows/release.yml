@@ -70,7 +70,10 @@ jobs:
             rid: linux-arm64
           - os: macos-latest
             rid: osx-arm64
-          - os: macos-13
+          # the free x86_64 label after macos-13's retirement; GitHub
+          # drops Intel macOS entirely when macos-15 retires (Fall 2027)
+          # — the platform sunsets with it
+          - os: macos-15-intel
             rid: osx-x64
           - os: windows-latest
             rid: win-x64
