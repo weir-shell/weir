@@ -1,5 +1,25 @@
 # Spike Notes
 
+## the image is the binary with a digest (2026-08-20)
+
+The container rider's framing did all the work: an artifact, not a
+product. Phase 0 killed two wrong turns before they started — the
+.dockerignore that suggested prior container work belongs to
+ci/local.sh's battery container (a dev artifact; the release image is a
+different thing with a different name), and ldd answered the base
+question in one line: the AOT binary links glibc, so distroless/cc, not
+scratch. The workflow is the site deploy's shape a third time: publish
+event, artifacts from the firing release, prerelease routing (here:
+:latest withheld rather than staging-aliased).
+
+The honest part is what could NOT be verified: this container has a
+docker client and no daemon (docker info prints a Server: header even
+when the dial fails — a trap worth remembering). So the -it question
+was probed at its root instead: the REPL under a pty with a
+distroless-shaped env — no TERM, minimal vars — renders the prompt,
+evaluates, quits. The build/push/pull/size half is stated as untested
+and lands with the rc1 rehearsal or a lent DOCKER_HOST.
+
 ## the grammar that was green and 70 commits stale (2026-08-20)
 
 The tree-sitter check asked "do I agree with the ref I chose?" — a
