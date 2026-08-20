@@ -28,6 +28,12 @@ on:
     branches: [main]
     paths: ["site/**", "docs/**", "CHANGELOG.md"]
   workflow_dispatch:
+    inputs:
+      channel:
+        description: "deploy channel (staging = the branch alias staging.weir.sh points at — stand it up before the rc1 rehearsal to verify DNS)"
+        type: choice
+        options: [production, staging]
+        default: production
 
 permissions:
   contents: read
@@ -72,7 +78,14 @@ jobs:
             fi
             case "$tag" in v*) ;; *) tag="" ;; esac
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
-            echo "branch=main" >> "$GITHUB_OUTPUT"
+            # a manual dispatch can target the staging alias — the only
+            # other staging route is a prerelease publish, and DNS wiring
+            # deserves a cheaper probe than a full rehearsal
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.channel }}" = "staging" ]; then
+              echo "branch=staging" >> "$GITHUB_OUTPUT"
+            else
+              echo "branch=main" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       # the generated installers are RELEASE ASSETS [D:install-checksum-scope]
