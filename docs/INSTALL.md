@@ -67,6 +67,20 @@ and compare against the `SHA256SUMS` line.
 
 `weir --version` reports the release tag (`v0.1.0+<sha>`).
 
+## Container image
+
+The same released binary, on distroless (amd64 + arm64):
+
+```
+docker run --rm -v "$PWD:/w" -w /w ghcr.io/weir-shell/weir:latest script.weir
+docker run --rm -it ghcr.io/weir-shell/weir:latest     # the REPL
+```
+
+`:latest` follows the latest published release (never a prerelease);
+pin `:v<tag>` to stay put. The image carries nothing but the binary —
+no shell, no package manager — so it runs scripts and the REPL, not
+`docker exec` sessions.
+
 ## Unsigned binaries — the first-run dialogs
 
 The binaries are **not code-signed** (a deliberate v1 posture; signing
