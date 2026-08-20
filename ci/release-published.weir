@@ -10,11 +10,18 @@
 let repo = "weir-shell/weir"
 
 // tags come from the checkout (the release tag is pushed before the
-// draft is published); no v* tag means pre-first-release, nothing to check
-let tags = git tag -l "v*" |> Seq.force
+// draft is published). Only STABLE tags count [D:tag-immutability]: a
+// prerelease suffix (v0.0.0-rc1) is EXCLUDED from releases/latest by
+// GitHub's own semantics, so an unpublished-or-deleted rc is a normal
+// state, not the missing-click defect — and tags are never deleted, so
+// the gate must not demand publication for tags that cannot satisfy it.
+let tags =
+    git tag -l "v*"
+    |> Seq.where (fun t -> not (Str.contains "-" t))
+    |> Seq.force
 
 if Seq.isEmpty tags then
-    print "no v* tag yet — nothing to check (pre-first-release)"
+    print "no stable v* tag yet — nothing to check (pre-first-release; prerelease tags are exempt)"
     exit 0
 
 // status is DATA — Http.send binds it, a 404 is a value not an error.

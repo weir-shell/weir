@@ -1,5 +1,42 @@
 # Spike Notes
 
+## the rehearsal dissolved into the release (2026-08-20)
+
+Once tags became immutable, the rc lost its reason to exist: its whole
+design (throwaway tag, deletable everything) assumed mutations we no
+longer allow, and under the new rules a failed v0.0.1 and a failed rc
+have identical cost — delete the release, cut the next number. Add
+that most of the rehearsal's receipts were already collected without
+any release (staging, content-type, 404s, the changelog gate's live
+red, the offline pins), and the rc was a number without added safety.
+
+The honest residue is named rather than buried: the prerelease→staging
+routing and the :latest-withholding are now unexercised code paths,
+waiting for a genuinely risky change to warrant an rc. The release
+procedure absorbed the verification checklist, and its last step is
+the recovery: delete the release, never the tag.
+
+## the rehearsal's first catch caught the runbook too (2026-08-20)
+
+rc1's tag went up without its changelog section and the gate refused —
+the exact red it was built for, collected live. But the obvious repair
+(re-point the tag at a fixed commit) and the runbook's own teardown
+(delete the tag) were both history mutation, the thing this project
+refuses everywhere else. The user called it: we shouldn't be deleting
+tags.
+
+The fix was a ruling plus an enabling change. Tags are immutable —
+failed attempts get the next rc number, teardown deletes only the
+release, and rc1's tag stays as the record of the gate's first catch.
+The enabling half: kept rc tags must not poison the gates, so
+release-published and site-staleness now count stable tags only. A
+prerelease is excluded from releases/latest by GitHub's own
+semantics — demanding publication of a tag that cannot satisfy /latest
+is what generated the delete-the-tag pressure in the first place. The
+trade is stated in the row: the rehearsal no longer shows
+release-published red (an rc cannot trip it); that observation moves
+to the real release's tag→publish window, where it happens inherently.
+
 ## the reference arrives by subtraction (2026-08-20)
 
 The audit reframed the job exactly as the plan suspected, with one
