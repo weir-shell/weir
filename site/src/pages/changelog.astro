@@ -1,0 +1,13 @@
+---
+// the one root-level doc page [D:changelog]: its audience is existing
+// users deciding whether to upgrade — a docs page, not a front page
+import { getCollection, render } from "astro:content";
+import Base from "../layouts/Base.astro";
+
+const [entry] = await getCollection("changelog");
+const { Content } = await render(entry);
+---
+
+<Base title="Changelog">
+  <Content />
+</Base>

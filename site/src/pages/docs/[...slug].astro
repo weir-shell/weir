@@ -1,0 +1,23 @@
+---
+// docs pages render straight from the repo's docs/ [D:site-skeleton].
+// Titles come from each file's first `# ` heading — the files carry no
+// frontmatter (written for GitHub) and the site adapts, not the docs.
+import { getCollection, render } from "astro:content";
+import Base from "../../layouts/Base.astro";
+
+export async function getStaticPaths() {
+  const docs = await getCollection("docs");
+  return docs.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry },
+  }));
+}
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+const title = entry.body?.match(/^#\s+(.+)$/m)?.[1] ?? entry.id;
+---
+
+<Base title={title}>
+  <Content />
+</Base>

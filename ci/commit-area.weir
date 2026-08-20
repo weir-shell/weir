@@ -62,6 +62,10 @@ let areaOfSrc p =
 let areaOfOther p =
     if p == "docs/DECISIONS.md" || Str.startsWith "dev/" p then
         "ledger"
+    // site is its OWN area [D:site-skeleton]: the content and deploy wiring
+    // are not docs — a site commit riding `docs` would make the log lie
+    elif Str.startsWith "site/" p then
+        "site"
     elif Str.startsWith "ci/" p || Str.startsWith ".github/" p || Str.startsWith "tools/" p || Str.startsWith "tests/pty/" p then
         "ci"
     elif Str.startsWith "publish." p || Str.startsWith "install." p || p == "weir.slnx" || p == ".gitignore" || p == ".dockerignore" then
@@ -70,7 +74,7 @@ let areaOfOther p =
         "tests"
     elif Str.startsWith "docs/" p || Str.startsWith "skills/" p || Str.startsWith "examples/" p || Str.startsWith "editors/" p then
         "docs"
-    elif p == "README.md" || p == "SECURITY.md" || p == "NOTICE" || p == "LICENSE" || p == "CONTRIBUTING.md" || p == "CODE_OF_CONDUCT.md" || p == "THIRD-PARTY-NOTICES.txt" || p == "CLAUDE.md" then
+    elif p == "README.md" || p == "SECURITY.md" || p == "NOTICE" || p == "LICENSE" || p == "CONTRIBUTING.md" || p == "CODE_OF_CONDUCT.md" || p == "THIRD-PARTY-NOTICES.txt" || p == "CLAUDE.md" || p == "CHANGELOG.md" then
         "docs"
     else
         // an unmapped NON-src path keeps a fallback, said aloud —

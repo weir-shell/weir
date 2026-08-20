@@ -1,0 +1,51 @@
+#!/usr/bin/env weir
+// The served-installer staleness check [D:site-deploy] —
+// [D:release-gate]'s shape one layer out: weir.sh/install.sh embeds the
+// tag it was generated for, so comparing that against releases/latest
+// catches a site dispatch that never fired or a deploy that failed
+// quietly — users silently getting an older weir, correct-but-behind and
+// invisible without a check. Runs in ci.yml on every push, so the gap is
+// caught within a commit of appearing, not when a user reports it.
+
+let repo = "weir-shell/weir"
+
+// pre-first-release: nothing published, nothing served — nothing to check
+let tags = git tag -l "v*" |> Seq.force
+
+if Seq.isEmpty tags then
+    print "no v* tag yet — nothing to check (pre-first-release)"
+    exit 0
+
+// an unpublished latest release is [D:release-gate]'s finding, not this
+// script's — skip rather than double-report the same defect
+let relCode =
+    sh -c $"curl -sS -o /dev/null -w '%{{http_code}}' https://api.github.com/repos/{repo}/releases/latest"
+    |> Seq.head
+
+if relCode <> "200" then
+    print $"releases/latest returned {relCode} — release-published.weir owns that state; skipping the staleness check"
+    exit 0
+
+let latest =
+    sh -c $"curl -fsSL https://api.github.com/repos/{repo}/releases/latest"
+    |> Seq.pick (fun l -> Str.rmatch "\"tag_name\": *\"([^\"]+)\"" l)
+    |> Seq.head
+
+// the site must serve an installer once a release exists — a 404 here IS
+// the dispatch-never-fired state, not a skippable condition
+let siteCode =
+    sh -c "curl -sS -o /dev/null -w '%{http_code}' https://weir.sh/install.sh"
+    |> Seq.head
+
+if siteCode <> "200" then
+    fail $"weir.sh/install.sh returned {siteCode} but release {latest} is published — the site deploy never fired or failed; check the site workflow run for the release"
+
+let served =
+    sh -c "curl -fsSL https://weir.sh/install.sh"
+    |> Seq.pick (fun l -> Str.rmatch "TAG=\"([^\"]+)\"" l)
+    |> Seq.head
+
+if served <> latest then
+    fail $"weir.sh/install.sh pins '{served}' but releases/latest is '{latest}' — users are getting an older weir; redeploy the site (site.yml workflow_dispatch)"
+
+print $"site staleness ok: weir.sh serves {served} == releases/latest"

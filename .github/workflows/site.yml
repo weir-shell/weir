@@ -1,0 +1,125 @@
+# The site deploy [D:site-deploy] — triggered by `release: published`,
+# NOT `push: tags`: only the publish CLICK fires this, which is the point
+# of [D:releases]'s draft coupling (wired to the tag it would deploy
+# before the assets are publishable and fetch a /latest that 404s).
+#
+# CHANNEL ROUTING: a PRERELEASE deploys to the `staging` Pages branch
+# (aliased staging.weir.sh) and a full release to production (weir.sh) —
+# so the v0.0.0-rc1 rehearsal exercises this entire chain against staging
+# with zero workflow changes. Content-only edits redeploy production via
+# the push trigger, taking installers from releases/latest.
+#
+# FAIL LOUD, NEVER A BROKEN INSTALL LINE: the installer fetch and the
+# pre-deploy verify fail the JOB; a failed job never reaches `wrangler
+# pages deploy`, so the prior deploy stays live BY CONSTRUCTION (direct
+# upload creates a deployment only when invoked — nothing here depends on
+# Pages' own build-retention behavior). Serving the previous version is
+# strictly better than a 404 at the most load-bearing string on the page.
+#
+# UNTESTED UNTIL THE REHEARSAL, stated plainly: the dispatch firing, the
+# content-type at the edge, and the staging alias are one-shot facts this
+# file cannot prove — item 5's rc1 rehearsal is where they are exercised.
+name: site
+
+on:
+  release:
+    types: [published]
+  push:
+    branches: [main]
+    paths: ["site/**", "docs/**", "CHANGELOG.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      # release event: the tag and channel come from THE release that
+      # fired — never /latest, which would race another publish and
+      # excludes the prereleases staging exists to serve
+      - name: resolve channel and tag
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            if [ "${{ github.event.release.prerelease }}" = "true" ]; then
+              echo "branch=staging" >> "$GITHUB_OUTPUT"
+            else
+              echo "branch=main" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # content redeploy: production, installers from the latest
+            # PUBLISHED release; pre-first-release there is none and the
+            # site deploys docs-only (said aloud below, not hidden)
+            tag=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name 2>/dev/null || true)
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "branch=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      # the generated installers are RELEASE ASSETS [D:install-checksum-scope]
+      # — the site serves them from a different origin than the binaries.
+      # A release with a tag but no fetchable installers FAILS the deploy.
+      - name: fetch the pinned installers from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.rel.outputs.tag }}"
+          if [ -z "$tag" ]; then
+            echo "::warning::no published release yet — deploying docs-only, /install.sh will 404 (pre-first-release)"
+            exit 0
+          fi
+          gh release download "$tag" --repo "${{ github.repository }}" \
+            --pattern 'install.sh' --pattern 'install.ps1' --dir site/public
+          sh -n site/public/install.sh
+          grep -q "TAG=\"$tag\"" site/public/install.sh \
+            || { echo "installer from $tag does not pin $tag — refusing to deploy" >&2; exit 1; }
+
+      - name: build
+        env:
+          ASTRO_TELEMETRY_DISABLED: "1"
+        run: cd site && npm ci && npm run build
+
+      # pre-deploy staleness guard: what we are ABOUT to serve pins the
+      # tag we resolved — catches a stale public/ artifact before it ships
+      - name: verify the artifact before it ships
+        run: |
+          tag="${{ steps.rel.outputs.tag }}"
+          [ -z "$tag" ] && exit 0
+          sh -n site/dist/install.sh
+          grep -q "TAG=\"$tag\"" site/dist/install.sh \
+            || { echo "built site would serve an installer not pinned to $tag" >&2; exit 1; }
+
+      - name: deploy (Cloudflare Pages, direct upload)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler@4 pages deploy site/dist \
+            --project-name weir-sh \
+            --branch "${{ steps.rel.outputs.branch }}"
+
+      # post-deploy staleness check [D:site-deploy] — release-published's
+      # shape one layer out: the SERVED script's embedded tag must match
+      # the release that fired. Catches a deploy that landed on the wrong
+      # channel or an edge cache serving yesterday. Production only —
+      # staging's alias is verified by the rehearsal itself.
+      - name: served installer pins the released tag
+        if: github.event_name == 'release' && github.event.release.prerelease == false
+        run: |
+          tag="${{ steps.rel.outputs.tag }}"
+          served=$(curl -fsSL https://weir.sh/install.sh | grep -m1 '^    TAG=' | cut -d'"' -f2)
+          [ "$served" = "$tag" ] \
+            || { echo "weir.sh/install.sh serves '$served', released '$tag' — users are getting an older weir" >&2; exit 1; }
+          echo "served installer pins $tag"
