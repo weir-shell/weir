@@ -1,5 +1,24 @@
 # Spike Notes
 
+## the whole GUIDE, de-walled (2026-08-20)
+
+The full prose pass landed in one stretch after all: every remaining
+wall broken into single-idea passages, with the REPL mega-bullet (one
+list item, fifty lines, a dozen ideas) becoming a six-passage section
+with its bindings table intact. Two register decisions worth
+recording: "district" no longer appears in GUIDE at all — five uses,
+zero definitions, was the purest form of the register defect — and
+the [D:] ledger keys came OUT of GUIDE prose entirely: a stranger
+cannot follow them, the site renders them as noise, and the citations
+still live where maintainers read (SEMANTICS, SKILL, the code).
+
+The pass also caught two glued-sentence defects — the ConfigMap line
+and the try/finally passage each carried two spliced versions of the
+same sentence, artifacts of earlier edits that no gate could see
+because prose does not execute. skill-doc held at 143 green through
+all ~30 edits, which is what made a mechanical sweep of a document
+full of executing examples safe.
+
 ## the stylesheet that styled nothing, and the prose pass (2026-08-20)
 
 The typography question ("theme default, or did something remove it?")
