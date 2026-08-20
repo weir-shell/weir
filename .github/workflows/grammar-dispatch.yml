@@ -1,0 +1,38 @@
+# The manifest-change dispatch [D:grammar-currency] — an EVENT, not a
+# poll: when weir's grammar manifest changes on main, tell the grammar
+# repo so its check runs at the exact moment it could newly fail. Same
+# shape as `release: published` → site deploy. Collapses the drift
+# window from "until someone notices" to one CI run.
+#
+# Cross-repo dispatch needs a PAT (the workflow token is scoped to this
+# repo): the GRAMMAR_DISPATCH_TOKEN secret, fine-grained, weir-shell/
+# tree-sitter-weir only, contents:write (repository_dispatch is a
+# contents endpoint). A missing secret FAILS LOUD naming the setup —
+# a silently-skipped dispatch would recreate the invisibility this
+# exists to end.
+name: grammar-dispatch
+
+on:
+  push:
+    branches: [main]
+    paths: ["editors/grammar-manifest.json"]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: dispatch weir-manifest-changed to tree-sitter-weir
+        env:
+          TOKEN: ${{ secrets.GRAMMAR_DISPATCH_TOKEN }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "GRAMMAR_DISPATCH_TOKEN is not configured — create a fine-grained PAT for weir-shell/tree-sitter-weir (contents:write) and add it as a repo secret" >&2; exit 1; }
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/weir-shell/tree-sitter-weir/dispatches \
+            -d '{"event_type":"weir-manifest-changed","client_payload":{"weir_sha":"${{ github.sha }}"}}'
+          echo "dispatched: the grammar repo's check runs against this manifest change"

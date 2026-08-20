@@ -1102,7 +1102,7 @@ if not table or bad:
     sys.exit(1)
 print(f"within kinds match across the table + in-repo grammars ({sorted(table)})")
 PYWK
-    echo "e2e ok: within-kind inventory (Ast.withinKinds == micro == tmLanguage; tree-sitter via the manifest)"
+    echo "e2e ok: within-kind inventory (Ast.withinKinds == micro == tmLanguage; the tree-sitter third TRUSTS the manifest — checked in its repo + [D:grammar-currency])"
 
     # adapter inventory [D:form-word-hover]: the from/to adapters are a
     # CLOSED SET whose SOURCE is the builtinDocs keys (`from X`/`to X`) —
@@ -1127,7 +1127,7 @@ if not source or bad:
     sys.exit(1)
 print(f"adapters match across builtinDocs + in-repo grammars ({sorted(source)})")
 PYADP
-    echo "e2e ok: adapter inventory (builtinDocs == micro == tmLanguage; tree-sitter via the manifest)"
+    echo "e2e ok: adapter inventory (builtinDocs == micro == tmLanguage; the tree-sitter third TRUSTS the manifest — checked in its repo + [D:grammar-currency])"
 
     # the Zed highlight drift guard RETIRED with the split [D:ts-split]:
     # the canonical queries live in weir-shell/tree-sitter-weir now, so

@@ -1,0 +1,93 @@
+#!/usr/bin/env weir
+// The Zed pin check [D:grammar-currency] — two invisible pins, one
+// check that fails when either moves. editors/zed/extension.toml pins
+// the tree-sitter grammar by REV, and nothing enforced the rev ritual
+// (bump + refresh highlights.scm, one motion) — a comment was doing a
+// check's job. Two assertions:
+//   1. the pinned rev IS the grammar repo's current main — a stale
+//      grammar and a stale rev both surface here, because either makes
+//      the rev not match what the repo publishes;
+//   2. every node name queried by editors/zed/languages/weir/
+//      highlights.scm exists in the grammar's node inventory AT THE
+//      PINNED REV — a matching rev with queries naming nodes the
+//      grammar no longer has is green-but-broken.
+// Public repo — plain fetches, no token. Runs at RELEASE and on the
+// weekly schedule, never on PRs: bumping the rev requires the grammar
+// push to have happened first, so a PR red here is unfixable in the PR.
+//
+//   ci/zed-rev-current.weir                fetch the grammar repo
+//   ci/zed-rev-current.weir --gdir <path>  check a local grammar clone
+
+type Cli = {
+    /// a local tree-sitter-weir clone to check against instead of fetching
+    gdir: Option<string>
+}
+
+type Commit = { sha: string }
+
+let cli = Args.load Cli
+
+let toml = File.read "editors/zed/extension.toml" |> Str.join "\n"
+
+let revHits =
+    Str.rmatchAll "rev = \"([0-9a-f]+)\"" toml |> Seq.force
+
+if Seq.isEmpty revHits then
+    fail "editors/zed/extension.toml has no rev = \"...\" line — the grammar pin is gone"
+
+let rev = revHits |> Seq.head |> Seq.head
+
+// 1 — the pinned rev is the grammar's current main
+let localSha d = git -C $d rev-parse HEAD |> Seq.head
+
+let fetchedSha () =
+    (Http.fetch "https://api.github.com/repos/weir-shell/tree-sitter-weir/commits/main"
+        |> from json Commit)
+            .sha
+
+let mainSha =
+    match cli.gdir with
+    | Some d -> localSha d
+    | None -> fetchedSha ()
+
+if not (Str.startsWith rev mainSha) then
+    fail $"ZED PIN STALE: extension.toml pins rev {rev} but tree-sitter-weir main is {Str.sub 0 12 mainSha} — the rev ritual is due: bump the rev and refresh languages/weir/highlights.scm from that same commit"
+
+// 2 — every queried node exists in the grammar at the pinned rev.
+// node-types.json's "type" values at every level are real node names,
+// so the collection is a safe superset; query captures (@x), predicates
+// (#match?) and quoted anonymous tokens never match the extraction.
+let nodeTypesText =
+    match cli.gdir with
+    | Some d -> File.read $"{d}/src/node-types.json" |> Str.join "\n"
+    | None ->
+        Http.fetch $"https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/{rev}/src/node-types.json"
+        |> Str.join "\n"
+
+let nodeNames =
+    Str.rmatchAll "\"type\": *\"([A-Za-z_]+)\"" nodeTypesText
+    |> Seq.map Seq.head
+    |> Seq.distinct
+    |> Seq.force
+
+// scm comments run ; to end-of-line — stripped per line before the
+// node extraction, or comment prose like "(a query override)" collects
+// as node names (no query here quotes a literal ";", checked)
+let queried =
+    File.read "editors/zed/languages/weir/highlights.scm"
+    |> Seq.map (fun l -> l |> Str.split ";" |> Seq.head)
+    |> Str.join "\n"
+    |> Str.rmatchAll "\\(([a-z_]+)[\\s)]"
+    |> Seq.map Seq.head
+    |> Seq.distinct
+    |> Seq.force
+
+let unknown =
+    queried
+    |> Seq.where (fun n -> not (nodeNames |> Seq.contains n))
+    |> Seq.force
+
+if not (Seq.isEmpty unknown) then
+    fail $"ZED QUERIES BROKEN: highlights.scm names node(s) the grammar at {rev} does not have: [{Str.join ", " unknown}] — refresh languages/weir/highlights.scm from the grammar commit the rev pins"
+
+print $"zed pin ok: rev {rev} is tree-sitter-weir main, and all {queried |> Seq.length} queried node names exist in its {nodeNames |> Seq.length}-node inventory"

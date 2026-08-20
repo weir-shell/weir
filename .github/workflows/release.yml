@@ -49,6 +49,15 @@ jobs:
       # any binary is built
       - name: changelog section exists for this tag
         run: ~/.local/bin/weir ci/changelog-check.weir --tag "${{ github.ref_name }}"
+      # editor currency [D:grammar-currency] — release is when editor
+      # users arrive, so the release asserts the split-out grammar and
+      # the Zed pin are current. Red here is fixable BEFORE tagging:
+      # refresh the grammar, push, re-run. Settles [D:ts-split]'s
+      # deferred question with yes.
+      - name: tree-sitter grammar is current
+        run: ~/.local/bin/weir ci/grammar-currency.weir
+      - name: zed rev + queries are current
+        run: ~/.local/bin/weir ci/zed-rev-current.weir
 
   build:
     needs: gate
@@ -162,4 +171,5 @@ jobs:
             --draft \
             --title "weir ${{ github.ref_name }}" \
             --notes-file notes.md \
-            dist/weir-* dist/SHA256SUMS dist/install.sh dist/install.ps1
+            dist/weir-* dist/SHA256SUMS dist/install.sh dist/install.ps1 \
+            editors/grammar-manifest.json
