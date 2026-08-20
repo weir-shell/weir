@@ -1,0 +1,46 @@
+---
+// The reference index [D:reference in the repo's DECISIONS]. Two
+// halves: the module pages are GENERATED from the binary's own docs
+// (reference.json — the same source #help and hover read, so they
+// cannot drift and cannot be incomplete), and the language pages are
+// written, with their behaviour claims executed in CI.
+import Base from "../../layouts/Base.astro";
+import { getCollection } from "astro:content";
+import ref from "../../data/reference.json";
+
+const written = await getCollection("reference");
+const sectionTitle = (e) => e.body?.match(/^#\s+(.+)$/m)?.[1] ?? e.id;
+---
+
+<Base title="Reference">
+  <h1>Reference</h1>
+
+  <h2>The language</h2>
+  <p>
+    Written pages; every behaviour claim in them is executed against
+    the release binary in CI. There is no mechanical enumeration of
+    the language's <em>rules</em> the way there is of its members, so
+    these pages are complete by judgement, not by proof.
+  </p>
+  <ul>
+    {written.map((e) => (
+      <li><a href={`/reference/${e.id}/`}>{sectionTitle(e)}</a></li>
+    ))}
+  </ul>
+
+  <h2>Modules</h2>
+  <p>
+    Generated from the binary's own documentation — the same text
+    <code>#help</code> and editor hover show. Every member is present
+    (the coverage is a build gate), and every example runs in CI.
+  </p>
+  <ul>
+    {ref.modules.map((m) => (
+      <li>
+        <a href={`/reference/${m.name.toLowerCase()}/`}>{m.name}</a>
+        — {m.members.length} members
+      </li>
+    ))}
+    <li><a href="/reference/forms/">Forms</a> — {ref.forms.length} entries: the command result forms (<code>succeeds</code>, <code>complete</code>…), adapters (<code>from json</code>…), and the print family</li>
+  </ul>
+</Base>

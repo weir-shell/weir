@@ -6080,4 +6080,15 @@ imsg=$(printf '%s\n' "$gsums" | grep -q " $missing\$" || echo "no embedded check
 [ "$imsg" = "no embedded checksum for $missing" ] || fail "a missing checksum entry must be named, got: $imsg"
 echo "e2e ok: install missing-checksum entry is named; present entry verifies"
 
+# ---- the reference dump is current [D:reference] --------------------------
+# site/src/data/reference.json is GENERATED from builtinDocs (weir
+# docs-json) — the same one source #help and hover read. The committed
+# copy must match the binary's dump, or the site's reference pages are
+# stale (the grammar-manifest currency pattern, applied to docs).
+refdump=$(mkweirtmp)
+"$BIN" docs-json > "$refdump/reference.json"
+diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" > /dev/null \
+    || fail "site/src/data/reference.json is stale — regenerate: weir docs-json > site/src/data/reference.json"
+echo "e2e ok: reference dump current (docs-json == committed site data)"
+
 echo "e2e battery: all green"

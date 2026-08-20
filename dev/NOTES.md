@@ -1,5 +1,37 @@
 # Spike Notes
 
+## the reference arrives by subtraction (2026-08-20)
+
+The audit reframed the job exactly as the plan suspected, with one
+twist: SEMANTICS' archaeology is not in sections you could cut — it is
+marbled into the rule bullets mid-sentence, dates and plan names and
+gate-owner waivers wrapped around every rule. Only ~50 of 2021 lines
+are purely archaeological, and one of those blocks is a BACKLOG, which
+is planning pretending to be semantics. The audit also caught a rule
+that had silently drifted ("no elif (parked)" — elif shipped weeks
+ago), which is the strongest single argument for retirement: fences
+execute, prose rots, and a 2000-line prose document cannot be fenced
+into honesty.
+
+Half A cost almost nothing because everything already existed: the
+docs were data (builtinDocs), the coverage was pinned, the examples
+already ran in the unit suite, and the REPL's #help had already
+forced the one-source discipline. The whole generated half is a
+60-line JSON dump plus two Astro pages, and its currency gate is the
+grammar-manifest pattern verbatim. 21 modules, 207 members, zero
+undocumented on the first dump.
+
+The calibration slice (Lexical) came in at ~150 lines and 16 fences —
+every weir-error probed against the binary before landing, and all 16
+held in skill-doc on the first full run (143→159 blocks). At that
+rate the remaining eleven sections are a-section-per-sitting work,
+with Commands and Types the big ones.
+
+One self-inflicted scare: 15 fuzz "failures" that were my own
+HOME=/tmp/h build workaround leaking into the runner's default binary
+path — the read-only home strikes again. WEIR_BIN pointed at the real
+binary: 47/47.
+
 ## the whole GUIDE, de-walled (2026-08-20)
 
 The full prose pass landed in one stretch after all: every remaining
