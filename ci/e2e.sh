@@ -6123,6 +6123,15 @@ diff "$cliusage/page.txt" "$cliusage/help.txt" \
     || fail "docs/cli.md's usage block differs from 'weir --help' — update the page (or the binary's usage string) so they agree"
 echo "e2e ok: docs/cli.md usage block == weir --help"
 
+# ---- the lexical keyword table renders the gated manifest -----------------
+# docs/reference/lexical.md's keyword region is generated from
+# editors/grammar-manifest.json; a keyword added to weir must appear on
+# the page in the same commit, and the generator's classification must
+# cover the manifest exactly (it fails loud on an unclassified keyword).
+(cd "$ROOT" && "$BIN" tools/gen-lexical.weir --check) \
+    || fail "the lexical keyword table is stale or unclassified — run: weir tools/gen-lexical.weir"
+echo "e2e ok: lexical keyword table current (generated from the grammar manifest)"
+
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned
 # here against LIVE runs so the homepage cannot go stale while green (the

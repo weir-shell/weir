@@ -216,7 +216,8 @@ sizes |> Seq.iter print
 `>>` / `<<` compose functions — `Seq.map (Str.trim >> Str.toLower)`
 is the point-free form. One precedence rule to know (it is F#'s):
 `|>` and `>>` share a level, so `xs |> f >> g` is `(xs |> f) >> g` —
-parenthesize the composition: `xs |> (f >> g)`.
+parenthesize the composition: `xs |> (f >> g)`. The whole operator
+table is on [Lexical](reference/lexical.md#operators).
 
 Equality, rendering, and sorting are GENERIC through inferred
 constraints — the classic helper shapes just work, and reject at the
@@ -317,7 +318,8 @@ name. Builtins shadow PATH; `^ls` forces the real one.
 (`git log | grep x`); `|>` applies a function
 (`git log |> Seq.head`). Read `|` as "fed to a program" and `|>` as
 "transformed by a function". Using the wrong one is an error naming
-the other operator, and the full table lives in
+the other operator; the operator table lives on
+[Lexical](reference/lexical.md#operators), the full pipe rules in
 [SEMANTICS.md](SEMANTICS.md).
 
 A `let` takes a bare command on its right-hand side anywhere a `let`
@@ -708,7 +710,8 @@ within env e
 Raw strings carry patterns and paths without escape noise — F#'s two
 kinds, single-line: `@"..."` (backslashes literal, `""` embeds a
 quote) and `"""..."""` (no escapes at all, bare `"` fine inside).
-Rawness is a property of the literal kind, never of position.
+Rawness is a property of the literal kind, never of position; all
+five string forms live on [Lexical](reference/lexical.md#strings).
 
 `Str.isMatch` is the yes/no test — pipe the subject in, so the line
 reads subject-first:
