@@ -1,5 +1,29 @@
 # Spike Notes
 
+## the hero reframed mid-build, and the probes carried it (2026-08-21)
+
+The catastrophe pitch became a maintenance pitch halfway through — the
+author's own story (PowerShell at tool scale, F# scripts' weight,
+Nushell's type gap) leads, and Steam/pgpool moved below the fold as
+the predictability illustration. The material survived the reframe
+because none of it was prose: probes, refusals, and pins move; only
+the framing was rewritten.
+
+The probes corrected the copy twice before it shipped. A missing
+command is a check-time WARNING (uninstalled tools stay editable) and
+a RUN-time refusal — so beat 1 demonstrates the run, and its money
+line is asserted by the gate: the e2e cell checks that tar's output
+file does not exist after the refusal. And my first --can pin failed
+against my own cell — the cell ran --can with an absolute path while
+the homepage quotes relative file:lines. The pin caught its author
+before it caught anyone else, which is the best first catch a pin can
+have.
+
+One deliberate flag for review: the "Why not the alternatives"
+section is written in the author's first person, good-and-bad per
+alternative. The rider asked whether it reads honest rather than
+defensive — that judgement is the maintainer's, not mine.
+
 ## the image ran for the first time and named a missing symbol (2026-08-21)
 
 GLIBC_2.38 not found — the release builds on ubuntu-24.04 and the
