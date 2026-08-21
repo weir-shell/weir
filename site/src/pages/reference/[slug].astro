@@ -6,6 +6,7 @@
 // written sections are lowercase words (lexical, commands…) chosen
 // apart from them; "forms" is the one reserved page name.
 import Base from "../../layouts/Base.astro";
+import nordWeir from "../../lib/nord-weir.mjs";
 import { Code } from "astro:components";
 import { getCollection, render } from "astro:content";
 import { readFileSync } from "node:fs";
@@ -68,9 +69,9 @@ const anchor = (name) => name.toLowerCase().replaceAll(" ", "-");
           <h2 id={anchor(m.name)}>
             <a href={`#${anchor(m.name)}`}>{kind === "module" ? `${module.name}.${m.name}` : m.name}</a>
           </h2>
-          {m.signature && <Code code={m.signature} lang={weirGrammar} theme="github-dark" />}
+          {m.signature && <Code code={m.signature} lang={weirGrammar} theme={nordWeir} />}
           {m.summary && <p>{m.summary}</p>}
-          {m.example && <Code code={m.example} lang={weirGrammar} theme="github-dark" />}
+          {m.example && <Code code={m.example} lang={weirGrammar} theme={nordWeir} />}
           {m.pointer && <p><em>{m.pointer}</em></p>}
         </section>
       ))}

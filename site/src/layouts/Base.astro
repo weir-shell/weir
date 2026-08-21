@@ -20,9 +20,13 @@ const { title } = Astro.props;
       :root {
         --fg: #1a1a1a;
         --muted: #6a737d;
-        --accent: #0b5fa5;
-        --code-bg: #eef1f4;
-        --border: #e1e4e8;
+        /* the accents are Nord's [D:site-design]: frost nord10 for
+           interactive elements (4.03:1 on white — links keep their
+           underline so colour is never the only affordance), nord4
+           for hairlines, nord6 for the light code tint */
+        --accent: #5e81ac;
+        --code-bg: #eceff4;
+        --border: #d8dee9;
         /* the type scale — five sizes, no arbitrary values per element */
         --text-sm: 0.88rem;
         --text-base: 1rem;
