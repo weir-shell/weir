@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.0.3
+
+### New features
+
+- Nothing.
+
+### Bugfixes
+
+- The installer served at weir.sh no longer prints six harmless
+  `not found` errors before downloading — a generator defect planted a
+  stray copy of the release checksums at the top of the script. The
+  install itself was never affected; it was noise.
+
+### Chores
+
+- The site's post-release check waits out edge propagation instead of
+  failing on a seconds-old deploy.
+
+### Checks clean, behaves differently
+
+- Nothing.
+
 ## v0.0.2
 
 First release.
