@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.0.4
+
+### New features
+
+- Nothing.
+
+### Bugfixes
+
+- **Breaking:** adjacent argv pieces no longer silently split into
+  separate arguments — they are refused at check time. Previously,
+  `rm -rf $root/*` ran as *two* arguments (`$root`, then `/*` — the
+  Steam-bug shape, reproduced), and `--flag="value"` passed `--flag=`
+  and `value` separately. Both now fail with an error naming the
+  repairs (an interpolated arg, quoting the whole word, or
+  `Path.under`). Scripts that relied on glued adjacency were already
+  silently wrong; they now fail loudly instead.
+- Error messages that suggest building a filesystem path now name
+  `Path.under` (which refuses a result that escapes its base) instead
+  of `Path.combine` (which follows it).
+
+### Chores
+
+- Nothing.
+
+### Checks clean, behaves differently
+
+- Nothing — the argv change above is the inverse: scripts that
+  previously checked clean may now be refused, loudly.
+
 ## v0.0.3
 
 ### New features

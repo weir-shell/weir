@@ -29,10 +29,16 @@ if Seq.isEmpty tags then
     exit 0
 
 // an unpublished latest release is [D:release-gate]'s finding, not this
-// script's — skip rather than double-report the same defect
+// script's — skip rather than double-report the same defect.
+// GITHUB_TOKEN when present: shared CI egress IPs 403 the
+// unauthenticated rate limit routinely — auth lifts it, so the skip
+// arm covers release states, not throttling.
+let req = Http.get $"https://api.github.com/repos/{repo}/releases/latest"
+
 let rel =
-    Http.get $"https://api.github.com/repos/{repo}/releases/latest"
-    |> Http.send
+    match Env.get "GITHUB_TOKEN" with
+    | Some t -> Http.send { req with auth = Bearer (Secret.of t) }
+    | None -> Http.send req
 
 if rel.status <> 200 then
     print $"releases/latest returned {rel.status} — release-published.weir owns that state; skipping the staleness check"

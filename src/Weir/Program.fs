@@ -211,7 +211,9 @@ let main argv =
     // generated pages; the e2e currency gate diffs it against the
     // committed site/src/data/reference.json
     | [ "docs-json" ] ->
-        Console.WriteLine(Weir.Repl.docsJson ())
+        // Write + "\n", never WriteLine: the trailing newline must be LF
+        // on Windows too — the dump is diffed against a committed file
+        Console.Out.Write(Weir.Repl.docsJson () + "\n")
         0
     | [ "--version" ] ->
         // the build stamp [D:masking-mechanized] — <tag>+<hash>; the

@@ -26,12 +26,23 @@ if Seq.isEmpty tags then
 
 // status is DATA — Http.send binds it, a 404 is a value not an error.
 // GitHub's API requires a User-Agent; the default one [D:http-ua] covers it.
+// GITHUB_TOKEN when present: CI runners share egress IPs, so the
+// unauthenticated rate limit 403s routinely — auth lifts it.
+let req = Http.get $"https://api.github.com/repos/{repo}/releases/latest"
+
 let rel =
-    Http.get $"https://api.github.com/repos/{repo}/releases/latest"
-    |> Http.send
+    match Env.get "GITHUB_TOKEN" with
+    | Some t -> Http.send { req with auth = Bearer (Secret.of t) }
+    | None -> Http.send req
 
 if rel.status == 200 then
     print $"releases/latest resolves (200) — a published release exists for {tags |> Seq.length} tag(s)"
     exit 0
 
-fail $"releases/latest returned {rel.status} but v* tag(s) exist — [D:releases] produces DRAFTS, which /latest excludes; the installers 404. PUBLISH THE DRAFT: gh release edit <tag> --draft=false (or the Releases page)"
+// ONLY a 404 is the missing-publish-click state — /latest excluding a
+// draft answers 404, never 403. Any other status is the API refusing
+// the QUERY, and the draft repair would be the wrong teach for it.
+if rel.status == 404 then
+    fail $"releases/latest 404s but v* tag(s) exist — [D:releases] produces DRAFTS, which /latest excludes; the installers 404. PUBLISH THE DRAFT: gh release edit <tag> --draft=false (or the Releases page)"
+
+fail $"releases/latest returned {rel.status} — the API refused the query, not a release state (an unpublished draft answers 404, and this is not one). Most often the unauthenticated rate limit on shared CI egress IPs: set GITHUB_TOKEN, or retry"

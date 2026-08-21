@@ -1,0 +1,7 @@
+# The [D:lf-output] law at the repo boundary: committed bytes CHECK OUT
+# as committed on every platform. Without this, a Windows runner's
+# autocrlf converts LF artifacts at checkout — and a currency gate that
+# byte-diffs a generated file against its committed copy (reference.json)
+# fails on CR bytes weir never emitted. eol=lf overrides autocrlf; auto
+# leaves binaries untouched.
+* text=auto eol=lf

@@ -1,5 +1,54 @@
 # Spike Notes
 
+## the fourth LF surface: a formatter's embedded newlines (2026-08-21)
+
+Windows e2e failed the reference-currency gate: the docs-json dump
+byte-differed from the committed LF file. Third CRLF appearance this
+session, and a genuinely new surface for [D:lf-output] — the startup
+NewLine gates cover streams, but Utf8JsonWriter with Indented=true
+bakes Environment.NewLine INSIDE the payload string, data before it
+reaches any gated writer. Console.WriteLine then added a fourth CR at
+the tail. NewLine="\n" at the writer options plus Write("..."+"\n")
+closes both; Linux bytes provably unchanged (diff against the
+committed file is empty), so only the Windows output moves.
+
+The writer fix was right and insufficient: Windows failed again,
+and the instrumented gate (the diff now prints on failure) showed
+1728 lines differing by exactly one CR each — on the COMMITTED side.
+The fifth surface is git itself: the runner image sets autocrlf=true,
+so the checkout converted the LF artifact before the diff ever ran.
+That also dissolves the pre-fix puzzle: the writer's indents were
+CRLF (matching the converted file) but the WriteLine tail had already
+been flipped to LF by the startup redirected-stdout gate — the
+pre-fix diff was one byte on the last line. .gitattributes
+`* text=auto eol=lf` closes it (every blob was already LF, no
+binaries, so renormalize was a no-op — verified before committing).
+
+The pattern across all five surfaces: the law is stated once, but
+everything that *composes or rewrites* line endings (WriteLine,
+StreamWriter, a child's stdin writer, an indenting serializer, and
+git's own checkout) defaults to platform behavior independently —
+each must be caught at its own site, and only a byte-equality
+comparison on Windows ever catches one. The gate now prints its diff
+on failure precisely because the silent version cost two rounds of
+armchair theorizing about which side held the CR.
+
+## the repair that was the bug, and the pins that met Windows (2026-08-21)
+
+The user asked whether the path teachings should suggest Path.under
+rather than Path.combine, and the probe answered harder than the
+question: Path.combine root "/*" RETURNS /* — absolute-second-wins
+means the message's own mechanical repair, applied to its canonical
+trigger, was the Steam bug. Path.under raises on the same input,
+naming the escape. Both teachings now route to under; combine keeps
+its member doc (it is the right tool for controlled joins — the
+control/confine split SECURITY already states).
+
+Windows then caught the pins themselves: FParsec wraps messages with
+Environment.NewLine, so the wrap-point byte pins held \n against a
+\r\n reality. One Replace normalizes; the pin that exists to catch
+drift caught its own platform assumption first.
+
 ## the like-for-like request found the hole (2026-08-21)
 
 Making the hero mirror Steam exactly meant writing `rm -rf

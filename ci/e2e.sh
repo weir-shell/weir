@@ -4297,12 +4297,12 @@ errout=$(printf 'echo --flag="quoted v"
 echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-quote teaching: $errout"
 # a PATH-shaped word gets the PATH hint, not the flag hint [D:argv-splat]:
 # the space repair splits one path into two args, so the message leads with
-# interpolation and Path.combine (the homepage hero quotes this exact case)
+# interpolation and Path.under (the confining join — combine would follow an escaping tail)
 errout=$(printf 'let build = "b"
 rm -rf ./tt3/$build
 ' | checkPiped 2>&1) && fail "mid-word path splice must reject"
 echo "$errout" | grep -qF "cannot join a path under construction" || fail "path splice says path, not word: $errout"
-echo "$errout" | grep -qF "Path.combine" || fail "path splice names Path.combine: $errout"
+echo "$errout" | grep -qF "Path.under" || fail "path splice names Path.under: $errout"
 # the spaced spelling stays legal (one argv word each)
 out=$(printf 'let f = "x.txt"
 echo --file $f
@@ -6101,8 +6101,16 @@ echo "e2e ok: install missing-checksum entry is named; present entry verifies"
 # stale (the grammar-manifest currency pattern, applied to docs).
 refdump=$(mkweirtmp)
 "$BIN" docs-json > "$refdump/reference.json"
-diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" > /dev/null \
-    || fail "site/src/data/reference.json is stale — regenerate: weir docs-json > site/src/data/reference.json"
+if ! diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" > /dev/null; then
+    # show WHAT differs before failing — a platform-byte mismatch and a
+    # stale dump need different repairs, and a silent diff hides which
+    echo "--- sizes: dump=$(wc -c < "$refdump/reference.json") committed=$(wc -c < "$ROOT/site/src/data/reference.json")"
+    echo "--- first differing bytes (cmp -l, octal):"
+    cmp -l "$refdump/reference.json" "$ROOT/site/src/data/reference.json" | head -5 || true
+    echo "--- diff head:"
+    diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" | head -40 || true
+    fail "site/src/data/reference.json differs from this binary's dump — content drift means regenerate (weir docs-json > site/src/data/reference.json); byte-only drift (CR bytes above) means a platform newline leak [D:lf-output]"
+fi
 echo "e2e ok: reference dump current (docs-json == committed site data)"
 
 # ---- the homepage quotes the compiler [D:hero] ----------------------------

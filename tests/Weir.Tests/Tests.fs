@@ -7567,9 +7567,11 @@ let agentFindingsTests =
               // change must move the homepage in the same commit
               match Weir.Parser.parseLine cmdResolver "rm -rf $steamroot/*" with
               | Error msg ->
+                  // Replace: FParsec wraps with Environment.NewLine — Windows
+                  // delivers \r\n and a \n-pinned EndsWith missed
                   Expect.isTrue
-                      (msg.TrimEnd().EndsWith
-                          "argv words do not concatenate — adjacent pieces would each become their OWN\nargument (`$root/*` would pass `/*` separately; `--flag=\"v\"` would pass\n`--flag=` separately). Build one word with an interpolated arg (`$\"{root}/*\"`,\n`$\"--flag={v}\"`), quote the whole word, or use `Path.combine dir name` for a\nfilesystem path")
+                      (msg.Replace("\r\n", "\n").TrimEnd().EndsWith
+                          "argv words do not concatenate — adjacent pieces would each become their OWN\nargument (`$root/*` would pass `/*` separately; `--flag=\"v\"` would pass\n`--flag=` separately). Build one word with an interpolated arg (`$\"{root}/*\"`,\n`$\"--flag={v}\"`), quote the whole word, or use `Path.under dir name` for a\nfilesystem path (it refuses a result that escapes dir, where `Path.combine`\nwould follow it)")
                       $"the homepage's quoted refusal drifted: {msg}"
               | Ok _ -> failtest "the steam shape must refuse"
           }
@@ -7583,8 +7585,8 @@ let agentFindingsTests =
                   // byte-exact (the file:line prefix is the CLI formatter's,
                   // pinned by the e2e hero-currency cell)
                   Expect.isTrue
-                      (msg.TrimEnd().EndsWith
-                          "a splice cannot join a path under construction — spell it as one interpolated\narg (`$\"dir/{x}\"`), or `Path.combine dir name` for a filesystem path; a space\n(`dir/ $x`) would pass two arguments, not one path")
+                      (msg.Replace("\r\n", "\n").TrimEnd().EndsWith
+                          "a splice cannot join a path under construction — spell it as one interpolated\narg (`$\"dir/{x}\"`), or `Path.under dir name` for a filesystem path; a space\n(`dir/ $x`) would pass two arguments, not one path")
                       $"the hero's quoted refusal drifted from the shipped message: {msg}"
               | Ok _ -> failtest "the hero snippet must refuse"
           }

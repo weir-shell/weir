@@ -75,12 +75,18 @@ jobs:
       # which is the missing-publish-click surfacing itself.
       - name: release-published check
         run: ~/.local/bin/weir ci/release-published.weir
+        env:
+          # shared runner egress IPs exhaust the unauthenticated rate
+          # limit — the gates authenticate when the token is present
+          GITHUB_TOKEN: ${{ github.token }}
       # the served-installer staleness check [D:site-deploy]: weir.sh's
       # embedded tag must match releases/latest — catches a site dispatch
       # that never fired or failed quietly. Skips pre-first-release and
       # defers the unpublished-draft state to the check above.
       - name: site staleness check
         run: ~/.local/bin/weir ci/site-staleness.weir
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: e2e battery (conflict-marker gate at its top)
         run: ./ci/e2e.sh

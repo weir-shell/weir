@@ -194,7 +194,7 @@ print $"{w}"
   splice like `--file=$f` is a hard error (the prefix can't glue to
   the value); spell `--file $f` or an interp arg `$"--file={f}"`. A
   PATH-shaped word (`./dir/$f`) leads you to interpolation or
-  `Path.combine` instead — a space there would split one path into two
+  `Path.under` instead — a space there would split one path into two
   arguments. The SUFFIX side is equally fatal: argv pieces do not
   CONCATENATE, so `$root/*`, `--flag="v"`, `"x"y` and `pre(x)` all
   refuse ("argv words do not concatenate") — adjacent pieces would
@@ -207,7 +207,7 @@ echo --file=$f // a splice cannot join a word under construction
 
 ```weir-error
 let build = "b"
-echo ./tt3/$build // a path: the hint leads with interpolation / Path.combine
+echo ./tt3/$build // a path: the hint leads with interpolation / Path.under
 ```
 
 ```weir-error

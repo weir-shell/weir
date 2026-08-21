@@ -2767,7 +2767,7 @@ let private notGluedPiece: Parser<unit, unit> =
          anyChar
          >>. failFatallyAt
                  at
-                 "argv words do not concatenate — adjacent pieces would each become their OWN argument (`$root/*` would pass `/*` separately; `--flag=\"v\"` would pass `--flag=` separately). Build one word with an interpolated arg (`$\"{root}/*\"`, `$\"--flag={v}\"`), quote the whole word, or use `Path.combine dir name` for a filesystem path")
+                 "argv words do not concatenate — adjacent pieces would each become their OWN argument (`$root/*` would pass `/*` separately; `--flag=\"v\"` would pass `--flag=` separately). Build one word with an interpolated arg (`$\"{root}/*\"`, `$\"--flag={v}\"`), quote the whole word, or use `Path.under dir name` for a filesystem path (it refuses a result that escapes dir, where `Path.combine` would follow it)")
     <|> preturn ()
 
 let private spliceVar =
@@ -2781,7 +2781,7 @@ let private spliceVar =
          >>= fun isPath ->
              notMidWord (
                  if isPath then
-                     "a splice cannot join a path under construction — spell it as one interpolated arg (`$\"dir/{x}\"`), or `Path.combine dir name` for a filesystem path; a space (`dir/ $x`) would pass two arguments, not one path"
+                     "a splice cannot join a path under construction — spell it as one interpolated arg (`$\"dir/{x}\"`), or `Path.under dir name` for a filesystem path; a space (`dir/ $x`) would pass two arguments, not one path"
                  else
                      "a splice cannot join a word under construction — spell it with a space (`--flag $x`) or an interpolated arg (`$\"--flag={x}\"`)"
              ))
