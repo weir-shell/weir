@@ -6071,7 +6071,12 @@ gsums=$(awk "/<<'WEIR_SUMS'/{f=1;next} /^WEIR_SUMS\$/{f=0} f" "$gendir/install.s
 gexp=$(printf '%s\n' "$gsums" | grep " $name\$" | cut -d' ' -f1)
 gact=$($HASHTOOL "$gendir/$name" | cut -d' ' -f1)
 [ -n "$gexp" ] && [ "$gexp" = "$gact" ] || fail "embedded checksum ($gexp) must match the real binary ($gact)"
-echo "e2e ok: gen-install.weir — pins the tag, embeds SHA256SUMS, embedded checksum matches the binary"
+# each checksum appears EXACTLY ONCE — inside the heredoc. v0.0.2's
+# generator replaced a comment that MENTIONED the placeholder, planting
+# a second, bare copy of the sums at the top of the served script,
+# executed as commands before set -eu could object.
+[ "$(grep -cF "$gexp" "$gendir/install.sh")" -eq 1 ] || fail "a checksum appears outside the heredoc — the anchor matched a mention, not the placeholder line"
+echo "e2e ok: gen-install.weir — pins the tag, embeds SHA256SUMS once, embedded checksum matches the binary"
 
 # a missing SHA256SUMS entry is NAMED, not left to a formatting error — the
 # exact grep-guard the generated script runs over its embedded SUMS
