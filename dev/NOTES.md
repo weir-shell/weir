@@ -1,5 +1,24 @@
 # Spike Notes
 
+## the design pass: hierarchy, not a theme (2026-08-21)
+
+The user's "nothing says what weir is" and "needs a theme" were one
+finding wearing two coats: no typographic hierarchy, so nothing on
+the page had emphasis to spend on the category line. The plan's
+option (b) shipped — the category is the sub-headline, the tagline
+folded into the lede as "…and nothing runs until everything checks",
+which reads as the sentence's natural second half rather than a
+run-on (the fold-in survived; no third line needed).
+
+Tokens over taste: five type sizes, five spacing steps, the existing
+accent used thrice (links, h1 rule, copy buttons), and one code
+treatment that finally gives bare pre blocks a background and border
+— the same defect the readability rider named for inline code, one
+level up. The install pair got a bounded container so the call to
+action reads as a block, not prose. Cold read still owed: whether a
+stranger can say what weir is in five seconds is the one check that
+cannot be self-assessed.
+
 ## the fourth LF surface: a formatter's embedded newlines (2026-08-21)
 
 Windows e2e failed the reference-currency gate: the docs-json dump
