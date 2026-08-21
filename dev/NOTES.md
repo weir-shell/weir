@@ -1,5 +1,24 @@
 # Spike Notes
 
+## the fourth LF surface: a formatter's embedded newlines (2026-08-21)
+
+Windows e2e failed the reference-currency gate: the docs-json dump
+byte-differed from the committed LF file. Third CRLF appearance this
+session, and a genuinely new surface for [D:lf-output] — the startup
+NewLine gates cover streams, but Utf8JsonWriter with Indented=true
+bakes Environment.NewLine INSIDE the payload string, data before it
+reaches any gated writer. Console.WriteLine then added a fourth CR at
+the tail. NewLine="\n" at the writer options plus Write("..."+"\n")
+closes both; Linux bytes provably unchanged (diff against the
+committed file is empty), so only the Windows output moves.
+
+The pattern across all four surfaces: the law is stated once, but
+every API that *composes* line endings (WriteLine, StreamWriter, a
+child's stdin writer, now an indenting serializer) defaults to
+Environment.NewLine independently — each one must be caught at its
+own construction site, and only a byte-equality pin on Windows ever
+catches them.
+
 ## the repair that was the bug, and the pins that met Windows (2026-08-21)
 
 The user asked whether the path teachings should suggest Path.under
