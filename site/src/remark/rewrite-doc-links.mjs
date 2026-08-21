@@ -8,6 +8,7 @@
 // Rule 3 covers DECISIONS.md (the maintainers' ledger — 557KB of index
 // rows is not a docs page), SECURITY.md, tests/fidelity/divergences.md:
 // real files a reader may want, just not site pages.
+import { readdirSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,7 +25,31 @@ const RENDERED = new Set([
   "docs/LEXICON.md",
   "docs/editors.md",
   "docs/repl.md",
+  "docs/tooling.md",
+  "docs/cli.md",
+  "docs/signatures.md",
+  "docs/schemas.md",
+  "docs/project.md",
+  "docs/configuration.md",
 ]);
+
+// the mirror is CHECKED, not commented: a docs page the glob renders but
+// this set does not know would silently GitHub-link — the drift mode the
+// guide reorder hit with repl.md. Throws at build, both directions.
+const EXCLUDED = new Set(["docs/DECISIONS.md", "docs/SEMANTICS.md"]);
+const onDisk = new Set(
+  readdirSync(resolve(repoRoot, "docs"))
+    .filter((f) => f.endsWith(".md"))
+    .map((f) => `docs/${f}`),
+);
+for (const f of onDisk) {
+  if (!RENDERED.has(f) && !EXCLUDED.has(f))
+    throw new Error(`rewrite-doc-links: '${f}' is rendered by content.config but missing from RENDERED — its links would silently point at GitHub`);
+}
+for (const f of RENDERED) {
+  if (!onDisk.has(f))
+    throw new Error(`rewrite-doc-links: RENDERED lists '${f}' but docs/ has no such file`);
+}
 
 const slugOf = (repoPath) =>
   repoPath.replace(/^docs\//, "").replace(/\.md$/, "").toLowerCase();

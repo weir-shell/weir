@@ -573,14 +573,12 @@ cm |> to yaml |> print
 ```
 
 A `yaml` block can name a vendored JSON schema on its marker line
-(`yaml schema=k8s-service` — add one with `weir add schema <url>
---as <name>`; for k8s use the `-standalone-strict` variants, whose
-`additionalProperties: false` is what makes unknown-field checking
-fire). The boundary, stated beside the success so it is not
-over-read: a spliced `int` checks against `integer`; a spliced
-`string` against a `pattern` or `enum` constraint does NOT; and
-`for`-generated content is structurally unchecked — the schema
-validates what the checker can see.
+(`yaml schema=k8s-service`), and the checker validates the
+template's structure before line one runs — within a stated
+boundary: the schema validates what the checker can see, and
+`for`-generated content is structurally unchecked. Vendoring
+(`weir add schema`), the lock, and the full boundary live in
+[schemas.md](schemas.md).
 
 Nonzero exit raises when the stream is forced. To inspect instead of
 raise, make the run data:
@@ -1422,13 +1420,12 @@ battery holds the runnable truth):
     bicep build --outfile x.json
 
 A generated signature is PARTIAL — unknown flags warn, because a
-scraped surface may be incomplete. Verify it by hand, add
-`let exhaustive = true`, and unknown flags become errors. The
-signature records the tool's verbatim `--version`; `weir verify`
-compares it against the installed binary (exact match — patch churn
-is handled by regenerating, and an empty diff is the useful signal).
-`weir check` never runs the tool, so checking works for tools that
-only exist in CI.
+scraped surface may be incomplete; verified by hand and marked
+`exhaustive`, unknown flags become errors. `weir check` never runs
+the tool, so checking works for tools that only exist in CI. The
+full cycle — generate, verify, regenerate — and the `.weir/` tree it
+lives in are [signatures.md](signatures.md) and
+[project.md](project.md).
 
 ## What a script can do, before it runs
 

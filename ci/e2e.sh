@@ -6113,6 +6113,16 @@ if ! diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" > /dev/
 fi
 echo "e2e ok: reference dump current (docs-json == committed site data)"
 
+# ---- the CLI page is byte-pinned against --help ---------------------------
+# docs/cli.md quotes the usage block verbatim; a new subcommand or flag
+# must move the page in the same commit as the binary.
+cliusage=$(mkweirtmp)
+awk '/^```text$/{f++; next} /^```$/{if(f==1)exit} f==1' "$ROOT/docs/cli.md" > "$cliusage/page.txt"
+"$BIN" --help > "$cliusage/help.txt"
+diff "$cliusage/page.txt" "$cliusage/help.txt" \
+    || fail "docs/cli.md's usage block differs from 'weir --help' — update the page (or the binary's usage string) so they agree"
+echo "e2e ok: docs/cli.md usage block == weir --help"
+
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned
 # here against LIVE runs so the homepage cannot go stale while green (the
