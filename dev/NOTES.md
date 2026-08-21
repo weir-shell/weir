@@ -12,12 +12,26 @@ the tail. NewLine="\n" at the writer options plus Write("..."+"\n")
 closes both; Linux bytes provably unchanged (diff against the
 committed file is empty), so only the Windows output moves.
 
-The pattern across all four surfaces: the law is stated once, but
-every API that *composes* line endings (WriteLine, StreamWriter, a
-child's stdin writer, now an indenting serializer) defaults to
-Environment.NewLine independently — each one must be caught at its
-own construction site, and only a byte-equality pin on Windows ever
-catches them.
+The writer fix was right and insufficient: Windows failed again,
+and the instrumented gate (the diff now prints on failure) showed
+1728 lines differing by exactly one CR each — on the COMMITTED side.
+The fifth surface is git itself: the runner image sets autocrlf=true,
+so the checkout converted the LF artifact before the diff ever ran.
+That also dissolves the pre-fix puzzle: the writer's indents were
+CRLF (matching the converted file) but the WriteLine tail had already
+been flipped to LF by the startup redirected-stdout gate — the
+pre-fix diff was one byte on the last line. .gitattributes
+`* text=auto eol=lf` closes it (every blob was already LF, no
+binaries, so renormalize was a no-op — verified before committing).
+
+The pattern across all five surfaces: the law is stated once, but
+everything that *composes or rewrites* line endings (WriteLine,
+StreamWriter, a child's stdin writer, an indenting serializer, and
+git's own checkout) defaults to platform behavior independently —
+each must be caught at its own site, and only a byte-equality
+comparison on Windows ever catches one. The gate now prints its diff
+on failure precisely because the silent version cost two rounds of
+armchair theorizing about which side held the CR.
 
 ## the repair that was the bug, and the pins that met Windows (2026-08-21)
 
