@@ -6096,4 +6096,67 @@ diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" > /dev/null 
     || fail "site/src/data/reference.json is stale — regenerate: weir docs-json > site/src/data/reference.json"
 echo "e2e ok: reference dump current (docs-json == committed site data)"
 
+# ---- the homepage quotes the compiler [D:hero] ----------------------------
+# site/src/pages/index.astro quotes four outputs verbatim; all are pinned
+# here against LIVE runs so the homepage cannot go stale while green (the
+# docs gate asserts executability, not output). The splice refusal's
+# message text is also byte-pinned in Tests.fs. --can file:lines are
+# included deliberately: fuzz.weir drift must move the homepage in the
+# same commit.
+herodir=$(mkweirtmp)
+# beat 1: the misspelled command refuses at RUN, before anything executes
+cat > "$herodir/release.weir" <<'WEOF'
+type Cli = {
+    /// print what would happen, upload nothing
+    dryRun: bool
+}
+
+let cli = Args.load Cli
+tar czf bundle.tar.gz dist/
+rsnyc -av bundle.tar.gz backup:/srv/dist
+WEOF
+b1=$(cd "$herodir" && "$BIN" release.weir 2>&1) && fail "the beat-1 tool must refuse"
+echo "$b1" | grep -qF "unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c" || fail "beat-1 refusal drifted: $b1"
+[ ! -e "$herodir/bundle.tar.gz" ] || fail "beat 1's money line is false — tar RAN before the refusal"
+# beat 2: --help derived from the record, quoted exactly
+cat > "$herodir/deploy.weir" <<'WEOF'
+type Cli = {
+    /// print what would happen, deploy nothing
+    dryRun: bool
+
+    /// the environment to deploy to
+    target: string
+
+    /// wait this long for the health check
+    timeout: Option<Duration>
+}
+
+let cli = Args.load Cli
+print $"deploying to {cli.target} (dry-run: {cli.dryRun})"
+WEOF
+b2=$(cd "$herodir" && "$BIN" deploy.weir --help 2>&1) || true
+for line in \
+    "  -d, --dry-run               print what would happen, deploy nothing" \
+    "      --target <string>       required — the environment to deploy to" \
+    "      --timeout               optional — wait this long for the health check"; do
+    echo "$b2" | grep -qF "$line" || fail "beat-2 --help drifted — update index.astro; missing: $line"
+done
+# the splice refusal (below the fold): CLI framing + tail
+printf 'let build = "old"\nrm -rf ./tt3/$build\n' > "$herodir/steam.weir"
+herr=$(cd "$herodir" && "$BIN" check steam.weir 2>&1) && fail "the splice snippet must refuse"
+echo "$herr" | grep -qF "steam.weir:2:14: error [parse]: a splice cannot join a path under construction" || fail "splice refusal framing drifted: $herr"
+echo "$herr" | grep -qF "would pass two arguments, not one path" || fail "splice refusal tail drifted: $herr"
+# the --can quote — RELATIVE path, as the homepage shows it
+hcan=$(cd "$ROOT" && "$BIN" check --can tools/fuzz.weir 2>&1) || fail "hero --can run failed: $hcan"
+for line in \
+    "tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):" \
+    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:69:5" \
+    "File.read (path not statically known)  tools/fuzz.weir:62:20" \
+    "within tmp (a temporary directory)  tools/fuzz.weir:44:1" \
+    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:51:49" \
+    "fail  tools/fuzz.weir:65:9"; do
+    echo "$hcan" | grep -qF "$line" || fail "the homepage's --can quote drifted — update index.astro; missing: $line"
+done
+echo "e2e ok: homepage hero currency (beat-1 refusal + tar-never-ran, beat-2 --help, the splice refusal, the --can quote — all match live runs)"
+
 echo "e2e battery: all green"
