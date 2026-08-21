@@ -201,6 +201,42 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     predictability bar.
   </p>
 
+  <h2>Provenance</h2>
+  <p>
+    weir was written almost entirely by an AI agent, directed by one
+    person through plans, reviews and rulings — about two months, part
+    time. That is a statement about economics, not capability: a
+    language like this was always possible, and never affordable —
+    three or four years of a non-specialist's evenings, or two months.
+    The design risk was compressed the same way: weir does not invent
+    a language. It selects from F#, which works, and adds the
+    shell-specific parts.
+  </p>
+  <p>What makes that checkable rather than a claim:</p>
+  <ul>
+    <li>every fenced example in the docs executes in CI, and
+      error-demonstrating blocks must <em>fail</em></li>
+    <li>every shipped module member is asserted present in the rule
+      file — the docs' completeness is a checked property, not a
+      hope</li>
+    <li>an F# fidelity oracle referees every divergence claim through
+      the same checker the runner uses</li>
+    <li>the parser's recursion graph is enumerated — a new unguarded
+      axis is a CI failure, not a review finding</li>
+    <li>an external referee pushes eighty hostile payloads through
+      PyYAML and Python's <code>json</code>, because weir refereeing
+      its own output missed four defects</li>
+    <li>five adversarial reviews, findings and all, in the
+      <a href="https://github.com/weir-shell/weir/blob/main/docs/DECISIONS.md">public
+      ledger</a></li>
+  </ul>
+  <p>
+    <strong>Don't trust it; check it.</strong> <code>git clone</code>
+    and <code>./ci/local.sh</code> run the whole battery. The longer
+    story — what broke, what the instruments missed, and what still
+    needed a human — is <a href="/docs/method/">The method</a>.
+  </p>
+
   <h2>Learn more</h2>
   <ul>
     <li><a href="/docs/guide/">The guide</a> — start here; every example runs in CI.</li>
