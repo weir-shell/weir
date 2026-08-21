@@ -1,5 +1,45 @@
 # Spike Notes
 
+## provenance shipped as economics, and the receipts got audited (2026-08-21)
+
+The provenance section survived its own discipline: every receipt was
+verified against the live tree before the copy shipped, and one was
+corrected by the verification — the interop referee runs eighty
+payloads, not the hundred the plan remembered. A provenance section
+citing a stale gate would be the worst possible home for a stale
+claim, so the audit was the work.
+
+The method piece landed as docs/METHOD.md through the existing
+pipeline. Writing it was mostly transcription — the ledger already
+held the seven instrument failures, the zero-needs-a-nonzero rule,
+the fired triggers, and the mispricings; the page's one new synthesis
+is the closing boundary line: the agent built the system, the human
+built the judgement the system was built inside.
+
+## the hero reframed mid-build, and the probes carried it (2026-08-21)
+
+The catastrophe pitch became a maintenance pitch halfway through — the
+author's own story (PowerShell at tool scale, F# scripts' weight,
+Nushell's type gap) leads, and Steam/pgpool moved below the fold as
+the predictability illustration. The material survived the reframe
+because none of it was prose: probes, refusals, and pins move; only
+the framing was rewritten.
+
+The probes corrected the copy twice before it shipped. A missing
+command is a check-time WARNING (uninstalled tools stay editable) and
+a RUN-time refusal — so beat 1 demonstrates the run, and its money
+line is asserted by the gate: the e2e cell checks that tar's output
+file does not exist after the refusal. And my first --can pin failed
+against my own cell — the cell ran --can with an absolute path while
+the homepage quotes relative file:lines. The pin caught its author
+before it caught anyone else, which is the best first catch a pin can
+have.
+
+One deliberate flag for review: the "Why not the alternatives"
+section is written in the author's first person, good-and-bad per
+alternative. The rider asked whether it reads honest rather than
+defensive — that judgement is the maintainer's, not mine.
+
 ## the image ran for the first time and named a missing symbol (2026-08-21)
 
 GLIBC_2.38 not found — the release builds on ubuntu-24.04 and the

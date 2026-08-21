@@ -1,33 +1,278 @@
 ---
-// SKELETON landing page [D:site-skeleton]: enough to prove the pipeline
-// (an executable-true weir snippet through the shared grammar, the pinned
-// install line, the docs links). The real hero/homepage is its own later
-// work — content, not wiring.
+// The hero [D:hero]: the maintenance story, told in three beats that
+// each answer one alternative — bash/PowerShell/Nushell (the check is
+// the test), PowerShell at tool scale (a real CLI, free), F# scripts
+// (one static binary). The catastrophe material (splice/Steam/pgpool)
+// illustrates "predictable" BELOW the fold; --can is a second-visit
+// feature and sits below too. Every quoted output on this page comes
+// from a run of the shipped binary and is pinned (unit byte-pin for the
+// splice refusal; the e2e hero-currency cell for everything quoted) —
+// never the docs gate, which asserts executability, not output.
 import Base from "../layouts/Base.astro";
+import { Code } from "astro:components";
+import { readFileSync } from "node:fs";
+
+const weirGrammar = JSON.parse(
+  readFileSync(
+    new URL("../../../editors/vscode/syntaxes/weir.tmLanguage.json", import.meta.url),
+    "utf8",
+  ),
+);
+
+const beat1Weir = `type Cli = {
+    /// print what would happen, upload nothing
+    dryRun: bool
+}
+
+let cli = Args.load Cli
+tar czf bundle.tar.gz dist/
+rsnyc -av bundle.tar.gz backup:/srv/dist`;
+
+// verbatim from running the script above (v0.0.3) — e2e-pinned
+const beat1Refusal = `release.weir:8:1: parse error:
+rsnyc -av bundle.tar.gz backup:/srv/dist
+^
+unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c`;
+
+const beat2Weir = `type Cli = {
+    /// print what would happen, deploy nothing
+    dryRun: bool
+
+    /// the environment to deploy to
+    target: string
+
+    /// wait this long for the health check
+    timeout: Option<Duration>
+}
+
+let cli = Args.load Cli`;
+
+// verbatim from \`weir deploy.weir --help\` (v0.0.3) — e2e-pinned
+const beat2Help = `usage: [flags]
+  -d, --dry-run               print what would happen, deploy nothing
+      --target <string>       required — the environment to deploy to
+      --timeout               optional — wait this long for the health check`;
+
+const spliceWeir = `let build = "old"
+rm -rf ./tt3/$build`;
+
+// verbatim from \`weir check\` (v0.0.3) — byte-pinned in Tests.fs + e2e
+const spliceRefusal = `steam.weir:2:14: error [parse]: a splice cannot join a path under construction — spell it as one interpolated
+arg (\`$"dir/{x}"\`), or \`Path.combine dir name\` for a filesystem path; a space
+(\`dir/ $x\`) would pass two arguments, not one path`;
+
+const steamBash = `# figure out the absolute path to the script being run
+STEAMROOT="$(cd "\${0%/*}" && echo $PWD)"
+
+# Scary!
+rm -rf "$STEAMROOT/"*`;
+
+// verbatim from \`weir check --can tools/fuzz.weir\` (v0.0.3) — e2e-pinned
+const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):
+  runs:
+    git  tools/fuzz.weir:23:12
+    ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:69:5
+    date  tools/fuzz.weir:36:15
+    dotnet  tools/fuzz.weir:56:56
+  reads:
+    File.read (path not statically known)  tools/fuzz.weir:62:20
+  writes:
+    within tmp (a temporary directory)  tools/fuzz.weir:44:1
+  environment:
+    reads WEIR_FUZZ_STRICT_SPANS (Env.get)  tools/fuzz.weir:40:14
+    sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:51:49
+  terminates:
+    fail  tools/fuzz.weir:65:9`;
 ---
 
 <Base>
-  <h1>weir — a typed shell</h1>
+  <h1>For scripts that became tools.</h1>
+  <p class="sub">
+    Typed shell scripting that checks the whole file — every command
+    included — before anything runs. One static binary. No runtime, no
+    compile step, the same on Linux, macOS and Windows.
+  </p>
+  <p class="tagline"><strong>Nothing runs until everything checks.</strong></p>
+
+  <h2>The check is the test</h2>
   <p>
-    A typed shell scripting language inspired by F#. Shell commands and
-    typed expressions share one syntax, and the whole file typechecks —
-    PATH lookups included — before anything runs: a broken script fails
-    up front instead of halfway through its side effects.
+    A small release tool: a typed flag, two commands. One of them is
+    misspelled.
+  </p>
+  <Code code={beat1Weir} lang={weirGrammar} theme="github-dark" />
+  <p>Run it:</p>
+  <pre class="refusal">{beat1Refusal}</pre>
+  <p>
+    <strong>Nothing ran.</strong> The bundle was never created, nothing
+    was uploaded, no half-finished state — weir resolves every command
+    name and checks every type in the file before executing line one.
+    No other scripting language catches a misspelled command at all.
+  </p>
+
+  <h2>A real CLI, free</h2>
+  <p>Declare the shape; the interface is derived.</p>
+  <Code code={beat2Weir} lang={weirGrammar} theme="github-dark" />
+  <pre class="report">{beat2Help}</pre>
+  <p>
+    <code>dryRun</code> became <code>--dry-run</code> with an
+    unambiguous <code>-d</code>; the <code>///</code> docs became the
+    help text. You did not write an argument parser, and you cannot
+    forget to update <code>--help</code>. Unknown flags, missing
+    requireds and unparseable values arrive together, in one boundary
+    error, before any effect runs.
   </p>
 
   <h2>Install</h2>
   <pre><code>curl -fsSL https://weir.sh/install.sh | sh</code></pre>
   <p>
-    Windows: <code>irm https://weir.sh/install.ps1 | iex</code> — one
-    static binary, no runtime. The script is generated per release with
-    that release's checksums baked in;
-    <a href="/docs/install/">docs/INSTALL</a> has the details.
+    Windows: <code>irm https://weir.sh/install.ps1 | iex</code> — or
+    <code>docker run --rm -it ghcr.io/weir-shell/weir</code>. One
+    static binary: no SDK, no restore step, no first-run compile, no
+    cache to get wrong. <a href="/docs/install/">docs/INSTALL</a> has
+    the details.
+  </p>
+
+  <h2>Predictable, illustrated</h2>
+  <p>
+    Two bash mechanisms have deleted real machines: an unquoted
+    variable <em>splitting</em> into words, and a path <em>glued</em>
+    from pieces that came apart. pgpool-II was patching the first by
+    hand in review as recently as September 2025 — quoting variables
+    in an <code>rm</code> so an empty expansion could not widen it.
+    Valve shipped the second in 2015:
+  </p>
+  <div class="hero-band">
+    <div class="hero-pair">
+      <div class="hero-cell">
+        <p class="hero-label">steam.sh, shipped:</p>
+        <Code code={steamBash} lang="bash" theme="github-dark" />
+        <p class="hero-caption">
+          When the Steam folder was moved, <code>&#36;&#123;0%/*&#125;</code>
+          came back <em>empty</em> — not unset, empty — and the last line
+          became <code>rm -rf /*</code>. It deleted everything users
+          owned, <a href="https://github.com/ValveSoftware/steam-for-linux/issues/3671">mounted
+          backup drives included</a>.
+        </p>
+      </div>
+      <div class="hero-cell">
+        <p class="hero-label">The same shape, in weir:</p>
+        <Code code={spliceWeir} lang={weirGrammar} theme="github-dark" />
+        <pre class="refusal">{spliceRefusal}</pre>
+      </div>
+    </div>
+  </div>
+  <p>
+    weir removes both ingredients, separately. A spliced value is
+    always exactly one argv word — splitting is not a thing that can
+    happen, quoted or not. And a path glued from pieces is refused at
+    check time, unconditionally: <code>build</code> above is bound and
+    holds a value, and the shape is still unrepresentable. Neither is
+    a mistake weir detects; both are sentences weir cannot say.
+  </p>
+
+  <h2>See what a script can do before you run it</h2>
+  <p>
+    Command names are literal and nothing expands inside argv, so the
+    set of things a script can reach is statically knowable — and
+    <code>weir check --can</code> reports it, with a source line for
+    every claim:
+  </p>
+  <pre class="report">{canReport}</pre>
+
+  <h2>Why not the alternatives</h2>
+  <p class="hero-caption">In the author's words.</p>
+  <p>
+    <strong>PowerShell</strong> was fine for small scripts. At tool
+    scale it got hard to maintain — the quirks compound, and it is not
+    typed where it counts.
+  </p>
+  <p>
+    <strong>F# scripts</strong> had the types — weir is F#-shaped
+    because F# scripting was the closest thing that worked. What did
+    not work: compilation times, caching that is hard to get right,
+    wrappers to make scripting fit the task, CLR bloat in the
+    language, a runtime dependency — and I needed the
+    <em>scripts</em> to behave identically in Linux CI and on
+    macOS/Windows dev machines, not just the platform to exist there.
+  </p>
+  <p>
+    <strong>Nushell</strong> is nice, but not strongly typed enough —
+    the type system is still being worked out, and it did not meet the
+    predictability bar.
+  </p>
+
+  <h2>Provenance</h2>
+  <p>
+    weir was written almost entirely by an AI agent, directed by one
+    person through plans, reviews and rulings — about two months, part
+    time. That is a statement about economics, not capability: a
+    language like this was always possible, and never affordable —
+    three or four years of a non-specialist's evenings, or two months.
+    The design risk was compressed the same way: weir does not invent
+    a language. It selects from F#, which works, and adds the
+    shell-specific parts.
+  </p>
+  <p>What makes that checkable rather than a claim:</p>
+  <ul>
+    <li>every fenced example in the docs executes in CI, and
+      error-demonstrating blocks must <em>fail</em></li>
+    <li>every shipped module member is asserted present in the rule
+      file — the docs' completeness is a checked property, not a
+      hope</li>
+    <li>an F# fidelity oracle referees every divergence claim through
+      the same checker the runner uses</li>
+    <li>the parser's recursion graph is enumerated — a new unguarded
+      axis is a CI failure, not a review finding</li>
+    <li>an external referee pushes eighty hostile payloads through
+      PyYAML and Python's <code>json</code>, because weir refereeing
+      its own output missed four defects</li>
+    <li>five adversarial reviews, findings and all, in the
+      <a href="https://github.com/weir-shell/weir/blob/main/docs/DECISIONS.md">public
+      ledger</a></li>
+  </ul>
+  <p>
+    <strong>Don't trust it; check it.</strong> <code>git clone</code>
+    and <code>./ci/local.sh</code> run the whole battery. The longer
+    story — what broke, what the instruments missed, and what still
+    needed a human — is <a href="/docs/method/">The method</a>.
   </p>
 
   <h2>Learn more</h2>
   <ul>
     <li><a href="/docs/guide/">The guide</a> — start here; every example runs in CI.</li>
+    <li><a href="/reference/">The reference</a> — the language and every module.</li>
     <li><a href="/docs/coming-from/">Coming from bash, PowerShell, Python…</a></li>
     <li><a href="/changelog/">Changelog</a></li>
   </ul>
 </Base>
+
+<style is:global>
+  .sub { font-size: 1.05rem; }
+  .tagline { font-size: 1.1rem; color: var(--muted); margin-top: -0.35rem; }
+  .hero-band {
+    width: min(72rem, calc(100vw - 2.5rem));
+    margin-left: 50%;
+    transform: translateX(-50%);
+  }
+  .hero-pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+    gap: 1.25rem;
+    align-items: start;
+  }
+  .hero-cell pre { margin-top: 0.35rem; }
+  .hero-label { margin-bottom: 0; color: var(--muted); font-size: 0.9rem; }
+  .hero-caption { font-size: 0.9rem; color: var(--muted); }
+  .refusal, .report {
+    background: #f6f8fa;
+    border: 1px solid var(--border);
+    border-left: 3px solid #b31d28;
+    color: #24292e;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    padding: 0.7rem 0.9rem;
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+  .report { border-left-color: var(--accent); }
+</style>

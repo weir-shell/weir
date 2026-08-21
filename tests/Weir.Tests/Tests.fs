@@ -120,7 +120,7 @@ let private forceSeq v =
     | v -> failtest $"expected a seq, got {formatValue v}"
 
 let private fakeExternals =
-    Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls"; "cat" ]
+    Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls"; "cat"; "rm" ]
 
 let private cmdResolver: Weir.Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n env.Values
@@ -7539,6 +7539,22 @@ let agentFindingsTests =
               match Weir.Parser.parseLine cmdResolver "echo $@\"x\"" with
               | Error msg -> Expect.isFalse (msg.Contains "splat") "the quote opener is not read as a splat"
               | Ok _ -> failtest "expected a parse error (the cell is parked)"
+          }
+          test "the homepage hero quotes the path-splice refusal EXACTLY [D:hero]" {
+              // the strongest pin for quoted output: byte-equality with the
+              // message the site shows — a wording change here must move the
+              // homepage in the same commit (site/src/pages/index.astro)
+              match Weir.Parser.parseLine cmdResolver "rm -rf ./tt3/$build" with
+              | Error msg ->
+                  // EndsWith: the parser frames the message with position
+                  // lines; the QUOTED text is the message itself, pinned
+                  // byte-exact (the file:line prefix is the CLI formatter's,
+                  // pinned by the e2e hero-currency cell)
+                  Expect.isTrue
+                      (msg.TrimEnd().EndsWith
+                          "a splice cannot join a path under construction — spell it as one interpolated\narg (`$\"dir/{x}\"`), or `Path.combine dir name` for a filesystem path; a space\n(`dir/ $x`) would pass two arguments, not one path")
+                      $"the hero's quoted refusal drifted from the shipped message: {msg}"
+              | Ok _ -> failtest "the hero snippet must refuse"
           }
           test "exitCode desugars to the exitCoded application [D:exit-reifiers]" {
               match Weir.Parser.parseLine cmdResolver "let rc = git push | exitCode" with
