@@ -1,5 +1,22 @@
 # Spike Notes
 
+## the CLI page could not be generated, and that was the finding (2026-08-21)
+
+The tooling plan's highest-value question — can the CLI reference
+render from --help the way module pages render from builtinDocs —
+answered no: hand-written match arms, hand-concatenated usage. The
+predicted cost was already on the books: the binary's own --help had
+drifted three arms behind the binary (add sig, check --can,
+--version). So the fix ran in the honest direction — complete the
+usage string in the binary, then byte-pin the docs page against it
+in e2e. A hand-written list that a gate diffs is generated-enough;
+a hand-written list nothing checks is how weir's own front door
+went stale.
+
+The .weir/ commit question needed no judgement call: the Contracts
+module header already ruled it (vendored = checked in; check never
+fetches), and the page just says so out loud.
+
 ## the guide learned to put the reader first (2026-08-21)
 
 The reorder rider's six findings shared one root: sections landed in
