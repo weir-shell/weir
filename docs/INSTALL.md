@@ -69,17 +69,37 @@ and compare against the `SHA256SUMS` line.
 
 ## Container image
 
-The same released binary, on distroless (amd64 + arm64):
+The same released binary, on distroless. Three forms:
 
 ```
+# the REPL — needs a tty
+docker run --rm -it ghcr.io/weir-shell/weir:latest
+
+# run a script from the current directory
 docker run --rm -v "$PWD:/w" -w /w ghcr.io/weir-shell/weir:latest script.weir
-docker run --rm -it ghcr.io/weir-shell/weir:latest     # the REPL
+
+# a one-liner
+docker run --rm ghcr.io/weir-shell/weir:latest -e 'print "hello"'
 ```
 
-`:latest` follows the latest published release (never a prerelease);
-pin `:v<tag>` to stay put. The image carries nothing but the binary —
-no shell, no package manager — so it runs scripts and the REPL, not
-`docker exec` sessions.
+Without `-it`, the bare form prints a prompt, reads end-of-file, and
+exits immediately — correct behaviour that looks broken. The REPL
+needs a terminal; give it one.
+
+Worth knowing:
+
+- `:latest` follows the latest published release, and never points at
+  a prerelease — the release flow enforces this; it is not a
+  convention.
+- One manifest covers amd64 and arm64 — nothing to choose.
+- The image runs as a non-root user (uid 65532). A script that writes
+  into a mounted volume inherits ordinary volume permissions.
+- There is no shell inside — no `docker run … sh`, and `docker exec`
+  has nothing to run. The image is the binary; that is the point.
+- The image digest carries signed build provenance:
+  `gh attestation verify oci://ghcr.io/weir-shell/weir:latest --repo weir-shell/weir`
+- It is not a build environment: no SDK, no source. The development
+  container is `ci/run.Dockerfile` in the repo — a different artifact.
 
 ## Unsigned binaries — the first-run dialogs
 
