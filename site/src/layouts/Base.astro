@@ -23,6 +23,18 @@ const { title } = Astro.props;
         --accent: #0b5fa5;
         --code-bg: #eef1f4;
         --border: #e1e4e8;
+        /* the type scale — five sizes, no arbitrary values per element */
+        --text-sm: 0.88rem;
+        --text-base: 1rem;
+        --text-lg: 1.125rem;
+        --text-xl: 1.35rem;
+        --text-2xl: 1.9rem;
+        /* the spacing scale — tighten within units, widen between them */
+        --space-1: 0.25rem;
+        --space-2: 0.5rem;
+        --space-3: 1rem;
+        --space-4: 1.75rem;
+        --space-5: 3rem;
       }
       * { box-sizing: border-box; }
       body {
@@ -35,6 +47,7 @@ const { title } = Astro.props;
         border-bottom: 1px solid var(--border);
         padding: 0.75rem 1.25rem;
         display: flex;
+        flex-wrap: wrap;   /* six links survive a narrow viewport */
         gap: 1.25rem;
         align-items: baseline;
       }
@@ -45,13 +58,19 @@ const { title } = Astro.props;
          matters more the denser the content */
       main { max-width: 68ch; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
       main a { color: var(--accent); }
+      /* the ONE code treatment — inline spans, blocks, install rows all
+         bound their code the same way: tinted, hairline-bordered, padded.
+         Highlighted blocks carry their theme background inline, which
+         wins over this tint; the border still bounds them. */
       pre {
         padding: 0.9rem 1.1rem;
         border-radius: 6px;
         overflow-x: auto;   /* long weir lines SCROLL, never wrap or bleed */
         max-width: 100%;
-        font-size: 0.88rem;
+        font-size: var(--text-sm);
         line-height: 1.55;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
       }
       code { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
       kbd {
@@ -72,7 +91,9 @@ const { title } = Astro.props;
         font-size: 0.875em;
       }
       h1, h2, h3 { line-height: 1.25; }
-      h2 { margin-top: 2.2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+      h1 { font-size: var(--text-2xl); }
+      h2 { font-size: var(--text-xl); margin-top: var(--space-5); border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+      h3 { font-size: var(--text-lg); }
       table { border-collapse: collapse; display: block; overflow-x: auto; }
       th, td { border: 1px solid var(--border); padding: 0.35rem 0.65rem; }
       blockquote { margin: 0; padding-left: 1rem; border-left: 3px solid var(--border); color: var(--muted); }
