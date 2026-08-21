@@ -1,5 +1,21 @@
 # Spike Notes
 
+## the image ran for the first time and named a missing symbol (2026-08-21)
+
+GLIBC_2.38 not found — the release builds on ubuntu-24.04 and the
+distroless base was a Debian behind. The ldd probe that chose the base
+answered the wrong question: it proved the binary is glibc-LINKED, not
+which glibc VERSION the base must carry, and nothing short of running
+the image could ask that one. Three live-only catches this release
+week (the SPA fallback, the planted checksums, this) — all three in
+surfaces every offline gate passed.
+
+The fix pattern matters more than the base bump: an image is packaging
+around the untouched release binary, so image.yml gained a dispatch
+rebuild — re-push :v0.0.3 on a working base, no v0.0.4 needed, while
+the release itself stays immutable. :latest on a rebuild follows
+releases/latest, never the dispatcher's whim.
+
 ## the first real install found what no fixture could (2026-08-20)
 
 v0.0.2's `curl weir.sh/install.sh | sh` worked — and printed six
