@@ -195,7 +195,10 @@ print $"{w}"
   the value); spell `--file $f` or an interp arg `$"--file={f}"`. A
   PATH-shaped word (`./dir/$f`) leads you to interpolation or
   `Path.combine` instead — a space there would split one path into two
-  arguments.
+  arguments. The SUFFIX side is equally fatal: argv pieces do not
+  CONCATENATE, so `$root/*`, `--flag="v"`, `"x"y` and `pre(x)` all
+  refuse ("argv words do not concatenate") — adjacent pieces would
+  each become their own argument, never one glued word.
 
 ```weir-error
 let f = "x"
@@ -205,6 +208,15 @@ echo --file=$f // a splice cannot join a word under construction
 ```weir-error
 let build = "b"
 echo ./tt3/$build // a path: the hint leads with interpolation / Path.combine
+```
+
+```weir-error
+let root = "r"
+echo $root/* // argv words do not concatenate — the tail would be its own argument
+```
+
+```weir-error
+echo --flag="quoted v" // the quoted part would be its own argument; quote the whole word
 ```
 - `+` on two unknown params cannot infer (int-or-string): anchor one
   side (`x + 0`) or take data in. All single-typing operators

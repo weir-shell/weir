@@ -53,13 +53,15 @@ const beat2Help = `usage: [flags]
       --target <string>       required — the environment to deploy to
       --timeout               optional — wait this long for the health check`;
 
-const spliceWeir = `let build = "old"
-rm -rf ./tt3/$build`;
+const spliceWeir = `let steamroot = Self.scriptPath |> Path.dir
+rm -rf $steamroot/*`;
 
-// verbatim from \`weir check\` (v0.0.3) — byte-pinned in Tests.fs + e2e
-const spliceRefusal = `steam.weir:2:14: error [parse]: a splice cannot join a path under construction — spell it as one interpolated
-arg (\`$"dir/{x}"\`), or \`Path.combine dir name\` for a filesystem path; a space
-(\`dir/ $x\`) would pass two arguments, not one path`;
+// verbatim from \`weir check\` — byte-pinned in Tests.fs + e2e
+const spliceRefusal = `steam.weir:2:18: error [parse]: argv words do not concatenate — adjacent pieces would each become their OWN
+argument (\`$root/*\` would pass \`/*\` separately; \`--flag="v"\` would pass
+\`--flag=\` separately). Build one word with an interpolated arg (\`$"{root}/*"\`,
+\`$"--flag={v}"\`), quote the whole word, or use \`Path.combine dir name\` for a
+filesystem path`;
 
 const steamBash = `# figure out the absolute path to the script being run
 STEAMROOT="$(cd "\${0%/*}" && echo $PWD)"
@@ -93,6 +95,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     compile step, the same on Linux, macOS and Windows.
   </p>
   <p class="tagline"><strong>Nothing runs until everything checks.</strong></p>
+  <pre class="install-line"><code>curl -fsSL https://weir.sh/install.sh | sh</code></pre>
 
   <h2>The check is the test</h2>
   <p>
@@ -147,10 +150,13 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
         <p class="hero-label">steam.sh, shipped:</p>
         <Code code={steamBash} lang="bash" theme="github-dark" />
         <p class="hero-caption">
-          When the Steam folder was moved, <code>&#36;&#123;0%/*&#125;</code>
-          came back <em>empty</em> — not unset, empty — and the last line
-          became <code>rm -rf /*</code>. It deleted everything users
-          owned, <a href="https://github.com/ValveSoftware/steam-for-linux/issues/3671">mounted
+
+          When the folder was moved, the <code>cd</code> inside the
+          substitution failed — and <code>&#36;(…)</code> came back
+          <em>empty</em>. Not unset: empty. <code>"$STEAMROOT/"*</code>
+          became <code>/*</code>, and the last line deleted everything
+          users owned,
+          <a href="https://github.com/ValveSoftware/steam-for-linux/issues/3671">mounted
           backup drives included</a>.
         </p>
       </div>
@@ -164,10 +170,15 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   <p>
     weir removes both ingredients, separately. A spliced value is
     always exactly one argv word — splitting is not a thing that can
-    happen, quoted or not. And a path glued from pieces is refused at
-    check time, unconditionally: <code>build</code> above is bound and
-    holds a value, and the shape is still unrepresentable. Neither is
-    a mistake weir detects; both are sentences weir cannot say.
+    happen, quoted or not. And gluing is not either:
+    <code>$steamroot/*</code> is refused at check time,
+    unconditionally — the pieces would be separate arguments, so the
+    shape is unrepresentable; building that word takes a deliberate
+    <code>$"&#123;steamroot&#125;/*"</code>. The root itself is the
+    second layer: <code>Self.scriptPath</code> is an absolute path by
+    construction, and taking its directory cannot fail — there is no
+    <code>cd</code>-and-echo substitution to quietly come back empty. Neither failure is a
+    mistake weir detects; both are sentences weir cannot say.
   </p>
 
   <h2>See what a script can do before you run it</h2>
@@ -249,6 +260,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 <style is:global>
   .sub { font-size: 1.05rem; }
   .tagline { font-size: 1.1rem; color: var(--muted); margin-top: -0.35rem; }
+  .install-line { margin: 0.75rem 0 1.5rem; }
   .hero-band {
     width: min(72rem, calc(100vw - 2.5rem));
     margin-left: 50%;

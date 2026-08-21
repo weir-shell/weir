@@ -1,5 +1,27 @@
 # Spike Notes
 
+## the like-for-like request found the hole (2026-08-21)
+
+Making the hero mirror Steam exactly meant writing `rm -rf
+$steamroot/*` — and weir accepted it, silently running two arguments,
+the second being `/*`. The law said whole-words everywhere it was
+stated; the guard only covered the prefix side. The homepage was one
+probe away from demonstrating a refusal the language did not make.
+
+The fix generalizes the prefix guard into one mechanism — a piece
+starts only after whitespace or a separator — gated per piece opener
+so pipes and closing parens stay untouched. The corpus answered the
+over-refusal question empirically: 1391 unit tests, every e2e cell,
+and 162 doc blocks pass unchanged, which also proves the repo itself
+never glued (any use would have been silently buggy already).
+
+Two precision notes that matter for the homepage. FParsec wraps long
+messages, so the byte pin pins the wrap points too. And the interp
+repair alone would NOT have saved Steam — an empty root interpolates
+to /* just as catastrophically; what saves the like-for-like is
+Self.scriptPath being absolute by construction. The caption says
+both layers, because the skeptical reader checks exactly that.
+
 ## provenance shipped as economics, and the receipts got audited (2026-08-21)
 
 The provenance section survived its own discipline: every receipt was

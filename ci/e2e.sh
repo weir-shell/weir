@@ -4286,6 +4286,15 @@ errout=$(printf 'let f = "x"
 echo --file=$f
 ' | checkPiped 2>&1) && fail "mid-word scalar splice must reject"
 echo "$errout" | grep -qF "cannot join a word under construction" || fail "mid-word scalar teaching: $errout"
+# argv pieces do not CONCATENATE [D:argv-concat]: the suffix side of the
+# whole-word law — before the guard, $root/* silently became TWO words
+errout=$(printf 'let root = "r"
+echo $root/*
+' | checkPiped 2>&1) && fail "glued tail must reject"
+echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-tail teaching: $errout"
+errout=$(printf 'echo --flag="quoted v"
+' | checkPiped 2>&1) && fail "glued quote must reject"
+echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-quote teaching: $errout"
 # a PATH-shaped word gets the PATH hint, not the flag hint [D:argv-splat]:
 # the space repair splits one path into two args, so the message leads with
 # interpolation and Path.combine (the homepage hero quotes this exact case)
@@ -6141,11 +6150,12 @@ for line in \
     "      --timeout               optional — wait this long for the health check"; do
     echo "$b2" | grep -qF "$line" || fail "beat-2 --help drifted — update index.astro; missing: $line"
 done
-# the splice refusal (below the fold): CLI framing + tail
-printf 'let build = "old"\nrm -rf ./tt3/$build\n' > "$herodir/steam.weir"
-herr=$(cd "$herodir" && "$BIN" check steam.weir 2>&1) && fail "the splice snippet must refuse"
-echo "$herr" | grep -qF "steam.weir:2:14: error [parse]: a splice cannot join a path under construction" || fail "splice refusal framing drifted: $herr"
-echo "$herr" | grep -qF "would pass two arguments, not one path" || fail "splice refusal tail drifted: $herr"
+# the concatenation refusal (below the fold) — the LIKE-FOR-LIKE steam
+# shape [D:argv-concat]: root from the script's own path, glued /*
+printf 'let steamroot = Self.scriptPath |> Path.dir\nrm -rf $steamroot/*\n' > "$herodir/steam.weir"
+herr=$(cd "$herodir" && "$BIN" check steam.weir 2>&1) && fail "the steam snippet must refuse"
+echo "$herr" | grep -qF "steam.weir:2:18: error [parse]: argv words do not concatenate" || fail "concat refusal framing drifted: $herr"
+echo "$herr" | grep -qF "filesystem path" || fail "concat refusal tail drifted: $herr"
 # the --can quote — RELATIVE path, as the homepage shows it
 hcan=$(cd "$ROOT" && "$BIN" check --can tools/fuzz.weir 2>&1) || fail "hero --can run failed: $hcan"
 for line in \
