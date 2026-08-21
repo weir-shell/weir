@@ -1,5 +1,21 @@
 # Spike Notes
 
+## the repair that was the bug, and the pins that met Windows (2026-08-21)
+
+The user asked whether the path teachings should suggest Path.under
+rather than Path.combine, and the probe answered harder than the
+question: Path.combine root "/*" RETURNS /* — absolute-second-wins
+means the message's own mechanical repair, applied to its canonical
+trigger, was the Steam bug. Path.under raises on the same input,
+naming the escape. Both teachings now route to under; combine keeps
+its member doc (it is the right tool for controlled joins — the
+control/confine split SECURITY already states).
+
+Windows then caught the pins themselves: FParsec wraps messages with
+Environment.NewLine, so the wrap-point byte pins held \n against a
+\r\n reality. One Replace normalizes; the pin that exists to catch
+drift caught its own platform assumption first.
+
 ## the like-for-like request found the hole (2026-08-21)
 
 Making the hero mirror Steam exactly meant writing `rm -rf
