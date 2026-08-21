@@ -125,7 +125,10 @@ let docsJson () : string =
     use ms = new MemoryStream()
 
     use w =
-        new System.Text.Json.Utf8JsonWriter(ms, System.Text.Json.JsonWriterOptions(Indented = true))
+        // LF on every platform [D:lf-output]: the dump is a generated,
+        // committed, diffed artifact — Indented's default newline is
+        // Environment.NewLine, which made the Windows dump byte-different
+        new System.Text.Json.Utf8JsonWriter(ms, System.Text.Json.JsonWriterOptions(Indented = true, NewLine = "\n"))
 
     let writeDocFields (d: Builtins.BuiltinDoc option) =
         match d with
