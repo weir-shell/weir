@@ -92,15 +92,26 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   <h1>For scripts that became tools.</h1>
   <p class="tagline"><strong>Nothing runs until everything checks.</strong></p>
   <p class="sub">
-    Typed shell scripting that checks the whole file — every command
-    included — before anything runs. One static binary. No runtime, no
-    compile step, the same on Linux, macOS and Windows.
+    <strong>weir is a typed shell-scripting language.</strong> Commands,
+    pipes and files, like bash — but the whole file is checked, every
+    command included, before anything runs. One static binary. No
+    runtime, no compile step, the same on Linux, macOS and Windows.
   </p>
-  <div class="install-line">
-    <pre><code id="install-cmd">curl -fsSL https://weir.sh/install.sh | sh</code></pre>
-    <button class="copy-btn" data-copy="install-cmd" aria-label="Copy install command" title="Copy">
-      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
-    </button>
+  <div class="install-lines">
+    <div class="install-line">
+      <span class="os">Linux · macOS</span>
+      <pre><code id="install-cmd">curl -fsSL https://weir.sh/install.sh | sh</code></pre>
+      <button class="copy-btn" data-copy="install-cmd" aria-label="Copy install command" title="Copy">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+      </button>
+    </div>
+    <div class="install-line">
+      <span class="os">Windows</span>
+      <pre><code id="install-cmd-win">irm https://weir.sh/install.ps1 | iex</code></pre>
+      <button class="copy-btn" data-copy="install-cmd-win" aria-label="Copy Windows install command" title="Copy">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+      </button>
+    </div>
   </div>
 
   <h2>The check is the test</h2>
@@ -266,11 +277,22 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 <style is:global>
   .sub { font-size: 1.05rem; }
   .tagline { font-size: 1.1rem; color: var(--muted); margin-top: -0.35rem; }
-  .install-line {
+  .install-lines {
     margin: 0.75rem 0 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .install-line {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+  .install-line .os {
+    color: var(--muted);
+    font-size: 0.8rem;
+    min-width: 6.5rem;
+    flex-shrink: 0;
   }
   .install-line pre { margin: 0; flex: 1; min-width: 0; }
   .copy-btn {
