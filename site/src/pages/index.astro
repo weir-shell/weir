@@ -90,12 +90,12 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 
 <Base>
   <h1>For scripts that became tools.</h1>
-  <p class="tagline"><strong>Nothing runs until everything checks.</strong></p>
+  <p class="what">weir is a typed shell-scripting language.</p>
   <p class="sub">
-    <strong>weir is a typed shell-scripting language.</strong> Commands,
-    pipes and files, like bash — but the whole file is checked, every
-    command included, before anything runs. One static binary. No
-    runtime, no compile step, the same on Linux, macOS and Windows.
+    Commands, pipes and files, like bash — with a compiler in front.
+    The whole file is checked, every command included, and nothing
+    runs until everything checks. One static binary: no runtime, no
+    compile step, the same on Linux, macOS and Windows.
   </p>
   <div class="install-lines">
     <div class="install-line">
@@ -275,18 +275,44 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 </Base>
 
 <style is:global>
-  .sub { font-size: 1.05rem; }
-  .tagline { font-size: 1.1rem; color: var(--muted); margin-top: -0.35rem; }
+  /* the hero's rhythm: headline+rule+category are ONE unit (tight),
+     the paragraph another, the install block a third — gaps group */
+  h1 { margin: var(--space-3) 0 0; }
+  h1::after {
+    content: "";
+    display: block;
+    width: 3.5rem;
+    height: 3px;
+    background: var(--accent);
+    border-radius: 2px;
+    margin-top: var(--space-2);
+  }
+  .what {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    margin: var(--space-2) 0 var(--space-4);
+  }
+  .sub { font-size: var(--text-base); margin: 0 0 var(--space-4); }
   .install-lines {
-    margin: 0.75rem 0 1.5rem;
+    margin: 0 0 var(--space-5);
+    padding: var(--space-3);
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
   .install-line {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+  /* inside the bounded block the rows drop their own chrome */
+  .install-line pre {
+    background: transparent;
+    border: none;
+    padding: 0.2rem 0;
   }
   .install-line .os {
     color: var(--muted);
@@ -294,11 +320,15 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     min-width: 6.5rem;
     flex-shrink: 0;
   }
+  @media (max-width: 520px) {
+    .install-line { flex-wrap: wrap; }
+    .install-line .os { flex-basis: 100%; min-width: 0; }
+  }
   .install-line pre { margin: 0; flex: 1; min-width: 0; }
   .copy-btn {
     border: 1px solid var(--border);
-    background: var(--code-bg);
-    color: var(--muted);
+    background: #fff;
+    color: var(--accent);
     border-radius: 6px;
     padding: 0.45rem 0.55rem;
     cursor: pointer;
