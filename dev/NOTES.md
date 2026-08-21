@@ -1,5 +1,20 @@
 # Spike Notes
 
+## Nord, and the two patches a bundled theme still needed (2026-08-21)
+
+The swap was the config line the rider promised, but "bundled" did not
+mean "done": the probe over every SKILL fence found weir's
+entity.name.type falling back to default white — Nord styles the
+.class child, never the parent — and arithmetic found stock comments
+at 2.44:1 on nord0, an accessibility REGRESSION from github-dark.
+Both fixed in one 25-line theme module; the grammar untouched, which
+was the rider's own test for whether the scope names were sound (they
+were — the gap was the theme's).
+
+Checking contrast by arithmetic before shipping beat eyeballing: the
+numbers token (nord15) at 4.41:1 is the one deliberate sub-AA
+survivor, named in the ledger rather than discovered later.
+
 ## the design pass: hierarchy, not a theme (2026-08-21)
 
 The user's "nothing says what weir is" and "needs a theme" were one
