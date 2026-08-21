@@ -91,7 +91,8 @@ Worth knowing:
 - `:latest` follows the latest published release, and never points at
   a prerelease — the release flow enforces this; it is not a
   convention.
-- One manifest covers amd64 and arm64 — nothing to choose.
+- One manifest covers amd64 and arm64 — nothing to choose. The whole
+  pull is ~17 MB compressed: the ~13 MB binary plus the distroless base.
 - The image runs as a non-root user (uid 65532). A script that writes
   into a mounted volume inherits ordinary volume permissions.
 - There is no shell inside — no `docker run … sh`, and `docker exec`
