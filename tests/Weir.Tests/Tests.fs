@@ -7540,10 +7540,42 @@ let agentFindingsTests =
               | Error msg -> Expect.isFalse (msg.Contains "splat") "the quote opener is not read as a splat"
               | Ok _ -> failtest "expected a parse error (the cell is parked)"
           }
-          test "the homepage hero quotes the path-splice refusal EXACTLY [D:hero]" {
-              // the strongest pin for quoted output: byte-equality with the
-              // message the site shows — a wording change here must move the
-              // homepage in the same commit (site/src/pages/index.astro)
+          test "argv pieces do not concatenate — every glued adjacency refuses [D:argv-concat]" {
+              // the suffix side of the whole-word law: before the guard,
+              // `$root/*` silently became TWO argv words. Each glued shape
+              // must refuse; the spaced/interpolated forms stay legal.
+              for glued in
+                  [ "echo $x/tail"
+                    "echo (x)/tail"
+                    "echo \"A\"/tail"
+                    "echo --flag=\"quoted v\""
+                    "echo pre(x)"
+                    "echo pre$\"i-{x}\"" ] do
+                  match Weir.Parser.parseLine cmdResolver glued with
+                  | Error msg ->
+                      Expect.stringContains msg "argv words do not concatenate" $"wrong refusal for {glued}: {msg}"
+                  | Ok _ -> failtest $"glued adjacency must refuse: {glued}"
+
+              // the legal neighbours: spaced, piped-unspaced, whole-quoted
+              for legal in [ "echo $x /tail"; "echo hi |grep hi"; "echo \"--flag=quoted v\"" ] do
+                  match Weir.Parser.parseLine cmdResolver legal with
+                  | Ok _ -> ()
+                  | Error msg -> failtest $"legal form refused: {legal}: {msg}"
+          }
+          test "the homepage quotes the concatenation refusal EXACTLY [D:argv-concat]" {
+              // byte-equality with the message the site shows — a wording
+              // change must move the homepage in the same commit
+              match Weir.Parser.parseLine cmdResolver "rm -rf $steamroot/*" with
+              | Error msg ->
+                  Expect.isTrue
+                      (msg.TrimEnd().EndsWith
+                          "argv words do not concatenate — adjacent pieces would each become their OWN\nargument (`$root/*` would pass `/*` separately; `--flag=\"v\"` would pass\n`--flag=` separately). Build one word with an interpolated arg (`$\"{root}/*\"`,\n`$\"--flag={v}\"`), quote the whole word, or use `Path.combine dir name` for a\nfilesystem path")
+                      $"the homepage's quoted refusal drifted: {msg}"
+              | Ok _ -> failtest "the steam shape must refuse"
+          }
+          test "the path-splice refusal text is pinned EXACTLY [D:splice-path-hint]" {
+              // byte-equality on a shipped teaching message (formerly the
+              // homepage quote; the hero now quotes [D:argv-concat]'s)
               match Weir.Parser.parseLine cmdResolver "rm -rf ./tt3/$build" with
               | Error msg ->
                   // EndsWith: the parser frames the message with position

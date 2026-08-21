@@ -957,7 +957,15 @@ and parens.
 
 Splice values into argv with `$name` or `(expr)`. A spliced value is
 always exactly one argv entry, never re-split — which is why there is
-no injection class to defend against.
+no injection class to defend against. And argv pieces never
+concatenate: `$root/*` and `--flag="value"` are refused outright,
+because the glued halves would otherwise be separate arguments. One
+word is built one way — interpolation:
+
+```weir-error
+let root = "build"
+rm -rf $root/* // argv words do not concatenate — write $"{root}/*"
+```
 
 What weir's command lines do NOT do:
 

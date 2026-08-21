@@ -2753,6 +2753,23 @@ let private wordHasPathSep: Parser<bool, unit> =
 
         Reply found
 
+// argv pieces do not CONCATENATE [D:argv-splat]: every piece is one
+// whole word, and before this guard an adjacent piece silently became
+// its OWN argument — `$root/*` ran as `$root` then `/*` (the Steam
+// shape, reproduced), `--flag="v"` passed `--flag=` and `v` separately.
+// A piece may start only after whitespace, `|`, an opener, or the
+// sibling sentinel; the `$`-starting pieces keep notMidWord's more
+// specific teach (this guard passes `$` through to them).
+let private notGluedPiece: Parser<unit, unit> =
+    (previousCharSatisfiesNot (fun c -> System.Char.IsWhiteSpace c || c = '|' || c = '(' || c = sibSep)
+     >>. getPosition
+     >>= fun at ->
+         anyChar
+         >>. failFatallyAt
+                 at
+                 "argv words do not concatenate — adjacent pieces would each become their OWN argument (`$root/*` would pass `/*` separately; `--flag=\"v\"` would pass `--flag=` separately). Build one word with an interpolated arg (`$\"{root}/*\"`, `$\"--flag={v}\"`), quote the whole word, or use `Path.combine dir name` for a filesystem path")
+    <|> preturn ()
+
 let private spliceVar =
     // gate the mid-word check behind the `$` (as splat gates behind `$@`)
     // so it fires only on an actual splice, never on a plain bareword. The
@@ -2818,17 +2835,20 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) =
         let core = if stopAtThen then stopWord "then" >>. core else core
         if stopAtIn then stopWord "in" >>. core else core
 
+    // each guard is GATED on its piece's opener (notMidWord's shape) so
+    // the fatal fires only where a piece genuinely starts — never on the
+    // `|` of `hi |grep` or the `)` that closes a capture
     choice
-        [ strLit
-          singleQuoted
+        [ lookAhead (pchar '"') >>. notGluedPiece >>. strLit
+          lookAhead (pchar '\'') >>. notGluedPiece >>. singleQuoted
           dollarAtTeach
-          interpRawLit
-          interpLit
-          captureSigil
+          lookAhead (pstring "$\"\"\"") >>. notGluedPiece >>. interpRawLit
+          lookAhead (pstring "$\"") >>. notGluedPiece >>. interpLit
+          lookAhead (pstring "$(") >>. notGluedPiece >>. captureSigil
           spliceSplat
           spliceVar
-          parens
-          bareword ]
+          lookAhead (pchar '(') >>. notGluedPiece >>. parens
+          lookAhead (satisfy cmdWordChar) >>. notGluedPiece >>. bareword ]
 
 let private cmdArgWith (stopAtIn: bool) = cmdArgStops stopAtIn false
 
