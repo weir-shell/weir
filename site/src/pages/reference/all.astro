@@ -27,9 +27,10 @@ const groups = [
   { name: "Forms", members: ref.forms },
 ];
 const memberCount = groups.reduce((n, g) => n + g.members.length, 0);
+const toc = groups.map((g) => ({ depth: 2, slug: g.name.toLowerCase(), text: g.name }));
 ---
 
-<Base title="All modules">
+<Base title="All modules" toc={toc}>
   <h1>The modules, on one page</h1>
   <p>
     All {memberCount} entries — generated from the binary's own

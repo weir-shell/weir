@@ -5,9 +5,10 @@ import { getCollection, render } from "astro:content";
 import Base from "../layouts/Base.astro";
 
 const [entry] = await getCollection("changelog");
-const { Content } = await render(entry);
+const { Content, headings } = await render(entry);
+const toc = headings.filter((h) => h.depth === 2);
 ---
 
-<Base title="Changelog">
+<Base title="Changelog" toc={toc}>
   <Content />
 </Base>

@@ -1,7 +1,10 @@
 ---
 // the skeleton layout [D:site-skeleton]: structure and navigation only —
 // the homepage/hero content is its own later work
-const { title } = Astro.props;
+const { title, toc } = Astro.props;
+// toc: optional [{ depth, slug, text }] — when present the page gets an
+// always-visible (sticky) side navigation; below 1100px it yields to
+// the one-column flow
 ---
 
 <!doctype html>
@@ -61,6 +64,41 @@ const { title } = Astro.props;
       /* the measure: 65–70 characters — readability beats width, and it
          matters more the denser the content */
       main { max-width: 68ch; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+      /* the side navigation: sticky, scrolls its own overflow, never
+         the page's. The measure is untouched — the grid centers the
+         pair, and narrow viewports fall back to one column. */
+      .with-toc {
+        display: grid;
+        grid-template-columns: 15rem minmax(0, 68ch);
+        gap: 3rem;
+        justify-content: center;
+        padding: 0 1.25rem;
+      }
+      .with-toc main { margin: 0; max-width: 68ch; padding: 2rem 0 4rem; }
+      .toc {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        max-height: 100vh;
+        overflow-y: auto;
+        padding: 2rem 0.25rem 2rem 0;
+        font-size: var(--text-sm);
+      }
+      .toc-title {
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        color: var(--fg);
+      }
+      .toc ul { list-style: none; margin: 0; padding: 0; }
+      .toc li { margin: 0.15rem 0; }
+      .toc li.d3 { padding-left: 0.9rem; }
+      .toc a { color: var(--muted); text-decoration: none; display: block; }
+      .toc a:hover { color: var(--accent); }
+      @media (max-width: 1100px) {
+        .with-toc { display: block; padding: 0; }
+        .with-toc main { margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+        .toc { display: none; }
+      }
       main a { color: var(--accent); }
       /* the ONE code treatment — inline spans, blocks, install rows all
          bound their code the same way: tinted, hairline-bordered, padded.
@@ -116,8 +154,28 @@ const { title } = Astro.props;
         <a href="https://github.com/weir-shell/weir">GitHub</a>
       </nav>
     </header>
-    <main>
-      <slot />
-    </main>
+    {
+      toc?.length ? (
+        <div class="with-toc">
+          <aside class="toc" aria-label="On this page">
+            <div class="toc-title">On this page</div>
+            <ul>
+              {toc.map((h) => (
+                <li class={`d${h.depth}`}>
+                  <a href={`#${h.slug}`}>{h.text}</a>
+                </li>
+              ))}
+            </ul>
+          </aside>
+          <main>
+            <slot />
+          </main>
+        </div>
+      ) : (
+        <main>
+          <slot />
+        </main>
+      )
+    }
   </body>
 </html>

@@ -39,8 +39,9 @@ const { kind, module, entry } = Astro.props;
 
 let Content = null;
 let title = "";
+let headings = [];
 if (kind === "written") {
-  ({ Content } = await render(entry));
+  ({ Content, headings } = await render(entry));
   title = entry.body?.match(/^#\s+(.+)$/m)?.[1] ?? entry.id;
 } else if (kind === "module") {
   title = module.name;
@@ -49,9 +50,13 @@ if (kind === "written") {
 }
 const entries = kind === "module" ? module.members : kind === "forms" ? ref.forms : [];
 const anchor = (name) => name.toLowerCase().replaceAll(" ", "-");
+const toc =
+  kind === "written"
+    ? headings.filter((h) => h.depth >= 2 && h.depth <= 3)
+    : entries.map((m) => ({ depth: 2, slug: anchor(m.name), text: m.name }));
 ---
 
-<Base title={title}>
+<Base title={title} toc={toc}>
   {kind === "written" ? (
     <Content />
   ) : (
