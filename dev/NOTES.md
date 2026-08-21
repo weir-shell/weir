@@ -1,5 +1,23 @@
 # Spike Notes
 
+## the count beside the list, and the generator that closes it (2026-08-21)
+
+F0 was one wrong word — "Four string forms" over a list of five —
+but the class is the finding: prose counts next to lists are
+unchecked by construction. The keyword table now cannot have that
+defect: the region renders from the grammar manifest, the four kinds
+are classified inside the generator with a two-way completeness
+check, and e2e diffs. The classification itself could not be derived
+(the manifest is flat), which is fine — hand judgement with a
+machine-checked cover is the pattern this repo keeps arriving at.
+
+Two small discoveries en route: the attribute registry is five, not
+the four the rider listed (Positional returned for signature files),
+and weir has no modulo operator at all — the operator table is
+positive-only rather than claiming an absence with no repair to
+name. The one-page reference weighed in at 26KB gzipped for all 230
+entries, which settles the size question the rider refused to guess.
+
 ## the CLI page could not be generated, and that was the finding (2026-08-21)
 
 The tooling plan's highest-value question — can the CLI reference
