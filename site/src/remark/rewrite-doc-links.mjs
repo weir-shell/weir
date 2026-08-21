@@ -23,6 +23,7 @@ const RENDERED = new Set([
   "docs/COMING-FROM.md",
   "docs/LEXICON.md",
   "docs/editors.md",
+  "docs/repl.md",
 ]);
 
 const slugOf = (repoPath) =>

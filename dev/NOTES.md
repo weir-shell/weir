@@ -1,5 +1,22 @@
 # Spike Notes
 
+## the guide learned to put the reader first (2026-08-21)
+
+The reorder rider's six findings shared one root: sections landed in
+writing order, not reading order — the REPL manual before the first
+script, the shell section two-thirds down a shell language's guide.
+The feared cost of reordering (fences depending on earlier fences)
+turned out to be zero by construction: skill-doc runs every block as
+its own file, so the 162 blocks held on the first build after the
+move. The real breakage was elsewhere — the site's link rewriter
+holds a hand-maintained RENDERED set that quietly GitHub-links any
+docs page it does not know, and the new repl.md walked straight into
+it. A comment says the set mirrors the content globs; nothing checks
+that, and it now has a second entry proving the drift mode. Worth a
+gate if a third page appears. (Also: an Astro cache in
+node_modules/.astro survives rm .astro — two builds chased a stale
+render before the third found it.)
+
 ## Nord, and the two patches a bundled theme still needed (2026-08-21)
 
 The swap was the config line the rider promised, but "bundled" did not
