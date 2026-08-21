@@ -1,5 +1,21 @@
 # Spike Notes
 
+## provenance shipped as economics, and the receipts got audited (2026-08-21)
+
+The provenance section survived its own discipline: every receipt was
+verified against the live tree before the copy shipped, and one was
+corrected by the verification — the interop referee runs eighty
+payloads, not the hundred the plan remembered. A provenance section
+citing a stale gate would be the worst possible home for a stale
+claim, so the audit was the work.
+
+The method piece landed as docs/METHOD.md through the existing
+pipeline. Writing it was mostly transcription — the ledger already
+held the seven instrument failures, the zero-needs-a-nonzero rule,
+the fired triggers, and the mispricings; the page's one new synthesis
+is the closing boundary line: the agent built the system, the human
+built the judgement the system was built inside.
+
 ## the hero reframed mid-build, and the probes carried it (2026-08-21)
 
 The catastrophe pitch became a maintenance pitch halfway through — the
