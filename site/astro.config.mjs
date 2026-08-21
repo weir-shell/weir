@@ -7,6 +7,7 @@
 import { defineConfig } from "astro/config";
 import { readFileSync } from "node:fs";
 import { rewriteDocLinks } from "./src/remark/rewrite-doc-links.mjs";
+import nordWeir from "./src/lib/nord-weir.mjs";
 
 // the ONE grammar, read from the repo — never a copy
 const weirGrammar = JSON.parse(
@@ -23,7 +24,7 @@ export default defineConfig({
       // `weir-error` fences are teaching blocks (SKILL/GUIDE convention):
       // same grammar, they just must not fall back to plaintext
       langs: [weirGrammar, { ...weirGrammar, name: "weir-error" }],
-      theme: "github-dark",
+      theme: nordWeir,
     },
     remarkPlugins: [rewriteDocLinks],
   },

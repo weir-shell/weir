@@ -1,5 +1,72 @@
 # Spike Notes
 
+## the count beside the list, and the generator that closes it (2026-08-21)
+
+F0 was one wrong word — "Four string forms" over a list of five —
+but the class is the finding: prose counts next to lists are
+unchecked by construction. The keyword table now cannot have that
+defect: the region renders from the grammar manifest, the four kinds
+are classified inside the generator with a two-way completeness
+check, and e2e diffs. The classification itself could not be derived
+(the manifest is flat), which is fine — hand judgement with a
+machine-checked cover is the pattern this repo keeps arriving at.
+
+Two small discoveries en route: the attribute registry is five, not
+the four the rider listed (Positional returned for signature files),
+and weir has no modulo operator at all — the operator table is
+positive-only rather than claiming an absence with no repair to
+name. The one-page reference weighed in at 26KB gzipped for all 230
+entries, which settles the size question the rider refused to guess.
+
+## the CLI page could not be generated, and that was the finding (2026-08-21)
+
+The tooling plan's highest-value question — can the CLI reference
+render from --help the way module pages render from builtinDocs —
+answered no: hand-written match arms, hand-concatenated usage. The
+predicted cost was already on the books: the binary's own --help had
+drifted three arms behind the binary (add sig, check --can,
+--version). So the fix ran in the honest direction — complete the
+usage string in the binary, then byte-pin the docs page against it
+in e2e. A hand-written list that a gate diffs is generated-enough;
+a hand-written list nothing checks is how weir's own front door
+went stale.
+
+The .weir/ commit question needed no judgement call: the Contracts
+module header already ruled it (vendored = checked in; check never
+fetches), and the page just says so out loud.
+
+## the guide learned to put the reader first (2026-08-21)
+
+The reorder rider's six findings shared one root: sections landed in
+writing order, not reading order — the REPL manual before the first
+script, the shell section two-thirds down a shell language's guide.
+The feared cost of reordering (fences depending on earlier fences)
+turned out to be zero by construction: skill-doc runs every block as
+its own file, so the 162 blocks held on the first build after the
+move. The real breakage was elsewhere — the site's link rewriter
+holds a hand-maintained RENDERED set that quietly GitHub-links any
+docs page it does not know, and the new repl.md walked straight into
+it. A comment says the set mirrors the content globs; nothing checks
+that, and it now has a second entry proving the drift mode. Worth a
+gate if a third page appears. (Also: an Astro cache in
+node_modules/.astro survives rm .astro — two builds chased a stale
+render before the third found it.)
+
+## Nord, and the two patches a bundled theme still needed (2026-08-21)
+
+The swap was the config line the rider promised, but "bundled" did not
+mean "done": the probe over every SKILL fence found weir's
+entity.name.type falling back to default white — Nord styles the
+.class child, never the parent — and arithmetic found stock comments
+at 2.44:1 on nord0, an accessibility REGRESSION from github-dark.
+Both fixed in one 25-line theme module; the grammar untouched, which
+was the rider's own test for whether the scope names were sound (they
+were — the gap was the theme's).
+
+Checking contrast by arithmetic before shipping beat eyeballing: the
+numbers token (nord15) at 4.41:1 is the one deliberate sub-AA
+survivor, named in the ledger rather than discovered later.
+
 ## the design pass: hierarchy, not a theme (2026-08-21)
 
 The user's "nothing says what weir is" and "needs a theme" were one

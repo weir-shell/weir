@@ -9,6 +9,7 @@
 // splice refusal; the e2e hero-currency cell for everything quoted) —
 // never the docs gate, which asserts executability, not output.
 import Base from "../layouts/Base.astro";
+import nordWeir from "../lib/nord-weir.mjs";
 import { Code } from "astro:components";
 import { readFileSync } from "node:fs";
 
@@ -119,7 +120,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     A small release tool: a typed flag, two commands. One of them is
     misspelled.
   </p>
-  <Code code={beat1Weir} lang={weirGrammar} theme="github-dark" />
+  <Code code={beat1Weir} lang={weirGrammar} theme={nordWeir} />
   <p>Run it:</p>
   <pre class="refusal">{beat1Refusal}</pre>
   <p>
@@ -131,7 +132,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 
   <h2>A real CLI, free</h2>
   <p>Declare the shape; the interface is derived.</p>
-  <Code code={beat2Weir} lang={weirGrammar} theme="github-dark" />
+  <Code code={beat2Weir} lang={weirGrammar} theme={nordWeir} />
   <pre class="report">{beat2Help}</pre>
   <p>
     <code>dryRun</code> became <code>--dry-run</code> with an
@@ -165,7 +166,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="hero-pair">
       <div class="hero-cell">
         <p class="hero-label">steam.sh, shipped:</p>
-        <Code code={steamBash} lang="bash" theme="github-dark" />
+        <Code code={steamBash} lang="bash" theme={nordWeir} />
         <p class="hero-caption">
 
           When the folder was moved, the <code>cd</code> inside the
@@ -179,7 +180,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       </div>
       <div class="hero-cell">
         <p class="hero-label">The same shape, in weir:</p>
-        <Code code={spliceWeir} lang={weirGrammar} theme="github-dark" />
+        <Code code={spliceWeir} lang={weirGrammar} theme={nordWeir} />
         <pre class="refusal">{spliceRefusal}</pre>
       </div>
     </div>
@@ -351,9 +352,9 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   .hero-label { margin-bottom: 0; color: var(--muted); font-size: 0.9rem; }
   .hero-caption { font-size: 0.9rem; color: var(--muted); }
   .refusal, .report {
-    background: #f6f8fa;
+    background: var(--code-bg);
     border: 1px solid var(--border);
-    border-left: 3px solid #b31d28;
+    border-left: 3px solid #bf616a;
     color: #24292e;
     font-size: 0.8rem;
     line-height: 1.5;

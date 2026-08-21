@@ -357,11 +357,14 @@ let main argv =
             + "       weir <script> [args...]                 run a script\n"
             + "       weir -e <program>                       evaluate a program; the result is its last expression\n"
             + "       weir check [--json] <script>            diagnostics only (no evaluation)\n"
-            + "       weir fmt [--check] <script>   canonical formatter\n"
+            + "       weir check --can [--strict] [--json] <script>  the static capability report\n"
+            + "       weir fmt [--check] <script>             canonical formatter\n"
             + "       weir lsp                                language server (stdio)\n"
+            + "       weir add sig <tool>                     generate a command signature from the installed binary\n"
             + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
             + "       weir restore                            re-materialize the lock's artifacts\n"
-            + "       weir verify                             vendored contracts vs the lock"
+            + "       weir verify                             vendored contracts vs the lock\n"
+            + "       weir --version                          the build stamp"
 
         match args with
         | [ "--help" ] // asked for: stdout, exit 0
