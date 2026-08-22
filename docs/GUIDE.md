@@ -363,14 +363,13 @@ the other operator; the operator table lives on
 [Lexical](reference/lexical.md#operators), the full pipe rules in
 [SEMANTICS.md](SEMANTICS.md).
 
-A `let` takes a bare command on its right-hand side anywhere a `let`
-goes — top level or inside a function body, with or without params:
-
-`let tree = git rev-parse $c |> Seq.head`
-`let revParse r = git rev-parse $r |> Seq.head`
-
-Params shadow PATH inside their own body, so `let f x = x` stays the
-identity whatever happens to be installed.
+A `let` takes a bare command on its right-hand side anywhere a
+`let` goes — top level or inside a function body, plain
+(`let tree = git rev-parse HEAD |> Seq.head`) or with params, whose
+values splice like any binding
+(`let commitOf r = git rev-parse $r |> Seq.head`). Params shadow
+PATH inside their own body, so `let f x = x` stays the identity
+whatever happens to be installed.
 
 One rule to know about `!`: weir has no `!`-negation. Negation is the
 word `not`; `!` means DO IT. Two markers bring full command chains
