@@ -232,6 +232,10 @@ logging never touches the data channel.
 
 ### The REPL config
 
+The REPL also loads an optional [init file](repl.md#the-init-file) —
+declarations for the prompt plus the `#session` settings directive —
+from the same directory.
+
 `$XDG_CONFIG_HOME/weir/config.json` (fallback
 `~/.config/weir/config.json`; on Windows
 `%APPDATA%\weir\config.json`) — read by the REPL only:

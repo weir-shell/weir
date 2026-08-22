@@ -262,10 +262,12 @@ glyph, two lifetimes:
 
 - **session** directives run NOW, in the REPL: `#help`, `#quit`,
   `#echo`
-- **file** directives are read at CHECK time: `#sig`, `#schema`
+- **file** directives are read at CHECK time: `#sig`, `#schema` —
+  and `#session`, read from the REPL's init file only
 
-The [REPL manual](../repl.md) covers the session set;
-[signatures](../tooling.md#command-signatures) the file set.
+The [REPL manual](../repl.md) covers the session set and the init
+file; [signatures](../tooling.md#command-signatures) the rest of
+the file set.
 
 ## Attributes
 

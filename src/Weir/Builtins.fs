@@ -948,6 +948,10 @@ let parseLogLevel (s: string) : Result<int, string> =
 // debug/trace are opt-in, WEIR_LOG=off is genuine silence
 let mutable private logThreshold = 2
 
+/// the init file's one write [D:repl-init]: #session logLevel goes
+/// through parseLogLevel first, so the two spellings cannot diverge
+let setLogThreshold (i: int) : unit = logThreshold <- i
+
 /// read WEIR_LOG once; Program calls this before dispatch so an
 /// invalid value is a loud startup error, never a silent fallback
 let initLogLevel () : Result<unit, string> =

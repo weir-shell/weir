@@ -1335,6 +1335,11 @@ let private memberHelp (te: TypeEnv) (name: string) : string option =
     | None, Some sch -> Some(formatSignature name [] sch.Ty)
     | None, None -> None
 
+// the init file's /// docs [D:repl-init]: position-keyed attachments
+// mapped to binding names at load, so #help on a session name answers
+// with its doc — and a failed init leaves this EMPTY, never stale
+let mutable private initDocs: Map<string, string list> = Map.empty
+
 let private helpDirective (te: TypeEnv) (arg: string) : string =
     match arg.Trim() with
     | "" ->
@@ -1369,7 +1374,10 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
         $"'{name}' is an ambiguous constructor; it is declared by: {owners} — rename one of the cases"
     | name ->
         match memberHelp te name with
-        | Some h -> h
+        | Some h ->
+            (match Map.tryFind name initDocs with
+             | Some doc -> h + "\n" + (doc |> String.concat "\n")
+             | None -> h)
         | None ->
             match Map.tryFind name te.Types with
             | Some(Record d) ->
@@ -1449,8 +1457,12 @@ let rec private loop (state: State) =
         else
             let word = t.Split(' ').[0]
 
-            Console.WriteLine
-                $"unknown directive '{word}' — #help lists them (#sig and #schema are file directives, read at check time)"
+            Console.WriteLine(
+                if word = "#session" then
+                    "#session is read from the init file at startup (config dir, weir/init.weir) — edit it and restart"
+                else
+                    $"unknown directive '{word}' — #help lists them (#sig and #schema are file directives, read at check time)"
+            )
 
             loop state
     | entry when entry.Contains '\n' ->
@@ -1567,12 +1579,359 @@ let rec private loop (state: State) =
 
         loop next
 
+
+// ---- the init file [D:repl-init] ----------------------------------------
+// config dir/weir/init.weir: an implicitly-loaded, DECLARATION-ONLY file
+// (the module rule, applied to the prompt) plus one #session directive
+// for the four settings a declaration cannot express. Loading is
+// ALL-OR-NOTHING: a broken init reports its located weir error and the
+// session starts with none of it — safe to continue past ONLY because
+// nothing in the file can run. This is not an exception to
+// check-before-run: the init is not part of any program; a failed init
+// means fewer names, never a program that half-ran.
+
+let private initFilePath () =
+    Path.Combine(configHome (), "weir", "init.weir")
+
+let private sessionKeys = [ "cwd"; "env"; "logLevel"; "echoCap" ]
+
+/// #session field values must be command-free (the module-let rule);
+/// beyond that any closed expression checks — literals in practice
+let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (msg: string) =
+    Console.Error.WriteLine $"{path}:{line}:{col}: {msg}"
+
+    if srcLine <> "" then
+        Console.Error.WriteLine srcLine
+        Console.Error.WriteLine(String(' ', max 0 (col - 1)) + "^")
+
+/// returns the session-block field lets (synthesized, line numbers kept)
+/// and the remaining lines (block replaced by blanks — transparent, so
+/// declaration diagnostics keep their real positions)
+let private splitSessionBlock
+    (path: string)
+    (lines: string[])
+    : Result<(int * string) list * (int * string) list, unit> =
+    let mutable fields: (int * string) list = []
+    let mutable rest: (int * string) list = []
+    let mutable inBlock = false
+    let mutable seen = false
+    let mutable failed = false
+
+    for i in 0 .. lines.Length - 1 do
+        let l = lines.[i]
+        let t = l.Trim()
+
+        if not inBlock && t.StartsWith "#session" then
+            if seen then
+                initDiag path (i + 1) 1 l "a second #session block — the init takes one"
+                failed <- true
+
+            seen <- true
+
+            if t = "#session {" then
+                inBlock <- true
+            else
+                initDiag path (i + 1) 1 l "malformed #session — usage: '#session {' then 'key = value' lines then '}'"
+                failed <- true
+
+            rest <- (i + 1, "") :: rest
+        elif inBlock && t = "}" then
+            inBlock <- false
+            rest <- (i + 1, "") :: rest
+        elif inBlock then
+            if t <> "" then
+                // a FIELD-START (`key = …`) dedents 4 and gains a 'let '
+                // prefix — 4 chars out, 4 in, columns survive. Every
+                // other line (list entries, closers) passes through
+                // UNTOUCHED: still indented, still a continuation of the
+                // synthesized let, columns exact
+                let isFieldStart =
+                    System.Text.RegularExpressions.Regex.IsMatch(t, "^[A-Za-z_][A-Za-z0-9_]*\s*=")
+
+                let synthesized =
+                    if isFieldStart then
+                        "let " + (if l.StartsWith "    " then l.Substring 4 else t)
+                    else
+                        l
+
+                fields <- (i + 1, synthesized) :: fields
+
+            rest <- (i + 1, "") :: rest
+        else
+            rest <- (i + 1, l) :: rest
+
+    if inBlock then
+        initDiag path lines.Length 1 "" "unclosed #session block — a lone '}' line ends it"
+        failed <- true
+
+    if failed then
+        Error()
+    else
+        Ok(List.rev fields, List.rev rest)
+
+let private applySessionField
+    (path: string)
+    (lines: string[])
+    (ll: Script.LogicalLine)
+    (name: string)
+    (te: Check.TypedExpr)
+    (venv: Eval.Env)
+    : bool =
+    let srcLine (n: int) =
+        if n >= 1 && n <= lines.Length then lines.[n - 1] else ""
+
+    let err msg =
+        initDiag path ll.Head 5 (srcLine ll.Head) msg
+        false
+
+    match name, te.Ty with
+    | "cwd", Types.TStr ->
+        (match Eval.eval venv te with
+         | Eval.VStr p ->
+             let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
+
+             let expanded =
+                 if p = "~" then
+                     home
+                 elif p.StartsWith "~/" then
+                     Path.Combine(home, p.Substring 2)
+                 else
+                     p
+
+             let resolved = Session.resolve expanded
+
+             if Directory.Exists resolved then
+                 Session.setCwd resolved
+                 true
+             else
+                 err $"cwd: no such directory: {resolved}"
+         | _ -> err "cwd expects a string")
+    | "cwd", ty -> err $"cwd expects a string, got {Types.formatTy ty}"
+    | "logLevel", Types.TStr ->
+        (match Eval.eval venv te with
+         | Eval.VStr lvl ->
+             (match Builtins.parseLogLevel lvl with
+              | Ok i ->
+                  Builtins.setLogThreshold i
+                  true
+              | Error e -> err (e.Replace("WEIR_LOG=", "logLevel=")))
+         | _ -> err "logLevel expects a string")
+    | "logLevel", ty -> err $"logLevel expects a string, got {Types.formatTy ty}"
+    | "echoCap", Types.TInt ->
+        (match Eval.eval venv te with
+         | Eval.VInt n when n > 0 ->
+             echoCap <- Some(int n)
+             true
+         | Eval.VInt n -> err $"echoCap must be positive; got {n}"
+         | _ -> err "echoCap expects an int")
+    | "echoCap", ty -> err $"echoCap expects an int, got {Types.formatTy ty}"
+    | "env", Types.TSeq(Types.TTuple [ Types.TStr; Types.TStr ]) ->
+        (match Eval.eval venv te with
+         | Eval.VSeq pairs ->
+             // the session's base reality, not an overlay: set the
+             // PROCESS env once, before the first prompt — exactly what
+             // exec'ing weir with this environment would mean. Env.get,
+             // Env.vars, and every spawn see it with no new machinery;
+             // within env and the sigils layer over it as they layer
+             // over any inherited env. (No unset: an entry adds or
+             // overrides, never hides — stated, not discovered.)
+             for pv in pairs do
+                 match pv with
+                 | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
+                 | _ -> ()
+
+             true
+         | _ -> err "env expects seq<string * string>")
+    | "env", ty -> err $"env expects seq<string * string> — pairs, order kept; got {Types.formatTy ty}"
+    | k, _ ->
+        let hint = didYouMean k (Set.ofList sessionKeys)
+        err $"unknown #session key '{k}'{hint} (the keys: cwd, env, logLevel, echoCap)"
+
+/// load the init file into the session; ALL-OR-NOTHING. Returns the
+/// state to start with and prints the one report line (stderr — a piped
+/// session's stdout stays data).
+let private loadInit (baseState: State) : State =
+    let path = initFilePath ()
+
+    if not (File.Exists path) then
+        baseState // no init is the normal case — silent
+    else
+        let lines = File.ReadAllLines path
+
+        let srcLine (n: int) =
+            if n >= 1 && n <= lines.Length then lines.[n - 1] else ""
+
+        let notLoaded () =
+            Console.Error.WriteLine $"init: NOT loaded ({path}) — the session starts without it"
+            baseState
+
+        match splitSessionBlock path lines with
+        | Error() -> notLoaded ()
+        | Ok(fieldLines, declLines) ->
+            let checkAll (lls: Script.LogicalLine list) (tenv: TypeEnv) =
+                let rec go env acc rest =
+                    match rest with
+                    | [] -> Ok(List.rev acc)
+                    | (ll: Script.LogicalLine) :: tail ->
+                        match Script.checkStatement false Script.resolver Script.scriptOnlyImport env ll with
+                        | Error d -> Error(ll, d)
+                        | Ok chk -> go chk.Env ((ll, chk) :: acc) tail
+
+                go tenv [] lls
+
+            let strictTenv, strictVenv = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+
+            let reportDiag (ll: Script.LogicalLine) (d: Script.StmtDiag) =
+                initDiag path d.PhysLine d.PhysCol (srcLine d.PhysLine) d.Message
+
+            // the #session fields first — settings before names
+            let fieldsOutcome =
+                match Script.assemble fieldLines with
+                | Error msg ->
+                    Console.Error.WriteLine $"{path}: {msg}"
+                    false
+                | Ok lls ->
+                    match checkAll lls strictTenv with
+                    | Error(ll, d) ->
+                        reportDiag ll d
+                        false
+                    | Ok checked' ->
+                        let mutable ok = true
+                        let mutable seenKeys: Set<string> = Set.empty
+
+                        for ll, chk in checked' do
+                            if ok then
+                                match chk.Kind with
+                                | Script.KLet(name, _, te) ->
+                                    if Set.contains name seenKeys then
+                                        initDiag path ll.Head 5 (srcLine ll.Head) $"duplicate #session key '{name}'"
+                                        ok <- false
+                                    elif Script.runsCommandT te then
+                                        initDiag
+                                            path
+                                            ll.Head
+                                            5
+                                            (srcLine ll.Head)
+                                            "a #session value cannot run a command — settings are read, not computed by running things"
+
+                                        ok <- false
+                                    else
+                                        seenKeys <- Set.add name seenKeys
+                                        ok <- applySessionField path lines ll name te strictVenv
+                                | _ ->
+                                    initDiag
+                                        path
+                                        ll.Head
+                                        1
+                                        (srcLine ll.Head)
+                                        "a #session block takes 'key = value' lines only"
+
+                                    ok <- false
+
+                        ok
+
+            if not fieldsOutcome then
+                notLoaded ()
+            else
+                // the declarations — the module rule, applied to the prompt
+                match Script.assemble declLines with
+                | Error msg ->
+                    Console.Error.WriteLine $"{path}: {msg}"
+                    notLoaded ()
+                | Ok lls ->
+                    match checkAll lls baseState.TypeEnv with
+                    | Error(ll, d) ->
+                        reportDiag ll d
+                        notLoaded ()
+                    | Ok checked' ->
+                        let mutable bad = None
+
+                        for ll, chk in checked' do
+                            if bad.IsNone then
+                                match chk.Kind with
+                                | Script.KType _ -> ()
+                                | Script.KLet(_, _, te)
+                                | Script.KLetPat(_, _, te) ->
+                                    if Script.runsCommandT te then
+                                        bad <-
+                                            Some(
+                                                ll,
+                                                "an init 'let' cannot run a command at load — wrap it in a function (let f () = …), the command runs when the prompt calls it"
+                                            )
+                                | Script.KCmd _
+                                | Script.KExpr _ ->
+                                    bad <-
+                                        Some(
+                                            ll,
+                                            "the init file is declaration-only — 'type' and 'let'; it configures the prompt, it cannot run"
+                                        )
+                                | Script.KImport _ ->
+                                    bad <-
+                                        Some(
+                                            ll,
+                                            "the init file does not import — declare here, or put shared code in a module scripts import"
+                                        )
+                                | Script.KModule _ ->
+                                    bad <-
+                                        Some(
+                                            ll,
+                                            "the init file is not a module — no 'module' marker; its names are the prompt's"
+                                        )
+
+                        match bad with
+                        | Some(ll, msg) ->
+                            initDiag path ll.Head 1 (srcLine ll.Head) msg
+                            notLoaded ()
+                        | None ->
+                            let attachments = Script.docAttachments (List.ofArray lines)
+                            let mutable venv = baseState.Values
+                            let mutable tenv = baseState.TypeEnv
+                            let mutable names = 0
+                            let mutable docs: Map<string, string list> = Map.empty
+
+                            for ll, chk in checked' do
+                                tenv <- chk.Env
+
+                                match chk.Kind with
+                                | Script.KType decl ->
+                                    names <- names + 1
+
+                                    (match decl.Body with
+                                     | Ast.DUnion cases ->
+                                         venv <-
+                                             Eval.constructorValues cases
+                                             |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                     | Ast.DRecord _ -> ())
+                                | Script.KLet(name, _, te) ->
+                                    names <- names + 1
+                                    venv <- Map.add name (Eval.eval venv te) venv
+
+                                    (match
+                                        attachments |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head)
+                                     with
+                                     | Some a -> docs <- Map.add name a.Doc docs
+                                     | None -> ())
+                                | Script.KLetPat(pat, _, te) ->
+                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                                    names <- names + bindings.Length
+                                    venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                | _ -> ()
+
+                            initDocs <- docs
+
+                            if names > 0 || not (List.isEmpty fieldLines) then
+                                Console.Error.WriteLine $"init: {names} name(s) from {path}"
+
+                            { TypeEnv = tenv; Values = venv }
+
 let run () =
     if not Console.IsInputRedirected then
         setupLineEditor ()
 
+    let state = loadInit initial
+
     try
-        loop initial
+        loop state
         0
     with Eval.ExitRequest code ->
         code

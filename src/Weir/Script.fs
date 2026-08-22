@@ -2625,7 +2625,7 @@ let private deriveModuleName (absPath: string) : string option =
 // [D:modules-v1]. Eager positions only, STOPS at lambdas: a command in a
 // lambda body is deferred, so a param-ful `let f r = git …` is a function,
 // not an import-time effect; only a paramless `let x = git …` is rejected.
-let rec private runsCommandT (te: Check.TypedExpr) : bool =
+let rec runsCommandT (te: Check.TypedExpr) : bool =
     match te.Kind with
     | Check.TECmd _ -> true
     | Check.TELambda _
@@ -4092,7 +4092,10 @@ let run (path: string) (scriptArgs: string list) : int =
                 located
                     path
                     (bodyOffset + i + 1)
-                    $"unknown or misplaced directive: {l} (directives belong at the file head)"
+                    (if l.TrimStart().StartsWith "#session" then
+                         "#session lives in the REPL init file (config dir, weir/init.weir) — a script takes its settings from flags and env"
+                     else
+                         $"unknown or misplaced directive: {l} (directives belong at the file head)")
             )
 
             1

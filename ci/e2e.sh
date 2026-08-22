@@ -6146,6 +6146,79 @@ echo "e2e ok: no mid-paragraph '>' wrap hazards in rendered docs"
 (cd "$ROOT" && "$BIN" ci/feature-docs.weir) || fail "a manifest keyword has no teaching prose — see above"
 echo "e2e ok: every manifest keyword taught in prose (GUIDE or written reference)"
 
+# ---- the REPL init file [D:repl-init] -------------------------------------
+# the plan's own example file loads: settings applied, names bound,
+# #help carries the /// doc; failure is all-or-nothing with a located
+# error; a missing init is SILENT (the negative pin).
+initcfg=$(mkweirtmp)
+mkdir -p "$initcfg/weir" "$initcfg/work"
+cat > "$initcfg/weir/init.weir" <<WEOF
+#session {
+    cwd = "$initcfg/work"
+    logLevel = "debug"
+    echoCap = 50
+    env = [
+        "EDITOR", "hx"
+        "PAGER", "less -R"
+    ]
+}
+
+/// push the current branch and set upstream
+let pu () = git push --set-upstream origin HEAD
+
+/// the last N commits, one line each
+let lg n = git log --oneline \$"-{n}"
+
+/// files over a size, newest first
+let big threshold =
+    ls
+    |> Seq.where (fun f -> f.bytes > threshold)
+    |> Seq.sortBy (fun f -> f.modified)
+WEOF
+iout=$(printf 'pwd\nprint (Env.get "EDITOR" |> Option.defaultValue "unset")\n#echo\n#help pu\nsh -c "echo child-sees-$PAGER"\n#quit\n' \
+    | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "init: 3 name(s) from $initcfg/weir/init.weir" || fail "init count line missing: $iout"
+echo "$iout" | grep -qF "$initcfg/work" || fail "init cwd not applied"
+echo "$iout" | grep -qxF "weir> hx" || fail "init env not visible to Env.get"
+echo "$iout" | grep -qF "echo cap: 50" || fail "init echoCap not applied"
+echo "$iout" | grep -qF "push the current branch and set upstream" || fail "#help on an init name lost its /// doc"
+echo "$iout" | grep -qF "child-sees-less -R" || fail "init env not inherited by a child"
+# all-or-nothing: a typo'd #session key reports located, loads NOTHING
+cat > "$initcfg/weir/init.weir" <<'WEOF'
+#session {
+    echoCpa = 50
+}
+let hi () = print "hi"
+WEOF
+iout=$(printf '#help hi
+#quit
+' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "unknown #session key 'echoCpa'. Did you mean 'echoCap'?" || fail "init typo key lost its did-you-mean"
+echo "$iout" | grep -qF "init: NOT loaded" || fail "broken init must say NOT loaded"
+echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a binding survived a failed init"
+# declaration-only: a bare command refuses with the teach
+cat > "$initcfg/weir/init.weir" <<'WEOF'
+git status
+WEOF
+iout=$(printf '#quit
+' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "the init file is declaration-only" || fail "init decl-only teach missing"
+# missing init: SILENT — the negative pin ("reports on failure" must
+# not be satisfied by something that reports always)
+rm "$initcfg/weir/init.weir"
+iout=$(printf '#quit
+' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "init:" && fail "a missing init must be silent" || true
+# a #session in a SCRIPT teaches its home; typed at the PROMPT likewise
+printf '#session {\n    cwd = "/tmp"\n}\nprint "x"\n' > "$initcfg/s.weir"
+sout=$("$BIN" "$initcfg/s.weir" 2>&1 || true)
+echo "$sout" | grep -qF "#session lives in the REPL init file" || fail "script #session teach missing: $sout"
+pout=$(printf '#session\n#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$pout" | grep -qF "#session is read from the init file at startup" || fail "prompt #session teach missing"
+# the login-shell convention: a leading-dash argv[0] changes nothing
+lout=$(bash -c "exec -a -weir \"$BIN\" --version" 2>&1) || fail "dash argv[0] broke weir"
+echo "e2e ok: repl init file (example loads with docs+settings, all-or-nothing failure, silent missing, both #session teaches, dash-argv0)"
+
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned
 # here against LIVE runs so the homepage cannot go stale while green (the

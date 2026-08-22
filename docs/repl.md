@@ -63,6 +63,47 @@ known binding or builtin, blue for found on PATH, red for
 would-fail. A red head is the typo caught before Enter. `NO_COLOR`
 is honored, and piped sessions are always plain text.
 
+## The init file
+
+`init.weir` beside the [config file](tooling.md#configuration)
+(`$XDG_CONFIG_HOME/weir/`, else `~/.config/weir/`; `%APPDATA%\weir\`
+on Windows) loads before the first prompt. It is DECLARATION-ONLY —
+`type` and `let`, the module rule applied to the prompt — plus one
+`#session` directive for the settings a declaration cannot express:
+
+```text
+#session {
+    cwd = "/home/me/work"
+    logLevel = "debug"
+    echoCap = 50
+    env = [
+        "EDITOR", "hx"
+    ]
+}
+
+/// push the current branch and set upstream
+let pu () = git push --set-upstream origin HEAD
+```
+
+The four keys: `cwd` (applied before the first prompt), `env`
+(`seq<string * string>` — set into the process environment once, so
+`Env.vars`, every spawn, and `within env` layering all see it; an
+entry adds or overrides, never unsets), `logLevel` (the `WEIR_LOG`
+levels, same parsing), and `echoCap` (the `#echo` cap's persistent
+form — it wins over the config file's `echoElems`). A typo'd key
+gets a did-you-mean; values cannot run commands.
+
+Aliases are functions — `let pu () = …` already takes params and
+spans lines, so there is no separate alias concept; calling a
+nullary one costs `()`.
+
+Loading is ALL-OR-NOTHING: a broken init prints its located weir
+error plus `init: NOT loaded`, and the session starts with none of
+it — safe precisely because nothing in the file can run. A missing
+init is silent; a loaded one reports one line
+(`init: 3 name(s) from …`). `#help` on an init name shows its `///`
+doc.
+
 ## Multi-line editing
 
 Enter submits when the statement is complete, and opens a

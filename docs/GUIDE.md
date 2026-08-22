@@ -1616,7 +1616,8 @@ time; session directives (`#help`, `#quit`) run now. One glyph, two
 lifetimes.
 
 The rest of the manual — what the echo shows and its cap, the
-prompt's colors, the multi-line keybindings — lives in
+prompt's colors, the multi-line keybindings, and the init file
+(declarations for the prompt, `#session` for settings) — lives in
 [repl.md](repl.md).
 
 ## Where weir ends
