@@ -1,5 +1,27 @@
 # Spike Notes
 
+## the palette came home, and the wrap ate an operator (2026-08-22)
+
+The theme reversal is recorded as what it is: preference. Nord's
+arguments never fell; the site should look like the author's other
+work, and pretending otherwise would be the dressed-up version the
+rider warned against. The port cost was real but small — eleven
+scopes, four AA lifts (the classic GitHub palette fails modern
+contrast on comments, numbers, punctuation and builtins), and a dark
+variant that is an invention with its inventedness stated.
+
+The Http bug was the better find: a source wrap put `>=` at line
+start and CommonMark's blockquote-interrupts-paragraph rule ate the
+`>`. One instance repo-wide, but the class is nasty — prose damage
+that no fence can catch because fences are exactly what wrap cannot
+touch. The gate distinguishes real blockquotes by their predecessor
+line, which held across all seventeen rendered docs.
+
+Iosevka arrived by HTTP range request — two zip members pulled from
+a 254MB release without downloading it — then harfbuzz subset 1.6MB
+faces to 132KB. The number the rider wanted: 264KB total for both
+weights, swap + preload.
+
 ## the count beside the list, and the generator that closes it (2026-08-21)
 
 F0 was one wrong word — "Four string forms" over a list of five —
