@@ -1314,6 +1314,47 @@ To resolve symlinks:
 Available in scripts only — the REPL and `-e` refuse each `Self`
 member by name, since neither has a file.
 
+## Sharing code: modules and `import`
+
+The moment a script becomes a tool is the moment two scripts want
+the same helper. A file that STARTS with `module` (bare, or
+`module Name`) is a module: importable and declaration-only —
+`type` and `let` definitions, no commands and no bare expressions —
+and not runnable itself. Import it by literal path, first in the
+file:
+
+```weir
+["module Greet"; ""; "/// the shared helper"; "let hello name = $\"hi {name}\""] |> File.write "greet.weir"
+["import \"./greet.weir\" as G"; ""; "print (G.hello \"weir\")"] |> File.write "use-greet.weir"
+weir use-greet.weir
+```
+
+Access is always qualified — `G.hello`, `G.Ctx` for an imported
+type, `G.Ctx { field = v }` to construct its records. Without `as`,
+the alias is the module's declared name (or the capitalized
+filename). Nothing leaks bare: an imported union's cases are
+reached qualified too, and a local declaration always wins over an
+imported name.
+
+Resolution happens at CHECK time against the literal path — nothing
+loads at runtime, and a missing file is a located error naming the
+resolved absolute path. Imports are transitive; a module two
+importers share is checked once (diamonds collapse), and an import
+cycle is a named check error. `import` is script-only — not `-e`,
+not the REPL. The wrong-kind errors are named as well:
+
+```weir
+["print 1"] |> File.write "plain.weir"
+["import \"./plain.weir\""; "print \"unreachable\""] |> File.write "use-plain.weir"
+let r = weir use-plain.weir | complete
+print (if r.exitCode <> 0 then "importing a non-module is a named check error" else "unexpected")
+```
+
+(The child's message: `plain.weir is not a module; add module at the
+top, or invoke it as a command`.) A module `let` that runs a command
+is refused too — wrap it in a function; a module declares, a script
+runs.
+
 ## Retrying and polling
 
 The bounded loops share one shape:

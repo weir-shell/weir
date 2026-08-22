@@ -6139,6 +6139,13 @@ echo "e2e ok: lexical keyword table current (generated from the grammar manifest
 (cd "$ROOT" && "$BIN" ci/wrap-hazard.weir) || fail "wrap hazard in rendered docs — see lines above"
 echo "e2e ok: no mid-paragraph '>' wrap hazards in rendered docs"
 
+# ---- every manifest keyword has teaching prose ----------------------------
+# members are coverage-gated; this is the syntax half, derived from the
+# same gated manifest (import shipped with no teaching section and only
+# this audit noticed — the class needs a gate, not a memory).
+(cd "$ROOT" && "$BIN" ci/feature-docs.weir) || fail "a manifest keyword has no teaching prose — see above"
+echo "e2e ok: every manifest keyword taught in prose (GUIDE or written reference)"
+
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned
 # here against LIVE runs so the homepage cannot go stale while green (the

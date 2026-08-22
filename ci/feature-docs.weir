@@ -1,0 +1,58 @@
+#!/usr/bin/env weir
+// The feature-docs gate [D:feature-docs]: every keyword the grammar
+// manifest carries must appear in TEACHING PROSE — GUIDE or a written
+// reference page — not merely inside a fence or the generated keyword
+// table. Members are coverage-gated ([D:docs-coverage]); this is the
+// same idea for the half that is syntax, derived from the same gated
+// artifact. STATED LIMIT: keywords that are ordinary English words
+// (of, in, do, if, to…) match prose vacuously — the gate's teeth are
+// the distinctive ones (import caught red before its section landed);
+// and "appears in prose" is presence, not pedagogy — judgement stays
+// judgement.
+
+type Manifest = { keywords: seq<string> }
+
+let m = File.read "editors/grammar-manifest.json" |> from json Manifest
+
+type St = {
+    InFence: bool
+    InGen: bool
+    Kept: string
+}
+
+// prose only: drop fenced blocks and the generated keyword table —
+// a python fence taught us `import socketserver` reads as coverage
+let stripFences path =
+    let step st line =
+        let fence = Str.startsWith "```" (Str.trim line)
+        let gen =
+            if Str.contains "keywords:begin" line then true
+            elif Str.contains "keywords:end" line then false
+            else st.InGen
+
+        { InFence = (if fence then not st.InFence else st.InFence)
+          InGen = gen
+          Kept =
+            (if st.InFence || fence || st.InGen || gen then
+                 st.Kept
+             else
+                 $"{st.Kept}\n{line}") }
+
+    let init = { InFence = false; InGen = false; Kept = "" }
+    (File.read path |> Seq.fold step init).Kept
+
+let prose =
+    ["docs/GUIDE.md"; "docs/reference/lexical.md"]
+    |> Seq.map stripFences
+    |> Str.join "\n"
+
+let missing =
+    m.keywords
+    |> Seq.where (fun k -> not (prose |> Str.isMatch $"(?<![\\w.]){k}(?![\\w])"))
+    |> Seq.force
+
+if not (Seq.isEmpty missing) then
+    let names = missing |> Str.join ", "
+    fail $"keyword(s) with no teaching prose in GUIDE or the written reference: {names} — the manifest says they exist; the docs never say what they are"
+
+print $"feature-docs ok: all {m.keywords |> Seq.length} manifest keywords appear in teaching prose"
