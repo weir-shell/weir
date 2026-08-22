@@ -72,7 +72,7 @@ let areaOfOther p =
         "ci"
     elif Str.startsWith "tests/" p then
         "tests"
-    elif Str.startsWith "docs/" p || Str.startsWith "skills/" p || Str.startsWith "examples/" p || Str.startsWith "editors/" p then
+    elif Str.startsWith "docs/" p || Str.startsWith "skills/" p || Str.startsWith "examples/" p || Str.startsWith "editors/" p || Str.startsWith "assets/" p then
         "docs"
     elif p == "README.md" || p == "SECURITY.md" || p == "NOTICE" || p == "LICENSE" || p == "CONTRIBUTING.md" || p == "CODE_OF_CONDUCT.md" || p == "THIRD-PARTY-NOTICES.txt" || p == "CLAUDE.md" || p == "CHANGELOG.md" then
         "docs"
