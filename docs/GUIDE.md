@@ -313,8 +313,27 @@ print target.Name
 
 ## Commands and processes
 
-A bareword at the head of a line runs the external program of that
-name. Builtins shadow PATH; `^ls` forces the real one.
+### How a line decides
+
+Weir has two modes, and the HEAD WORD of a statement picks one: a
+name bound in scope (or a builtin) makes the line an expression —
+ordinary application; an unbound bareword runs the external program
+of that name. Builtins shadow PATH; `^ls` forces the real one, and
+params shadow PATH inside their own body.
+
+```weir
+let greet name = print $"hi {name}"
+greet "io"
+echo hi io
+```
+
+Inside command mode everything is an inert argv word — nothing
+expands, nothing splits — and islands of expression open only at
+the splice markers (`$name`, `(expr)`) and close again. Expression
+mode is everywhere else: right of a `let`, inside interpolation
+holes, inside `$()`/`!()`. The two never blend mid-word (glued
+pieces are refused outright), and the [editor colors](#what-the-editor-colors-mean)
+paint exactly this boundary from the parse.
 
 **The pipe glyph: the right-hand side decides.** `|` feeds a program
 (`git log | grep x`); `|>` applies a function

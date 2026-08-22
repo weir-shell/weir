@@ -113,6 +113,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
       </button>
     </div>
+    <p class="install-more">
+      <a href="/docs/install/">More install options</a> — Docker,
+      checksums, air-gapped.
+    </p>
   </div>
 
   <h2>The check is the test</h2>
@@ -141,16 +145,6 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     forget to update <code>--help</code>. Unknown flags, missing
     requireds and unparseable values arrive together, in one boundary
     error, before any effect runs.
-  </p>
-
-  <h2>Install</h2>
-  <pre><code>curl -fsSL https://weir.sh/install.sh | sh</code></pre>
-  <p>
-    Windows: <code>irm https://weir.sh/install.ps1 | iex</code> — or
-    <code>docker run --rm -it ghcr.io/weir-shell/weir</code>. One
-    static binary: no SDK, no restore step, no first-run compile, no
-    cache to get wrong. <a href="/docs/install/">docs/INSTALL</a> has
-    the details.
   </p>
 
   <h2>Predictable, illustrated</h2>
@@ -309,6 +303,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     align-items: center;
     gap: 0.5rem;
   }
+  .install-more { margin: 0.15rem 0 0; font-size: var(--text-sm); color: var(--muted); }
   /* inside the bounded block the rows drop their own chrome */
   .install-line pre {
     background: transparent;
