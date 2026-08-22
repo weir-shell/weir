@@ -6117,10 +6117,10 @@ echo "e2e ok: reference dump current (docs-json == committed site data)"
 # docs/cli.md quotes the usage block verbatim; a new subcommand or flag
 # must move the page in the same commit as the binary.
 cliusage=$(mkweirtmp)
-awk '/^```text$/{f++; next} /^```$/{if(f==1)exit} f==1' "$ROOT/docs/cli.md" > "$cliusage/page.txt"
+awk '/^```text$/{f++; next} /^```$/{if(f==1)exit} f==1' "$ROOT/docs/tooling.md" > "$cliusage/page.txt"
 "$BIN" --help > "$cliusage/help.txt"
 diff "$cliusage/page.txt" "$cliusage/help.txt" \
-    || fail "docs/cli.md's usage block differs from 'weir --help' — update the page (or the binary's usage string) so they agree"
+    || fail "docs/tooling.md's usage block differs from 'weir --help' — update the page (or the binary's usage string) so they agree"
 echo "e2e ok: docs/cli.md usage block == weir --help"
 
 # ---- the lexical keyword table renders the gated manifest -----------------
@@ -6139,6 +6139,13 @@ echo "e2e ok: lexical keyword table current (generated from the grammar manifest
 (cd "$ROOT" && "$BIN" ci/wrap-hazard.weir) || fail "wrap hazard in rendered docs — see lines above"
 echo "e2e ok: no mid-paragraph '>' wrap hazards in rendered docs"
 
+# ---- every manifest keyword has teaching prose ----------------------------
+# members are coverage-gated; this is the syntax half, derived from the
+# same gated manifest (import shipped with no teaching section and only
+# this audit noticed — the class needs a gate, not a memory).
+(cd "$ROOT" && "$BIN" ci/feature-docs.weir) || fail "a manifest keyword has no teaching prose — see above"
+echo "e2e ok: every manifest keyword taught in prose (GUIDE or written reference)"
+
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned
 # here against LIVE runs so the homepage cannot go stale while green (the
@@ -6156,7 +6163,7 @@ type Cli = {
 
 let cli = Args.load Cli
 tar czf bundle.tar.gz dist/
-rsnyc -av bundle.tar.gz backup:/srv/dist
+if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist
 WEOF
 b1=$(cd "$herodir" && "$BIN" release.weir 2>&1) && fail "the beat-1 tool must refuse"
 echo "$b1" | grep -qF "unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c" || fail "beat-1 refusal drifted: $b1"

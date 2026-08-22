@@ -335,9 +335,10 @@ within tmp d
   attribute mutation.
 - Exceptions and `try/except` — `fail` stops; a fallible step becomes
   data with `| complete` and you branch on it.
-- Dicts — there is no `Map` type (the honest gap): declared records
-  where the keys are known, `seq<string * string>` pairs where they
-  are not, `from json T` at the boundary.
+- Dicts — `Map<string, T>` covers keys that are DATA (ID-keyed JSON
+  objects, counters): `Map.ofPairs`/`get`/`tryGet`/`pairs`, string
+  keys only, and `from json Map<string, T>` at the boundary. Keys
+  known at write time are a declared record instead.
 - `os.path`/`pathlib` — `Path.*` functions over plain strings,
   platform-native (`Path.combine`, `Path.stem`, `Path.glob`).
 

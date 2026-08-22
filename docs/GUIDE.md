@@ -3,7 +3,9 @@
 Weir is a typed shell: F#-shaped expressions, real commands, and a
 type checker that runs before anything else does. Every fenced `weir`
 block in this guide is executed against the release binary in CI —
-if an example here stops working, the build fails.
+if an example here stops working, the build fails. (Blocks needing a
+live endpoint or a real token are marked demo and are the exception;
+everything else runs.)
 
 ## Why weir
 
@@ -311,8 +313,27 @@ print target.Name
 
 ## Commands and processes
 
-A bareword at the head of a line runs the external program of that
-name. Builtins shadow PATH; `^ls` forces the real one.
+### How a line decides
+
+Weir has two modes, and the HEAD WORD of a statement picks one: a
+name bound in scope (or a builtin) makes the line an expression —
+ordinary application; an unbound bareword runs the external program
+of that name. Builtins shadow PATH; `^ls` forces the real one, and
+params shadow PATH inside their own body.
+
+```weir
+let greet name = print $"hi {name}"
+greet "io"
+echo hi io
+```
+
+Inside command mode everything is an inert argv word — nothing
+expands, nothing splits — and islands of expression open only at
+the splice markers (`$name`, `(expr)`) and close again. Expression
+mode is everywhere else: right of a `let`, inside interpolation
+holes, inside `$()`/`!()`. The two never blend mid-word (glued
+pieces are refused outright), and the [editor colors](#what-the-editor-colors-mean)
+paint exactly this boundary from the parse.
 
 **The pipe glyph: the right-hand side decides.** `|` feeds a program
 (`git log | grep x`); `|>` applies a function
@@ -580,7 +601,7 @@ template's structure before line one runs — within a stated
 boundary: the schema validates what the checker can see, and
 `for`-generated content is structurally unchecked. Vendoring
 (`weir add schema`), the lock, and the full boundary live in
-[schemas.md](schemas.md).
+[schemas.md](tooling.md#yaml-schemas).
 
 Nonzero exit raises when the stream is forced. To inspect instead of
 raise, make the run data:
@@ -939,7 +960,7 @@ preserves them, and nothing errors between. `Http` closes that: the
 request is a record, `Http.send` runs it, and a `Json` body carries
 the caller's `to json` output byte-exact.
 
-```
+```weir-demo
 type Item = { name: string; count: int }
 
 let created =
@@ -968,14 +989,14 @@ built request runs through `Http.send`). It returns the body and raises
 on a non-2xx naming the status, where `Http.send` binds the same
 status as data.
 
-```
+```weir-demo
 let item = Http.fetch $"{api}/items/1" |> from json Item
 ```
 
 When the shape belongs to a foreign API and you read it once, write
 the type inline — an **anonymous record type**:
 
-```
+```weir-demo
 let ip = Http.fetch "https://api.ipify.org?format=json" |> from json {| ip: string |} |> _.ip
 ```
 
@@ -1077,7 +1098,7 @@ code — only a
 transport failure (unreachable, TLS, timeout) raises. A health check
 is one line:
 
-```
+```weir-demo
 let up = (Http.send { Http.defaults with url = $"{api}/health" }).status == 200
 ```
 
@@ -1086,7 +1107,7 @@ let up = (Http.send { Http.defaults with url = $"{api}/health" }).status == 200
 token into a string is a check error, and `show` on the request masks
 it as `***`. A shared base config is the record's own case:
 
-```
+```weir-demo
 let github = { Http.defaults with
                  auth = Bearer token
                  headers = [("Accept", "application/vnd.github+json")] }
@@ -1121,7 +1142,7 @@ The primary producer is `Env.load` — env is the standard CI secret
 channel (`secrets.GITHUB_TOKEN` becomes an env var), so a `Secret`
 field is the main way a token enters:
 
-```
+```weir-demo
 type Cfg = { GITHUB_TOKEN: Secret }
 let cfg = Env.load Cfg
 git push https://$(Secret.reveal cfg.GITHUB_TOKEN)@github.com/…
@@ -1314,6 +1335,47 @@ To resolve symlinks:
 Available in scripts only — the REPL and `-e` refuse each `Self`
 member by name, since neither has a file.
 
+## Sharing code: modules and `import`
+
+The moment a script becomes a tool is the moment two scripts want
+the same helper. A file that STARTS with `module` (bare, or
+`module Name`) is a module: importable and declaration-only —
+`type` and `let` definitions, no commands and no bare expressions —
+and not runnable itself. Import it by literal path, first in the
+file:
+
+```weir
+["module Greet"; ""; "/// the shared helper"; "let hello name = $\"hi {name}\""] |> File.write "greet.weir"
+["import \"./greet.weir\" as G"; ""; "print (G.hello \"weir\")"] |> File.write "use-greet.weir"
+weir use-greet.weir
+```
+
+Access is always qualified — `G.hello`, `G.Ctx` for an imported
+type, `G.Ctx { field = v }` to construct its records. Without `as`,
+the alias is the module's declared name (or the capitalized
+filename). Nothing leaks bare: an imported union's cases are
+reached qualified too, and a local declaration always wins over an
+imported name.
+
+Resolution happens at CHECK time against the literal path — nothing
+loads at runtime, and a missing file is a located error naming the
+resolved absolute path. Imports are transitive; a module two
+importers share is checked once (diamonds collapse), and an import
+cycle is a named check error. `import` is script-only — not `-e`,
+not the REPL. The wrong-kind errors are named as well:
+
+```weir
+["print 1"] |> File.write "plain.weir"
+["import \"./plain.weir\""; "print \"unreachable\""] |> File.write "use-plain.weir"
+let r = weir use-plain.weir | complete
+print (if r.exitCode <> 0 then "importing a non-module is a named check error" else "unexpected")
+```
+
+(The child's message: `plain.weir is not a module; add module at the
+top, or invoke it as a command`.) A module `let` that runs a command
+is refused too — wrap it in a function; a module declares, a script
+runs.
+
 ## Retrying and polling
 
 The bounded loops share one shape:
@@ -1428,8 +1490,8 @@ scraped surface may be incomplete; verified by hand and marked
 `exhaustive`, unknown flags become errors. `weir check` never runs
 the tool, so checking works for tools that only exist in CI. The
 full cycle — generate, verify, regenerate — and the `.weir/` tree it
-lives in are [signatures.md](signatures.md) and
-[project.md](project.md).
+lives in are [signatures.md](tooling.md#command-signatures) and
+[project.md](tooling.md#project-layout-weir).
 
 ## What a script can do, before it runs
 
@@ -1438,7 +1500,7 @@ heads are literal and nothing expands in argv, the set of commands a
 script can reach is statically knowable — so weir reports it, with a
 site for every line:
 
-```
+```text
 deploy.weir can (capability, not behaviour — an untaken branch still counts):
   ⚠ this report is incomplete: 1 opaque site(s) — an interpreter's argument cannot be analyzed
   runs:

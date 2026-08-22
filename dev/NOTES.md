@@ -1,5 +1,19 @@
 # Spike Notes
 
+## the audit found the word but not the teaching (2026-08-22)
+
+Word-presence said import was covered; the hit was `import
+socketserver` in a python fence. Backtick spans then hid the
+opposite direction — rec and mutable WERE taught, in prose the
+first gate draft refused to see. Both false modes are now stripped
+or admitted in the gate itself, which went red three separate ways
+before it was allowed to stay. The worst bucket was neither absent
+nor passing-mention: coming-from actively DENIED Map exists, one
+session after it shipped — a denial reads as authoritative exactly
+because the page is honest everywhere else. Owed and recorded:
+Bytes and record patterns are SKILL-only; the process finding was
+empty (every gap had its ledger row).
+
 ## the extensions plan met a friendly registry (2026-08-22)
 
 The decisive unknown — does zed-industries/extensions take a

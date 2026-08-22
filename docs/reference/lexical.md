@@ -69,8 +69,9 @@ adapters read `from` `json`, `jsonl`, `yaml` and write `to` `json`, `yaml`;
 kind and adapter words are ordinary identifiers everywhere else.
 <!-- keywords:end -->
 
-The reserved kinds are deliberate. Two words are reserved with NO
-meaning, so the F# reflex gets an error rather than a binding:
+The reserved kinds are deliberate. Two words — `rec` and `mutable`
+— are reserved with NO meaning, so the F# reflex gets an error
+rather than a binding:
 
 ```weir-error
 let rec f x = x // 'rec' is reserved; weir has no let rec
@@ -264,7 +265,7 @@ glyph, two lifetimes:
 - **file** directives are read at CHECK time: `#sig`, `#schema`
 
 The [REPL manual](../repl.md) covers the session set;
-[signatures](../signatures.md) the file set.
+[signatures](../tooling.md#command-signatures) the file set.
 
 ## Attributes
 
