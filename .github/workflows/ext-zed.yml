@@ -57,6 +57,12 @@ jobs:
           git -C extensions/weir fetch origin "$GITHUB_SHA"
           git -C extensions/weir checkout "$GITHUB_SHA"
           python3 ../.github/scripts/zed-extensions-entry.py
+          # THEIR sorter is canonical: submodule add appends to
+          # .gitmodules, and their CI requires both files sorted —
+          # running pnpm sort-extensions cannot drift from their rules
+          corepack enable pnpm
+          pnpm install --frozen-lockfile
+          pnpm sort-extensions
           git add -A
           git commit -m "Add weir v${VERSION}"
           git push -u origin "$branch" --force
