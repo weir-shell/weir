@@ -1,0 +1,68 @@
+# The VS Code extension pipeline [D:ext-publish] — build ONCE, publish
+# the same .vsix twice (Marketplace + Open VSX cannot diverge), attach
+# it to a GitHub release so a manual install path survives both
+# registries. Trigger discipline: neither registry can unpublish or
+# reuse a version, so this NEVER rides `release: published` — a
+# dedicated `ext-vscode-v*` tag (NOT `vscode-v*`: release.yml's `v*`
+# glob would catch that) or a dispatch, and dispatch is a DRY RUN:
+# package + artifact, nothing permanent.
+name: ext-vscode
+
+on:
+  push:
+    tags: ["ext-vscode-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: package the vsix (the one artifact both registries get)
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          npx vsce package
+          ls -la weir-*.vsix
+      - name: the tag names the version it publishes
+        if: github.ref_type == 'tag'
+        working-directory: editors/vscode
+        run: |
+          want="${GITHUB_REF_NAME#ext-vscode-v}"
+          have=$(node -p "require('./package.json').version")
+          [ "$want" = "$have" ] || { echo "tag says $want, package.json says $have — align before tagging" >&2; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: editors/vscode/weir-*.vsix
+      - name: publish — VS Code Marketplace
+        if: github.ref_type == 'tag'
+        working-directory: editors/vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          [ -n "$VSCE_PAT" ] || { echo "VSCE_PAT is not set — create the publisher and PAT first (dev/RELEASE-RUNBOOK.md)" >&2; exit 1; }
+          npx vsce publish --packagePath weir-*.vsix
+      - name: publish — Open VSX (VSCodium, Cursor, Windsurf, Gitpod)
+        if: github.ref_type == 'tag'
+        working-directory: editors/vscode
+        env:
+          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+        run: |
+          [ -n "$OVSX_TOKEN" ] || { echo "OVSX_TOKEN is not set — create the namespace and token first (dev/RELEASE-RUNBOOK.md)" >&2; exit 1; }
+          npx ovsx publish weir-*.vsix -p "$OVSX_TOKEN"
+      - name: attach the vsix to a GitHub release on this tag
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" editors/vscode/weir-*.vsix \
+            --title "VS Code extension $GITHUB_REF_NAME" \
+            --notes "The same .vsix published to the VS Code Marketplace and Open VSX. Manual install: \`code --install-extension weir-*.vsix\`."

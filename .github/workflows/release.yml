@@ -9,7 +9,7 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]*"]  # never ext-vscode-v* / ext-zed-v* — and a v-junk tag stays inert
 
 permissions:
   contents: write

@@ -1,0 +1,22 @@
+<!-- The weir mark without the tile [D:ext-publish] — for use on any
+     surface. Same hues as icon.svg, but colours SWAP WITH THE SURFACE:
+     the tile's light blues only work on a dark ground, so the default
+     here is the light-theme deep set (#004396/#00658a/#007575, the
+     queil-weir palette) and a prefers-color-scheme query restores the
+     dark-mode set (#7fb2f0/#4fc1e8/#2fc6c6). Browsers honour the query
+     in <img> and favicon contexts; a raster export must pick one set. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <style>
+    .b1 { fill: #004396; }
+    .b2 { fill: #00658a; }
+    .b3 { fill: #007575; }
+    @media (prefers-color-scheme: dark) {
+      .b1 { fill: #7fb2f0; }
+      .b2 { fill: #4fc1e8; }
+      .b3 { fill: #2fc6c6; }
+    }
+  </style>
+  <rect class="b1" x="20" y="34" width="56" height="12" rx="6"/>
+  <rect class="b2" x="36" y="57" width="56" height="12" rx="6"/>
+  <rect class="b3" x="52" y="80" width="56" height="12" rx="6"/>
+</svg>

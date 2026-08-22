@@ -1,5 +1,23 @@
 # Spike Notes
 
+## the extensions plan met a friendly registry (2026-08-22)
+
+The decisive unknown — does zed-industries/extensions take a
+subdirectory — dissolved on contact: the live extensions.toml has
+entries with path = "editors/zed" character-for-character, so the
+feared repo split (and the currency-check surgery it would drag
+along) never happens. The trap worth the entry: extension tags named
+vscode-v* would have FIRED THE WEIR RELEASE WORKFLOW — release.yml
+triggers on the v* glob, and "vscode-v0.1.0" starts with v. Tags are
+ext-*, and the release glob is v[0-9]* now regardless.
+
+The icon forced the parked logo question, answered with a designed
+minimal mark (a weir: three bars stepping down, palette blues on the
+dark tile) rather than a placeholder — deliberately small, easy to
+supersede. What stays human: the marketplace accounts and tokens,
+the clean-profile installs, the screenshot, and the merge on Zed's
+side of the fence.
+
 ## the palette came home, and the wrap ate an operator (2026-08-22)
 
 The theme reversal is recorded as what it is: preference. Nord's

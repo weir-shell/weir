@@ -82,3 +82,46 @@ site workflow's manual channel.
      `:latest` resolves to the same digest
 7. If any of it fails: delete the release, fix, cut the next number.
    The tag stays [D:tag-immutability].
+
+## Editor extensions — a separate cadence [D:ext-publish]
+
+Extensions version independently of weir: a highlighting fix never
+waits for a weir release, and the READMEs state the requirement
+("weir on your PATH") instead of a version lockstep. Registry
+versions are PERMANENT — no unpublish, no number reuse — so neither
+pipeline rides `release: published`; each has its own tag.
+
+One-time setup (human, before the first publish):
+
+1. VS Code Marketplace: create the `weir-shell` publisher
+   (marketplace.visualstudio.com/manage), mint an Azure DevOps PAT
+   with Marketplace→Manage scope → repo secret `VSCE_PAT`.
+2. Open VSX: eclipse.org account, sign the publisher agreement,
+   create the `weir-shell` namespace (`npx ovsx create-namespace`)
+   → repo secret `OVSX_TOKEN`.
+3. Zed: fork zed-industries/extensions as weir-shell/extensions;
+   fine-grained PAT (contents:write + pull-requests:write on the
+   fork) → repo secret `ZED_EXTENSIONS_TOKEN`.
+4. Before anything permanent: `workflow_dispatch` ext-vscode (a DRY
+   RUN — package + artifact only), download the .vsix, install it on
+   a clean profile (`code --install-extension`), check highlighting,
+   the LSP against the SHIPPED weir, and the no-weir case (clear
+   PATH: the error must offer the Install-weir button). Load
+   editors/zed via zed: install dev extension, same checks.
+5. A screenshot of a diagnostic underlined in the editor belongs on
+   the marketplace listing — one capture, the most persuasive thing
+   on the page (open item; the listing ships without it).
+
+Publishing:
+
+- VS Code + Open VSX: bump `editors/vscode/package.json` version,
+  tag `ext-vscode-v<version>` (the workflow refuses a mismatched
+  tag), push. One .vsix is built and published to BOTH registries
+  and attached to a GitHub release on the tag.
+- Zed: bump `editors/zed/extension.toml` version, tag
+  `ext-zed-v<version>`, push. The workflow opens a PR against
+  zed-industries/extensions (submodule + `path = "editors/zed"` —
+  subdirectories verified accepted). A green run means PR OPENED;
+  the merge is Zed's review, not ours.
+- After the FIRST publish, install from each registry (not the local
+  .vsix) — the path users take is the one nobody tests.

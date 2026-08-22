@@ -13,6 +13,9 @@ const { title, toc } = Astro.props;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title ? `${title} · weir` : "weir — a typed shell"}</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="preload" href="/fonts/iosevka-term-ext-regular.woff2" as="font" type="font/woff2" crossorigin />
     <script is:inline>
       // theme before first paint [D:queil-theme]: stored choice wins,
@@ -109,7 +112,21 @@ const { title, toc } = Astro.props;
         gap: 1.25rem;
         align-items: baseline;
       }
-      header .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+      header .brand {
+        font-weight: 700;
+        font-size: 1.1rem;
+        color: var(--fg);
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+      }
+      .brand .b1 { fill: #004396; }
+      .brand .b2 { fill: #00658a; }
+      .brand .b3 { fill: #007575; }
+      html.dark .brand .b1 { fill: #7fb2f0; }
+      html.dark .brand .b2 { fill: #4fc1e8; }
+      html.dark .brand .b3 { fill: #2fc6c6; }
       #theme-toggle {
         margin-left: auto;
         border: 1px solid var(--border);
@@ -206,7 +223,12 @@ const { title, toc } = Astro.props;
   </head>
   <body>
     <header>
-      <a class="brand" href="/">weir</a>
+      <a class="brand" href="/">
+        <svg class="mark" viewBox="0 0 128 128" width="17" height="17" aria-hidden="true">
+          <rect class="b1" x="20" y="34" width="56" height="12" rx="6" />
+          <rect class="b2" x="36" y="57" width="56" height="12" rx="6" />
+          <rect class="b3" x="52" y="80" width="56" height="12" rx="6" />
+        </svg>weir</a>
       <nav>
         <a href="/docs/install/">Install</a>
         <a href="/docs/guide/">Guide</a>
