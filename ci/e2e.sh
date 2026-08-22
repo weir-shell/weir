@@ -6151,8 +6151,16 @@ echo "e2e ok: every manifest keyword taught in prose (GUIDE or written reference
 # #help carries the /// doc; failure is all-or-nothing with a located
 # error; a missing init is SILENT (the negative pin).
 initcfg=$(mkweirtmp)
-mkdir -p "$initcfg/weir" "$initcfg/work"
-cat > "$initcfg/weir/init.weir" <<WEOF
+# the config-home split [D:windows-v1], same as the config cells: POSIX
+# reads XDG_CONFIG_HOME (the fixture), Windows reads the shell API's
+# real AppData — write there and clean up (throwaway VM either way)
+if [ "$IS_WINDOWS" = "1" ]; then
+    INITHOME="$APPDATA"
+else
+    INITHOME="$initcfg"
+fi
+mkdir -p "$INITHOME/weir" "$initcfg/work"
+cat > "$INITHOME/weir/init.weir" <<WEOF
 #session {
     cwd = "$initcfg/work"
     logLevel = "debug"
@@ -6177,14 +6185,18 @@ let big threshold =
 WEOF
 iout=$(printf 'pwd\nprint (Env.get "EDITOR" |> Option.defaultValue "unset")\n#echo\n#help pu\nsh -c "echo child-sees-$PAGER"\n#quit\n' \
     | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
-echo "$iout" | grep -qF "init: 3 name(s) from $initcfg/weir/init.weir" || fail "init count line missing: $iout"
-echo "$iout" | grep -qF "$initcfg/work" || fail "init cwd not applied"
+# count + file name only — Windows prints native separators, the
+# fixture path is bash-form; the path SPELLING is not the claim
+echo "$iout" | grep -q "init: 3 name(s) from .*init\.weir" || fail "init count line missing: $iout"
+# the fixture's unique dirname + /work, separator-agnostic: pwd echoes
+# the native (escape-doubled) spelling on Windows
+echo "$iout" | grep -q "$(basename "$initcfg").*work" || fail "init cwd not applied"
 echo "$iout" | grep -qxF "weir> hx" || fail "init env not visible to Env.get"
 echo "$iout" | grep -qF "echo cap: 50" || fail "init echoCap not applied"
 echo "$iout" | grep -qF "push the current branch and set upstream" || fail "#help on an init name lost its /// doc"
 echo "$iout" | grep -qF "child-sees-less -R" || fail "init env not inherited by a child"
 # all-or-nothing: a typo'd #session key reports located, loads NOTHING
-cat > "$initcfg/weir/init.weir" <<'WEOF'
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
 #session {
     echoCpa = 50
 }
@@ -6197,7 +6209,7 @@ echo "$iout" | grep -qF "unknown #session key 'echoCpa'. Did you mean 'echoCap'?
 echo "$iout" | grep -qF "init: NOT loaded" || fail "broken init must say NOT loaded"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a binding survived a failed init"
 # declaration-only: a bare command refuses with the teach
-cat > "$initcfg/weir/init.weir" <<'WEOF'
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
 git status
 WEOF
 iout=$(printf '#quit
@@ -6205,7 +6217,7 @@ iout=$(printf '#quit
 echo "$iout" | grep -qF "the init file is declaration-only" || fail "init decl-only teach missing"
 # missing init: SILENT — the negative pin ("reports on failure" must
 # not be satisfied by something that reports always)
-rm "$initcfg/weir/init.weir"
+rm "$INITHOME/weir/init.weir"
 iout=$(printf '#quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "init:" && fail "a missing init must be silent" || true
@@ -6217,6 +6229,7 @@ pout=$(printf '#session\n#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$
 echo "$pout" | grep -qF "#session is read from the init file at startup" || fail "prompt #session teach missing"
 # the login-shell convention: a leading-dash argv[0] changes nothing
 lout=$(bash -c "exec -a -weir \"$BIN\" --version" 2>&1) || fail "dash argv[0] broke weir"
+rm -f "$INITHOME/weir/init.weir"
 echo "e2e ok: repl init file (example loads with docs+settings, all-or-nothing failure, silent missing, both #session teaches, dash-argv0)"
 
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
