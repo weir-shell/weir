@@ -129,9 +129,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   <pre class="refusal">{beat1Refusal}</pre>
   <p>
     <strong>Nothing ran.</strong> The bundle was never created, nothing
-    was uploaded, no half-finished state — weir resolves every command
-    name and checks every type in the file before executing line one.
-    No other scripting language catches a misspelled command at all.
+    was uploaded, no half-finished state. Your shell finds out when it
+    gets there; weir resolves every command — including the ones on
+    your PATH — and checks every type in the file before the first
+    one runs.
   </p>
 
   <h2>A real CLI, free</h2>
