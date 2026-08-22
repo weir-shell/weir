@@ -113,7 +113,10 @@ One-time setup (human, before the first publish):
    the banner between its publish and the grant; that window is
    theirs, not ours. Verified = claimed owner exists AND the
    publishing account is a namespace member (a bot token belongs to
-   a contributor account).
+   a contributor account). A fresh publish also lands DEACTIVATED on
+   Open VSX — their post-publish gate for new publishers; v0.1.0
+   activated within minutes, so treat the state as a queue, not a
+   failure. The Marketplace's "verifying" is the same shape.
 3. Zed: fork zed-industries/extensions as weir-shell/extensions;
    fine-grained PAT (contents:write + pull-requests:write on the
    fork) → repo secret `ZED_EXTENSIONS_TOKEN`.
