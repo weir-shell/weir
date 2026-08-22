@@ -98,7 +98,22 @@ One-time setup (human, before the first publish):
    with Marketplace→Manage scope → repo secret `VSCE_PAT`.
 2. Open VSX: eclipse.org account, sign the publisher agreement,
    create the `weir-shell` namespace (`npx ovsx create-namespace`)
-   → repo secret `OVSX_TOKEN`.
+   → repo secret `OVSX_TOKEN`. Then CLAIM OWNERSHIP — creating a
+   namespace only makes you a contributor, and an unclaimed
+   namespace shows every version with a ⚠ unverified banner. THE
+   CLAIM ORDER IS FIXED BY THEIR TEMPLATE: the only self-served
+   route for `weir-shell` is Option 1 (VS Code publisher WITH a
+   published extension naming its repo), so publish to the VS Code
+   Marketplace FIRST, then open the claim issue at
+   github.com/EclipseFdn/open-vsx.org — tick "repo owned by the
+   GitHub ID making this request (same org)" filing from an org
+   member, or link a commit you authored in weir-shell/weir.
+   (Option 3 does not fit: the namespace matches the ORG, not your
+   user ID, and not the weir.sh domain.) The Open VSX listing wears
+   the banner between its publish and the grant; that window is
+   theirs, not ours. Verified = claimed owner exists AND the
+   publishing account is a namespace member (a bot token belongs to
+   a contributor account).
 3. Zed: fork zed-industries/extensions as weir-shell/extensions;
    fine-grained PAT (contents:write + pull-requests:write on the
    fork) → repo secret `ZED_EXTENSIONS_TOKEN`.
