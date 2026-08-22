@@ -1,0 +1,10 @@
+<!-- The weir mark [D:ext-publish]: water stepping over a weir — three
+     bars cascading down-right, the site palette's dark-mode blues on
+     its dark ground. icon.png is rendered from this file (256px, via
+     sharp); edit here, re-render there. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="28" fill="#0e1113"/>
+  <rect x="20" y="34" width="56" height="12" rx="6" fill="#7fb2f0"/>
+  <rect x="36" y="57" width="56" height="12" rx="6" fill="#4fc1e8"/>
+  <rect x="52" y="80" width="56" height="12" rx="6" fill="#2fc6c6"/>
+</svg>
