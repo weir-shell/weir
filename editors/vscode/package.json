@@ -1,9 +1,9 @@
 {
   "name": "weir",
   "displayName": "weir",
-  "description": "Language support for weir, the typed shell — diagnostics, hover, and completion via `weir lsp`, plus TextMate colorization.",
+  "description": "Language support for weir, the typed shell \u2014 diagnostics, hover, and completion via `weir lsp`, plus TextMate colorization.",
   "version": "0.1.0",
-  "publisher": "weir-local",
+  "publisher": "weir-shell",
   "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.91.0"
@@ -94,5 +94,18 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/weir-shell/weir"
+  },
+  "icon": "icon.png",
+  "keywords": [
+    "weir",
+    "shell",
+    "scripting",
+    "typed",
+    "lsp",
+    "language-server"
+  ],
+  "homepage": "https://weir.sh",
+  "bugs": {
+    "url": "https://github.com/weir-shell/weir/issues"
   }
 }

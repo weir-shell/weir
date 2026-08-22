@@ -1,0 +1,65 @@
+# The Zed extension pipeline [D:ext-publish] — Zed publishes by PR
+# against zed-industries/extensions (a submodule entry with
+# path = "editors/zed"; SUBDIRECTORIES ARE ACCEPTED — verified against
+# the live extensions.toml, so no repo split and zed-rev-current stays
+# where it is). A bot can open the PR; it cannot merge it — THE SUCCESS
+# CONDITION OF A GREEN RUN IS "PR OPENED", NOT "PUBLISHED"; the review
+# and merge are Zed's. Trigger: a dedicated ext-zed-v* tag, or dispatch.
+#
+# Needs ZED_EXTENSIONS_TOKEN: a fine-grained PAT with contents:write +
+# pull-requests:write on weir-shell/extensions (a fork of
+# zed-industries/extensions) — the GRAMMAR_DISPATCH_TOKEN pattern.
+name: ext-zed
+
+on:
+  push:
+    tags: ["ext-zed-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: read the extension version (the tag must agree)
+        id: ver
+        run: |
+          v=$(grep -m1 '^version' editors/zed/extension.toml | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            want="${GITHUB_REF_NAME#ext-zed-v}"
+            [ "$want" = "$v" ] || { echo "tag says $want, extension.toml says $v — align before tagging" >&2; exit 1; }
+          fi
+      - name: sync the fork, bump the submodule, open the PR
+        env:
+          GH_TOKEN: ${{ secrets.ZED_EXTENSIONS_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "ZED_EXTENSIONS_TOKEN is not set — fork zed-industries/extensions as weir-shell/extensions and mint the PAT first (dev/RELEASE-RUNBOOK.md)" >&2; exit 1; }
+          gh repo sync weir-shell/extensions --source zed-industries/extensions
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/weir-shell/extensions" fork
+          cd fork
+          git config user.name "weir-ci"
+          git config user.email "ci@weir.sh"
+          branch="weir-v${VERSION}"
+          git checkout -b "$branch"
+          if [ ! -e extensions/weir ]; then
+            git submodule add https://github.com/weir-shell/weir extensions/weir
+          fi
+          git -C extensions/weir fetch origin "$GITHUB_SHA"
+          git -C extensions/weir checkout "$GITHUB_SHA"
+          python3 ../.github/scripts/zed-extensions-entry.py
+          git add -A
+          git commit -m "Add weir v${VERSION}"
+          git push -u origin "$branch" --force
+          gh pr create \
+            --repo zed-industries/extensions \
+            --head "weir-shell:${branch}" \
+            --title "Add weir v${VERSION}" \
+            --body "Language support for weir (https://weir.sh): tree-sitter highlighting + \`weir lsp\`. The extension lives at \`editors/zed\` in the weir repo (subdirectory via \`path\`)." \
+            || echo "PR may already exist — check zed-industries/extensions PRs"
+          echo "::notice::PR OPENED — that is this pipeline's success condition; review and merge are Zed's, a green run does NOT mean published"

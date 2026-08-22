@@ -1,39 +1,44 @@
-# weir + VS Code
+# weir
 
-Client glue + TextMate colorization for `weir lsp` — the same
-checked-statement pipeline the runner uses, whole-file per keystroke.
-No server changes: protocol disagreements are findings against the
-server (frame-level pins in tests/lsp/lsp-e2e.py), never client-side
-workarounds.
+Language support for [weir](https://weir.sh) — a typed
+shell-scripting language: commands, pipes and files, like bash, with
+a checker up front. **Nothing runs until everything checks.**
 
-Build and sideload (marketplace publishing is parked with the OSS
-decisions):
+This extension gives you:
+
+- **Diagnostics as you type** — the whole file is checked, every
+  command included; a misspelled external command is underlined
+  before anything runs
+- **Hover** — types and documentation for every builtin, from the
+  same source the REPL's `#help` reads
+- **Completion** — members, keywords, and command names
+- **Highlighting** — weir's one novel boundary, command versus
+  expression, colored from the parse: command heads as callables,
+  argv as inert words, splice islands as code
+
+## Requires weir
+
+The language server is the weir binary itself (`weir lsp`) — install
+it first:
 
 ```
-cd editors/vscode
-npm install
-npm run package
-code --install-extension weir-0.1.0.vsix
+curl -fsSL https://weir.sh/install.sh | sh
 ```
 
-`npm run package` runs the LOCAL vsce (a devDependency, current
-major) and bundles via esbuild — the vsix is the bundle + grammar +
-metadata (8 files, ~106 KB), no node_modules, no flags needed. Every
-runtime dependency compiles into `out/extension.js`, so the shipped
-surface has zero third-party modules and `npm audit` is clean at pin
-time. Requires VS Code ≥ 1.91 (the languageclient v10 floor).
+Windows: `irm https://weir.sh/install.ps1 | iex`
 
-The `weir` binary resolves from PATH; `weir.serverPath` in settings
-is the escape hatch. `.weir` files and `#!...weir` shebang scripts
-get the language mode.
+The extension finds `weir` on PATH, then in `~/.local/bin` (GUI
+editors often see a shorter PATH than your shell). If it lives
+elsewhere, set `weir.serverPath` to the absolute path of the binary
+— the path only; the extension runs `<path> lsp` itself.
 
-Verification: editors/vscode/SMOKE.md (the interactive half runs on
-a machine with VS Code; the protocol half is CI's lsp-e2e.py).
+## Learn weir
 
-MAINTENANCE RULE: `syntaxes/weir.tmLanguage.json` is a rule-for-rule
-port of `editors/micro/weir.yaml` (the micro file is the SPEC). A
-rule existing in one grammar only is drift — add to BOTH or neither;
-the e2e inventory test diffs micro's `# rule:` annotations against
-this grammar's repository keys and fails on divergence. Oniguruma
-extras (lookbehind/lookahead) are used only where they simplify an
-existing micro rule, never to add rules micro lacks.
+- [The guide](https://weir.sh/docs/guide/) — from first script to
+  parallelism
+- [The reference](https://weir.sh/reference/) — the language and
+  every module
+- [Coming from bash, PowerShell, Python…](https://weir.sh/docs/coming-from/)
+
+The extension versions independently of weir — a highlighting fix
+does not wait for a weir release, and any recent weir works.

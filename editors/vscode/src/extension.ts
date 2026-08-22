@@ -51,7 +51,15 @@ export function activate(_context: vscode.ExtensionContext): void {
     const hint = configured.includes(" ")
       ? `weir.serverPath is the path to the weir BINARY only ('${configured}' contains a space) — the client runs '<path> lsp' itself; remove the ' lsp' suffix.`
       : `'${configured}' was not found on the extension host's PATH (GUI apps often see a shorter PATH than your shell) nor in ~/.local/bin. Install weir, or set weir.serverPath to the absolute binary path.`;
-    void vscode.window.showErrorMessage(`weir language server: ${hint}`);
+    void vscode.window
+      .showErrorMessage(`weir language server: ${hint}`, "Install weir")
+      .then((choice) => {
+        if (choice === "Install weir") {
+          void vscode.env.openExternal(
+            vscode.Uri.parse("https://weir.sh/docs/install/")
+          );
+        }
+      });
     return;
   }
 
