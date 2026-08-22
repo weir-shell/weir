@@ -37,6 +37,14 @@ if Seq.isEmpty revHits then
 
 let rev = revHits |> Seq.head |> Seq.head
 
+// the rev must be the FULL 40-hex sha: Zed's builder runs `git fetch
+// origin <rev>` with the literal string, and a server cannot resolve
+// an abbreviated sha in a fetch — a short pin builds locally (the
+// clone resolves it) and dies only in THEIR CI (caught live on the
+// first submission)
+if Str.length rev <> 40 then
+    fail $"ZED PIN TOO SHORT: rev '{rev}' has {Str.length rev} chars — Zed fetches the literal rev and git cannot fetch an abbreviated sha; pin the full 40-char commit"
+
 // 1 — the pinned rev is the grammar's current main
 let localSha d = git -C $d rev-parse HEAD |> Seq.head
 
