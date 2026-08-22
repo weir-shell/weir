@@ -42,48 +42,68 @@ Three properties, in the order they matter:
 
 ## First script
 
-Command lines stream, like any shell. Everything else is a value:
-bind it with `let`, or print it. A value you drop on the floor is a
-check error, not silent output.
+Save a file, run it with `weir file.weir` — `#!/usr/bin/env weir`
+makes it a program. Three kinds of line cover most scripts:
 
 ```weir
-git status --porcelain
+echo checking...
 
 let files = git ls-files
-print $"tracked: {files |> Seq.length}"
+print $"{files |> Seq.length} tracked file(s)"
 ```
+
+A bare command STREAMS, like any shell — the `echo` writes straight
+through. A `let` in front of a command CAPTURES instead: nothing
+streams, and `files` is a `seq<string>`, one element per line. And
+everything that is not a command must be USED — bind it or print
+it; a value dropped on the floor is a check error, not silent
+output:
 
 ```weir-error
 ls |> Seq.length // computes an int and discards it — bind it, or pipe it to print
 ```
 
+Before any of it runs, the whole file is checked — and
+`weir check file.weir` gives you every finding at once without
+running line one.
+
 `print` takes strings, ints, bools, or `seq<string>` (one line per
-element — `weir script | grep x` composes). For anything else there is
-a hole — interpolation renders any `Show` value, records included:
+element — `weir script | grep x` composes). For anything else there
+is a hole — interpolation renders any `Show` value, records
+included:
 
 ```weir
 let row = ls |> Seq.head
 print $"{row}"
 ```
 
-`show` produces the same text as a plain string; reach for it in the
-two places a hole cannot go — point-free positions (`Seq.map show`)
-and Secrets (`show` masks where interpolation refuses).
+`show` produces the same text as a plain string; its niche is the
+places a hole cannot go — point-free positions (`Seq.map show`) and
+Secrets (`show` masks where interpolation refuses).
 
 ## Comments
 
-`//` runs to end of line, full-line or trailing — and a comment needs
-a preceding space (or line start), which is what keeps `http://a` in
-a command line intact. Command lines take trailing comments too:
+`//` runs to the end of the line, full-line or trailing — command
+lines included:
 
 ```weir
 let retries = 3 // why: registry flakes under load
-git status --porcelain // the porcelain form is the stable one
+echo done // trailing works on command lines too
 ```
 
-`///` lines are doc comments: they attach to the declaration below
-and surface in hover and `--help`. A trailing `///` is just a
-comment — docs attach from their own line only.
+`///` is the doc comment, and it pays its way: it attaches to the
+declaration below and surfaces on hover — and on a CLI record, its
+first line becomes the flag's `--help` text. One source; help and
+hover cannot drift. Watch the `///` lines come back out:
+
+```weir
+["type Cli = {"; "    /// run without uploading"; "    dryRun: bool"; ""; "    /// where the bundle goes"; "    target: string"; "}"; ""; "let cli = Args.load Cli"; "print $\"dry={cli.dryRun} target={cli.target}\""] |> File.write "tool.weir"
+weir tool.weir --help
+```
+
+The edge rules (why `http://a` survives as an argv word, why a
+comment cannot live inside an interpolation hole) are on
+[Lexical](reference/lexical.md#comments).
 
 ## Values and pipelines
 
