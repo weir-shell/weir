@@ -46,6 +46,12 @@ if rel.status <> 200 then
 
 let latest = (rel.body |> from json Release).tag_name
 
+// releases/latest must be a WEIR release: an adjacent product's
+// release (the vsix's ext-vscode-v*) can steal latest if published
+// without --latest=false — caught live on ext-vscode-v0.1.0
+if not (latest |> Str.isMatch @"^v\d") then
+    fail $"releases/latest is '{latest}' — not a weir release tag; an adjacent release stole latest. Repair: gh release edit {latest} --latest=false (and gh release edit <weir-tag> --latest); ext workflows must create releases with --latest=false"
+
 // the site must serve an installer once a release exists — a 404 here IS
 // the dispatch-never-fired state, not a skippable condition. send, not
 // fetch: fetch's raise names only url+status, and this arm's job is the

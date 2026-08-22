@@ -64,5 +64,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" editors/vscode/weir-*.vsix \
+            --latest=false \
             --title "VS Code extension $GITHUB_REF_NAME" \
             --notes "The same .vsix published to the VS Code Marketplace and Open VSX. Manual install: \`code --install-extension weir-*.vsix\`."
