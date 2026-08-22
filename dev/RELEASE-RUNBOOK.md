@@ -118,8 +118,9 @@ One-time setup (human, before the first publish):
    activated within minutes, so treat the state as a queue, not a
    failure. The Marketplace's "verifying" is the same shape.
 3. Zed: fork zed-industries/extensions as weir-shell/extensions;
-   fine-grained PAT (contents:write + pull-requests:write on the
-   fork) → repo secret `ZED_EXTENSIONS_TOKEN`.
+   a CLASSIC PAT with `public_repo` scope (fine-grained tokens
+   cannot open PRs on repos you do not own, and the PR targets
+   zed-industries/extensions) → repo secret `ZED_EXTENSIONS_TOKEN`.
 4. Before anything permanent: `workflow_dispatch` ext-vscode (a DRY
    RUN — package + artifact only), download the .vsix, install it on
    a clean profile (`code --install-extension`), check highlighting,

@@ -6,9 +6,10 @@
 # CONDITION OF A GREEN RUN IS "PR OPENED", NOT "PUBLISHED"; the review
 # and merge are Zed's. Trigger: a dedicated ext-zed-v* tag, or dispatch.
 #
-# Needs ZED_EXTENSIONS_TOKEN: a fine-grained PAT with contents:write +
-# pull-requests:write on weir-shell/extensions (a fork of
-# zed-industries/extensions) — the GRAMMAR_DISPATCH_TOKEN pattern.
+# Needs ZED_EXTENSIONS_TOKEN: a CLASSIC PAT with public_repo scope —
+# fine-grained tokens cannot open PRs on repos you do not own, and the
+# PR targets zed-industries/extensions. The token also pushes the
+# branch to weir-shell/extensions (the fork).
 name: ext-zed
 
 on:
