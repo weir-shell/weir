@@ -37,16 +37,18 @@ const sectionTitle = (e) => e.body?.match(/^#\s+(.+)$/m)?.[1] ?? e.id;
   <p>
     Generated from the binary's own documentation — the same text
     <code>#help</code> and editor hover show. Every member is present
-    (the coverage is a build gate), and every example runs in CI.
+    (the coverage is a build gate), and every example runs in CI. All
+    of it lives on <a href="/reference/all/">the one page</a>; the
+    list below links straight into it.
   </p>
   <ul>
     {ref.modules.map((m) => (
       <li>
-        <a href={`/reference/${m.name.toLowerCase()}/`}>{m.name}</a>
+        <a href={`/reference/all/#${m.name.toLowerCase()}`}>{m.name}</a>
         — {m.members.length} members
       </li>
     ))}
-    <li><a href="/reference/forms/">Forms</a> — {ref.forms.length} entries: the command result forms (<code>succeeds</code>, <code>complete</code>…), adapters (<code>from json</code>…), and the print family</li>
+    <li><a href="/reference/all/#forms">Forms</a> — {ref.forms.length} entries: the command result forms (<code>succeeds</code>, <code>complete</code>…), adapters (<code>from json</code>…), and the print family</li>
   </ul>
 </Base>
 

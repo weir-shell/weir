@@ -1,11 +1,11 @@
 ---
-// The one-page modules reference [D:reference]: the same generated
-// entries as the per-module pages (option (b) — those remain; links in
-// the wild keep working), concatenated behind a signature index so
-// Ctrl+F finds a name or a type in the index and prose ("raises",
-// "symlink") in the entries. Anchors are the reference's API:
-// #<module>-<member>, lowercase, dash-joined — the per-module pages'
-// member anchors with the module prefixed, and they must not change.
+// THE modules reference [D:reference]: every generated entry on one
+// page behind a signature index — Ctrl+F finds a name or a type in the
+// index and prose ("raises", "symlink") in the entries; the side
+// navigation carries the modules. The per-module pages retired once
+// this page grew that navigation; their URLs redirect here (astro
+// config). Anchors are the reference's API: #<module>-<member>,
+// lowercase, dash-joined — they must not change.
 import Base from "../../layouts/Base.astro";
 import nordWeir from "../../lib/nord-weir.mjs";
 import { Code } from "astro:components";
@@ -35,9 +35,7 @@ const toc = groups.map((g) => ({ depth: 2, slug: g.name.toLowerCase(), text: g.n
   <p>
     All {memberCount} entries — generated from the binary's own
     documentation, the same text <code>#help</code> and hover show.
-    The index below links into the full entries; the
-    <a href="/reference/">per-module pages</a> carry the same
-    content one module at a time.
+    The index below links into the full entries.
   </p>
 
   <nav class="sig-index">
