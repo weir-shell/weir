@@ -26,9 +26,11 @@ const refData = JSON.parse(
 const moduleRedirects = Object.fromEntries([
   ...refData.modules.map((m) => [
     `/reference/${m.name.toLowerCase()}`,
-    `/reference/all/#${m.name.toLowerCase()}`,
+    `/reference/#${m.name.toLowerCase()}`,
   ]),
-  ["/reference/forms", "/reference/all/#forms"],
+  ["/reference/forms", "/reference/#forms"],
+  ["/reference/all", "/reference/"],
+  ["/reference/lexical", "/reference/#lexical"],
   // the tooling sub-pages merged into one page with a side nav
   ["/docs/cli", "/docs/tooling/#the-cli"],
   ["/docs/signatures", "/docs/tooling/#command-signatures"],
