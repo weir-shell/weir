@@ -76,7 +76,17 @@ jobs:
             if ! tag=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name 2>/dev/null); then
               tag=""
             fi
-            case "$tag" in v*) ;; *) tag="" ;; esac
+            # docs-only is for PRE-FIRST-RELEASE only. A latest that is
+            # not a weir tag means an adjacent release stole it — that
+            # deploy would silently drop install.sh (the edge cache hid
+            # exactly this once); refuse loudly instead.
+            case "$tag" in
+              v[0-9]*) ;;
+              "") ;;
+              *)
+                echo "releases/latest is '$tag' — not a weir release tag; an adjacent release stole latest. Repair: gh release edit $tag --latest=false && gh release edit <weir-tag> --latest, then re-run" >&2
+                exit 1 ;;
+            esac
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
             # a manual dispatch can target the staging alias — the only
             # other staging route is a prerelease publish, and DNS wiring
