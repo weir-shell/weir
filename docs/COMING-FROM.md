@@ -2,21 +2,11 @@
 
 You arrive with a working mental model; this page is the diff. Per
 language: what you write today, what you write in weir, and the one
-thing that will catch you out. It is not a tutorial
-([GUIDE.md](GUIDE.md)), not a reference
-(`skills/weir/SKILL.md`), and not a rationale (`SEMANTICS.md`,
-`DECISIONS.md`) — those own the details this page points at.
+thing that will catch you out. The [guide](GUIDE.md) teaches from
+scratch; this page translates.
 
-Every fenced `weir` block below runs against the release binary in CI
-(`ci/skill-doc.sh`); `weir-error` blocks must fail. A translation
-that stops being true fails the build. The harness is POSIX by
-design (the doc-test CI is Linux), so blocks may lean on `sh` and
-`printf` where the SHOWCASE — which must run on Windows too —
-restricts itself to weir and git. The tables are the unverified
-surface: cells were hand-checked against the binary (2026-08-05, re-swept
-same day after `Size` landed — the `File.*` cells are type-unchanged),
-but only the fenced blocks re-verify on every build (the fish
-section's cells were probe-checked 2026-08-06).
+Every fenced block runs against the release binary in CI — a
+translation that stops being true fails the build.
 
 ## Coming from bash / POSIX sh
 

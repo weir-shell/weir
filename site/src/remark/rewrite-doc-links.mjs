@@ -71,7 +71,10 @@ export function rewriteDocLinks() {
       if (RENDERED.has(repoPath)) {
         node.url = `/docs/${slugOf(repoPath)}/${suffix}`;
       } else if (repoPath.startsWith("docs/reference/")) {
-        node.url = `/reference/${slugOf(repoPath.replace("docs/reference/", "docs/"))}/${suffix}`;
+        // the reference is ONE page: a link's own anchor wins, else the
+        // page lands at its title section
+        const slug = slugOf(repoPath.replace("docs/reference/", "docs/"));
+        node.url = anchor ? `/reference/${suffix}` : `/reference/#${slug}`;
       } else if (repoPath === "CHANGELOG.md") {
         node.url = `/changelog/${suffix}`;
       } else if (!repoPath.startsWith("..")) {

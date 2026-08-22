@@ -16,7 +16,18 @@ export async function getStaticPaths() {
 const { entry } = Astro.props;
 const { Content, headings } = await render(entry);
 const title = entry.body?.match(/^#\s+(.+)$/m)?.[1] ?? entry.id;
-const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+let toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+
+// the Tooling AREA shares a sub-nav: its three pages list each other
+// in the sidebar, the current page expanded into its own headings
+const area = { tooling: "Tooling", editors: "Editors", repl: "The REPL" };
+if (entry.id in area) {
+  toc = Object.entries(area).flatMap(([id, text]) =>
+    id === entry.id
+      ? [{ depth: 2, slug: "", href: `/docs/${id}/`, text }, ...toc.map((h) => ({ ...h, depth: 3 }))]
+      : [{ depth: 2, slug: "", href: `/docs/${id}/`, text }],
+  );
+}
 ---
 
 <Base title={title} toc={toc}>

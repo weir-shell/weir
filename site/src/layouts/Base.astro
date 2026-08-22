@@ -349,7 +349,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
             <ul>
               {toc.map((h) => (
                 <li class={`d${h.depth}`}>
-                  <a href={`#${h.slug}`}>{h.text}</a>
+                  <a href={h.href ?? `#${h.slug}`}>{h.text}</a>
                 </li>
               ))}
             </ul>
@@ -360,7 +360,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
               <ul>
                 {toc.map((h) => (
                   <li class={`d${h.depth}`}>
-                    <a href={`#${h.slug}`}>{h.text}</a>
+                    <a href={h.href ?? `#${h.slug}`}>{h.text}</a>
                   </li>
                 ))}
               </ul>

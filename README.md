@@ -1,10 +1,13 @@
 # weir
 
-A typed shell scripting language inspired by F#. Shell commands and
-typed expressions share one syntax — no strings passed to a shell —
-and the type checker runs over the whole file, PATH lookups
-included, before anything executes: a broken script fails up front
-instead of halfway through its side effects.
+**weir is a typed shell-scripting language.** Commands, pipes and
+files, like bash — with a checker up front: the whole file is
+checked, every command included, and nothing runs until everything
+checks. Expressions are F#-shaped, commands are first-class in the
+same pipelines, and no string is ever passed to a shell.
+
+**[weir.sh](https://weir.sh)** · [Guide](https://weir.sh/docs/guide/) ·
+[Reference](https://weir.sh/reference/) · [Tooling](https://weir.sh/docs/tooling/)
 
 ```
 weir> ls |> Seq.sortByDescending _.bytes
@@ -60,8 +63,11 @@ HTTP and YAML — is in [docs/GUIDE.md](docs/GUIDE.md).
 - **Editor and CLI tooling.** `weir check [--json]`, an LSP
   (diagnostics, hover, completion, semantic tokens), and a REPL with
   completion and history — the editor shows exactly the errors the
-  runner would raise. Setup for Neovim, Helix, Emacs, and VS Code:
-  [docs/editors.md](docs/editors.md).
+  runner would raise. The VS Code extension is on the
+  [Marketplace](https://marketplace.visualstudio.com/items?itemName=weir-shell.weir)
+  and [Open VSX](https://open-vsx.org/extension/weir-shell/weir);
+  Neovim, Helix, Emacs and Zed:
+  [editor setup](https://weir.sh/docs/editors/).
 
 ## Install
 
@@ -102,18 +108,17 @@ oracle referees the fidelity claims. The full account is in
 
 ## Learn more
 
-- [docs/GUIDE.md](docs/GUIDE.md) — start here; every example runs in
-  CI against the release binary.
+- [The guide](https://weir.sh/docs/guide/) — start here; every
+  example runs in CI against the release binary.
+- [The reference](https://weir.sh/reference/) — the language and
+  every module, on one page.
+- [Coming from bash, PowerShell, Python…](https://weir.sh/docs/coming-from/)
+  — the per-language diff.
+- [Tooling](https://weir.sh/docs/tooling/) — the CLI, signatures,
+  schemas, `.weir/`, configuration.
 - [examples/showcase.weir](examples/showcase.weir) — the
   full-language tour, also CI-run.
-- [docs/COMING-FROM.md](docs/COMING-FROM.md) — the per-language diff
-  for arrivals from bash, PowerShell, Python, fish, TypeScript,
-  Make, or F#.
-- [docs/SEMANTICS.md](docs/SEMANTICS.md) — the rulebook, with decision
-  rationale.
 - [tests/fidelity/divergences.md](tests/fidelity/divergences.md) —
   the exact border with F# (different / rejected / pending),
   machine-verified against the F# compiler.
-- [docs/LEXICON.md](docs/LEXICON.md) — the project vocabulary ("receipt",
-  "park", "pin").
 
