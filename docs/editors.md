@@ -5,53 +5,33 @@ language server over stdio, a subcommand of the same binary that runs
 your scripts, so it can never go out of sync with the language. All
 blocks below assume `weir` is on PATH.
 
-The server provides diagnostics, hover, completion, semantic tokens,
-formatting, and go-to-definition — top-level bindings, record
-fields, union cases (expressions and match patterns), record-literal
-field names, and LOCAL binders (params, inner lets, pattern payload
-binders — lexically resolved, innermost wins). Both hover and
-definition CROSS FILES [D:lsp-cross-file]: a module member (`Lib.f`)
-hovers its signature + `///` doc and jumps to its declaration; an
-imported type's fields and cases resolve to the declaring module; the
-import path itself jumps to the file; and a `#sig`-signed command's
-head hovers its identity + recorded version (no spawn — works with
-the tool off PATH) and opens the signature file, its flags hovering
-and jumping to their field declarations. Definition targets carry the
-client's own URI for open files. Module member COMPLETION offers the
-names (`Lib.` lists members), without their docs yet. The `within`
-form is understood [D:within-kinds]: hovering `within` explains the
-form, hovering a kind (`tmp`/`cd`/`env`) gives its meaning and whether
-it BINDS a resource or CONSUMES one, and completion after `within `
-offers the three kinds and nothing else. The other form keywords
-answer too: `retry`/`poll` hover their meaning plus their KEYS (read
-from the options records, so the list cannot drift), `until` its
-predicate role, `from`/`to` their adapters — and none of them fires
-inside a string or comment. A type argument (`Config` in
-`from json Config`, and the `from yaml`/`Env.load`/`Args.load`
-positions) hovers the type's OWN shape and `///` doc, identical to
-hovering it at its declaration. A `schema=` name hovers its FILE's
-facts [D:schema-hover] — the resolved vendored path, the lock's
-source URL, and whether the schema is strict (without an
-`additionalProperties: false` it cannot catch unknown fields); a
-not-vendored name teaches `weir restore`/`weir add` in the checker's
-words, and definition opens the vendored file. Two
-facts every block encodes, matching `weir fmt`: comment token `//`,
-indent 4 spaces. The formatting request runs `weir fmt`'s canonical
-pipeline — editor options (tabSize etc.) are ignored by design, so a
-2-space editor still writes canonical 4-space weir.
+What you get, in any LSP editor:
 
-weir scripts are often extensionless (`#!/usr/bin/env weir`), so each
-block registers BOTH the `.weir` extension and shebang detection.
+- **Diagnostics as you type** — the same checks the runner makes,
+  whole file, every keystroke
+- **Hover** — types and `///` docs for bindings, builtins, record
+  fields and union cases, across files and imports; a `#sig`-signed
+  command's head hovers its identity and recorded version (no spawn
+  — works with the tool off PATH); a `schema=` name hovers its
+  vendored file's facts
+- **Go to definition** — locals, module members, import paths,
+  signature files, vendored schemas
+- **Completion** — module members (`Lib.` lists them), and the
+  `within` kinds after `within `
+- **The form keywords answer** — `within`, `retry`/`poll` (with
+  their keys), `until`, the adapters — and never inside a string or
+  comment
+- **Formatting** — `weir fmt`'s canonical pipeline; editor tab
+  settings are ignored by design, so a 2-space editor still writes
+  canonical 4-space weir
 
-Verification: each block below was run in a container against a real
-weir file (server attach, a deliberate error surfacing as a
-diagnostic, hover, semantic tokens) — except where marked UNTESTED.
-The per-editor result is noted at the end of its section.
+weir scripts are often extensionless (`#!/usr/bin/env weir`), so
+each setup below registers BOTH the `.weir` extension and shebang
+detection.
 
-Debugging the server: `weir lsp --debug` logs every dispatched method
-and every diagnostics publish (URI + count) to stderr — VS Code shows
-it in the Output panel for the client. Wire it by adding `--debug` to
-the client's server argv.
+Debugging: `weir lsp --debug` logs every dispatched method and
+diagnostics publish to stderr — add `--debug` to the client's server
+argv (VS Code shows it in the Output panel).
 
 ## Neovim (0.11+)
 
@@ -172,26 +152,22 @@ semantic-tokens support — expect diagnostics/hover/completion only.
 
 ## VS Code
 
-Extension, not config — see [`editors/vscode/`](../editors/vscode/):
-the shipped client wraps the same `weir lsp` server and adds a
-TextMate grammar. Install it from there; no manual LSP wiring needed.
+Install **weir** from the
+[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=weir-shell.weir)
+— or from [Open VSX](https://open-vsx.org/extension/weir-shell/weir)
+for VSCodium, Cursor and friends. The client wraps the same
+`weir lsp` server and adds highlighting; no manual wiring. If the
+binary lives off PATH, set `weir.serverPath` to it (the binary path
+only — the client runs `<path> lsp` itself).
 
 ## Zed
 
-Extension, not config — see [`editors/zed/`](../editors/zed/): the
-same `weir lsp` server plus tree-sitter highlighting (Zed has no
-other path for an unknown language). Install as a dev extension
-(Extensions → Install Dev Extension → the `editors/zed/` directory;
-needs a local Rust toolchain) until it is published.
-
-Verified (Zed on macOS, dev-extension install, 2026-07-26):
-tree-sitter highlighting ✓, diagnostics ✓, hover ✓, formatting ✓.
-Not testable in the verification container (GUI-only) — verified on a
-real machine via the README's 5-step list. Two install gotchas the
-README covers: the grammar repo must be clonable by Zed (use the
-`file://` dev-mode override while the weir repo is private), and a
-failed attempt leaves a stale `grammars/` clone that must be deleted
-before retrying.
+Extension, not config — [`editors/zed/`](../editors/zed/): the same
+`weir lsp` server plus tree-sitter highlighting. Until it lands in
+the Zed extension registry, install as a dev extension (Extensions →
+Install Dev Extension → the `editors/zed/` directory; needs a local
+Rust toolchain). A failed install attempt leaves a stale `grammars/`
+clone in the extension's work dir — delete it before retrying.
 
 ## Troubleshooting
 
