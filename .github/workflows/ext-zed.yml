@@ -44,8 +44,11 @@ jobs:
           gh repo sync weir-shell/extensions --source zed-industries/extensions
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/weir-shell/extensions" fork
           cd fork
-          git config user.name "weir-ci"
-          git config user.email "ci@weir.sh"
+          # authored as the human who pushed the tag, in GitHub's
+          # noreply form — Zed's CLA bot must parse the identity, and
+          # a bot email maps to no account (caught live on the first PR)
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.event.sender.id || github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
           branch="weir-v${VERSION}"
           git checkout -b "$branch"
           if [ ! -e extensions/weir ]; then
