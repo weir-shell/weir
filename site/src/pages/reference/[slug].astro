@@ -1,85 +1,25 @@
 ---
-// One dynamic route, two sources [D:reference in the repo's DECISIONS]:
-// module pages generated from reference.json (the binary's own docs),
-// and written language pages from docs/reference/*.md. Slugs cannot
-// collide — modules are capitalized names lowercased (seq, str…),
-// written sections are lowercase words (lexical, commands…) chosen
-// apart from them; "forms" is the one reserved page name.
+// The written language pages [D:reference] — lexical, and the sections
+// to come. The GENERATED half lives on /reference/all/ (one page, side
+// navigation); the per-module pages retired in its favour, their URLs
+// redirecting into its anchors.
 import Base from "../../layouts/Base.astro";
-import nordWeir from "../../lib/nord-weir.mjs";
-import { Code } from "astro:components";
 import { getCollection, render } from "astro:content";
-import { readFileSync } from "node:fs";
-import ref from "../../data/reference.json";
-
-const weirGrammar = JSON.parse(
-  readFileSync(
-    new URL("../../../../editors/vscode/syntaxes/weir.tmLanguage.json", import.meta.url),
-    "utf8",
-  ),
-);
 
 export async function getStaticPaths() {
-  const refData = (await import("../../data/reference.json")).default;
   const written = await getCollection("reference");
-  return [
-    ...refData.modules.map((m) => ({
-      params: { slug: m.name.toLowerCase() },
-      props: { kind: "module", module: m },
-    })),
-    { params: { slug: "forms" }, props: { kind: "forms" } },
-    ...written.map((entry) => ({
-      params: { slug: entry.id },
-      props: { kind: "written", entry },
-    })),
-  ];
+  return written.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry },
+  }));
 }
 
-const { kind, module, entry } = Astro.props;
-
-let Content = null;
-let title = "";
-let headings = [];
-if (kind === "written") {
-  ({ Content, headings } = await render(entry));
-  title = entry.body?.match(/^#\s+(.+)$/m)?.[1] ?? entry.id;
-} else if (kind === "module") {
-  title = module.name;
-} else {
-  title = "Forms";
-}
-const entries = kind === "module" ? module.members : kind === "forms" ? ref.forms : [];
-const anchor = (name) => name.toLowerCase().replaceAll(" ", "-");
-const toc =
-  kind === "written"
-    ? headings.filter((h) => h.depth >= 2 && h.depth <= 3)
-    : entries.map((m) => ({ depth: 2, slug: anchor(m.name), text: m.name }));
+const { entry } = Astro.props;
+const { Content, headings } = await render(entry);
+const title = entry.body?.match(/^#\s+(.+)$/m)?.[1] ?? entry.id;
+const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
 ---
 
 <Base title={title} toc={toc}>
-  {kind === "written" ? (
-    <Content />
-  ) : (
-    <>
-      <h1>{title}</h1>
-      {kind === "forms" && (
-        <p>
-          Entries that are not module members: the command result forms,
-          the adapters, the print family, and the row types command
-          output arrives as.
-        </p>
-      )}
-      {entries.map((m) => (
-        <section>
-          <h2 id={anchor(m.name)}>
-            <a href={`#${anchor(m.name)}`}>{kind === "module" ? `${module.name}.${m.name}` : m.name}</a>
-          </h2>
-          {m.signature && <Code code={m.signature} lang={weirGrammar} theme={nordWeir} />}
-          {m.summary && <p>{m.summary}</p>}
-          {m.example && <Code code={m.example} lang={weirGrammar} theme={nordWeir} />}
-          {m.pointer && <p><em>{m.pointer}</em></p>}
-        </section>
-      ))}
-    </>
-  )}
+  <Content />
 </Base>

@@ -7,7 +7,7 @@
 import { defineConfig } from "astro/config";
 import { readFileSync } from "node:fs";
 import { rewriteDocLinks } from "./src/remark/rewrite-doc-links.mjs";
-import nordWeir from "./src/lib/nord-weir.mjs";
+import queilThemes from "./src/lib/queil-weir.mjs";
 
 // the ONE grammar, read from the repo — never a copy
 const weirGrammar = JSON.parse(
@@ -17,14 +17,30 @@ const weirGrammar = JSON.parse(
   ),
 );
 
+// the per-module pages retired once the one-page reference grew its
+// side navigation — links in the wild keep working via redirects into
+// the same anchors the pages used
+const refData = JSON.parse(
+  readFileSync(new URL("./src/data/reference.json", import.meta.url), "utf8"),
+);
+const moduleRedirects = Object.fromEntries([
+  ...refData.modules.map((m) => [
+    `/reference/${m.name.toLowerCase()}`,
+    `/reference/all/#${m.name.toLowerCase()}`,
+  ]),
+  ["/reference/forms", "/reference/all/#forms"],
+]);
+
 export default defineConfig({
   site: "https://weir.sh",
+  redirects: moduleRedirects,
   markdown: {
     shikiConfig: {
       // `weir-error` fences are teaching blocks (SKILL/GUIDE convention):
       // same grammar, they just must not fall back to plaintext
       langs: [weirGrammar, { ...weirGrammar, name: "weir-error" }],
-      theme: nordWeir,
+      themes: queilThemes,
+      defaultColor: false,
     },
     remarkPlugins: [rewriteDocLinks],
   },

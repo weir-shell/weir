@@ -1071,8 +1071,9 @@ TLS verification is on by default. `Http.send { … with insecure =
 true }` turns it off for ONE request (self-signed clusters) — a loud,
 per-call field, never a global switch.
 
-**Status is data.** A 404 binds and you branch on it (`if resp.status
->= 400`) exactly as `| complete` treats an exit code — only a
+**Status is data.** A 404 binds and you branch on it
+(`if resp.status >= 400`) exactly as `| complete` treats an exit
+code — only a
 transport failure (unreachable, TLS, timeout) raises. A health check
 is one line:
 

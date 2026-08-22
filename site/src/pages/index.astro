@@ -9,7 +9,7 @@
 // splice refusal; the e2e hero-currency cell for everything quoted) —
 // never the docs gate, which asserts executability, not output.
 import Base from "../layouts/Base.astro";
-import nordWeir from "../lib/nord-weir.mjs";
+import queilThemes from "../lib/queil-weir.mjs";
 import { Code } from "astro:components";
 import { readFileSync } from "node:fs";
 
@@ -120,7 +120,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     A small release tool: a typed flag, two commands. One of them is
     misspelled.
   </p>
-  <Code code={beat1Weir} lang={weirGrammar} theme={nordWeir} />
+  <Code code={beat1Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
   <p>Run it:</p>
   <pre class="refusal">{beat1Refusal}</pre>
   <p>
@@ -132,7 +132,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 
   <h2>A real CLI, free</h2>
   <p>Declare the shape; the interface is derived.</p>
-  <Code code={beat2Weir} lang={weirGrammar} theme={nordWeir} />
+  <Code code={beat2Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
   <pre class="report">{beat2Help}</pre>
   <p>
     <code>dryRun</code> became <code>--dry-run</code> with an
@@ -166,7 +166,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="hero-pair">
       <div class="hero-cell">
         <p class="hero-label">steam.sh, shipped:</p>
-        <Code code={steamBash} lang="bash" theme={nordWeir} />
+        <Code code={steamBash} lang="bash" themes={queilThemes} defaultColor={false} />
         <p class="hero-caption">
 
           When the folder was moved, the <code>cd</code> inside the
@@ -180,7 +180,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       </div>
       <div class="hero-cell">
         <p class="hero-label">The same shape, in weir:</p>
-        <Code code={spliceWeir} lang={weirGrammar} theme={nordWeir} />
+        <Code code={spliceWeir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
         <pre class="refusal">{spliceRefusal}</pre>
       </div>
     </div>
@@ -328,7 +328,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   .install-line pre { margin: 0; flex: 1; min-width: 0; }
   .copy-btn {
     border: 1px solid var(--border);
-    background: #fff;
+    background: var(--bg);
     color: var(--accent);
     border-radius: 6px;
     padding: 0.45rem 0.55rem;
@@ -336,7 +336,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     line-height: 0;
   }
   .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
-  .copy-btn.copied { color: #1a7f37; border-color: #1a7f37; }
+  .copy-btn.copied { color: var(--ok); border-color: var(--ok); }
   .hero-band {
     width: min(72rem, calc(100vw - 2.5rem));
     margin-left: 50%;
@@ -354,8 +354,8 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   .refusal, .report {
     background: var(--code-bg);
     border: 1px solid var(--border);
-    border-left: 3px solid #bf616a;
-    color: #24292e;
+    border-left: 3px solid var(--danger);
+    color: var(--fg);
     font-size: 0.8rem;
     line-height: 1.5;
     padding: 0.7rem 0.9rem;
