@@ -114,7 +114,10 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         display: flex;
         flex-wrap: wrap;   /* six links survive a narrow viewport */
         gap: 1.25rem;
-        align-items: baseline;
+        /* center, not baseline: the brand is a flex pair (mark + word)
+           whose baseline sits above the nav's — centering aligns the
+           row and puts the mark's middle bar at the line's middle */
+        align-items: center;
       }
       header .brand {
         font-weight: 700;
@@ -236,10 +239,25 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
       .toc li.d3 { padding-left: 0.9rem; }
       .toc a { color: var(--muted); text-decoration: none; display: block; }
       .toc a:hover { color: var(--accent); }
+      /* the mobile stand-in: same links, a collapsed block above the
+         content — the sticky aside has no room below the breakpoint */
+      .toc-mobile { display: none; }
       @media (max-width: 1100px) {
         .with-toc { display: block; padding: 0; }
         .with-toc main { margin: 0 auto; padding: 2rem 1.25rem 4rem; }
         .toc { display: none; }
+        .toc-mobile {
+          display: block;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          padding: 0.5rem 0.9rem;
+          margin-bottom: var(--space-4);
+          font-size: var(--text-sm);
+        }
+        .toc-mobile summary { cursor: pointer; font-weight: 600; }
+        .toc-mobile ul { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+        .toc-mobile li.d3 { padding-left: 0.9rem; }
+        .toc-mobile a { color: var(--muted); text-decoration: none; display: block; padding: 0.25rem 0; }
       }
       main a { color: var(--accent); }
       /* the ONE code treatment — inline spans, blocks, install rows all
@@ -270,7 +288,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
          sentence in another typeface: smaller, bounded, tinted */
       :not(pre) > code {
         background: var(--code-bg);
-        padding: 0.1em 0.3em;
+        padding: 0.16em 0.42em;
         border-radius: 4px;
         font-size: 0.85em;
       }
@@ -337,6 +355,16 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
             </ul>
           </aside>
           <main>
+            <details class="toc-mobile">
+              <summary>On this page</summary>
+              <ul>
+                {toc.map((h) => (
+                  <li class={`d${h.depth}`}>
+                    <a href={`#${h.slug}`}>{h.text}</a>
+                  </li>
+                ))}
+              </ul>
+            </details>
             <slot />
           </main>
         </div>

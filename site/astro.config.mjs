@@ -29,6 +29,12 @@ const moduleRedirects = Object.fromEntries([
     `/reference/all/#${m.name.toLowerCase()}`,
   ]),
   ["/reference/forms", "/reference/all/#forms"],
+  // the tooling sub-pages merged into one page with a side nav
+  ["/docs/cli", "/docs/tooling/#the-cli"],
+  ["/docs/signatures", "/docs/tooling/#command-signatures"],
+  ["/docs/schemas", "/docs/tooling/#yaml-schemas"],
+  ["/docs/project", "/docs/tooling/#project-layout-weir"],
+  ["/docs/configuration", "/docs/tooling/#configuration"],
 ]);
 
 export default defineConfig({
@@ -38,7 +44,10 @@ export default defineConfig({
     shikiConfig: {
       // `weir-error` fences are teaching blocks (SKILL/GUIDE convention):
       // same grammar, they just must not fall back to plaintext
-      langs: [weirGrammar, { ...weirGrammar, name: "weir-error" }],
+      // weir-demo: the same grammar for DISPLAY-ONLY blocks — shapes
+      // that need a live endpoint or a real token; skill-doc extracts
+      // only weir/weir-error, so these are highlighted, never executed
+      langs: [weirGrammar, { ...weirGrammar, name: "weir-error" }, { ...weirGrammar, name: "weir-demo" }],
       themes: queilThemes,
       defaultColor: false,
     },

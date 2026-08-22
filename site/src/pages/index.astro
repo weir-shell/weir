@@ -27,12 +27,12 @@ const beat1Weir = `type Cli = {
 
 let cli = Args.load Cli
 tar czf bundle.tar.gz dist/
-rsnyc -av bundle.tar.gz backup:/srv/dist`;
+if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist`;
 
-// verbatim from running the script above (v0.0.3) — e2e-pinned
-const beat1Refusal = `release.weir:8:1: parse error:
-rsnyc -av bundle.tar.gz backup:/srv/dist
-^
+// verbatim from running the script above — e2e-pinned
+const beat1Refusal = `release.weir:8:24: parse error:
+if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist
+                       ^
 unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c`;
 
 const beat2Weir = `type Cli = {

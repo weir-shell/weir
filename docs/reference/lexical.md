@@ -265,7 +265,7 @@ glyph, two lifetimes:
 - **file** directives are read at CHECK time: `#sig`, `#schema`
 
 The [REPL manual](../repl.md) covers the session set;
-[signatures](../signatures.md) the file set.
+[signatures](../tooling.md#command-signatures) the file set.
 
 ## Attributes
 

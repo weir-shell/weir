@@ -3,7 +3,9 @@
 Weir is a typed shell: F#-shaped expressions, real commands, and a
 type checker that runs before anything else does. Every fenced `weir`
 block in this guide is executed against the release binary in CI —
-if an example here stops working, the build fails.
+if an example here stops working, the build fails. (Blocks needing a
+live endpoint or a real token are marked demo and are the exception;
+everything else runs.)
 
 ## Why weir
 
@@ -580,7 +582,7 @@ template's structure before line one runs — within a stated
 boundary: the schema validates what the checker can see, and
 `for`-generated content is structurally unchecked. Vendoring
 (`weir add schema`), the lock, and the full boundary live in
-[schemas.md](schemas.md).
+[schemas.md](tooling.md#yaml-schemas).
 
 Nonzero exit raises when the stream is forced. To inspect instead of
 raise, make the run data:
@@ -939,7 +941,7 @@ preserves them, and nothing errors between. `Http` closes that: the
 request is a record, `Http.send` runs it, and a `Json` body carries
 the caller's `to json` output byte-exact.
 
-```
+```weir-demo
 type Item = { name: string; count: int }
 
 let created =
@@ -968,14 +970,14 @@ built request runs through `Http.send`). It returns the body and raises
 on a non-2xx naming the status, where `Http.send` binds the same
 status as data.
 
-```
+```weir-demo
 let item = Http.fetch $"{api}/items/1" |> from json Item
 ```
 
 When the shape belongs to a foreign API and you read it once, write
 the type inline — an **anonymous record type**:
 
-```
+```weir-demo
 let ip = Http.fetch "https://api.ipify.org?format=json" |> from json {| ip: string |} |> _.ip
 ```
 
@@ -1077,7 +1079,7 @@ code — only a
 transport failure (unreachable, TLS, timeout) raises. A health check
 is one line:
 
-```
+```weir-demo
 let up = (Http.send { Http.defaults with url = $"{api}/health" }).status == 200
 ```
 
@@ -1086,7 +1088,7 @@ let up = (Http.send { Http.defaults with url = $"{api}/health" }).status == 200
 token into a string is a check error, and `show` on the request masks
 it as `***`. A shared base config is the record's own case:
 
-```
+```weir-demo
 let github = { Http.defaults with
                  auth = Bearer token
                  headers = [("Accept", "application/vnd.github+json")] }
@@ -1121,7 +1123,7 @@ The primary producer is `Env.load` — env is the standard CI secret
 channel (`secrets.GITHUB_TOKEN` becomes an env var), so a `Secret`
 field is the main way a token enters:
 
-```
+```weir-demo
 type Cfg = { GITHUB_TOKEN: Secret }
 let cfg = Env.load Cfg
 git push https://$(Secret.reveal cfg.GITHUB_TOKEN)@github.com/…
@@ -1469,8 +1471,8 @@ scraped surface may be incomplete; verified by hand and marked
 `exhaustive`, unknown flags become errors. `weir check` never runs
 the tool, so checking works for tools that only exist in CI. The
 full cycle — generate, verify, regenerate — and the `.weir/` tree it
-lives in are [signatures.md](signatures.md) and
-[project.md](project.md).
+lives in are [signatures.md](tooling.md#command-signatures) and
+[project.md](tooling.md#project-layout-weir).
 
 ## What a script can do, before it runs
 
@@ -1479,7 +1481,7 @@ heads are literal and nothing expands in argv, the set of commands a
 script can reach is statically knowable — so weir reports it, with a
 site for every line:
 
-```
+```text
 deploy.weir can (capability, not behaviour — an untaken branch still counts):
   ⚠ this report is incomplete: 1 opaque site(s) — an interpreter's argument cannot be analyzed
   runs:

@@ -26,11 +26,6 @@ const RENDERED = new Set([
   "docs/editors.md",
   "docs/repl.md",
   "docs/tooling.md",
-  "docs/cli.md",
-  "docs/signatures.md",
-  "docs/schemas.md",
-  "docs/project.md",
-  "docs/configuration.md",
 ]);
 
 // the mirror is CHECKED, not commented: a docs page the glob renders but
