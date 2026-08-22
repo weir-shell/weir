@@ -106,9 +106,27 @@ jobs:
           grep -q "TAG=\"$tag\"" site/public/install.sh \
             || { echo "installer from $tag does not pin $tag — refusing to deploy" >&2; exit 1; }
 
+      # the three-way agreement [D:site-version]: the tag the site will
+      # DISPLAY, the release its installer targets, and the weir its
+      # reference documents must be one version. Display==installer by
+      # construction (one resolved tag; the TAG= grep above pins the
+      # installer). The reference: this checkout's reference.json must
+      # BE the released tag's — otherwise the site documents a weir
+      # nobody can install; release first, then deploy.
+      - name: the reference documents the released weir
+        run: |
+          tag="${{ steps.rel.outputs.tag }}"
+          [ -z "$tag" ] && exit 0
+          git fetch --depth 1 origin tag "$tag"
+          git diff --quiet "$tag" -- site/src/data/reference.json \
+            || { echo "site/src/data/reference.json differs from $tag's — the site would document a weir nobody can install. Cut a release with the new docs first, or deploy from the tag" >&2; exit 1; }
+
       - name: build
         env:
           ASTRO_TELEMETRY_DISABLED: "1"
+          # the displayed version [D:site-version] — the SAME resolved
+          # tag the installer came from, never a second source
+          WEIR_RELEASE_TAG: ${{ steps.rel.outputs.tag }}
         run: cd site && npm ci && npm run build
 
       # pre-deploy staleness guard: what we are ABOUT to serve pins the
