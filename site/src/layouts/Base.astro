@@ -13,6 +13,16 @@ const { title, toc } = Astro.props;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title ? `${title} · weir` : "weir — a typed shell"}</title>
+    <link rel="preload" href="/fonts/iosevka-term-ext-regular.woff2" as="font" type="font/woff2" crossorigin />
+    <script is:inline>
+      // theme before first paint [D:queil-theme]: stored choice wins,
+      // else the OS setting — inline so a dark load never flashes light
+      (() => {
+        const t = localStorage.getItem("theme");
+        if (t === "dark" || (!t && matchMedia("(prefers-color-scheme: dark)").matches))
+          document.documentElement.classList.add("dark");
+      })();
+    </script>
     <style is:global>
       /* is:global, deliberately [D:guide-register]: Astro scopes styles
          to template-authored elements, and the markdown content that IS
@@ -20,16 +30,32 @@ const { title, toc } = Astro.props;
          styles the chrome and leaves every rendered doc browser-default
          (how the code blocks shipped unpadded: the rule existed, the
          scoping kept it from matching). */
+      @font-face {
+        font-family: "Iosevka Term Ext";
+        src: url("/fonts/iosevka-term-ext-regular.woff2") format("woff2");
+        font-weight: 400;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Iosevka Term Ext";
+        src: url("/fonts/iosevka-term-ext-bold.woff2") format("woff2");
+        font-weight: 700;
+        font-display: swap;
+      }
+      /* the palette is queil.net's [D:queil-theme]: monochrome page,
+         the colour lives in the code; the accent is the palette's own
+         keyword blue. Dark values are DERIVED (hue kept, lightness
+         re-tuned) — html.dark swaps every token, so no element may
+         hard-code a colour. */
       :root {
-        --fg: #1a1a1a;
-        --muted: #6a737d;
-        /* the accents are Nord's [D:site-design]: frost nord10 for
-           interactive elements (4.03:1 on white — links keep their
-           underline so colour is never the only affordance), nord4
-           for hairlines, nord6 for the light code tint */
-        --accent: #5e81ac;
-        --code-bg: #eceff4;
-        --border: #d8dee9;
+        --bg: #ffffff;
+        --fg: #111111;
+        --muted: #555555;
+        --accent: #004396;
+        --code-bg: #f4f4f4;
+        --border: #d0d0d0;
+        --danger: #c81040;
+        --ok: #1a7f37;
         /* the type scale — five sizes, no arbitrary values per element */
         --text-sm: 0.88rem;
         --text-base: 1rem;
@@ -43,9 +69,34 @@ const { title, toc } = Astro.props;
         --space-4: 1.75rem;
         --space-5: 3rem;
       }
+      html.dark {
+        --bg: #0e1113;
+        --fg: #d6dade;
+        --muted: #98a2ac;
+        --accent: #7fb2f0;
+        --code-bg: #161b1e;
+        --border: #2a3138;
+        --danger: #ff8098;
+        --ok: #4ec97a;
+      }
+      /* dual-theme code: Shiki emits both palettes as custom
+         properties (defaultColor off); the html class picks one */
+      .astro-code, .astro-code span {
+        color: var(--shiki-light);
+        background-color: var(--shiki-light-bg);
+        font-style: var(--shiki-light-font-style);
+        font-weight: var(--shiki-light-font-weight);
+      }
+      html.dark .astro-code, html.dark .astro-code span {
+        color: var(--shiki-dark);
+        background-color: var(--shiki-dark-bg);
+        font-style: var(--shiki-dark-font-style);
+        font-weight: var(--shiki-dark-font-weight);
+      }
       * { box-sizing: border-box; }
       body {
         margin: 0;
+        background: var(--bg);
         color: var(--fg);
         /* dense technical prose: taller leading than display text wants */
         font: 16px/1.7 system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -59,6 +110,18 @@ const { title, toc } = Astro.props;
         align-items: baseline;
       }
       header .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+      #theme-toggle {
+        margin-left: auto;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--muted);
+        border-radius: 6px;
+        padding: 0.1rem 0.45rem;
+        cursor: pointer;
+        font-size: 1rem;
+        line-height: 1.4;
+      }
+      #theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
       header nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
       header nav a:hover { color: var(--accent); }
       /* the measure: 65–70 characters — readability beats width, and it
@@ -114,9 +177,9 @@ const { title, toc } = Astro.props;
         background: var(--code-bg);
         border: 1px solid var(--border);
       }
-      code { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+      code { font-family: "Iosevka Term Ext", ui-monospace, "SF Mono", Consolas, monospace; }
       kbd {
-        font: 0.78em ui-monospace, "SF Mono", Consolas, monospace;
+        font: 0.78em "Iosevka Term Ext", ui-monospace, "SF Mono", Consolas, monospace;
         background: var(--code-bg);
         border: 1px solid var(--border);
         border-bottom-width: 2px;
@@ -130,7 +193,7 @@ const { title, toc } = Astro.props;
         background: var(--code-bg);
         padding: 0.1em 0.3em;
         border-radius: 4px;
-        font-size: 0.875em;
+        font-size: 0.85em;
       }
       h1, h2, h3 { line-height: 1.25; }
       h1 { font-size: var(--text-2xl); }
@@ -153,6 +216,16 @@ const { title, toc } = Astro.props;
         <a href="/changelog/">Changelog</a>
         <a href="https://github.com/weir-shell/weir">GitHub</a>
       </nav>
+      <button id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">◐</button>
+      <script is:inline>
+        document.getElementById("theme-toggle").addEventListener("click", () => {
+          const dark = document.documentElement.classList.toggle("dark");
+          const os = matchMedia("(prefers-color-scheme: dark)").matches;
+          // back at the OS value → forget, so the OS keeps driving
+          if (dark === os) localStorage.removeItem("theme");
+          else localStorage.setItem("theme", dark ? "dark" : "light");
+        });
+      </script>
     </header>
     {
       toc?.length ? (

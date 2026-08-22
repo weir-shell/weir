@@ -6132,6 +6132,13 @@ echo "e2e ok: docs/cli.md usage block == weir --help"
     || fail "the lexical keyword table is stale or unclassified — run: weir tools/gen-lexical.weir"
 echo "e2e ok: lexical keyword table current (generated from the grammar manifest)"
 
+# ---- prose wrap hazard: '>' at a wrapped line's start -----------------------
+# CommonMark lets a blockquote interrupt a paragraph, so a wrap that
+# lands '>' at line start eats the character and breaks the span —
+# prose damage no fence can catch (the Http >= 400 incident).
+(cd "$ROOT" && "$BIN" ci/wrap-hazard.weir) || fail "wrap hazard in rendered docs — see lines above"
+echo "e2e ok: no mid-paragraph '>' wrap hazards in rendered docs"
+
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned
 # here against LIVE runs so the homepage cannot go stale while green (the

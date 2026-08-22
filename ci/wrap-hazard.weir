@@ -1,0 +1,48 @@
+#!/usr/bin/env weir
+// The wrap-hazard gate: a paragraph line WRAPPED so its continuation
+// starts with '>' is eaten by CommonMark — a blockquote may interrupt a
+// paragraph, so the '>' becomes quote syntax and the rest of the span
+// renders broken (`if resp.status >= 400` lost its operator this way).
+// A real blockquote is fine: its previous line is blank, or another
+// quote line. Fenced content is exempt. Prose is what nothing executes,
+// so this class needs its own gate — the fences cannot catch it.
+
+type St = {
+    InFence: bool
+    PrevBlank: bool
+    PrevQuote: bool
+    Count: int
+}
+
+let checkFile path =
+    let step st pair =
+        let (n, l) = pair
+        let fence = Str.startsWith "```" (Str.trim l)
+        let quote = Str.startsWith ">" l
+        let hazard = not st.InFence && not fence && quote && not st.PrevBlank && not st.PrevQuote
+
+        if hazard then
+            printerr $"{path}:{n}: a wrapped line starts with '>' mid-paragraph — CommonMark reads it as a blockquote; reflow so the '>' is not at line start"
+
+        { InFence = (if fence then not st.InFence else st.InFence)
+          PrevBlank = Str.trim l == ""
+          PrevQuote = quote
+          Count = st.Count + (if hazard then 1 else 0) }
+
+    let init = { InFence = false; PrevBlank = true; PrevQuote = false; Count = 0 }
+
+    let final =
+        File.read path
+        |> Seq.indexed
+        |> Seq.map (fun (i, l) -> (i + 1, l))
+        |> Seq.fold step init
+
+    final.Count
+
+let files = [Path.glob "docs/**/*.md" |> Seq.force; ["CHANGELOG.md"]] |> Seq.collect (fun xs -> xs)
+
+let total = files |> Seq.map checkFile |> Seq.fold (fun a n -> a + n) 0
+
+if total > 0 then fail $"{total} wrap hazard(s) — see lines above"
+
+print $"wrap-hazard ok: no mid-paragraph '>' continuations across {files |> Seq.length} rendered doc file(s)"

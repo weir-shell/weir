@@ -7,7 +7,7 @@
 // config). Anchors are the reference's API: #<module>-<member>,
 // lowercase, dash-joined — they must not change.
 import Base from "../../layouts/Base.astro";
-import nordWeir from "../../lib/nord-weir.mjs";
+import queilThemes from "../../lib/queil-weir.mjs";
 import { Code } from "astro:components";
 import { readFileSync } from "node:fs";
 import ref from "../../data/reference.json";
@@ -61,9 +61,9 @@ const toc = groups.map((g) => ({ depth: 2, slug: g.name.toLowerCase(), text: g.n
           <h3 id={anchor(g.name, m.name)}>
             <a href={`#${anchor(g.name, m.name)}`}>{g.name === "Forms" ? m.name : `${g.name}.${m.name}`}</a>
           </h3>
-          {m.signature && <Code code={m.signature} lang={weirGrammar} theme={nordWeir} />}
+          {m.signature && <Code code={m.signature} lang={weirGrammar} themes={queilThemes} defaultColor={false} />}
           {m.summary && <p>{m.summary}</p>}
-          {m.example && <Code code={m.example} lang={weirGrammar} theme={nordWeir} />}
+          {m.example && <Code code={m.example} lang={weirGrammar} themes={queilThemes} defaultColor={false} />}
           {m.pointer && <p><em>{m.pointer}</em></p>}
         </section>
       ))}
