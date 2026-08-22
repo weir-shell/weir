@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.0.5
+
+### New features
+
+- **The REPL init file.** `init.weir` beside the REPL config
+  (`$XDG_CONFIG_HOME/weir/`, `%APPDATA%\weir\` on Windows) loads
+  before the first prompt: declaration-only `type`/`let` bindings for
+  the prompt (aliases are functions — `let pu () = git push …`), plus
+  one `#session` directive for four settings: `cwd`, `env`
+  (`seq<string * string>`, set into the process environment once —
+  visible to `Env.vars`, every spawn, and layered under `within
+  env`/sigils), `logLevel` (the `WEIR_LOG` levels, same parsing), and
+  `echoCap`. Loading is all-or-nothing: a broken init prints its
+  located error and the session starts with none of it — safe because
+  nothing in the file can run. `#help` on an init name shows its
+  `///` doc. A missing init is silent.
+- `weir --help` now lists `add sig`, `check --can`, and `--version` —
+  three arms the usage string had silently omitted.
+
+### Bugfixes
+
+- `weir docs-json` emits LF on every platform (its dump is a
+  generated, diffed artifact; Windows emitted CRLF).
+
+### Chores
+
+- `#session` outside its home teaches: in a script it names the init
+  file; typed at the prompt it says edit-and-restart.
+
+### Checks clean, behaves differently
+
+- Nothing — scripts are untouched; the init file is REPL-only.
+
 ## v0.0.4
 
 ### New features

@@ -1,5 +1,28 @@
 # Spike Notes
 
+## the init file, and the overlay that refused to exist (2026-08-23)
+
+The plan braced for an env matrix hunt — every spawn route times the
+new layer times nested within env. The hunt dissolved at the design
+step: #session env is not an overlay, it IS the process environment,
+set once before the first prompt. That is what a login shell means
+by environment, it is what exec'ing weir with that env would mean,
+and every reader and spawner sees it with zero new machinery. The
+matrix became two pinned lines (sigil wins inside, base restored
+outside).
+
+The record-literal question answered sideways: no new grammar. The
+block's fields become synthesized lets — dedent four, prefix four,
+columns survive — through the real parser and checker, so the config
+surface gets the record law's errors for free. Two rounds of
+continuation-line bugs later (the closer at base indent is not a
+field), the located carets point at the user's own file.
+
+The plan's own example carries a small trap worth knowing: `let lg n
+= git log --oneline $"-{n}"` types n as STRING (the bare-hole
+default), so `lg 1` teaches. The example is honest — that is the
+language working — but the e2e cell calls it as written.
+
 ## the audit found the word but not the teaching (2026-08-22)
 
 Word-presence said import was covered; the hit was `import
