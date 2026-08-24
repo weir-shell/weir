@@ -1,5 +1,25 @@
 # Spike Notes
 
+## the module exploration: the siblings had already decided (2026-08-24)
+
+Phase 0 was the whole exploration. The contracts spine fetches file
+BYTES by URL and locks a content hash — no git, no refs, no graph —
+so the old `<repo> --ref <sha>` sketch dissolved on contact with
+what actually shipped: v1 is a single file by raw URL, and the
+rawUrlHint even teaches the GitHub file-page rewrite already. The
+question the exploration existed for (are annotations prerequisite?)
+answered itself the same way: a pinned lock means interface drift
+arrives only at a deliberate re-add against a diffable vendored
+file, which is a local-module edit in experience. Adjacent, with the
+non-claim stated.
+
+The one thing the siblings could not answer: import resolution is
+literally file-relative, so vendoring needs either ugly ../ paths or
+one bare-name-resolves-via-the-walk rule — which is not new design,
+it is #sig's resolution verbatim. Two sessions if a trigger ever
+fires; parked as unmotivated with the triggers named, because one
+repo cannot want a package manager.
+
 ## the init file, and the overlay that refused to exist (2026-08-23)
 
 The plan braced for an env matrix hunt — every spawn route times the
