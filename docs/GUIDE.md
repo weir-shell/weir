@@ -276,7 +276,7 @@ cleanup 5 // expected unit, got int
 `if` is an expression; `else` is optional only when the then-branch is
 unit; `elif` chains (it is short for `else if`). `match` has literal patterns (`| 0 ->`, `| "yes" ->` — int/string
 literals never complete a match alone; close with `_` or a var),
-bool patterns, constructor patterns, and `when`
+bool patterns, constructor patterns, record patterns, and `when`
 guards — and a non-exhaustive match is a hard error, not a warning.
 
 ```weir-error
@@ -299,6 +299,35 @@ type V =
 match Pass with
 | pass -> print "ok" // 'pass' BINDS — did you mean 'Pass'? the next arm is unreachable
 | Failing -> print "no"
+```
+
+Record patterns destructure by field name — in a `match` arm, a
+`let`, or a `for` binder (never a function param — params stay plain
+idents). Fields keep their declared case, binders are lowercase, and
+there is no punning: `{ names = n }`, never `{ names }`. A field
+pattern may hold a literal, which makes the arm REFUTABLE — filter
+and destructure in one motion:
+
+```weir
+type Container = { State: string; Names: string }
+
+let running =
+    [{ State = "running"; Names = "api" }; { State = "exited"; Names = "old" }]
+    |> Seq.choose (fun c ->
+        match c with
+        | { State = "running"; Names = n } -> Some n
+        | _ -> None)
+
+running |> Seq.iter print
+```
+
+A refutable record pattern never completes a match alone — the same
+rule literal arms have; close with `_` or a var:
+
+```weir-error
+type St = { state: string }
+match { state = "up" } with
+| { state = "up" } -> print "x" // a refutable record arm needs a catch-all below it
 ```
 
 ```weir
@@ -970,6 +999,37 @@ with `Duration.toSeconds`:
 let ratio = Duration.toSeconds 90s / Duration.toSeconds 1m
 print $"{ratio}x the budget"
 ```
+
+## Binary data: `Bytes`
+
+`Bytes` is the non-text value — an in-memory byte array, opt-in at
+both ends: nothing becomes byte-typed by default (commands still
+produce `seq<string>`, `File.read` still decodes text). In:
+`File.readBytes` (no decode, no line split), `Bytes.fromBase64` /
+`tryFromBase64` (malformed raises / `None`), `Str.toUtf8`. Out:
+`File.writeBytes`, `Bytes.toBase64`, and `Str.fromUtf8` /
+`tryFromUtf8` — the gate back to text, where non-UTF-8 or
+NUL-bearing bytes raise or yield `None` rather than corrupting a
+string.
+
+```weir
+let b = Str.toUtf8 "hello"
+print (Bytes.sha256 b)
+print (Bytes.toBase64 b)
+print $"{b}"
+
+let png = Bytes.fromBase64 "iVBORw0KGgo="
+print (show (Bytes.length png))
+print (show (Str.tryFromUtf8 png))
+```
+
+The boundaries refuse raw bytes, each naming the exit: `print`,
+`to json`/`to yaml`, argv splices and `Args.load`/`Env.load` all
+point at `Bytes.toBase64` or `File.writeBytes`; a hole or `show`
+renders a summary (`<12 B>` above), never content — raw bytes wreck
+terminals. `Bytes.length` is a `Size`; `==` is byte equality; there
+is no ordering. And to hash a file without loading it,
+`File.sha256 path` streams internally.
 
 ## Making requests: `Http`
 
