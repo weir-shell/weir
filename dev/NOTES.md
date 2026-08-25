@@ -1,5 +1,23 @@
 # Spike Notes
 
+## add module: the frozen design survived contact (2026-08-25)
+
+Two sessions of exploration meant the implementation was mostly
+transcription — the one design decision left open (R1) resolved
+against BOTH friendly options: the probe showed extensionless bare
+imports already work, so the vendored namespace became the weir:
+scheme inside the ordinary string, shape-scoped with no fallback and
+no grammar movement. The acceptance battery's one real find was in
+the SIBLINGS: restore had never repaired a modified artifact, only
+materialized absent ones — "re-materialize, hash-verified" read as a
+promise the code kept only half of. Now drift refetches.
+
+Add-time typechecking was free, as the plan hoped: the import
+loader with a phantom importer IS the validator, so the add refuses
+with the checker's own located words. And the update experience the
+design rests on held: a re-add prints the sha pair and the vendored
+file's git diff is the whole review.
+
 ## the init guard, and a fix that could not compile (2026-08-24)
 
 The change was small and right in intent: [D:repl-init] made the init file

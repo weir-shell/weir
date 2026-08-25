@@ -2605,7 +2605,22 @@ let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
 // precedent, two links to one file are two files.
 let private resolveImportPath (importingAbsPath: string) (path: string) : string =
     let dir = IO.Path.GetDirectoryName importingAbsPath
-    IO.Path.GetFullPath(IO.Path.Combine(dir, path))
+
+    if path.StartsWith "weir:" then
+        // the vendored namespace [D:add-module] — SHAPE-scoped, never a
+        // fallback: `weir:` always resolves via the .weir/ walk (a file
+        // literally containing a colon keeps the ./ spelling). Both bare
+        // import shapes were already meaningful (R1's probe), so the
+        // vendored spelling had to be distinct.
+        let name = path.Substring 5
+
+        match Contracts.findWeirDir dir with
+        | Ok wd -> IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
+        | Error _ ->
+            // no .weir/ anywhere: a display path for the not-found teach
+            IO.Path.GetFullPath(IO.Path.Combine(dir, ".weir", "modules", name + ".weir"))
+    else
+        IO.Path.GetFullPath(IO.Path.Combine(dir, path))
 
 // F#'s filename fallback for a bare `module`: capitalize the base name. A
 // non-identifier filename has no derivation (name it, or import `as`).
@@ -2672,7 +2687,12 @@ let rec loadModuleCached
     let notAModule =
         stmt $"{absPath} is not a module; add `module` at the top, or invoke it as a command"
 
-    if absPath = importingAbsPath then
+    if
+        path.StartsWith "weir:"
+        && (let n = path.Substring 5 in n = "" || n.Contains "/" || n.Contains "\\" || n.Contains "..")
+    then
+        stmt "a weir: import names a vendored module, never a path — weir:<name>, no separators"
+    elif absPath = importingAbsPath then
         stmt "a file cannot import itself"
     elif List.contains absPath chain then
         // a cycle — same detector as self-import, different rendering
@@ -2693,7 +2713,13 @@ let rec loadModuleCached
             { cached with
                 Alias = importAs |> Option.defaultValue cached.NaturalName }
     elif (readImportSource absPath) |> Option.isNone then
-        stmt $"cannot resolve import: no file at {absPath}"
+        if path.StartsWith "weir:" then
+            let n = path.Substring 5
+
+            stmt
+                $"no vendored module '{n}' ({absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {n}"
+        else
+            stmt $"cannot resolve import: no file at {absPath}"
     else
         let rawLines = readImportSource absPath |> Option.get
         let body, bodyOffset, _ = scriptBody rawLines
@@ -2840,6 +2866,34 @@ let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) 
 
 // the -e / REPL import loader [D:modules-v1]: there is no file to resolve
 // relative paths against, so import is script-only (decision 12)
+/// add-time validation for a fetched module file [D:add-module]: the
+/// SAME loader imports use — is-a-module, the module purity rules, a
+/// full typecheck — with imports REFUSED first: vendored modules are
+/// leaves for now (a current boundary, not a permanent one). Returns
+/// the member count for the add's report line.
+let checkVendoredModule (absPath: string) : Result<int, string> =
+    match readImportSource absPath with
+    | None -> Error $"cannot read {absPath}"
+    | Some raws ->
+        if raws |> List.exists (fun l -> l.StartsWith "import ") then
+            Error
+                "the module imports — vendored modules are leaves for now (transitive vendoring is a current boundary, not a refusal of the idea): inline the dependency, or vendor both and import each"
+        else
+            let cache = Collections.Generic.Dictionary()
+            // a phantom importer in the same directory: never equal to
+            // absPath, so the self-import guard stays quiet
+            let phantom = absPath + ".add"
+
+            match loadModuleCached cache [] phantom absPath None with
+            | Ok lm -> Ok(List.length lm.Members)
+            | Error e ->
+                let where =
+                    match e.File with
+                    | Some f -> $"{f}:{e.Line}:{e.Col}: "
+                    | None -> ""
+
+                Error $"{where}{e.Message}"
+
 let scriptOnlyImport: ImportLoader =
     fun _ _ _ ->
         Error

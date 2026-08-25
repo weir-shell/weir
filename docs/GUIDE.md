@@ -1395,6 +1395,14 @@ top, or invoke it as a command`.) A module `let` that runs a command
 is refused too — wrap it in a function; a module declares, a script
 runs.
 
+A module can also come from another repo, vendored and committed:
+`weir add module github.com/org/repo//lib/x.weir@v1.2.0 --as x`
+fetches it into `.weir/modules/`, pins it in the lock, and it
+imports by name from anywhere under the project —
+`import "weir:x" as X`. The mechanics (pinning, updates, private
+repos, what `add` validates) live in
+[tooling.md](tooling.md#remote-modules).
+
 ## Retrying and polling
 
 The bounded loops share one shape:
