@@ -262,7 +262,7 @@ did-you-mean.
   commands.
 - `$x` as a variable-that-also-does-properties — `$` in weir is a
   splice (into argv or a string); expressions use bare names.
-- `trap`/`try` — the reifier family:
+- `trap`/`try` — the exit-code forms:
   [GUIDE.md](GUIDE.md#exit-codes-from-command-to-value).
 - On Windows: bare names resolve through the full `PATHEXT` list
   (platform parity), and the `.bat`/`.cmd` hazard is a stated
@@ -375,7 +375,7 @@ echo --file=$f
 - `async`/`await` — none, and none needed: I/O is synchronous from
   the script's point of view; parallelism lives in `Seq.pmap`/`piter`
   (and a task that truly needs async has outgrown a shell).
-- `try/catch` — the reifier family; `| orFail "msg"` is the one-line
+- `try/catch` — the exit-code forms; `| orFail "msg"` is the one-line
   assert.
 - npm dependencies — `import "./lib/x.weir"` shares code between
   scripts; external tools are external tools.
@@ -585,7 +585,7 @@ print $"typed rows: {rows}"
   minus the execution and plus the pinning. The cost: vendored files
   are yours to keep current, and the validation reaches only what the
   checker can see.
-- **The reifier family under one law** — output goes where the
+- **The exit-code forms under one law** — output goes where the
   meaning goes: `succeeds` and `complete` are silent/captured because
   their output IS the result; `orFail` and `exitCode` stream because
   their output is for the human. The cost: `succeeds` is
