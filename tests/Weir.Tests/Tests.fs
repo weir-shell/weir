@@ -12702,9 +12702,13 @@ let tasksUnderneathTests =
               let sw = System.Diagnostics.Stopwatch.StartNew()
               run "[1..128] |> Seq.piter (fun i -> Duration.sleep 100ms)" |> ignore
               sw.Stop()
-              // 2 rounds ≈ 200ms; the old ProcessorCount sizing would need
-              // 100ms × ceil(128/cores) ≥ 800ms on any machine ≤ 16 cores
-              Expect.isTrue (sw.ElapsedMilliseconds < 700L) $"took {sw.ElapsedMilliseconds}ms — the ceiling regressed"
+              // 2 rounds ≈ 200ms; the old ProcessorCount sizing needs
+              // 100ms × ceil(128/cores) — ≥ 3200ms on the ≤4-core CI
+              // runners, ≥ 800ms on anything ≤ 16 cores. 1500ms keeps a
+              // 2x margin below the worst regression floor this pin can
+              // meet while giving shared-VM noise real room (a macOS
+              // runner stretched the 200ms design to 750ms live)
+              Expect.isTrue (sw.ElapsedMilliseconds < 1500L) $"took {sw.ElapsedMilliseconds}ms — the ceiling regressed"
           }
           test "pmapWith takes an explicit ceiling; degree < 1 raises naming the constraint" {
               expectValue
