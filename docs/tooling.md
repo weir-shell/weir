@@ -22,6 +22,7 @@ usage: weir                                    the REPL
        weir lsp                                language server (stdio)
        weir add sig <tool>                     generate a command signature from the installed binary
        weir add schema <url> --as <name>       fetch an external contract, lock it
+       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it
        weir restore                            re-materialize the lock's artifacts
        weir verify                             vendored contracts vs the lock
        weir --version                          the build stamp
@@ -63,8 +64,12 @@ These maintain the [`.weir/` tree](#project-layout-weir):
   ([signatures](#command-signatures)).
 - `weir add schema <url> --as <name>` — fetch a JSON schema into
   `.weir/schemas/`, lock it ([schemas](#yaml-schemas)).
+- `weir add module <src>//<file>@<ref> --as <name>` — vendor a remote
+  module into `.weir/modules/`, lock it ([modules](#remote-modules)).
 - `weir restore` — re-materialize everything the lock records,
-  hash-verified. The one subcommand that fetches.
+  hash-verified — absent files are fetched, and a present-but-modified
+  URL artifact is repaired by refetching (the lock is the intent). The
+  one subcommand that fetches.
 - `weir verify` — compare the vendored contracts against the lock:
   absent or modified artifacts are findings, exit 1.
 
@@ -169,16 +174,68 @@ The schema validates what the checker can see. The teaching version
 — templates, block scalars, splices-as-nodes — lives in the
 [guide](GUIDE.md#commands-and-processes).
 
+## Remote modules
+
+Share code across repos by vendoring it — a fetch, not a package
+manager: no registry, no resolver, no version ranges.
+
+```text
+weir add module github.com/org/repo//lib/retry.weir@v1.2.0 --as retry
+```
+
+Host-first, with `//` separating the repo from the in-repo path
+(GitLab nests groups, so the boundary must be spelled — and one
+spelling beats a per-host rule). An explicit `@ref` is required — a
+tag, branch, or sha; weir resolves it to the **full commit sha** and
+stores that in the lock's URL, so what you reviewed is what restore
+refetches. The shorthand knows `github.com` and `gitlab.com`; any
+other host takes the full raw URL:
+
+```text
+weir add module https://raw.githubusercontent.com/org/repo/<sha>/lib/retry.weir --as retry
+```
+
+`add` validates before writing: the file must be a `module`
+(declaration-only), it must typecheck, and it must not `import` —
+vendored modules are leaves for now, a current boundary rather than
+a permanent one. Nothing lands in `.weir/` unless all three hold.
+Then import it anywhere under the project by name — the `weir:`
+namespace resolves via the same upward walk `#sig` uses, so the
+spelling is depth-independent:
+
+```text
+import "weir:retry" as Retry
+```
+
+A re-add is the update path: it overwrites and prints the old and
+new sha — the vendored file's diff is the review surface. `verify`
+flags a modified copy; `restore` repairs it by refetching.
+
+Worth stating as a feature: `check --can` walks imports, so a
+vendored module's commands, writes and network access appear in
+**your** report, each at the module's own `file:line` — "what can
+this dependency do" is answerable before anything runs.
+
+Private repos need a token only at `add`/`restore` time (the
+committed file needs neither): set `WEIR_TOKEN_GITHUB_COM` /
+`WEIR_TOKEN_GITLAB_COM`. GitHub answers 404 for
+private-without-auth, so the not-found teach names the token.
+Tokens are read from the environment and never stored. Stated
+non-claim: no signing — trust is review-then-hash plus your own
+repo's history.
+
 ## Project layout: `.weir/`
 
-A project that uses [signatures](#command-signatures) or
-[schemas](#yaml-schemas) grows one directory:
+A project that uses [signatures](#command-signatures),
+[schemas](#yaml-schemas) or [remote modules](#remote-modules) grows
+one directory:
 
 ```text
 .weir/
   lock.json          # the lock: exact identity + hash for every vendored artifact
   sigs/<tool>.weir   # command signatures (weir add sig)
   schemas/<name>.json# JSON schemas (weir add schema)
+  modules/<name>.weir# vendored modules (weir add module)
 ```
 
 A script finds its `.weir/` by walking UP from its own directory to

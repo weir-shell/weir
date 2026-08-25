@@ -82,6 +82,14 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
         try
             use doc = Text.Json.JsonDocument.Parse(File.ReadAllText p)
 
+            let ver =
+                match doc.RootElement.TryGetProperty "schemaVersion" with
+                | true, v -> v.GetInt32()
+                | _ -> 1 // pre-field locks are version 1
+
+            if ver > 1 then
+                failwith $"lock schemaVersion {ver} is newer than this weir understands — upgrade weir"
+
             doc.RootElement.GetProperty("artifacts").EnumerateArray()
             |> Seq.map (fun e ->
                 { Kind = e.GetProperty("kind").GetString()
@@ -105,6 +113,7 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
         new Text.Json.Utf8JsonWriter(ms, Text.Json.JsonWriterOptions(Indented = true))
 
      w.WriteStartObject()
+     w.WriteNumber("schemaVersion", 1)
      w.WriteStartArray "artifacts"
 
      for e in entries do
@@ -128,10 +137,14 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
 
 // ---- fetch (ruling 4: each failure mode its own message) -------------------
 
-let fetchBytes (url: string) : Result<byte[] * string option, string> =
+let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte[] * string option, string> =
     try
         use client = new Net.Http.HttpClient()
         client.Timeout <- TimeSpan.FromSeconds 60.0
+
+        for k, v in headers do
+            client.DefaultRequestHeaders.TryAddWithoutValidation(k, v) |> ignore
+
         use resp = client.GetAsync(url).Result
 
         if not resp.IsSuccessStatusCode then
@@ -155,6 +168,8 @@ let fetchBytes (url: string) : Result<byte[] * string option, string> =
         // this fetch's own client timeout above
         Error(Http.transportMessage host (Http.classifyTransport 60000 port ex))
 
+let fetchBytes (url: string) : Result<byte[] * string option, string> = fetchBytesWith [] url
+
 /// the single most likely user error for `add schema <url>` is a
 /// GitHub/GitLab FILE PAGE where the raw URL was meant — recognize the
 /// host and OFFER the rewritten raw URL, because the fix is a URL edit
@@ -173,6 +188,189 @@ let rawUrlHint (url: string) : string =
             $" — this is a GitLab file page; use the raw URL: https://gitlab.com/{g.Groups[1].Value}/-/raw/{g.Groups[2].Value}"
         else
             " — if this is a GitHub or GitLab file page, use the raw URL"
+
+// ---- remote module sources [D:add-module] ----------------------------------
+// The shorthand is CLI SUGAR ONLY — the lock never sees it: a plain URL
+// plus content hash goes in, host-agnostic, so restore/verify stay
+// generic. Host-first with the `//` repo/path separator REQUIRED on
+// every host (GitLab nests groups, so the boundary must be spelled; a
+// host-conditional parse is a guess). Tag in, FULL SHA stored. An
+// explicit @ref is required — weir does not guess a default branch.
+
+/// the env var a host's token is read from — never stored anywhere
+let hostTokenVar (host: string) : string =
+    "WEIR_TOKEN_" + host.ToUpperInvariant().Replace(".", "_").Replace("-", "_")
+
+let private hostToken (host: string) : string option =
+    match Environment.GetEnvironmentVariable(hostTokenVar host) with
+    | null
+    | "" -> None
+    | t -> Some t
+
+/// GitHub answers 404 (not 403) for private-without-auth — the teach
+/// must fire on both, or every private repo reads as a typo
+let hintPrivate (host: string) (e: string) : string =
+    if e.Contains "answered 404" || e.Contains "answered 403" then
+        e + $" — or the repo is private: set {hostTokenVar host}"
+    else
+        e
+
+type ResolvedModuleSource =
+    { Url: string
+      Sha: string option
+      FetchHeaders: (string * string) list
+      Host: string option }
+
+let private uaHeader = [ "User-Agent", "weir/" + Version.current ]
+
+let private shaFrom (field: string) (bytes: byte[]) : string option =
+    try
+        use doc = Text.Json.JsonDocument.Parse bytes
+        Some(doc.RootElement.GetProperty(field).GetString())
+    with _ ->
+        None
+
+let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
+    if spec.StartsWith "http://" || spec.StartsWith "https://" then
+        // the explicit raw-URL form — any host, no expansion
+        let host =
+            try
+                (Uri spec).Host
+            with _ ->
+                ""
+
+        let hdrs =
+            match hostToken host with
+            | Some t -> [ "Authorization", "token " + t ]
+            | None -> []
+
+        Ok
+            { Url = spec
+              Sha = None
+              FetchHeaders = uaHeader @ hdrs
+              Host = (if host = "" then None else Some host) }
+    else
+        match spec.IndexOf "//" with
+        | -1 ->
+            Error
+                "the shorthand needs the // repo/path separator — <host>/<org>/<repo>//<path>@<ref> (GitLab nests groups, so the boundary must be spelled); any host also takes the full raw URL"
+        | i ->
+            let left = spec.Substring(0, i)
+            let right = spec.Substring(i + 2)
+
+            match right.LastIndexOf "@" with
+            | -1 ->
+                Error "an explicit @ref is required — @main, @v1.2.0, or @<sha>; weir does not guess a default branch"
+            | j ->
+                let path = right.Substring(0, j)
+                let refName = right.Substring(j + 1)
+
+                if path = "" || refName = "" then
+                    Error
+                        "an explicit @ref is required — @main, @v1.2.0, or @<sha>; weir does not guess a default branch"
+                else
+                    match left.IndexOf "/" with
+                    | -1 -> Error $"the shorthand is <host>/<org>/<repo>//<path>@<ref>; '{left}' has no repo part"
+                    | k ->
+                        let host = left.Substring(0, k)
+                        let repo = left.Substring(k + 1)
+
+                        match host with
+                        | "github.com" ->
+                            let apiAuth =
+                                match hostToken host with
+                                | Some t -> [ "Authorization", "Bearer " + t ]
+                                | None -> []
+
+                            let api = $"https://api.github.com/repos/{repo}/commits/{refName}"
+
+                            (match
+                                fetchBytesWith (uaHeader @ [ "Accept", "application/vnd.github+json" ] @ apiAuth) api
+                             with
+                             | Error e -> Error(hintPrivate host $"resolving @{refName}: {e}")
+                             | Ok(bytes, _) ->
+                                 match shaFrom "sha" bytes with
+                                 | None -> Error $"unexpected answer resolving @{refName} at {api}"
+                                 | Some sha ->
+                                     let rawAuth =
+                                         match hostToken host with
+                                         | Some t -> [ "Authorization", "token " + t ]
+                                         | None -> []
+
+                                     Ok
+                                         { Url = $"https://raw.githubusercontent.com/{repo}/{sha}/{path}"
+                                           Sha = Some sha
+                                           FetchHeaders = uaHeader @ rawAuth
+                                           Host = Some host })
+                        | "gitlab.com" ->
+                            let auth =
+                                match hostToken host with
+                                | Some t -> [ "PRIVATE-TOKEN", t ]
+                                | None -> []
+
+                            let api =
+                                $"https://gitlab.com/api/v4/projects/{Uri.EscapeDataString repo}/repository/commits/{Uri.EscapeDataString refName}"
+
+                            (match fetchBytesWith (uaHeader @ auth) api with
+                             | Error e -> Error(hintPrivate host $"resolving @{refName}: {e}")
+                             | Ok(bytes, _) ->
+                                 match shaFrom "id" bytes with
+                                 | None -> Error $"unexpected answer resolving @{refName} at {api}"
+                                 | Some sha ->
+                                     Ok
+                                         { Url = $"https://gitlab.com/{repo}/-/raw/{sha}/{path}"
+                                           Sha = Some sha
+                                           FetchHeaders = uaHeader @ auth
+                                           Host = Some host })
+                        | h ->
+                            Error
+                                $"unknown host '{h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
+
+/// the shared vendoring tail: write the artifact and upsert its lock
+/// entry together, or neither. Returns (sha256, prior entry's sha) so
+/// the caller can render added/updated — a re-add IS the update path,
+/// and the sha change is the review signal.
+let vendorFile
+    (weirDir: string)
+    (kind: string)
+    (name: string)
+    (rel: string)
+    (url: string)
+    (bytes: byte[])
+    : Result<string * string option, string> =
+    match readLock weirDir with
+    | Error e -> Error e
+    | Ok entries ->
+        let prior =
+            entries
+            |> List.tryFind (fun e -> e.Kind = kind && e.Name = name)
+            |> Option.map (fun e -> e.Sha256)
+
+        let dest = Path.Combine(weirDir, rel)
+        let hash = sha256Hex bytes
+
+        let entry =
+            { Kind = kind
+              Name = name
+              Url = url
+              Sha256 = hash
+              Path = rel
+              Version = None }
+
+        let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
+
+        try
+            Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
+            File.WriteAllBytes(dest, bytes)
+            writeLock weirDir (others @ [ entry ])
+            Ok(hash, prior)
+        with ex ->
+            (try
+                File.Delete dest
+             with _ ->
+                 ())
+
+            Error $"write failed: {ex.Message} — the partial file was removed"
 
 // ---- the JSON Schema subset [D:yaml-schemas] -------------------------------
 
@@ -479,7 +677,15 @@ let restore (weirDir: string) : Result<string list, string> =
             |> List.map (fun e ->
                 let dest = Path.Combine(weirDir, e.Path)
 
-                if File.Exists dest then
+                // a PRESENT-BUT-MODIFIED url artifact is drift from the
+                // lock's intent — restore repairs it by refetching, the
+                // same hash-checked path an absent file takes (a
+                // deliberate local edit is a re-add, not an edit-in-place)
+                let presentAndTrue =
+                    File.Exists dest
+                    && (e.Url.StartsWith "generated:" || sha256Hex (File.ReadAllBytes dest) = e.Sha256)
+
+                if presentAndTrue then
                     Ok $"{e.Kind} {e.Name}: present"
                 elif e.Url.StartsWith "generated:" then
                     // the ruled restore behaviour for a GENERATED entry
@@ -500,9 +706,16 @@ let restore (weirDir: string) : Result<string list, string> =
                             Error
                                 $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, `weir add schema` again"
                         else
+                            let repaired = File.Exists dest
                             Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
                             File.WriteAllBytes(dest, bytes)
-                            Ok $"{e.Kind} {e.Name}: restored from {e.Url}")
+
+                            Ok(
+                                if repaired then
+                                    $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
+                                else
+                                    $"{e.Kind} {e.Name}: restored from {e.Url}"
+                            ))
 
         match
             results

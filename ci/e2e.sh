@@ -6265,6 +6265,71 @@ lout=$(bash -c "exec -a -weir \"$BIN\" --version" 2>&1) || fail "dash argv[0] br
 rm -f "$INITHOME/weir/init.weir"
 echo "e2e ok: repl init file (example loads with docs+settings, all-or-nothing failure, raising values fail located with no trace, silent missing, both #session teaches, dash-argv0)"
 
+# ---- weir add module [D:add-module] ---------------------------------------
+# the acceptance battery: vendor from a local server (deterministic),
+# import via the weir: walk from root AND a subdir, the module's
+# capability in the IMPORTER's --can at the module's own line, tamper →
+# verify → restore-repairs, re-add prints the sha pair, the seven
+# teaches, R1's negative pins, and the live shorthand chain.
+amdir=$(mkweirtmp)
+mkdir -p "$amdir/serve" "$amdir/proj/sub"
+cat > "$amdir/serve/greet.weir" <<'WEOF'
+module Greet
+
+/// the greeting the pins expect
+let hello name = $"hi {name}"
+
+/// writes an audit line
+let log msg = [msg] |> File.write "audit.log"
+WEOF
+printf 'module NeedsDep\n\nimport "./x.weir" as X\n\nlet f x = x\n' > "$amdir/serve/needsdep.weir"
+amport=$((21000 + RANDOM % 2000))
+python3 -m http.server $amport --bind 127.0.0.1 --directory "$amdir/serve" >/dev/null 2>&1 &
+amsrv=$!
+awaitHttp "http://127.0.0.1:$amport/greet.weir" || { kill $amsrv 2>/dev/null || true; fail "the module server never came up"; }
+( cd "$amdir/proj" && git init -q . )
+aout=$(cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/greet.weir" --as greet)
+echo "$aout" | grep -q "added module greet (.*2 member(s))" || fail "add module: $aout"
+echo "$aout" | grep -qF 'import it:  import "weir:greet" as Greet' || fail "add module must print the import line: $aout"
+grep -q '"schemaVersion": 1' "$amdir/proj/.weir/lock.json" || fail "the lock carries schemaVersion 1"
+printf 'import "weir:greet" as G\nprint (G.hello "vendored")\n' > "$amdir/proj/use.weir"
+printf 'import "weir:greet" as G\nprint (G.hello "deep")\n' > "$amdir/proj/sub/deep.weir"
+[ "$(cd "$amdir/proj" && $BIN use.weir)" = "hi vendored" ] || fail "weir: import at the root"
+[ "$(cd "$amdir/proj" && $BIN sub/deep.weir)" = "hi deep" ] || fail "weir: import from a subdir (the walk)"
+printf 'import "weir:greet" as G\n\nG.log "ran"\n' > "$amdir/proj/audit.weir"
+canout=$(cd "$amdir/proj" && $BIN check --can audit.weir)
+# separator-agnostic: Windows prints the module path with backslashes
+echo "$canout" | grep -q "File.write audit.log  .*modules.greet\.weir:7:" || fail "--can must carry the vendored module's write at its own line: $canout"
+sed -i.bak 's/hi/hacked/' "$amdir/proj/.weir/modules/greet.weir" && rm -f "$amdir/proj/.weir/modules/greet.weir.bak"
+( cd "$amdir/proj" && $BIN verify || true ) | grep -q "module greet: MODIFIED" || fail "verify must flag the tampered module"
+( cd "$amdir/proj" && $BIN restore ) | grep -q "module greet: repaired" || fail "restore must repair a modified vendored file"
+( cd "$amdir/proj" && $BIN verify ) | grep -q "module greet: ok" || fail "post-repair verify"
+printf '\n/// third\nlet bye n = $"bye {n}"\n' >> "$amdir/serve/greet.weir"
+( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/greet.weir" --as greet ) | grep -q "updated module greet: " || fail "re-add must print old → new sha"
+( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/needsdep.weir" --as dep 2>&1 || true ) | grep -q "vendored modules are leaves for now" || fail "import refusal teach"
+( cd "$amdir/proj" && $BIN add module "github.com/acme/lib/x.weir@v1" --as x 2>&1 || true ) | grep -q "needs the // repo/path separator" || fail "// teach"
+( cd "$amdir/proj" && $BIN add module "github.com/acme/lib//x.weir" --as x 2>&1 || true ) | grep -q "an explicit @ref is required" || fail "@ref teach"
+( cd "$amdir/proj" && $BIN add module "sr.ht/a/b//x.weir@v1" --as x 2>&1 || true ) | grep -q "unknown host 'sr.ht'" || fail "unknown-host teach"
+( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/greet.weir" --as seq 2>&1 || true ) | grep -q "a builtin module — pick another --as" || fail "builtin alias refusal"
+printf 'import "weir:nope" as N\nprint "x"\n' > "$amdir/proj/missing.weir"
+( cd "$amdir/proj" && $BIN missing.weir 2>&1 || true ) | grep -q "no vendored module 'nope'" || fail "missing-vendored teach"
+printf 'import "weir:../evil" as E\nprint "x"\n' > "$amdir/proj/evil.weir"
+( cd "$amdir/proj" && $BIN evil.weir 2>&1 || true ) | grep -q "names a vendored module, never a path" || fail "weir: path-shape refusal"
+# R1's negative pins: BOTH pre-existing bare spellings stay file-relative
+printf 'module Sib\nlet s () = "sibling"\n' > "$amdir/proj/sib.weir"
+cp "$amdir/proj/sib.weir" "$amdir/proj/sibnoext"
+printf 'import "sib.weir" as A\nprint (A.s ())\n' > "$amdir/proj/r1a.weir"
+printf 'import "sibnoext" as B\nprint (B.s ())\n' > "$amdir/proj/r1b.weir"
+[ "$(cd "$amdir/proj" && $BIN r1a.weir)" = "sibling" ] || fail "R1: bare-with-extension must stay file-relative"
+[ "$(cd "$amdir/proj" && $BIN r1b.weir)" = "sibling" ] || fail "R1: bare-no-extension must stay file-relative"
+# the live shorthand chain (ref→sha→raw fetch→validation): a real repo
+# file that is NOT a module — the refusal proves the bytes arrived.
+# Tolerates the shared-IP rate limit; CI passes WEIR_TOKEN_GITHUB_COM.
+lout=$(cd "$amdir/proj" && $BIN add module "github.com/weir-shell/weir//ci/release-published.weir@v0.0.5" --as relpub 2>&1 || true)
+echo "$lout" | grep -q "is not a module" || echo "$lout" | grep -qE "rate limit|answered 403" || fail "live shorthand chain: $lout"
+kill $amsrv 2>/dev/null || true
+echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's line, tamper→repair, re-add sha pair, the teaches, R1 negative pins, live shorthand)"
+
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned
 # here against LIVE runs so the homepage cannot go stale while green (the

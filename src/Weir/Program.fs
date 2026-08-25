@@ -285,14 +285,98 @@ let main argv =
     | "add" :: "sig" :: _ ->
         Console.Error.WriteLine "usage: weir add sig <tool>   generate a signature from the installed binary"
         2
+    | [ "add"; "module"; spec; "--as"; name ] ->
+        let weirDir =
+            match Contracts.findWeirDir "." with
+            | Ok d -> d
+            | Error _ -> IO.Path.GetFullPath ".weir"
+
+        // R5: the alias namespace — a builtin module's name is reserved,
+        // and the name must be able to derive an import alias
+        let nameOk =
+            name.Length > 0
+            && System.Char.IsLetter name[0]
+            && name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+
+        let derivedAlias =
+            if name.Length > 0 then
+                string (System.Char.ToUpper name[0]) + name.Substring 1
+            else
+                name
+
+        if not nameOk then
+            Console.Error.WriteLine
+                $"weir add module: '--as {name}' must be a plain name (a letter, then letters/digits/_) — it becomes the vendored file and the import alias"
+
+            1
+        elif Map.containsKey derivedAlias Builtins.typeEnvStrict.Modules then
+            Console.Error.WriteLine
+                $"weir add module: '{name}' derives the alias '{derivedAlias}', a builtin module — pick another --as"
+
+            1
+        else
+            (match Contracts.resolveModuleSpec spec with
+             | Error e ->
+                 Console.Error.WriteLine $"weir add module: {e}"
+                 1
+             | Ok src ->
+                 match Contracts.fetchBytesWith src.FetchHeaders src.Url with
+                 | Error e ->
+                     let e =
+                         match src.Host with
+                         | Some h -> Contracts.hintPrivate h e
+                         | None -> e
+
+                     Console.Error.WriteLine $"weir add module: {e}; nothing was written"
+                     1
+                 | Ok(bytes, _) ->
+                     // validate BEFORE any .weir/ write [D:add-validates]:
+                     // a module that does not check must not land
+                     let tmp = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-add-{name}.weir")
+                     IO.File.WriteAllBytes(tmp, bytes)
+                     let checked' = Script.checkVendoredModule tmp
+
+                     (try
+                         IO.File.Delete tmp
+                      with _ ->
+                          ())
+
+                     match checked' with
+                     | Error e ->
+                         // the teach names the SOURCE, not the temp file
+                         // validation ran against
+                         let e = e.Replace(tmp, src.Url)
+                         Console.Error.WriteLine $"weir add module: {e}; nothing was written"
+                         1
+                     | Ok memberCount ->
+                         match
+                             Contracts.vendorFile weirDir "module" name ("modules/" + name + ".weir") src.Url bytes
+                         with
+                         | Error e ->
+                             Console.Error.WriteLine $"weir add module: {e}"
+                             1
+                         | Ok(hash, prior) ->
+                             (match prior with
+                              | Some old when old <> hash ->
+                                  // a re-add IS the update path: the sha pair is
+                                  // the signal there is a diff to review
+                                  Console.WriteLine
+                                      $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
+                              | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
+                              | None ->
+                                  Console.WriteLine
+                                      $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {src.Url}")
+
+                             Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
+                             0)
     | "add" :: "module" :: _ ->
         Console.Error.WriteLine
-            "weir add module: remote modules are the spine's third customer — not built yet (DESIGN-external-contracts.md); `add module <repo> --ref <sha>` will clone at a ref"
+            "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       (an explicit @ref is required; the full raw URL is also accepted)"
 
         2
     | "add" :: _ ->
         Console.Error.WriteLine
-            "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig <tool>                (next customer — generates from the installed binary)\n       weir add module <repo> --ref <sha> (third customer — clones at a ref)"
+            "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig <tool>                 generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it"
 
         2
     | [ "restore" ] ->
@@ -362,6 +446,7 @@ let main argv =
             + "       weir lsp                                language server (stdio)\n"
             + "       weir add sig <tool>                     generate a command signature from the installed binary\n"
             + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
+            + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"
             + "       weir restore                            re-materialize the lock's artifacts\n"
             + "       weir verify                             vendored contracts vs the lock\n"
             + "       weir --version                          the build stamp"

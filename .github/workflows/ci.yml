@@ -89,6 +89,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: e2e battery (conflict-marker gate at its top)
+        env:
+          # the add-module live cell resolves a ref via api.github.com —
+          # authenticated, so shared runner IPs cannot rate-limit it
+          WEIR_TOKEN_GITHUB_COM: ${{ github.token }}
         run: ./ci/e2e.sh
       - name: fuzz smoke (pinned seed)
         run: dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
