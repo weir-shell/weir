@@ -6208,6 +6208,39 @@ iout=$(printf '#help hi
 echo "$iout" | grep -qF "unknown #session key 'echoCpa'. Did you mean 'echoCap'?" || fail "init typo key lost its did-you-mean"
 echo "$iout" | grep -qF "init: NOT loaded" || fail "broken init must say NOT loaded"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a binding survived a failed init"
+# a RAISING value fails the load LOCATED, never as a .NET trace: both
+# eval sites (a #session field's value and a plain let) run user code at
+# startup, and an escaping exception killed the REPL before it reached a
+# prompt. The trace-absence assertion is the claim — the located line
+# alone would pass on a build that ALSO dumped a stack.
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#session {
+    cwd = File.read "/no/such/file/xyz" |> Seq.head
+}
+let hi () = print "hi"
+WEOF
+iout=$(printf '#help hi
+#quit
+' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising #session value must report its own error: $iout"
+echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising #session value must be LOCATED at its line: $iout"
+echo "$iout" | grep -qF "init: NOT loaded" || fail "a raising #session value must not load"
+echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising #session value"
+echo "$iout" | grep -qF "Unhandled exception" && fail "a raising #session value dumped a .NET trace: $iout" || true
+
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+let bad = File.read "/no/such/file/xyz" |> Seq.head
+let hi () = print "hi"
+WEOF
+iout=$(printf '#help hi
+#quit
+' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising init let must report its own error: $iout"
+echo "$iout" | grep -qE "init\.weir:1:" || fail "the raising let must be LOCATED at its line: $iout"
+echo "$iout" | grep -qF "init: NOT loaded" || fail "a raising init let must not load"
+echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
+echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true
+
 # declaration-only: a bare command refuses with the teach
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
 git status
@@ -6230,7 +6263,7 @@ echo "$pout" | grep -qF "#session is read from the init file at startup" || fail
 # the login-shell convention: a leading-dash argv[0] changes nothing
 lout=$(bash -c "exec -a -weir \"$BIN\" --version" 2>&1) || fail "dash argv[0] broke weir"
 rm -f "$INITHOME/weir/init.weir"
-echo "e2e ok: repl init file (example loads with docs+settings, all-or-nothing failure, silent missing, both #session teaches, dash-argv0)"
+echo "e2e ok: repl init file (example loads with docs+settings, all-or-nothing failure, raising values fail located with no trace, silent missing, both #session teaches, dash-argv0)"
 
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned

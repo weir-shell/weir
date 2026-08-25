@@ -1,5 +1,42 @@
 # Spike Notes
 
+## the init guard, and a fix that could not compile (2026-08-24)
+
+The change was small and right in intent: [D:repl-init] made the init file
+declaration-only and all-or-nothing, but declaration-only is not effect-free —
+a `#session` field's VALUE and a plain `let` both run user code at startup, and
+an exception escaping either killed the REPL before it reached a prompt. Two
+`try`s and an `evalFailed` flag, and both failures report through the same
+`initDiag` as every other init error.
+
+**It arrived not compiling**, and that is the part worth writing down. The
+commit was a half-applied re-indent: `match chk.Kind with` had moved right, two
+of its four arms had moved with it, two had not, and the compiler said exactly
+that (FS0058, offside at 1908:33 against a context started at 1907:37). Under
+it sat a second, independent breakage the compiler never got far enough to
+mention — an `else` with an empty body, its whole tail left dedented outside
+it. One error hid the other, which is the ordinary shape of a broken build and
+the reason the ritual runs the compiler before anything else.
+
+**The pin's claim is the NEGATIVE.** Pre-fix behaviour was reconstructed by
+building the parent commit in a worktree rather than reasoned about: both sites
+printed `Unhandled exception. System.Exception: …` and four stack frames. So
+the located line is not the assertion that matters — a build that reports
+politely and ALSO dumps a stack passes a located-line check. The e2e rows
+assert `grep -qF "Unhandled exception" && fail`, which is the only assertion
+that would have been red before.
+
+**Coverage the smoke test did not reach, said aloud.** The first pass at
+exercising the `#session` guard used `#session` + `key = value` lines and never
+reached `applySessionField` at all — the block splitter rejected it first,
+because the form wants braces. The guard looked exercised and was not. The
+committed fixture uses the brace form and was re-checked against the pre-fix
+binary to confirm it actually reaches the new code.
+
+**Ritual note**: `ci/local.sh` could not run — docker is installed but its
+daemon is unreachable in this container — so the battery ran directly instead.
+Same steps, one less layer of isolation, stated rather than implied.
+
 ## the module exploration: the siblings had already decided (2026-08-24)
 
 Phase 0 was the whole exploration. The contracts spine fetches file

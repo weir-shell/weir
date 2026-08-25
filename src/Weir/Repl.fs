@@ -1817,7 +1817,17 @@ let private loadInit (baseState: State) : State =
                                         ok <- false
                                     else
                                         seenKeys <- Set.add name seenKeys
-                                        ok <- applySessionField path lines ll name te strictVenv
+
+                                        ok <-
+                                            try
+                                                applySessionField path lines ll name te strictVenv
+                                            with ex ->
+                                                // a RAISING value (File.read on a missing
+                                                // path…) fails the load like any other
+                                                // located error, never a raw trace
+                                                // [D:init-eval-guard]
+                                                initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                                                false
                                 | _ ->
                                     initDiag
                                         path
@@ -1888,41 +1898,57 @@ let private loadInit (baseState: State) : State =
                             let mutable tenv = baseState.TypeEnv
                             let mutable names = 0
                             let mutable docs: Map<string, string list> = Map.empty
+                            let mutable evalFailed = false
 
                             for ll, chk in checked' do
-                                tenv <- chk.Env
+                                if not evalFailed then
+                                    tenv <- chk.Env
 
-                                match chk.Kind with
-                                | Script.KType decl ->
-                                    names <- names + 1
+                                    try
+                                        match chk.Kind with
+                                        | Script.KType decl ->
+                                            names <- names + 1
 
-                                    (match decl.Body with
-                                     | Ast.DUnion cases ->
-                                         venv <-
-                                             Eval.constructorValues cases
-                                             |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                     | Ast.DRecord _ -> ())
-                                | Script.KLet(name, _, te) ->
-                                    names <- names + 1
-                                    venv <- Map.add name (Eval.eval venv te) venv
+                                            (match decl.Body with
+                                             | Ast.DUnion cases ->
+                                                 venv <-
+                                                     Eval.constructorValues cases
+                                                     |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                             | Ast.DRecord _ -> ())
+                                        | Script.KLet(name, _, te) ->
+                                            names <- names + 1
+                                            venv <- Map.add name (Eval.eval venv te) venv
 
-                                    (match
-                                        attachments |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head)
-                                     with
-                                     | Some a -> docs <- Map.add name a.Doc docs
-                                     | None -> ())
-                                | Script.KLetPat(pat, _, te) ->
-                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                                    names <- names + bindings.Length
-                                    venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                | _ -> ()
+                                            (match
+                                                attachments
+                                                |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head)
+                                             with
+                                             | Some a -> docs <- Map.add name a.Doc docs
+                                             | None -> ())
+                                        | Script.KLetPat(pat, _, te) ->
+                                            let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                                            names <- names + bindings.Length
+                                            venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                        | _ -> ()
+                                    with ex ->
+                                        // a raising let fails the load LOCATED
+                                        // [D:init-eval-guard]; names stay
+                                        // all-or-nothing (nothing below binds). An effect an
+                                        // earlier let already ran is the file's own doing —
+                                        // the load reports, it cannot unwrite
+                                        initDiag path ll.Head 1 (srcLine ll.Head) ex.Message
+                                        evalFailed <- true
 
-                            initDocs <- docs
+                            if evalFailed then
+                                notLoaded ()
+                            else
 
-                            if names > 0 || not (List.isEmpty fieldLines) then
-                                Console.Error.WriteLine $"init: {names} name(s) from {path}"
+                                initDocs <- docs
 
-                            { TypeEnv = tenv; Values = venv }
+                                if names > 0 || not (List.isEmpty fieldLines) then
+                                    Console.Error.WriteLine $"init: {names} name(s) from {path}"
+
+                                { TypeEnv = tenv; Values = venv }
 
 let run () =
     if not Console.IsInputRedirected then
