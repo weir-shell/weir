@@ -2,7 +2,9 @@
 
 ## Scalars
 
-`int` (64-bit; overflow raises rather than wrapping), `float`
+`int` (64-bit; arithmetic overflow raises rather than wrapping,
+while a range TERMINATES at the type boundary — every yielded value
+is correct), `float`
 (always finite — a would-be `NaN` or `Infinity` raises; `==` on
 floats is a check error naming `Float.near`), `string`, `bool`,
 and `unit` — the value of an effect, written `()`.
@@ -26,8 +28,10 @@ exist, and the errors name the explicit conversions
 ## `seq`
 
 Lazy. Pipelines pull what they need; ranges are lazy generators;
-`[a; b; c]` literals are eager values; `Seq.force` pins a lazy seq
-in place. Command capture is `seq<string>`, one element per line.
+`[a; b; c]` literals are eager values. Re-enumerating a bound
+pipeline RE-RUNS its effects — external commands included;
+`Seq.force` materializes once and is the standard escape. Command
+capture is `seq<string>`, one element per line.
 
 ## Tuples
 

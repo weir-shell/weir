@@ -22,7 +22,20 @@ const weirGrammar = JSON.parse(
 const written = await getCollection("reference");
 // reading order, not collection order: lexical first, then the
 // statement/command/type/pattern ladder; an unlisted page appends
-const pageOrder = ["lexical", "statements", "commands", "types", "patterns"];
+const pageOrder = [
+  "lexical",
+  "statements",
+  "commands",
+  "types",
+  "patterns",
+  "interpolation",
+  "scopes",
+  "boundaries",
+  "adapters",
+  "modules",
+  "loops",
+  "errors",
+];
 written.sort(
   (a, b) =>
     (pageOrder.indexOf(a.id) + 1 || 99) - (pageOrder.indexOf(b.id) + 1 || 99),

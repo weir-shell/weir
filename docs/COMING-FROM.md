@@ -611,6 +611,7 @@ print $"typed rows: {rows}"
   lean on `git` and `sh`.
 
 If a section above sent you looking for more: [GUIDE.md](GUIDE.md)
-teaches the language, `SEMANTICS.md` rules on it, and
+teaches the language, [the reference](reference/lexical.md) rules on
+it, and
 [tests/fidelity/divergences.md](../tests/fidelity/divergences.md) is
 the machine-checked F# border.

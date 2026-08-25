@@ -19,6 +19,17 @@ print $"run exits {r.exitCode}"
 `{file, line, col, endLine, endCol, severity, code, message}` — for
 editors, CI gates and agent loops.
 
+## Which error you see
+
+When a line has more than one thing wrong, one error reaches you:
+the error at the FURTHEST point the parser reached in your file —
+so a later mistake cannot hide an earlier one, and across separate
+statements each broken statement reports its own. The position is
+always physical, a real spot in your file. Teaching hints replace
+the message at that position, never the position itself. `check`,
+`check --json`, and the LSP all read the same choice from one
+pipeline.
+
 ## Raising
 
 A failing command raises when its stream is FORCED; the four

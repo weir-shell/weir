@@ -15,7 +15,7 @@ its `[D:key]`; every entry that corresponds to a rule points at
 PROCESS. If you want to know what was decided, follow the pointer; this
 file only tells you what the words mean.
 
-Not a tutorial (that's GUIDE), not a spec (SEMANTICS), not a history
+Not a tutorial (that's GUIDE), not a spec (the reference), not a history
 (NOTES). One paragraph per term, maximum. Terms weir uses differently
 from the field state the difference — that is this file's highest-value
 content.
@@ -447,8 +447,8 @@ interpretation with no diagnostic (the check/run verdict split: user
 junk became a phantom command's argv). The totality floor and
 consumed-separator law exist to make it impossible. [D:seq-commit]
 
-**District / sigil / reifier / splat.** weir's command-mode vocabulary,
-defined in SEMANTICS (pointers here): a DISTRICT is a line-end `!` block
+**District / sigil / reifier / splat.** weir's command-mode vocabulary
+(the rules live on the reference's Commands page): a DISTRICT is a line-end `!` block
 of command lines; a SIGIL is `$(chain)` (capture) or `!(chain)`
 (effect); a REIFIER (`complete`/`succeeds`/`orFail`/`exitCode`) turns a
 command's run into a value where the meaning goes; a SPLAT (`$@xs`)
@@ -479,10 +479,10 @@ picked):**
 flagged for their home):**
 
 - **district** and **sigil** have no `[D:key]` in DECISIONS — they are
-  described in SEMANTICS and NOTES but never got an index row (unlike
+  described in NOTES (and SEMANTICS before its retirement) but never got an index row (unlike
   their sibling `exit-reifiers`). Not a correctness gap; a
   completeness one. Proposed: a `[D:command-district]` and
-  `[D:command-sigils]` row each, pointing at the SEMANTICS sections, so
+  `[D:command-sigils]` row each, pointing at the ledger record, so
   the index is whole. Reported, not added (this session is docs-only
   and DECISIONS rows are decisions, not definitions).
 

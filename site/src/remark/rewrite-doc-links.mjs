@@ -31,7 +31,7 @@ const RENDERED = new Set([
 // the mirror is CHECKED, not commented: a docs page the glob renders but
 // this set does not know would silently GitHub-link — the drift mode the
 // guide reorder hit with repl.md. Throws at build, both directions.
-const EXCLUDED = new Set(["docs/DECISIONS.md", "docs/SEMANTICS.md"]);
+const EXCLUDED = new Set(["docs/DECISIONS.md"]);
 const onDisk = new Set(
   readdirSync(resolve(repoRoot, "docs"))
     .filter((f) => f.endsWith(".md"))
