@@ -1,5 +1,18 @@
 # Spike Notes
 
+## half B's top four, and the probe-first dividend (2026-08-25)
+
+Bytes and record patterns paid the audit's debt in the guide, and
+the reference gained its four most-looked-up pages — Commands,
+Types, Patterns, Statements — in the strict register. The number
+worth keeping: 35 new fences, zero failures on the first skill-doc
+run, because every uncertain claim was probed before it was prose
+(subset record patterns legal, ; binds into if, fst refuses
+triples, Map == refused, overflow raises) and everything else was
+adapted from fences CI already executes. Writing reference pages
+from a gated skill file is transcription plus ordering — the
+priced-and-declined generator would have saved less than it cost.
+
 ## add module: the frozen design survived contact (2026-08-25)
 
 Two sessions of exploration meant the implementation was mostly
