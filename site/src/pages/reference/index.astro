@@ -102,12 +102,23 @@ const toc = [
 </Base>
 
 <style is:global>
-  /* an embedded written page's h1 reads as a section heading */
+  /* an embedded written page's h1 reads as a section heading — and
+     its OWN h2/h3 step down a size each, or "Types" and "Scalars"
+     render equal (the global h2 is already --text-xl) */
   .written-page h1 {
     font-size: var(--text-xl);
     margin-top: var(--space-5);
     border-bottom: 1px solid var(--border);
     padding-bottom: 0.3rem;
+  }
+  .written-page h2 {
+    font-size: var(--text-lg);
+    margin-top: var(--space-4);
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+  .written-page h3 {
+    font-size: var(--text-base);
   }
   .module-head {
     font-size: var(--text-xl);
