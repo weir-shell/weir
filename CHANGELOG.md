@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.0.6
+
+### New features
+
+- **`weir add module` — remote modules, vendored.** Share code
+  across repos as a fetch, not a package manager: no registry, no
+  resolver, no version ranges.
+  `weir add module github.com/org/repo//lib/x.weir@v1.2.0 --as x`
+  resolves the ref to a full commit sha, fetches, validates (the
+  file must be a `module`, must typecheck, and must not `import` —
+  vendored modules are leaves for now), and vendors it into
+  `.weir/modules/` with a content-hashed lock entry. The `//`
+  separates repo from in-repo path; an explicit `@ref` is required;
+  the shorthand knows github.com and gitlab.com, and any host takes
+  the full raw URL. Import from anywhere under the project with
+  `import "weir:x" as X` — a new, distinct spelling: both existing
+  import forms resolve exactly as before. A re-add updates and
+  prints the old and new sha. Private repos: set
+  `WEIR_TOKEN_GITHUB_COM` / `WEIR_TOKEN_GITLAB_COM` (needed only at
+  add/restore — the committed file needs neither). And
+  `check --can` reports a vendored module's commands, writes and
+  network access in your own report, at the module's `file:line`.
+
+### Bugfixes
+
+- A REPL init `let` whose evaluation raises (`File.read` on a
+  missing path) no longer crashes the REPL with a raw .NET stack
+  trace — it reports the located error, prints `init: NOT loaded`,
+  and the session starts with none of the init's names.
+- `weir restore` now repairs a present-but-MODIFIED vendored
+  artifact by refetching it (schemas and modules alike) — the lock
+  is the intent. Previously it only materialized absent files,
+  leaving local drift in place; a deliberate local edit is a
+  re-add, not an edit-in-place.
+
+### Chores
+
+- `.weir/lock.json` now carries `"schemaVersion": 1`. Locks without
+  the field read as version 1; a lock newer than the binary
+  understands is refused with an upgrade teach.
+
+### Checks clean, behaves differently
+
+- Nothing — the two import spellings that existed keep their exact
+  resolution (pinned); `weir:` is new surface only.
+
 ## v0.0.5
 
 ### New features
