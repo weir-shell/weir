@@ -137,6 +137,8 @@ One deliberate split: `Seq.sum` is for ints, and `Float`/`Size`/
 `Duration` each own their `sum` and `average`
 (`ls |> Seq.map _.bytes |> Size.sum`).
 
+## Records, unions, and tuples
+
 Tuples cover transient pairs: `(a, b)` literals, `int * string`
 types, `| (x, y) ->` patterns, and destructuring binders
 (`let host, port = target`). The moment a shape needs NAMES, declare
@@ -389,8 +391,8 @@ paint exactly this boundary from the parse.
 (`git log |> Seq.head`). Read `|` as "fed to a program" and `|>` as
 "transformed by a function". Using the wrong one is an error naming
 the other operator; the operator table lives on
-[Lexical](reference/lexical.md#operators), the full pipe rules in
-[SEMANTICS.md](SEMANTICS.md).
+[Lexical](reference/lexical.md#operators), the command-mode rules on
+[Commands](reference/commands.md).
 
 A `let` takes a bare command on its right-hand side anywhere a
 `let` goes — top level or inside a function body, plain
@@ -1708,8 +1710,8 @@ points there on purpose.
 
 Where to next:
 
-- [SEMANTICS.md](SEMANTICS.md) — the language rulebook, with
-  rationale
+- [The reference](reference/lexical.md) — the language rulebook,
+  page by page
 - [skills/weir/SKILL.md](../skills/weir/SKILL.md) — the exhaustive,
   agent-oriented rule file: every shipped member, every rule,
   CI-executed

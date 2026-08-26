@@ -16,7 +16,7 @@ const reference = defineCollection({
 
 const docs = defineCollection({
   loader: glob({
-    pattern: ["*.md", "!DECISIONS.md", "!SEMANTICS.md"],
+    pattern: ["*.md", "!DECISIONS.md"],
     base: "../docs",
   }),
 });

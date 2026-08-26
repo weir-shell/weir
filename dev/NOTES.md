@@ -1,5 +1,18 @@
 # Spike Notes
 
+## the rulebook died of being absorbed (2026-08-25)
+
+SEMANTICS.md is gone. Not archived, not excluded — deleted, because
+twelve reference pages now hold its rule-half and the ledger always
+held its history-half. The audit's yield was honest and small: three
+rules had no home (re-enumeration re-runs effects; ranges terminate
+where arithmetic raises; the furthest-point diagnostics rule), which
+is what "the reference absorbed it through SKILL" predicts — the
+marbled archaeology was the file's bulk, and archaeology has a
+ledger. Fence arithmetic for the whole of Half B: 55 new fences
+across seven sittings' worth of pages done in two, zero first-run
+failures, all of it riding probe-before-prose.
+
 ## half B's top four, and the probe-first dividend (2026-08-25)
 
 Bytes and record patterns paid the audit's debt in the guide, and

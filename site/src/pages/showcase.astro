@@ -1,0 +1,27 @@
+---
+// The showcase page: examples/showcase.weir rendered whole — the one
+// full-language artifact that was CI-run and README-linked but never
+// on the site. The source is read from the repo; a showcase edit is a
+// site edit with no sync step.
+import Base from "../layouts/Base.astro";
+import queilThemes from "../lib/queil-weir.mjs";
+import { Code } from "astro:components";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const weirGrammar = JSON.parse(
+  readFileSync(resolve(process.cwd(), "../editors/vscode/syntaxes/weir.tmLanguage.json"), "utf8"),
+);
+const source = readFileSync(resolve(process.cwd(), "../examples/showcase.weir"), "utf8");
+---
+
+<Base title="Showcase">
+  <h1>The showcase</h1>
+  <p>
+    One script touring the whole language — commands, pipelines,
+    records, matching, scopes, retries, the boundaries. It runs in CI
+    against every release, on Linux, macOS and Windows: what you read
+    here executed.
+  </p>
+  <Code code={source} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
+</Base>
