@@ -1318,6 +1318,100 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "the text district assembles exactly as yaml's does [D:text-block]" {
+              match Weir.Script.assemble [ 1, "let t = text"; 2, "    echo $HOME {x}"; 3, ""; 4, "        deep" ] with
+              | Ok [ ll ] ->
+                  Expect.stringContains ll.Text "let t = text" "the marker word survives"
+                  Expect.stringContains ll.Text "echo $HOME {x}" "content is bytes"
+
+                  Expect.stringContains
+                      ll.Text
+                      (Weir.Parser.sibSepStr + "    deep")
+                      "relative indent is preserved behind the sentinel"
+              | other -> failtest $"expected one logical line, got {other}"
+
+              // the negative pin [D:text-block]: disambiguation is by SHAPE —
+              // a same-line continuation keeps `text` an ordinary identifier
+              match Weir.Script.assemble [ 1, "let n = text |> Seq.length" ] with
+              | Ok [ ll ] -> Expect.isFalse (ll.Text.Contains Weir.Parser.sibSepStr) "no district arms mid-line"
+              | other -> failtest $"expected one logical line, got {other}"
+          }
+          test "a text block is a seq<string>: verbatim lines, blanks survive [D:text-block]" {
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let src = asm [ "let t = text"; "    a $HOME {x}"; ""; "        deep" ]
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      Expect.equal te.Ty (TSeq TStr) "a text block types as seq<string>"
+
+                      match Weir.Eval.eval valueEnv te with
+                      | Weir.Eval.VSeq items ->
+                          let strs =
+                              items
+                              |> Seq.map (fun v ->
+                                  match v with
+                                  | Weir.Eval.VStr s -> s
+                                  | v -> failtest $"bad item {v}")
+                              |> List.ofSeq
+
+                          Expect.equal
+                              strs
+                              [ "a $HOME {x}"; ""; "    deep" ]
+                              "$ and { are bytes; blanks survive; indent is relative to the first line"
+                      | v -> failtest $"expected VSeq, got {v}"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "$text lines carry holes: {expr} evaluates, {{}} escape, $ stays a byte [D:text-block]" {
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let src = asm [ "let t = $text"; "    n={1 + 2} {{b}} $HOME" ]
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      match Weir.Eval.eval valueEnv te with
+                      | Weir.Eval.VSeq items ->
+                          Expect.equal
+                              (List.ofSeq items)
+                              [ Weir.Eval.VStr "n=3 {b} $HOME" ]
+                              "the string forms' hole rules, line by line"
+                      | v -> failtest $"expected VSeq, got {v}"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "text-block errors: no block, outdent, the }-teaching, empty [D:text-block]" {
+              match Weir.Script.assemble [ 1, "let t = text"; 2, "print \"x\"" ] with
+              | Error e -> Expect.stringContains e "'text' needs an indented block" "the no-block error names text"
+              | other -> failtest $"expected an assembly error, got {other}"
+
+              match Weir.Script.assemble [ 1, "let t = $text"; 2, "        a"; 3, "    b" ] with
+              | Error e -> Expect.stringContains e "this text line outdents" "the outdent error names text"
+              | other -> failtest $"expected an assembly error, got {other}"
+
+              match Weir.Script.assemble [ 1, "let t = $text"; 2, "    a } b" ] with
+              | Ok [ ll ] ->
+                  match Weir.Parser.parseLine cmdResolver ll.Text with
+                  | Error e -> Expect.stringContains e "a literal } in a $text line is }}" "the brace teaching"
+                  | other -> failtest $"expected a parse error, got {other}"
+              | other -> failtest $"assembly: {other}"
+
+              // all-blank can only be handcrafted — the assembler never
+              // arms on blanks — but the parser still refuses it
+              match Weir.Parser.parseLine cmdResolver ("let t = text" + Weir.Parser.sibSepStr) with
+              | Error e -> Expect.stringContains e "this text block is empty" "the defensive empty error"
+              | other -> failtest $"expected a parse error, got {other}"
+          }
           test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {
               let docOf lines' =
                   match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with

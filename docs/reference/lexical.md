@@ -133,6 +133,25 @@ There is no `$@"..."`:
 print $@"x" // no verbatim-interpolated form; use $"""...""" instead
 ```
 
+**The block forms** — the multiline literal is a line-end marker,
+not a string form. `text` opens a plain block: the indented lines
+below are the content, one `seq<string>` element per line — every
+byte is content, `$` and `{` included; blank lines and deeper
+indentation survive, relative to the first line. `$text` is the
+interpolated twin with the string forms' hole rules — `{expr}`
+substitutes, `{{` and `}}` are literal braces, `$` STILL stays a
+byte. Any line ending in the marker word arms a block, exactly as
+`yaml` does; without an indented block below it, that is the error.
+
+```weir
+let n = 2
+let block = $text
+    n={n} with {{literal braces}}
+    $HOME stays a byte
+
+block |> Seq.iter print
+```
+
 ## Numbers
 
 Integer literals are digit runs. A prefix minus binds at operand

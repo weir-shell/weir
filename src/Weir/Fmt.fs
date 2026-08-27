@@ -219,7 +219,12 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                     | Script.MarkerKind.NoMarker -> ()
                                     | marker ->
                                         district <- Some(indent, depth)
-                                        yamlDistrict <- (marker = Script.MarkerKind.Yaml)
+                                        // text districts are content-bytes exactly as
+                                        // yaml's are [D:text-block] — the flag means
+                                        // "district content is verbatim", not "is yaml"
+                                        yamlDistrict <-
+                                            (marker = Script.MarkerKind.Yaml || marker = Script.MarkerKind.Text)
+
                                         yamlBase <- None
 
                                     let line = String.replicate (depth * 4) " " + content

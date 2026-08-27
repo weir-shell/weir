@@ -11,6 +11,10 @@
       "yaml"
     ]
   },
+  "blockHeads": [
+    "text",
+    "yaml"
+  ],
   "keywords": [
     "always",
     "def",

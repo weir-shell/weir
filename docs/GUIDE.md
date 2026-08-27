@@ -513,6 +513,27 @@ let pod name pairs = yaml
 pod "web" [("app", "web")] |> to yaml |> print
 ```
 
+When the block is not YAML — a config fragment, a here-doc, any
+literal lines — `text` is the plain multiline literal: every byte
+below the marker is content (`$` and `{` included), blank lines and
+relative indentation survive, and the value is `seq<string>`, one
+element per line — ready for `File.write`, a pipe, or the `Seq`
+module. `$text` is its interpolated twin with exactly the string
+forms' hole rules: `{expr}` substitutes, `{{` and `}}` are literal
+braces, and `$` STILL stays a byte — shell text passes through
+untouched.
+
+```weir
+let host = "db.example"
+let conf = $text
+    server {host}
+    retries {2 + 1}
+    literal $HOME and {{braces}}
+
+conf |> File.write "app.conf"
+File.read "app.conf" |> Seq.iter print
+```
+
 A scratch directory is a SCOPE, not a chore:
 `within tmp <name>` binds a fresh directory for the block and removes
 it on every exit — including the raise path, which is the half that

@@ -1042,6 +1042,29 @@ type Bad = { type: string }
   `$VAR` and `for` lines inside it are bytes (embedded scripts stay
   verbatim); templated content interpolates upstream and splices as a
   whole value. Paste a manifest, replace values with `$`.
+- `text` / `$text` blocks [D:text-block]: line-end `text` opens the
+  PLAIN multiline literal — every byte below the marker is content
+  (`$` and `{` included), blank lines and deeper indentation survive
+  (relative to the first line), and the value is `seq<string>`, one
+  element per line (compose with `File.write`, pipes, `Seq`). `$text`
+  is the interpolated twin with EXACTLY the string forms' hole rules:
+  `{expr}` substitutes, `{{`/`}}` are literal braces, `$` STILL stays
+  a byte (`${VAR}`-style shell text needs `{{VAR}}` only when the
+  brace itself must survive a hole position). The marker word is
+  soft-reserved at line end exactly as `yaml` is: any line ENDING in
+  `text` with no indented block below errors. YAML `key: |` scalars
+  stay fully literal — a `$text` block is the interpolated spelling.
+
+```weir
+let region = "eu-1"
+let conf = $text
+    endpoint {region}.example.com
+    retries {2 + 1}
+    literal $HOME and {{braces}}
+
+conf |> Seq.iter print
+```
+
 - `!(…)` runs one command inline in expression position (`!(git
   pull)`). There is NO line-end `!` block — that district was retired
   [D:district-retirement]: commands are ordinary statements inside any

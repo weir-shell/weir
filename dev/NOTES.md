@@ -1,5 +1,30 @@
 # Spike Notes
 
+## the text block: one guard, two blames, one inherited bug (2026-08-27)
+
+The design was frozen tight enough that the body of the work was
+transcription onto yaml's rails — MarkerKind.Text rode every
+verbatim-join arm untouched, and the parser's district body is the
+yaml one with the sentinel-decode loop extracted and shared. The
+session's one real fight was `$text` failing to arm while `text`
+worked, and the instinct (assembler) was wrong: deepenAfter's
+lookahead guard listed only the bare word, so the district parser
+never ran and its attempt failed silently at the `$`. The probe
+that settled it in one step: inject the sentinel by hand through
+`-e`, which bypasses the assembler entirely — parser still refused,
+blame assigned. Worth keeping as a move; the alternative was reading
+join arms for another hour.
+
+The error-message pass paid twice. Naming the marker in the
+assembler's three errors surfaced that the EOF no-block arm had
+said `'!'` since the district retirement — for yaml too. And
+carrying the column out of the fragment run surfaced that FParsec's
+"Other error messages:" trailer had been eating the Expecting line:
+a bad expression in a yaml `$()` splice reported an EMPTY parse
+error before this session. Both were inherited, both are now fixed,
+neither was the feature's fault — the feature just walked the paths
+with fresh eyes.
+
 ## the rulebook died of being absorbed (2026-08-25)
 
 SEMANTICS.md is gone. Not archived, not excluded — deleted, because
