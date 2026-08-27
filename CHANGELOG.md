@@ -4,19 +4,20 @@
 
 ### New features
 
-- **`text` / `$text` — the multiline block literal.** A line-end
-  `text` marker opens a plain block: every byte below is content
+- **`<<<` / `$<<<` — the heredoc block.** A line-end `<<<` marker
+  opens a plain multiline literal: every byte below is content
   (`$` and `{` included), blank lines and relative indentation
   survive, and the value is `seq<string>` — one element per line,
-  ready for `File.write`, a pipe, or the `Seq` module. `$text` is
+  ready for `File.write`, a pipe, or the `Seq` module. `$<<<` is
   the interpolated twin with exactly the string forms' hole rules:
   `{expr}` substitutes, `{{`/`}}` are literal braces, `$` still
-  stays a byte. The marker law is yaml's: any line ending in the
-  marker word arms a block, and the errors teach.
+  stays a byte. The markers are glyphs, so no identifier is
+  reserved and the interpolated form can never read as a splice;
+  the arming law is yaml's, and the errors teach.
 
 ### Bugfixes
 
-- A parse error inside a yaml `$(…)` splice or a `$text` hole now
+- A parse error inside a yaml `$(…)` splice or a `$<<<` hole now
   reports its message and exact column instead of an empty error
   (the extraction landed on FParsec's "Other error messages:"
   trailer).

@@ -49,10 +49,10 @@
       "include": "#yaml-district"
     },
     {
-      "include": "#text-district-interp"
+      "include": "#heredoc-district-interp"
     },
     {
-      "include": "#text-district"
+      "include": "#heredoc-district"
     },
     {
       "include": "#binder"
@@ -450,9 +450,9 @@
         }
       ]
     },
-    "text-district": {
-      "comment": "the plain text block [D:text-block]: a line-end `text` marker opens a verbatim seq<string> block — every byte is content, $ and { included. The while continues on ANY indented or blank line — a renderer bound, the yaml district's charter.",
-      "begin": "(?:^|(?<=[ \\t]))(?<!\\$)(text)[ \\t]*$",
+    "heredoc-district": {
+      "comment": "the plain heredoc block [D:text-block]: a line-end `<<<` marker opens a verbatim seq<string> block — every byte is content, $ and { included. The while continues on ANY indented or blank line — a renderer bound, the yaml district's charter.",
+      "begin": "(?:^|(?<=[ \\t]))(?<!\\$)(<<<)[ \\t]*$",
       "while": "^(?=[ \\t])|^[ \\t]*$",
       "beginCaptures": {
         "1": {
@@ -462,13 +462,13 @@
       "patterns": [
         {
           "match": ".+",
-          "name": "string.unquoted.text.weir"
+          "name": "string.unquoted.heredoc.weir"
         }
       ]
     },
-    "text-district-interp": {
-      "comment": "the interpolated text block [D:text-block]: line-end `$text`, the $-string of the block forms. {expr} holes color exactly as interp-string holes, {{ }} are the escapes, $ stays a byte.",
-      "begin": "(?:^|(?<=[ \\t]))(\\$text)[ \\t]*$",
+    "heredoc-district-interp": {
+      "comment": "the interpolated heredoc block [D:text-block]: line-end `$<<<`, the $-string of the block forms. {expr} holes color exactly as interp-string holes, {{ }} are the escapes, $ stays a byte.",
+      "begin": "(?:^|(?<=[ \\t]))(\\$<<<)[ \\t]*$",
       "while": "^(?=[ \\t])|^[ \\t]*$",
       "beginCaptures": {
         "1": {
@@ -516,7 +516,7 @@
         },
         {
           "match": "[^{}\\n]+",
-          "name": "string.unquoted.text.weir"
+          "name": "string.unquoted.heredoc.weir"
         }
       ]
     },

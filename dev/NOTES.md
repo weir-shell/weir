@@ -1,5 +1,23 @@
 # Spike Notes
 
+## the marker that ate a word, and the glyph that gave it back (2026-08-27)
+
+The `text` marker survived the whole battery and died in the first
+minute of user contact — not to a bug, to a name. The soft-reserve
+that yaml carries invisibly (nobody binds `yaml`) was, for `text`,
+three breaks in our own tree and one silent trap: with `text` bound,
+`$text` at a line end is the interpolated marker, not a splice, and
+the block parses to something the reader did not write. The ruling
+walked heredoc-the-word (reserve it? still steals a word), a
+trailing glyph (invents a convention), `>>>` (Python's prompt,
+composition's neighbor) and landed on `<<<`: shell's own heredoc
+chevrons, pointing into the binding, in lexical space the language
+had left empty. The lesson worth the ink: a marker word's cost is
+not its rarity in the grammar, it is its frequency in USER bindings
+— and a glyph pays zero. The probe set from the first round
+(union-case lines, record fields, line-end shapes) re-ran unchanged
+and proved the glyph collision-free before the sweep started.
+
 ## the text block: one guard, two blames, one inherited bug (2026-08-27)
 
 The design was frozen tight enough that the body of the work was

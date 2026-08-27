@@ -654,8 +654,6 @@ let grade =
     let doubled = [1; 2; 3] |> Seq.map double |> Seq.sum
     if doubled > 10 then Pass doubled else Fail
 
-// (`text` itself is a poor binding name: at line end it is the
-// text-block marker [D:text-block], exactly as `yaml` is yaml's)
 let label =
     match grade with
     | Pass n when n > 100 -> "outstanding"
@@ -1044,22 +1042,24 @@ type Bad = { type: string }
   `$VAR` and `for` lines inside it are bytes (embedded scripts stay
   verbatim); templated content interpolates upstream and splices as a
   whole value. Paste a manifest, replace values with `$`.
-- `text` / `$text` blocks [D:text-block]: line-end `text` opens the
-  PLAIN multiline literal — every byte below the marker is content
-  (`$` and `{` included), blank lines and deeper indentation survive
-  (relative to the first line), and the value is `seq<string>`, one
-  element per line (compose with `File.write`, pipes, `Seq`). `$text`
-  is the interpolated twin with EXACTLY the string forms' hole rules:
-  `{expr}` substitutes, `{{`/`}}` are literal braces, `$` STILL stays
-  a byte (`${VAR}`-style shell text needs `{{VAR}}` only when the
-  brace itself must survive a hole position). The marker word is
-  soft-reserved at line end exactly as `yaml` is: any line ENDING in
-  `text` with no indented block below errors. YAML `key: |` scalars
-  stay fully literal — a `$text` block is the interpolated spelling.
+- `<<<` / `$<<<` heredoc blocks [D:text-block]: line-end `<<<` opens
+  the PLAIN multiline literal — every byte below the marker is
+  content (`$` and `{` included), blank lines and deeper indentation
+  survive (relative to the first line), and the value is
+  `seq<string>`, one element per line (compose with `File.write`,
+  pipes, `Seq`). `$<<<` is the interpolated twin with EXACTLY the
+  string forms' hole rules: `{expr}` substitutes, `{{`/`}}` are
+  literal braces, `$` STILL stays a byte (shell `$VAR` text passes
+  through untouched). The markers are GLYPHS, not words — no
+  identifier is reserved and `$<<<` can never read as a splice; any
+  line ENDING in the glyph arms a block (no indented block below is
+  an error), and nothing else may legally end in `<<<`. YAML
+  `key: |` scalars stay fully literal — a `$<<<` block is the
+  interpolated spelling.
 
 ```weir
 let region = "eu-1"
-let conf = $text
+let conf = $<<<
     endpoint {region}.example.com
     retries {2 + 1}
     literal $HOME and {{braces}}

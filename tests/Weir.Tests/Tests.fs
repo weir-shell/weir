@@ -1318,10 +1318,10 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
-          test "the text district assembles exactly as yaml's does [D:text-block]" {
-              match Weir.Script.assemble [ 1, "let t = text"; 2, "    echo $HOME {x}"; 3, ""; 4, "        deep" ] with
+          test "the heredoc district assembles exactly as yaml's does [D:text-block]" {
+              match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    echo $HOME {x}"; 3, ""; 4, "        deep" ] with
               | Ok [ ll ] ->
-                  Expect.stringContains ll.Text "let t = text" "the marker word survives"
+                  Expect.stringContains ll.Text "let t = <<<" "the marker glyph survives"
                   Expect.stringContains ll.Text "echo $HOME {x}" "content is bytes"
 
                   Expect.stringContains
@@ -1330,25 +1330,27 @@ let boundaryTests =
                       "relative indent is preserved behind the sentinel"
               | other -> failtest $"expected one logical line, got {other}"
 
-              // the negative pin [D:text-block]: disambiguation is by SHAPE —
-              // a same-line continuation keeps `text` an ordinary identifier
-              match Weir.Script.assemble [ 1, "let n = text |> Seq.length" ] with
-              | Ok [ ll ] -> Expect.isFalse (ll.Text.Contains Weir.Parser.sibSepStr) "no district arms mid-line"
-              | other -> failtest $"expected one logical line, got {other}"
+              // the negative pin [D:text-block]: a glyph marker steals no
+              // identifier — `text` binds and ends a line freely (the
+              // word-marker's soft-reserve, retired by the glyph ruling)
+              match Weir.Script.assemble [ 1, "let text = \"x\""; 2, "print text" ] with
+              | Ok [ _; ll ] ->
+                  Expect.isFalse (ll.Text.Contains Weir.Parser.sibSepStr) "no district arms on a binding named text"
+              | other -> failtest $"expected two logical lines, got {other}"
           }
-          test "a text block is a seq<string>: verbatim lines, blanks survive [D:text-block]" {
+          test "a heredoc block is a seq<string>: verbatim lines, blanks survive [D:text-block]" {
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
                   | Ok [ ll ] -> ll.Text
                   | other -> failtest $"assembly: {other}"
 
-              let src = asm [ "let t = text"; "    a $HOME {x}"; ""; "        deep" ]
+              let src = asm [ "let t = <<<"; "    a $HOME {x}"; ""; "        deep" ]
 
               match Weir.Parser.parseLine realResolver src with
               | Ok(SLet(_, e)) ->
                   match typecheck env e with
                   | Ok te ->
-                      Expect.equal te.Ty (TSeq TStr) "a text block types as seq<string>"
+                      Expect.equal te.Ty (TSeq TStr) "a heredoc block types as seq<string>"
 
                       match Weir.Eval.eval valueEnv te with
                       | Weir.Eval.VSeq items ->
@@ -1368,13 +1370,13 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
-          test "$text lines carry holes: {expr} evaluates, {{}} escape, $ stays a byte [D:text-block]" {
+          test "$<<< lines carry holes: {expr} evaluates, {{}} escape, $ stays a byte [D:text-block]" {
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
                   | Ok [ ll ] -> ll.Text
                   | other -> failtest $"assembly: {other}"
 
-              let src = asm [ "let t = $text"; "    n={1 + 2} {{b}} $HOME" ]
+              let src = asm [ "let t = $<<<"; "    n={1 + 2} {{b}} $HOME" ]
 
               match Weir.Parser.parseLine realResolver src with
               | Ok(SLet(_, e)) ->
@@ -1390,26 +1392,26 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
-          test "text-block errors: no block, outdent, the }-teaching, empty [D:text-block]" {
-              match Weir.Script.assemble [ 1, "let t = text"; 2, "print \"x\"" ] with
-              | Error e -> Expect.stringContains e "'text' needs an indented block" "the no-block error names text"
+          test "heredoc errors: no block, outdent, the }-teaching, empty [D:text-block]" {
+              match Weir.Script.assemble [ 1, "let t = <<<"; 2, "print \"x\"" ] with
+              | Error e -> Expect.stringContains e "'<<<' needs an indented block" "the no-block error names the glyph"
               | other -> failtest $"expected an assembly error, got {other}"
 
-              match Weir.Script.assemble [ 1, "let t = $text"; 2, "        a"; 3, "    b" ] with
-              | Error e -> Expect.stringContains e "this text line outdents" "the outdent error names text"
+              match Weir.Script.assemble [ 1, "let t = $<<<"; 2, "        a"; 3, "    b" ] with
+              | Error e -> Expect.stringContains e "this heredoc line outdents" "the outdent error names the form"
               | other -> failtest $"expected an assembly error, got {other}"
 
-              match Weir.Script.assemble [ 1, "let t = $text"; 2, "    a } b" ] with
+              match Weir.Script.assemble [ 1, "let t = $<<<"; 2, "    a } b" ] with
               | Ok [ ll ] ->
                   match Weir.Parser.parseLine cmdResolver ll.Text with
-                  | Error e -> Expect.stringContains e "a literal } in a $text line is }}" "the brace teaching"
+                  | Error e -> Expect.stringContains e "a literal } in a $<<< line is }}" "the brace teaching"
                   | other -> failtest $"expected a parse error, got {other}"
               | other -> failtest $"assembly: {other}"
 
               // all-blank can only be handcrafted — the assembler never
               // arms on blanks — but the parser still refuses it
-              match Weir.Parser.parseLine cmdResolver ("let t = text" + Weir.Parser.sibSepStr) with
-              | Error e -> Expect.stringContains e "this text block is empty" "the defensive empty error"
+              match Weir.Parser.parseLine cmdResolver ("let t = <<<" + Weir.Parser.sibSepStr) with
+              | Error e -> Expect.stringContains e "this heredoc block is empty" "the defensive empty error"
               | other -> failtest $"expected a parse error, got {other}"
           }
           test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {

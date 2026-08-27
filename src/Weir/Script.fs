@@ -268,10 +268,10 @@ type MarkerKind =
     // covers the overlay; the $e()/!e() SIGIL forms stay (fragment and
     // single-command uses have no block spelling).
     | Yaml
-    // line-end `text` / `$text` opens a text district [D:text-block] —
+    // line-end `<<<` / `$<<<` opens a heredoc district [D:text-block] —
     // the yaml district's sibling; identical join semantics (verbatim
     // lines, relative indentation behind the sentinel)
-    | Text
+    | Heredoc
 
 type PieceClass =
     { Kind: PieceKind
@@ -292,7 +292,7 @@ let private isIdentToken (t: string) =
 /// the marker predicate lives in Parser (shared with completion);
 /// this alias keeps Script's callers and pins stable
 let isYamlMarkerPiece = Parser.isYamlMarkerPiece
-let isTextMarkerPiece = Parser.isTextMarkerPiece
+let isHeredocMarkerPiece = Parser.isHeredocMarkerPiece
 
 let classifyPiece (piece: string) : PieceClass =
     let lastToken =
@@ -322,7 +322,7 @@ let classifyPiece (piece: string) : PieceClass =
             PieceKind.Plain
       Marker =
         if isYamlMarkerPiece piece then MarkerKind.Yaml
-        elif isTextMarkerPiece piece then MarkerKind.Text
+        elif isHeredocMarkerPiece piece then MarkerKind.Heredoc
         else MarkerKind.NoMarker
       OpensCompound =
         // within/for block heads close-and-wrap exactly like the
@@ -585,7 +585,7 @@ let private markerOpener (m: MarkerKind) : (string * int * bool) option =
     // relative indentation behind the sentinel [D:yaml-district]
     | MarkerKind.Yaml -> Some("", 0, true)
     // the text district joins exactly as yaml does [D:text-block]
-    | MarkerKind.Text -> Some("", 0, true)
+    | MarkerKind.Heredoc -> Some("", 0, true)
 
 type LogicalLine =
     { Text: string
@@ -933,7 +933,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                        Marker = m } } ->
                 let what =
                     match m with
-                    | MarkerKind.Text -> "'text'"
+                    | MarkerKind.Heredoc -> "'<<<'"
                     | _ -> "'yaml'"
 
                 Error $"line {mLine}: line-end {what} needs an indented block below it"
@@ -1188,7 +1188,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 if indent < bse then
                                                     let noun =
                                                         match dst.Marker with
-                                                        | MarkerKind.Text -> "text"
+                                                        | MarkerKind.Heredoc -> "heredoc"
                                                         | _ -> "yaml"
 
                                                     Error
@@ -1229,7 +1229,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                      Marker = m } ->
                                                 let what =
                                                     match m with
-                                                    | MarkerKind.Text -> "'text'"
+                                                    | MarkerKind.Heredoc -> "'<<<'"
                                                     | _ -> "'yaml'"
 
                                                 Error $"line {mLine}: line-end {what} needs an indented block below it"
