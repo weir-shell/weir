@@ -6385,11 +6385,11 @@ echo "$herr" | grep -qF "filesystem path" || fail "concat refusal tail drifted: 
 hcan=$(cd "$ROOT" && "$BIN" check --can tools/fuzz.weir 2>&1) || fail "hero --can run failed: $hcan"
 for line in \
     "tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):" \
-    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:69:5" \
-    "File.read (path not statically known)  tools/fuzz.weir:62:20" \
-    "within tmp (a temporary directory)  tools/fuzz.weir:44:1" \
-    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:51:49" \
-    "fail  tools/fuzz.weir:65:9"; do
+    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:72:5" \
+    "File.read (path not statically known)  tools/fuzz.weir:65:20" \
+    "within tmp (a temporary directory)  tools/fuzz.weir:47:1" \
+    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:54:49" \
+    "fail  tools/fuzz.weir:68:9"; do
     echo "$hcan" | grep -qF "$line" || fail "the homepage's --can quote drifted — update index.astro; missing: $line"
 done
 echo "e2e ok: homepage hero currency (beat-1 refusal + tar-never-ran, beat-2 --help, the splice refusal, the --can quote — all match live runs)"
