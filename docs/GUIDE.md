@@ -856,9 +856,9 @@ cover DOTALL and MULTILINE. Map each match to what you want,
 (`| sha256sum`) when you need one:
 
 ```weir
-let text = "let a = 1\nlet b = 2\nlet a = 1"
+let src = "let a = 1\nlet b = 2\nlet a = 1"
 
-Str.rmatchAll @"let (\w+) = (\d+)" text
+Str.rmatchAll @"let (\w+) = (\d+)" src
 |> Seq.map (fun g -> Str.join "=" g)
 |> Seq.distinct
 |> Seq.iter print

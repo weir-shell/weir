@@ -654,13 +654,15 @@ let grade =
     let doubled = [1; 2; 3] |> Seq.map double |> Seq.sum
     if doubled > 10 then Pass doubled else Fail
 
-let text =
+// (`text` itself is a poor binding name: at line end it is the
+// text-block marker [D:text-block], exactly as `yaml` is yaml's)
+let label =
     match grade with
     | Pass n when n > 100 -> "outstanding"
     | Pass n -> $"pass ({n})"
     | Fail -> "fail"
 
-print text
+print label
 print (if 1 == 1 then "eq" else "ne")
 ```
 
