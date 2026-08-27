@@ -18,7 +18,9 @@ print $"{fun x -> x}" // 'a1 -> 'a1 cannot be shown (functions never render)
 
 `{{` and `}}` are literal braces. A comment cannot live inside a
 hole. The raw-interpolated form `$"""…"""` keeps holes with escapes
-off ([Lexical](lexical.md#strings)).
+off, and each line of a `$<<<` heredoc block carries these same
+hole rules — with `$` still a literal byte there
+([Lexical](lexical.md#strings)).
 
 ## The bare-hole default
 

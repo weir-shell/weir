@@ -49,6 +49,12 @@
       "include": "#yaml-district"
     },
     {
+      "include": "#heredoc-district-interp"
+    },
+    {
+      "include": "#heredoc-district"
+    },
+    {
       "include": "#binder"
     },
     {
@@ -441,6 +447,76 @@
         {
           "match": "(?:[^#$\"\\n]|(?<![ \\t])#)+",
           "name": "string.unquoted.yaml.weir"
+        }
+      ]
+    },
+    "heredoc-district": {
+      "comment": "the plain heredoc block [D:text-block]: a line-end `<<<` marker opens a verbatim seq<string> block — every byte is content, $ and { included. The while continues on ANY indented or blank line — a renderer bound, the yaml district's charter.",
+      "begin": "(?:^|(?<=[ \\t]))(?<!\\$)(<<<)[ \\t]*$",
+      "while": "^(?=[ \\t])|^[ \\t]*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.district.weir"
+        }
+      },
+      "patterns": [
+        {
+          "match": ".+",
+          "name": "string.unquoted.heredoc.weir"
+        }
+      ]
+    },
+    "heredoc-district-interp": {
+      "comment": "the interpolated heredoc block [D:text-block]: line-end `$<<<`, the $-string of the block forms. {expr} holes color exactly as interp-string holes, {{ }} are the escapes, $ stays a byte.",
+      "begin": "(?:^|(?<=[ \\t]))(\\$<<<)[ \\t]*$",
+      "while": "^(?=[ \\t])|^[ \\t]*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.district.weir"
+        }
+      },
+      "patterns": [
+        {
+          "match": "\\{\\{|\\}\\}",
+          "name": "constant.character.escape.weir"
+        },
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "name": "meta.interpolation.weir",
+          "patterns": [
+            {
+              "match": "\\b(if|then|elif|else|when|match|with|function|fun|let|in)\\b",
+              "name": "keyword.control.weir"
+            },
+            {
+              "include": "#bool"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#builtin-types"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#field-sugar"
+            },
+            {
+              "match": "\\|>|==|<>|<=|>=|->|\\.\\.|::|[+\\-*/<>=]",
+              "name": "keyword.operator.weir"
+            },
+            {
+              "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+              "name": "variable.other.weir"
+            }
+          ]
+        },
+        {
+          "match": "[^{}\\n]+",
+          "name": "string.unquoted.heredoc.weir"
         }
       ]
     },

@@ -188,6 +188,20 @@ let isYamlMarkerPiece (piece: string) =
     && not (core.EndsWith "to yaml")
     && not (core.EndsWith "from yaml")
 
+/// Line-end `<<<` / `$<<<` arms a heredoc district [D:text-block] — the
+/// yaml district's sibling. The block forms mirror the string forms:
+/// plain and $-interpolated; the marker law is yaml's. A GLYPH, not a
+/// word, so no identifier is soft-reserved and `$<<<` can never read
+/// as a splice [D:text-block].
+let isHeredocMarkerPiece (piece: string) =
+    piece = "<<<"
+    || piece.EndsWith " <<<"
+    || piece = "$<<<"
+    || piece.EndsWith " $<<<"
+
+/// the grammar manifest's blockHeads field reads this list [D:text-block]
+let blockHeads = [ "<<<"; "yaml" ]
+
 
 let private pos (p: Position) : Pos =
     { Line = int p.Line
@@ -2061,15 +2075,33 @@ comprehensionLitRef.Value <-
 // run a weir sub-parser on a fragment at logical column `col` — the
 // padding aligns FParsec's columns with the logical line, so no span
 // shifting is ever needed
+// the message's tail can be an "Other error messages:" trailer (interp
+// note messages) — cut there, or the extraction lands on the trailer
+// instead of the Expecting line
+let private fragmentErrorLine (msg: string) =
+    let lines = msg.Split '\n'
+
+    let cut =
+        match lines |> Array.tryFindIndex (fun l -> l.Trim() = "Other error messages:") with
+        | Some i -> lines[.. i - 1]
+        | None -> lines
+
+    (cut |> Array.filter (fun l -> l.Trim() <> "") |> Array.tryLast)
+    |> Option.defaultValue msg
+    |> fun s -> s.Trim()
+
 let private runFragment (col: int) (frag: string) (p: Parser<'a, unit>) : Result<'a, string> =
     match run (ws >>. p .>> eof) (System.String(' ', col - 1) + frag) with
     | Success(v, _, _) -> Result.Ok v
-    | Failure(msg, _, _) ->
-        let firstLine =
-            (msg.Split('\n') |> Array.filter (fun l -> l.Trim() <> "") |> Array.tryLast)
-            |> Option.defaultValue msg
+    | Failure(msg, _, _) -> Result.Error(fragmentErrorLine msg)
 
-        Result.Error(firstLine.Trim())
+// runFragment plus WHERE — the padded run's column is already the true
+// logical column, so a heredoc line's hole errors land on the offending
+// character [D:text-block]
+let private runFragmentAt (col: int) (frag: string) (p: Parser<'a, unit>) : Result<'a, string * int> =
+    match run (ws >>. p .>> eof) (System.String(' ', col - 1) + frag) with
+    | Success(v, _, _) -> Result.Ok v
+    | Failure(msg, err, _) -> Result.Error(fragmentErrorLine msg, int err.Position.Column)
 
 let private isIdentWord (w: string) =
     w.Length > 0
@@ -2463,6 +2495,35 @@ and private parseTplBlockBody
                         tplValueSlot col text
                 | _ -> Result.Error("multiple for blocks need a surrounding mapping or sequence context", firstCol)
 
+// decode a district's sentinel tail into (col, rel, content) lines and
+// the end column — shared by the yaml and text districts [D:text-block]
+let private districtTail: Parser<(int * int * string)[] * int, unit> =
+    getPosition .>>. manyChars anyChar
+    |>> fun (tailP, tail) ->
+        let parts = tail.Split sibSep
+        // parts[0] is the empty prefix before the first sentinel
+        let lineList = System.Collections.Generic.List<int * int * string>()
+        let mutable colCursor = int tailP.Column
+
+        for i in 1 .. parts.Length - 1 do
+            let part = parts[i]
+            let partStart = colCursor + 1 // past the sentinel char
+            let rel = Yaml.indentOf part
+            let content = part.Substring rel
+
+            if content.TrimEnd() <> "" then
+                // UNTRIMMED: trailing whitespace is bytes inside a
+                // block scalar; structure decisions Trim on their own
+                lineList.Add((partStart + rel, rel, content))
+            else
+                // a blank district line is BYTES inside a block
+                // scalar [D:block-scalars]; the structure loops skip it
+                lineList.Add((partStart, 0, ""))
+
+            colCursor <- partStart + part.Length
+
+        lineList.ToArray(), colCursor
+
 let private yamlDistrictBody: Parser<Expr, unit> =
     attempt (
         getPosition .>> pstring "yaml"
@@ -2473,32 +2534,8 @@ let private yamlDistrictBody: Parser<Expr, unit> =
         .>> followedBy (pstring sibSepStr)
     )
     >>= fun (startP, schemaName) ->
-        getPosition .>>. manyChars anyChar
-        >>= fun (tailP, tail) ->
-            let parts = tail.Split sibSep
-            // parts[0] is the empty prefix before the first sentinel
-            let lineList = System.Collections.Generic.List<int * int * string>()
-            let mutable colCursor = int tailP.Column
-
-            for i in 1 .. parts.Length - 1 do
-                let part = parts[i]
-                let partStart = colCursor + 1 // past the sentinel char
-                let rel = Yaml.indentOf part
-                let content = part.Substring rel
-
-                if content.TrimEnd() <> "" then
-                    // UNTRIMMED: trailing whitespace is bytes inside a
-                    // block scalar; structure decisions Trim on their own
-                    lineList.Add((partStart + rel, rel, content))
-                else
-                    // a blank district line is BYTES inside a block
-                    // scalar [D:block-scalars]; the structure loops skip it
-                    lineList.Add((partStart, 0, ""))
-
-                colCursor <- partStart + part.Length
-
-            let lines = lineList.ToArray()
-
+        districtTail
+        >>= fun (lines, colCursor) ->
             if lines |> Array.forall (fun (_, _, t) -> t = "") then
                 failFatallyAtCol (int startP.Column) "this yaml block is empty"
             else
@@ -2517,6 +2554,82 @@ let private yamlDistrictBody: Parser<Expr, unit> =
 
 let private yamlDistrict = deepenAfter [ "yaml" ] yamlDistrictBody // [D:depth-guard]
 
+// ---- the heredoc district [D:text-block] -----------------------------------
+// Multiline content as LINES — the yaml district's content half with
+// the structure stripped away. `<<<` is the plain form: every byte is
+// content, $ stays $. `$<<<` is the interpolated form: {expr} holes,
+// {{ }} literal braces, $ STILL literal — the block forms mirror the
+// string forms. Both yield seq<string> (a list of line strings), so
+// File.write, command stdin and Seq composition take them unchanged.
+
+let private heredocLinePart: Parser<InterpPart<Expr>, unit> =
+    choice
+        [ pstring "{{" >>% IStr "{"
+          pstring "}}" >>% IStr "}"
+          pchar '{' >>. ws >>. holeExpr .>> pchar '}' |>> IExpr
+          many1Satisfy (fun c -> c <> '{' && c <> '}') |>> IStr ]
+
+let private heredocInterpLine: Parser<InterpPart<Expr> list, unit> =
+    many heredocLinePart
+    .>> (eof
+         <|> (getPosition
+              >>= fun p -> failFatallyAt p "a literal } in a $<<< line is }} ('{' opens a hole, '{{' a literal brace)"))
+
+let private heredocDistrictBody: Parser<Expr, unit> =
+    attempt (
+        getPosition .>>. (pstring "$<<<" >>% true <|> (pstring "<<<" >>% false))
+        .>> followedBy (pstring sibSepStr)
+    )
+    >>= fun (startP, interpolated) ->
+        districtTail
+        >>= fun (lines, colCursor) ->
+            if lines |> Array.forall (fun (_, _, t) -> t = "") then
+                failFatallyAtCol (int startP.Column) "this heredoc block is empty"
+            else
+                let baseRel =
+                    lines |> Array.pick (fun (_, r, t) -> if t <> "" then Some r else None)
+
+                let items = System.Collections.Generic.List<Expr>()
+                let mutable err: (int * string) option = None
+
+                for (col, rel, content) in lines do
+                    if err.IsNone then
+                        let lineSpan len =
+                            { Start = { Line = 1; Col = col }
+                              End = { Line = 1; Col = col + len } }
+
+                        if content = "" then
+                            items.Add { Kind = EStr ""; Span = lineSpan 0 }
+                        elif rel < baseRel then
+                            err <- Some(col, "this heredoc line is dedented below the block's first line")
+                        else
+                            let lineText = System.String(' ', rel - baseRel) + content
+
+                            if interpolated then
+                                match runFragmentAt (col - (rel - baseRel)) lineText heredocInterpLine with
+                                | Result.Ok parts ->
+                                    items.Add
+                                        { Kind = EInterp parts
+                                          Span = lineSpan lineText.Length }
+                                | Result.Error(m, ecol) -> err <- Some(ecol, m)
+                            else
+                                items.Add
+                                    { Kind = EStr lineText
+                                      Span = lineSpan lineText.Length }
+
+                match err with
+                | Some(col, msg) -> failFatallyAtCol col msg
+                | None ->
+                    preturn
+                        { Kind = EList(List.ofSeq items)
+                          Span =
+                            { Start = pos startP
+                              End =
+                                { Line = int startP.Line
+                                  Col = colCursor } } }
+
+let private heredocDistrict = deepenAfter [ "<<<"; "$<<<" ] heredocDistrictBody // [D:depth-guard]
+
 opp.TermParser <-
     choice
         [ lambda
@@ -2528,6 +2641,7 @@ opp.TermParser <-
           withinExpr
           retryExpr
           yamlDistrict
+          heredocDistrict
           fromExpr
           toExpr
           appChain ]

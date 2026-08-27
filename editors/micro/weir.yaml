@@ -18,6 +18,7 @@
 # micro-exempt: type-param (RE2 cannot peek for a closing quote to tell `'a` (type var) from `'echo x'` (command raw string); tree-sitter uses an external scanner, TextMate a lookahead)
 # micro-exempt: field-name (RE2 has no lookahead to require a following `:` or `=` without consuming it, nor lookbehind to catch a field after `{`/`;` — the first field on a `{ Field = ` line, or an inline `{ A = 1; B = 2 }`; and it colours a whole match one colour, so it cannot scope a record field name apart from the punctuation and the type/value after it)
 # micro-exempt: yaml-district (RE2 has no lookbehind to exclude the `to yaml` adapter at line end — the marker rule would actively mis-color `x |> to yaml` — and regions cannot close on a dedent, so the block cannot be scoped either; district body lines render with the base rules)
+# micro-exempt: heredoc-district-interp (RE2 regions cannot close on a dedent, so a $<<< body cannot be scoped and its {holes} cannot color; the marker glyph itself IS expressible — the heredoc-district rule covers both spellings)
 
 filetype: weir
 
@@ -84,6 +85,14 @@ rules:
     # ---- splices in command lines (casing law: vars are lowercase) ----
     # rule: splice
     - identifier.var: "\\$[a-z_][A-Za-z0-9_]*"
+
+    # ---- heredoc markers [D:text-block]: line-end `<<<` / `$<<<`. A
+    # glyph, so no identifier rule fights it and RE2 expresses it; the
+    # body still cannot be scoped (regions cannot close on a dedent)
+    # and renders with the base rules. AFTER the operator rules so this
+    # overwrite wins. ----
+    # rule: heredoc-district
+    - statement: "(^|[ \\t])\\$?<<<[ \\t]*$"
 
     # ---- attributes on record fields (names get the types rule) ----
     # rule: attribute

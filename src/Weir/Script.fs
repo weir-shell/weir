@@ -268,6 +268,10 @@ type MarkerKind =
     // covers the overlay; the $e()/!e() SIGIL forms stay (fragment and
     // single-command uses have no block spelling).
     | Yaml
+    // line-end `<<<` / `$<<<` opens a heredoc district [D:text-block] —
+    // the yaml district's sibling; identical join semantics (verbatim
+    // lines, relative indentation behind the sentinel)
+    | Heredoc
 
 type PieceClass =
     { Kind: PieceKind
@@ -288,6 +292,7 @@ let private isIdentToken (t: string) =
 /// the marker predicate lives in Parser (shared with completion);
 /// this alias keeps Script's callers and pins stable
 let isYamlMarkerPiece = Parser.isYamlMarkerPiece
+let isHeredocMarkerPiece = Parser.isHeredocMarkerPiece
 
 let classifyPiece (piece: string) : PieceClass =
     let lastToken =
@@ -316,10 +321,9 @@ let classifyPiece (piece: string) : PieceClass =
         else
             PieceKind.Plain
       Marker =
-        if isYamlMarkerPiece piece then
-            MarkerKind.Yaml
-        else
-            MarkerKind.NoMarker
+        if isYamlMarkerPiece piece then MarkerKind.Yaml
+        elif isHeredocMarkerPiece piece then MarkerKind.Heredoc
+        else MarkerKind.NoMarker
       OpensCompound =
         // within/for block heads close-and-wrap exactly like the
         // conditionals [D:dedent-join] — same machine, two more
@@ -580,6 +584,8 @@ let private markerOpener (m: MarkerKind) : (string * int * bool) option =
     // the yaml district keeps its marker word; lines join VERBATIM with
     // relative indentation behind the sentinel [D:yaml-district]
     | MarkerKind.Yaml -> Some("", 0, true)
+    // the text district joins exactly as yaml does [D:text-block]
+    | MarkerKind.Heredoc -> Some("", 0, true)
 
 type LogicalLine =
     { Text: string
@@ -777,6 +783,8 @@ type private District =
       Opener: string
       Strip: int
       Yaml: bool
+      // the marker kind that armed this district — errors name its word
+      Marker: MarkerKind
       Active: int option }
 
 type private Pend =
@@ -920,8 +928,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
             | Some p when not p.Brackets.IsEmpty -> braceOpen p
             | Some { Lambdas = (oline, _, _, _) :: _ } ->
                 Error $"line {oline}: this lambda's '(' is still open when the statement ends — close the paren"
-            | Some { District = Some { Active = None; MarkerLine = mLine } } ->
-                Error $"line {mLine}: line-end '!' needs an indented block of command lines below it"
+            | Some { District = Some { Active = None
+                                       MarkerLine = mLine
+                                       Marker = m } } ->
+                let what =
+                    match m with
+                    | MarkerKind.Heredoc -> "'<<<'"
+                    | _ -> "'yaml'"
+
+                Error $"line {mLine}: line-end {what} needs an indented block below it"
             | Some { Lets = (_, letLine) :: _ } -> noBody letLine
             | Some p ->
                 Ok(
@@ -1171,8 +1186,13 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 indent > dst.MarkerIndent
                                                 ->
                                                 if indent < bse then
+                                                    let noun =
+                                                        match dst.Marker with
+                                                        | MarkerKind.Heredoc -> "heredoc"
+                                                        | _ -> "yaml"
+
                                                     Error
-                                                        $"line {lineNo}: this yaml line outdents below the block's first line"
+                                                        $"line {lineNo}: this {noun} line outdents below the block's first line"
                                                 else
                                                     Ok(
                                                         Some
@@ -1206,8 +1226,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     blankSinceHead)
                                             | Some { Active = None
                                                      MarkerLine = mLine
-                                                     Yaml = isY } ->
-                                                let what = if isY then "'yaml'" else "'!'"
+                                                     Marker = m } ->
+                                                let what =
+                                                    match m with
+                                                    | MarkerKind.Heredoc -> "'<<<'"
+                                                    | _ -> "'yaml'"
 
                                                 Error $"line {mLine}: line-end {what} needs an indented block below it"
                                             | Some({ Active = Some d } as dst) when indent > dst.MarkerIndent ->
@@ -1489,6 +1512,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                   Opener = opener
                                                                   Strip = strip
                                                                   Yaml = isYaml
+                                                                  Marker = cls.Marker
                                                                   Active = None })
 
                                                         let joined = applyJoin join ll piece lineNo indent
@@ -1603,6 +1627,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                   Opener = opener
                                                   Strip = strip
                                                   Yaml = isYaml
+                                                  Marker = cls.Marker
                                                   Active = None })
                                           Compounds = []
                                           ParenDepth = parenDelta (raw.TrimEnd())

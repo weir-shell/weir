@@ -513,6 +513,29 @@ let pod name pairs = yaml
 pod "web" [("app", "web")] |> to yaml |> print
 ```
 
+When the block is not YAML — a config fragment, an embedded
+script, any literal lines — `<<<` is the heredoc block, the plain
+multiline literal: every byte below the marker is content (`$` and
+`{` included), blank lines and relative indentation survive, and
+the value is `seq<string>`, one element per line — ready for
+`File.write`, a pipe, or the `Seq` module. `$<<<` is its
+interpolated twin with exactly the string forms' hole rules:
+`{expr}` substitutes, `{{` and `}}` are literal braces, and `$`
+STILL stays a byte — shell text passes through untouched. A glyph,
+not a word: no binding is reserved, and the marker can never read
+as a splice.
+
+```weir
+let host = "db.example"
+let conf = $<<<
+    server {host}
+    retries {2 + 1}
+    literal $HOME and {{braces}}
+
+conf |> File.write "app.conf"
+File.read "app.conf" |> Seq.iter print
+```
+
 A scratch directory is a SCOPE, not a chore:
 `within tmp <name>` binds a fresh directory for the block and removes
 it on every exit — including the raise path, which is the half that
@@ -835,9 +858,9 @@ cover DOTALL and MULTILINE. Map each match to what you want,
 (`| sha256sum`) when you need one:
 
 ```weir
-let text = "let a = 1\nlet b = 2\nlet a = 1"
+let src = "let a = 1\nlet b = 2\nlet a = 1"
 
-Str.rmatchAll @"let (\w+) = (\d+)" text
+Str.rmatchAll @"let (\w+) = (\d+)" src
 |> Seq.map (fun g -> Str.join "=" g)
 |> Seq.distinct
 |> Seq.iter print

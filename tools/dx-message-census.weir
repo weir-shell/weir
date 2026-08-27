@@ -119,7 +119,7 @@ let classify d entry =
     // precede the diagnostics (the not-a-weir-script note), and grading the
     // line under it graded the preamble — every displaced message read as
     // `plain` and the total fell without a single message changing
-    let text =
+    let topLine =
         r.stdout
         |> Seq.tryFind (fun l -> Str.contains "error [" l || Str.contains "warning [" l)
         |> Option.orElse (r.stdout |> Seq.tryHead)
@@ -130,11 +130,11 @@ let classify d entry =
     // first, and the message the anchoring law wants on top is second
     // [D:anchor-before-read]. Presence alone scored these `teaches` and
     // the bucket could not see the demotion.
-    let dumpAt = Str.tryIndexOf "Expecting:" text
+    let dumpAt = Str.tryIndexOf "Expecting:" topLine
 
     let teachAt =
         teachPhrases
-        |> Seq.choose (fun p -> Str.tryIndexOf p text)
+        |> Seq.choose (fun p -> Str.tryIndexOf p topLine)
         |> Seq.sort
         |> Seq.tryHead
 

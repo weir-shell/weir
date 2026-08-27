@@ -133,6 +133,26 @@ There is no `$@"..."`:
 print $@"x" // no verbatim-interpolated form; use $"""...""" instead
 ```
 
+**The block forms** — the multiline literal (the heredoc block) is
+a line-end marker, not a string form. `<<<` opens a plain block:
+the indented lines below are the content, one `seq<string>` element
+per line — every byte is content, `$` and `{` included; blank lines
+and deeper indentation survive, relative to the first line. `$<<<`
+is the interpolated twin with the string forms' hole rules —
+`{expr}` substitutes, `{{` and `}}` are literal braces, `$` STILL
+stays a byte. Any line ending in the marker glyph arms a block,
+exactly as `yaml` does; without an indented block below it, that is
+the error. The glyph is not an operator and reserves no identifier.
+
+```weir
+let n = 2
+let block = $<<<
+    n={n} with {{literal braces}}
+    $HOME stays a byte
+
+block |> Seq.iter print
+```
+
 ## Numbers
 
 Integer literals are digit runs. A prefix minus binds at operand
