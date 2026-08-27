@@ -1369,6 +1369,19 @@ let boundaryTests =
                       | v -> failtest $"expected VSeq, got {v}"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
+
+              // trailing blanks CLIP (the block-scalar ruling [D:block-scalars]):
+              // the blank separating a block from the next statement is layout
+              match Weir.Parser.parseLine realResolver (asm [ "let t = <<<"; "    a"; ""; "" ]) with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      match Weir.Eval.eval valueEnv te with
+                      | Weir.Eval.VSeq items ->
+                          Expect.equal (List.ofSeq items) [ Weir.Eval.VStr "a" ] "trailing blank elements clip"
+                      | v -> failtest $"expected VSeq, got {v}"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
           }
           test "$<<< lines carry holes: {expr} evaluates, {{}} escape, $ stays a byte [D:text-block]" {
               let asm lines' =

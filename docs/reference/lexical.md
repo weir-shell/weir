@@ -136,8 +136,10 @@ print $@"x" // no verbatim-interpolated form; use $"""...""" instead
 **The block forms** — the multiline literal (the heredoc block) is
 a line-end marker, not a string form. `<<<` opens a plain block:
 the indented lines below are the content, one `seq<string>` element
-per line — every byte is content, `$` and `{` included; blank lines
-and deeper indentation survive, relative to the first line. `$<<<`
+per line — every byte is content, `$` and `{` included; interior
+blank lines and deeper indentation survive, relative to the first
+line, and trailing blank lines CLIP (the block-scalar ruling: the
+blank before the next statement is layout, not content). `$<<<`
 is the interpolated twin with the string forms' hole rules —
 `{expr}` substitutes, `{{` and `}}` are literal braces, `$` STILL
 stays a byte. Any line ending in the marker glyph arms a block,

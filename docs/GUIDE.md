@@ -516,8 +516,9 @@ pod "web" [("app", "web")] |> to yaml |> print
 When the block is not YAML — a config fragment, an embedded
 script, any literal lines — `<<<` is the heredoc block, the plain
 multiline literal: every byte below the marker is content (`$` and
-`{` included), blank lines and relative indentation survive, and
-the value is `seq<string>`, one element per line — ready for
+`{` included), interior blank lines and relative indentation
+survive — trailing blanks clip, the block-scalar rule — and the
+value is `seq<string>`, one element per line — ready for
 `File.write`, a pipe, or the `Seq` module. `$<<<` is its
 interpolated twin with exactly the string forms' hole rules:
 `{expr}` substitutes, `{{` and `}}` are literal braces, and `$`

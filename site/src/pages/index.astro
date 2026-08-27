@@ -71,22 +71,22 @@ STEAMROOT="$(cd "\${0%/*}" && echo $PWD)"
 # Scary!
 rm -rf "$STEAMROOT/"*`;
 
-// verbatim from \`weir check --can tools/fuzz.weir\` (v0.0.3) — e2e-pinned
+// verbatim from \`weir check --can tools/fuzz.weir\` (v0.0.8) — e2e-pinned
 const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):
   runs:
     git  tools/fuzz.weir:23:12
-    ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:69:5
-    date  tools/fuzz.weir:36:15
-    dotnet  tools/fuzz.weir:56:56
+    ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:72:5
+    date  tools/fuzz.weir:39:15
+    dotnet  tools/fuzz.weir:59:56
   reads:
-    File.read (path not statically known)  tools/fuzz.weir:62:20
+    File.read (path not statically known)  tools/fuzz.weir:65:20
   writes:
-    within tmp (a temporary directory)  tools/fuzz.weir:44:1
+    within tmp (a temporary directory)  tools/fuzz.weir:47:1
   environment:
-    reads WEIR_FUZZ_STRICT_SPANS (Env.get)  tools/fuzz.weir:40:14
-    sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:51:49
+    reads WEIR_FUZZ_STRICT_SPANS (Env.get)  tools/fuzz.weir:43:14
+    sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:54:49
   terminates:
-    fail  tools/fuzz.weir:65:9`;
+    fail  tools/fuzz.weir:68:9`;
 ---
 
 <Base>
