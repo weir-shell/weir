@@ -100,6 +100,23 @@ print $"""raw+holes: File.read "{who}\keep" — no escape pass, one splice"""
 let squares = [for n in [1..cli.limit] -> n * n]
 print $"sum of squares to {cli.limit}: {squares |> Seq.sum}"
 
+// ---- the heredoc block: multiline LINES, holes on the $ form ----------
+// line-end <<< opens the plain block: every byte below is content ($ and
+// { included), indentation is relative to the first line, and the value
+// is seq<string> — File.write, pipes and Seq take it unchanged
+
+let plain = <<<
+    $HOME and {braces} are bytes here
+    a second line
+print $"plain heredoc: {plain |> Seq.length} lines, every byte literal"
+
+// $<<< is the interpolated twin with the string forms' hole rules:
+// {expr} substitutes, {{ }} are literal braces, $ STILL stays a byte
+let motd = $<<<
+    hello {who} from the heredoc
+        deeper indent survives; $PATH and {{braces}} are bytes
+motd |> Seq.iter print
+
 // ---- tuples, records, copy-and-update ---------------------------------
 
 let pair = 3, "three"
