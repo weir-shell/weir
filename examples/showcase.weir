@@ -108,13 +108,16 @@ print $"sum of squares to {cli.limit}: {squares |> Seq.sum}"
 let plain = <<<
     $HOME and {braces} are bytes here
     a second line
+
 print $"plain heredoc: {plain |> Seq.length} lines, every byte literal"
 
 // $<<< is the interpolated twin with the string forms' hole rules:
-// {expr} substitutes, {{ }} are literal braces, $ STILL stays a byte
+// {expr} substitutes, {{ }} are literal braces, $ STILL stays a byte;
+// the blank line above `print` is layout — trailing blanks clip
 let motd = $<<<
     hello {who} from the heredoc
         deeper indent survives; $PATH and {{braces}} are bytes
+
 motd |> Seq.iter print
 
 // ---- tuples, records, copy-and-update ---------------------------------

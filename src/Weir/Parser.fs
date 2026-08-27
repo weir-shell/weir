@@ -2620,6 +2620,16 @@ let private heredocDistrictBody: Parser<Expr, unit> =
                 match err with
                 | Some(col, msg) -> failFatallyAtCol col msg
                 | None ->
+                    // trailing blanks CLIP — the block-scalar ruling
+                    // ([D:block-scalars]: |+ rejected): a blank separating
+                    // the block from the next statement is layout, not
+                    // content. Interior blanks stay bytes.
+                    while items.Count > 0
+                          && (match items[items.Count - 1].Kind with
+                              | EStr "" -> true
+                              | _ -> false) do
+                        items.RemoveAt(items.Count - 1)
+
                     preturn
                         { Kind = EList(List.ofSeq items)
                           Span =

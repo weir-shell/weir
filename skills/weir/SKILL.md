@@ -1044,8 +1044,9 @@ type Bad = { type: string }
   whole value. Paste a manifest, replace values with `$`.
 - `<<<` / `$<<<` heredoc blocks [D:text-block]: line-end `<<<` opens
   the PLAIN multiline literal — every byte below the marker is
-  content (`$` and `{` included), blank lines and deeper indentation
-  survive (relative to the first line), and the value is
+  content (`$` and `{` included), interior blank lines and deeper
+  indentation survive (relative to the first line; TRAILING blanks
+  clip — the block-scalar rule), and the value is
   `seq<string>`, one element per line (compose with `File.write`,
   pipes, `Seq`). `$<<<` is the interpolated twin with EXACTLY the
   string forms' hole rules: `{expr}` substitutes, `{{`/`}}` are

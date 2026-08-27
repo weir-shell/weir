@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Bugfixes
+
+- A heredoc block's trailing blank lines clip — the blank line
+  separating the block from the next statement is layout, not a
+  trailing empty element. Interior blanks stay content, matching
+  YAML block scalars (whose keep-trailing `|+` form weir rejects).
+
 ## v0.0.7
 
 ### New features
