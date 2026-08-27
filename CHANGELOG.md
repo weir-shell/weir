@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.7
 
 ### New features
 
@@ -21,6 +21,14 @@
   reports its message and exact column instead of an empty error
   (the extraction landed on FParsec's "Other error messages:"
   trailer).
+
+### Editors
+
+- Heredoc highlighting everywhere the grammars reach: VS Code
+  (Marketplace/Open VSX) and micro ship rules with this release;
+  the tree-sitter grammar gained the heredoc district (byte-verbatim
+  body lines, whole-`{expr}` hole tokens) and the Zed extension pins
+  it.
 
 ## v0.0.6
 
