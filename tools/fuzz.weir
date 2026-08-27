@@ -33,7 +33,10 @@ ci/deep-lock.sh acquire $"{Self.pid}" | orFail "a deep fuzz run is already live 
 let seed =
     match cli.seed with
     | Some n -> $"{n}"
-    | None -> $(date +%N) |> Seq.head
+    // normalized through int: %N pads with LEADING ZEROS, and the
+    // harness echoes the seed it parsed — "027" vs "27" would trip the
+    // receipt check on formatting, not config [D:observed-report]
+    | None -> $(date +%N) |> Seq.head |> Str.toInt |> fun n -> $"{n}"
 
 let count = $"{cli.count}"
 
