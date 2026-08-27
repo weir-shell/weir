@@ -56,6 +56,13 @@
 (yaml_hole) @punctuation.special
 (adapter) @keyword
 
+; the heredoc block [D:text-block]: the <<< / $<<< marker reads as a
+; keyword; body lines are data (string); a {expr} hole is one token,
+; painted as the interp-string holes are
+(heredoc_marker) @keyword
+(heredoc_text) @string
+(heredoc_hole) @string.special
+
 (operator) @operator
 (punctuation) @punctuation.bracket
 
