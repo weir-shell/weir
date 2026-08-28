@@ -67,7 +67,7 @@ let target =
 print target.Name
 ```
 
-## `;`
+## Sequencing with `;`
 
 `;` sequences statements on one line — and it binds INTO an `if` or
 `match` body, block-shaped. Both statements below belong to the
