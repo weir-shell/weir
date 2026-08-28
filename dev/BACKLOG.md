@@ -3,11 +3,13 @@
 (Moved from SEMANTICS.md at its retirement — planning residue never
 belonged in a semantics document.)
 
-0. **Block effect-sequencing** (`print "a"` mid-block — F#'s other half of
-   light syntax): needs an ESeq node checked `unit` in non-final
-   positions, the statement rule's discipline applied inside blocks.
-   Revive on dogfood demand; until then a block is bindings + one result
-   expression.
+0. ~~**Block effect-sequencing**~~ — done, and was already done when this
+   note moved here from SEMANTICS.md: the sibling-sentinel ESeq spine
+   ([D:seq-commit]/[D:sibling-sentinel]) sequences any unit expression
+   mid-block, a non-unit line refuses with `[seq-unit]` ("bind it or
+   print it" — the statement rule's discipline inside blocks, exactly as
+   priced), and the fuzz invariant "block siblings and single-line ';'
+   agree" pins it. Probe-confirmed 2026-08-28.
 1. ~~**Measure algebra**~~ — superseded: **measures were removed
    entirely** (2026-07-18; see the tombstone section and the NOTES arc).
    The 2026-07-17 drop decision and the `no_unit_algebra` tripwire
