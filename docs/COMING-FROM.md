@@ -24,7 +24,7 @@ representable.
 | `if grep -q pat f; then` | `if grep -q pat f \| succeeds then` — inline; bind first (`let hit = …`) when the verdict is reused |
 | `cmd > out.txt` | `cmd \|> File.write "out.txt"` — a function on the right takes `\|>` (the pipe rule) |
 | `$?` | `cmd \| exitCode` (streams, gives the code as `int`) |
-| `cat <<EOF … EOF \| cmd` | `lines \| cmd` — a value pipes into stdin |
+| `cat <<EOF … EOF \| cmd` | `let lines = <<<` + an indented block, then `lines \| cmd` — the heredoc is a value (`$<<<` for `{holes}`; `$` stays literal in both) |
 | `# comment` | `// comment` — full-line or trailing (needs a preceding space) |
 
 ```weir
