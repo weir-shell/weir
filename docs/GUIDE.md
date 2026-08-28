@@ -1,7 +1,8 @@
 # The weir guide
 
-Weir is a typed shell: F#-shaped expressions, real commands, and a
-type checker that runs before anything else does. Every fenced `weir`
+Weir is a typed shell-scripting language: F#-shaped expressions,
+real commands, and a type checker that runs before anything else
+does. Every fenced `weir`
 block in this guide is executed against the release binary in CI —
 if an example here stops working, the build fails. (Blocks needing a
 live endpoint or a real token are marked demo and are the exception;
