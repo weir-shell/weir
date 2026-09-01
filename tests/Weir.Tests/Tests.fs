@@ -4858,14 +4858,15 @@ let reserveBuiltinTests =
         "reserved builtins"
         [ test "the message, verbatim — every binding position" {
               let expected =
-                  "'ls' is a builtin with no qualified spelling — a binding would shadow it for the whole file with no way back; pick another name"
+                  "'pwd' is a builtin with no qualified spelling — a binding would shadow it for the whole file with no way back; pick another name"
 
-              Expect.equal (checkErr "let ls = 1 in ls").Message expected "let"
+              Expect.equal (checkErr "let pwd = 1 in pwd").Message expected "let"
 
               Expect.stringContains
                   (checkErr "[1] |> Seq.map (fun pwd -> pwd)").Message
                   "'pwd' is a builtin"
                   "lambda param"
+
 
               Expect.stringContains
                   (checkErr "match (1, 2) with | (cd, _) -> cd").Message
@@ -4878,6 +4879,9 @@ let reserveBuiltinTests =
               // the alias distinction IS the ruling's edge: Seq.max is
               // the way back, so `max` stays bindable
               expectValue "let max = 3 in max + Seq.max [1; 2]" (VInt 5L)
+              // the escape-bearer, not an alias [D:dir-stat]: Dir.stat
+              // "." is ls's way back, so ls binds
+              expectValue "let ls = 3 in ls" (VInt 3L)
           } ]
 
 let wireKeyTests =
@@ -11760,7 +11764,7 @@ let recordPatternTests =
                   "the casing law reaches record-pattern binders"
 
               Expect.stringContains
-                  (errR "let { UpN = ls } = { UpN = 1 } in 0" |> _.Message)
+                  (errR "let { UpN = pwd } = { UpN = 1 } in 0" |> _.Message)
                   "builtin with no qualified spelling"
                   "the builtin reservation reaches record-pattern binders"
           }
@@ -11828,6 +11832,70 @@ let fileStatTests =
 
               Expect.stringContains ex.Message "File.stat: no such path:" "the family's raise shape"
               Expect.stringContains ex.Message "weir-stat-no-such-path-xyz" "names the path"
+          } ]
+
+let dirStatTests =
+    // the rows form of Dir.list [D:dir-stat]: ls's enumeration over a
+    // NAMED directory. The agreement — identical rows in identical
+    // order — IS the property; the halves are implementation.
+    // SEQUENCED: the session cwd is ambient (the fileStatTests reason)
+    testSequenced
+    <| testList
+        "Dir.stat [D:dir-stat]"
+        [ test "the agreement pin: ls and Dir.stat \".\" produce identical rows in identical order" {
+              let d =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dstat-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub")) |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "B.txt"), "x")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "a.txt"), "x")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".dot"), "x")
+
+              try
+                  let saved = Weir.Session.Cwd()
+                  Weir.Session.setCwd d
+
+                  let runLive input =
+                      match typecheck env (parse input) with
+                      | Ok te -> eval Weir.Builtins.valueEnv te
+                      | Error terr -> failtest (formatError terr)
+
+                  try
+                      match
+                          runLive
+                              "(ls |> Seq.map show |> Str.join \"|\") == (Dir.stat \".\" |> Seq.map show |> Str.join \"|\")"
+                      with
+                      | VBool true -> ()
+                      | other -> failtest $"rows and order must agree: {other}"
+
+                      // a RELATIVE argument yields absolute path fields
+                      // (File.stat's pin, the seq form)
+                      match runLive "(Dir.stat \".\" |> Seq.head).path" with
+                      | VStr p when p.StartsWith d -> ()
+                      | other -> failtest $"a relative argument must yield absolute paths: {other}"
+                  finally
+                      Weir.Session.setCwd saved
+              finally
+                  System.IO.Directory.Delete(d, true)
+          }
+          test "empty gives []; absent raises naming Dir.stat and the path" {
+              let d =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dstat-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory d |> ignore
+
+              try
+                  match run $"Dir.stat \"{d.Replace('\\', '/')}\" |> Seq.length" with
+                  | VInt 0L -> ()
+                  | other -> failtest $"empty must be zero rows: {other}"
+              finally
+                  System.IO.Directory.Delete(d, true)
+
+              let ex =
+                  Expect.throwsC (fun () -> run "Dir.stat \"weir-dstat-no-such-dir-xyz\"" |> ignore) id
+
+              Expect.stringContains ex.Message "Dir.stat: no such directory:" "names the member"
+              Expect.stringContains ex.Message "weir-dstat-no-such-dir-xyz" "names the path"
           } ]
 
 let invariantModeTests =
@@ -14675,6 +14743,7 @@ let allTests =
           replTableTests
           lsTruthTests
           fileStatTests
+          dirStatTests
           recordPatternTests
           refutableRecordPatternTests
           recordPatternRowTests

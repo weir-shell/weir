@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **`Dir.stat` — a directory's entries as rows.** `Dir.list`'s
+  `seq<FileRow>` form: `ls`'s own rows over a named directory, same
+  order, sorted by name, eager. Three names, one mapping — `Dir.list`
+  gives paths, `Dir.stat` gives rows, `File.stat` gives one row. And
+  the consequence: `ls` is no longer a reserved binder — with
+  `Dir.stat "."` as the escape a shadow leaves open, `let ls = …` is
+  a user preference now, not an error.
+
 ## v0.0.8
 
 ### Bugfixes

@@ -798,17 +798,22 @@ print x
   `path` for handing to `File.*` — name derives from path, never the
   reverse (a later `cd` makes name→path ambiguous), which is why both
   ride the row. `^ls` forces the external. Builtins WITHOUT a
-  qualified spelling (`ls`, `cd`, `pwd`, `print`, `printerr`, `show`,
+  qualified spelling (`cd`, `pwd`, `print`, `printerr`, `show`,
   `exit`, `fail`, `into`, `not`, `fst`, `snd`, `nats`) are RESERVED
   binder names [D:reserve-builtins] — a binding would shadow them for
   the whole file with no way back, so the checker refuses; bare
   aliases (`max`, `find`, `item`…) stay bindable because the
-  qualified member survives.
+  qualified member survives. `ls` LEFT the reserved set with
+  `Dir.stat` [D:dir-stat]: `Dir.stat "."` is the escape a shadow
+  leaves open, so `let ls = …` is now a user preference, not an
+  error.
 
-```weir-error
-// a no-home builtin cannot be bound — the capability has no way back
-let ls x = Dir.list x
-print (show (ls "."))
+```weir
+// ls binds since Dir.stat exists — the qualified escape survives
+let ls = "shadowed"
+print ls
+let n = Dir.stat "." |> Seq.length
+print $"{n >= 0}"
 ```
 ```weir-error
 // params reserve too
@@ -859,9 +864,13 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
 
   (prints `lssort-B.txt` then `lssort-a.txt` — ordinal order, the
   uppercase name first.)
-- Discovery has two surfaces with two shapes: `ls` gives rows,
-  `Path.glob` gives strings. `File.stat p` is the bridge — `ls`'s OWN
-  row for one path, so `Path.glob ... |> Seq.map File.stat` filters a
+- Discovery: `ls` gives the cwd's rows, `Dir.stat p` a NAMED
+  directory's rows (same rows, same order — ls's own enumeration; two
+  names because weir is curried with no optional-parameter spelling,
+  so one name cannot serve both arities), `Dir.list p` its paths
+  (`seq<string>` — what `File.*` and argv want), `Path.glob` pattern
+  strings. `File.stat p` is the one-path bridge — `ls`'s OWN
+  row, so `Path.glob ... |> Seq.map File.stat` filters a
   glob on any row field. It describes a symlink ITSELF (`kind ==
   Symlink`, `target Some` — a dangling link is a row, not an absence),
   matching `ls` — a stated third position beside `**`'s
@@ -1492,7 +1501,7 @@ and in `#help Module.member`; this list is the completeness contract,
 not the teaching.
 
 - `Args`: `flag` `load` `value`
-- `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move`
+- `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
 - `File`: `append` `copy` `delete` `exists` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeBytes`
