@@ -2118,7 +2118,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 match homes with
                 // no history claim [D:bare-rule]: most of these were
                 // never bare — the wording matches the multi-home arm's
-                | [ one ] -> err expr.Span $"'{name}' is module-qualified; use '{one}'"
+                | [ one ] ->
+                    // `dir` is DOS/cmd muscle memory for a LISTING, and
+                    // Path.dir is the parent-of-a-path function — the
+                    // qualified redirect alone sends the reader somewhere
+                    // semantically unrelated [D:dir-teach]
+                    let hint =
+                        if name = "dir" then
+                            " (the parent directory of a path) — for a directory listing, use ls"
+                        else
+                            ""
+
+                    err expr.Span $"'{name}' is module-qualified; use '{one}'{hint}"
                 | _ :: _ ->
                     let all = String.concat " or " homes
                     err expr.Span $"'{name}' is module-qualified here; use {all}"

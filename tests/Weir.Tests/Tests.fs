@@ -14259,6 +14259,20 @@ let bareRuleTests =
                   Expect.stringContains terr.Message "module-qualified; use 'Seq.rev'" "the truthful wording"
                   Expect.isFalse (terr.Message.Contains "moved") "no false history"
               | Ok _ -> failtest "strict mode must not resolve bare rev"
+          }
+          test "bare `dir` teaches the listing too [D:dir-teach]" {
+              // DOS muscle memory wants ls; Path.dir is the parent-of-a-
+              // path function — the teach carries both readings.
+              // ARGUMENT position forces pure expression mode: a bare
+              // `dir` elsewhere resolves as the coreutils COMMAND on
+              // Linux (the platform split that makes this teach
+              // Windows/macOS-facing)
+              let m = (checkErr "[1] |> Seq.map dir").Message
+              Expect.stringContains m "use 'Path.dir'" "the qualified home"
+              Expect.stringContains m "for a directory listing, use ls" "the muscle-memory half"
+
+              // the suffix is dir's alone
+              Expect.isFalse ((checkErr "[1] |> Seq.map rev").Message.Contains "listing") "rev keeps the plain form"
           } ]
 
 let gapATests =
