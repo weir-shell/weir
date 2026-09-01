@@ -34,8 +34,8 @@ median() {
 
 $BIN -e '1 + 1' > /dev/null # warm the fs cache
 
-EXPR_SNIPPET='ls |> Seq.where (fun f -> f.bytes > 1MiB) |> Seq.first 5'
-CMD_SNIPPET='echo hi |> Seq.first 1'
+EXPR_SNIPPET='ls |> Seq.where (fun f -> f.bytes > 1MiB) |> Seq.take 5'
+CMD_SNIPPET='echo hi |> Seq.take 1'
 
 # pre-flight each snippet OUTSIDE the timing substitution
 # [D:masking-mechanized]: set -e is disabled inside $(...), so a snippet
