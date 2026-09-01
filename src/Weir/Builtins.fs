@@ -728,6 +728,37 @@ let private splitImpl: Value =
             | VStr sep, VStr s -> VSeq(s.Split sep |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'split' on these arguments"))
 
+// split at the FIRST occurrence, tail INTACT [D:split-once] — Rust's
+// split_once shape (Go's Cut, Python's partition are the same
+// correction): "at most one split" is a different operation from
+// "split into pieces", and Str.split + a seq pattern silently misses
+// when the tail contains the separator
+let private splitOnceImpl: Value =
+    VBuiltin(fun sep ->
+        VBuiltin(fun subject ->
+            match sep, subject with
+            | VStr sep, VStr s ->
+                if sep = "" then
+                    failwith "splitOnce: the separator cannot be empty"
+                else
+                    match s.IndexOf sep with
+                    | -1 -> failwith $"splitOnce: no \"{sep}\" in the input"
+                    | i -> VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ]
+            | _ -> unreachable "the checker rejects 'splitOnce' on these arguments"))
+
+let private trySplitOnceImpl: Value =
+    VBuiltin(fun sep ->
+        VBuiltin(fun subject ->
+            match sep, subject with
+            | VStr sep, VStr s ->
+                if sep = "" then
+                    failwith "trySplitOnce: the separator cannot be empty"
+                else
+                    match s.IndexOf sep with
+                    | -1 -> vNone
+                    | i -> vSome (VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ])
+            | _ -> unreachable "the checker rejects 'trySplitOnce' on these arguments"))
+
 let private joinImpl: Value =
     VBuiltin(fun sep ->
         VBuiltin(fun s ->
@@ -1720,6 +1751,8 @@ let private strMembers: (string * Ty * Value) list =
       "toLower", TFun(TStr, TStr), str1 "toLower" (fun s -> s.ToLowerInvariant())
       "toUpper", TFun(TStr, TStr), str1 "toUpper" (fun s -> s.ToUpperInvariant())
       "split", TFun(TStr, TFun(TStr, TSeq TStr)), splitImpl
+      "splitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), splitOnceImpl
+      "trySplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), trySplitOnceImpl
       "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
       "length", TFun(TStr, TInt), strLenImpl
@@ -3835,6 +3868,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.split",
           (bd "Split on a separator into a sequence." (Some "Str.split \",\" \"a,b,c\" |> Seq.force") None
+           |> named [ "sep"; "s" ])
+          "Str.splitOnce",
+          (bd
+              "Split at the FIRST occurrence into (before, after) — the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin)."
+              (Some "let (k, v) = Str.splitOnce \"=\" \"key=a=b\" in print v")
+              None
+           |> named [ "sep"; "s" ])
+          "Str.trySplitOnce",
+          (bd
+              "splitOnce's Option twin: Some (before, after) at the first occurrence, None when the separator is absent — the KEY=VALUE parser's shape."
+              (Some "match Str.trySplitOnce \"=\" \"key=val\" with | Some (k, v) -> print k | None -> print \"no\"")
+              None
            |> named [ "sep"; "s" ])
           "Str.join",
           (bd "Join a sequence of strings with a separator." (Some "Str.join \",\" [\"a\"; \"b\"]") None

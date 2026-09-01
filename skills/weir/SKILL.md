@@ -316,6 +316,20 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   is one pipeline: `Str.rmatchAll pat text |> Seq.map Seq.head |>
   Seq.distinct` (all matches → contents → dedup); pipe a match through
   a tool with `| sha256sum`.
+- Split at the FIRST separator, tail INTACT [D:split-once]:
+  `Str.splitOnce sep s : (string, string)` — Rust's split_once shape;
+  raises when the separator is absent; `Str.trySplitOnce` is the
+  Option twin (`Some (before, after)` / `None`). This is the
+  KEY=VALUE / host:port spelling — `Str.split` + a `[k; v]` pattern
+  silently MISSES when the value contains the separator; splitOnce
+  keeps the tail whole. Empty separator refused on both. Destructures
+  straight into names:
+
+```weir
+let (key, value) = Str.splitOnce "=" "PATH=/usr/bin:/bin"
+print $"{key} -> {value}"
+```
+
 - Floats exist and are FINITE-only: `0.5`, `1e5`, `1.5e-3` (digits
   required on both sides of a point — `1.` and `.5` are errors).
   A non-finite result RAISES (`1.0 / 0.0`, overflow); NaN/Infinity
@@ -1523,4 +1537,4 @@ not the teaching.
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exists` `find` `first` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `length` `sha256` `toBase64` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `sha256` `split` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`

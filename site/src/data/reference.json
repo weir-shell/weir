@@ -1462,6 +1462,13 @@
           "pointer": null
         },
         {
+          "name": "splitOnce",
+          "signature": "Str.splitOnce (sep: string) (s: string) : string * string",
+          "summary": "Split at the FIRST occurrence into (before, after) \u2014 the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin).",
+          "example": "let (k, v) = Str.splitOnce \u0022=\u0022 \u0022key=a=b\u0022 in print v",
+          "pointer": null
+        },
+        {
           "name": "startsWith",
           "signature": "Str.startsWith (prefix: string) (s: string) : bool",
           "summary": "True when the string starts with a prefix.",
@@ -1550,6 +1557,13 @@
           "signature": "Str.tryIndexOf (needle: string) (s: string) : Option\u003Cint\u003E",
           "summary": "The index of a substring as an Option.",
           "example": "Str.tryIndexOf \u0022b\u0022 \u0022abc\u0022",
+          "pointer": null
+        },
+        {
+          "name": "trySplitOnce",
+          "signature": "Str.trySplitOnce (sep: string) (s: string) : Option\u003Cstring * string\u003E",
+          "summary": "splitOnce\u0027s Option twin: Some (before, after) at the first occurrence, None when the separator is absent \u2014 the KEY=VALUE parser\u0027s shape.",
+          "example": "match Str.trySplitOnce \u0022=\u0022 \u0022key=val\u0022 with | Some (k, v) -\u003E print k | None -\u003E print \u0022no\u0022",
           "pointer": null
         },
         {

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **`Str.splitOnce` / `Str.trySplitOnce` — split at the first
+  separator, tail intact.** Rust's `split_once` shape: `splitOnce
+  sep s` yields `(before, after)` and raises when the separator is
+  absent; `trySplitOnce` is the Option twin. The KEY=VALUE spelling
+  — `Str.split` plus a `[k; v]` pattern silently misses when the
+  value contains the separator; `splitOnce` keeps the tail whole.
+
+- **Bare `dir` teaches the listing.** The module-qualified redirect
+  (`use 'Path.dir'`) now also says "for a directory listing, use
+  ls" — DOS muscle memory pointed at the parent-of-a-path function
+  was a wrong turn.
+
 ## v0.0.9
 
 ### New features

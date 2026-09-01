@@ -3068,6 +3068,40 @@ let stringTests =
               Expect.equal (run "split \",\" \"a,,b\"" |> forceSeq) [ VStr "a"; VStr ""; VStr "b" ] "empties kept"
           }
           test "replace is pattern-replacement-subject" { expectValue "replace \"o\" \"0\" \"foo\"" (VStr "f00") }
+          test "splitOnce splits at the FIRST separator, tail intact [D:split-once]" {
+              // the receipt class: the tail CONTAINS the separator —
+              // Str.split + a [k; v] pattern silently misses here
+              expectValue "Str.splitOnce \"=\" \"KEY=a=b\"" (VTuple [ VStr "KEY"; VStr "a=b" ])
+              // destructures straight into names (the tuple answer)
+              expectValue "let (k, v) = Str.splitOnce \"=\" \"k=v\" in k + v" (VStr "kv")
+              // multi-char separator consumed whole
+              expectValue "Str.splitOnce \"::\" \"a::b\"" (VTuple [ VStr "a"; VStr "b" ])
+              // edges are empty strings, never absences
+              expectValue "Str.splitOnce \"=\" \"=v\"" (VTuple [ VStr ""; VStr "v" ])
+              expectValue "Str.splitOnce \"=\" \"k=\"" (VTuple [ VStr "k"; VStr "" ])
+
+              let msgOf src =
+                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
+
+              Expect.equal
+                  (msgOf "Str.splitOnce \":\" \"abc\"")
+                  "splitOnce: no \":\" in the input"
+                  "the raising form names the separator"
+
+              Expect.equal
+                  (msgOf "Str.splitOnce \"\" \"abc\"")
+                  "splitOnce: the separator cannot be empty"
+                  "empty separator refused"
+
+              Expect.equal
+                  (msgOf "Str.trySplitOnce \"\" \"abc\"")
+                  "trySplitOnce: the separator cannot be empty"
+                  "…on the try side too (absence is Option's job, malformed args are not)"
+
+              // the Option twin, and absence as None
+              expectValue "Str.trySplitOnce \"=\" \"k=v\"" (VUnion("Some", Some(VTuple [ VStr "k"; VStr "v" ])))
+              expectValue "Str.trySplitOnce \"=\" \"none\"" (VUnion("None", None))
+          }
           test "Str.length and toInt" {
               expectValue "Str.length \"abc\"" (VInt 3)
               expectValue "toInt \"42\" + 1" (VInt 43)
