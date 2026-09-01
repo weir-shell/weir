@@ -4,6 +4,14 @@
 
 ### New features
 
+- **`%` — integer remainder.** F#'s spelling at `*`/`/`'s
+  precedence, TRUNCATED — the sign follows the dividend (`-7 % 3`
+  is `-1`, matching F#/.NET; Python's floored `%` gives `2` there).
+  A zero divisor raises ("modulo by zero", `/`'s discipline);
+  floats are refused with a teach — finite-only floats cannot hold
+  IEEE's NaN remainder. In command argv `%` stays a literal byte
+  (`echo 50%`, `date +%N`).
+
 - **`Dir.stat` — a directory's entries as rows.** `Dir.list`'s
   `seq<FileRow>` form: `ls`'s own rows over a named directory, same
   order, sorted by name, eager. Three names, one mapping — `Dir.list`

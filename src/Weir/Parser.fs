@@ -1393,6 +1393,9 @@ let private mkOpp (withPipe: bool) =
     opp.AddOperator(InfixOperator("-", notFollowedBy (pchar '>') >>. ws, 6, Associativity.Left, binOp "-"))
     opp.AddOperator(InfixOperator("*", ws, 7, Associativity.Left, binOp "*"))
     opp.AddOperator(InfixOperator("/", ws, 7, Associativity.Left, binOp "/"))
+    // modulo [D:modulo]: F#'s spelling at */'s level; int-only (the
+    // checker's arm) and truncated (the oracle referees fidelity)
+    opp.AddOperator(InfixOperator("%", ws, 7, Associativity.Left, binOp "%"))
     opp
 
 let private opp = mkOpp true

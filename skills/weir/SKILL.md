@@ -220,8 +220,11 @@ echo --flag="quoted v" // the quoted part would be its own argument; quote the w
 ```
 - `+` on two unknown params cannot infer (int-or-string): anchor one
   side (`x + 0`) or take data in. All single-typing operators
-  (`- * / > <`) default to int; `let rec` and `mutable` are reserved
-  words with no meaning. But `==`, `show`, and `Seq.sortBy` ARE
+  (`- * / % > <`) default to int; `let rec` and `mutable` are reserved
+  words with no meaning. `%` is integer remainder, TRUNCATED like
+  F#/.NET (`-7 % 3` is `-1`, NOT Python's `2`); zero divisor raises
+  ("modulo by zero"); floats are refused (finite-only floats cannot
+  hold IEEE's NaN remainder) — `Float.toInt` one side. But `==`, `show`, and `Seq.sortBy` ARE
   generic (inferred constraints): `let same x y = x == y` works at any
   equatable type — rejected only at functions/seqs, at the USE site.
 - Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in

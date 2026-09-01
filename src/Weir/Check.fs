@@ -896,7 +896,7 @@ let rec private typeBinOp
                 ($"'>>' composes functions, and this expression has type {formatTy ty}; "
                  + "to append command output to a file, pipe it: cmd |> File.append \"out.txt\"")
         | _, ty -> err l.Span $"'<<' composes functions, and this expression has type {formatTy ty}"
-    | ("*" | "/" | "-" | ">" | "<" | ">=" | "<="), TVar _, TVar _ ->
+    | ("*" | "/" | "%" | "-" | ">" | "<" | ">=" | "<="), TVar _, TVar _ ->
         retryAfter (
             bind ctx env l.Span (TInt) l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span (TInt) r.Ty)
@@ -930,6 +930,15 @@ let rec private typeBinOp
     | _, TVar _, TVar _ -> err opSpan $"cannot infer the operand types of '{op}'; pipe data in or use concrete values"
     | _, TRowVar _, _
     | _, _, TRowVar _ -> err opSpan $"operator '{op}' is not defined for records"
+    // modulo is INT-ONLY [D:modulo]: weir floats are finite-only and
+    // IEEE `x % 0.0` is NaN — float modulo would need a divergent
+    // raise, declined until its own ruling; the teach names the exits
+    | "%", TFloat, _
+    | "%", _, TFloat ->
+        err
+            opSpan
+            "'%' is integer-only — weir floats are finite-only, and IEEE float remainder can produce NaN; Float.toInt one side, or keep the cycle arithmetic in int"
+    | "%", TInt, TInt -> Ok TInt
     | ("+" | "-" | "*" | "/"), TFloat, TFloat -> Ok TFloat
     | (">" | "<" | ">=" | "<="), TFloat, TFloat -> Ok TBool
     // no implicit widening [D:floats] — the one deliberate footgun,

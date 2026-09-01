@@ -10088,6 +10088,8 @@ let durationTests =
               // the literal exists only in expression position; a command
               // argument is a word like any other
               expectCmd "echo 30s" "(cmd echo \"30s\")"
+              // % is inert in argv [D:modulo] — a literal word char
+              expectCmd "echo 50%" "(cmd echo \"50%\")"
           }
           test "show is the Go shape; parse round-trips it both directions" {
               Expect.equal (run "show 0ms") (VStr "0s") "zero is 0s"
@@ -11661,6 +11663,30 @@ let accessorTeachingTests =
               // LAZY (an infinite source must not be probed for length)
               expectValue "[1; 2; 3] |> Seq.item 1" (VInt 2L)
               expectValue "nats |> Seq.skip 2 |> Seq.head" (VInt 2L)
+          }
+          test "modulo [D:modulo]: truncated, int-only, /'s zero discipline" {
+              let msgOf src =
+                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
+
+              // TRUNCATED (F#/.NET): the sign follows the DIVIDEND —
+              // only the negative cases assert the ruling
+              expectValue "7 % 3" (VInt 1L)
+              expectValue "-7 % 3" (VInt -1L)
+              expectValue "7 % -3" (VInt 1L)
+              expectValue "-7 % -3" (VInt -1L)
+
+              // precedence: */'s level
+              expectValue "1 + 2 % 3" (VInt 3L)
+
+              Expect.equal (msgOf "7 % 0") "modulo by zero" "/'s discipline, %'s word"
+
+              Expect.stringContains
+                  (checkErr "let x = 7.5 % 2.0 in 0").Message
+                  "'%' is integer-only"
+                  "floats refused — finite-only cannot hold NaN remainder"
+
+              // the checked corner /'s family shares
+              Expect.stringContains (msgOf "(0 - 9223372036854775807 - 1) % (0 - 1)") "integer overflow" "MinValue % -1"
           } ]
 
 let recordPatternTests =

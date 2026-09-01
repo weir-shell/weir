@@ -289,6 +289,7 @@ splice is one word, and no shell ever re-parses your line.
 | `argparse` | `Args.load Cli` — the flags DERIVE from a record you declare |
 | `json.loads(...)` → dict soup | `\|> from json T` → your declared record |
 | `requests.post(url, json=payload)` | `Http.send { Http.defaults with method = Post; url = u; body = Json (payload \|> to json) }` — status is data, `Secret` auth, body byte-exact |
+| `-7 % 3 == 2` (floored) | `-7 % 3 == -1` — weir's `%` is TRUNCATED (F#/.NET/C): the sign follows the dividend; they agree whenever both operands are positive |
 
 ```weir
 type Cfg = { name: string; port: int }
