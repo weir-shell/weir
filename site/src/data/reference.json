@@ -110,6 +110,13 @@
           "summary": "Move (rename) a directory \u2014 (src, dst); refuses an existing destination.",
           "example": "let d = Path.newTempDir () in Dir.move d $\u0022{d}-m\u0022 ; Dir.delete $\u0022{d}-m\u0022",
           "pointer": null
+        },
+        {
+          "name": "stat",
+          "signature": "Dir.stat (path: string) : seq\u003CFileRow\u003E",
+          "summary": "The directory\u0027s entries as ROWS \u2014 Dir.list\u0027s seq\u003CFileRow\u003E form, ls\u0027s own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager.",
+          "example": "let d = Path.newTempDir () in print $\u0022{Dir.stat d |\u003E Seq.length}\u0022 ; Dir.delete d",
+          "pointer": null
         }
       ]
     },
