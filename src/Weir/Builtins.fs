@@ -648,6 +648,45 @@ let private str2Bool (name: string) (f: string -> string -> bool) : Value =
 let private vSome (v: Value) : Value = VUnion("Some", Some v)
 let private vNone: Value = VUnion("None", None)
 
+// the cardinality ASSERTION [D:exactly-one]: head silently accepts a
+// second element, so a wrong-arity command output passes quietly at
+// the boundary where it is most likely. TWO distinct messages — a
+// source that produced nothing and one that produced more are
+// different bugs; collapsing them wastes the member. The more-case
+// stops at the SECOND element (never a count): the source may be
+// infinite, and enumerating it to report a number is the hang the
+// lazy law forbids.
+let private exactlyOneImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            use e = items.GetEnumerator()
+
+            if not (e.MoveNext()) then
+                failwith "exactlyOne: expected exactly one element, got none"
+
+            let x = e.Current
+
+            if e.MoveNext() then
+                failwith "exactlyOne: expected exactly one element, got more"
+
+            x
+        | v -> unreachable $"the checker rejects 'exactlyOne' on {formatValue v}")
+
+let private tryExactlyOneImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            use e = items.GetEnumerator()
+
+            if not (e.MoveNext()) then
+                vNone
+            else
+                let x = e.Current
+                if e.MoveNext() then vNone else vSome x
+        | v -> unreachable $"the checker rejects 'tryExactlyOne' on {formatValue v}")
+
+
 let private tryHeadImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -1630,9 +1669,10 @@ let private typedAverageImpl (name: string) (get: Value -> int64) (mk: int64 -> 
 let private seqMembers: (string * Ty * Value) list =
     [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
       "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
-      "first", TFun(TInt, TFun(TSeq tA, TSeq tA)), truncateImpl
       "take", TFun(TInt, TFun(TSeq tA, TSeq tA)), truncateImpl
       "head", TFun(TSeq tA, tA), headImpl
+      "exactlyOne", TFun(TSeq tA, tA), exactlyOneImpl
+      "tryExactlyOne", TFun(TSeq tA, TNamed("Option", [ tA ])), tryExactlyOneImpl
       "sum", TFun(seqInt, TInt), sumImpl
       "force", TFun(TSeq tA, TSeq tA), toListImpl
       "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
@@ -3499,6 +3539,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.tryHead",
           (bd "The first element as an Option, None when empty." (Some "Seq.tryHead [1; 2; 3]") None
            |> named [ "xs" ])
+          "Seq.exactlyOne",
+          (bd
+              "The one element — a cardinality ASSERTION: raises on none AND on more (head silently accepts a second element, hiding a wrong-arity source). The spelling for command output expected to be one line."
+              (Some "[\"one line\"] |> Seq.exactlyOne |> print")
+              None
+           |> named [ "xs" ])
+          "Seq.tryExactlyOne",
+          (bd
+              "exactlyOne's Option twin: Some when the sequence has exactly one element, None on none or more."
+              (Some "[42] |> Seq.tryExactlyOne")
+              None
+           |> named [ "xs" ])
           "Seq.tryFind",
           bd
               "The first element a predicate accepts, as an Option."
@@ -3512,16 +3564,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "The element at an index as an Option." (Some "[1; 2; 3] |> Seq.tryItem 0") None
            |> named [ "i"; "xs" ])
           "Seq.take",
-          (bd
-              "The first n elements, lazily. SYNONYM of Seq.first (one implementation, two names — F# parity and the pipeline reading, ruled deliberate)."
-              (Some "[1; 2; 3] |> Seq.take 2 |> Seq.force")
-              None
-           |> named [ "n"; "xs" ])
-          "Seq.first",
-          (bd
-              "The first n elements, lazily. SYNONYM of Seq.take (this spelling reads best mid-pipeline)."
-              (Some "[1; 2; 3] |> Seq.first 2 |> Seq.force")
-              None
+          (bd "The first n elements, lazily; pairs with Seq.skip." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.force") None
            |> named [ "n"; "xs" ])
           "Seq.skip",
           (bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.force") None

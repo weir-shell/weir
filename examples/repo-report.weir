@@ -57,7 +57,7 @@ print "largest files:"
 
 ls
     |> Seq.sortByDescending _.bytes
-    |> Seq.first 3
+    |> Seq.take 3
     |> Seq.map (fun f -> $"  {f.name} ({f.bytes})")
     |> print
 

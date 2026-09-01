@@ -91,7 +91,7 @@ print (show 1)
 let files = git ls-files
 print $"tracked: {files |> Seq.length}"
 ["a"; "b"] |> Seq.iter print
-git ls-files |> Seq.first 1
+git ls-files |> Seq.take 1
 ```
 
 ```weir-error
@@ -187,7 +187,7 @@ print $"{w}"
   `fun`). Params are idents, `()`, or PARENTHESIZED irrefutable
   patterns (`let dist (x, y) = ...`) — no type annotations. A
   param-ful let TAKES a command RHS
-  (`let revParse r = git rev-parse $r |> Seq.head`): params shadow
+  (`let revParse r = git rev-parse $r |> Seq.exactlyOne`): params shadow
   PATH inside their own RHS (bindings-beat-PATH's scope; `^x` still
   forces the binary), and a spliced param defaults to string at the
   statement boundary. Splices are WHOLE argv entries — a mid-word
@@ -328,6 +328,22 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
 ```weir
 let (key, value) = Str.splitOnce "=" "PATH=/usr/bin:/bin"
 print $"{key} -> {value}"
+```
+
+- Cardinality [D:exactly-one]: `Seq.exactlyOne` asserts ONE element —
+  raises on none AND on more, with distinct messages (a source that
+  produced nothing and one that produced extra are different bugs);
+  `Seq.tryExactlyOne` is the Option twin (None for both failure
+  shapes; never hangs — it stops at the second element). THE SPELLING
+  for command output expected to be one line
+  (`git rev-parse HEAD |> Seq.exactlyOne`) — `Seq.head` takes the
+  first and silently accepts more; save it for "the first of many".
+  `Seq.first` is RETIRED [D:first-retired]: one name per operation —
+  `Seq.take` (pairs with `skip`).
+
+```weir-error
+// retired: one name per operation (take pairs with skip)
+[1; 2; 3] |> Seq.first 2 |> Seq.iter print
 ```
 
 - Floats exist and are FINITE-only: `0.5`, `1e5`, `1.5e-3` (digits
@@ -514,7 +530,7 @@ print $"{key} -> {value}"
   OUTLIVE the script is a daemon — write a unit file; weir declines
   nohup.
 - A `let` RHS takes command mode wherever lets go — top level AND
-  inside bodies (`let tree = git rev-parse $c |> Seq.head` in a
+  inside bodies (`let tree = git rev-parse $c |> Seq.exactlyOne` in a
   function); `$()` covers sub-expression positions. `function | pat -> e | …`
   is the implicit-match lambda (`fun x -> match x with …` exactly;
   first `|` optional, guards work) — the usual spelling for
@@ -1140,7 +1156,7 @@ if clean then !(sh -c "echo acting")
   command chains (splices, pipes, `| complete`). `!` is NOT bash
   history/extglob and `;` still does not chain inside them.
 - A top-level `let` RHS takes command lines — param-ful included
-  (`let f r = git rev-parse $r |> Seq.head`): `let files = git ls-files`
+  (`let f r = git rev-parse $r |> Seq.exactlyOne`): `let files = git ls-files`
   binds `seq<string>`; `let r = git status | complete` binds the
   record. Externals only — builtins stay functions there
   (`let w = cd target` applies the BINDING target). BLOCK lets inside
@@ -1534,7 +1550,7 @@ not the teaching.
 - `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
-- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exists` `find` `first` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
+- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exactlyOne` `exists` `find` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `length` `sha256` `toBase64` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
 - `Str`: `contains` `endsWith` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`

@@ -976,6 +976,13 @@
           "pointer": null
         },
         {
+          "name": "exactlyOne",
+          "signature": "Seq.exactlyOne (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The one element \u2014 a cardinality ASSERTION: raises on none AND on more (head silently accepts a second element, hiding a wrong-arity source). The spelling for command output expected to be one line.",
+          "example": "[\u0022one line\u0022] |\u003E Seq.exactlyOne |\u003E print",
+          "pointer": null
+        },
+        {
           "name": "except",
           "signature": "Seq.except (excluded: seq\u003C\u0027a\u003E) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Set difference: the source without the excluded values (exclusions first, source last; the exclusion set materializes on the first pull, the source streams).",
@@ -994,13 +1001,6 @@
           "signature": "Seq.find (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : \u0027a",
           "summary": "The first element a predicate accepts (raises when none match \u2014 tryFind asks).",
           "example": "[1; 5; 3] |\u003E Seq.find (fun x -\u003E x \u003E 2)",
-          "pointer": null
-        },
-        {
-          "name": "first",
-          "signature": "Seq.first (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
-          "summary": "The first n elements, lazily. SYNONYM of Seq.take (this spelling reads best mid-pipeline).",
-          "example": "[1; 2; 3] |\u003E Seq.first 2 |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1258,7 +1258,7 @@
         {
           "name": "take",
           "signature": "Seq.take (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
-          "summary": "The first n elements, lazily. SYNONYM of Seq.first (one implementation, two names \u2014 F# parity and the pipeline reading, ruled deliberate).",
+          "summary": "The first n elements, lazily; pairs with Seq.skip.",
           "example": "[1; 2; 3] |\u003E Seq.take 2 |\u003E Seq.force",
           "pointer": null
         },
@@ -1267,6 +1267,13 @@
           "signature": "Seq.takeWhile (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Elements while the predicate holds, lazily; stops at the first refusal.",
           "example": "[1; 2; 9; 1] |\u003E Seq.takeWhile (fun x -\u003E x \u003C 5) |\u003E Seq.force",
+          "pointer": null
+        },
+        {
+          "name": "tryExactlyOne",
+          "signature": "Seq.tryExactlyOne (xs: seq\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "exactlyOne\u0027s Option twin: Some when the sequence has exactly one element, None on none or more.",
+          "example": "[42] |\u003E Seq.tryExactlyOne",
           "pointer": null
         },
         {
