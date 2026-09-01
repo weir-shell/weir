@@ -230,9 +230,14 @@ left-associative:
 | | `&&` | boolean and |
 | | `==` `<>` `<` `<=` `>` `>=` | equality and comparison |
 | | `+` `-` | additive |
-| tightest | `*` `/` | multiplicative |
+| tightest | `*` `/` `%` | multiplicative; `%` is integer remainder |
 
 A prefix `-` binds at operand positions (`2 * -3`).
+
+`%` is TRUNCATED remainder — the sign follows the dividend, F#'s
+and .NET's convention (`-7 % 3` is `-1`; Python's floored `%` gives
+`2` there). Integer-only; a zero divisor raises
+([Types](types.md#scalars)).
 
 The one precedence rule that bites: `|>` and `>>` share the loosest
 level, so `xs |> f >> g` is `(xs |> f) >> g` — and the error says

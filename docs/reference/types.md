@@ -16,6 +16,20 @@ sides is a type error naming `Float.ofInt`:
 print $"{3 / 2.0}" // no implicit widening; use Float.ofInt 3
 ```
 
+`%` is integer remainder, TRUNCATED — the sign follows the dividend
+(`-7 % 3` is `-1`, F#'s and .NET's convention; Python's floored `%`
+gives `2`). A zero divisor raises, `/`'s own discipline. Floats are
+refused — weir floats are finite-only and IEEE remainder can
+produce NaN:
+
+```weir
+print $"{7 % 3} {-7 % 3}"
+```
+
+```weir-error
+print $"{7.5 % 2.0}" // '%' is integer-only — Float.toInt one side
+```
+
 ## The unit-bearing scalars
 
 `Duration`, `Size`, and `Instant` put the unit in the value.

@@ -2507,6 +2507,28 @@ let private dirMembers: (string * Ty * Value) list =
                   |> Seq.map VStr
               )
           | v -> unreachable $"the checker rejects 'Dir.list' on {formatValue v}")
+      "stat",
+      TFun(TStr, seqFileRow),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.Directory.Exists r) then
+                  failwith $"Dir.stat: no such directory: {r}"
+
+              // the ROWS form of Dir.list [D:dir-stat]: ls's own
+              // enumeration and row constructor over the named
+              // directory, so the discovery surfaces cannot diverge;
+              // EAGER like list (a listing is bounded)
+              VSeq(
+                  ioGuarded "Dir.stat" r (fun () ->
+                      DirectoryInfo(r).GetFileSystemInfos()
+                      |> Array.sortBy (fun i -> i.Name)
+                      |> Array.map lsRow
+                      |> List.ofArray)
+              )
+          | v -> unreachable $"the checker rejects 'Dir.stat' on {formatValue v}")
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
       fsStr2 "Dir.move" (fun src dst ->
@@ -3992,6 +4014,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "let d = Path.newTempDir () in print $\"{Dir.list d |> Seq.length}\" ; Dir.delete d")
               None
            |> named [ "path" ])
+          "Dir.stat",
+          (bd
+              "The directory's entries as ROWS — Dir.list's seq<FileRow> form, ls's own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager."
+              (Some "let d = Path.newTempDir () in print $\"{Dir.stat d |> Seq.length}\" ; Dir.delete d")
+              None
+           |> named [ "path" ])
           "Dir.move",
           (bd
               "Move (rename) a directory — (src, dst); refuses an existing destination."
@@ -4730,6 +4758,14 @@ let valueEnv: Env =
 // qualified spelling — derived from the flat entries (bare ALIASES
 // keep the standing values-shadow-builtins rule: Seq.max is the
 // escape `let max = …` leaves open; these have none)
+// escapes that are NOT aliases [D:dir-stat]: `ls` (a value) and
+// Dir.stat (a function) are not one value with two names, so no
+// bareAliasHomes entry — that map MEANS alias (strict mode removes its
+// names; hover claims the home). But [D:strict-only]'s criterion is an
+// ESCAPE's existence, and `Dir.stat "."` is ls's way back: shadowing
+// ls no longer strands the rows.
+let private escapeBearers: Set<string> = Set [ "ls" ]
+
 Check.reservedBinderNames.Value <-
     (entries |> List.map (fun (n, _, _) -> n)) @ [ "print"; "printerr"; "show" ]
     |> List.filter (fun n ->
@@ -4737,5 +4773,6 @@ Check.reservedBinderNames.Value <-
         && not (n.Contains ".")
         // a bare ALIAS keeps the standing shadow rule — its qualified
         // home is the way back (`let max = …` leaves Seq.max reachable)
-        && not (Map.containsKey n bareAliasHomes))
+        && not (Map.containsKey n bareAliasHomes)
+        && not (Set.contains n escapeBearers))
     |> Set.ofList

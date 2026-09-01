@@ -107,7 +107,7 @@ rules:
     # rule: operators
     - symbol.operator: "\\|>"
     - symbol.operator: "(==|<>|<=|>=|->|\\.\\.|&&|\\|\\||::)"
-    - symbol.operator: "[+\\-*/<>=;,]"
+    - symbol.operator: "[+\\-*/%<>=;,]"
     - symbol.operator: "\\|"
 
     # ---- module members & field access (ident after '.'; any case —
@@ -139,7 +139,7 @@ rules:
                     - special: "_\\.[A-Za-z][A-Za-z0-9_]*"
                     - symbol.operator: "\\|>"
                     - symbol.operator: "(==|<>|<=|>=|->|\\.\\.)"
-                    - symbol.operator: "[+\\-*/<>=]"
+                    - symbol.operator: "[+\\-*/%<>=]"
                     - identifier: "\\b[a-z_][A-Za-z0-9_]*\\b"
 
     # ---- interpolated strings, holes get real weir highlighting ----
@@ -165,7 +165,7 @@ rules:
                     - special: "_\\.[A-Za-z][A-Za-z0-9_]*"
                     - symbol.operator: "\\|>"
                     - symbol.operator: "(==|<>|<=|>=|->|\\.\\.)"
-                    - symbol.operator: "[+\\-*/<>=]"
+                    - symbol.operator: "[+\\-*/%<>=]"
                     - identifier: "\\b[a-z_][A-Za-z0-9_]*\\b"
 
     # ---- raw strings: @ verbatim ("" = one quote, no escapes) and

@@ -706,6 +706,14 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
             failwith "division by zero"
         else
             checkedInt (fun () -> a / b)
+    | "%", VInt a, VInt b ->
+        // TRUNCATED, .NET's own % [D:modulo] — sign follows the
+        // dividend (-7 % 3 = -1), matching F# so the oracle stays
+        // divergence-free; /'s zero discipline, %'s word
+        if b = 0L then
+            failwith "modulo by zero"
+        else
+            checkedInt (fun () -> a % b)
     | ">", VInt a, VInt b -> VBool(a > b)
     | "<", VInt a, VInt b -> VBool(a < b)
     | ">=", VInt a, VInt b -> VBool(a >= b)

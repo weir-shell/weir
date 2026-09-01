@@ -147,6 +147,13 @@ let pins =
       pin "triple-quoted with a bare quote" "let s = \"\"\"a\"b\"\"\"\n" Same
       pin "edge: quad-quote opener (\"\"\"\"a\"\"\")" "let s = \"\"\"\"a\"\"\"\n" Same
       pin "edge: quad-quote closer (\"\"\"a\"\"\"\")" "let s = \"\"\"a\"\"\"\"\n" Same
+      // --- modulo [D:modulo] ---
+      pin "modulo accepted, int" "let x = 7 % 3\n" Same
+      pin "modulo on negatives (truncated is F#'s own)" "let x = -7 % 3\n" Same
+      pin
+          "float modulo refused (finite-only floats cannot hold NaN remainder)"
+          "let x = 7.5 % 2.0\n"
+          (Diverges "floats-finite-only")
       pin "multi-line verbatim: weir is single-line" "let s = @\"a\nb\"\n" (Diverges "raw-single-line")
       pin "multi-line triple: weir is single-line" "let s = \"\"\"a\nb\"\"\"\n" (Diverges "raw-single-line")
       pin "interpolated verbatim $@ teaches the one spelling" "let s = $@\"x{1}\"\n" (Diverges "interpolated-raw")
