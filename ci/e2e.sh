@@ -225,7 +225,7 @@ expect() {
 out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
 
-out=$($BIN -e 'ls |> Seq.where (fun f -> f.bytes > 1MiB) |> Seq.first 5' 2>&1); rc=$?
+out=$($BIN -e 'ls |> Seq.where (fun f -> f.bytes > 1MiB) |> Seq.take 5' 2>&1); rc=$?
 [ $rc -eq 0 ] || fail "flagship pipeline must run measure-free: $out"
 echo "e2e ok: flagship pipeline, bare bytes"
 
@@ -244,13 +244,13 @@ printf 'Self.args |> print\n' > "$awdir/args.weir"
 out=$(PATH="$BINDIR:$PATH" $BIN -e "\$(weir \"$awdir/args.weir\" \"*\")")
 expect "argv stays literal" '["*"]' "$out"
 
-out=$($BIN -e 'echo hi (40 + 2) |> Seq.first 1')
+out=$($BIN -e 'echo hi (40 + 2) |> Seq.take 1')
 expect "command mode with splice" '["hi 42"]' "$out"
 
 out=$($BIN -e '[1..5] |> Seq.length')
 expect "range literal on the AOT binary" "5 : int" "$out"
 
-out=$(timeout 5 $BIN -e '[1..1000000] |> Seq.first 3') || fail "huge range under first must terminate (laziness)"
+out=$(timeout 5 $BIN -e '[1..1000000] |> Seq.take 3') || fail "huge range under first must terminate (laziness)"
 expect "ranges are lazy generators" '[1; 2; 3]' "$out"
 
 rangedir=$(mkweirtmp)
@@ -266,7 +266,7 @@ rm -rf "$rangedir"
 out=$($BIN -e 'let n = 40 + 2 in $"answer: {n} {{ok}}"')
 expect "string interpolation with brace escapes" '"answer: 42 {ok}"' "$out"
 
-out=$($BIN -e 'echo $"n={40 + 2}" |> Seq.first 1')
+out=$($BIN -e 'echo $"n={40 + 2}" |> Seq.take 1')
 expect "interpolated string is one argv entry" '["n=42"]' "$out"
 
 dir=$(mkweirtmp)
@@ -289,7 +289,7 @@ expect "^ls forces external" 'untracked.txt' "$out"
 expect "bound-variable splice into grep" '["staged.txt"]' "$out"
 rm -rf "$dir"
 
-out=$($BIN -e 'yes hi | cat |> Seq.first 2')
+out=$($BIN -e 'yes hi | cat |> Seq.take 2')
 expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
 
 # /etc/hosts, not /etc/hostname: the latter doesn't exist on macOS
@@ -352,7 +352,7 @@ cat > "$scriptdir/task.weir" <<'WEOF'
 // strict by default
 type Tag = Big | Small
 let names = ls |> Seq.map _.name
-names |> Seq.first 1 |> print
+names |> Seq.take 1 |> print
 echo spliced (40 + 2)
 Self.args |> Seq.head |> print
 WEOF
@@ -492,7 +492,7 @@ expect "comment lines transparent inside blocks" "3" "$out"
 cat > "$scriptdir/show.weir" <<'WEOF'
 let rows =
     ls
-    |> Seq.first 1
+    |> Seq.take 1
 
 rows |> Seq.iter (fun f -> print (show f))
 WEOF
