@@ -24,6 +24,12 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
+- Two more help dialects generate: micro's Go-flag rows
+  (single-dash longs, description on the next line), and BSD grep's
+  usage-only page — which exits nonzero, so the dump now feeds the
+  harvest. And a surface that recorded no shorts no longer warns on
+  short flags: no evidence, no claim.
+
 - Probe output is stripped of ANSI escapes — a tool that colors its
   help when piped (jira on macOS) broke banner detection and leaked
   `[1m` bytes into sig docs; a colored `--version` would have stored

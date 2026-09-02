@@ -1,0 +1,3 @@
+#sig fakegrep
+fakegrep --colour=auto pat
+print "d"

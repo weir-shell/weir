@@ -3515,8 +3515,12 @@ let sigCmdDiagnostics
 
                                 check acc rest
                             | (w, sp) :: rest when w.StartsWith "-" && w.Length = 2 && not (System.Char.IsDigit w[1]) ->
+                                // a surface that recorded NO shorts has no
+                                // evidence to warn on (BSD grep's help is
+                                // usage-only — the harvest sees longs, never
+                                // the short bundle) [D:sig-version-probe]
                                 let acc =
-                                    if shorts.Contains(w.Substring 1) then
+                                    if shorts.IsEmpty || shorts.Contains(w.Substring 1) then
                                         acc
                                     else
                                         mk sp $"unknown flag '{w}' for {si.Tool} {note}" :: acc
@@ -3536,7 +3540,7 @@ let sigCmdDiagnostics
 // the hand edit the provenance comment invites. The generated file
 // VALIDATES (loads as a signature) before anything persists.
 module SigGen =
-    let private runTool (tool: string) (args: string) : string option =
+    let private runToolWith (anyExit: bool) (tool: string) (args: string) : string option =
         // probeRung's guards [D:sig-version-probe]: null stdin (a
         // stdin-reader must not hang generation), temp cwd, async reads
         // ahead of a bounded wait, kill on expiry
@@ -3559,13 +3563,23 @@ module SigGen =
                      ())
 
                 None
-            elif p.ExitCode = 0 then
+            elif p.ExitCode = 0 || anyExit then
                 let out = outTask.Result
-                Some(Contracts.stripAnsi (if out.Trim() <> "" then out else errTask.Result))
+
+                match Contracts.stripAnsi (if out.Trim() <> "" then out else errTask.Result) with
+                | blank when blank.Trim() = "" -> None
+                | text -> Some text
             else
                 None
         with _ ->
             None
+
+    let private runTool = runToolWith false
+
+    // BSD grep's --help exits 2 with the usage on stderr — a nonzero
+    // exit's dump is harvest-only material [D:sig-version-probe]:
+    // never structured rows, never the walk, never a bare-word gate
+    let private runToolAnyExit = runToolWith true
 
     // one discovered flag: long name (kebab), optional short, optional doc
     type private Flag =
@@ -3613,7 +3627,16 @@ module SigGen =
         // help shapes; unreliable by design, a starting point
         let flags = System.Collections.Generic.Dictionary<string, Flag>()
 
+        // Go-flag rows (micro): `-clean` / `-config-dir dir`, description
+        // on the NEXT line — single-dash multi-char is a LONG (Go accepts
+        // --clean too); the last flag with no doc adopts a following
+        // deeper prose line
+        let mutable lastDocless: string option = None
+
         for line in text.Split '\n' do
+            let goRow =
+                System.Text.RegularExpressions.Regex.Match(line, "^\\s*-([a-zA-Z][a-zA-Z0-9-]+)( \\S+)?\\s*$")
+
             let m =
                 System.Text.RegularExpressions.Regex.Match(
                     line,
@@ -3624,7 +3647,31 @@ module SigGen =
                     "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(.*)$"
                 )
 
-            if m.Success then
+            if goRow.Success && not m.Success then
+                let long = goRow.Groups[1].Value
+
+                if legalLong long && not (flags.ContainsKey long) then
+                    flags[long] <-
+                        { Long = long
+                          Short = None
+                          Doc = None }
+
+                    lastDocless <- Some long
+            elif
+                not m.Success
+                && line.StartsWith "        "
+                && line.Trim() <> ""
+                && not (line.TrimStart().StartsWith "-")
+            then
+                match lastDocless with
+                | Some l when flags.ContainsKey l && flags[l].Doc.IsNone ->
+                    flags[l] <-
+                        { flags[l] with
+                            Doc = Some(line.Trim()) }
+
+                    lastDocless <- None
+                | _ -> ()
+            elif m.Success then
                 let long = m.Groups[2].Value
 
                 let mutable short = if m.Groups[1].Success then Some m.Groups[1].Value else None
@@ -3677,6 +3724,8 @@ module SigGen =
 
                 for a in aliases do
                     record a
+
+                lastDocless <- None
 
         flags.Values |> List.ofSeq
 
@@ -3780,9 +3829,15 @@ module SigGen =
 
     // the source label rides the sig comment — a harvested surface is
     // weaker lineage than parsed rows, and says so
-    let private helpSurface (tool: string) (topHelp: string option) : string * Flag list =
+    let private helpSurface (tool: string) (topHelp: string option) (harvestOnly: string option) : string * Flag list =
         match topHelp with
-        | None -> "help", []
+        | None ->
+            match harvestOnly with
+            | Some dump ->
+                match harvestHelp dump with
+                | [] -> "help", []
+                | fs -> "help-scan", fs
+            | None -> "help", []
         | Some text ->
             let source, top =
                 match parseHelp text with
@@ -3830,6 +3885,13 @@ module SigGen =
         | rung1 ->
             let topHelp = runTool tool "--help"
 
+            // exit-0 help only gates and walks; a refused --help still
+            // yields its usage dump to the HARVEST below
+            let harvestOnly =
+                match topHelp with
+                | Some _ -> None
+                | None -> runToolAnyExit tool "--help"
+
             let advertised = topHelp |> Option.map subcommandTokens |> Option.defaultValue []
 
             // a tool that refuses --version has NO recorded identity
@@ -3854,7 +3916,7 @@ module SigGen =
                 match fishText with
                 | Some text when text.Contains "complete " ->
                     match parseFish text tool with
-                    | [] -> helpSurface tool topHelp
+                    | [] -> helpSurface tool topHelp harvestOnly
                     | fs -> "completion-fish", fs
                 | _ ->
                     let shipped =
@@ -3865,9 +3927,9 @@ module SigGen =
                     match shipped with
                     | Some f ->
                         match parseFish (IO.File.ReadAllText f) tool with
-                        | [] -> helpSurface tool topHelp
+                        | [] -> helpSurface tool topHelp harvestOnly
                         | fs -> "fish-file", fs
-                    | None -> helpSurface tool topHelp
+                    | None -> helpSurface tool topHelp harvestOnly
 
             match flags with
             | [] ->

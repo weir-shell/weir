@@ -5960,6 +5960,31 @@ echo "$out" | grep -qF ".azure" && fail "environment lines reached the identity"
 grep -qF '[<Short "u">]' .weir/sigs/aztool.weir || fail "the postfix short records"
 grep -qF "url: bool" .weir/sigs/aztool.weir || fail "the alias records as its own flag"
 grep -qF "/// Request URL." .weir/sigs/aztool.weir || fail "the doc sheds the alias run and the colon"
+# Go-flag rows (micro): single-dash longs, description on the NEXT line
+cat > bin/gotool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gotool 2.0"; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'Usage: gotool [OPTION]...\n-clean\n        Clean the configuration directory and exit\n-config-dir dir\n        Specify a custom configuration directory\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x bin/gotool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig gotool 2>&1) || fail "add sig gotool: $out"
+grep -qF "configDir: bool" .weir/sigs/gotool.weir || fail "single-dash longs record"
+grep -qF "/// Clean the configuration directory and exit" .weir/sigs/gotool.weir || fail "next-line docs attach"
+# usage-only help on a NONZERO exit (BSD grep): the dump harvests; a
+# short never warns on a surface that recorded no shorts
+cat > bin/bsdtool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "bsdtool 2.6"; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'usage: bsdtool [-abcq] [-e pattern] [--color=when] [--null] [file ...]\n' >&2; exit 2; fi
+exit 1
+WEOF
+chmod +x bin/bsdtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig bsdtool 2>&1) || fail "add sig bsdtool: $out"
+echo "$out" | grep -qF "source: help-scan" || fail "the refused help still harvests: $out"
+printf '#sig bsdtool\nbsdtool -q --color=auto x\nprint "d"\n' > bsd.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check bsd.weir 2>&1)
+echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not warn on shorts: $out" || true
 fi
 cd - >/dev/null
 rm -rf "$sgdir"
