@@ -5843,6 +5843,53 @@ fi
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig subverstool 2>&1) || fail "add sig must succeed via the version subcommand: $out"
 echo "$out" | grep -qF "version: subverstool (Version=1.7.0)" || fail "the second rung records the identity: $out"
 grep -qF 'let version = "subverstool (Version=1.7.0)"' .weir/sigs/subverstool.weir || fail "the sig carries the rung-two identity"
+# the harvest pass [D:sig-version-probe]: weir's OWN usage-table help
+# has no flag rows — the last-resort --flag harvest records a surface
+out=$($BIN add sig weir 2>&1) || fail "add sig weir must succeed via the harvest: $out"
+echo "$out" | grep -qF "source: help-scan" || fail "the harvested surface is labeled: $out"
+grep -qF "json: bool" .weir/sigs/weir.weir || fail "the harvest found weir's own --json"
+# the SUBCOMMAND WALK (the jira/kubectl shape): Cobra keeps the real
+# flags under `tool sub --help` — depth 2, unioned into the flat surface
+if [ "$IS_WINDOWS" != "1" ]; then
+cat > bin/cobratool <<'WEOF'
+#!/bin/sh
+case "$*" in
+  "--version") echo "cobratool 1.0";;
+  "--help") printf 'Available Commands:\n  issue    Manage issues\n\nFlags:\n      --debug   Debug\n';;
+  "issue --help") printf 'Available Commands:\n  list    List\n';;
+  "issue list --help") printf 'Flags:\n      --jql string   JQL query\n';;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/cobratool
+else
+cat > bin/cobratool.bat <<'BEOF'
+@echo off
+if "%*"=="--version" echo cobratool 1.0 & goto :eof
+if "%*"=="--help" (
+echo Available Commands:
+echo   issue    Manage issues
+echo.
+echo Flags:
+echo       --debug   Debug
+goto :eof
+)
+if "%*"=="issue --help" (
+echo Available Commands:
+echo   list    List
+goto :eof
+)
+if "%*"=="issue list --help" (
+echo Flags:
+echo       --jql string   JQL query
+goto :eof
+)
+exit /b 1
+BEOF
+fi
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig cobratool 2>&1) || fail "add sig cobratool: $out"
+echo "$out" | grep -qF "source: help+subs" || fail "the walk labels its lineage: $out"
+grep -qF "jql: bool" .weir/sigs/cobratool.weir || fail "the depth-2 walk found --jql"
 cd - >/dev/null
 rm -rf "$sgdir"
 echo "e2e ok: command signatures (generate, typo+did-you-mean, check spawns nothing, property 3, verify arms, restore never regenerates, --version refuser records none)"

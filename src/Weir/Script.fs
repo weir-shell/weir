@@ -3522,19 +3522,31 @@ let sigCmdDiagnostics
 // VALIDATES (loads as a signature) before anything persists.
 module SigGen =
     let private runTool (tool: string) (args: string) : string option =
+        // probeRung's guards [D:sig-version-probe]: null stdin (a
+        // stdin-reader must not hang generation), temp cwd, async reads
+        // ahead of a bounded wait, kill on expiry
         try
             let psi = System.Diagnostics.ProcessStartInfo(Proc.resolveProg tool, args)
             psi.RedirectStandardOutput <- true
             psi.RedirectStandardError <- true
+            psi.RedirectStandardInput <- true
             psi.UseShellExecute <- false
+            psi.WorkingDirectory <- IO.Path.GetTempPath()
             use p = System.Diagnostics.Process.Start psi
+            p.StandardInput.Close()
+            let outTask = p.StandardOutput.ReadToEndAsync()
+            let errTask = p.StandardError.ReadToEndAsync()
 
-            let out = p.StandardOutput.ReadToEnd()
-            let err = p.StandardError.ReadToEnd()
-            p.WaitForExit()
+            if not (p.WaitForExit 15000) then
+                (try
+                    p.Kill true
+                 with _ ->
+                     ())
 
-            if p.ExitCode = 0 then
-                Some(if out.Trim() <> "" then out else err)
+                None
+            elif p.ExitCode = 0 then
+                let out = outTask.Result
+                Some(if out.Trim() <> "" then out else errTask.Result)
             else
                 None
         with _ ->
@@ -3609,6 +3621,101 @@ module SigGen =
 
         flags.Values |> List.ofSeq
 
+    // the LAST-RESORT pass [D:sig-version-probe]: a usage-table help
+    // (weir's own: `weir check [--json] <script>`) has no flag ROWS, so
+    // the structured scrape finds nothing — harvest every --flag token
+    // instead, docless. Only ever consulted at zero structured hits;
+    // partial by default covers the imprecision.
+    let private harvestHelp (text: string) : Flag list =
+        System.Text.RegularExpressions.Regex.Matches(text, "--([a-zA-Z][a-zA-Z0-9-]*)")
+        |> Seq.map (fun m -> m.Groups[1].Value)
+        |> Seq.filter legalLong
+        |> Seq.distinct
+        |> Seq.map (fun long ->
+            { Long = long
+              Short = None
+              Doc = None })
+        |> List.ofSeq
+
+    // subcommand tokens advertised by a help page: indented first words
+    // under any heading ending in "commands:" (Cobra's "Available
+    // Commands:", kubectl's grouped "Basic Commands (Beginner):").
+    // `help`/`completion` are noise on every such tool and are skipped.
+    let private subcommandTokens (helpText: string) : string list =
+        let subs = ResizeArray<string>()
+        let mutable inSection = false
+
+        for raw in helpText.Split '\n' do
+            let line = raw.TrimEnd()
+
+            if line.EndsWith ":" && line.ToLowerInvariant().Contains "command" then
+                inSection <- true
+            elif line = "" || (line.Length > 0 && not (System.Char.IsWhiteSpace line[0])) then
+                inSection <- false
+
+            if inSection && line.StartsWith "  " then
+                let tok = line.TrimStart().Split(' ') |> Array.head
+
+                if
+                    tok.Length > 1
+                    && tok
+                       |> Seq.forall (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                    && tok <> "help"
+                    && tok <> "completion"
+                    && not (subs.Contains tok)
+                then
+                    subs.Add tok
+
+        List.ofSeq subs
+
+    // the SUBCOMMAND WALK [D:sig-version-probe]: Cobra-family tools
+    // (jira, kubectl) keep the real flags under `tool sub --help` — the
+    // flat surface unions them (flags checked across the whole line is
+    // the flat model's own charter). Depth 2 (`jira issue list`),
+    // budget-capped; structured rows only, never the harvest (a
+    // sub-page harvest over-collects).
+    let private walkSubFlags (tool: string) (topHelp: string) : Flag list =
+        let flags = ResizeArray<Flag>()
+        let mutable budget = 30
+
+        let rec walk (prefix: string) (help: string) (depth: int) =
+            if depth < 2 then
+                for sub in subcommandTokens help do
+                    if budget > 0 then
+                        budget <- budget - 1
+
+                        match runTool tool $"{prefix}{sub} --help" with
+                        | None -> ()
+                        | Some subHelp ->
+                            flags.AddRange(parseHelp subHelp)
+                            walk $"{prefix}{sub} " subHelp (depth + 1)
+
+        walk "" topHelp 0
+        List.ofSeq flags
+
+    // the source label rides the sig comment — a harvested surface is
+    // weaker lineage than parsed rows, and says so
+    let private helpSurface (tool: string) : string * Flag list =
+        match runTool tool "--help" with
+        | None -> "help", []
+        | Some text ->
+            let source, top =
+                match parseHelp text with
+                | [] -> "help-scan", harvestHelp text
+                | fs -> "help", fs
+
+            match walkSubFlags tool text with
+            | [] -> source, top
+            | subFlags ->
+                let seen = top |> List.map (fun f -> f.Long) |> Set.ofList
+
+                let extra =
+                    subFlags
+                    |> List.distinctBy (fun f -> f.Long)
+                    |> List.filter (fun f -> not (Set.contains f.Long seen))
+
+                (if extra.IsEmpty then source else source + "+subs"), top @ extra
+
     let private fieldName (long: string) =
         // inverse kebab: dry-run -> dryRun
         long.Split '-'
@@ -3638,7 +3745,7 @@ module SigGen =
                 match runTool tool "completion fish" with
                 | Some text when text.Contains "complete " ->
                     match parseFish text tool with
-                    | [] -> "help", (runTool tool "--help" |> Option.map parseHelp |> Option.defaultValue [])
+                    | [] -> helpSurface tool
                     | fs -> "completion-fish", fs
                 | _ ->
                     let shipped =
@@ -3649,9 +3756,9 @@ module SigGen =
                     match shipped with
                     | Some f ->
                         match parseFish (IO.File.ReadAllText f) tool with
-                        | [] -> "help", (runTool tool "--help" |> Option.map parseHelp |> Option.defaultValue [])
+                        | [] -> helpSurface tool
                         | fs -> "fish-file", fs
-                    | None -> "help", (runTool tool "--help" |> Option.map parseHelp |> Option.defaultValue [])
+                    | None -> helpSurface tool
 
             match flags with
             | [] ->

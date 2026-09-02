@@ -756,8 +756,10 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
         psi.WorkingDirectory <- IO.Path.GetTempPath()
         use p = Diagnostics.Process.Start psi
         p.StandardInput.Close()
-        let out = p.StandardOutput.ReadToEnd()
-        let err = p.StandardError.ReadToEnd()
+        // ASYNC reads, then the bounded wait — a synchronous ReadToEnd
+        // blocks before any timeout can fire if the child holds stdout
+        let outTask = p.StandardOutput.ReadToEndAsync()
+        let errTask = p.StandardError.ReadToEndAsync()
 
         // a version probe that needs a minute is a hang, not a slow
         // tool — kill and record no identity
@@ -771,6 +773,9 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
         elif p.ExitCode <> 0 then
             RefusesVersionFlag
         else
+            let out = outTask.Result
+            let err = errTask.Result
+
             match (if out.Trim() <> "" then out else err) with
             | blank when blank.Trim() = "" -> RefusesVersionFlag
             | text -> ToolVersion text

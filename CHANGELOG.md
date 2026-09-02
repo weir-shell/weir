@@ -19,7 +19,13 @@
 
 - The sig help scraper learns fzf's `+s, --no-sort` off-toggle
   spelling, and stops eating the first word of an argless flag's
-  description.
+  description. And a usage-table help with no flag rows (weir's
+  own) now yields a harvested surface — every `--flag` token,
+  docless, labeled `help-scan` — instead of "found no flags". And
+  generation walks a Cobra tool's advertised subcommands (depth 2 —
+  `jira issue list --help`, kubectl's grouped commands) and unions
+  their flags into the flat surface, so `jira issue list --jql …`
+  stops warning on every flag the top-level help never mentioned.
 
 - Pattern-let binders hover: `let key, title = …` shows each name's
   own type.
