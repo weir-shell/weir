@@ -24,6 +24,13 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
+- Sig flags complete in the editor — a `-`-word after a sig'd tool
+  offers the sig's own longs in kebab spelling (`--s` →
+  `--session-id`, not the field name or a comment word; the old
+  dropdown was the editor's word-fallback over the sig file).
+  claude-style dual spellings (`--allowedTools, --allowed-tools`)
+  merge into one field, both accepted.
+
 - broot's box-drawing options table parses — the border glyphs
   strip to spaces and the rows read as standard columns, shorts and
   docs included.

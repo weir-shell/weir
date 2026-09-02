@@ -3198,22 +3198,22 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
     // a [<Wire "type">] field carries the FLAG spelling the field name
     // cannot (keywords) [D:sig-version-probe] — the language-wide wire
     // teach, honored here
-    let wireOf f =
+    // ALL Wire specs count [D:sig-version-probe]: a field may carry one
+    // per accepted spelling (claude lists --allowedTools AND
+    // --allowed-tools; both camelize to one field)
+    let wiresOf f =
         match Map.tryFind f def.Attrs with
         | Some specs ->
             specs
-            |> List.tryPick (function
+            |> List.choose (function
                 | "Wire", Some(AStr w) -> Some w
                 | _ -> None)
-        | None -> None
+        | None -> []
 
     let longs =
         def.Fields
         |> List.filter (fun (f, _) -> not (positional f))
-        |> List.map (fun (f, _) ->
-            match wireOf f with
-            | Some w -> w
-            | None -> Weir.Argv.kebabFlag f)
+        |> List.collect (fun (f, _) -> Weir.Argv.kebabFlag f :: wiresOf f)
         |> Set.ofList
 
     let shorts = Weir.Argv.explicitShorts def |> List.map snd |> Set.ofList
@@ -3695,8 +3695,12 @@ module SigGen =
                         | -1 -> rest, ""
                         | i -> rest.Substring(0, i), rest.Substring(i + 1).TrimStart()
 
-                    if tok.StartsWith "--" && legalLong (tok.TrimStart '-') then
-                        aliases.Add(tok.TrimStart '-')
+                    if tok = "," then
+                        // claude spells `--allowedTools, --allowed-tools <x>` —
+                        // the bare comma between aliases is separator noise
+                        rest <- tail
+                    elif tok.StartsWith "--" && legalLong (tok.TrimEnd(',').TrimStart '-') then
+                        aliases.Add(tok.TrimEnd(',').TrimStart '-')
                         rest <- tail
                     elif tok.Length = 2 && tok[0] = '-' && System.Char.IsLetterOrDigit tok[1] then
                         if short.IsNone then
@@ -3983,26 +3987,38 @@ module SigGen =
                         | Some sh when not (taken.Add sh) -> { f with Short = None }
                         | _ -> f)
 
-                for f in flags do
-                    match f.Doc with
+                // spellings that camelize to ONE field (claude's
+                // --allowedTools / --allowed-tools) merge: the field
+                // carries a Wire per spelling and the reader accepts
+                // each. Attr specs share ONE bracket: stacked [<…>]
+                // lines do not parse
+                let grouped = flags |> List.groupBy (fun f -> fieldName f.Long) |> List.sortBy fst
+
+                for fname, group in grouped do
+                    let f = group |> List.head
+
+                    match group |> List.tryPick (fun g -> g.Doc) with
                     | Some d -> line $"    /// {escape d}"
                     | None -> ()
 
-                    // a keyword long (docker --type, kubectl --for)
-                    // cannot name a field — Wire carries the flag
-                    // spelling, the field takes a Flag suffix. Attr
-                    // specs share ONE bracket: stacked [<…>] lines do
-                    // not parse
-                    let fname = fieldName f.Long
-
-                    let fname, attrs =
+                    let fname =
                         if Set.contains fname Weir.Parser.keywords then
-                            fname + "Flag", [ $"Wire \"{f.Long}\"" ]
+                            fname + "Flag"
                         else
-                            fname, []
+                            fname
+
+                    // the field's own kebab is accepted for free — ONE
+                    // Wire carries the one spelling that differs (the
+                    // keyword long, or claude's camel alias)
+                    let covered = Weir.Argv.kebabFlag fname
 
                     let attrs =
-                        match f.Short with
+                        match group |> List.tryFind (fun g -> g.Long <> covered) with
+                        | Some g -> [ $"Wire \"{g.Long}\"" ]
+                        | None -> []
+
+                    let attrs =
+                        match group |> List.tryPick (fun g -> g.Short) with
                         | Some sh when sh.Length = 1 && sh <> "h" -> attrs @ [ $"Short \"{sh}\"" ]
                         | _ -> attrs
 

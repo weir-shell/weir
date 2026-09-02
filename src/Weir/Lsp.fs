@@ -2170,9 +2170,47 @@ let run (debug: bool) : int =
                                     else
                                         None
 
+                                // sig FLAG completion [D:sig-flag-completion]: a
+                                // `-`-word after a sig'd tool offers the sig's own
+                                // longs, kebab spelling — without this, editors
+                                // word-complete the sig FILE's camelCase field
+                                // names, which the checker then rightly rejects
+                                let sigFlags =
+                                    if word.StartsWith "-" then
+                                        let path =
+                                            try
+                                                Uri(uri).LocalPath
+                                            with _ ->
+                                                uri
+
+                                        Script.sigInfosForFile path (List.ofArray lines)
+                                        |> List.choose (fun si ->
+                                            let m =
+                                                Text.RegularExpressions.Regex.Matches(
+                                                    upto,
+                                                    $"\\b{Text.RegularExpressions.Regex.Escape si.Tool}\\b"
+                                                )
+
+                                            if m.Count > 0 then Some(m[m.Count - 1].Index, si) else None)
+                                        |> List.sortByDescending fst
+                                        |> List.tryHead
+                                        |> Option.map (fun (_, si) ->
+                                            si.Subs
+                                            |> Map.toSeq
+                                            |> Seq.collect (fun (_, (longs, _)) -> longs)
+                                            |> Seq.distinct
+                                            |> Seq.map (fun l -> "--" + l)
+                                            |> Seq.filter (fun l -> l.StartsWith word)
+                                            |> Seq.sort
+                                            |> List.ofSeq)
+                                        |> Option.defaultValue []
+                                    else
+                                        []
+
                                 let items =
                                     match repaired with
                                     | Some fields when not fields.IsEmpty -> fields
+                                    | _ when not sigFlags.IsEmpty -> sigFlags
                                     | _ ->
                                         // binders may sit on EARLIER lines —
                                         // the whole doc is the binder scope

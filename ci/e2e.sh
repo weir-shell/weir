@@ -5949,7 +5949,7 @@ cat > bin/aztool <<'WEOF'
 #!/bin/sh
 case "$*" in
   "--version") printf 'azcli 9.9 *\nConfig directory /home/u/.azure\n'; exit 0;;
-  "--help") printf 'Arguments\n    --uri --url -u [Required] : Request URL.\n    --body -b : Request body.\n'; exit 0;;
+  "--help") printf 'Arguments\n    --uri --url -u [Required] : Request URL.\n    --body -b : Request body.\n    --dryRun, --dry-run : Both spellings accepted.\n'; exit 0;;
   *) exit 1;;
 esac
 WEOF
@@ -5960,6 +5960,12 @@ echo "$out" | grep -qF ".azure" && fail "environment lines reached the identity"
 grep -qF '[<Short "u">]' .weir/sigs/aztool.weir || fail "the postfix short records"
 grep -qF "url: bool" .weir/sigs/aztool.weir || fail "the alias records as its own flag"
 grep -qF "/// Request URL." .weir/sigs/aztool.weir || fail "the doc sheds the alias run and the colon"
+# claude-style same-camel aliases MERGE into one field: the kebab is
+# accepted for free, one Wire carries the differing spelling
+grep -qF '[<Wire "dryRun">]' .weir/sigs/aztool.weir || fail "the camel alias rides Wire"
+printf '#sig aztool\naztool --dryRun x\naztool --dry-run x\nprint "d"\n' > azw.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check azw.weir 2>&1)
+echo "$out" | grep -q "unknown flag" && fail "both alias spellings must check: $out" || true
 # Go-flag rows (micro): single-dash longs, description on the NEXT line
 cat > bin/gotool <<'WEOF'
 #!/bin/sh
@@ -5989,7 +5995,7 @@ echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not 
 cat > bin/boxtool <<'WEOF'
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo "boxtool 1.0"; exit 0; fi
-if [ "$1" = "--help" ]; then printf 'Options:\n\xe2\x94\x82  -d    \xe2\x94\x82--dates   \xe2\x94\x82Show dates\xe2\x94\x82\n'; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'Options:\n\342\224\202  -d    \342\224\202--dates   \342\224\202Show dates\342\224\202\n'; exit 0; fi
 exit 1
 WEOF
 chmod +x bin/boxtool
