@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Docs
+
+- Builtin hover/`#help` examples are statement-style — the eleven
+  `let … in` one-liners now read as scripts actually read, and a
+  gate keeps the form out.
+
 ## v0.0.10
 
 ### New features

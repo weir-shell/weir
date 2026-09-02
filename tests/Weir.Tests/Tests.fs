@@ -5789,12 +5789,53 @@ let semanticTokenTests =
               // D1 = (a) EXECUTABLE, weir-side: the Example is registry DATA
               // run through the same check+eval path, not prose parsed from
               // an F# literal. A rotted example fails the build here.
+              // STATEMENT-STYLE examples [D:no-let-in-examples]: a multi-line
+              // example assembles and folds statement by statement, so hover
+              // teaches the style scripts actually use — never `let … in`
+              let runExample (ex: string) =
+                  let lines = ex.Split '\n' |> Array.toList
+
+                  match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+                  | Error e -> failwith $"assemble: {e}"
+                  | Ok lls ->
+                      lls
+                      |> List.fold
+                          (fun (te, ve) ll ->
+                              match Weir.Parser.parseLine cmdResolver ll.Text with
+                              | Error m -> failwith $"parse: {m}"
+                              | Ok(SExpr e)
+                              | Ok(SCmd e) ->
+                                  match Weir.Check.typecheck te e with
+                                  | Error terr -> failwith $"check: {formatError terr}"
+                                  | Ok typed ->
+                                      eval ve typed |> ignore
+                                      te, ve
+                              | Ok(SLet(n, e)) ->
+                                  match Weir.Check.typecheck te e with
+                                  | Error terr -> failwith $"check: {formatError terr}"
+                                  | Ok typed ->
+                                      let v = eval ve typed
+
+                                      { te with
+                                          Values = Map.add n (Weir.Types.generalize typed.Ty) te.Values },
+                                      Map.add n v ve
+                              | Ok other -> failwith $"doc examples are let/command/expression statements, got {other}")
+                          (env, valueEnv)
+                      |> ignore
+
               for KeyValue(name, d) in Weir.Builtins.builtinDocs do
                   match d.Example with
                   | None -> ()
                   | Some ex ->
+                      // the style guard: statement lets only — an example
+                      // teaching `let … in` teaches a spelling scripts
+                      // never use (for…in is not a let)
+                      for line in ex.Split '\n' do
+                          if line.Contains "let " && line.Contains " in " && not (line.Contains "for ") then
+                              failtestf "the doc example for '%s' uses let…in — write it statement-style: %s" name line
+
                       try
-                          run ex |> ignore
+                          runExample ex
                       with e ->
                           failtestf "the doc example for '%s' failed to run: %s\n%s" name ex e.Message
           }

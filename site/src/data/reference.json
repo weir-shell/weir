@@ -66,7 +66,7 @@
           "name": "copy",
           "signature": "Dir.copy (src: string) (dst: string) : unit",
           "summary": "Copy a directory and its contents \u2014 (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory MEANS its contents: there is no non-recursive form.",
-          "example": "let d = Path.newTempDir () in Dir.copy d $\u0022{d}-c\u0022 ; Dir.deleteAll d ; Dir.deleteAll $\u0022{d}-c\u0022",
+          "example": "let d = Path.newTempDir ()\nDir.copy d $\u0022{d}-c\u0022\nDir.deleteAll d\nDir.deleteAll $\u0022{d}-c\u0022",
           "pointer": null
         },
         {
@@ -87,7 +87,7 @@
           "name": "deleteAll",
           "signature": "Dir.deleteAll (path: string) : unit",
           "summary": "DELETE THE DIRECTORY AND EVERYTHING UNDER IT, recursively. The destructive one \u2014 there is no undo.",
-          "example": "let d = Path.newTempDir () in Dir.create $\u0022{d}/tree-a/tree-b\u0022 ; Dir.deleteAll d",
+          "example": "let d = Path.newTempDir ()\nDir.create $\u0022{d}/tree-a/tree-b\u0022\nDir.deleteAll d",
           "pointer": null
         },
         {
@@ -101,21 +101,21 @@
           "name": "list",
           "signature": "Dir.list (path: string) : seq\u003Cstring\u003E",
           "summary": "The directory\u0027s entries as FULL paths \u2014 files and directories both, SORTED (the glob precedent), eager. Filter with Seq.where \u002B File.exists/Dir.exists; \u0060Path.glob \u0022**\u0022\u0060 is the recursive spelling.",
-          "example": "let d = Path.newTempDir () in print $\u0022{Dir.list d |\u003E Seq.length}\u0022 ; Dir.delete d",
+          "example": "let d = Path.newTempDir ()\nprint $\u0022{Dir.list d |\u003E Seq.length}\u0022\nDir.delete d",
           "pointer": null
         },
         {
           "name": "move",
           "signature": "Dir.move (src: string) (dst: string) : unit",
           "summary": "Move (rename) a directory \u2014 (src, dst); refuses an existing destination.",
-          "example": "let d = Path.newTempDir () in Dir.move d $\u0022{d}-m\u0022 ; Dir.delete $\u0022{d}-m\u0022",
+          "example": "let d = Path.newTempDir ()\nDir.move d $\u0022{d}-m\u0022\nDir.delete $\u0022{d}-m\u0022",
           "pointer": null
         },
         {
           "name": "stat",
           "signature": "Dir.stat (path: string) : seq\u003CFileRow\u003E",
           "summary": "The directory\u0027s entries as ROWS \u2014 Dir.list\u0027s seq\u003CFileRow\u003E form, ls\u0027s own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager.",
-          "example": "let d = Path.newTempDir () in print $\u0022{Dir.stat d |\u003E Seq.length}\u0022 ; Dir.delete d",
+          "example": "let d = Path.newTempDir ()\nprint $\u0022{Dir.stat d |\u003E Seq.length}\u0022\nDir.delete d",
           "pointer": null
         }
       ]
@@ -256,14 +256,14 @@
           "name": "copy",
           "signature": "File.copy (src: string) (dst: string) : unit",
           "summary": "Copy src to dst \u2014 (src, dst), the universal convention (neither arg is \u0027the data\u0027, so data-last does not apply). REFUSES an existing destination (raises naming it); delete first to overwrite.",
-          "example": "let d = Path.newTempDir () in ([\u0022x\u0022] |\u003E File.write $\u0022{d}/a.txt\u0022) ; File.copy $\u0022{d}/a.txt\u0022 $\u0022{d}/b.txt\u0022 ; Dir.deleteAll d",
+          "example": "let d = Path.newTempDir ()\n[\u0022x\u0022] |\u003E File.write $\u0022{d}/a.txt\u0022\nFile.copy $\u0022{d}/a.txt\u0022 $\u0022{d}/b.txt\u0022\nDir.deleteAll d",
           "pointer": null
         },
         {
           "name": "delete",
           "signature": "File.delete (path: string) : unit",
           "summary": "Delete a file (raises naming the path when absent). The explicit pre-step for an overwriting copy/move.",
-          "example": "let d = Path.newTempDir () in ([\u0022x\u0022] |\u003E File.write $\u0022{d}/f.txt\u0022) ; File.delete $\u0022{d}/f.txt\u0022 ; Dir.delete d",
+          "example": "let d = Path.newTempDir ()\n[\u0022x\u0022] |\u003E File.write $\u0022{d}/f.txt\u0022\nFile.delete $\u0022{d}/f.txt\u0022\nDir.delete d",
           "pointer": null
         },
         {
@@ -284,7 +284,7 @@
           "name": "move",
           "signature": "File.move (src: string) (dst: string) : unit",
           "summary": "Move (rename) src to dst \u2014 (src, dst); refuses an existing destination.",
-          "example": "let d = Path.newTempDir () in ([\u0022x\u0022] |\u003E File.write $\u0022{d}/a.txt\u0022) ; File.move $\u0022{d}/a.txt\u0022 $\u0022{d}/b.txt\u0022 ; Dir.deleteAll d",
+          "example": "let d = Path.newTempDir ()\n[\u0022x\u0022] |\u003E File.write $\u0022{d}/a.txt\u0022\nFile.move $\u0022{d}/a.txt\u0022 $\u0022{d}/b.txt\u0022\nDir.deleteAll d",
           "pointer": null
         },
         {
@@ -319,14 +319,14 @@
           "name": "size",
           "signature": "File.size (path: string) : Size",
           "summary": "The file\u0027s size as a Size \u2014 compare directly (File.size p \u003E 10MiB); Size.toBytes for the int. Raises when absent (the plain name asserts; a trySize is a park).",
-          "example": "let d = Path.newTempDir () in let f = $\u0022{d}/a.txt\u0022 in ([\u0022x\u0022] |\u003E File.write f) ; print $\u0022{File.size f}\u0022 ; Dir.deleteAll d",
+          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/a.txt\u0022\n[\u0022x\u0022] |\u003E File.write f\nprint $\u0022{File.size f}\u0022\nDir.deleteAll d",
           "pointer": null
         },
         {
           "name": "stat",
           "signature": "File.stat (path: string) : FileRow",
           "summary": "The path\u0027s FileRow \u2014 ls\u0027s own row for ONE path, so \u0060Path.glob ... |\u003E Seq.map File.stat\u0060 turns strings into rows. Describes a symlink ITSELF (kind Symlink, target Some), not what it points at. Raises when absent \u2014 and a glob hit can vanish before stat reaches it (the glob TIMING seam).",
-          "example": "let d = Path.newTempDir () in let f = $\u0022{d}/a.txt\u0022 in ([\u0022x\u0022] |\u003E File.write f) ; print (File.stat f).name ; Dir.deleteAll d",
+          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/a.txt\u0022\n[\u0022x\u0022] |\u003E File.write f\nprint (File.stat f).name\nDir.deleteAll d",
           "pointer": null
         },
         {
@@ -1472,7 +1472,7 @@
           "name": "splitOnce",
           "signature": "Str.splitOnce (sep: string) (s: string) : string * string",
           "summary": "Split at the FIRST occurrence into (before, after) \u2014 the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin).",
-          "example": "let (k, v) = Str.splitOnce \u0022=\u0022 \u0022key=a=b\u0022 in print v",
+          "example": "Str.splitOnce \u0022=\u0022 \u0022key=a=b\u0022 |\u003E snd |\u003E print",
           "pointer": null
         },
         {
