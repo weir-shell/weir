@@ -3915,7 +3915,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.splitOnce",
           (bd
               "Split at the FIRST occurrence into (before, after) — the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin)."
-              (Some "let (k, v) = Str.splitOnce \"=\" \"key=a=b\" in print v")
+              (Some "Str.splitOnce \"=\" \"key=a=b\" |> snd |> print")
               None
            |> named [ "sep"; "s" ])
           "Str.trySplitOnce",
@@ -4044,35 +4044,35 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd
               "Delete a file (raises naming the path when absent). The explicit pre-step for an overwriting copy/move."
               (Some
-                  "let d = Path.newTempDir () in ([\"x\"] |> File.write $\"{d}/f.txt\") ; File.delete $\"{d}/f.txt\" ; Dir.delete d")
+                  "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/f.txt\"\nFile.delete $\"{d}/f.txt\"\nDir.delete d")
               None
            |> named [ "path" ])
           "File.copy",
           (bd
               "Copy src to dst — (src, dst), the universal convention (neither arg is 'the data', so data-last does not apply). REFUSES an existing destination (raises naming it); delete first to overwrite."
               (Some
-                  "let d = Path.newTempDir () in ([\"x\"] |> File.write $\"{d}/a.txt\") ; File.copy $\"{d}/a.txt\" $\"{d}/b.txt\" ; Dir.deleteAll d")
+                  "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.copy $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
               None
            |> named [ "src"; "dst" ])
           "File.move",
           (bd
               "Move (rename) src to dst — (src, dst); refuses an existing destination."
               (Some
-                  "let d = Path.newTempDir () in ([\"x\"] |> File.write $\"{d}/a.txt\") ; File.move $\"{d}/a.txt\" $\"{d}/b.txt\" ; Dir.deleteAll d")
+                  "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.move $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
               None
            |> named [ "src"; "dst" ])
           "File.size",
           (bd
               "The file's size as a Size — compare directly (File.size p > 10MiB); Size.toBytes for the int. Raises when absent (the plain name asserts; a trySize is a park)."
               (Some
-                  "let d = Path.newTempDir () in let f = $\"{d}/a.txt\" in ([\"x\"] |> File.write f) ; print $\"{File.size f}\" ; Dir.deleteAll d")
+                  "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint $\"{File.size f}\"\nDir.deleteAll d")
               None
            |> named [ "path" ])
           "File.stat",
           (bd
               "The path's FileRow — ls's own row for ONE path, so `Path.glob ... |> Seq.map File.stat` turns strings into rows. Describes a symlink ITSELF (kind Symlink, target Some), not what it points at. Raises when absent — and a glob hit can vanish before stat reaches it (the glob TIMING seam)."
               (Some
-                  "let d = Path.newTempDir () in let f = $\"{d}/a.txt\" in ([\"x\"] |> File.write f) ; print (File.stat f).name ; Dir.deleteAll d")
+                  "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint (File.stat f).name\nDir.deleteAll d")
               None
            |> named [ "path" ])
           "Dir.create",
@@ -4093,31 +4093,31 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Dir.deleteAll",
           (bd
               "DELETE THE DIRECTORY AND EVERYTHING UNDER IT, recursively. The destructive one — there is no undo."
-              (Some "let d = Path.newTempDir () in Dir.create $\"{d}/tree-a/tree-b\" ; Dir.deleteAll d")
+              (Some "let d = Path.newTempDir ()\nDir.create $\"{d}/tree-a/tree-b\"\nDir.deleteAll d")
               None
            |> named [ "path" ])
           "Dir.list",
           (bd
               "The directory's entries as FULL paths — files and directories both, SORTED (the glob precedent), eager. Filter with Seq.where + File.exists/Dir.exists; `Path.glob \"**\"` is the recursive spelling."
-              (Some "let d = Path.newTempDir () in print $\"{Dir.list d |> Seq.length}\" ; Dir.delete d")
+              (Some "let d = Path.newTempDir ()\nprint $\"{Dir.list d |> Seq.length}\"\nDir.delete d")
               None
            |> named [ "path" ])
           "Dir.stat",
           (bd
               "The directory's entries as ROWS — Dir.list's seq<FileRow> form, ls's own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager."
-              (Some "let d = Path.newTempDir () in print $\"{Dir.stat d |> Seq.length}\" ; Dir.delete d")
+              (Some "let d = Path.newTempDir ()\nprint $\"{Dir.stat d |> Seq.length}\"\nDir.delete d")
               None
            |> named [ "path" ])
           "Dir.move",
           (bd
               "Move (rename) a directory — (src, dst); refuses an existing destination."
-              (Some "let d = Path.newTempDir () in Dir.move d $\"{d}-m\" ; Dir.delete $\"{d}-m\"")
+              (Some "let d = Path.newTempDir ()\nDir.move d $\"{d}-m\"\nDir.delete $\"{d}-m\"")
               None
            |> named [ "src"; "dst" ])
           "Dir.copy",
           (bd
               "Copy a directory and its contents — (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory MEANS its contents: there is no non-recursive form."
-              (Some "let d = Path.newTempDir () in Dir.copy d $\"{d}-c\" ; Dir.deleteAll d ; Dir.deleteAll $\"{d}-c\"")
+              (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
               None
            |> named [ "src"; "dst" ])
           "File.read",
