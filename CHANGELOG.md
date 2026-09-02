@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **`Str.splitOnce` / `Str.trySplitOnce` — split at the first
+  separator, tail intact.** Rust's `split_once` shape: `splitOnce
+  sep s` yields `(before, after)` and raises when the separator is
+  absent; `trySplitOnce` is the Option twin. The KEY=VALUE spelling
+  — `Str.split` plus a `[k; v]` pattern silently misses when the
+  value contains the separator; `splitOnce` keeps the tail whole.
+
+- **`Seq.exactlyOne` / `Seq.tryExactlyOne` — the cardinality
+  assertion.** `head` takes the first and silently accepts more, so
+  a wrong-arity command output passes quietly; `exactlyOne` raises
+  on none AND on more, with distinct messages (they are different
+  bugs). The try twin answers None for both shapes, and stops at
+  the second element — an infinite source never hangs it. The guide
+  now teaches it for one-line expectations
+  (`git rev-parse HEAD |> Seq.exactlyOne`).
+
+- **`Seq.first` is retired; `take` stands.** A preference reversal:
+  the synonym's readability reason did not fall — it was outweighed
+  by one-name-per-operation, the rule that already retired
+  `filter`. The error teaches (`weir's first is 'Seq.take'`), and
+  the freed name binds (`let first = …`).
+
+- **Bare `dir` teaches the listing.** The module-qualified redirect
+  (`use 'Path.dir'`) now also says "for a directory listing, use
+  ls" — DOS muscle memory pointed at the parent-of-a-path function
+  was a wrong turn.
+
 ## v0.0.9
 
 ### New features

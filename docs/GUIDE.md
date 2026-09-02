@@ -397,11 +397,14 @@ the other operator; the operator table lives on
 
 A `let` takes a bare command on its right-hand side anywhere a
 `let` goes — top level or inside a function body, plain
-(`let tree = git rev-parse HEAD |> Seq.head`) or with params, whose
-values splice like any binding
-(`let commitOf r = git rev-parse $r |> Seq.head`). Params shadow
-PATH inside their own body, so `let f x = x` stays the identity
-whatever happens to be installed.
+(`let tree = git rev-parse HEAD |> Seq.exactlyOne`) or with params,
+whose values splice like any binding
+(`let commitOf r = git rev-parse $r |> Seq.exactlyOne`). Params
+shadow PATH inside their own body, so `let f x = x` stays the
+identity whatever happens to be installed. When the expectation is
+ONE line, `Seq.exactlyOne` says so — `Seq.head` takes the first and
+silently accepts more, hiding a wrong-arity output; save `head` for
+"the first of many".
 
 One rule to know about `!`: weir has no `!`-negation. Negation is the
 word `not`; `!` means DO IT. Two markers bring full command chains
@@ -422,10 +425,10 @@ if ready then
     !(sh -c "echo inline-form")
     print "mixed with expressions"
 
-let latest = git log -1 "--format=%h" |> Seq.head
+let latest = git log -1 "--format=%h" |> Seq.exactlyOne
 print $"at {latest}"
 
-let tagged = $"at {$(git log -1 "--format=%h") |> Seq.head}"
+let tagged = $"at {$(git log -1 "--format=%h") |> Seq.exactlyOne}"
 ```
 
 There is no syntax for a computed program NAME — branch the whole

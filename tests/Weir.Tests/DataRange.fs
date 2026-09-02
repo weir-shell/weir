@@ -72,5 +72,5 @@ let dataRangeTests =
               | v -> failtest $"unexpected {formatValue v}"
           }
           test "laziness under huge sources" {
-              Expect.equal (run "[1..1000000000] |> Seq.first 2 |> Seq.length") (VInt 2L) "billion-range"
+              Expect.equal (run "[1..1000000000] |> Seq.take 2 |> Seq.length") (VInt 2L) "billion-range"
           } ]

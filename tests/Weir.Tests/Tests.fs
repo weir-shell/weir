@@ -220,7 +220,7 @@ let private skipOnWindows () =
     if System.OperatingSystem.IsWindows() then
         skiptest "POSIX fixture (sh/coreutils/absolute POSIX path)"
 
-let acceptance = "ls |> where (fun f -> f.bytes > 1MiB) |> first 5"
+let acceptance = "ls |> where (fun f -> f.bytes > 1MiB) |> take 5"
 
 let parserTests =
     testList
@@ -232,7 +232,7 @@ let parserTests =
           test "lambda body extends right" { expectParse "fun x -> x + 1" "(fun x (+ x 1))" }
           test "let-in" { expectParse "let x = 1 in x" "(let x 1 x)" }
           test "field access chains" { expectParse "f.bytes > 1048576" "(> f.bytes 1048576)" }
-          test "shell pipe is pipe" { expectParse "ls |> where p |> first 5" "((ls |> (where p)) |> (first 5))" }
+          test "shell pipe is pipe" { expectParse "ls |> where p |> take 5" "((ls |> (where p)) |> (take 5))" }
           test "less-than without space parses as comparison (transition-recognizer guard)" {
               expectParse "1<2" "(< 1 2)"
           }
@@ -290,7 +290,7 @@ let checkerTests =
               | Ok _ -> failtest "expected a type error"
           }
           test "typo in field is rejected with exact span and a hint" {
-              let input = "ls |> where (fun f -> f.bytse > 1048576) |> first 5"
+              let input = "ls |> where (fun f -> f.bytse > 1048576) |> take 5"
               let terr = checkErr input
               let expectedStart = input.IndexOf "bytse" + 1
               Expect.equal terr.Span.Start.Col expectedStart "start col"
@@ -299,7 +299,7 @@ let checkerTests =
               Expect.stringContains terr.Message "Did you mean 'bytes'?" ""
           }
           test "lambda body of wrong type reports expected vs actual" {
-              let terr = checkErr "ls |> where (fun f -> f.bytes) |> first 5"
+              let terr = checkErr "ls |> where (fun f -> f.bytes) |> take 5"
               Expect.stringContains terr.Message "expected bool, got Size" ""
           }
           test "unbound variable gets a hint" {
@@ -357,7 +357,7 @@ let evalTests =
           }
           test "first truncates" {
               expectValue
-                  "ls |> first 2"
+                  "ls |> take 2"
                   (VSeq [ Weir.Builtins.file "a.txt" 0 false; Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "arithmetic and pipes: 1 + 2 |> double" { expectValue "1 + 2 |> double" (VInt 6) }
@@ -424,7 +424,7 @@ let evalTests =
           test "closure captures environment" { expectValue "let y = 40 in (fun x -> x + y) 2" (VInt 42) }
           test "partially applied polymorphic builtin stays polymorphic" {
               expectValue
-                  "let firstTwo = first 2 in ls |> firstTwo |> where (fun f -> f.hidden)"
+                  "let firstTwo = take 2 in ls |> firstTwo |> where (fun f -> f.hidden)"
                   (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "lambda in polymorphic position without data now checks via rows" {
@@ -737,11 +737,11 @@ let warningTests =
 let streamingTests =
     testList
         "Streaming"
-        [ test "acceptance: infinite source |> first 5 terminates" {
+        [ test "acceptance: infinite source |> take 5 terminates" {
               let infinite = Seq.initInfinite (fun i -> Weir.Builtins.file $"f{i}" i false)
 
               let result =
-                  runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.bytes > 1B) |> first 5"
+                  runWith [ "ls", VSeq infinite ] "ls |> where (fun f -> f.bytes > 1B) |> take 5"
                   |> forceSeq
 
               Expect.equal (List.length result) 5 "exactly five rows"
@@ -761,8 +761,7 @@ let streamingTests =
                           yield VInt(int64 i)
                   }
 
-              let out =
-                  runWith [ "src", VSeq source ] "src |> Seq.distinct |> first 2" |> forceSeq
+              let out = runWith [ "src", VSeq source ] "src |> Seq.distinct |> take 2" |> forceSeq
 
               Expect.equal out [ VInt 1; VInt 2 ] "first occurrences, in order"
               Expect.equal pulled.Value 4 "pulled exactly to the second novel element"
@@ -782,7 +781,7 @@ let streamingTests =
                   (VStr " x\ny | z ")
 
               // lazy over matches: first 2 of many yields exactly 2
-              expectValue "Str.rmatchAll @\"(\\d)\" \"12345\" |> first 2 |> Seq.length" (VInt 2L)
+              expectValue "Str.rmatchAll @\"(\\d)\" \"12345\" |> take 2 |> Seq.length" (VInt 2L)
           }
           test "feed pulls its INPUT lazily: an early-exiting child bounds the pulls [D:spawn-spec]" {
               // the standing laziness rule reaches inputs — the writer
@@ -823,7 +822,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> first 5" |> forceSeq |> ignore
+              runWith [ "ls", VSeq counting ] "ls |> take 5" |> forceSeq |> ignore
               Expect.equal pulled.Value 5 "no over-pulling"
           }
           test "where pulls only what the filter and take demand" {
@@ -834,7 +833,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1B) |> first 2"
+              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1B) |> take 2"
               |> forceSeq
               |> ignore
 
@@ -848,7 +847,7 @@ let streamingTests =
                       System.Threading.Interlocked.Increment pulled |> ignore
                       Weir.Builtins.file $"f{i}" i false)
 
-              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1B) |> first 5"
+              runWith [ "ls", VSeq counting ] "ls |> where (fun f -> f.bytes > 1B) |> take 5"
               |> ignore
 
               Expect.equal pulled.Value 0 "evaluation alone must not enumerate"
@@ -903,7 +902,7 @@ let polymorphismTests =
               Expect.equal (run "nats |> map double |> take 3" |> forceSeq) [ VInt 0; VInt 2; VInt 4 ] ""
           }
           test "full application instantiates from the trailing data argument" {
-              expectValue "where (fun f -> f.hidden) ls |> first 1" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
+              expectValue "where (fun f -> f.hidden) ls |> take 1" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "instantiation mismatch is reported" {
               Expect.stringContains
@@ -921,7 +920,7 @@ let boundaryTests =
           }
           test "cmd is lazy across the process boundary" {
               skipOnWindows ()
-              Expect.equal (runReal "sh -c \"yes\" |> first 3" |> forceSeq) [ VStr "y"; VStr "y"; VStr "y" ] ""
+              Expect.equal (runReal "sh -c \"yes\" |> take 3" |> forceSeq) [ VStr "y"; VStr "y"; VStr "y" ] ""
           }
           test "failing command raises when forced" {
               skipOnWindows ()
@@ -1757,7 +1756,7 @@ let boundaryTests =
           }
           test "from can be let-bound" {
               expectValue
-                  "let p = from jsonl JRow in [\"{\\\"name\\\": \\\"x\\\", \\\"bytes\\\": 1, \\\"readOnly\\\": false}\"] |> p |> first 1 |> map (fun f -> f.name)"
+                  "let p = from jsonl JRow in [\"{\\\"name\\\": \\\"x\\\", \\\"bytes\\\": 1, \\\"readOnly\\\": false}\"] |> p |> take 1 |> map (fun f -> f.name)"
                   (VSeq [ VStr "x" ])
           } ]
 
@@ -1800,11 +1799,11 @@ let shorthandTests =
           test "map with shorthand projects" {
               Expect.equal (checkOk "ls |> map _.bytes").Ty (TSeq TSize) ""
 
-              Expect.equal (run "ls |> map _.name |> first 2" |> forceSeq) [ VStr "a.txt"; VStr "b.bin" ] ""
+              Expect.equal (run "ls |> map _.name |> take 2" |> forceSeq) [ VStr "a.txt"; VStr "b.bin" ] ""
           }
           test "shorthand chains through nested records" { expectParse "map _.A.B" "(map (fun _ _.A.B))" }
           test "shorthand in a larger expression gets the targeted hint" {
-              let terr = checkErr "ls |> where (_.bytes > 9B) |> first \"x\""
+              let terr = checkErr "ls |> where (_.bytes > 9B) |> take \"x\""
               Expect.stringContains terr.Message "_.Field is a whole function" ""
           }
           test "byte literals filter correctly" {
@@ -2350,14 +2349,14 @@ let lifecycleTests =
           // re-derive which of these guards what.
           test "simple command: no survivors after partial consumption" {
               skipOnWindows ()
-              runReal "sh -c \"yes weir-s1-simple\" |> first 3" |> forceSeq |> ignore
+              runReal "sh -c \"yes weir-s1-simple\" |> take 3" |> forceSeq |> ignore
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s1-simple") "yes leaked"
           }
           test "compound command: no survivors after partial consumption" {
               skipOnWindows ()
 
-              runReal "sh -c \"yes weir-s1-compound | grep --line-buffered weir-s1-compound\" |> first 3"
+              runReal "sh -c \"yes weir-s1-compound | grep --line-buffered weir-s1-compound\" |> take 3"
               |> forceSeq
               |> ignore
 
@@ -2376,7 +2375,7 @@ let lifecycleTests =
               skipOnWindows ()
 
               for _ in 1..50 do
-                  runReal "sh -c \"yes weir-s1-zombie\" |> first 1" |> forceSeq |> ignore
+                  runReal "sh -c \"yes weir-s1-zombie\" |> take 1" |> forceSeq |> ignore
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s1-zombie") "killed children leaked"
               let zombies = defunctChildren ()
@@ -2391,7 +2390,7 @@ let session2Tests =
               expectParse "[1; 2; 3]" "[1; 2; 3]"
               Expect.equal (checkOk "[1; 2]").Ty (TSeq(TInt)) "type"
               expectValue "[1; 2] |> sum" (VInt 3)
-              expectValue "[\"a\"; \"b\"] |> first 1" (VSeq [ VStr "a" ])
+              expectValue "[\"a\"; \"b\"] |> take 1" (VSeq [ VStr "a" ])
           }
           test "empty list literal is polymorphic" {
               match (checkOk "[]").Ty with
@@ -2531,14 +2530,14 @@ let session2Tests =
           // apply — tree-kill must hold on its own.
           test "direct cmd: no survivors after partial consumption" {
               skipOnWindows ()
-              runReal "yes \"weir-s2-direct\" |> first 3" |> forceSeq |> ignore
+              runReal "yes \"weir-s2-direct\" |> take 3" |> forceSeq |> ignore
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-direct") "direct-exec child leaked"
           }
           test "direct cmd: 50 abandoned streams leave no zombies" {
               skipOnWindows ()
 
               for _ in 1..50 do
-                  runReal "yes \"weir-s2-dz\" |> first 1" |> forceSeq |> ignore
+                  runReal "yes \"weir-s2-dz\" |> take 1" |> forceSeq |> ignore
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-dz") "direct-exec children leaked"
               Expect.equal (defunctChildren ()) 0 "defunct children accumulated"
@@ -2584,11 +2583,9 @@ let commandModeTests =
               | Error msg -> Expect.stringContains msg "'|>' applies functions; feed a program with '|'" ""
               | Ok _ -> failtest "expr |> program must error under the pipe rule"
           }
-          test "pipe accepts |> in command mode too" {
-              expectCmd "git log |> first 5" "((cmd git \"log\") |> (first 5))"
-          }
+          test "pipe accepts |> in command mode too" { expectCmd "git log |> take 5" "((cmd git \"log\") |> (take 5))" }
           test "external to external to expression" {
-              expectCmd "git log | grep x |> first 2" "(((cmd git \"log\") |> (cmd grep \"x\")) |> (first 2))"
+              expectCmd "git log | grep x |> take 2" "(((cmd git \"log\") |> (cmd grep \"x\")) |> (take 2))"
           }
           test "unknown head without PATH hit falls back to expression" {
               match Weir.Parser.parseLine cmdResolver "gti status" with
@@ -2611,7 +2608,7 @@ let commandModeTests =
               | Ok _ -> failtest "expected parse failure"
           }
           test "command line types as seq<string>" {
-              match Weir.Parser.parseLine cmdResolver "git status |> first 1" with
+              match Weir.Parser.parseLine cmdResolver "git status |> take 1" with
               | Ok(SExpr e | SCmd e) ->
                   match typecheck env e with
                   | Ok te -> Expect.equal te.Ty (TSeq TStr) ""
@@ -2648,7 +2645,7 @@ let commandModeTests =
               skipOnWindows ()
 
               Expect.equal
-                  (runReal "yes weir-s3-pipe |> first 2" |> forceSeq)
+                  (runReal "yes weir-s3-pipe |> take 2" |> forceSeq)
                   [ VStr "weir-s3-pipe"; VStr "weir-s3-pipe" ]
                   ""
 
@@ -2761,7 +2758,7 @@ let diagnoseTests =
           }
           test "operator tails stay quiet" {
               let isKnown n = Map.containsKey n env.Values
-              Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> false) (fun _ -> true) "ls |> first 5") ""
+              Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> false) (fun _ -> true) "ls |> take 5") ""
               Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> false) (fun _ -> true) "x + 1") ""
           }
           test "path tails hint even without PATH presence" {
@@ -2782,7 +2779,7 @@ let session3Tests =
 
               try
                   expectValue
-                      "let p = pwd |> force in let d = cd \"/tmp\" in p |> first 1"
+                      "let p = pwd |> force in let d = cd \"/tmp\" in p |> take 1"
                       (VSeq [ VStr(System.IO.Directory.GetCurrentDirectory()) ])
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
@@ -2795,7 +2792,7 @@ let session3Tests =
 
               try
                   runReal
-                      $"let s = $(sh -c \"echo x >> {marker}; echo line\") |> force in let a = s |> first 1 in let b = s |> first 1 in b"
+                      $"let s = $(sh -c \"echo x >> {marker}; echo line\") |> force in let a = s |> take 1 in let b = s |> take 1 in b"
                   |> forceSeq
                   |> ignore
 
@@ -2805,7 +2802,7 @@ let session3Tests =
 
                   let r =
                       runReal
-                          $"let s = $(sh -c \"echo x >> {marker}; echo line\") in let a = s |> first 1 |> force in let b = s |> first 1 |> force in b"
+                          $"let s = $(sh -c \"echo x >> {marker}; echo line\") in let a = s |> take 1 |> force in let b = s |> take 1 |> force in b"
 
                   r |> forceSeq |> ignore
                   Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront force"
@@ -2832,7 +2829,7 @@ let session3Tests =
               // SOMETHING — it previously asserted a marker no process
               // ever carried [D:vacuous-probe-audit]
               Expect.equal
-                  (runReal "yes weir-s3cc | cat |> first 2" |> forceSeq)
+                  (runReal "yes weir-s3cc | cat |> take 2" |> forceSeq)
                   [ VStr "weir-s3cc"; VStr "weir-s3cc" ]
                   ""
 
@@ -2985,7 +2982,7 @@ let session3Tests =
               | Ok _ -> failtest "expected parse failure"
           }
           test "complete after a non-external stage is a parse error" {
-              match Weir.Parser.parseLine realResolver "git status |> first 1 | complete" with
+              match Weir.Parser.parseLine realResolver "git status |> take 1 | complete" with
               | Error msg -> Expect.stringContains msg "must directly follow a single external command segment" ""
               | Ok _ -> failtest "expected parse failure"
           }
@@ -3068,12 +3065,85 @@ let stringTests =
               Expect.equal (run "split \",\" \"a,,b\"" |> forceSeq) [ VStr "a"; VStr ""; VStr "b" ] "empties kept"
           }
           test "replace is pattern-replacement-subject" { expectValue "replace \"o\" \"0\" \"foo\"" (VStr "f00") }
+          test "splitOnce splits at the FIRST separator, tail intact [D:split-once]" {
+              // the receipt class: the tail CONTAINS the separator —
+              // Str.split + a [k; v] pattern silently misses here
+              expectValue "Str.splitOnce \"=\" \"KEY=a=b\"" (VTuple [ VStr "KEY"; VStr "a=b" ])
+              // destructures straight into names (the tuple answer)
+              expectValue "let (k, v) = Str.splitOnce \"=\" \"k=v\" in k + v" (VStr "kv")
+              // multi-char separator consumed whole
+              expectValue "Str.splitOnce \"::\" \"a::b\"" (VTuple [ VStr "a"; VStr "b" ])
+              // edges are empty strings, never absences
+              expectValue "Str.splitOnce \"=\" \"=v\"" (VTuple [ VStr ""; VStr "v" ])
+              expectValue "Str.splitOnce \"=\" \"k=\"" (VTuple [ VStr "k"; VStr "" ])
+
+              let msgOf src =
+                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
+
+              Expect.equal
+                  (msgOf "Str.splitOnce \":\" \"abc\"")
+                  "splitOnce: no \":\" in the input"
+                  "the raising form names the separator"
+
+              Expect.equal
+                  (msgOf "Str.splitOnce \"\" \"abc\"")
+                  "splitOnce: the separator cannot be empty"
+                  "empty separator refused"
+
+              Expect.equal
+                  (msgOf "Str.trySplitOnce \"\" \"abc\"")
+                  "trySplitOnce: the separator cannot be empty"
+                  "…on the try side too (absence is Option's job, malformed args are not)"
+
+              // the Option twin, and absence as None
+              expectValue "Str.trySplitOnce \"=\" \"k=v\"" (VUnion("Some", Some(VTuple [ VStr "k"; VStr "v" ])))
+              expectValue "Str.trySplitOnce \"=\" \"none\"" (VUnion("None", None))
+          }
           test "Str.length and toInt" {
               expectValue "Str.length \"abc\"" (VInt 3)
               expectValue "toInt \"42\" + 1" (VInt 43)
               Expect.throws (fun () -> run "toInt \"nope\"" |> ignore) "toInt raises"
               expectValue "tryToInt \"42\"" (VUnion("Some", Some(VInt 42)))
               expectValue "tryToInt \"nope\"" (VUnion("None", None))
+          }
+          test "exactlyOne asserts cardinality with DISTINCT messages [D:exactly-one]" {
+              let msgOf src =
+                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
+
+              expectValue "[42] |> Seq.exactlyOne" (VInt 42L)
+
+              // ruling 2: none and more are DIFFERENT causes — the two
+              // messages pin separately, one pin covering both would
+              // defeat the member's advantage over head
+              Expect.equal
+                  (msgOf "[] |> Seq.exactlyOne")
+                  "exactlyOne: expected exactly one element, got none"
+                  "the produced-nothing cause"
+
+              Expect.equal
+                  (msgOf "[1; 2] |> Seq.exactlyOne")
+                  "exactlyOne: expected exactly one element, got more"
+                  "the produced-extra cause"
+
+              // the try twin: None for BOTH failure shapes, and it must
+              // stop at the SECOND element — an infinite source proves it
+              expectValue "[7] |> Seq.tryExactlyOne" (VUnion("Some", Some(VInt 7L)))
+              expectValue "[] |> Seq.tryExactlyOne" (VUnion("None", None))
+              expectValue "[1; 2] |> Seq.tryExactlyOne" (VUnion("None", None))
+              expectValue "nats |> Seq.tryExactlyOne" (VUnion("None", None))
+          }
+          test "Seq.first is retired; take stands [D:first-retired]" {
+              // the reversal's receipt: the teaching, both spellings
+              Expect.stringContains
+                  (checkErr "[1] |> Seq.first 2").Message
+                  "'Seq.first' is retired: weir's first is 'Seq.take'"
+                  "the qualified teach"
+
+              Expect.stringContains (checkErr "[1] |> first 2").Message "'first' is retired" "the bare teach"
+
+              // the survivor, and the freed name binds
+              expectValue "[1; 2; 3] |> Seq.take 2 |> Seq.length" (VInt 2L)
+              expectValue "let first = 9 in first" (VInt 9L)
           }
           test "Seq.tryHead returns Option and Seq.isEmpty stands" {
               expectValue "[1; 2] |> Seq.tryHead" (VUnion("Some", Some(VInt 1)))
@@ -3856,7 +3926,7 @@ let chooseTests =
               match
                   runWith
                       [ "ls", VSeq infinite ]
-                      "ls |> Seq.choose (fun f -> if f.bytes > 2B then Some (Size.toBytes f.bytes) else None) |> first 2 |> Seq.sum"
+                      "ls |> Seq.choose (fun f -> if f.bytes > 2B then Some (Size.toBytes f.bytes) else None) |> take 2 |> Seq.sum"
               with
               | VInt n -> Expect.equal n 7L "3 + 4"
               | v -> failtest $"unexpected {v}"
@@ -3873,7 +3943,7 @@ let chooseTests =
 
               let infinite = Seq.initInfinite (fun i -> Weir.Builtins.file $"f{i}" i false)
 
-              match runWith [ "ls", VSeq infinite ] "ls |> Seq.append ls |> first 2 |> Seq.length" with
+              match runWith [ "ls", VSeq infinite ] "ls |> Seq.append ls |> take 2 |> Seq.length" with
               | VInt n -> Expect.equal n 2L "lazy on both sides"
               | v -> failtest $"unexpected {v}"
           }
@@ -7186,7 +7256,7 @@ let rangeTests =
               expectValue "let a = 2 in [a..(a + 3)] |> Seq.length" (VInt 4L)
           }
           test "lazy: huge range under first terminates" {
-              expectValue "[1..1000000] |> Seq.first 3 |> Seq.length" (VInt 3L)
+              expectValue "[1..1000000] |> Seq.take 3 |> Seq.length" (VInt 3L)
           }
           test "re-enumeration re-runs the generator" {
               expectValue "let r = [1..3] in (r |> Seq.length) + (r |> Seq.length)" (VInt 6L)
@@ -7229,7 +7299,7 @@ let depthGuardTests =
         "Depth guard"
         [ test "legitimate nesting is untouched (corpus max is ~11)" {
               expectValue (nestDeep "(" ")" 100 + " + 0") (VInt 1L)
-              expectValue "[[[1]]] |> Seq.first 1 |> Seq.force |> Seq.length" (VInt 1L)
+              expectValue "[[[1]]] |> Seq.take 1 |> Seq.force |> Seq.length" (VInt 1L)
           }
           test "at-ceiling parens: parse or a located diagnostic, never a crash (limit 500, stack-probed)" {
               // capacity between the stack probe's floor and the counted
@@ -7722,7 +7792,7 @@ let agentFindingsTests =
               // the single-external-segment family rule (statement level —
               // the let-RHS chain rejects mid-chain stages earlier, with
               // the bare-pipe hint, family-uniformly)
-              match Weir.Parser.parseLine cmdResolver "git log |> Seq.first 1 | exitCode" with
+              match Weir.Parser.parseLine cmdResolver "git log |> Seq.take 1 | exitCode" with
               | Error msg -> Expect.stringContains msg "single external command segment" ""
               | Ok _ -> failtest "exitCode must keep the family's segment rule"
           }
@@ -9899,7 +9969,7 @@ let operatorTests =
           test "not builtin" {
               expectValue "not true" (VBool false)
 
-              expectValue "ls |> where (fun f -> not f.hidden) |> first 1" (VSeq [ Weir.Builtins.file "a.txt" 0 false ])
+              expectValue "ls |> where (fun f -> not f.hidden) |> take 1" (VSeq [ Weir.Builtins.file "a.txt" 0 false ])
           }
           test "and-or require bools" {
               Expect.stringContains (checkErr "1 && 2").Message "'&&' is not defined for int" ""
@@ -11194,7 +11264,7 @@ let fileRowSizeTests =
                       "{ name = \"b.bin\"; kind = Regular; target = None; bytes = 5 MiB; modified = 1970-01-01T00:00:00Z; hidden = true; path = \"b.bin\" }")
           }
           test "sortBy crosses the class boundary: Ord admits Size" {
-              expectValue "ls |> Seq.sortByDescending _.bytes |> first 1 |> map _.name" (VSeq [ VStr "b.bin" ])
+              expectValue "ls |> Seq.sortByDescending _.bytes |> take 1 |> map _.name" (VSeq [ VStr "b.bin" ])
           } ]
 
 let replTableTests =
@@ -13551,15 +13621,15 @@ let seqGapsTests =
 
     testList
         "the Seq-gaps cohort [D:seq-gaps]"
-        [ pullPin "collect" 3 "nats |> Seq.collect (fun x -> [x; x]) |> Seq.first 3"
-          pullPin "concat" 3 "[nats] |> Seq.concat |> Seq.first 2"
-          pullPin "indexed" 3 "nats |> Seq.indexed |> Seq.map (fun (i, x) -> i) |> Seq.first 2"
-          pullPin "chunkBySize" 4 "nats |> Seq.chunkBySize 3 |> Seq.first 1 |> Seq.map Seq.force"
+        [ pullPin "collect" 3 "nats |> Seq.collect (fun x -> [x; x]) |> Seq.take 3"
+          pullPin "concat" 3 "[nats] |> Seq.concat |> Seq.take 2"
+          pullPin "indexed" 3 "nats |> Seq.indexed |> Seq.map (fun (i, x) -> i) |> Seq.take 2"
+          pullPin "chunkBySize" 4 "nats |> Seq.chunkBySize 3 |> Seq.take 1 |> Seq.map Seq.force"
           pullPin "takeWhile" 4 "nats |> Seq.takeWhile (fun x -> x < 2)"
-          pullPin "skipWhile" 4 "nats |> Seq.skipWhile (fun x -> x < 2) |> Seq.first 1"
-          pullPin "scan" 3 "nats |> Seq.scan (fun acc x -> acc + x) 0 |> Seq.first 2"
-          pullPin "distinctBy" 3 "nats |> Seq.distinctBy (fun x -> x) |> Seq.first 2"
-          pullPin "except" 3 "nats |> Seq.except [999] |> Seq.first 2"
+          pullPin "skipWhile" 4 "nats |> Seq.skipWhile (fun x -> x < 2) |> Seq.take 1"
+          pullPin "scan" 3 "nats |> Seq.scan (fun acc x -> acc + x) 0 |> Seq.take 2"
+          pullPin "distinctBy" 3 "nats |> Seq.distinctBy (fun x -> x) |> Seq.take 2"
+          pullPin "except" 3 "nats |> Seq.except [999] |> Seq.take 2"
           test "the receipt pipeline: collect over split, F# semantics" {
               Expect.equal
                   (run "[\"a<b\"; \"\"; \"c\"] |> Seq.collect (Str.split \"<\")" |> forceSeq)
@@ -13620,12 +13690,9 @@ let seqGapsTests =
               Expect.stringContains (checkErr "ls |> Seq.max").Message "cannot be ordered" ""
               checkOk "ls |> Seq.maxBy (fun r -> r.bytes)" |> ignore
           }
-          test "first/take RULED synonyms; filter and flatMap teach their one name [D:seq-gaps]" {
-              Expect.equal
-                  (run "[1; 2; 3] |> Seq.take 2" |> forceSeq)
-                  (run "[1; 2; 3] |> Seq.first 2" |> forceSeq)
-                  "one implementation, two names — deliberate"
-
+          test "one name per operation: filter and flatMap teach theirs [D:seq-gaps]" {
+              // (first joined this family by reversal [D:first-retired] —
+              // its teach pins beside take's survival in the strings list)
               Expect.stringContains
                   (checkErr "[1] |> Seq.filter (fun _ -> true)").Message
                   "'Seq.where'"
@@ -14201,11 +14268,13 @@ let bareRuleTests =
                   "the two-home scan moved: decide the new name (qualified-only), then update this pin"
           }
           test "no formerly-bare name lost its slot in the widening (the monotonicity check the plan demanded)" {
+              // `first` LEFT the set by RULING, not accident — the
+              // retirement [D:first-retired] is the allowed exit this
+              // pin guards against happening silently
               let before =
                   Set
                       [ "map"
                         "where"
-                        "first"
                         "take"
                         "head"
                         "sum"
@@ -14259,6 +14328,20 @@ let bareRuleTests =
                   Expect.stringContains terr.Message "module-qualified; use 'Seq.rev'" "the truthful wording"
                   Expect.isFalse (terr.Message.Contains "moved") "no false history"
               | Ok _ -> failtest "strict mode must not resolve bare rev"
+          }
+          test "bare `dir` teaches the listing too [D:dir-teach]" {
+              // DOS muscle memory wants ls; Path.dir is the parent-of-a-
+              // path function — the teach carries both readings.
+              // ARGUMENT position forces pure expression mode: a bare
+              // `dir` elsewhere resolves as the coreutils COMMAND on
+              // Linux (the platform split that makes this teach
+              // Windows/macOS-facing)
+              let m = (checkErr "[1] |> Seq.map dir").Message
+              Expect.stringContains m "use 'Path.dir'" "the qualified home"
+              Expect.stringContains m "for a directory listing, use ls" "the muscle-memory half"
+
+              // the suffix is dir's alone
+              Expect.isFalse ((checkErr "[1] |> Seq.map rev").Message.Contains "listing") "rev keeps the plain form"
           } ]
 
 let gapATests =
@@ -14274,7 +14357,7 @@ let gapATests =
 
               runWith
                   [ "nats", VSeq counting ]
-                  "nats |> Seq.windowed 2 |> Seq.first 1 |> Seq.iter (fun w -> w |> Seq.iter (fun _ -> print \"\"))"
+                  "nats |> Seq.windowed 2 |> Seq.take 1 |> Seq.iter (fun w -> w |> Seq.iter (fun _ -> print \"\"))"
               |> ignore
 
               Expect.isLessThan pulled.Value 4 "a window of 2 must not pull the world"

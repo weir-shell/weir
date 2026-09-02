@@ -46,6 +46,10 @@ let private retiredMember (m: string) (field: string) : string option =
     // one exists (collect), and the weir spelling keeps its seat (where)
     | "Seq", "flatMap" -> Some "F# parity names it 'Seq.collect'"
     | "Seq", "filter" -> Some "weir's filter is 'Seq.where' — one name per operation"
+    // a preference REVERSAL [D:first-retired]: the synonym's readability
+    // reason did not fall — it was outweighed by the same rule that
+    // retired filter
+    | "Seq", "first" -> Some "weir's first is 'Seq.take' — one name per operation"
     | _ -> None
 
 // retired FIELDS teach their replacement at the access site
@@ -64,6 +68,7 @@ let private retiredBare (name: string) : string option =
     match name with
     | "toList" -> Some "weir has no list type; 'force' is the materializer"
     | "defaultTo" -> Some "renamed: use 'Option.defaultValue' (or 'Option.defaultWith' for a thunk)"
+    | "first" -> Some "weir's first is 'Seq.take' (bare: 'take') — one name per operation"
     | _ -> None
 
 /// Members that live as bespoke checker ARMS, not as entries in a
@@ -2118,7 +2123,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 match homes with
                 // no history claim [D:bare-rule]: most of these were
                 // never bare — the wording matches the multi-home arm's
-                | [ one ] -> err expr.Span $"'{name}' is module-qualified; use '{one}'"
+                | [ one ] ->
+                    // `dir` is DOS/cmd muscle memory for a LISTING, and
+                    // Path.dir is the parent-of-a-path function — the
+                    // qualified redirect alone sends the reader somewhere
+                    // semantically unrelated [D:dir-teach]
+                    let hint =
+                        if name = "dir" then
+                            " (the parent directory of a path) — for a directory listing, use ls"
+                        else
+                            ""
+
+                    err expr.Span $"'{name}' is module-qualified; use '{one}'{hint}"
                 | _ :: _ ->
                     let all = String.concat " or " homes
                     err expr.Span $"'{name}' is module-qualified here; use {all}"

@@ -297,7 +297,7 @@ if "\u2500" not in t or "bytes" not in t:
 if "[{" in t:
     failures.append(f"the tty echo must not fall back to the line rendering: {t[-300:]!r}")
 
-p = subprocess.run([WEIR], input='ls |> Seq.first 1\n#quit\n', capture_output=True, text=True, cwd=d)
+p = subprocess.run([WEIR], input='ls |> Seq.take 1\n#quit\n', capture_output=True, text=True, cwd=d)
 if "\u2500" in p.stdout:
     failures.append(f"piped output must keep the line rendering: {p.stdout!r}")
 if "bytes =" not in p.stdout:
