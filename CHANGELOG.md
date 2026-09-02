@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.0.13
+
+### New features
+
+- **Sig generation walks subcommands.** Cobra-family tools (jira,
+  docker, kubectl, kustomize) keep the real flags under
+  `tool sub --help` — generation now reads the advertised commands
+  sections (grouped headings included), probes each subcommand's
+  help breadth-first to depth 2 under a 60-probe budget, and unions
+  the flags into the flat surface, labeled `help+subs`. So
+  `jira issue list --jql …` stops warning on every flag the
+  top-level help never mentioned. Every probe is guarded: null
+  stdin, temp cwd, bounded wait with kill.
+
+- A usage-table help with no flag rows (weir's own) yields a
+  harvested surface — every `--flag` token, docless, labeled
+  `help-scan` — instead of "found no flags".
+
 ## v0.0.12
 
 ### Bugfixes
@@ -19,13 +37,7 @@
 
 - The sig help scraper learns fzf's `+s, --no-sort` off-toggle
   spelling, and stops eating the first word of an argless flag's
-  description. And a usage-table help with no flag rows (weir's
-  own) now yields a harvested surface — every `--flag` token,
-  docless, labeled `help-scan` — instead of "found no flags". And
-  generation walks a Cobra tool's advertised subcommands (depth 2 —
-  `jira issue list --help`, kubectl's grouped commands) and unions
-  their flags into the flat surface, so `jira issue list --jql …`
-  stops warning on every flag the top-level help never mentioned.
+  description.
 
 - Pattern-let binders hover: `let key, title = …` shows each name's
   own type.
