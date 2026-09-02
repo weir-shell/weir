@@ -3633,7 +3633,12 @@ module SigGen =
         // deeper prose line
         let mutable lastDocless: string option = None
 
-        for line in text.Split '\n' do
+        for raw in text.Split '\n' do
+            // broot draws its options as a box table — the border and
+            // column glyphs (U+2500..U+257F) become spaces and the rows
+            // collapse into the standard `-d  --dates  desc` shape
+            let line = System.Text.RegularExpressions.Regex.Replace(raw, "[\u2500-\u257F]", " ")
+
             let goRow =
                 System.Text.RegularExpressions.Regex.Match(line, "^\\s*-([a-zA-Z][a-zA-Z0-9-]+)( \\S+)?\\s*$")
 

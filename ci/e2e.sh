@@ -5985,6 +5985,17 @@ echo "$out" | grep -qF "source: help-scan" || fail "the refused help still harve
 printf '#sig bsdtool\nbsdtool -q --color=auto x\nprint "d"\n' > bsd.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check bsd.weir 2>&1)
 echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not warn on shorts: $out" || true
+# broot draws a box TABLE — the glyphs strip to spaces and rows parse
+cat > bin/boxtool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "boxtool 1.0"; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'Options:\n\xe2\x94\x82  -d    \xe2\x94\x82--dates   \xe2\x94\x82Show dates\xe2\x94\x82\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x bin/boxtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig boxtool 2>&1) || fail "add sig boxtool: $out"
+grep -qF '[<Short "d">]' .weir/sigs/boxtool.weir || fail "the boxed short records"
+grep -qF "/// Show dates" .weir/sigs/boxtool.weir || fail "the boxed doc records"
 fi
 cd - >/dev/null
 rm -rf "$sgdir"

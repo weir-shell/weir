@@ -24,6 +24,10 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
+- broot's box-drawing options table parses — the border glyphs
+  strip to spaces and the rows read as standard columns, shorts and
+  docs included.
+
 - Two more help dialects generate: micro's Go-flag rows
   (single-dash longs, description on the next line), and BSD grep's
   usage-only page — which exits nonzero, so the dump now feeds the
