@@ -5764,9 +5764,88 @@ echo "$out" | grep -qF "VERSION MISMATCH" || fail "verify version arm (mismatch)
 rm .weir/sigs/sigtool.weir
 out=$($BIN restore 2>&1) && fail "restore of an absent generated sig must fail" || true
 echo "$out" | grep -qF "ABSENT and generated (nothing to fetch)" || fail "restore never regenerates: $out"
+# a tool that REFUSES --version (the jira shape [D:sig-version-probe]):
+# the usage dump is not an identity — the sig records NO version and
+# says so; the surface still checks; verify takes the hash-only arm
+if [ "$IS_WINDOWS" != "1" ]; then
+cat > bin/noverstool <<'WEOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "Error: unknown flag: --version" >&2; echo "Usage: noverstool <command>" >&2; exit 1;;
+  version) echo "Error: unknown command" >&2; exit 1;;
+  --help) printf 'Flags:\n      --force   push through\n';;
+  *) echo "ran:$@";;
+esac
+WEOF
+chmod +x bin/noverstool
+else
+cat > bin/noverstool.bat <<'BEOF'
+@echo off
+if "%~1"=="--version" goto badflag
+if "%~1"=="version" goto badflag
+if "%~1"=="--help" goto help
+echo ran:%*
+goto :eof
+:badflag
+echo Error: unknown flag: --version 1>&2
+exit /b 1
+:help
+echo Flags:
+echo       --force   push through
+BEOF
+fi
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig noverstool 2>&1) || fail "add sig must succeed on a --version refuser: $out"
+echo "$out" | grep -qF "version: none — 'noverstool' answers neither --version nor version" || fail "the refusal is stated, never recorded: $out"
+grep -qF "unknown flag" .weir/sigs/noverstool.weir && fail "the usage dump leaked into the sig" || true
+grep -qF '"name": "noverstool"' .weir/lock.json || fail "lock entry written"
+printf '#sig noverstool
+noverstool --forc
+print "d"
+' > nv.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check nv.weir 2>&1)
+echo "$out" | grep -qF "unknown flag '--forc' for noverstool" || fail "a version-less sig still checks: $out"
+# (verify exits nonzero here — the sigtool teardown above left its lock
+# entry pointing at a removed file; the noverstool LINE is the pin)
+vout=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN verify 2>&1) || true
+echo "$vout" | grep -qF "sig noverstool: ok" || fail "verify takes the hash-only arm: $vout"
+# the SECOND rung (the jira shape exactly): --version refused, the
+# `version` subcommand speaks — the ladder records that identity
+if [ "$IS_WINDOWS" != "1" ]; then
+cat > bin/subverstool <<'WEOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "Error: unknown flag: --version" >&2; exit 1;;
+  version) echo "subverstool (Version=1.7.0)";;
+  --help) printf 'Flags:\n      --force   push through\n';;
+  *) echo "ran:$@";;
+esac
+WEOF
+chmod +x bin/subverstool
+else
+cat > bin/subverstool.bat <<'BEOF'
+@echo off
+if "%~1"=="--version" goto badflag
+if "%~1"=="version" goto vers
+if "%~1"=="--help" goto help
+echo ran:%*
+goto :eof
+:badflag
+echo Error: unknown flag: --version 1>&2
+exit /b 1
+:vers
+echo subverstool (Version=1.7.0)
+goto :eof
+:help
+echo Flags:
+echo       --force   push through
+BEOF
+fi
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig subverstool 2>&1) || fail "add sig must succeed via the version subcommand: $out"
+echo "$out" | grep -qF "version: subverstool (Version=1.7.0)" || fail "the second rung records the identity: $out"
+grep -qF 'let version = "subverstool (Version=1.7.0)"' .weir/sigs/subverstool.weir || fail "the sig carries the rung-two identity"
 cd - >/dev/null
 rm -rf "$sgdir"
-echo "e2e ok: command signatures (generate, typo+did-you-mean, check spawns nothing, property 3, verify arms, restore never regenerates)"
+echo "e2e ok: command signatures (generate, typo+did-you-mean, check spawns nothing, property 3, verify arms, restore never regenerates, --version refuser records none)"
 
 # ---- Size [D:size] ---------------------------------------------------------
 szdir=$(mkweirtmp)

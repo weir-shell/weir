@@ -3234,6 +3234,12 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
     for decl in decls do
         if decl.Tool = "" then
             diags.Add(mk decl.Line "malformed #sig — usage: #sig <tool> [\"path/to/sig.weir\"]")
+        // quoted tool names searched for a file named "tool".weir,
+        // quotes and all — the directive takes a BARE word (only the
+        // override path is quoted) [D:sig-version-probe]
+        elif decl.Tool.StartsWith "\"" || decl.Tool.EndsWith "\"" then
+            let bare = decl.Tool.Trim '"'
+            diags.Add(mk decl.Line $"#sig takes a bare tool name — drop the quotes: #sig {bare}")
         else
             let resolved =
                 match decl.Override with
@@ -3287,67 +3293,62 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 | _ -> None
                             | _ -> None)
 
-                    if (letStr "version").IsNone then
+                    // `let version` is OPTIONAL [D:sig-version-probe]: a
+                    // tool that does not answer --version has no identity
+                    // to record — absence is a stated fact, not a defect
+                    let recordOf name =
+                        lm.TypeDefs
+                        |> List.tryPick (function
+                            | (n, Record rd) when n = name -> Some rd
+                            | _ -> None)
+
+                    match lm.TypeDefs |> List.tryFind (fun (n, _) -> n = "Cmd") with
+                    | None ->
                         diags.Add(
                             mk
                                 decl.Line
-                                $"#sig {decl.Tool}: the signature has no `let version = \"…\"` — a signature records its tool's verbatim --version output"
+                                $"#sig {decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
                         )
-                    else
-                        let recordOf name =
-                            lm.TypeDefs
-                            |> List.tryPick (function
-                                | (n, Record rd) when n = name -> Some rd
-                                | _ -> None)
-
-                        match lm.TypeDefs |> List.tryFind (fun (n, _) -> n = "Cmd") with
-                        | None ->
-                            diags.Add(
-                                mk
-                                    decl.Line
-                                    $"#sig {decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
-                            )
-                        | Some(_, Record rd) ->
-                            infos.Add
-                                { Tool = decl.Tool
-                                  DeclLine = decl.Line
-                                  Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                                  Subs = Map [ "", sigFlagSets rd ]
-                                  SigPath = sigFile
-                                  Version = letStr "version" |> Option.defaultValue ""
-                                  SubRecords = Map [ "", "Cmd" ] }
-                        | Some(_, Union ud) ->
-                            let subs =
-                                ud.Cases
-                                |> List.map (fun (case, payload) ->
-                                    let flags =
-                                        match payload with
-                                        | Some(TNamed(rn, [])) ->
-                                            match recordOf rn with
-                                            | Some rd -> sigFlagSets rd
-                                            | None -> Set.empty, Set.empty
-                                        | _ -> Set.empty, Set.empty
-
-                                    Weir.Argv.kebabFlag case, flags)
-                                |> Map.ofList
-
-                            let subRecords =
-                                ud.Cases
-                                |> List.choose (fun (case, payload) ->
+                    | Some(_, Record rd) ->
+                        infos.Add
+                            { Tool = decl.Tool
+                              DeclLine = decl.Line
+                              Exhaustive = letBool "exhaustive" |> Option.defaultValue false
+                              Subs = Map [ "", sigFlagSets rd ]
+                              SigPath = sigFile
+                              Version = letStr "version" |> Option.defaultValue ""
+                              SubRecords = Map [ "", "Cmd" ] }
+                    | Some(_, Union ud) ->
+                        let subs =
+                            ud.Cases
+                            |> List.map (fun (case, payload) ->
+                                let flags =
                                     match payload with
-                                    | Some(TNamed(rn, [])) when (recordOf rn).IsSome ->
-                                        Some(Weir.Argv.kebabFlag case, rn)
-                                    | _ -> None)
-                                |> Map.ofList
+                                    | Some(TNamed(rn, [])) ->
+                                        match recordOf rn with
+                                        | Some rd -> sigFlagSets rd
+                                        | None -> Set.empty, Set.empty
+                                    | _ -> Set.empty, Set.empty
 
-                            infos.Add
-                                { Tool = decl.Tool
-                                  DeclLine = decl.Line
-                                  Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                                  Subs = subs
-                                  SigPath = sigFile
-                                  Version = letStr "version" |> Option.defaultValue ""
-                                  SubRecords = subRecords }
+                                Weir.Argv.kebabFlag case, flags)
+                            |> Map.ofList
+
+                        let subRecords =
+                            ud.Cases
+                            |> List.choose (fun (case, payload) ->
+                                match payload with
+                                | Some(TNamed(rn, [])) when (recordOf rn).IsSome -> Some(Weir.Argv.kebabFlag case, rn)
+                                | _ -> None)
+                            |> Map.ofList
+
+                        infos.Add
+                            { Tool = decl.Tool
+                              DeclLine = decl.Line
+                              Exhaustive = letBool "exhaustive" |> Option.defaultValue false
+                              Subs = subs
+                              SigPath = sigFile
+                              Version = letStr "version" |> Option.defaultValue ""
+                              SubRecords = subRecords }
 
     List.ofSeq diags, List.ofSeq infos
 
@@ -3589,7 +3590,12 @@ module SigGen =
             let m =
                 System.Text.RegularExpressions.Regex.Match(
                     line,
-                    "^\\s+(?:-(\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(?:[= ]?\\S*)?\\s*(.*)$"
+                    // `+s, --no-sort` — fzf-style OFF toggles: the +x is
+                    // skipped, never recorded as a short
+                    // the arg skip takes real arg SHAPES only (=X, <x>,
+                    // [x], NUM) — `[= ]?\\S*` ate the first word of an
+                    // argless flag's description
+                    "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(?:=\\S+|\\s(?:<\\S+>|\\[\\S+\\]))?\\s*(.*)$"
                 )
 
             if m.Success then
@@ -3617,10 +3623,16 @@ module SigGen =
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n")
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
-        match Contracts.toolVersionOutput Proc.resolveProg tool with
-        | None -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
-        | Some rawVersion ->
-            let version = rawVersion.Trim()
+        match Contracts.probeToolVersion Proc.resolveProg tool with
+        | Contracts.ToolAbsent -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
+        | probe ->
+            // a tool that refuses --version has NO recorded identity
+            // [D:sig-version-probe] — the refusal's usage dump is not a
+            // version, and recording it leaked paths into the sig
+            let version =
+                match probe with
+                | Contracts.ToolVersion raw -> Some(raw.Trim())
+                | _ -> None
 
             let source, flags =
                 match runTool tool "completion fish" with
@@ -3659,7 +3671,7 @@ module SigGen =
                 line (
                     "/// generated from '"
                     + tool
-                    + " --version' on "
+                    + "' on "
                     + System.DateTime.UtcNow.ToString "yyyy-MM-dd"
                 )
 
@@ -3667,7 +3679,13 @@ module SigGen =
                 line "/// by default; add `let exhaustive = true` once verified by hand)"
                 line "/// flat surface: flags checked across the whole line — split into"
                 line "/// subcommand records by hand if the tool warrants it"
-                line $"let version = \"{escape version}\""
+
+                match version with
+                | Some v -> line $"let version = \"{escape v}\""
+                | None ->
+                    line
+                        "// no `let version`: the tool answers neither --version nor the version subcommand, so there is no identity to record"
+
                 line "type Cmd = {"
 
                 for f in flags do
@@ -3716,7 +3734,7 @@ module SigGen =
                               Url = $"generated:{source}"
                               Sha256 = Contracts.sha256Hex bytes
                               Path = IO.Path.Combine("sigs", tool + ".weir")
-                              Version = Some version }
+                              Version = version }
 
                         match Contracts.readLock weirDir with
                         | Error e -> Error e
@@ -3725,8 +3743,13 @@ module SigGen =
 
                             Contracts.writeLock weirDir (others @ [ entry ])
 
+                            let versionNote =
+                                match version with
+                                | Some v -> escape v
+                                | None -> $"none — '{tool}' answers neither --version nor version"
+
                             Ok
-                                $"added sig {tool} ({flags.Length} flag(s), source: {source}, version: {escape version}) — partial by default; verify and mark exhaustive by hand"
+                                $"added sig {tool} ({flags.Length} flag(s), source: {source}, version: {versionNote}) — partial by default; verify and mark exhaustive by hand"
                 finally
                     try
                         IO.File.Delete tmp

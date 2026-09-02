@@ -1,0 +1,18 @@
+module Fakefzf
+/// generated from 'fakefzf' on 2026-09-02
+/// source: help — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// flat surface: flags checked across the whole line — split into
+/// subcommand records by hand if the tool warrants it
+let version = "fakefzf 0.1"
+type Cmd = {
+    /// Extended-search mode
+    [<Short "x">]
+    extended: bool
+    /// Case-sensitive match
+    noIgnoreCase: bool
+    /// Do not sort the result
+    noSort: bool
+    /// Scoring scheme
+    scheme: bool
+}

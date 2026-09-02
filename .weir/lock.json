@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "kind": "sig",
+      "name": "fakefzf",
+      "url": "generated:help",
+      "sha256": "829fc7edc2059e9c6a2f6491a35cd697d4f6a1f175d226aceb9e0d8dded2aed6",
+      "path": "sigs/fakefzf.weir",
+      "version": "fakefzf 0.1"
+    }
+  ]
+}
