@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.14
+
+### Bugfixes
+
+- The subcommand walk learns all-caps command banners — jira's
+  `MAIN COMMANDS` / `OTHER COMMANDS` carry no trailing colon, so
+  v0.0.13's detector saw no subcommands to walk and jira sigs
+  stayed at the four global flags. And the walk's outcome is now
+  observable either way: a help-sourced sig that probed subcommands
+  without profit says so —
+  `source: help (walked 12 subcommand help(s), 0 answered, none yielded flags)`.
+
 ## v0.0.13
 
 ### New features
