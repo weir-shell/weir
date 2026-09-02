@@ -3648,7 +3648,15 @@ module SigGen =
         for raw in helpText.Split '\n' do
             let line = raw.TrimEnd()
 
-            if line.EndsWith ":" && line.ToLowerInvariant().Contains "command" then
+            // a heading is NON-indented and names commands — with a
+            // colon (Cobra's "Available Commands:") or as an all-caps
+            // banner (jira's "MAIN COMMANDS" / "OTHER COMMANDS")
+            if
+                line.Length > 0
+                && not (System.Char.IsWhiteSpace line[0])
+                && line.ToLowerInvariant().Contains "command"
+                && (line.EndsWith ":" || line = line.ToUpperInvariant())
+            then
                 inSection <- true
             elif line = "" || (line.Length > 0 && not (System.Char.IsWhiteSpace line[0])) then
                 inSection <- false
@@ -3674,9 +3682,11 @@ module SigGen =
     // the flat model's own charter). Depth 2 (`jira issue list`),
     // budget-capped; structured rows only, never the harvest (a
     // sub-page harvest over-collects).
-    let private walkSubFlags (tool: string) (topHelp: string) : Flag list =
+    let private walkSubFlags (tool: string) (topHelp: string) : Flag list * int * int =
         let flags = ResizeArray<Flag>()
         let mutable budget = 60
+        let mutable probed = 0
+        let mutable answered = 0
 
         // BREADTH-first: level 1 completes before level 2 spends a
         // probe — depth-first let an early subcommand's children starve
@@ -3689,10 +3699,12 @@ module SigGen =
             for prefix, sub in level do
                 if budget > 0 then
                     budget <- budget - 1
+                    probed <- probed + 1
 
                     match runTool tool $"{prefix}{sub} --help" with
                     | None -> ()
                     | Some subHelp ->
+                        answered <- answered + 1
                         flags.AddRange(parseHelp subHelp)
 
                         for deeper in subcommandTokens subHelp do
@@ -3700,7 +3712,7 @@ module SigGen =
 
             level <- List.ofSeq next
 
-        List.ofSeq flags
+        List.ofSeq flags, probed, answered
 
     // the source label rides the sig comment — a harvested surface is
     // weaker lineage than parsed rows, and says so
@@ -3714,8 +3726,13 @@ module SigGen =
                 | fs -> "help", fs
 
             match walkSubFlags tool text with
-            | [] -> source, top
-            | subFlags ->
+            // the walk's outcome is OBSERVABLE either way [D:sig-version-probe]:
+            // "help" alone cannot say whether subcommands were never
+            // advertised, never answered, or answered nothing — the counts do
+            | [], 0, _ -> source, top
+            | [], probed, answered ->
+                $"{source} (walked {probed} subcommand help(s), {answered} answered, none yielded flags)", top
+            | subFlags, _, _ ->
                 let seen = top |> List.map (fun f -> f.Long) |> Set.ofList
 
                 let extra =
