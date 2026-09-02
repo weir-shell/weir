@@ -661,15 +661,21 @@ os.makedirs(os.path.join(td6, ".weir", "sigs"), exist_ok=True)
 open(os.path.join(td6, ".weir", "sigs", "comptool.weir"), "w").write(
     "module Comptool\n"
     "let version = \"1.0\"\n"
-    "type Cmd = {\n"
+    "type PsFlags = {\n"
     "    /// sandboxes separated scraped server words never complete\n"
     "    scope: bool\n"
     "    sessionId: bool\n"
     "    settings: bool\n"
+    "}\n"
+    "type RunFlags = {\n"
+    "    slow: bool\n"
     "    verbose: bool\n"
-    "}\n")
+    "}\n"
+    "type Cmd =\n"
+    "    | Ps of PsFlags\n"
+    "    | Run of RunFlags\n")
 docp6 = os.path.join(td6, "use.weir")
-doc6 = "#sig comptool\ncomptool --s"
+doc6 = "#sig comptool\ncomptool ps --s"
 open(docp6, "w").write(doc6 + "\n")
 p6 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 PROCS.append(p6)
@@ -691,7 +697,7 @@ m = read6()
 while m.get("method") != "textDocument/publishDiagnostics":
     m = read6()
 send6({"jsonrpc": "2.0", "id": 61, "method": "textDocument/completion",
-       "params": {"textDocument": {"uri": uri6}, "position": {"line": 1, "character": len("comptool --s")}}})
+       "params": {"textDocument": {"uri": uri6}, "position": {"line": 1, "character": len("comptool ps --s")}}})
 m = read6()
 while m.get("id") != 61:
     m = read6()
@@ -701,6 +707,7 @@ expect("--scope" in labels6 and "--session-id" in labels6 and "--settings" in la
 expect(all(l.startswith("--") for l in labels6),
        f"a -word position offers flags ONLY, never buffer words: {labels6[:12]}")
 expect(not any("sandbox" in l for l in labels6), f"comment words must not complete: {labels6[:12]}")
+expect("--slow" not in labels6, f"a SCOPED sig completes only the matched case: {labels6[:12]}")
 send6({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}})
 m = read6()
 while m.get("id") != 2:

@@ -2194,10 +2194,25 @@ let run (debug: bool) : int =
                                             if m.Count > 0 then Some(m[m.Count - 1].Index, si) else None)
                                         |> List.sortByDescending fst
                                         |> List.tryHead
-                                        |> Option.map (fun (_, si) ->
-                                            si.Subs
-                                            |> Map.toSeq
-                                            |> Seq.collect (fun (_, (longs, _)) -> longs)
+                                        |> Option.map (fun (toolAt, si) ->
+                                            // SCOPED sigs complete their matched
+                                            // case only [D:scoped-sigs]: the first
+                                            // non-flag word after the tool picks
+                                            // the set; before one exists, the
+                                            // union of every case
+                                            let sub =
+                                                upto
+                                                    .Substring(toolAt + si.Tool.Length)
+                                                    .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                                                |> Array.tryFind (fun t -> not (t.StartsWith "-"))
+
+                                            let sets =
+                                                match sub |> Option.bind (fun t -> Map.tryFind t si.Subs) with
+                                                | Some fs -> [ fs ]
+                                                | None -> si.Subs |> Map.toList |> List.map snd
+
+                                            sets
+                                            |> Seq.collect fst
                                             |> Seq.distinct
                                             |> Seq.map (fun l -> "--" + l)
                                             |> Seq.filter (fun l -> l.StartsWith word)
