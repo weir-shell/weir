@@ -785,7 +785,18 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
 
             match stripAnsi (if out.Trim() <> "" then out else err) with
             | blank when blank.Trim() = "" -> RefusesVersionFlag
-            | text -> ToolVersion text
+            | text ->
+                // the IDENTITY is the FIRST line, whitespace-collapsed
+                // [D:sig-version-probe]: az's --version is a whole
+                // environment report — machine paths, dependency lists,
+                // even a volatile update marker; the headline is the
+                // version, the rest is environment
+                let firstLine =
+                    text.Split '\n'
+                    |> Array.tryFind (fun l -> l.Trim() <> "")
+                    |> Option.defaultValue text
+
+                ToolVersion(Text.RegularExpressions.Regex.Replace(firstLine.Trim(), "\s+", " "))
     with _ ->
         ToolAbsent
 

@@ -5942,6 +5942,24 @@ chmod +x bin/opentool
 rm -f "$sgdir/opened.log"
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig opentool 2>&1) || fail "add sig opentool: $out"
 test -f "$sgdir/opened.log" && fail "a bare-word probe OPENED something: $(cat "$sgdir/opened.log")" || true
+# the az dialect [D:sig-version-probe]: multi-line --version records its
+# FIRST line only; `--flag --alias -s [Required] : doc` rows record the
+# postfix short, each alias, and a clean doc
+cat > bin/aztool <<'WEOF'
+#!/bin/sh
+case "$*" in
+  "--version") printf 'azcli 9.9 *\nConfig directory /home/u/.azure\n'; exit 0;;
+  "--help") printf 'Arguments\n    --uri --url -u [Required] : Request URL.\n    --body -b : Request body.\n'; exit 0;;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/aztool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig aztool 2>&1) || fail "add sig aztool: $out"
+echo "$out" | grep -qF "version: azcli 9.9 *" || fail "the identity is the first line: $out"
+echo "$out" | grep -qF ".azure" && fail "environment lines reached the identity" || true
+grep -qF '[<Short "u">]' .weir/sigs/aztool.weir || fail "the postfix short records"
+grep -qF "url: bool" .weir/sigs/aztool.weir || fail "the alias records as its own flag"
+grep -qF "/// Request URL." .weir/sigs/aztool.weir || fail "the doc sheds the alias run and the colon"
 fi
 cd - >/dev/null
 rm -rf "$sgdir"

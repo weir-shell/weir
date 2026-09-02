@@ -3222,7 +3222,7 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
 /// load the signatures a file declared; errors become diagnostics at
 /// the declaring line. The sig file is an ordinary weir MODULE
 /// (decl-only + weak purity for free): `module X`, `let version =
-/// "<verbatim --version>"`, optionally `let exhaustive = true`, and
+/// "<--version's first line>"`, optionally `let exhaustive = true`, and
 /// the surface as the type named `Cmd`.
 let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo list =
     let diags = ResizeArray<Diagnostic>()
@@ -3618,21 +3618,65 @@ module SigGen =
                 System.Text.RegularExpressions.Regex.Match(
                     line,
                     // `+s, --no-sort` — fzf-style OFF toggles: the +x is
-                    // skipped, never recorded as a short
-                    // the arg skip takes real arg SHAPES only (=X, <x>,
-                    // [x], NUM) — `[= ]?\\S*` ate the first word of an
-                    // argless flag's description
-                    "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(?:=\\S+|\\s(?:<\\S+>|\\[\\S+\\]))?\\s*(.*)$"
+                    // skipped, never recorded as a short. The TAIL is
+                    // walked procedurally: az spells rows as
+                    // `--flag --alias -s [Required] : doc`
+                    "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(.*)$"
                 )
 
             if m.Success then
                 let long = m.Groups[2].Value
 
-                if legalLong long && not (flags.ContainsKey long) then
-                    flags[long] <-
-                        { Long = long
-                          Short = (if m.Groups[1].Success then Some m.Groups[1].Value else None)
-                          Doc = (let d = m.Groups[3].Value.Trim() in if d = "" then None else Some d) }
+                let mutable short = if m.Groups[1].Success then Some m.Groups[1].Value else None
+
+                let aliases = ResizeArray<string>()
+
+                // walk the tail: aliases and shorts join the flag, arg
+                // shapes (=X, <x>, [X], BARE-CAPS) are skipped, and the
+                // doc starts at az's `:` or the first prose word
+                let mutable rest = m.Groups[3].Value.TrimStart()
+                let mutable walking = true
+
+                while walking && rest <> "" do
+                    let tok, tail =
+                        match rest.IndexOf ' ' with
+                        | -1 -> rest, ""
+                        | i -> rest.Substring(0, i), rest.Substring(i + 1).TrimStart()
+
+                    if tok.StartsWith "--" && legalLong (tok.TrimStart '-') then
+                        aliases.Add(tok.TrimStart '-')
+                        rest <- tail
+                    elif tok.Length = 2 && tok[0] = '-' && System.Char.IsLetterOrDigit tok[1] then
+                        if short.IsNone then
+                            short <- Some(string tok[1])
+
+                        rest <- tail
+                    elif
+                        tok.StartsWith "="
+                        || (tok.StartsWith "<" && tok.EndsWith ">")
+                        || (tok.StartsWith "[" && tok.EndsWith "]")
+                        || (tok.Length > 1 && tok |> Seq.forall (fun c -> System.Char.IsUpper c || c = '_'))
+                    then
+                        rest <- tail
+                    elif tok = ":" then
+                        rest <- tail
+                        walking <- false
+                    else
+                        walking <- false
+
+                let doc = rest.TrimStart(':', ' ')
+
+                let record l =
+                    if legalLong l && not (flags.ContainsKey l) then
+                        flags[l] <-
+                            { Long = l
+                              Short = (if l = long then short else None)
+                              Doc = (let d = doc.Trim() in if d = "" then None else Some d) }
+
+                record long
+
+                for a in aliases do
+                    record a
 
         flags.Values |> List.ofSeq
 

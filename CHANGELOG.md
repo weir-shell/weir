@@ -18,6 +18,12 @@
   tool's own `--help` advertises that subcommand; flag probes
   (`--version`, `--help`) remain universal.
 
+- The recorded version identity is `--version`'s FIRST line,
+  whitespace-collapsed — az's multi-page environment report (with
+  machine paths) is not an identity. And az's help dialect parses:
+  `--flag --alias -s [Required] : doc` rows record the postfix
+  short, each alias as its own flag, and a clean description.
+
 - Probe output is stripped of ANSI escapes — a tool that colors its
   help when piped (jira on macOS) broke banner detection and leaked
   `[1m` bytes into sig docs; a colored `--version` would have stored

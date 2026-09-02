@@ -106,7 +106,9 @@ bicep build --outfile x.json
 ```
 
 `weir verify` compares the vendored signature against the installed
-binary's verbatim `--version` — an exact match; patch churn is
+binary's `--version` first line (whitespace-collapsed — az's
+multi-page environment report is not an identity) — an exact
+match; patch churn is
 handled by regenerating, and an empty diff is the useful signal.
 When the tool updates, `weir add sig` again.
 
