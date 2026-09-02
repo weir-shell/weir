@@ -173,13 +173,11 @@ Equality, `show`, and sorting are generic through inferred
 constraints (a closed, compiler-owned set — no user type classes).
 
 **The one thing that will catch you out:** `==` versus `=`, in minute
-one. It has caught the people writing these docs: a claim that F#
-accepts `0.1 == 0.2` went to the fidelity oracle and came back
-backwards — `==` is weir's equality and an F# error; `=` is F#'s
-equality and weir's binding glyph. (In weir,
-`0.1 == 0.2` is a check error either way: floats do not join `==` —
-`Float.near a b eps` is the idiom, because floats are finite-only
-here. See [GUIDE.md](GUIDE.md#rates-and-percentages-floats-finite-only).)
+one — `==` is weir's equality and an F# error; `=` is F#'s equality
+and weir's binding glyph. (In weir, `0.1 == 0.2` is a check error
+either way: floats do not join `==` — `Float.near a b eps` is the
+idiom, because floats are finite-only here. See
+[GUIDE.md](GUIDE.md#rates-and-percentages-floats-finite-only).)
 
 `=` on collections is the other equality surprise, in the opposite
 direction: weir's `==` REFUSES seqs at check time, which reads as a
