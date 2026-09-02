@@ -3683,8 +3683,6 @@ module SigGen =
                     tok.Length > 1
                     && tok
                        |> Seq.forall (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
-                    && tok <> "help"
-                    && tok <> "completion"
                     && not (subs.Contains tok)
                 then
                     subs.Add tok
@@ -3706,7 +3704,13 @@ module SigGen =
         // BREADTH-first: level 1 completes before level 2 spends a
         // probe — depth-first let an early subcommand's children starve
         // the rest of docker's forty top-level commands
-        let mutable level = [ for sub in subcommandTokens topHelp -> "", sub ]
+        // help/completion are advertised everywhere and walk nowhere
+        let noise sub = sub = "help" || sub = "completion"
+
+        let mutable level =
+            [ for sub in subcommandTokens topHelp do
+                  if not (noise sub) then
+                      "", sub ]
 
         for _ in 1..2 do
             let next = ResizeArray<string * string>()
@@ -3723,7 +3727,8 @@ module SigGen =
                         flags.AddRange(parseHelp subHelp)
 
                         for deeper in subcommandTokens subHelp do
-                            next.Add($"{prefix}{sub} ", deeper)
+                            if not (noise deeper) then
+                                next.Add($"{prefix}{sub} ", deeper)
 
             level <- List.ofSeq next
 
@@ -3731,8 +3736,8 @@ module SigGen =
 
     // the source label rides the sig comment — a harvested surface is
     // weaker lineage than parsed rows, and says so
-    let private helpSurface (tool: string) : string * Flag list =
-        match runTool tool "--help" with
+    let private helpSurface (tool: string) (topHelp: string option) : string * Flag list =
+        match topHelp with
         | None -> "help", []
         | Some text ->
             let source, top =
@@ -3771,22 +3776,41 @@ module SigGen =
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n")
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
-        match Contracts.probeToolVersion Proc.resolveProg tool with
+        // FLAG probes are safe on any tool; a bare word is NOT — `code
+        // completion fish` OPENED VS CODE on two files
+        // [D:sig-version-probe]. Bare-word probes (completion fish, the
+        // version word) run only when the tool's own --help ADVERTISES
+        // that subcommand.
+        match Contracts.probeVersionFlag Proc.resolveProg tool with
         | Contracts.ToolAbsent -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
-        | probe ->
+        | rung1 ->
+            let topHelp = runTool tool "--help"
+
+            let advertised = topHelp |> Option.map subcommandTokens |> Option.defaultValue []
+
             // a tool that refuses --version has NO recorded identity
             // [D:sig-version-probe] — the refusal's usage dump is not a
             // version, and recording it leaked paths into the sig
             let version =
-                match probe with
+                match rung1 with
                 | Contracts.ToolVersion raw -> Some(raw.Trim())
+                | _ when List.contains "version" advertised ->
+                    match Contracts.probeVersionWord Proc.resolveProg tool with
+                    | Contracts.ToolVersion raw -> Some(raw.Trim())
+                    | _ -> None
                 | _ -> None
 
+            let fishText =
+                if List.contains "completion" advertised then
+                    runTool tool "completion fish"
+                else
+                    None
+
             let source, flags =
-                match runTool tool "completion fish" with
+                match fishText with
                 | Some text when text.Contains "complete " ->
                     match parseFish text tool with
-                    | [] -> helpSurface tool
+                    | [] -> helpSurface tool topHelp
                     | fs -> "completion-fish", fs
                 | _ ->
                     let shipped =
@@ -3797,9 +3821,9 @@ module SigGen =
                     match shipped with
                     | Some f ->
                         match parseFish (IO.File.ReadAllText f) tool with
-                        | [] -> helpSurface tool
+                        | [] -> helpSurface tool topHelp
                         | fs -> "fish-file", fs
-                    | None -> helpSurface tool
+                    | None -> helpSurface tool topHelp
 
             match flags with
             | [] ->

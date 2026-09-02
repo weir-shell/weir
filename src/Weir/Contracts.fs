@@ -804,6 +804,17 @@ let probeToolVersion (resolve: string -> string) (tool: string) : VersionProbe =
     | RefusesVersionFlag -> probeRung resolve tool "version"
     | answer -> answer
 
+/// the rungs SEPARATELY, for the add side's gated ladder
+/// [D:sig-version-probe]: a FLAG probe is safe on any tool; a bare
+/// word is not (`code completion fish` opened VS Code on two files) —
+/// the add side runs the word rung only when the tool's help
+/// advertises a `version` subcommand. verify keeps the full ladder:
+/// it only probes tools with a RECORDED version, i.e. tools that
+/// answered a rung at add time.
+let probeVersionFlag (resolve: string -> string) (tool: string) : VersionProbe = probeRung resolve tool "--version"
+
+let probeVersionWord (resolve: string -> string) (tool: string) : VersionProbe = probeRung resolve tool "version"
+
 /// `weir verify`, two-arm shaped (ruling: today the hash arm; the
 /// signature arm — tool `--version` against the recorded identity —
 /// landed beside it [D:command-signatures]).

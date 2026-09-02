@@ -12,6 +12,12 @@
   without profit says so —
   `source: help (walked 12 subcommand help(s), 0 answered, none yielded flags)`.
 
+- Bare-word probes are gated on advertisement — `weir add sig code`
+  ran `code completion fish`, which OPENED VS Code on two files.
+  `completion fish` and the `version` word now run only when the
+  tool's own `--help` advertises that subcommand; flag probes
+  (`--version`, `--help`) remain universal.
+
 - Probe output is stripped of ANSI escapes — a tool that colors its
   help when piped (jira on macOS) broke banner detection and leaked
   `[1m` bytes into sig docs; a colored `--version` would have stored

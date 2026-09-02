@@ -5816,7 +5816,7 @@ cat > bin/subverstool <<'WEOF'
 case "$1" in
   --version) echo "Error: unknown flag: --version" >&2; exit 1;;
   version) echo "subverstool (Version=1.7.0)";;
-  --help) printf 'Flags:\n      --force   push through\n';;
+  --help) printf 'OTHER COMMANDS\n  version   Print version\n\nFlags:\n      --force   push through\n';;
   *) echo "ran:$@";;
 esac
 WEOF
@@ -5836,6 +5836,9 @@ exit /b 1
 echo subverstool (Version=1.7.0)
 goto :eof
 :help
+echo OTHER COMMANDS
+echo   version   Print version
+echo.
 echo Flags:
 echo       --force   push through
 BEOF
@@ -5923,6 +5926,22 @@ grep -qF '[<Wire "type"; Short "t">]' .weir/sigs/kwtool.weir || fail "Wire and S
 # subcommands reusing a short: first holder keeps it, the union still validates
 grep -qF "allTags: bool" .weir/sigs/kwtool.weir || fail "the dup-short flag keeps its long"
 grep -c 'Short "a"' .weir/sigs/kwtool.weir | grep -qx 1 || fail "exactly one field holds -a"
+# open-by-default tools (the VS Code shape [D:sig-version-probe]): a bare
+# word would OPEN things — bare-word probes run only when --help
+# advertises the subcommand, so generation must spawn none here
+cat > bin/opentool <<'WEOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "1.93.0"; exit 0;;
+  --help) printf 'Usage: opentool [options][paths...]\n\nOptions:\n      --wait   Wait for close\n'; exit 0;;
+  -*) exit 1;;
+  *) echo "OPENED:$*" >> "$sgdir/opened.log"; exit 0;;
+esac
+WEOF
+chmod +x bin/opentool
+rm -f "$sgdir/opened.log"
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig opentool 2>&1) || fail "add sig opentool: $out"
+test -f "$sgdir/opened.log" && fail "a bare-word probe OPENED something: $(cat "$sgdir/opened.log")" || true
 fi
 cd - >/dev/null
 rm -rf "$sgdir"
