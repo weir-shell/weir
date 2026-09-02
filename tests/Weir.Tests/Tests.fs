@@ -12756,13 +12756,17 @@ let sigTests =
                   let ds = diagsFor root [] [ "#sig fixtool"; "print \"never calls it\"" ]
                   Expect.equal ds [] "legal, not an error")
           }
-          test "the sig file must carry version and Cmd — each absence teaches" {
+          test "the sig file needs Cmd; `let version` is OPTIONAL [D:sig-version-probe]" {
+              // a tool that does not answer --version has no identity to
+              // record — a version-less sig VALIDATES and its flags check
               withSigTree [ "module Fixtool"; "type Cmd = { x: bool }" ] (fun root ->
                   let ds = diagsFor root [] [ "#sig fixtool"; "print \"x\"" ]
+                  Expect.equal ds [] "version absence is a stated fact, not a defect")
 
-                  match ds with
-                  | [ d ] -> Expect.stringContains d.Message "no `let version" "version required"
-                  | other -> failtest $"unexpected {other.Length}")
+              withSigTree [ "module Fixtool"; "type Cmd = { outfile: bool }" ] (fun root ->
+                  let ds = diagsFor root [] [ "#sig fixtool"; "fixtool --outfil x" ]
+                  Expect.equal ds.Length 1 "the surface still checks without a version"
+                  Expect.stringContains ds[0].Message "unknown flag '--outfil'" "")
 
               withSigTree [ "module Fixtool"; "let version = \"v\""; "type Other = { x: bool }" ] (fun root ->
                   let ds = diagsFor root [] [ "#sig fixtool"; "print \"x\"" ]

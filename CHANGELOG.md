@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Bugfixes
+
+- `weir add sig` on a tool that refuses `--version` (jira-style) no
+  longer records the error's usage dump — user paths included — as
+  the version. The probe reads the exit code: a refusal records NO
+  identity, the sig says so in a comment, and `weir verify` takes
+  the hash-only arm. `let version` is now optional in sig files.
+
 ## v0.0.11
 
 ### Docs

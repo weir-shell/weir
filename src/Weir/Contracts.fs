@@ -732,6 +732,15 @@ let restore (weirDir: string) : Result<string list, string> =
                     | Error _ -> "")
             )
 
+/// the `<tool> --version` probe's three honest answers
+/// [D:sig-version-probe]: absent, speaks, or REFUSES the flag — a
+/// nonzero exit's output is a usage dump (paths included), never an
+/// identity; recording it leaked the error text into committed sigs
+type VersionProbe =
+    | ToolAbsent
+    | RefusesVersionFlag
+    | ToolVersion of string
+
 /// spawn `<tool> --version` and capture its combined first output —
 /// FENCED to the two commands allowed to ask the environment
 /// (`weir verify`, `weir add sig`); check/completion never call this
@@ -739,7 +748,7 @@ let restore (weirDir: string) : Result<string list, string> =
 /// `resolve` is the spawn-side PATHEXT resolution (Proc.resolveProg —
 /// this module compiles before it): CreateProcess appends only .exe,
 /// so a .bat tool needs its real file handed over [D:windows-s2]
-let toolVersionOutput (resolve: string -> string) (tool: string) : string option =
+let probeToolVersion (resolve: string -> string) (tool: string) : VersionProbe =
     try
         let psi = Diagnostics.ProcessStartInfo(resolve tool, "--version")
         psi.RedirectStandardOutput <- true
@@ -749,9 +758,13 @@ let toolVersionOutput (resolve: string -> string) (tool: string) : string option
         let out = p.StandardOutput.ReadToEnd()
         let err = p.StandardError.ReadToEnd()
         p.WaitForExit()
-        Some(if out.Trim() <> "" then out else err)
+
+        if p.ExitCode <> 0 then
+            RefusesVersionFlag
+        else
+            ToolVersion(if out.Trim() <> "" then out else err)
     with _ ->
-        None
+        ToolAbsent
 
 /// `weir verify`, two-arm shaped (ruling: today the hash arm; the
 /// signature arm — tool `--version` against the recorded identity —
@@ -795,18 +808,23 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
                     // exact match, no tolerance [D:command-signatures]
                     match e.Version with
                     | Some recorded ->
-                        match toolVersionOutput resolve e.Name with
-                        | None ->
+                        match probeToolVersion resolve e.Name with
+                        | ToolAbsent ->
                             findings.Add(ToolMissing e)
 
                             lines.Add
                                 $"{e.Kind} {e.Name}: TOOL MISSING — '{e.Name}' is not on PATH (the signature records: {recorded})"
-                        | Some actual when actual.Trim() <> recorded.Trim() ->
+                        | RefusesVersionFlag ->
+                            findings.Add(VersionMismatch(e, "(the tool no longer answers --version)"))
+
+                            lines.Add
+                                $"{e.Kind} {e.Name}: VERSION MISMATCH — the installed tool no longer answers --version, the signature records '{recorded.Trim()}' — regenerate: weir add sig {e.Name}"
+                        | ToolVersion actual when actual.Trim() <> recorded.Trim() ->
                             findings.Add(VersionMismatch(e, actual))
 
                             lines.Add
                                 $"{e.Kind} {e.Name}: VERSION MISMATCH — installed says '{actual.Trim()}', the signature records '{recorded.Trim()}' — regenerate: weir add sig {e.Name}"
-                        | Some _ -> lines.Add $"{e.Kind} {e.Name}: ok (hash + version)"
+                        | ToolVersion _ -> lines.Add $"{e.Kind} {e.Name}: ok (hash + version)"
                     | None -> lines.Add $"{e.Kind} {e.Name}: ok"
 
         Ok(List.ofSeq lines, List.ofSeq findings)
