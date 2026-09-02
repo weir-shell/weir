@@ -5579,6 +5579,15 @@ let semanticTokenTests =
               let argsLines = [ "type Cli = { verbose: bool }"; "let c = Args.load Cli" ]
               Expect.equal (Weir.Lsp.definitionFor argsLines 2 20) (Some(1, 6, 3)) "Args.load Cli -> the type decl"
           }
+          test "hoverType: pattern-let binders hover their own types [D:pat-binder-hover] (user receipt)" {
+              // `let key, title = Str.splitOnce …` — both names hover;
+              // the RHS keeps its expression hover past the `=`
+              let lines = [ "let key, title = Str.splitOnce \"=\" \"k=v\"" ]
+              let onKey = Weir.Lsp.hoverType lines 1 6 // on `key`
+              let onTitle = Weir.Lsp.hoverType lines 1 11 // on `title`
+              Expect.isTrue (onKey |> Option.exists (fun s -> s.Contains "string")) "key : string"
+              Expect.isTrue (onTitle |> Option.exists (fun s -> s.Contains "string")) "title : string"
+          }
           test "hoverType: a lambda param shows its own type, not the enclosing arrow (user receipt)" {
               // t is used via field access -> an OPEN ROW; the bug showed
               // the param carrying the function's `... -> ...` arrow because
@@ -12750,6 +12759,15 @@ let sigTests =
 
                   for d in ds do
                       Expect.stringContains d.Message "unknown flag '--outfil'" "")
+          }
+          test "#sig with a quoted tool name teaches the bare word" {
+              withSigTree fixSig (fun root ->
+                  let ds = diagsFor root [] [ "#sig \"fixtool\""; "print \"x\"" ]
+
+                  match ds with
+                  | [ d ] ->
+                      Expect.stringContains d.Message "drop the quotes: #sig fixtool" "the teach names the repair"
+                  | other -> failtest $"unexpected {other.Length}")
           }
           test "a declared-but-unused signature is INERT" {
               withSigTree fixSig (fun root ->

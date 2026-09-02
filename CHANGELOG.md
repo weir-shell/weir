@@ -10,6 +10,16 @@
   identity, the sig says so in a comment, and `weir verify` takes
   the hash-only arm. `let version` is now optional in sig files.
 
+- `#sig "jira"` (a quoted tool name) searched for a file literally
+  named `"jira".weir` — it now teaches: drop the quotes.
+
+- The sig help scraper learns fzf's `+s, --no-sort` off-toggle
+  spelling, and stops eating the first word of an argless flag's
+  description.
+
+- Pattern-let binders hover: `let key, title = …` shows each name's
+  own type.
+
 ## v0.0.11
 
 ### Docs

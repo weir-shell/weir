@@ -1269,6 +1269,24 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             letBinderAt ll.Text jcol
             |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetSig name jcol))
 
+        // a top-level PATTERN binder (`let key, title = …`) hovers its
+        // own scheme [D:pat-binder-hover]: KLetPat carries name→scheme
+        // pairs, so the lookup is by word — gated LEFT of the `=` so an
+        // RHS use of the same name keeps its expression hover
+        let patBinderTy =
+            match chk.Kind with
+            | Script.KLetPat(_, schemes, _) ->
+                wordAt ll.Text jcol
+                |> Option.bind (fun w ->
+                    let eq = ll.Text.IndexOf '='
+
+                    if eq > 0 && jcol - 1 < eq then
+                        schemes
+                        |> List.tryPick (fun (n, sc) -> if n = w then Some(formatTy sc.Ty) else None)
+                    else
+                        None)
+            | _ -> None
+
         let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
         let node = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
 
@@ -1414,6 +1432,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElse fieldInLiteral
             |> Option.orElse constructorSig
             |> Option.orElse binderSig
+            |> Option.orElse patBinderTy
             |> Option.orElse builtinSig
             |> Option.orElse moduleMemberSig
             |> Option.orElseWith (fun () -> paramTy |> Option.map formatTy)

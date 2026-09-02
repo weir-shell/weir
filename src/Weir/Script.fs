@@ -3234,6 +3234,12 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
     for decl in decls do
         if decl.Tool = "" then
             diags.Add(mk decl.Line "malformed #sig — usage: #sig <tool> [\"path/to/sig.weir\"]")
+        // quoted tool names searched for a file named "tool".weir,
+        // quotes and all — the directive takes a BARE word (only the
+        // override path is quoted) [D:sig-version-probe]
+        elif decl.Tool.StartsWith "\"" || decl.Tool.EndsWith "\"" then
+            let bare = decl.Tool.Trim '"'
+            diags.Add(mk decl.Line $"#sig takes a bare tool name — drop the quotes: #sig {bare}")
         else
             let resolved =
                 match decl.Override with
@@ -3584,7 +3590,12 @@ module SigGen =
             let m =
                 System.Text.RegularExpressions.Regex.Match(
                     line,
-                    "^\\s+(?:-(\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(?:[= ]?\\S*)?\\s*(.*)$"
+                    // `+s, --no-sort` — fzf-style OFF toggles: the +x is
+                    // skipped, never recorded as a short
+                    // the arg skip takes real arg SHAPES only (=X, <x>,
+                    // [x], NUM) — `[= ]?\\S*` ate the first word of an
+                    // argless flag's description
+                    "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(?:=\\S+|\\s(?:<\\S+>|\\[\\S+\\]))?\\s*(.*)$"
                 )
 
             if m.Success then
