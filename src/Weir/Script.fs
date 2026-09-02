@@ -3683,7 +3683,8 @@ module SigGen =
                 match version with
                 | Some v -> line $"let version = \"{escape v}\""
                 | None ->
-                    line "// no `let version`: the tool does not answer --version, so there is no identity to record"
+                    line
+                        "// no `let version`: the tool answers neither --version nor the version subcommand, so there is no identity to record"
 
                 line "type Cmd = {"
 
@@ -3745,7 +3746,7 @@ module SigGen =
                             let versionNote =
                                 match version with
                                 | Some v -> escape v
-                                | None -> $"none — '{tool}' does not answer --version"
+                                | None -> $"none — '{tool}' answers neither --version nor version"
 
                             Ok
                                 $"added sig {tool} ({flags.Length} flag(s), source: {source}, version: {versionNote}) — partial by default; verify and mark exhaustive by hand"

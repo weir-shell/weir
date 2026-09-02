@@ -6,9 +6,13 @@
 
 - `weir add sig` on a tool that refuses `--version` (jira-style) no
   longer records the error's usage dump — user paths included — as
-  the version. The probe reads the exit code: a refusal records NO
-  identity, the sig says so in a comment, and `weir verify` takes
-  the hash-only arm. `let version` is now optional in sig files.
+  the version. The probe reads the exit code and climbs a two-rung
+  ladder: `--version`, then the `version` subcommand (`jira version`
+  works), with null stdin and a temp cwd so a bare-word probe can
+  neither hang nor serve a local VERSION file as the identity. A
+  tool answering neither records NO identity, the sig says so in a
+  comment, and `weir verify` takes the hash-only arm. `let version`
+  is now optional in sig files.
 
 - `#sig "jira"` (a quoted tool name) searched for a file literally
   named `"jira".weir` — it now teaches: drop the quotes.
