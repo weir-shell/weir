@@ -5890,6 +5890,24 @@ fi
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig cobratool 2>&1) || fail "add sig cobratool: $out"
 echo "$out" | grep -qF "source: help+subs" || fail "the walk labels its lineage: $out"
 grep -qF "jql: bool" .weir/sigs/cobratool.weir || fail "the depth-2 walk found --jql"
+# ANSI in help/version output (the mac jira shape [D:sig-version-probe]):
+# escapes are stripped at the probe boundary — a colored all-caps banner
+# still detects, and no escape byte reaches the sig
+if [ "$IS_WINDOWS" != "1" ]; then
+cat > bin/colortool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'tool \033[32m2.0\033[0m\n'; exit 0; fi
+if [ "$1" = "--help" ]; then printf '\033[1mMAIN COMMANDS\033[0m\n  sub    A sub\n\n\033[1mFLAGS\033[0m\n      --top   top\n'; exit 0; fi
+if [ "$1" = "sub" ] && [ "$2" = "--help" ]; then printf 'FLAGS\n      --deep   deep flag\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x bin/colortool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig colortool 2>&1) || fail "add sig colortool: $out"
+echo "$out" | grep -qF "source: help+subs" || fail "a colored banner must still detect: $out"
+echo "$out" | grep -qF 'version: tool 2.0' || fail "the version is stripped clean: $out"
+grep -qF "deep: bool" .weir/sigs/colortool.weir || fail "the colored walk reached the sub"
+grep -q $'\x1b' .weir/sigs/colortool.weir && fail "an escape byte reached the sig" || true
+fi
 cd - >/dev/null
 rm -rf "$sgdir"
 echo "e2e ok: command signatures (generate, typo+did-you-mean, check spawns nothing, property 3, verify arms, restore never regenerates, --version refuser records none)"

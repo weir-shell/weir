@@ -12,6 +12,11 @@
   without profit says so —
   `source: help (walked 12 subcommand help(s), 0 answered, none yielded flags)`.
 
+- Probe output is stripped of ANSI escapes — a tool that colors its
+  help when piped (jira on macOS) broke banner detection and leaked
+  `[1m` bytes into sig docs; a colored `--version` would have stored
+  escapes as the identity.
+
 ## v0.0.13
 
 ### New features

@@ -3546,7 +3546,7 @@ module SigGen =
                 None
             elif p.ExitCode = 0 then
                 let out = outTask.Result
-                Some(if out.Trim() <> "" then out else errTask.Result)
+                Some(Contracts.stripAnsi (if out.Trim() <> "" then out else errTask.Result))
             else
                 None
         with _ ->

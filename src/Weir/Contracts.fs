@@ -741,6 +741,13 @@ type VersionProbe =
     | RefusesVersionFlag
     | ToolVersion of string
 
+/// probe output is PARSED, so terminal escapes are noise — a colored
+/// help banner fails an all-caps test (ToUpper turns the CSI final
+/// byte `m` into `M`), and a colored version would store escapes in
+/// the sig [D:sig-version-probe]
+let stripAnsi (text: string) : string =
+    Text.RegularExpressions.Regex.Replace(text, "\x1b\\[[0-9;?]*[A-Za-z]", "")
+
 /// one probe rung: spawn `<tool> <arg>` and read the exit code.
 /// stdin is NULL and the cwd a fresh temp dir — probing the bare
 /// `version` word must not hang a stdin-reader (`grep version`) or
@@ -776,7 +783,7 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
             let out = outTask.Result
             let err = errTask.Result
 
-            match (if out.Trim() <> "" then out else err) with
+            match stripAnsi (if out.Trim() <> "" then out else err) with
             | blank when blank.Trim() = "" -> RefusesVersionFlag
             | text -> ToolVersion text
     with _ ->
