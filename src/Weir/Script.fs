@@ -3676,21 +3676,30 @@ module SigGen =
     // sub-page harvest over-collects).
     let private walkSubFlags (tool: string) (topHelp: string) : Flag list =
         let flags = ResizeArray<Flag>()
-        let mutable budget = 30
+        let mutable budget = 60
 
-        let rec walk (prefix: string) (help: string) (depth: int) =
-            if depth < 2 then
-                for sub in subcommandTokens help do
-                    if budget > 0 then
-                        budget <- budget - 1
+        // BREADTH-first: level 1 completes before level 2 spends a
+        // probe — depth-first let an early subcommand's children starve
+        // the rest of docker's forty top-level commands
+        let mutable level = [ for sub in subcommandTokens topHelp -> "", sub ]
 
-                        match runTool tool $"{prefix}{sub} --help" with
-                        | None -> ()
-                        | Some subHelp ->
-                            flags.AddRange(parseHelp subHelp)
-                            walk $"{prefix}{sub} " subHelp (depth + 1)
+        for _ in 1..2 do
+            let next = ResizeArray<string * string>()
 
-        walk "" topHelp 0
+            for prefix, sub in level do
+                if budget > 0 then
+                    budget <- budget - 1
+
+                    match runTool tool $"{prefix}{sub} --help" with
+                    | None -> ()
+                    | Some subHelp ->
+                        flags.AddRange(parseHelp subHelp)
+
+                        for deeper in subcommandTokens subHelp do
+                            next.Add($"{prefix}{sub} ", deeper)
+
+            level <- List.ofSeq next
+
         List.ofSeq flags
 
     // the source label rides the sig comment — a harvested surface is
