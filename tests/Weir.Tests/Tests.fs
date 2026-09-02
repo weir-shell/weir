@@ -12760,6 +12760,27 @@ let sigTests =
                   for d in ds do
                       Expect.stringContains d.Message "unknown flag '--outfil'" "")
           }
+          test "a Wire attr carries a keyword flag spelling [D:sig-version-probe]" {
+              // docker --type / kubectl --for: the generator emits
+              // [<Wire "type">] typeFlag, and the flag set reads Wire
+              withSigTree
+                  [ "module Fixtool"
+                    "type Cmd = {"
+                    "    [<Wire \"type\">]"
+                    "    typeFlag: bool"
+                    "}" ]
+                  (fun root ->
+                      let ok = diagsFor root [] [ "#sig fixtool"; "fixtool --type x" ]
+                      Expect.equal ok [] "--type matches through Wire"
+
+                      let ds = diagsFor root [] [ "#sig fixtool"; "fixtool --typ x" ]
+                      Expect.equal ds.Length 1 "the typo still catches"
+
+                      Expect.stringContains
+                          ds[0].Message
+                          "Did you mean '--type'?"
+                          "…did-you-mean speaks the WIRE spelling")
+          }
           test "#sig with a quoted tool name teaches the bare word" {
               withSigTree fixSig (fun root ->
                   let ds = diagsFor root [] [ "#sig \"fixtool\""; "print \"x\"" ]

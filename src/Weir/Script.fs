@@ -3195,10 +3195,25 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
         | Some specs -> specs |> List.exists (fun (n, _) -> n = "Positional")
         | None -> false
 
+    // a [<Wire "type">] field carries the FLAG spelling the field name
+    // cannot (keywords) [D:sig-version-probe] — the language-wide wire
+    // teach, honored here
+    let wireOf f =
+        match Map.tryFind f def.Attrs with
+        | Some specs ->
+            specs
+            |> List.tryPick (function
+                | "Wire", Some(AStr w) -> Some w
+                | _ -> None)
+        | None -> None
+
     let longs =
         def.Fields
         |> List.filter (fun (f, _) -> not (positional f))
-        |> List.map (fun (f, _) -> Weir.Argv.kebabFlag f)
+        |> List.map (fun (f, _) ->
+            match wireOf f with
+            | Some w -> w
+            | None -> Weir.Argv.kebabFlag f)
         |> Set.ofList
 
     let shorts = Weir.Argv.explicitShorts def |> List.map snd |> Set.ofList
@@ -3826,11 +3841,23 @@ module SigGen =
                     | Some d -> line $"    /// {escape d}"
                     | None -> ()
 
+                    // a keyword long (docker --type, kubectl --for)
+                    // cannot name a field — Wire carries the flag
+                    // spelling, the field takes a Flag suffix
+                    let fname = fieldName f.Long
+
+                    let fname =
+                        if Set.contains fname Weir.Parser.keywords then
+                            line $"    [<Wire \"{f.Long}\">]"
+                            fname + "Flag"
+                        else
+                            fname
+
                     match f.Short with
                     | Some sh when sh.Length = 1 && sh <> "h" -> line $"    [<Short \"{sh}\">]"
                     | _ -> ()
 
-                    line $"    {fieldName f.Long}: bool"
+                    line $"    {fname}: bool"
 
                 line "}"
                 let text = sb.ToString()

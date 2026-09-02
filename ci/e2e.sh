@@ -5907,6 +5907,17 @@ echo "$out" | grep -qF "source: help+subs" || fail "a colored banner must still 
 echo "$out" | grep -qF 'version: tool 2.0' || fail "the version is stripped clean: $out"
 grep -qF "deep: bool" .weir/sigs/colortool.weir || fail "the colored walk reached the sub"
 grep -q $'\x1b' .weir/sigs/colortool.weir && fail "an escape byte reached the sig" || true
+# keyword longs (docker --type, kubectl --for): Wire carries the flag
+# spelling, the field takes a Flag suffix — generation validates
+cat > bin/kwtool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "kt 1.0"; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'Flags:\n      --for string    Wait condition\n      --type string   Resource type\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x bin/kwtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig kwtool 2>&1) || fail "keyword longs must generate: $out"
+grep -qF '[<Wire "type">]' .weir/sigs/kwtool.weir || fail "the Wire attr carries the keyword spelling"
 fi
 cd - >/dev/null
 rm -rf "$sgdir"

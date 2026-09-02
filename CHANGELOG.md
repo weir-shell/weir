@@ -17,6 +17,11 @@
   `[1m` bytes into sig docs; a colored `--version` would have stored
   escapes as the identity.
 
+- A flag whose long is a weir keyword (docker's `--type`, kubectl's
+  `--for`) no longer aborts generation — the generator emits
+  `[<Wire "type">] typeFlag: bool`, and the sig checker reads the
+  Wire spelling for matching and did-you-mean.
+
 ## v0.0.13
 
 ### New features
