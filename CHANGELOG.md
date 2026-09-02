@@ -20,7 +20,11 @@
 - A flag whose long is a weir keyword (docker's `--type`, kubectl's
   `--for`) no longer aborts generation — the generator emits
   `[<Wire "type">] typeFlag: bool`, and the sig checker reads the
-  Wire spelling for matching and did-you-mean.
+  Wire spelling for matching and did-you-mean. A keyword long WITH a
+  short (jira's `-t, --type`) shares one attr bracket, and when
+  walked subcommands reuse a short (docker's `-a` on `all` and
+  `all-tags`) the first holder keeps it — longs still check. A
+  generator-bug refusal now names the offending sig line.
 
 ## v0.0.13
 

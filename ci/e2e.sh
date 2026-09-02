@@ -5912,12 +5912,17 @@ grep -q $'\x1b' .weir/sigs/colortool.weir && fail "an escape byte reached the si
 cat > bin/kwtool <<'WEOF'
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo "kt 1.0"; exit 0; fi
-if [ "$1" = "--help" ]; then printf 'Flags:\n      --for string    Wait condition\n      --type string   Resource type\n'; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'MAIN COMMANDS\n  wait   Wait for things\n\nFlags:\n      --for string    Wait condition\n  -t, --type string   Resource type\n  -a, --all           All of them\n'; exit 0; fi
+if [ "$1" = "wait" ] && [ "$2" = "--help" ]; then printf 'Flags:\n  -a, --all-tags   Every tag\n'; exit 0; fi
 exit 1
 WEOF
 chmod +x bin/kwtool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig kwtool 2>&1) || fail "keyword longs must generate: $out"
-grep -qF '[<Wire "type">]' .weir/sigs/kwtool.weir || fail "the Wire attr carries the keyword spelling"
+# a keyword long WITH a short shares one bracket (stacked attrs do not parse)
+grep -qF '[<Wire "type"; Short "t">]' .weir/sigs/kwtool.weir || fail "Wire and Short share one attr bracket"
+# subcommands reusing a short: first holder keeps it, the union still validates
+grep -qF "allTags: bool" .weir/sigs/kwtool.weir || fail "the dup-short flag keeps its long"
+grep -c 'Short "a"' .weir/sigs/kwtool.weir | grep -qx 1 || fail "exactly one field holds -a"
 fi
 cd - >/dev/null
 rm -rf "$sgdir"

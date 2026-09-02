@@ -3836,6 +3836,18 @@ module SigGen =
 
                 line "type Cmd = {"
 
+                // subcommands legitimately reuse shorts (docker -a =
+                // all AND all-tags); the flat union keeps the FIRST
+                // holder and drops the rest — longs still check
+                let flags =
+                    let taken = System.Collections.Generic.HashSet<string>()
+
+                    flags
+                    |> List.map (fun f ->
+                        match f.Short with
+                        | Some sh when not (taken.Add sh) -> { f with Short = None }
+                        | _ -> f)
+
                 for f in flags do
                     match f.Doc with
                     | Some d -> line $"    /// {escape d}"
@@ -3843,19 +3855,25 @@ module SigGen =
 
                     // a keyword long (docker --type, kubectl --for)
                     // cannot name a field — Wire carries the flag
-                    // spelling, the field takes a Flag suffix
+                    // spelling, the field takes a Flag suffix. Attr
+                    // specs share ONE bracket: stacked [<…>] lines do
+                    // not parse
                     let fname = fieldName f.Long
 
-                    let fname =
+                    let fname, attrs =
                         if Set.contains fname Weir.Parser.keywords then
-                            line $"    [<Wire \"{f.Long}\">]"
-                            fname + "Flag"
+                            fname + "Flag", [ $"Wire \"{f.Long}\"" ]
                         else
-                            fname
+                            fname, []
 
-                    match f.Short with
-                    | Some sh when sh.Length = 1 && sh <> "h" -> line $"    [<Short \"{sh}\">]"
-                    | _ -> ()
+                    let attrs =
+                        match f.Short with
+                        | Some sh when sh.Length = 1 && sh <> "h" -> attrs @ [ $"Short \"{sh}\"" ]
+                        | _ -> attrs
+
+                    if not attrs.IsEmpty then
+                        let joined = String.concat "; " attrs
+                        line $"    [<{joined}>]"
 
                     line $"    {fname}: bool"
 
@@ -3881,7 +3899,15 @@ module SigGen =
                                 Line = 1 } ]
 
                     match probe with
-                    | d :: _, _ -> Error $"generated signature does not validate: {d.Message} — this is a generator bug"
+                    | d :: _, _ ->
+                        // name the offending LINE — three generator bugs
+                        // arrived blind before this did [D:sig-version-probe]
+                        let atLine =
+                            match text.Split '\n' |> Array.tryItem (d.Line - 1) with
+                            | Some l when l.Trim() <> "" -> $" at line {d.Line}: {l.Trim()}"
+                            | _ -> ""
+
+                        Error $"generated signature does not validate: {d.Message}{atLine} — this is a generator bug"
                     | [], _ ->
                         let dest = IO.Path.Combine(weirDir, "sigs", tool + ".weir")
                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
