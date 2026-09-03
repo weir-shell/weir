@@ -4817,7 +4817,8 @@ let typeEnv: TypeEnv =
               completedDef.Name, Record completedDef
               groupDef.Name, Record groupDef
               envVarDef.Name, Record envVarDef ]
-      ModuleTypes = Map.empty }
+      ModuleTypes = Map.empty
+      AnonLitDefs = System.Collections.Generic.Dictionary() }
 
 let typeEnvStrict: TypeEnv =
     { typeEnv with

@@ -738,7 +738,13 @@ let bracketFold
                 | '{'
                 | '[' ->
                     let entryCol =
+                        // `{|` is ONE opener token [D:anon-literals] — the
+                        // `|` is not entry content, and `|}` closes from
+                        // the entry-content side too
                         let mutable j = i + 1
+
+                        if c = '{' && j < piece.Length && piece[j] = '|' then
+                            j <- j + 1
 
                         while j < piece.Length && piece[j] = ' ' do
                             j <- j + 1
@@ -1109,6 +1115,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                             let danglesOpen =
                                                 prev.EndsWith "{"
+                                                // the anon opener is one token [D:anon-literals] —
+                                                // named here because the operator clause below
+                                                // excludes `type` lines, where a nested anon
+                                                // TYPE may dangle it too
+                                                || prev.EndsWith "{|"
                                                 || prev.EndsWith "["
                                                 || prev.EndsWith ";"
                                                 // an update header ends at `with`; the

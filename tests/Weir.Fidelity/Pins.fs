@@ -234,6 +234,24 @@ let pins =
           "type R = { A: int }\nlet x = { A = 1 }\nlet y = { match 1 with | _ -> x with A = 2 }\n"
           Same
 
+      // --- anonymous record literals [D:anon-literals] — the row
+      // no-anonymous-records NARROWED to its edges ---
+      pin "anonymous literal accepted, field access included" "let x = {| a = 1; b = \"t\" |}\nlet n = x.a\n" Same
+      pin "punning rejected both sides" "let k = 1\nlet x = {| k |}\n" Same
+      pin
+          "a literal never becomes a declared record (nominal both sides)"
+          "type An = { a: int }\nlet xs = [{ a = 1 }; {| a = 1 |}]\n"
+          Same
+      pin
+          "generic literal: weir needs ground fields, F# generalizes"
+          "let f = fun q -> {| a = q |}\n"
+          (Diverges "no-anonymous-records")
+      pin "empty literal: weir refuses, F# admits {||}" "let e = {||}\n" (Diverges "no-anonymous-records")
+      pin
+          "anonymous copy-update: weir parks it, F# accepts"
+          "let r = {| a = 1 |}\nlet x = {| r with a = 2 |}\n"
+          (Diverges "no-anonymous-records")
+
       // --- the Regex pattern (the weir-only match form) ---
       pin
           "the Regex match pattern: weir-only (F# has no built-in regex pattern)"

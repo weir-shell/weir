@@ -142,6 +142,23 @@ comp = read_msg()
 labels = [c["label"] for c in comp["result"]]
 expect(any("name" in l for l in labels), f"record fields missing: {labels[:10]}")
 
+# anonymous LITERAL [D:anon-literals]: hover shows the canonical name;
+# dot completion on the binding offers the minted def's fields
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let anon = {| ip = "z"; n = 1 |}\n\nlet y = anon.\n'}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 45, "method": "textDocument/hover",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 5}}})
+hov = read_msg()
+expect(hov["result"] and "{| ip: string; n: int |}" in hov["result"]["contents"]["value"],
+       f"anon literal binding should hover the canonical name: {hov}")
+send({"jsonrpc": "2.0", "id": 46, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 2, "character": 13}}})
+comp = read_msg()
+labels = [c["label"] for c in comp["result"]]
+expect("anon.ip" in labels and "anon.n" in labels, f"anon literal fields missing: {labels[:10]}")
+
 # textEdit ranges: dot completion replaces the WHOLE dotted word (the
 # Env.Env.fromFile doubling), and paren-nested completion still offers
 # (micro's label-prefix filter needs textEdit to engage)

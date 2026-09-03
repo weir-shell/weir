@@ -515,7 +515,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
                 let key = formatTy t
 
                 seen.Contains key
-                || (match Map.tryFind n env.Types with
+                || (match typeDefFor env n with
                     | Some(Record def) ->
                         def.Fields
                         |> List.forall (fun (_, ft) -> ok (Set.add key seen) (substParams def.Params targs ft))
@@ -667,7 +667,7 @@ and private dischargeRow
     (name: string)
     (targs: Ty list)
     : Result<unit, TypeError> =
-    match Map.tryFind name env.Types with
+    match typeDefFor env name with
     | Some(Record def) ->
         let constraints =
             Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty |> Map.toList
@@ -1085,7 +1085,7 @@ let rec private jsonAdmitted
 
         err span $"{at}the type cycle {cycle} cannot cross the JSON boundary — it needs finite trees"
     | TNamed(n, []) ->
-        match Map.tryFind n env.Types with
+        match typeDefFor env n with
         | Some(Record def) when def.Params.IsEmpty ->
             allOk def.Fields (fun (fn, fty) ->
                 jsonAdmitted span env (n :: seen) (if path = "" then fn else $"{path}.{fn}") fty)
@@ -1134,7 +1134,7 @@ and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty
     | TSeq elem -> jsonDefsClosure env acc elem
     | TNamed("Map", [ TStr; inner ]) -> jsonDefsClosure env acc inner
     | TNamed(n, []) when not (acc.ContainsKey n) ->
-        match Map.tryFind n env.Types with
+        match typeDefFor env n with
         | Some(Record def) ->
             def.Fields
             |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.add n def acc)
@@ -1173,7 +1173,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
         if seen.Contains n then
             err span $"'{n}' is recursive; the yaml boundary needs finite trees"
         else
-            match Map.tryFind n env.Types with
+            match typeDefFor env n with
             | Some(Record def) when def.Params.IsEmpty ->
                 def.Fields
                 |> List.fold
@@ -1221,7 +1221,7 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty:
         if seen.Contains n then
             err span $"'{n}' is recursive; the yaml boundary needs finite trees"
         else
-            match Map.tryFind n env.Types with
+            match typeDefFor env n with
             | Some(Record def) when def.Params.IsEmpty ->
                 def.Fields
                 |> List.fold
@@ -1473,7 +1473,7 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
 
                 match ty with
                 | TNamed(typeName, targs) ->
-                    match Map.tryFind typeName env.Types with
+                    match typeDefFor env typeName with
                     | Some(Record def) ->
                         return!
                             fields
@@ -1575,7 +1575,7 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
         | PCase(ctor, argPat) ->
             match ty with
             | TNamed(typeName, targs) ->
-                match Map.tryFind typeName env.Types with
+                match typeDefFor env typeName with
                 | Some(Union def) ->
                     match def.Cases |> List.tryFind (fun (c, _) -> c = ctor) with
                     | None ->
@@ -1730,7 +1730,7 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
     else
         match ty with
         | TNamed(name, targs) ->
-            match Map.tryFind name env.Types with
+            match typeDefFor env name with
             | Some(Union def) ->
                 def.Cases
                 |> List.filter (fun (case, payload) ->
@@ -1833,7 +1833,7 @@ let private exhaustive
             let hint =
                 match scrutTy with
                 | TNamed(tyName, _) ->
-                    match Map.tryFind tyName env.Types with
+                    match typeDefFor env tyName with
                     | Some(Union def) -> didYouMean name (List.map fst def.Cases)
                     | _ -> ""
                 | _ -> ""
@@ -2299,7 +2299,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let namedRecord (typeName: string) (fields: (string * Span * Expr) list) =
                     result {
                         let def =
-                            match Map.tryFind typeName env.Types with
+                            match typeDefFor env typeName with
                             | Some(Record d) -> d
                             | _ -> failwith "named record target is not a record"
 
@@ -2350,7 +2350,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 match head.Kind, args with
                 | EVar tyName, [ { Kind = ERecord fields } ] when
-                    (match Map.tryFind tyName env.Types with
+                    (match typeDefFor env tyName with
                      | Some(Record _) -> true
                      | _ -> false)
                     && not (Map.containsKey tyName env.Values)
@@ -2360,7 +2360,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     (match Map.tryFind m env.ModuleTypes with
                      | Some ts -> Set.contains tyName ts
                      | None -> false)
-                    && (match Map.tryFind tyName env.Types with
+                    && (match typeDefFor env tyName with
                         | Some(Record _) -> true
                         | _ -> false)
                     ->
@@ -2373,7 +2373,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     // resolution, relocated to expression position.
                     (match arg.Kind with
                      | EVar tyName ->
-                         match Map.tryFind tyName env.Types with
+                         match typeDefFor env tyName with
                          | Some(Record def) when def.Params.IsEmpty ->
                              // an ENUM field [D:env-enums]: a monomorphic union,
                              // every case 0-arity — the declared set becomes a
@@ -2382,7 +2382,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  match ft with
                                  | TNamed(n, [])
                                  | TNamed("Option", [ TNamed(n, []) ]) ->
-                                     match Map.tryFind n env.Types with
+                                     match typeDefFor env n with
                                      | Some(Union u) when u.Params.IsEmpty -> Some(n, u)
                                      | _ -> None
                                  | _ -> None
@@ -2538,7 +2538,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                      | [] -> Ok acc
                                      | (_, None) :: rest -> buildPayloads acc rest
                                      | (c, Some(TNamed(rn, []))) :: rest ->
-                                         match Map.tryFind rn env.Types with
+                                         match typeDefFor env rn with
                                          | Some(Record rdef) when rdef.Params.IsEmpty ->
                                              validateFields span $"case '{c}': " rdef
                                              |> Result.bind (fun () -> buildPayloads (Map.add c rdef acc) rest)
@@ -2549,7 +2549,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                          match arg.Kind with
                          | EVar tyName ->
-                             match Map.tryFind tyName env.Types with
+                             match typeDefFor env tyName with
                              | Some(Record def) when def.Params.IsEmpty ->
                                  // the field law [D:shared-flags]: at most ONE
                                  // union-typed field — the subcommand slot; its
@@ -2559,7 +2559,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                      |> List.choose (fun (f, ft) ->
                                          match ft with
                                          | TNamed(n, []) ->
-                                             match Map.tryFind n env.Types with
+                                             match typeDefFor env n with
                                              | Some(Union u) when u.Params.IsEmpty -> Some(f, u)
                                              | _ -> None
                                          | _ -> None)
@@ -2820,7 +2820,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             match resolve ctx ttarget.Ty with
             | TNamed(typeName, targs) ->
-                match Map.tryFind typeName env.Types with
+                match typeDefFor env typeName with
                 | Some(Record def) ->
                     match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
                     | Some(_, fieldTy) ->
@@ -2938,7 +2938,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     | (field, fieldSpan) :: rest ->
                         match resolve ctx ty with
                         | TNamed(typeName, targs) ->
-                            match Map.tryFind typeName env.Types with
+                            match typeDefFor env typeName with
                             | Some(Record def) ->
                                 match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
                                 | Some(_, declared) ->
@@ -3010,12 +3010,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | None ->
                 let names = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
 
+                // registered anonymous defs (adapter shapes, drained
+                // literals) never join the candidate set — the anon
+                // form has its own spelling [D:anon-literals], and a
+                // same-shaped hidden def must not make a declared
+                // record look ambiguous
                 let candidates =
                     env.Types
                     |> Map.toList
-                    |> List.choose (fun (_, def) ->
+                    |> List.choose (fun (tn, def) ->
                         match def with
-                        | Record r when Set.ofList (List.map fst r.Fields) = names -> Some r
+                        | Record r when isUserName tn && Set.ofList (List.map fst r.Fields) = names -> Some r
                         | _ -> None)
 
                 match candidates with
@@ -3047,6 +3052,58 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | many ->
                     let nameList = many |> List.map (fun r -> r.Name) |> String.concat ", "
                     return! err expr.Span $"ambiguous record literal; it matches: {nameList}"
+        }
+    // the anonymous literal [D:anon-literals]: fields infer, the
+    // canonical name is minted HERE (the parse-time push cannot — it
+    // sees values, not types) and registered both mid-statement
+    // (AnonLitDefs) and for the next statement's drain. The typed
+    // node is TERecord — eval/writers/LSP gain no arms.
+    | EAnonRecord fields ->
+        result {
+            match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
+            | Some dup ->
+                let _, dupSpan, _ = fields |> List.findBack (fun (n, _, _) -> n = dup)
+                return! err dupSpan $"duplicate field '{dup}'"
+            | None ->
+                let! tfields =
+                    fields
+                    |> List.fold
+                        (fun acc (n, s, v) ->
+                            acc
+                            |> Result.bind (fun ts -> infer ctx env v |> Result.map (fun tv -> (n, s, tv) :: ts)))
+                        (Ok [])
+                    |> Result.map List.rev
+
+                // ground types only: the canonical name IS the type,
+                // so it cannot carry an inference variable — the
+                // named divergence anon-literal-mono (F# admits the
+                // generic form; declared records serve it here)
+                let fieldTys = tfields |> List.map (fun (n, s, tv) -> n, s, finalTy ctx tv.Ty)
+
+                match fieldTys |> List.tryFind (fun (_, _, ty) -> not (Set.isEmpty (tyVars ty))) with
+                | Some(n, s, _) ->
+                    return!
+                        err
+                            s
+                            $"the type of field '{n}' is not fully known at the literal — an anonymous record's name IS its type, so every field needs a concrete type here; annotate the value, or declare a record (declared records may be generic)"
+                | None ->
+                    let flds = fieldTys |> List.map (fun (n, _, ty) -> n, ty)
+                    let name = anonRecordName flds
+
+                    env.AnonLitDefs[name] <-
+                        Record
+                            { Name = name
+                              Params = []
+                              Fields = List.sortBy fst flds
+                              Attrs = Map.empty
+                              Docs = Map.empty }
+
+                    Types.pushAnonDef name flds
+
+                    return
+                        { Kind = TERecord(name, tfields |> List.map (fun (n, _, tv) -> n, tv))
+                          Ty = TNamed(name, [])
+                          Span = expr.Span }
         }
     | EFrom(fmt, shape, seqOf) ->
         result {
@@ -3104,7 +3161,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // [D:from-jsonl]. The plain name carries the common case;
             // nothing sniffs.
             | ("json" | "jsonl"), Some name ->
-                match Map.tryFind name env.Types with
+                match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
                     do! jsonableRecord expr.Span env def
 
@@ -3140,7 +3197,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // level, never the input. Multi-document streams are not
                 // supported: weir cannot type a heterogeneous stream, and
                 // homogeneous ones are rare (the retirement's reason).
-                match Map.tryFind name env.Types with
+                match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
                     let declared = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
 
@@ -4101,7 +4158,10 @@ let typecheckBinderCore
     (pat: Pattern)
     (expr: Expr)
     : Result<TypedExpr * (string * Scheme) list, TypeError> =
-    let env = withAnonDefs env expr
+    let env =
+        { withAnonDefs env expr with
+            AnonLitDefs = System.Collections.Generic.Dictionary() }
+
     let ctx = newCtx ()
 
     match binderShape ctx env pat with
@@ -4150,7 +4210,10 @@ let typecheckWithCore
           TypeError
        >
     =
-    let env = withAnonDefs env expr
+    let env =
+        { withAnonDefs env expr with
+            AnonLitDefs = System.Collections.Generic.Dictionary() }
+
     let ctx = newCtx ()
 
     match infer ctx env expr with
@@ -4318,7 +4381,7 @@ let rec private validateTy
             if n = selfName then
                 Some selfArity
             else
-                match Map.tryFind n env.Types with
+                match typeDefFor env n with
                 | Some(Record d) -> Some d.Params.Length
                 | Some(Union d) -> Some d.Params.Length
                 | None -> None
