@@ -6060,6 +6060,10 @@ abs=$(cd "$sgdir/proj/lib" && pwd)/jp
 $BIN add sig "$abs" >/dev/null 2>&1 || fail "an absolute tool path must generate"
 find .weir/sigs -maxdepth 1 -name '*jp.weir' | grep -q . || fail "the absolute path stays INSIDE .weir/sigs"
 test -f "$abs.weir" && fail "the sig ESCAPED next to the binary" || true
+# a data file is a different wrong turn than a missing tool
+printf 'kind: XR\n' > xr.yaml
+out=$($BIN add sig ./xr.yaml 2>&1) && fail "a data file must refuse" || true
+echo "$out" | grep -qF "exists but did not run" || fail "the data-file teach: $out"
 fi
 # broot draws a box TABLE — the glyphs strip to spaces and rows parse
 cat > bin/boxtool <<'WEOF'

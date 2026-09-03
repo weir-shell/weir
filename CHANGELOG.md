@@ -30,6 +30,9 @@
   outside `.weir` entirely, and a leading `/` or `.` broke the
   module line.
 
+- `weir add sig` on a file that exists but will not run (a stray
+  `.yaml`) says so, instead of "not on PATH".
+
 - Completion fires on `-` (a declared trigger character now) — a
   bare `--` offers the longs, a single `-` the shorts beside them.
 

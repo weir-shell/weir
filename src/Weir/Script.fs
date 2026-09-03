@@ -3962,7 +3962,14 @@ module SigGen =
         // version word) run only when the tool's own --help ADVERTISES
         // that subcommand.
         match Contracts.probeVersionFlag Proc.resolveProg tool with
-        | Contracts.ToolAbsent -> Error $"'{tool}' is not on PATH — generation probes the installed binary"
+        | Contracts.ToolAbsent ->
+            // a file that EXISTS but would not run is a different wrong
+            // turn than a missing tool — `add sig rooz/v3/xr.yaml` is a
+            // data file, not a binary
+            if IO.File.Exists tool then
+                Error $"'{tool}' exists but did not run — a signature describes a runnable tool; is this a data file?"
+            else
+                Error $"'{tool}' is not on PATH — generation probes the installed binary"
         | rung1 ->
             let topHelp = runTool tool "--help"
 
