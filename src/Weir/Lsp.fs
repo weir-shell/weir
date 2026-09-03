@@ -1847,7 +1847,7 @@ let run (debug: bool) : int =
                                 // <tag>+<hash>, all JSON-safe chars, so the placeholder
                                 // splice needs no escaping.
                                 w.WriteRawValue(
-                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
                                         .Replace("__WEIR_VERSION__", Weir.Version.current)
                                 )))
                     | "initialized" -> ()
@@ -2268,13 +2268,28 @@ let run (debug: bool) : int =
                                                         if li.IsEmpty then all else [ li, s0 ]
                                                     | [] -> []
 
-                                            sets
-                                            |> Seq.collect fst
-                                            |> Seq.distinct
-                                            |> Seq.map (fun l -> "--" + l)
-                                            |> Seq.filter (fun l -> l.StartsWith word)
-                                            |> Seq.sort
-                                            |> List.ofSeq)
+                                            let longs =
+                                                sets
+                                                |> Seq.collect fst
+                                                |> Seq.distinct
+                                                |> Seq.map (fun l -> "--" + l)
+                                                |> Seq.filter (fun l -> l.StartsWith word)
+                                                |> Seq.sort
+                                                |> List.ofSeq
+
+                                            // a single dash offers the SHORTS too
+                                            let shorts =
+                                                if word = "-" then
+                                                    sets
+                                                    |> Seq.collect snd
+                                                    |> Seq.distinct
+                                                    |> Seq.map (fun sh -> "-" + sh)
+                                                    |> Seq.sort
+                                                    |> List.ofSeq
+                                                else
+                                                    []
+
+                                            shorts @ longs)
                                         |> Option.defaultValue []
                                     else
                                         []

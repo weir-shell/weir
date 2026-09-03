@@ -708,6 +708,20 @@ expect(all(l.startswith("--") for l in labels6),
        f"a -word position offers flags ONLY, never buffer words: {labels6[:12]}")
 expect(not any("sandbox" in l for l in labels6), f"comment words must not complete: {labels6[:12]}")
 expect("--slow" not in labels6, f"a SCOPED sig completes only the matched case: {labels6[:12]}")
+# bare `--` and `-` answer too — `-` is a declared trigger character,
+# and a single dash offers the shorts beside the longs
+send6({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": uri6}, "contentChanges": [{"text": "#sig comptool\ncomptool ps --\n"}]}})
+m = read6()
+while m.get("method") != "textDocument/publishDiagnostics":
+    m = read6()
+send6({"jsonrpc": "2.0", "id": 64, "method": "textDocument/completion",
+       "params": {"textDocument": {"uri": uri6}, "position": {"line": 1, "character": len("comptool ps --")}}})
+m = read6()
+while m.get("id") != 64:
+    m = read6()
+labels64 = [c["label"] for c in m["result"]]
+expect("--scope" in labels64, f"bare -- must offer the longs: {labels64[:8]}")
 # go-to-definition into the sig [D:scoped-sigs]: a flag lands on its
 # FIELD, a sub token on its case's RECORD declaration
 sig6 = furi(os.path.join(td6, ".weir", "sigs", "comptool.weir"))

@@ -30,6 +30,9 @@
   outside `.weir` entirely, and a leading `/` or `.` broke the
   module line.
 
+- Completion fires on `-` (a declared trigger character now) — a
+  bare `--` offers the longs, a single `-` the shorts beside them.
+
 - Go-to-definition reaches into the sig: a flag lands on its field
   declaration (the scoped record the line resolves to), a
   subcommand token on its case's record.
