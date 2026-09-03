@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.0.15
+
+### New features
+
+- **Anonymous record literals.** `{| key = key; n = 3 |}` builds a
+  value with no declaration — the write-side mirror of the anonymous
+  TYPE the adapter slot already takes. Heterogeneous fields (where
+  `Map.ofPairs` forces one value type), typed by the same canonical
+  shape name, so a literal unifies with `from json {| … |}`'s result
+  and a declared record with the same fields stays a different type.
+  `[{| key = k; value = v |}] |> to json |> File.write "x.json"`
+  works in one line; multi-line literals assemble; hover shows the
+  canonical shape and dot-completion offers the fields. Fields must
+  have concrete types at the literal (the name IS the type); no
+  punning, no empty `{||}`, no `{| r with … |}` — each refusal
+  teaches its repair.
+
 ## v0.0.14
 
 ### New features
