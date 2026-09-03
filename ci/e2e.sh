@@ -5860,7 +5860,7 @@ case "$*" in
   "--version") echo "cobratool 1.0";;
   "--help") printf 'Available Commands:\n  issue    Manage issues\n  run      Run a thing\n\nFlags:\n      --debug   Debug\n';;
   "run --help") printf 'Flags:\n      --fast   Skip checks\n';;
-  "issue --help") printf 'Available Commands:\n  list    List\n';;
+  "issue --help") printf 'Available Commands:\n  list    List\n\nFlags:\n      --history   History\n';;
   "issue list --help") printf 'Flags:\n      --jql string   JQL query\n';;
   *) exit 1;;
 esac
@@ -5887,6 +5887,9 @@ goto :eof
 if "%*"=="issue --help" (
 echo Available Commands:
 echo   list    List
+echo.
+echo Flags:
+echo       --history   History
 goto :eof
 )
 if "%*"=="issue list --help" (
@@ -6036,6 +6039,28 @@ chmod +x bin/ghtool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig ghtool 2>&1) || fail "add sig ghtool: $out"
 grep -qF "branch: bool" .weir/sigs/ghtool.weir || fail "colon-suffixed command tokens walk"
 grep -qF "track4: bool" .weir/sigs/ghtool.weir || fail "the walk reaches depth 4"
+# PATH-y tool names [D:scoped-sigs]: one FLAT file under sigs/ (never a
+# nested tree, never an escape from .weir), a legal module name, and
+# the #sig round-trip on the spelling the script uses
+mkdir -p "$sgdir/proj/lib"
+cat > "$sgdir/proj/lib/jp" <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--help" ]; then printf 'usage: [flags]\n  -c, --clean   Deletes branch\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x "$sgdir/proj/lib/jp"
+if [ "$IS_WINDOWS" != "1" ]; then
+out=$($BIN add sig ./lib/jp 2>&1) || fail "add sig on a path-y tool: $out"
+test -f .weir/sigs/_lib_jp.weir || fail "the sig file is FLAT under sigs/: $(find .weir/sigs -name '*jp*')"
+head -1 .weir/sigs/_lib_jp.weir | grep -qE '^module [A-Z]' || fail "a path-y tool mints a legal module name"
+printf '#sig ./lib/jp\n./lib/jp --clena\nprint "d"\n' > jp.weir
+out=$($BIN check jp.weir 2>&1)
+echo "$out" | grep -qF "Did you mean '--clean'?" || fail "the path-y sig round-trips: $out"
+abs=$(cd "$sgdir/proj/lib" && pwd)/jp
+$BIN add sig "$abs" >/dev/null 2>&1 || fail "an absolute tool path must generate"
+find .weir/sigs -maxdepth 1 -name '*jp.weir' | grep -q . || fail "the absolute path stays INSIDE .weir/sigs"
+test -f "$abs.weir" && fail "the sig ESCAPED next to the binary" || true
+fi
 # broot draws a box TABLE — the glyphs strip to spaces and rows parse
 cat > bin/boxtool <<'WEOF'
 #!/bin/sh

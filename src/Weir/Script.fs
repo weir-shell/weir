@@ -3219,6 +3219,21 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
     let shorts = Weir.Argv.explicitShorts def |> List.map snd |> Set.ofList
     longs, shorts
 
+/// a PATH-y tool name ("./rooz/v3/lib/jp", "~/.azure/bin/bicep") maps
+/// to ONE flat filename under .weir/sigs — separators become '_'
+/// [D:scoped-sigs]. Never a nested tree, and never Path.Combine on the
+/// raw name: an absolute tool path made Combine DISCARD the sigs dir
+/// and aim outside .weir entirely.
+let sigFileName (tool: string) : string =
+    (tool
+     |> String.map (fun c ->
+         if System.Char.IsLetterOrDigit c || c = '-' || c = '_' || c = '.' then
+             c
+         else
+             '_'))
+        .TrimStart('.')
+    + ".weir"
+
 /// load the signatures a file declared; errors become diagnostics at
 /// the declaring line. The sig file is an ordinary weir MODULE
 /// (decl-only + weak purity for free): `module X`, `let version =
@@ -3262,7 +3277,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                 | None ->
                     match Contracts.findWeirDir scriptDir with
                     | Error e -> Error $"#sig {decl.Tool}: {e}"
-                    | Ok weirDir -> Ok(IO.Path.Combine(weirDir, "sigs", decl.Tool + ".weir"))
+                    | Ok weirDir -> Ok(IO.Path.Combine(weirDir, "sigs", sigFileName decl.Tool))
 
             match resolved with
             | Error e -> diags.Add(mk decl.Line e)
@@ -4002,9 +4017,15 @@ module SigGen =
                 Error
                     $"'{tool}': found no flags to record (probed: completion fish, shipped fish files, --help) — write .weir/sigs/{tool}.weir by hand"
             | flags, subGroups ->
+                // a path-y tool name must still mint a LEGAL module
+                // name: letters and digits only, letter-first (the
+                // absolute-path case minted `module /Users…`)
                 let moduleName =
-                    string (System.Char.ToUpper tool[0])
-                    + (tool.Substring 1 |> String.filter (fun c -> System.Char.IsLetterOrDigit c))
+                    let core = tool |> String.filter System.Char.IsLetterOrDigit
+
+                    if core = "" then "Sig"
+                    elif System.Char.IsDigit core[0] then "Sig" + core
+                    else string (System.Char.ToUpper core[0]) + core.Substring 1
 
                 let sb = System.Text.StringBuilder()
                 let line (l: string) = sb.AppendLine l |> ignore
@@ -4177,7 +4198,7 @@ module SigGen =
 
                         Error $"generated signature does not validate: {d.Message}{atLine} — this is a generator bug"
                     | [], _ ->
-                        let dest = IO.Path.Combine(weirDir, "sigs", tool + ".weir")
+                        let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
                         IO.File.WriteAllText(dest, text)
                         let bytes = IO.File.ReadAllBytes dest
@@ -4187,7 +4208,7 @@ module SigGen =
                               Name = tool
                               Url = $"generated:{source}"
                               Sha256 = Contracts.sha256Hex bytes
-                              Path = IO.Path.Combine("sigs", tool + ".weir")
+                              Path = IO.Path.Combine("sigs", sigFileName tool)
                               Version = version }
 
                         match Contracts.readLock weirDir with

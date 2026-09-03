@@ -24,6 +24,12 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
+- A path-y tool (`weir add sig ./lib/jp`, an absolute path) mints a
+  legal module name and ONE flat sig file under `.weir/sigs/`
+  (separators become `_`) — the absolute case had aimed the write
+  outside `.weir` entirely, and a leading `/` or `.` broke the
+  module line.
+
 - Go-to-definition reaches into the sig: a flag lands on its field
   declaration (the scoped record the line resolves to), a
   subcommand token on its case's record.
