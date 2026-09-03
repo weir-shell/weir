@@ -735,14 +735,31 @@ let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int *
 /// the flag's field in its signature, resolved the way the unknown-flag
 /// check resolves surfaces (record = the "" sub; union = the first
 /// non-dash word): (record name, field, field type, sig lines, sig stmts)
+// the record a LINE's flags live in: the longest run of leading sub
+// words, kebab-joined — the checker's own rule [D:scoped-sigs]
+let private sigRecordFor (si: Script.SigInfo) (words: (string * Span) list) : string option =
+    match Map.tryFind "" si.SubRecords with
+    | Some rn -> Some rn
+    | None ->
+        let run =
+            words
+            |> List.skipWhile (fun (w, _) -> w.StartsWith "-")
+            |> List.takeWhile (fun (w, _) -> not (w.StartsWith "-"))
+            |> List.truncate 4
+            |> List.map fst
+
+        [ List.length run .. -1 .. 1 ]
+        |> List.tryPick (fun n -> Map.tryFind (String.concat "-" (run |> List.truncate n)) si.SubRecords)
+
 let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: string) =
     let rn =
-        match Map.tryFind "" si.SubRecords with
+        match sigRecordFor si words with
         | Some rn -> Some rn
         | None ->
-            words
-            |> List.tryFind (fun (x, _) -> not (x.StartsWith "-"))
-            |> Option.bind (fun (x, _) -> Map.tryFind x si.SubRecords)
+            // a sub-less line on a scoped sig: the flag lives in every
+            // case that carries it — the first record holding the field
+            // is the definition worth jumping to
+            si.SubRecords |> Map.toList |> List.map snd |> List.distinct |> List.tryHead
 
     rn
     |> Option.bind (fun rn ->
@@ -907,13 +924,29 @@ let definitionTarget
                         if progCol <= jcol && jcol < progCol + prog.Length then
                             Some(Some si.SigPath, 1, 1, 0)
                         else
-                            words
-                            |> List.tryFind (fun (w, sp) ->
-                                w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
-                            |> Option.bind (fun (w, _) -> sigFlagField si words w)
-                            |> Option.bind (fun (rn, f, _, _, sigStmts) ->
-                                typeSiteIn sigStmts rn (Some f)
-                                |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len))))
+                            match
+                                words
+                                |> List.tryFind (fun (w, sp) ->
+                                    w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
+                            with
+                            | Some(w, _) ->
+                                sigFlagField si words w
+                                |> Option.bind (fun (rn, f, _, _, sigStmts) ->
+                                    typeSiteIn sigStmts rn (Some f)
+                                    |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len))
+                            | None ->
+                                // a SUB token jumps to its case's RECORD
+                                // declaration [D:scoped-sigs] — the record
+                                // the checker would pick for this line
+                                words
+                                |> List.tryFind (fun (w, sp) ->
+                                    not (w.StartsWith "-") && sp.Start.Col <= jcol && jcol < sp.End.Col)
+                                |> Option.bind (fun _ -> sigRecordFor si words)
+                                |> Option.bind (fun rn ->
+                                    targetStmts si.SigPath
+                                    |> Option.bind (fun (_, sigStmts) ->
+                                        typeSiteIn sigStmts rn None
+                                        |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len)))))
 
             let fromPattern =
                 teOf chk
@@ -2200,14 +2233,24 @@ let run (debug: bool) : int =
                                             // non-flag word after the tool picks
                                             // the set; before one exists, the
                                             // union of every case
-                                            let sub =
+                                            let run =
                                                 upto
                                                     .Substring(toolAt + si.Tool.Length)
                                                     .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                                                |> Array.tryFind (fun t -> not (t.StartsWith "-"))
+                                                |> Array.skipWhile (fun t -> t.StartsWith "-")
+                                                |> Array.takeWhile (fun t -> not (t.StartsWith "-"))
+                                                |> Array.truncate 4
+                                                |> Array.toList
+
+                                            // the longest path wins, the checker's rule
+                                            let sub =
+                                                [ List.length run .. -1 .. 1 ]
+                                                |> List.tryPick (fun n ->
+                                                    let key = String.concat "-" (run |> List.truncate n)
+                                                    Map.tryFind key si.Subs)
 
                                             let sets =
-                                                match sub |> Option.bind (fun t -> Map.tryFind t si.Subs) with
+                                                match sub with
                                                 | Some fs -> [ fs ]
                                                 | None ->
                                                     // sub-less: the GLOBALS (the case

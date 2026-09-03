@@ -24,6 +24,10 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
+- Go-to-definition reaches into the sig: a flag lands on its field
+  declaration (the scoped record the line resolves to), a
+  subcommand token on its case's record.
+
 - The walk follows nesting to depth 4 (`kustomize edit add
   resource`), reads gh's colon-suffixed command tables, and the
   not-on-PATH message dropped its aside.
@@ -34,14 +38,16 @@
   hand-written unions that share nothing keep the partial-surface
   skip.
 
-- **Sig generation scopes to subcommands.** The walk keeps its
-  provenance: a walked surface now generates a union — the first
-  subcommand token picks the case and only its flags check, so
-  `docker ps --detach` warns naming `docker ps` where the flat
-  surface accepted any flag anywhere. Globals ride every case, a
-  line with no subcommand keeps the partial-surface skip, and
-  completion offers the matched case only. Flat sigs (hand-written
-  or scrape-poor) load unchanged.
+- **Sig generation scopes to subcommand paths.** The walk keeps
+  its provenance to depth 4: a walked surface generates a union
+  with a case per subcommand path — the longest match picks it, so
+  `jira issue list --summary` warns naming `jira issue list` while
+  `jira issue create --summary` checks clean (sibling paths no
+  longer share flags; `issue create` and `project create` name
+  distinct records by construction). A case checks its own flags
+  plus its ancestors' and the globals; a line with no subcommand
+  checks the globals; completion offers the matched path only.
+  Flat sigs (hand-written or scrape-poor) load unchanged.
 
 - Sig flags complete in the editor — a `-`-word after a sig'd tool
   offers the sig's own longs in kebab spelling (`--s` →

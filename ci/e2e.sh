@@ -5910,6 +5910,11 @@ echo "$out" | grep -q "unknown flag" && fail "in-scope + global must check clean
 printf '#sig cobratool\ncobratool run --jql x\nprint "d"\n' > sc2.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc2.weir 2>&1)
 echo "$out" | grep -qF "unknown flag '--jql' for cobratool run" || fail "the wrong-case flag warns naming the case: $out"
+# the UNCRAMPING receipt [D:scoped-sigs]: a deeper path's flag does not
+# leak up — `issue --jql` warns while `issue list --jql` is the clean pin above
+printf '#sig cobratool\ncobratool issue --jql x\nprint "d"\n' > sc4.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc4.weir 2>&1)
+echo "$out" | grep -qF "unknown flag '--jql' for cobratool issue" || fail "a deeper path's flag must not leak up: $out"
 # a SUB-LESS line checks the GLOBALS (the case intersection) — the
 # claude shape: flag-only usage must still squiggle [D:scoped-sigs]
 printf '#sig cobratool\ncobratool --debgu\ncobratool --debug\nprint "d"\n' > sc3.weir

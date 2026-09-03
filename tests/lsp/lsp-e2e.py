@@ -708,6 +708,31 @@ expect(all(l.startswith("--") for l in labels6),
        f"a -word position offers flags ONLY, never buffer words: {labels6[:12]}")
 expect(not any("sandbox" in l for l in labels6), f"comment words must not complete: {labels6[:12]}")
 expect("--slow" not in labels6, f"a SCOPED sig completes only the matched case: {labels6[:12]}")
+# go-to-definition into the sig [D:scoped-sigs]: a flag lands on its
+# FIELD, a sub token on its case's RECORD declaration
+sig6 = furi(os.path.join(td6, ".weir", "sigs", "comptool.weir"))
+doc6b = "#sig comptool\ncomptool ps --scope x"
+send6({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": uri6}, "contentChanges": [{"text": doc6b + "\n"}]}})
+m = read6()
+while m.get("method") != "textDocument/publishDiagnostics":
+    m = read6()
+send6({"jsonrpc": "2.0", "id": 62, "method": "textDocument/definition",
+       "params": {"textDocument": {"uri": uri6}, "position": {"line": 1, "character": len("comptool ps --sc")}}})
+m = read6()
+while m.get("id") != 62:
+    m = read6()
+loc = m["result"]
+expect(loc and nuri(loc["uri"]) == nuri(sig6), f"a flag must define into the sig file: {loc}")
+expect(loc["range"]["start"]["line"] == 4, f"…on the scope field's line: {loc}")
+send6({"jsonrpc": "2.0", "id": 63, "method": "textDocument/definition",
+       "params": {"textDocument": {"uri": uri6}, "position": {"line": 1, "character": len("comptool p")}}})
+m = read6()
+while m.get("id") != 63:
+    m = read6()
+loc = m["result"]
+expect(loc and nuri(loc["uri"]) == nuri(sig6), f"a sub token must define into the sig file: {loc}")
+expect(loc["range"]["start"]["line"] == 2, f"…on the PsFlags record line: {loc}")
 send6({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}})
 m = read6()
 while m.get("id") != 2:

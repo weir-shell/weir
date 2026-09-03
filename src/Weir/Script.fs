@@ -3469,12 +3469,27 @@ let sigCmdDiagnostics
                         match Map.tryFind "" si.Subs with
                         | Some fs -> Some(None, fs)
                         | None ->
-                            match
+                            // the LONGEST run of leading sub words wins
+                            // [D:scoped-sigs]: `issue list` matches the
+                            // IssueList case before falling back to Issue —
+                            // tokens join kebab-style, the loader's own key
+                            let run =
                                 words
-                                |> List.tryFind (fun (w, _) -> not (w.StartsWith "-"))
-                                |> Option.bind (fun (w, _) ->
-                                    Map.tryFind w si.Subs |> Option.map (fun fs -> Some w, fs))
-                            with
+                                |> List.skipWhile (fun (w, _) -> w.StartsWith "-")
+                                |> List.takeWhile (fun (w, _) -> not (w.StartsWith "-"))
+                                |> List.truncate 4
+                                |> List.map fst
+
+                            let hit =
+                                [ List.length run .. -1 .. 1 ]
+                                |> List.tryPick (fun n ->
+                                    let toks = run |> List.truncate n
+                                    let key = String.concat "-" toks
+
+                                    Map.tryFind key si.Subs
+                                    |> Option.map (fun fs -> Some(String.concat " " toks), fs))
+
+                            match hit with
                             | Some hit -> Some hit
                             | None ->
                                 // a SUB-LESS line on a scoped sig checks the
@@ -3848,12 +3863,12 @@ module SigGen =
         let mutable level =
             [ for sub in subcommandTokens topHelp do
                   if not (noise sub) then
-                      sub, "", sub ]
+                      "", sub ]
 
         for _ in 1..4 do
-            let next = ResizeArray<string * string * string>()
+            let next = ResizeArray<string * string>()
 
-            for root, prefix, sub in level do
+            for prefix, sub in level do
                 if budget > 0 then
                     budget <- budget - 1
                     probed <- probed + 1
@@ -3862,16 +3877,17 @@ module SigGen =
                     | None -> ()
                     | Some subHelp ->
                         answered <- answered + 1
+                        let path = $"{prefix}{sub}"
 
-                        if not (groups.ContainsKey root) then
-                            groups[root] <- ResizeArray<Flag>()
-                            order.Add root
+                        if not (groups.ContainsKey path) then
+                            groups[path] <- ResizeArray<Flag>()
+                            order.Add path
 
-                        groups[root].AddRange(parseHelp subHelp)
+                        groups[path].AddRange(parseHelp subHelp)
 
                         for deeper in subcommandTokens subHelp do
                             if not (noise deeper) then
-                                next.Add(root, $"{prefix}{sub} ", deeper)
+                                next.Add($"{prefix}{sub} ", deeper)
 
             level <- List.ofSeq next
 
@@ -4045,10 +4061,12 @@ module SigGen =
 
                     line "}"
 
-                // a case name from a sub token: PascalCase of the camel,
-                // Cmd suffix on a collision with the union's own name
-                let caseName (sub: string) =
-                    let camel = fieldName sub
+                // a case name from a sub PATH ("issue list" ->
+                // IssueList): PascalCase of the camel of the kebab-joined
+                // tokens — kebabFlag round-trips it to the key the
+                // checker builds from the line's own words
+                let caseName (path: string) =
+                    let camel = fieldName (path.Replace(" ", "-"))
                     let pascal = string (System.Char.ToUpper camel[0]) + camel.Substring 1
                     if pascal = "Cmd" then "CmdCmd" else pascal
 
@@ -4068,8 +4086,9 @@ module SigGen =
                     line "/// flat surface: flags checked across the whole line — split into"
                     line "/// subcommand records by hand if the tool warrants it"
                 else
-                    line "/// scoped surface [D:scoped-sigs]: the first subcommand token picks"
-                    line "/// the case and only ITS flags check; global flags ride every case"
+                    line "/// scoped surface [D:scoped-sigs]: the LONGEST matching subcommand"
+                    line "/// path picks the case (issue list beats issue); a case checks its"
+                    line "/// own flags plus its ancestors' and the globals"
 
                 match version with
                 | Some v -> line $"let version = \"{escape v}\""
@@ -4081,22 +4100,41 @@ module SigGen =
                     renderRecord "Cmd" flags
                 else
                     // R2, load-bearing (phase 0.3: no global merge exists
-                    // in the checker): top-level flags JOIN every case
+                    // in the checker): top-level flags JOIN every case —
+                    // and so do each ANCESTOR path's flags (`jira issue
+                    // list` carries issue's own flags too); nearest
+                    // definition wins on a field collision
                     let globalByField = flags |> List.map (fun f -> fieldName f.Long, f)
+                    let byPath = subGroups |> Map.ofList
 
                     let cases =
                         subGroups
-                        |> List.distinctBy (fun (sub, _) -> caseName sub)
-                        |> List.map (fun (sub, gflags) ->
-                            let have = gflags |> List.map (fun f -> fieldName f.Long) |> Set.ofList
+                        |> List.distinctBy (fun (path, _) -> caseName path)
+                        |> List.map (fun (path, gflags) ->
+                            let parts = path.Split ' '
 
-                            let withGlobals =
-                                gflags
-                                @ (globalByField
-                                   |> List.filter (fun (fn, _) -> not (Set.contains fn have))
-                                   |> List.map snd)
+                            let ancestors =
+                                [ for n in parts.Length - 1 .. -1 .. 1 do
+                                      let anc = String.concat " " (Array.truncate n parts)
 
-                            sub, caseName sub, withGlobals)
+                                      match Map.tryFind anc byPath with
+                                      | Some fs -> yield! fs
+                                      | None -> () ]
+
+                            let mutable have = gflags |> List.map (fun f -> fieldName f.Long) |> Set.ofList
+
+                            let inherited =
+                                (ancestors @ (globalByField |> List.map snd))
+                                |> List.filter (fun f ->
+                                    let fn = fieldName f.Long
+
+                                    if Set.contains fn have then
+                                        false
+                                    else
+                                        have <- Set.add fn have
+                                        true)
+
+                            path, caseName path, gflags @ inherited)
 
                     for _, cn, cflags in cases do
                         renderRecord $"{cn}Flags" cflags
