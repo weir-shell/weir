@@ -273,7 +273,7 @@ weir $echoArgs three words: $@words
 let caught = weir -e "[\"one\"; \"two\"] |> Seq.iter print" |> Seq.length
 print $"captured {caught} lines"
 
-!(weir $probe --out "effect streams")
+weir $probe --out "effect streams"
 
 // exit codes are data: the reifier family
 let found = weir $probe --out hit | succeeds
