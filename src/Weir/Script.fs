@@ -3219,6 +3219,21 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
     let shorts = Weir.Argv.explicitShorts def |> List.map snd |> Set.ofList
     longs, shorts
 
+/// a PATH-y tool name ("./rooz/v3/lib/jp", "~/.azure/bin/bicep") maps
+/// to ONE flat filename under .weir/sigs — separators become '_'
+/// [D:scoped-sigs]. Never a nested tree, and never Path.Combine on the
+/// raw name: an absolute tool path made Combine DISCARD the sigs dir
+/// and aim outside .weir entirely.
+let sigFileName (tool: string) : string =
+    (tool
+     |> String.map (fun c ->
+         if System.Char.IsLetterOrDigit c || c = '-' || c = '_' || c = '.' then
+             c
+         else
+             '_'))
+        .TrimStart('.')
+    + ".weir"
+
 /// load the signatures a file declared; errors become diagnostics at
 /// the declaring line. The sig file is an ordinary weir MODULE
 /// (decl-only + weak purity for free): `module X`, `let version =
@@ -3262,7 +3277,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                 | None ->
                     match Contracts.findWeirDir scriptDir with
                     | Error e -> Error $"#sig {decl.Tool}: {e}"
-                    | Ok weirDir -> Ok(IO.Path.Combine(weirDir, "sigs", decl.Tool + ".weir"))
+                    | Ok weirDir -> Ok(IO.Path.Combine(weirDir, "sigs", sigFileName decl.Tool))
 
             match resolved with
             | Error e -> diags.Add(mk decl.Line e)
@@ -3469,12 +3484,48 @@ let sigCmdDiagnostics
                         match Map.tryFind "" si.Subs with
                         | Some fs -> Some(None, fs)
                         | None ->
-                            words
-                            |> List.tryFind (fun (w, _) -> not (w.StartsWith "-"))
-                            |> Option.bind (fun (w, _) -> Map.tryFind w si.Subs |> Option.map (fun fs -> Some w, fs))
+                            // the LONGEST run of leading sub words wins
+                            // [D:scoped-sigs]: `issue list` matches the
+                            // IssueList case before falling back to Issue —
+                            // tokens join kebab-style, the loader's own key
+                            let run =
+                                words
+                                |> List.skipWhile (fun (w, _) -> w.StartsWith "-")
+                                |> List.takeWhile (fun (w, _) -> not (w.StartsWith "-"))
+                                |> List.truncate 4
+                                |> List.map fst
+
+                            let hit =
+                                [ List.length run .. -1 .. 1 ]
+                                |> List.tryPick (fun n ->
+                                    let toks = run |> List.truncate n
+                                    let key = String.concat "-" toks
+
+                                    Map.tryFind key si.Subs
+                                    |> Option.map (fun fs -> Some(String.concat " " toks), fs))
+
+                            match hit with
+                            | Some hit -> Some hit
+                            | None ->
+                                // a SUB-LESS line on a scoped sig checks the
+                                // GLOBALS — R2's own invariant: what rides
+                                // every case is global, so the intersection
+                                // IS the global set [D:scoped-sigs]. Empty
+                                // intersection (hand-written unions that
+                                // never duplicate) keeps the L2 skip —
+                                // claude's flag-only lines check, git's
+                                // sub-less lines stay silent
+                                match si.Subs |> Map.toList |> List.map snd with
+                                | [] -> None
+                                | (l0, s0) :: rest ->
+                                    let longs = rest |> List.fold (fun acc (l, _) -> Set.intersect acc l) l0
+
+                                    let shorts = rest |> List.fold (fun acc (_, sh) -> Set.intersect acc sh) s0
+
+                                    if longs.IsEmpty then None else Some(None, (longs, shorts))
 
                     match surface with
-                    | None -> [] // no matching subcommand: L2 stops here
+                    | None -> [] // no matching subcommand, no shared globals: L2 stops here
                     | Some(subName, (longs, shorts)) ->
                         // a scoped surface names its CASE in the warn
                         // [D:scoped-sigs] — the scoping's visible dividend
@@ -3786,7 +3837,9 @@ module SigGen =
                 inSection <- false
 
             if inSection && line.StartsWith "  " then
-                let tok = line.TrimStart().Split(' ') |> Array.head
+                // gh spells its command tables `auth:  Authenticate…` —
+                // the trailing colon is punctuation, not the token
+                let tok = (line.TrimStart().Split(' ') |> Array.head).TrimEnd ':'
 
                 if
                     tok.Length > 1
@@ -3806,7 +3859,9 @@ module SigGen =
     // sub-page harvest over-collects).
     // provenance KEPT [D:scoped-sigs]: flags group under their LEVEL-1
     // subcommand (deeper levels flatten into their root's group), so
-    // the emitter can scope
+    // the emitter can scope. Depth 4 (`kustomize edit add resource`),
+    // breadth-first under the budget — levels complete in order, so a
+    // big tool degrades to shallow-but-wide, never deep-but-lopsided
     let private walkSubFlags (tool: string) (topHelp: string) : (string * Flag list) list * int * int =
         let groups = System.Collections.Generic.Dictionary<string, ResizeArray<Flag>>()
         let order = ResizeArray<string>()
@@ -3823,12 +3878,12 @@ module SigGen =
         let mutable level =
             [ for sub in subcommandTokens topHelp do
                   if not (noise sub) then
-                      sub, "", sub ]
+                      "", sub ]
 
-        for _ in 1..2 do
-            let next = ResizeArray<string * string * string>()
+        for _ in 1..4 do
+            let next = ResizeArray<string * string>()
 
-            for root, prefix, sub in level do
+            for prefix, sub in level do
                 if budget > 0 then
                     budget <- budget - 1
                     probed <- probed + 1
@@ -3837,16 +3892,17 @@ module SigGen =
                     | None -> ()
                     | Some subHelp ->
                         answered <- answered + 1
+                        let path = $"{prefix}{sub}"
 
-                        if not (groups.ContainsKey root) then
-                            groups[root] <- ResizeArray<Flag>()
-                            order.Add root
+                        if not (groups.ContainsKey path) then
+                            groups[path] <- ResizeArray<Flag>()
+                            order.Add path
 
-                        groups[root].AddRange(parseHelp subHelp)
+                        groups[path].AddRange(parseHelp subHelp)
 
                         for deeper in subcommandTokens subHelp do
                             if not (noise deeper) then
-                                next.Add(root, $"{prefix}{sub} ", deeper)
+                                next.Add($"{prefix}{sub} ", deeper)
 
             level <- List.ofSeq next
 
@@ -3906,7 +3962,14 @@ module SigGen =
         // version word) run only when the tool's own --help ADVERTISES
         // that subcommand.
         match Contracts.probeVersionFlag Proc.resolveProg tool with
-        | Contracts.ToolAbsent -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
+        | Contracts.ToolAbsent ->
+            // a file that EXISTS but would not run is a different wrong
+            // turn than a missing tool — `add sig rooz/v3/xr.yaml` is a
+            // data file, not a binary
+            if IO.File.Exists tool then
+                Error $"'{tool}' exists but did not run — a signature describes a runnable tool; is this a data file?"
+            else
+                Error $"'{tool}' is not on PATH — generation probes the installed binary"
         | rung1 ->
             let topHelp = runTool tool "--help"
 
@@ -3961,9 +4024,15 @@ module SigGen =
                 Error
                     $"'{tool}': found no flags to record (probed: completion fish, shipped fish files, --help) — write .weir/sigs/{tool}.weir by hand"
             | flags, subGroups ->
+                // a path-y tool name must still mint a LEGAL module
+                // name: letters and digits only, letter-first (the
+                // absolute-path case minted `module /Users…`)
                 let moduleName =
-                    string (System.Char.ToUpper tool[0])
-                    + (tool.Substring 1 |> String.filter (fun c -> System.Char.IsLetterOrDigit c))
+                    let core = tool |> String.filter System.Char.IsLetterOrDigit
+
+                    if core = "" then "Sig"
+                    elif System.Char.IsDigit core[0] then "Sig" + core
+                    else string (System.Char.ToUpper core[0]) + core.Substring 1
 
                 let sb = System.Text.StringBuilder()
                 let line (l: string) = sb.AppendLine l |> ignore
@@ -4020,10 +4089,12 @@ module SigGen =
 
                     line "}"
 
-                // a case name from a sub token: PascalCase of the camel,
-                // Cmd suffix on a collision with the union's own name
-                let caseName (sub: string) =
-                    let camel = fieldName sub
+                // a case name from a sub PATH ("issue list" ->
+                // IssueList): PascalCase of the camel of the kebab-joined
+                // tokens — kebabFlag round-trips it to the key the
+                // checker builds from the line's own words
+                let caseName (path: string) =
+                    let camel = fieldName (path.Replace(" ", "-"))
                     let pascal = string (System.Char.ToUpper camel[0]) + camel.Substring 1
                     if pascal = "Cmd" then "CmdCmd" else pascal
 
@@ -4043,8 +4114,9 @@ module SigGen =
                     line "/// flat surface: flags checked across the whole line — split into"
                     line "/// subcommand records by hand if the tool warrants it"
                 else
-                    line "/// scoped surface [D:scoped-sigs]: the first subcommand token picks"
-                    line "/// the case and only ITS flags check; global flags ride every case"
+                    line "/// scoped surface [D:scoped-sigs]: the LONGEST matching subcommand"
+                    line "/// path picks the case (issue list beats issue); a case checks its"
+                    line "/// own flags plus its ancestors' and the globals"
 
                 match version with
                 | Some v -> line $"let version = \"{escape v}\""
@@ -4056,22 +4128,41 @@ module SigGen =
                     renderRecord "Cmd" flags
                 else
                     // R2, load-bearing (phase 0.3: no global merge exists
-                    // in the checker): top-level flags JOIN every case
+                    // in the checker): top-level flags JOIN every case —
+                    // and so do each ANCESTOR path's flags (`jira issue
+                    // list` carries issue's own flags too); nearest
+                    // definition wins on a field collision
                     let globalByField = flags |> List.map (fun f -> fieldName f.Long, f)
+                    let byPath = subGroups |> Map.ofList
 
                     let cases =
                         subGroups
-                        |> List.distinctBy (fun (sub, _) -> caseName sub)
-                        |> List.map (fun (sub, gflags) ->
-                            let have = gflags |> List.map (fun f -> fieldName f.Long) |> Set.ofList
+                        |> List.distinctBy (fun (path, _) -> caseName path)
+                        |> List.map (fun (path, gflags) ->
+                            let parts = path.Split ' '
 
-                            let withGlobals =
-                                gflags
-                                @ (globalByField
-                                   |> List.filter (fun (fn, _) -> not (Set.contains fn have))
-                                   |> List.map snd)
+                            let ancestors =
+                                [ for n in parts.Length - 1 .. -1 .. 1 do
+                                      let anc = String.concat " " (Array.truncate n parts)
 
-                            sub, caseName sub, withGlobals)
+                                      match Map.tryFind anc byPath with
+                                      | Some fs -> yield! fs
+                                      | None -> () ]
+
+                            let mutable have = gflags |> List.map (fun f -> fieldName f.Long) |> Set.ofList
+
+                            let inherited =
+                                (ancestors @ (globalByField |> List.map snd))
+                                |> List.filter (fun f ->
+                                    let fn = fieldName f.Long
+
+                                    if Set.contains fn have then
+                                        false
+                                    else
+                                        have <- Set.add fn have
+                                        true)
+
+                            path, caseName path, gflags @ inherited)
 
                     for _, cn, cflags in cases do
                         renderRecord $"{cn}Flags" cflags
@@ -4114,7 +4205,7 @@ module SigGen =
 
                         Error $"generated signature does not validate: {d.Message}{atLine} — this is a generator bug"
                     | [], _ ->
-                        let dest = IO.Path.Combine(weirDir, "sigs", tool + ".weir")
+                        let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
                         IO.File.WriteAllText(dest, text)
                         let bytes = IO.File.ReadAllBytes dest
@@ -4124,7 +4215,7 @@ module SigGen =
                               Name = tool
                               Url = $"generated:{source}"
                               Sha256 = Contracts.sha256Hex bytes
-                              Path = IO.Path.Combine("sigs", tool + ".weir")
+                              Path = IO.Path.Combine("sigs", sigFileName tool)
                               Version = version }
 
                         match Contracts.readLock weirDir with

@@ -24,14 +24,47 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
-- **Sig generation scopes to subcommands.** The walk keeps its
-  provenance: a walked surface now generates a union — the first
-  subcommand token picks the case and only its flags check, so
-  `docker ps --detach` warns naming `docker ps` where the flat
-  surface accepted any flag anywhere. Globals ride every case, a
-  line with no subcommand keeps the partial-surface skip, and
-  completion offers the matched case only. Flat sigs (hand-written
-  or scrape-poor) load unchanged.
+- A path-y tool (`weir add sig ./lib/jp`, an absolute path) mints a
+  legal module name and ONE flat sig file under `.weir/sigs/`
+  (separators become `_`) — the absolute case had aimed the write
+  outside `.weir` entirely, and a leading `/` or `.` broke the
+  module line.
+
+- `weir add sig` on a file that exists but will not run (a stray
+  `.yaml`) says so, instead of "not on PATH".
+
+- Subcommand tokens complete at every depth — `kustomize ed` offers
+  `edit`, `kustomize edit a` offers `add` — in the token spelling,
+  never the case or record name; the segments un-glue from the sig's
+  own path keys.
+
+- Completion fires on `-` (a declared trigger character now) — a
+  bare `--` offers the longs, a single `-` the shorts beside them.
+
+- Go-to-definition reaches into the sig: a flag lands on its field
+  declaration (the scoped record the line resolves to), a
+  subcommand token on its case's record.
+
+- The walk follows nesting to depth 4 (`kustomize edit add
+  resource`), reads gh's colon-suffixed command tables, and the
+  not-on-PATH message dropped its aside.
+
+- A sub-less line on a scoped sig checks the GLOBALS — flag-only
+  usage (`claude --scop2 --scope`) squiggles again: the flags riding
+  every case are the global set, so the case intersection checks it;
+  hand-written unions that share nothing keep the partial-surface
+  skip.
+
+- **Sig generation scopes to subcommand paths.** The walk keeps
+  its provenance to depth 4: a walked surface generates a union
+  with a case per subcommand path — the longest match picks it, so
+  `jira issue list --summary` warns naming `jira issue list` while
+  `jira issue create --summary` checks clean (sibling paths no
+  longer share flags; `issue create` and `project create` name
+  distinct records by construction). A case checks its own flags
+  plus its ancestors' and the globals; a line with no subcommand
+  checks the globals; completion offers the matched path only.
+  Flat sigs (hand-written or scrape-poor) load unchanged.
 
 - Sig flags complete in the editor — a `-`-word after a sig'd tool
   offers the sig's own longs in kebab spelling (`--s` →
@@ -72,7 +105,7 @@
   docker, kubectl, kustomize) keep the real flags under
   `tool sub --help` — generation now reads the advertised commands
   sections (grouped headings included), probes each subcommand's
-  help breadth-first to depth 2 under a 60-probe budget, and unions
+  help breadth-first to depth 4 under a 60-probe budget, and unions
   the flags into the flat surface, labeled `help+subs`. So
   `jira issue list --jql …` stops warning on every flag the
   top-level help never mentioned. Every probe is guarded: null

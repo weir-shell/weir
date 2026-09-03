@@ -121,10 +121,12 @@ flags become errors.
 
 Generation probes, in order: the tool's fish completions, shipped
 fish completion files, then `--help` — and when the help advertises
-subcommands, each subcommand's own help (breadth-first, two levels).
-A walked surface generates SCOPED: the first subcommand token picks
-its case and only that case's flags check (`docker ps --detach`
-warns naming `docker ps`), with global flags riding every case; a
+subcommands, each subcommand's own help (breadth-first, four
+levels — `kustomize edit add resource` reaches).
+A walked surface generates SCOPED: the longest matching subcommand
+path picks its case (`jira issue list` beats `jira issue`) and a
+case checks its own flags plus its ancestors' and the globals
+(`docker ps --detach` warns naming `docker ps`); a
 flat surface still generates when there is nothing to scope. A tool
 that yields no flags is told so — `.weir/sigs/<tool>.weir` can
 always be written by hand; it is an ordinary weir file, either

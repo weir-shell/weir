@@ -5860,7 +5860,7 @@ case "$*" in
   "--version") echo "cobratool 1.0";;
   "--help") printf 'Available Commands:\n  issue    Manage issues\n  run      Run a thing\n\nFlags:\n      --debug   Debug\n';;
   "run --help") printf 'Flags:\n      --fast   Skip checks\n';;
-  "issue --help") printf 'Available Commands:\n  list    List\n';;
+  "issue --help") printf 'Available Commands:\n  list    List\n\nFlags:\n      --history   History\n';;
   "issue list --help") printf 'Flags:\n      --jql string   JQL query\n';;
   *) exit 1;;
 esac
@@ -5887,6 +5887,9 @@ goto :eof
 if "%*"=="issue --help" (
 echo Available Commands:
 echo   list    List
+echo.
+echo Flags:
+echo       --history   History
 goto :eof
 )
 if "%*"=="issue list --help" (
@@ -5910,6 +5913,17 @@ echo "$out" | grep -q "unknown flag" && fail "in-scope + global must check clean
 printf '#sig cobratool\ncobratool run --jql x\nprint "d"\n' > sc2.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc2.weir 2>&1)
 echo "$out" | grep -qF "unknown flag '--jql' for cobratool run" || fail "the wrong-case flag warns naming the case: $out"
+# the UNCRAMPING receipt [D:scoped-sigs]: a deeper path's flag does not
+# leak up — `issue --jql` warns while `issue list --jql` is the clean pin above
+printf '#sig cobratool\ncobratool issue --jql x\nprint "d"\n' > sc4.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc4.weir 2>&1)
+echo "$out" | grep -qF "unknown flag '--jql' for cobratool issue" || fail "a deeper path's flag must not leak up: $out"
+# a SUB-LESS line checks the GLOBALS (the case intersection) — the
+# claude shape: flag-only usage must still squiggle [D:scoped-sigs]
+printf '#sig cobratool\ncobratool --debgu\ncobratool --debug\nprint "d"\n' > sc3.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc3.weir 2>&1)
+echo "$out" | grep -qF "unknown flag '--debgu' for cobratool" || fail "a sub-less unknown must warn against the globals: $out"
+echo "$out" | grep -q "unknown flag '--debug'" && fail "a sub-less GLOBAL must check clean: $out" || true
 # ANSI in help/version output (the mac jira shape [D:sig-version-probe]):
 # escapes are stripped at the probe boundary — a colored all-caps banner
 # still detects, and no escape byte reaches the sig
@@ -6008,6 +6022,49 @@ echo "$out" | grep -qF "source: help-scan" || fail "the refused help still harve
 printf '#sig bsdtool\nbsdtool -q --color=auto x\nprint "d"\n' > bsd.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check bsd.weir 2>&1)
 echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not warn on shorts: $out" || true
+# gh's dialect [D:scoped-sigs]: colon-suffixed command tokens walk, and
+# the walk reaches DEPTH 4 (kustomize edit add resource's shape)
+cat > bin/ghtool <<'WEOF'
+#!/bin/sh
+case "$*" in
+  "--version") echo "ghtool 2.99"; exit 0;;
+  "--help") printf 'CORE COMMANDS\n  pr:    Manage pull requests\n\nFLAGS\n  --help   Show help\n'; exit 0;;
+  "pr --help") printf 'CORE COMMANDS\n  checkout:  Check out\n'; exit 0;;
+  "pr checkout --help") printf 'CORE COMMANDS\n  branch:  Branch ops\n\nFLAGS\n  -b, --branch string   Branch\n'; exit 0;;
+  "pr checkout branch --help") printf 'FLAGS\n      --track4 string   Level four\n'; exit 0;;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/ghtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig ghtool 2>&1) || fail "add sig ghtool: $out"
+grep -qF "branch: bool" .weir/sigs/ghtool.weir || fail "colon-suffixed command tokens walk"
+grep -qF "track4: bool" .weir/sigs/ghtool.weir || fail "the walk reaches depth 4"
+# PATH-y tool names [D:scoped-sigs]: one FLAT file under sigs/ (never a
+# nested tree, never an escape from .weir), a legal module name, and
+# the #sig round-trip on the spelling the script uses
+mkdir -p "$sgdir/proj/lib"
+cat > "$sgdir/proj/lib/jp" <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--help" ]; then printf 'usage: [flags]\n  -c, --clean   Deletes branch\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x "$sgdir/proj/lib/jp"
+if [ "$IS_WINDOWS" != "1" ]; then
+out=$($BIN add sig ./lib/jp 2>&1) || fail "add sig on a path-y tool: $out"
+test -f .weir/sigs/_lib_jp.weir || fail "the sig file is FLAT under sigs/: $(find .weir/sigs -name '*jp*')"
+head -1 .weir/sigs/_lib_jp.weir | grep -qE '^module [A-Z]' || fail "a path-y tool mints a legal module name"
+printf '#sig ./lib/jp\n./lib/jp --clena\nprint "d"\n' > jp.weir
+out=$($BIN check jp.weir 2>&1)
+echo "$out" | grep -qF "Did you mean '--clean'?" || fail "the path-y sig round-trips: $out"
+abs=$(cd "$sgdir/proj/lib" && pwd)/jp
+$BIN add sig "$abs" >/dev/null 2>&1 || fail "an absolute tool path must generate"
+find .weir/sigs -maxdepth 1 -name '*jp.weir' | grep -q . || fail "the absolute path stays INSIDE .weir/sigs"
+test -f "$abs.weir" && fail "the sig ESCAPED next to the binary" || true
+# a data file is a different wrong turn than a missing tool
+printf 'kind: XR\n' > xr.yaml
+out=$($BIN add sig ./xr.yaml 2>&1) && fail "a data file must refuse" || true
+echo "$out" | grep -qF "exists but did not run" || fail "the data-file teach: $out"
+fi
 # broot draws a box TABLE — the glyphs strip to spaces and rows parse
 cat > bin/boxtool <<'WEOF'
 #!/bin/sh

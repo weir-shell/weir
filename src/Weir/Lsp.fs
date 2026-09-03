@@ -735,14 +735,31 @@ let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int *
 /// the flag's field in its signature, resolved the way the unknown-flag
 /// check resolves surfaces (record = the "" sub; union = the first
 /// non-dash word): (record name, field, field type, sig lines, sig stmts)
+// the record a LINE's flags live in: the longest run of leading sub
+// words, kebab-joined — the checker's own rule [D:scoped-sigs]
+let private sigRecordFor (si: Script.SigInfo) (words: (string * Span) list) : string option =
+    match Map.tryFind "" si.SubRecords with
+    | Some rn -> Some rn
+    | None ->
+        let run =
+            words
+            |> List.skipWhile (fun (w, _) -> w.StartsWith "-")
+            |> List.takeWhile (fun (w, _) -> not (w.StartsWith "-"))
+            |> List.truncate 4
+            |> List.map fst
+
+        [ List.length run .. -1 .. 1 ]
+        |> List.tryPick (fun n -> Map.tryFind (String.concat "-" (run |> List.truncate n)) si.SubRecords)
+
 let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: string) =
     let rn =
-        match Map.tryFind "" si.SubRecords with
+        match sigRecordFor si words with
         | Some rn -> Some rn
         | None ->
-            words
-            |> List.tryFind (fun (x, _) -> not (x.StartsWith "-"))
-            |> Option.bind (fun (x, _) -> Map.tryFind x si.SubRecords)
+            // a sub-less line on a scoped sig: the flag lives in every
+            // case that carries it — the first record holding the field
+            // is the definition worth jumping to
+            si.SubRecords |> Map.toList |> List.map snd |> List.distinct |> List.tryHead
 
     rn
     |> Option.bind (fun rn ->
@@ -907,13 +924,29 @@ let definitionTarget
                         if progCol <= jcol && jcol < progCol + prog.Length then
                             Some(Some si.SigPath, 1, 1, 0)
                         else
-                            words
-                            |> List.tryFind (fun (w, sp) ->
-                                w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
-                            |> Option.bind (fun (w, _) -> sigFlagField si words w)
-                            |> Option.bind (fun (rn, f, _, _, sigStmts) ->
-                                typeSiteIn sigStmts rn (Some f)
-                                |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len))))
+                            match
+                                words
+                                |> List.tryFind (fun (w, sp) ->
+                                    w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
+                            with
+                            | Some(w, _) ->
+                                sigFlagField si words w
+                                |> Option.bind (fun (rn, f, _, _, sigStmts) ->
+                                    typeSiteIn sigStmts rn (Some f)
+                                    |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len))
+                            | None ->
+                                // a SUB token jumps to its case's RECORD
+                                // declaration [D:scoped-sigs] — the record
+                                // the checker would pick for this line
+                                words
+                                |> List.tryFind (fun (w, sp) ->
+                                    not (w.StartsWith "-") && sp.Start.Col <= jcol && jcol < sp.End.Col)
+                                |> Option.bind (fun _ -> sigRecordFor si words)
+                                |> Option.bind (fun rn ->
+                                    targetStmts si.SigPath
+                                    |> Option.bind (fun (_, sigStmts) ->
+                                        typeSiteIn sigStmts rn None
+                                        |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len)))))
 
             let fromPattern =
                 teOf chk
@@ -1814,7 +1847,7 @@ let run (debug: bool) : int =
                                 // <tag>+<hash>, all JSON-safe chars, so the placeholder
                                 // splice needs no escaping.
                                 w.WriteRawValue(
-                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["."]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
                                         .Replace("__WEIR_VERSION__", Weir.Version.current)
                                 )))
                     | "initialized" -> ()
@@ -2175,49 +2208,132 @@ let run (debug: bool) : int =
                                 // longs, kebab spelling — without this, editors
                                 // word-complete the sig FILE's camelCase field
                                 // names, which the checker then rightly rejects
+                                // the nearest sig'd tool to the LEFT — the flag
+                                // arm and the sub-token arm share it
+                                let nearestSig =
+                                    let path =
+                                        try
+                                            Uri(uri).LocalPath
+                                        with _ ->
+                                            uri
+
+                                    Script.sigInfosForFile path (List.ofArray lines)
+                                    |> List.choose (fun si ->
+                                        let m =
+                                            Text.RegularExpressions.Regex.Matches(
+                                                upto,
+                                                $"\\b{Text.RegularExpressions.Regex.Escape si.Tool}\\b"
+                                            )
+
+                                        if m.Count > 0 then Some(m[m.Count - 1].Index, si) else None)
+                                    |> List.sortByDescending fst
+                                    |> List.tryHead
+
+                                // sub TOKENS complete at every depth
+                                // [D:scoped-sigs]: the Subs keys ARE the
+                                // kebab-joined paths, so the next segment
+                                // un-glues from the run typed so far — the
+                                // same conflation the checker's key join
+                                // already lives with
+                                let sigSubTokens =
+                                    if word.StartsWith "-" then
+                                        []
+                                    else
+                                        nearestSig
+                                        |> Option.map (fun (toolAt, si) ->
+                                            let run =
+                                                upto
+                                                    .Substring(toolAt + si.Tool.Length)
+                                                    .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                                                |> Array.skipWhile (fun t -> t.StartsWith "-")
+                                                |> Array.takeWhile (fun t -> not (t.StartsWith "-"))
+                                                |> Array.toList
+                                                // the word being typed is the PREFIX, not the run
+                                                |> fun ts ->
+                                                    if word <> "" && ts <> [] && List.last ts = word then
+                                                        ts |> List.take (ts.Length - 1)
+                                                    else
+                                                        ts
+
+                                            let joined = String.concat "-" run
+                                            let prefix = if joined = "" then "" else joined + "-"
+
+                                            si.Subs
+                                            |> Map.toList
+                                            |> List.map fst
+                                            |> List.filter (fun k -> k <> "" && k.StartsWith prefix && k <> joined)
+                                            |> List.map (fun k -> (k.Substring prefix.Length).Split('-')[0])
+                                            |> List.distinct
+                                            |> List.filter (fun t -> t.StartsWith word && t <> word)
+                                            |> List.sort)
+                                        |> Option.defaultValue []
+
                                 let sigFlags =
                                     if word.StartsWith "-" then
-                                        let path =
-                                            try
-                                                Uri(uri).LocalPath
-                                            with _ ->
-                                                uri
-
-                                        Script.sigInfosForFile path (List.ofArray lines)
-                                        |> List.choose (fun si ->
-                                            let m =
-                                                Text.RegularExpressions.Regex.Matches(
-                                                    upto,
-                                                    $"\\b{Text.RegularExpressions.Regex.Escape si.Tool}\\b"
-                                                )
-
-                                            if m.Count > 0 then Some(m[m.Count - 1].Index, si) else None)
-                                        |> List.sortByDescending fst
-                                        |> List.tryHead
+                                        nearestSig
                                         |> Option.map (fun (toolAt, si) ->
                                             // SCOPED sigs complete their matched
                                             // case only [D:scoped-sigs]: the first
                                             // non-flag word after the tool picks
                                             // the set; before one exists, the
                                             // union of every case
-                                            let sub =
+                                            let run =
                                                 upto
                                                     .Substring(toolAt + si.Tool.Length)
                                                     .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                                                |> Array.tryFind (fun t -> not (t.StartsWith "-"))
+                                                |> Array.skipWhile (fun t -> t.StartsWith "-")
+                                                |> Array.takeWhile (fun t -> not (t.StartsWith "-"))
+                                                |> Array.truncate 4
+                                                |> Array.toList
+
+                                            // the longest path wins, the checker's rule
+                                            let sub =
+                                                [ List.length run .. -1 .. 1 ]
+                                                |> List.tryPick (fun n ->
+                                                    let key = String.concat "-" (run |> List.truncate n)
+                                                    Map.tryFind key si.Subs)
 
                                             let sets =
-                                                match sub |> Option.bind (fun t -> Map.tryFind t si.Subs) with
+                                                match sub with
                                                 | Some fs -> [ fs ]
-                                                | None -> si.Subs |> Map.toList |> List.map snd
+                                                | None ->
+                                                    // sub-less: the GLOBALS (the case
+                                                    // intersection, the checker's own
+                                                    // rule); union-of-cases only when
+                                                    // nothing is shared [D:scoped-sigs]
+                                                    let all = si.Subs |> Map.toList |> List.map snd
 
-                                            sets
-                                            |> Seq.collect fst
-                                            |> Seq.distinct
-                                            |> Seq.map (fun l -> "--" + l)
-                                            |> Seq.filter (fun l -> l.StartsWith word)
-                                            |> Seq.sort
-                                            |> List.ofSeq)
+                                                    match all with
+                                                    | (l0, s0) :: rest ->
+                                                        let li =
+                                                            rest
+                                                            |> List.fold (fun acc (l, _) -> Set.intersect acc l) l0
+
+                                                        if li.IsEmpty then all else [ li, s0 ]
+                                                    | [] -> []
+
+                                            let longs =
+                                                sets
+                                                |> Seq.collect fst
+                                                |> Seq.distinct
+                                                |> Seq.map (fun l -> "--" + l)
+                                                |> Seq.filter (fun l -> l.StartsWith word)
+                                                |> Seq.sort
+                                                |> List.ofSeq
+
+                                            // a single dash offers the SHORTS too
+                                            let shorts =
+                                                if word = "-" then
+                                                    sets
+                                                    |> Seq.collect snd
+                                                    |> Seq.distinct
+                                                    |> Seq.map (fun sh -> "-" + sh)
+                                                    |> Seq.sort
+                                                    |> List.ofSeq
+                                                else
+                                                    []
+
+                                            shorts @ longs)
                                         |> Option.defaultValue []
                                     else
                                         []
@@ -2226,6 +2342,7 @@ let run (debug: bool) : int =
                                     match repaired with
                                     | Some fields when not fields.IsEmpty -> fields
                                     | _ when not sigFlags.IsEmpty -> sigFlags
+                                    | _ when not sigSubTokens.IsEmpty -> sigSubTokens
                                     | _ ->
                                         // binders may sit on EARLIER lines —
                                         // the whole doc is the binder scope
