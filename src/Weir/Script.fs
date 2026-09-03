@@ -3807,7 +3807,9 @@ module SigGen =
                 inSection <- false
 
             if inSection && line.StartsWith "  " then
-                let tok = line.TrimStart().Split(' ') |> Array.head
+                // gh spells its command tables `auth:  Authenticate…` —
+                // the trailing colon is punctuation, not the token
+                let tok = (line.TrimStart().Split(' ') |> Array.head).TrimEnd ':'
 
                 if
                     tok.Length > 1
@@ -3827,7 +3829,9 @@ module SigGen =
     // sub-page harvest over-collects).
     // provenance KEPT [D:scoped-sigs]: flags group under their LEVEL-1
     // subcommand (deeper levels flatten into their root's group), so
-    // the emitter can scope
+    // the emitter can scope. Depth 4 (`kustomize edit add resource`),
+    // breadth-first under the budget — levels complete in order, so a
+    // big tool degrades to shallow-but-wide, never deep-but-lopsided
     let private walkSubFlags (tool: string) (topHelp: string) : (string * Flag list) list * int * int =
         let groups = System.Collections.Generic.Dictionary<string, ResizeArray<Flag>>()
         let order = ResizeArray<string>()
@@ -3846,7 +3850,7 @@ module SigGen =
                   if not (noise sub) then
                       sub, "", sub ]
 
-        for _ in 1..2 do
+        for _ in 1..4 do
             let next = ResizeArray<string * string * string>()
 
             for root, prefix, sub in level do
@@ -3927,7 +3931,7 @@ module SigGen =
         // version word) run only when the tool's own --help ADVERTISES
         // that subcommand.
         match Contracts.probeVersionFlag Proc.resolveProg tool with
-        | Contracts.ToolAbsent -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
+        | Contracts.ToolAbsent -> Error $"'{tool}' is not on PATH — generation probes the installed binary"
         | rung1 ->
             let topHelp = runTool tool "--help"
 

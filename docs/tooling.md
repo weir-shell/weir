@@ -121,7 +121,8 @@ flags become errors.
 
 Generation probes, in order: the tool's fish completions, shipped
 fish completion files, then `--help` — and when the help advertises
-subcommands, each subcommand's own help (breadth-first, two levels).
+subcommands, each subcommand's own help (breadth-first, four
+levels — `kustomize edit add resource` reaches).
 A walked surface generates SCOPED: the first subcommand token picks
 its case and only that case's flags check (`docker ps --detach`
 warns naming `docker ps`), with global flags riding every case; a

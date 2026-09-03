@@ -24,6 +24,10 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
+- The walk follows nesting to depth 4 (`kustomize edit add
+  resource`), reads gh's colon-suffixed command tables, and the
+  not-on-PATH message dropped its aside.
+
 - A sub-less line on a scoped sig checks the GLOBALS — flag-only
   usage (`claude --scop2 --scope`) squiggles again: the flags riding
   every case are the global set, so the case intersection checks it;
@@ -78,7 +82,7 @@
   docker, kubectl, kustomize) keep the real flags under
   `tool sub --help` — generation now reads the advertised commands
   sections (grouped headings included), probes each subcommand's
-  help breadth-first to depth 2 under a 60-probe budget, and unions
+  help breadth-first to depth 4 under a 60-probe budget, and unions
   the flags into the flat surface, labeled `help+subs`. So
   `jira issue list --jql …` stops warning on every flag the
   top-level help never mentioned. Every probe is guarded: null

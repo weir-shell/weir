@@ -6014,6 +6014,23 @@ echo "$out" | grep -qF "source: help-scan" || fail "the refused help still harve
 printf '#sig bsdtool\nbsdtool -q --color=auto x\nprint "d"\n' > bsd.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check bsd.weir 2>&1)
 echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not warn on shorts: $out" || true
+# gh's dialect [D:scoped-sigs]: colon-suffixed command tokens walk, and
+# the walk reaches DEPTH 4 (kustomize edit add resource's shape)
+cat > bin/ghtool <<'WEOF'
+#!/bin/sh
+case "$*" in
+  "--version") echo "ghtool 2.99"; exit 0;;
+  "--help") printf 'CORE COMMANDS\n  pr:    Manage pull requests\n\nFLAGS\n  --help   Show help\n'; exit 0;;
+  "pr --help") printf 'CORE COMMANDS\n  checkout:  Check out\n'; exit 0;;
+  "pr checkout --help") printf 'CORE COMMANDS\n  branch:  Branch ops\n\nFLAGS\n  -b, --branch string   Branch\n'; exit 0;;
+  "pr checkout branch --help") printf 'FLAGS\n      --track4 string   Level four\n'; exit 0;;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/ghtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig ghtool 2>&1) || fail "add sig ghtool: $out"
+grep -qF "branch: bool" .weir/sigs/ghtool.weir || fail "colon-suffixed command tokens walk"
+grep -qF "track4: bool" .weir/sigs/ghtool.weir || fail "the walk reaches depth 4"
 # broot draws a box TABLE — the glyphs strip to spaces and rows parse
 cat > bin/boxtool <<'WEOF'
 #!/bin/sh
