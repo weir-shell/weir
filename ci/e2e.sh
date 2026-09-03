@@ -5858,7 +5858,8 @@ cat > bin/cobratool <<'WEOF'
 #!/bin/sh
 case "$*" in
   "--version") echo "cobratool 1.0";;
-  "--help") printf 'Available Commands:\n  issue    Manage issues\n\nFlags:\n      --debug   Debug\n';;
+  "--help") printf 'Available Commands:\n  issue    Manage issues\n  run      Run a thing\n\nFlags:\n      --debug   Debug\n';;
+  "run --help") printf 'Flags:\n      --fast   Skip checks\n';;
   "issue --help") printf 'Available Commands:\n  list    List\n';;
   "issue list --help") printf 'Flags:\n      --jql string   JQL query\n';;
   *) exit 1;;
@@ -5872,9 +5873,15 @@ if "%*"=="--version" echo cobratool 1.0 & goto :eof
 if "%*"=="--help" (
 echo Available Commands:
 echo   issue    Manage issues
+echo   run      Run a thing
 echo.
 echo Flags:
 echo       --debug   Debug
+goto :eof
+)
+if "%*"=="run --help" (
+echo Flags:
+echo       --fast   Skip checks
 goto :eof
 )
 if "%*"=="issue --help" (
@@ -5893,6 +5900,16 @@ fi
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig cobratool 2>&1) || fail "add sig cobratool: $out"
 echo "$out" | grep -qF "source: help+subs" || fail "the walk labels its lineage: $out"
 grep -qF "jql: bool" .weir/sigs/cobratool.weir || fail "the depth-2 walk found --jql"
+# the SCOPING receipt [D:scoped-sigs]: provenance kept, the union emitted —
+# a flag on the wrong subcommand warns NAMING the case; globals ride
+# every case; a line with no subcommand token stays the L2 skip
+grep -qF "type Cmd =" .weir/sigs/cobratool.weir || fail "the walk emits the scoped union"
+printf '#sig cobratool\ncobratool issue list --jql x --debug\nprint "d"\n' > sc1.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc1.weir 2>&1)
+echo "$out" | grep -q "unknown flag" && fail "in-scope + global must check clean: $out" || true
+printf '#sig cobratool\ncobratool run --jql x\nprint "d"\n' > sc2.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc2.weir 2>&1)
+echo "$out" | grep -qF "unknown flag '--jql' for cobratool run" || fail "the wrong-case flag warns naming the case: $out"
 # ANSI in help/version output (the mac jira shape [D:sig-version-probe]):
 # escapes are stripped at the probe boundary — a colored all-caps banner
 # still detects, and no escape byte reaches the sig
@@ -6262,7 +6279,7 @@ cp -r "$(dirname "$0")/../examples" "$sctdir/root/examples"
 # the caught-typo proof the showcase's comment points at
 printf '#sig git\nlet rc = git status --porcelian | exitCode\nprint (show rc)\n' > "$sctdir/root/examples/typo.weir"
 out=$(cd "$sctdir/root" && $BIN check examples/typo.weir 2>&1) || true
-echo "$out" | grep -qF "unknown flag '--porcelian' for git. Did you mean '--porcelain'?" || fail "the git sig catches the typo (reified shape): $out"
+echo "$out" | grep -qF "unknown flag '--porcelian' for git status. Did you mean '--porcelain'?" || fail "the git sig catches the typo (reified shape): $out"
 rm -rf "$sctdir"
 echo "e2e ok: showcase .weir tree (offline check, no restore; the typo the comment names is caught)"
 

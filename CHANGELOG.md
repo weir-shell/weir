@@ -24,6 +24,15 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
+- **Sig generation scopes to subcommands.** The walk keeps its
+  provenance: a walked surface now generates a union — the first
+  subcommand token picks the case and only its flags check, so
+  `docker ps --detach` warns naming `docker ps` where the flat
+  surface accepted any flag anywhere. Globals ride every case, a
+  line with no subcommand keeps the partial-surface skip, and
+  completion offers the matched case only. Flat sigs (hand-written
+  or scrape-poor) load unchanged.
+
 - Sig flags complete in the editor — a `-`-word after a sig'd tool
   offers the sig's own longs in kebab spelling (`--s` →
   `--session-id`, not the field name or a comment word; the old

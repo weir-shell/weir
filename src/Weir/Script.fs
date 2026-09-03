@@ -3467,15 +3467,22 @@ let sigCmdDiagnostics
 
                     let surface =
                         match Map.tryFind "" si.Subs with
-                        | Some fs -> Some fs
+                        | Some fs -> Some(None, fs)
                         | None ->
                             words
                             |> List.tryFind (fun (w, _) -> not (w.StartsWith "-"))
-                            |> Option.bind (fun (w, _) -> Map.tryFind w si.Subs)
+                            |> Option.bind (fun (w, _) -> Map.tryFind w si.Subs |> Option.map (fun fs -> Some w, fs))
 
                     match surface with
                     | None -> [] // no matching subcommand: L2 stops here
-                    | Some(longs, shorts) ->
+                    | Some(subName, (longs, shorts)) ->
+                        // a scoped surface names its CASE in the warn
+                        // [D:scoped-sigs] — the scoping's visible dividend
+                        let toolAndSub =
+                            match subName with
+                            | Some sub -> $"{si.Tool} {sub}"
+                            | None -> si.Tool
+
                         let sev = if si.Exhaustive then "error" else "warning"
 
                         let note =
@@ -3511,7 +3518,7 @@ let sigCmdDiagnostics
                                         let dym =
                                             Weir.Types.didYouMean ("--" + name) (longs |> Seq.map (fun l -> "--" + l))
 
-                                        mk sp $"unknown flag '--{name}' for {si.Tool}{dym} {note}" :: acc
+                                        mk sp $"unknown flag '--{name}' for {toolAndSub}{dym} {note}" :: acc
 
                                 check acc rest
                             | (w, sp) :: rest when w.StartsWith "-" && w.Length = 2 && not (System.Char.IsDigit w[1]) ->
@@ -3523,7 +3530,7 @@ let sigCmdDiagnostics
                                     if shorts.IsEmpty || shorts.Contains(w.Substring 1) then
                                         acc
                                     else
-                                        mk sp $"unknown flag '{w}' for {si.Tool} {note}" :: acc
+                                        mk sp $"unknown flag '{w}' for {toolAndSub} {note}" :: acc
 
                                 check acc rest
                             | _ :: rest -> check acc rest
@@ -3797,8 +3804,12 @@ module SigGen =
     // the flat model's own charter). Depth 2 (`jira issue list`),
     // budget-capped; structured rows only, never the harvest (a
     // sub-page harvest over-collects).
-    let private walkSubFlags (tool: string) (topHelp: string) : Flag list * int * int =
-        let flags = ResizeArray<Flag>()
+    // provenance KEPT [D:scoped-sigs]: flags group under their LEVEL-1
+    // subcommand (deeper levels flatten into their root's group), so
+    // the emitter can scope
+    let private walkSubFlags (tool: string) (topHelp: string) : (string * Flag list) list * int * int =
+        let groups = System.Collections.Generic.Dictionary<string, ResizeArray<Flag>>()
+        let order = ResizeArray<string>()
         let mutable budget = 60
         let mutable probed = 0
         let mutable answered = 0
@@ -3812,12 +3823,12 @@ module SigGen =
         let mutable level =
             [ for sub in subcommandTokens topHelp do
                   if not (noise sub) then
-                      "", sub ]
+                      sub, "", sub ]
 
         for _ in 1..2 do
-            let next = ResizeArray<string * string>()
+            let next = ResizeArray<string * string * string>()
 
-            for prefix, sub in level do
+            for root, prefix, sub in level do
                 if budget > 0 then
                     budget <- budget - 1
                     probed <- probed + 1
@@ -3826,27 +3837,40 @@ module SigGen =
                     | None -> ()
                     | Some subHelp ->
                         answered <- answered + 1
-                        flags.AddRange(parseHelp subHelp)
+
+                        if not (groups.ContainsKey root) then
+                            groups[root] <- ResizeArray<Flag>()
+                            order.Add root
+
+                        groups[root].AddRange(parseHelp subHelp)
 
                         for deeper in subcommandTokens subHelp do
                             if not (noise deeper) then
-                                next.Add($"{prefix}{sub} ", deeper)
+                                next.Add(root, $"{prefix}{sub} ", deeper)
 
             level <- List.ofSeq next
 
-        List.ofSeq flags, probed, answered
+        [ for root in order do
+              if groups[root].Count > 0 then
+                  root, List.ofSeq groups[root] ],
+        probed,
+        answered
 
     // the source label rides the sig comment — a harvested surface is
     // weaker lineage than parsed rows, and says so
-    let private helpSurface (tool: string) (topHelp: string option) (harvestOnly: string option) : string * Flag list =
+    let private helpSurface
+        (tool: string)
+        (topHelp: string option)
+        (harvestOnly: string option)
+        : string * Flag list * (string * Flag list) list =
         match topHelp with
         | None ->
             match harvestOnly with
             | Some dump ->
                 match harvestHelp dump with
-                | [] -> "help", []
-                | fs -> "help-scan", fs
-            | None -> "help", []
+                | [] -> "help", [], []
+                | fs -> "help-scan", fs, []
+            | None -> "help", [], []
         | Some text ->
             let source, top =
                 match parseHelp text with
@@ -3857,18 +3881,10 @@ module SigGen =
             // the walk's outcome is OBSERVABLE either way [D:sig-version-probe]:
             // "help" alone cannot say whether subcommands were never
             // advertised, never answered, or answered nothing — the counts do
-            | [], 0, _ -> source, top
+            | [], 0, _ -> source, top, []
             | [], probed, answered ->
-                $"{source} (walked {probed} subcommand help(s), {answered} answered, none yielded flags)", top
-            | subFlags, _, _ ->
-                let seen = top |> List.map (fun f -> f.Long) |> Set.ofList
-
-                let extra =
-                    subFlags
-                    |> List.distinctBy (fun f -> f.Long)
-                    |> List.filter (fun f -> not (Set.contains f.Long seen))
-
-                (if extra.IsEmpty then source else source + "+subs"), top @ extra
+                $"{source} (walked {probed} subcommand help(s), {answered} answered, none yielded flags)", top, []
+            | groups, _, _ -> source + "+subs", top, groups
 
     let private fieldName (long: string) =
         // inverse kebab: dry-run -> dryRun
@@ -3921,12 +3937,12 @@ module SigGen =
                 else
                     None
 
-            let source, flags =
+            let source, flags, subGroups =
                 match fishText with
                 | Some text when text.Contains "complete " ->
                     match parseFish text tool with
                     | [] -> helpSurface tool topHelp harvestOnly
-                    | fs -> "completion-fish", fs
+                    | fs -> "completion-fish", fs, []
                 | _ ->
                     let shipped =
                         [ $"/usr/share/fish/completions/{tool}.fish"
@@ -3937,22 +3953,80 @@ module SigGen =
                     | Some f ->
                         match parseFish (IO.File.ReadAllText f) tool with
                         | [] -> helpSurface tool topHelp harvestOnly
-                        | fs -> "fish-file", fs
+                        | fs -> "fish-file", fs, []
                     | None -> helpSurface tool topHelp harvestOnly
 
-            match flags with
-            | [] ->
+            match flags, subGroups with
+            | [], [] ->
                 Error
                     $"'{tool}': found no flags to record (probed: completion fish, shipped fish files, --help) — write .weir/sigs/{tool}.weir by hand"
-            | flags ->
-                let flags = flags |> List.sortBy (fun f -> f.Long)
-
+            | flags, subGroups ->
                 let moduleName =
                     string (System.Char.ToUpper tool[0])
                     + (tool.Substring 1 |> String.filter (fun c -> System.Char.IsLetterOrDigit c))
 
                 let sb = System.Text.StringBuilder()
                 let line (l: string) = sb.AppendLine l |> ignore
+
+                // one record body, shared by the flat shape and every
+                // union case: same-camel spellings MERGE (the field
+                // carries ONE Wire for the spelling its kebab does not
+                // cover), shorts dedup WITHIN the record (per case —
+                // docker's -a on all and all-tags live apart now), and
+                // keyword longs take the Flag suffix
+                let renderRecord (name: string) (flags: Flag list) =
+                    line $"type {name} = {{"
+
+                    let flags =
+                        let taken = System.Collections.Generic.HashSet<string>()
+
+                        flags
+                        |> List.sortBy (fun f -> f.Long)
+                        |> List.map (fun f ->
+                            match f.Short with
+                            | Some sh when not (taken.Add sh) -> { f with Short = None }
+                            | _ -> f)
+
+                    let grouped = flags |> List.groupBy (fun f -> fieldName f.Long) |> List.sortBy fst
+
+                    for fname, group in grouped do
+                        match group |> List.tryPick (fun g -> g.Doc) with
+                        | Some d -> line $"    /// {escape d}"
+                        | None -> ()
+
+                        let fname =
+                            if Set.contains fname Weir.Parser.keywords then
+                                fname + "Flag"
+                            else
+                                fname
+
+                        let covered = Weir.Argv.kebabFlag fname
+
+                        let attrs =
+                            match group |> List.tryFind (fun g -> g.Long <> covered) with
+                            | Some g -> [ $"Wire \"{g.Long}\"" ]
+                            | None -> []
+
+                        let attrs =
+                            match group |> List.tryPick (fun g -> g.Short) with
+                            | Some sh when sh.Length = 1 && sh <> "h" -> attrs @ [ $"Short \"{sh}\"" ]
+                            | _ -> attrs
+
+                        if not attrs.IsEmpty then
+                            let joined = String.concat "; " attrs
+                            line $"    [<{joined}>]"
+
+                        line $"    {fname}: bool"
+
+                    line "}"
+
+                // a case name from a sub token: PascalCase of the camel,
+                // Cmd suffix on a collision with the union's own name
+                let caseName (sub: string) =
+                    let camel = fieldName sub
+                    let pascal = string (System.Char.ToUpper camel[0]) + camel.Substring 1
+                    if pascal = "Cmd" then "CmdCmd" else pascal
+
                 line $"module {moduleName}"
 
                 line (
@@ -3964,8 +4038,13 @@ module SigGen =
 
                 line $"/// source: {source} — a scraped surface may be incomplete (partial"
                 line "/// by default; add `let exhaustive = true` once verified by hand)"
-                line "/// flat surface: flags checked across the whole line — split into"
-                line "/// subcommand records by hand if the tool warrants it"
+
+                if subGroups.IsEmpty then
+                    line "/// flat surface: flags checked across the whole line — split into"
+                    line "/// subcommand records by hand if the tool warrants it"
+                else
+                    line "/// scoped surface [D:scoped-sigs]: the first subcommand token picks"
+                    line "/// the case and only ITS flags check; global flags ride every case"
 
                 match version with
                 | Some v -> line $"let version = \"{escape v}\""
@@ -3973,62 +4052,37 @@ module SigGen =
                     line
                         "// no `let version`: the tool answers neither --version nor the version subcommand, so there is no identity to record"
 
-                line "type Cmd = {"
+                if subGroups.IsEmpty then
+                    renderRecord "Cmd" flags
+                else
+                    // R2, load-bearing (phase 0.3: no global merge exists
+                    // in the checker): top-level flags JOIN every case
+                    let globalByField = flags |> List.map (fun f -> fieldName f.Long, f)
 
-                // subcommands legitimately reuse shorts (docker -a =
-                // all AND all-tags); the flat union keeps the FIRST
-                // holder and drops the rest — longs still check
-                let flags =
-                    let taken = System.Collections.Generic.HashSet<string>()
+                    let cases =
+                        subGroups
+                        |> List.distinctBy (fun (sub, _) -> caseName sub)
+                        |> List.map (fun (sub, gflags) ->
+                            let have = gflags |> List.map (fun f -> fieldName f.Long) |> Set.ofList
 
-                    flags
-                    |> List.map (fun f ->
-                        match f.Short with
-                        | Some sh when not (taken.Add sh) -> { f with Short = None }
-                        | _ -> f)
+                            let withGlobals =
+                                gflags
+                                @ (globalByField
+                                   |> List.filter (fun (fn, _) -> not (Set.contains fn have))
+                                   |> List.map snd)
 
-                // spellings that camelize to ONE field (claude's
-                // --allowedTools / --allowed-tools) merge: the field
-                // carries a Wire per spelling and the reader accepts
-                // each. Attr specs share ONE bracket: stacked [<…>]
-                // lines do not parse
-                let grouped = flags |> List.groupBy (fun f -> fieldName f.Long) |> List.sortBy fst
+                            sub, caseName sub, withGlobals)
 
-                for fname, group in grouped do
-                    let f = group |> List.head
+                    for _, cn, cflags in cases do
+                        renderRecord $"{cn}Flags" cflags
 
-                    match group |> List.tryPick (fun g -> g.Doc) with
-                    | Some d -> line $"    /// {escape d}"
-                    | None -> ()
+                    line "type Cmd ="
 
-                    let fname =
-                        if Set.contains fname Weir.Parser.keywords then
-                            fname + "Flag"
-                        else
-                            fname
+                    for sub, cn, _ in cases do
+                        // the matching key is the kebab of the case — it
+                        // must round-trip to the sub token the user types
+                        line $"    | {cn} of {cn}Flags"
 
-                    // the field's own kebab is accepted for free — ONE
-                    // Wire carries the one spelling that differs (the
-                    // keyword long, or claude's camel alias)
-                    let covered = Weir.Argv.kebabFlag fname
-
-                    let attrs =
-                        match group |> List.tryFind (fun g -> g.Long <> covered) with
-                        | Some g -> [ $"Wire \"{g.Long}\"" ]
-                        | None -> []
-
-                    let attrs =
-                        match group |> List.tryPick (fun g -> g.Short) with
-                        | Some sh when sh.Length = 1 && sh <> "h" -> attrs @ [ $"Short \"{sh}\"" ]
-                        | _ -> attrs
-
-                    if not attrs.IsEmpty then
-                        let joined = String.concat "; " attrs
-                        line $"    [<{joined}>]"
-
-                    line $"    {fname}: bool"
-
-                line "}"
                 let text = sb.ToString()
 
                 // VALIDATE BEFORE WRITE [D:add-validates]: the generated
@@ -4085,8 +4139,19 @@ module SigGen =
                                 | Some v -> escape v
                                 | None -> $"none — '{tool}' answers neither --version nor version"
 
+                            let surfaceNote =
+                                if subGroups.IsEmpty then
+                                    $"{flags.Length} flag(s)"
+                                else
+                                    let total =
+                                        (flags @ (subGroups |> List.collect snd))
+                                        |> List.distinctBy (fun f -> f.Long)
+                                        |> List.length
+
+                                    $"{total} flag(s) across {subGroups.Length} subcommand case(s)"
+
                             Ok
-                                $"added sig {tool} ({flags.Length} flag(s), source: {source}, version: {versionNote}) — partial by default; verify and mark exhaustive by hand"
+                                $"added sig {tool} ({surfaceNote}, source: {source}, version: {versionNote}) — partial by default; verify and mark exhaustive by hand"
                 finally
                     try
                         IO.File.Delete tmp
