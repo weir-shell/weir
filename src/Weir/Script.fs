@@ -3195,10 +3195,25 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
         | Some specs -> specs |> List.exists (fun (n, _) -> n = "Positional")
         | None -> false
 
+    // a [<Wire "type">] field carries the FLAG spelling the field name
+    // cannot (keywords) [D:sig-version-probe] — the language-wide wire
+    // teach, honored here
+    // ALL Wire specs count [D:sig-version-probe]: a field may carry one
+    // per accepted spelling (claude lists --allowedTools AND
+    // --allowed-tools; both camelize to one field)
+    let wiresOf f =
+        match Map.tryFind f def.Attrs with
+        | Some specs ->
+            specs
+            |> List.choose (function
+                | "Wire", Some(AStr w) -> Some w
+                | _ -> None)
+        | None -> []
+
     let longs =
         def.Fields
         |> List.filter (fun (f, _) -> not (positional f))
-        |> List.map (fun (f, _) -> Weir.Argv.kebabFlag f)
+        |> List.collect (fun (f, _) -> Weir.Argv.kebabFlag f :: wiresOf f)
         |> Set.ofList
 
     let shorts = Weir.Argv.explicitShorts def |> List.map snd |> Set.ofList
@@ -3207,7 +3222,7 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
 /// load the signatures a file declared; errors become diagnostics at
 /// the declaring line. The sig file is an ordinary weir MODULE
 /// (decl-only + weak purity for free): `module X`, `let version =
-/// "<verbatim --version>"`, optionally `let exhaustive = true`, and
+/// "<--version's first line>"`, optionally `let exhaustive = true`, and
 /// the surface as the type named `Cmd`.
 let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo list =
     let diags = ResizeArray<Diagnostic>()
@@ -3500,8 +3515,12 @@ let sigCmdDiagnostics
 
                                 check acc rest
                             | (w, sp) :: rest when w.StartsWith "-" && w.Length = 2 && not (System.Char.IsDigit w[1]) ->
+                                // a surface that recorded NO shorts has no
+                                // evidence to warn on (BSD grep's help is
+                                // usage-only — the harvest sees longs, never
+                                // the short bundle) [D:sig-version-probe]
                                 let acc =
-                                    if shorts.Contains(w.Substring 1) then
+                                    if shorts.IsEmpty || shorts.Contains(w.Substring 1) then
                                         acc
                                     else
                                         mk sp $"unknown flag '{w}' for {si.Tool} {note}" :: acc
@@ -3521,7 +3540,7 @@ let sigCmdDiagnostics
 // the hand edit the provenance comment invites. The generated file
 // VALIDATES (loads as a signature) before anything persists.
 module SigGen =
-    let private runTool (tool: string) (args: string) : string option =
+    let private runToolWith (anyExit: bool) (tool: string) (args: string) : string option =
         // probeRung's guards [D:sig-version-probe]: null stdin (a
         // stdin-reader must not hang generation), temp cwd, async reads
         // ahead of a bounded wait, kill on expiry
@@ -3544,13 +3563,23 @@ module SigGen =
                      ())
 
                 None
-            elif p.ExitCode = 0 then
+            elif p.ExitCode = 0 || anyExit then
                 let out = outTask.Result
-                Some(if out.Trim() <> "" then out else errTask.Result)
+
+                match Contracts.stripAnsi (if out.Trim() <> "" then out else errTask.Result) with
+                | blank when blank.Trim() = "" -> None
+                | text -> Some text
             else
                 None
         with _ ->
             None
+
+    let private runTool = runToolWith false
+
+    // BSD grep's --help exits 2 with the usage on stderr — a nonzero
+    // exit's dump is harvest-only material [D:sig-version-probe]:
+    // never structured rows, never the walk, never a bare-word gate
+    let private runToolAnyExit = runToolWith true
 
     // one discovered flag: long name (kebab), optional short, optional doc
     type private Flag =
@@ -3598,26 +3627,114 @@ module SigGen =
         // help shapes; unreliable by design, a starting point
         let flags = System.Collections.Generic.Dictionary<string, Flag>()
 
-        for line in text.Split '\n' do
+        // Go-flag rows (micro): `-clean` / `-config-dir dir`, description
+        // on the NEXT line — single-dash multi-char is a LONG (Go accepts
+        // --clean too); the last flag with no doc adopts a following
+        // deeper prose line
+        let mutable lastDocless: string option = None
+
+        for raw in text.Split '\n' do
+            // broot draws its options as a box table — the border and
+            // column glyphs (U+2500..U+257F) become spaces and the rows
+            // collapse into the standard `-d  --dates  desc` shape
+            let line = System.Text.RegularExpressions.Regex.Replace(raw, "[\u2500-\u257F]", " ")
+
+            let goRow =
+                System.Text.RegularExpressions.Regex.Match(line, "^\\s*-([a-zA-Z][a-zA-Z0-9-]+)( \\S+)?\\s*$")
+
             let m =
                 System.Text.RegularExpressions.Regex.Match(
                     line,
                     // `+s, --no-sort` — fzf-style OFF toggles: the +x is
-                    // skipped, never recorded as a short
-                    // the arg skip takes real arg SHAPES only (=X, <x>,
-                    // [x], NUM) — `[= ]?\\S*` ate the first word of an
-                    // argless flag's description
-                    "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(?:=\\S+|\\s(?:<\\S+>|\\[\\S+\\]))?\\s*(.*)$"
+                    // skipped, never recorded as a short. The TAIL is
+                    // walked procedurally: az spells rows as
+                    // `--flag --alias -s [Required] : doc`
+                    "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(.*)$"
                 )
 
-            if m.Success then
-                let long = m.Groups[2].Value
+            if goRow.Success && not m.Success then
+                let long = goRow.Groups[1].Value
 
                 if legalLong long && not (flags.ContainsKey long) then
                     flags[long] <-
                         { Long = long
-                          Short = (if m.Groups[1].Success then Some m.Groups[1].Value else None)
-                          Doc = (let d = m.Groups[3].Value.Trim() in if d = "" then None else Some d) }
+                          Short = None
+                          Doc = None }
+
+                    lastDocless <- Some long
+            elif
+                not m.Success
+                && line.StartsWith "        "
+                && line.Trim() <> ""
+                && not (line.TrimStart().StartsWith "-")
+            then
+                match lastDocless with
+                | Some l when flags.ContainsKey l && flags[l].Doc.IsNone ->
+                    flags[l] <-
+                        { flags[l] with
+                            Doc = Some(line.Trim()) }
+
+                    lastDocless <- None
+                | _ -> ()
+            elif m.Success then
+                let long = m.Groups[2].Value
+
+                let mutable short = if m.Groups[1].Success then Some m.Groups[1].Value else None
+
+                let aliases = ResizeArray<string>()
+
+                // walk the tail: aliases and shorts join the flag, arg
+                // shapes (=X, <x>, [X], BARE-CAPS) are skipped, and the
+                // doc starts at az's `:` or the first prose word
+                let mutable rest = m.Groups[3].Value.TrimStart()
+                let mutable walking = true
+
+                while walking && rest <> "" do
+                    let tok, tail =
+                        match rest.IndexOf ' ' with
+                        | -1 -> rest, ""
+                        | i -> rest.Substring(0, i), rest.Substring(i + 1).TrimStart()
+
+                    if tok = "," then
+                        // claude spells `--allowedTools, --allowed-tools <x>` —
+                        // the bare comma between aliases is separator noise
+                        rest <- tail
+                    elif tok.StartsWith "--" && legalLong (tok.TrimEnd(',').TrimStart '-') then
+                        aliases.Add(tok.TrimEnd(',').TrimStart '-')
+                        rest <- tail
+                    elif tok.Length = 2 && tok[0] = '-' && System.Char.IsLetterOrDigit tok[1] then
+                        if short.IsNone then
+                            short <- Some(string tok[1])
+
+                        rest <- tail
+                    elif
+                        tok.StartsWith "="
+                        || (tok.StartsWith "<" && tok.EndsWith ">")
+                        || (tok.StartsWith "[" && tok.EndsWith "]")
+                        || (tok.Length > 1 && tok |> Seq.forall (fun c -> System.Char.IsUpper c || c = '_'))
+                    then
+                        rest <- tail
+                    elif tok = ":" then
+                        rest <- tail
+                        walking <- false
+                    else
+                        walking <- false
+
+                let doc = rest.TrimStart(':', ' ')
+
+                let record l =
+                    if legalLong l && not (flags.ContainsKey l) then
+                        flags[l] <-
+                            { Long = l
+                              Short = (if l = long then short else None)
+                              Doc = (let d = doc.Trim() in if d = "" then None else Some d) }
+
+                record long
+
+                for a in aliases do
+                    record a
+
+                lastDocless <- None
 
         flags.Values |> List.ofSeq
 
@@ -3668,8 +3785,6 @@ module SigGen =
                     tok.Length > 1
                     && tok
                        |> Seq.forall (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
-                    && tok <> "help"
-                    && tok <> "completion"
                     && not (subs.Contains tok)
                 then
                     subs.Add tok
@@ -3691,7 +3806,13 @@ module SigGen =
         // BREADTH-first: level 1 completes before level 2 spends a
         // probe — depth-first let an early subcommand's children starve
         // the rest of docker's forty top-level commands
-        let mutable level = [ for sub in subcommandTokens topHelp -> "", sub ]
+        // help/completion are advertised everywhere and walk nowhere
+        let noise sub = sub = "help" || sub = "completion"
+
+        let mutable level =
+            [ for sub in subcommandTokens topHelp do
+                  if not (noise sub) then
+                      "", sub ]
 
         for _ in 1..2 do
             let next = ResizeArray<string * string>()
@@ -3708,7 +3829,8 @@ module SigGen =
                         flags.AddRange(parseHelp subHelp)
 
                         for deeper in subcommandTokens subHelp do
-                            next.Add($"{prefix}{sub} ", deeper)
+                            if not (noise deeper) then
+                                next.Add($"{prefix}{sub} ", deeper)
 
             level <- List.ofSeq next
 
@@ -3716,9 +3838,15 @@ module SigGen =
 
     // the source label rides the sig comment — a harvested surface is
     // weaker lineage than parsed rows, and says so
-    let private helpSurface (tool: string) : string * Flag list =
-        match runTool tool "--help" with
-        | None -> "help", []
+    let private helpSurface (tool: string) (topHelp: string option) (harvestOnly: string option) : string * Flag list =
+        match topHelp with
+        | None ->
+            match harvestOnly with
+            | Some dump ->
+                match harvestHelp dump with
+                | [] -> "help", []
+                | fs -> "help-scan", fs
+            | None -> "help", []
         | Some text ->
             let source, top =
                 match parseHelp text with
@@ -3756,22 +3884,48 @@ module SigGen =
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n")
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
-        match Contracts.probeToolVersion Proc.resolveProg tool with
+        // FLAG probes are safe on any tool; a bare word is NOT — `code
+        // completion fish` OPENED VS CODE on two files
+        // [D:sig-version-probe]. Bare-word probes (completion fish, the
+        // version word) run only when the tool's own --help ADVERTISES
+        // that subcommand.
+        match Contracts.probeVersionFlag Proc.resolveProg tool with
         | Contracts.ToolAbsent -> Error $"'{tool}' is not on PATH — generation asks the tool (weir check never will)"
-        | probe ->
+        | rung1 ->
+            let topHelp = runTool tool "--help"
+
+            // exit-0 help only gates and walks; a refused --help still
+            // yields its usage dump to the HARVEST below
+            let harvestOnly =
+                match topHelp with
+                | Some _ -> None
+                | None -> runToolAnyExit tool "--help"
+
+            let advertised = topHelp |> Option.map subcommandTokens |> Option.defaultValue []
+
             // a tool that refuses --version has NO recorded identity
             // [D:sig-version-probe] — the refusal's usage dump is not a
             // version, and recording it leaked paths into the sig
             let version =
-                match probe with
+                match rung1 with
                 | Contracts.ToolVersion raw -> Some(raw.Trim())
+                | _ when List.contains "version" advertised ->
+                    match Contracts.probeVersionWord Proc.resolveProg tool with
+                    | Contracts.ToolVersion raw -> Some(raw.Trim())
+                    | _ -> None
                 | _ -> None
 
+            let fishText =
+                if List.contains "completion" advertised then
+                    runTool tool "completion fish"
+                else
+                    None
+
             let source, flags =
-                match runTool tool "completion fish" with
+                match fishText with
                 | Some text when text.Contains "complete " ->
                     match parseFish text tool with
-                    | [] -> helpSurface tool
+                    | [] -> helpSurface tool topHelp harvestOnly
                     | fs -> "completion-fish", fs
                 | _ ->
                     let shipped =
@@ -3782,9 +3936,9 @@ module SigGen =
                     match shipped with
                     | Some f ->
                         match parseFish (IO.File.ReadAllText f) tool with
-                        | [] -> helpSurface tool
+                        | [] -> helpSurface tool topHelp harvestOnly
                         | fs -> "fish-file", fs
-                    | None -> helpSurface tool
+                    | None -> helpSurface tool topHelp harvestOnly
 
             match flags with
             | [] ->
@@ -3821,16 +3975,58 @@ module SigGen =
 
                 line "type Cmd = {"
 
-                for f in flags do
-                    match f.Doc with
+                // subcommands legitimately reuse shorts (docker -a =
+                // all AND all-tags); the flat union keeps the FIRST
+                // holder and drops the rest — longs still check
+                let flags =
+                    let taken = System.Collections.Generic.HashSet<string>()
+
+                    flags
+                    |> List.map (fun f ->
+                        match f.Short with
+                        | Some sh when not (taken.Add sh) -> { f with Short = None }
+                        | _ -> f)
+
+                // spellings that camelize to ONE field (claude's
+                // --allowedTools / --allowed-tools) merge: the field
+                // carries a Wire per spelling and the reader accepts
+                // each. Attr specs share ONE bracket: stacked [<…>]
+                // lines do not parse
+                let grouped = flags |> List.groupBy (fun f -> fieldName f.Long) |> List.sortBy fst
+
+                for fname, group in grouped do
+                    let f = group |> List.head
+
+                    match group |> List.tryPick (fun g -> g.Doc) with
                     | Some d -> line $"    /// {escape d}"
                     | None -> ()
 
-                    match f.Short with
-                    | Some sh when sh.Length = 1 && sh <> "h" -> line $"    [<Short \"{sh}\">]"
-                    | _ -> ()
+                    let fname =
+                        if Set.contains fname Weir.Parser.keywords then
+                            fname + "Flag"
+                        else
+                            fname
 
-                    line $"    {fieldName f.Long}: bool"
+                    // the field's own kebab is accepted for free — ONE
+                    // Wire carries the one spelling that differs (the
+                    // keyword long, or claude's camel alias)
+                    let covered = Weir.Argv.kebabFlag fname
+
+                    let attrs =
+                        match group |> List.tryFind (fun g -> g.Long <> covered) with
+                        | Some g -> [ $"Wire \"{g.Long}\"" ]
+                        | None -> []
+
+                    let attrs =
+                        match group |> List.tryPick (fun g -> g.Short) with
+                        | Some sh when sh.Length = 1 && sh <> "h" -> attrs @ [ $"Short \"{sh}\"" ]
+                        | _ -> attrs
+
+                    if not attrs.IsEmpty then
+                        let joined = String.concat "; " attrs
+                        line $"    [<{joined}>]"
+
+                    line $"    {fname}: bool"
 
                 line "}"
                 let text = sb.ToString()
@@ -3854,7 +4050,15 @@ module SigGen =
                                 Line = 1 } ]
 
                     match probe with
-                    | d :: _, _ -> Error $"generated signature does not validate: {d.Message} — this is a generator bug"
+                    | d :: _, _ ->
+                        // name the offending LINE — three generator bugs
+                        // arrived blind before this did [D:sig-version-probe]
+                        let atLine =
+                            match text.Split '\n' |> Array.tryItem (d.Line - 1) with
+                            | Some l when l.Trim() <> "" -> $" at line {d.Line}: {l.Trim()}"
+                            | _ -> ""
+
+                        Error $"generated signature does not validate: {d.Message}{atLine} — this is a generator bug"
                     | [], _ ->
                         let dest = IO.Path.Combine(weirDir, "sigs", tool + ".weir")
                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore

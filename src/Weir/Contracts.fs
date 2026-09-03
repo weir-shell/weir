@@ -741,6 +741,13 @@ type VersionProbe =
     | RefusesVersionFlag
     | ToolVersion of string
 
+/// probe output is PARSED, so terminal escapes are noise — a colored
+/// help banner fails an all-caps test (ToUpper turns the CSI final
+/// byte `m` into `M`), and a colored version would store escapes in
+/// the sig [D:sig-version-probe]
+let stripAnsi (text: string) : string =
+    Text.RegularExpressions.Regex.Replace(text, "\x1b\\[[0-9;?]*[A-Za-z]", "")
+
 /// one probe rung: spawn `<tool> <arg>` and read the exit code.
 /// stdin is NULL and the cwd a fresh temp dir — probing the bare
 /// `version` word must not hang a stdin-reader (`grep version`) or
@@ -776,9 +783,20 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
             let out = outTask.Result
             let err = errTask.Result
 
-            match (if out.Trim() <> "" then out else err) with
+            match stripAnsi (if out.Trim() <> "" then out else err) with
             | blank when blank.Trim() = "" -> RefusesVersionFlag
-            | text -> ToolVersion text
+            | text ->
+                // the IDENTITY is the FIRST line, whitespace-collapsed
+                // [D:sig-version-probe]: az's --version is a whole
+                // environment report — machine paths, dependency lists,
+                // even a volatile update marker; the headline is the
+                // version, the rest is environment
+                let firstLine =
+                    text.Split '\n'
+                    |> Array.tryFind (fun l -> l.Trim() <> "")
+                    |> Option.defaultValue text
+
+                ToolVersion(Text.RegularExpressions.Regex.Replace(firstLine.Trim(), "\s+", " "))
     with _ ->
         ToolAbsent
 
@@ -796,6 +814,17 @@ let probeToolVersion (resolve: string -> string) (tool: string) : VersionProbe =
     match probeRung resolve tool "--version" with
     | RefusesVersionFlag -> probeRung resolve tool "version"
     | answer -> answer
+
+/// the rungs SEPARATELY, for the add side's gated ladder
+/// [D:sig-version-probe]: a FLAG probe is safe on any tool; a bare
+/// word is not (`code completion fish` opened VS Code on two files) —
+/// the add side runs the word rung only when the tool's help
+/// advertises a `version` subcommand. verify keeps the full ladder:
+/// it only probes tools with a RECORDED version, i.e. tools that
+/// answered a rung at add time.
+let probeVersionFlag (resolve: string -> string) (tool: string) : VersionProbe = probeRung resolve tool "--version"
+
+let probeVersionWord (resolve: string -> string) (tool: string) : VersionProbe = probeRung resolve tool "version"
 
 /// `weir verify`, two-arm shaped (ruling: today the hash arm; the
 /// signature arm — tool `--version` against the recorded identity —

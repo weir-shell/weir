@@ -12,6 +12,49 @@
   without profit says so —
   `source: help (walked 12 subcommand help(s), 0 answered, none yielded flags)`.
 
+- Bare-word probes are gated on advertisement — `weir add sig code`
+  ran `code completion fish`, which OPENED VS Code on two files.
+  `completion fish` and the `version` word now run only when the
+  tool's own `--help` advertises that subcommand; flag probes
+  (`--version`, `--help`) remain universal.
+
+- The recorded version identity is `--version`'s FIRST line,
+  whitespace-collapsed — az's multi-page environment report (with
+  machine paths) is not an identity. And az's help dialect parses:
+  `--flag --alias -s [Required] : doc` rows record the postfix
+  short, each alias as its own flag, and a clean description.
+
+- Sig flags complete in the editor — a `-`-word after a sig'd tool
+  offers the sig's own longs in kebab spelling (`--s` →
+  `--session-id`, not the field name or a comment word; the old
+  dropdown was the editor's word-fallback over the sig file).
+  claude-style dual spellings (`--allowedTools, --allowed-tools`)
+  merge into one field, both accepted.
+
+- broot's box-drawing options table parses — the border glyphs
+  strip to spaces and the rows read as standard columns, shorts and
+  docs included.
+
+- Two more help dialects generate: micro's Go-flag rows
+  (single-dash longs, description on the next line), and BSD grep's
+  usage-only page — which exits nonzero, so the dump now feeds the
+  harvest. And a surface that recorded no shorts no longer warns on
+  short flags: no evidence, no claim.
+
+- Probe output is stripped of ANSI escapes — a tool that colors its
+  help when piped (jira on macOS) broke banner detection and leaked
+  `[1m` bytes into sig docs; a colored `--version` would have stored
+  escapes as the identity.
+
+- A flag whose long is a weir keyword (docker's `--type`, kubectl's
+  `--for`) no longer aborts generation — the generator emits
+  `[<Wire "type">] typeFlag: bool`, and the sig checker reads the
+  Wire spelling for matching and did-you-mean. A keyword long WITH a
+  short (jira's `-t, --type`) shares one attr bracket, and when
+  walked subcommands reuse a short (docker's `-a` on `all` and
+  `all-tags`) the first holder keeps it — longs still check. A
+  generator-bug refusal now names the offending sig line.
+
 ## v0.0.13
 
 ### New features

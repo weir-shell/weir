@@ -652,4 +652,59 @@ while m.get("id") != 2:
     m = read5()
 send5({"jsonrpc": "2.0", "method": "exit", "params": {}}); p5.wait(timeout=5)
 
+# ---- sig flag completion [D:sig-flag-completion] --------------------
+# a `-`-word after a sig'd tool completes the sig's LONGS in kebab
+# spelling — without this, editors word-complete the sig file's
+# camelCase field names and comment words, which the checker rejects
+td6 = tempfile.mkdtemp()
+os.makedirs(os.path.join(td6, ".weir", "sigs"), exist_ok=True)
+open(os.path.join(td6, ".weir", "sigs", "comptool.weir"), "w").write(
+    "module Comptool\n"
+    "let version = \"1.0\"\n"
+    "type Cmd = {\n"
+    "    /// sandboxes separated scraped server words never complete\n"
+    "    scope: bool\n"
+    "    sessionId: bool\n"
+    "    settings: bool\n"
+    "    verbose: bool\n"
+    "}\n")
+docp6 = os.path.join(td6, "use.weir")
+doc6 = "#sig comptool\ncomptool --s"
+open(docp6, "w").write(doc6 + "\n")
+p6 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+PROCS.append(p6)
+def send6(o):
+    b = json.dumps(o).encode()
+    p6.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p6.stdin.flush()
+def read6():
+    length = None
+    while True:
+        line = p6.stdout.readline().strip()
+        if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
+        elif line == b"": break
+    return json.loads(p6.stdout.read(length))
+send6({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}); read6()
+uri6 = furi(docp6)
+send6({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": uri6, "text": doc6 + "\n"}}})
+m = read6()
+while m.get("method") != "textDocument/publishDiagnostics":
+    m = read6()
+send6({"jsonrpc": "2.0", "id": 61, "method": "textDocument/completion",
+       "params": {"textDocument": {"uri": uri6}, "position": {"line": 1, "character": len("comptool --s")}}})
+m = read6()
+while m.get("id") != 61:
+    m = read6()
+labels6 = [c["label"] for c in m["result"]]
+expect("--scope" in labels6 and "--session-id" in labels6 and "--settings" in labels6,
+       f"sig flags must complete in kebab spelling: {labels6[:12]}")
+expect(all(l.startswith("--") for l in labels6),
+       f"a -word position offers flags ONLY, never buffer words: {labels6[:12]}")
+expect(not any("sandbox" in l for l in labels6), f"comment words must not complete: {labels6[:12]}")
+send6({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}})
+m = read6()
+while m.get("id") != 2:
+    m = read6()
+send6({"jsonrpc": "2.0", "method": "exit", "params": {}}); p6.wait(timeout=5)
+
 print("lsp-e2e: all probes green")

@@ -5816,7 +5816,7 @@ cat > bin/subverstool <<'WEOF'
 case "$1" in
   --version) echo "Error: unknown flag: --version" >&2; exit 1;;
   version) echo "subverstool (Version=1.7.0)";;
-  --help) printf 'Flags:\n      --force   push through\n';;
+  --help) printf 'OTHER COMMANDS\n  version   Print version\n\nFlags:\n      --force   push through\n';;
   *) echo "ran:$@";;
 esac
 WEOF
@@ -5836,6 +5836,9 @@ exit /b 1
 echo subverstool (Version=1.7.0)
 goto :eof
 :help
+echo OTHER COMMANDS
+echo   version   Print version
+echo.
 echo Flags:
 echo       --force   push through
 BEOF
@@ -5890,6 +5893,116 @@ fi
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig cobratool 2>&1) || fail "add sig cobratool: $out"
 echo "$out" | grep -qF "source: help+subs" || fail "the walk labels its lineage: $out"
 grep -qF "jql: bool" .weir/sigs/cobratool.weir || fail "the depth-2 walk found --jql"
+# ANSI in help/version output (the mac jira shape [D:sig-version-probe]):
+# escapes are stripped at the probe boundary — a colored all-caps banner
+# still detects, and no escape byte reaches the sig
+if [ "$IS_WINDOWS" != "1" ]; then
+cat > bin/colortool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'tool \033[32m2.0\033[0m\n'; exit 0; fi
+if [ "$1" = "--help" ]; then printf '\033[1mMAIN COMMANDS\033[0m\n  sub    A sub\n\n\033[1mFLAGS\033[0m\n      --top   top\n'; exit 0; fi
+if [ "$1" = "sub" ] && [ "$2" = "--help" ]; then printf 'FLAGS\n      --deep   deep flag\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x bin/colortool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig colortool 2>&1) || fail "add sig colortool: $out"
+echo "$out" | grep -qF "source: help+subs" || fail "a colored banner must still detect: $out"
+echo "$out" | grep -qF 'version: tool 2.0' || fail "the version is stripped clean: $out"
+grep -qF "deep: bool" .weir/sigs/colortool.weir || fail "the colored walk reached the sub"
+grep -q $'\x1b' .weir/sigs/colortool.weir && fail "an escape byte reached the sig" || true
+# keyword longs (docker --type, kubectl --for): Wire carries the flag
+# spelling, the field takes a Flag suffix — generation validates
+cat > bin/kwtool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "kt 1.0"; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'MAIN COMMANDS\n  wait   Wait for things\n\nFlags:\n      --for string    Wait condition\n  -t, --type string   Resource type\n  -a, --all           All of them\n'; exit 0; fi
+if [ "$1" = "wait" ] && [ "$2" = "--help" ]; then printf 'Flags:\n  -a, --all-tags   Every tag\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x bin/kwtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig kwtool 2>&1) || fail "keyword longs must generate: $out"
+# a keyword long WITH a short shares one bracket (stacked attrs do not parse)
+grep -qF '[<Wire "type"; Short "t">]' .weir/sigs/kwtool.weir || fail "Wire and Short share one attr bracket"
+# subcommands reusing a short: first holder keeps it, the union still validates
+grep -qF "allTags: bool" .weir/sigs/kwtool.weir || fail "the dup-short flag keeps its long"
+grep -c 'Short "a"' .weir/sigs/kwtool.weir | grep -qx 1 || fail "exactly one field holds -a"
+# open-by-default tools (the VS Code shape [D:sig-version-probe]): a bare
+# word would OPEN things — bare-word probes run only when --help
+# advertises the subcommand, so generation must spawn none here
+cat > bin/opentool <<'WEOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "1.93.0"; exit 0;;
+  --help) printf 'Usage: opentool [options][paths...]\n\nOptions:\n      --wait   Wait for close\n'; exit 0;;
+  -*) exit 1;;
+  *) echo "OPENED:$*" >> "$sgdir/opened.log"; exit 0;;
+esac
+WEOF
+chmod +x bin/opentool
+rm -f "$sgdir/opened.log"
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig opentool 2>&1) || fail "add sig opentool: $out"
+test -f "$sgdir/opened.log" && fail "a bare-word probe OPENED something: $(cat "$sgdir/opened.log")" || true
+# the az dialect [D:sig-version-probe]: multi-line --version records its
+# FIRST line only; `--flag --alias -s [Required] : doc` rows record the
+# postfix short, each alias, and a clean doc
+cat > bin/aztool <<'WEOF'
+#!/bin/sh
+case "$*" in
+  "--version") printf 'azcli 9.9 *\nConfig directory /home/u/.azure\n'; exit 0;;
+  "--help") printf 'Arguments\n    --uri --url -u [Required] : Request URL.\n    --body -b : Request body.\n    --dryRun, --dry-run : Both spellings accepted.\n'; exit 0;;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/aztool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig aztool 2>&1) || fail "add sig aztool: $out"
+echo "$out" | grep -qF "version: azcli 9.9 *" || fail "the identity is the first line: $out"
+echo "$out" | grep -qF ".azure" && fail "environment lines reached the identity" || true
+grep -qF '[<Short "u">]' .weir/sigs/aztool.weir || fail "the postfix short records"
+grep -qF "url: bool" .weir/sigs/aztool.weir || fail "the alias records as its own flag"
+grep -qF "/// Request URL." .weir/sigs/aztool.weir || fail "the doc sheds the alias run and the colon"
+# claude-style same-camel aliases MERGE into one field: the kebab is
+# accepted for free, one Wire carries the differing spelling
+grep -qF '[<Wire "dryRun">]' .weir/sigs/aztool.weir || fail "the camel alias rides Wire"
+printf '#sig aztool\naztool --dryRun x\naztool --dry-run x\nprint "d"\n' > azw.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check azw.weir 2>&1)
+echo "$out" | grep -q "unknown flag" && fail "both alias spellings must check: $out" || true
+# Go-flag rows (micro): single-dash longs, description on the NEXT line
+cat > bin/gotool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gotool 2.0"; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'Usage: gotool [OPTION]...\n-clean\n        Clean the configuration directory and exit\n-config-dir dir\n        Specify a custom configuration directory\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x bin/gotool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig gotool 2>&1) || fail "add sig gotool: $out"
+grep -qF "configDir: bool" .weir/sigs/gotool.weir || fail "single-dash longs record"
+grep -qF "/// Clean the configuration directory and exit" .weir/sigs/gotool.weir || fail "next-line docs attach"
+# usage-only help on a NONZERO exit (BSD grep): the dump harvests; a
+# short never warns on a surface that recorded no shorts
+cat > bin/bsdtool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "bsdtool 2.6"; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'usage: bsdtool [-abcq] [-e pattern] [--color=when] [--null] [file ...]\n' >&2; exit 2; fi
+exit 1
+WEOF
+chmod +x bin/bsdtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig bsdtool 2>&1) || fail "add sig bsdtool: $out"
+echo "$out" | grep -qF "source: help-scan" || fail "the refused help still harvests: $out"
+printf '#sig bsdtool\nbsdtool -q --color=auto x\nprint "d"\n' > bsd.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check bsd.weir 2>&1)
+echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not warn on shorts: $out" || true
+# broot draws a box TABLE — the glyphs strip to spaces and rows parse
+cat > bin/boxtool <<'WEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "boxtool 1.0"; exit 0; fi
+if [ "$1" = "--help" ]; then printf 'Options:\n\342\224\202  -d    \342\224\202--dates   \342\224\202Show dates\342\224\202\n'; exit 0; fi
+exit 1
+WEOF
+chmod +x bin/boxtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig boxtool 2>&1) || fail "add sig boxtool: $out"
+grep -qF '[<Short "d">]' .weir/sigs/boxtool.weir || fail "the boxed short records"
+grep -qF "/// Show dates" .weir/sigs/boxtool.weir || fail "the boxed doc records"
+fi
 cd - >/dev/null
 rm -rf "$sgdir"
 echo "e2e ok: command signatures (generate, typo+did-you-mean, check spawns nothing, property 3, verify arms, restore never regenerates, --version refuser records none)"
