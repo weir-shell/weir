@@ -2208,25 +2208,69 @@ let run (debug: bool) : int =
                                 // longs, kebab spelling — without this, editors
                                 // word-complete the sig FILE's camelCase field
                                 // names, which the checker then rightly rejects
+                                // the nearest sig'd tool to the LEFT — the flag
+                                // arm and the sub-token arm share it
+                                let nearestSig =
+                                    let path =
+                                        try
+                                            Uri(uri).LocalPath
+                                        with _ ->
+                                            uri
+
+                                    Script.sigInfosForFile path (List.ofArray lines)
+                                    |> List.choose (fun si ->
+                                        let m =
+                                            Text.RegularExpressions.Regex.Matches(
+                                                upto,
+                                                $"\\b{Text.RegularExpressions.Regex.Escape si.Tool}\\b"
+                                            )
+
+                                        if m.Count > 0 then Some(m[m.Count - 1].Index, si) else None)
+                                    |> List.sortByDescending fst
+                                    |> List.tryHead
+
+                                // sub TOKENS complete at every depth
+                                // [D:scoped-sigs]: the Subs keys ARE the
+                                // kebab-joined paths, so the next segment
+                                // un-glues from the run typed so far — the
+                                // same conflation the checker's key join
+                                // already lives with
+                                let sigSubTokens =
+                                    if word.StartsWith "-" then
+                                        []
+                                    else
+                                        nearestSig
+                                        |> Option.map (fun (toolAt, si) ->
+                                            let run =
+                                                upto
+                                                    .Substring(toolAt + si.Tool.Length)
+                                                    .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                                                |> Array.skipWhile (fun t -> t.StartsWith "-")
+                                                |> Array.takeWhile (fun t -> not (t.StartsWith "-"))
+                                                |> Array.toList
+                                                // the word being typed is the PREFIX, not the run
+                                                |> fun ts ->
+                                                    if word <> "" && ts <> [] && List.last ts = word then
+                                                        ts |> List.take (ts.Length - 1)
+                                                    else
+                                                        ts
+
+                                            let joined = String.concat "-" run
+                                            let prefix = if joined = "" then "" else joined + "-"
+
+                                            si.Subs
+                                            |> Map.toList
+                                            |> List.map fst
+                                            |> List.filter (fun k -> k <> "" && k.StartsWith prefix && k <> joined)
+                                            |> List.map (fun k -> (k.Substring prefix.Length).Split('-')[0])
+                                            |> List.distinct
+                                            |> List.filter (fun t -> t.StartsWith word && t <> word)
+                                            |> List.sort)
+                                        |> Option.defaultValue []
+
                                 let sigFlags =
                                     if word.StartsWith "-" then
-                                        let path =
-                                            try
-                                                Uri(uri).LocalPath
-                                            with _ ->
-                                                uri
-
-                                        Script.sigInfosForFile path (List.ofArray lines)
-                                        |> List.choose (fun si ->
-                                            let m =
-                                                Text.RegularExpressions.Regex.Matches(
-                                                    upto,
-                                                    $"\\b{Text.RegularExpressions.Regex.Escape si.Tool}\\b"
-                                                )
-
-                                            if m.Count > 0 then Some(m[m.Count - 1].Index, si) else None)
-                                        |> List.sortByDescending fst
-                                        |> List.tryHead
+                                        nearestSig
                                         |> Option.map (fun (toolAt, si) ->
                                             // SCOPED sigs complete their matched
                                             // case only [D:scoped-sigs]: the first
@@ -2298,6 +2342,7 @@ let run (debug: bool) : int =
                                     match repaired with
                                     | Some fields when not fields.IsEmpty -> fields
                                     | _ when not sigFlags.IsEmpty -> sigFlags
+                                    | _ when not sigSubTokens.IsEmpty -> sigSubTokens
                                     | _ ->
                                         // binders may sit on EARLIER lines —
                                         // the whole doc is the binder scope

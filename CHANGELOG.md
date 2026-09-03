@@ -33,6 +33,11 @@
 - `weir add sig` on a file that exists but will not run (a stray
   `.yaml`) says so, instead of "not on PATH".
 
+- Subcommand tokens complete at every depth — `kustomize ed` offers
+  `edit`, `kustomize edit a` offers `add` — in the token spelling,
+  never the case or record name; the segments un-glue from the sig's
+  own path keys.
+
 - Completion fires on `-` (a declared trigger character now) — a
   bare `--` offers the longs, a single `-` the shorts beside them.
 
