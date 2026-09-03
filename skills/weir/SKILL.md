@@ -109,7 +109,7 @@ print "unreached"
 let ok = 1 > 0
 
 if ok then
-    !(sh -c "echo step-one")
+    sh -c "echo step-one"
     print "step-two"
 
 let branches = $(git branch) |> Seq.length
@@ -649,7 +649,7 @@ refs
 ["r1"; "r2"]
     |> Seq.iter (fun r ->
         let tag = $"repo-{r}"
-        !(echo fetching $tag)
+        echo fetching $tag
         print $"done {r}")
 ```
 - `if c then a else b` is an expression; `else` is mandatory unless the
@@ -1156,7 +1156,7 @@ conf |> Seq.iter print
 
 ```weir
 let clean = not (1 == 2)
-if clean then !(sh -c "echo acting")
+if clean then sh -c "echo acting"
 ```
 
 ```weir-error
@@ -1168,10 +1168,11 @@ if clean then !(sh -c "echo acting")
   output (`seq<string>`, pipes onward); `!(git push)` runs-and-streams
   (unit, raises on nonzero). On a top-level `let` RHS prefer the bare
   chain (`let b = git branch |> Seq.head`); sigils are for positions
-  bare cannot reach. The block effect idiom:
-  `if clean then` + indented `!(...)` lines. Interiors are ordinary
-  command chains (splices, pipes, `| complete`). `!` is NOT bash
-  history/extglob and `;` still does not chain inside them.
+  bare cannot reach — block bodies are NOT one of them:
+  `if clean then` + indented bare command lines just works, no
+  sigil. Interiors are ordinary command chains (splices, pipes,
+  `| complete`). `!` is NOT bash history/extglob and `;` still does
+  not chain inside them.
 - A top-level `let` RHS takes command lines — param-ful included
   (`let f r = git rev-parse $r |> Seq.exactlyOne`): `let files = git ls-files`
   binds `seq<string>`; `let r = git status | complete` binds the

@@ -17,6 +17,14 @@
   punning, no empty `{||}`, no `{| r with … |}` — each refusal
   teaches its repair.
 
+### Docs
+
+- Redundant `!()` sigils swept from examples — a command is an
+  ordinary statement inside any block body, so `if ready then` +
+  indented bare command lines is the modeled idiom; the sigil
+  appears only where an expression position demands it, and the
+  one stale "block effect idiom" sentence now says so.
+
 ## v0.0.14
 
 ### New features

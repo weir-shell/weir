@@ -80,7 +80,7 @@ let files = git ls-files
 print $"{files |> Seq.length} tracked"
 
 if 2 > 1 then
-    !(git status --porcelain)
+    git status --porcelain
     print (($(git rev-parse HEAD) |> Seq.head) |> Str.sub 0 7)
 ```
 
