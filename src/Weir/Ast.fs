@@ -130,6 +130,9 @@ and ExprKind =
     // the checker desugars it to `fun a b -> a op b` verbatim
     | EOpValue of op: string
     | ERecord of fields: (string * Span * Expr) list
+    // an anonymous record literal [D:anon-literals] — typed as its
+    // canonical synthetic-nominal name; the TYPED node is TERecord
+    | EAnonRecord of fields: (string * Span * Expr) list
     | EMatch of scrutinee: Expr * arms: (Pattern * Expr option * Expr) list
     | EIf of cond: Expr * thn: Expr * els: Expr option
     | ESeq of first: Expr * rest: Expr
@@ -306,7 +309,8 @@ let exprChildren (e: Expr) : Expr list =
     | EField(t, _, _) -> [ t ]
     | EBinOp(_, l, r) -> [ l; r ]
     | EOpValue _ -> []
-    | ERecord fields -> fields |> List.map (fun (_, _, v) -> v)
+    | ERecord fields
+    | EAnonRecord fields -> fields |> List.map (fun (_, _, v) -> v)
     | EMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
     | EIf(c, t, e) -> c :: t :: Option.toList e
     | ESeq(a, b) -> [ a; b ]
@@ -409,6 +413,11 @@ let rec sexpr (e: Expr) : string =
             fields |> List.map (fun (n, _, v) -> $"{n} = {sexpr v}") |> String.concat "; "
 
         "{" + body + "}"
+    | EAnonRecord fields ->
+        let body =
+            fields |> List.map (fun (n, _, v) -> $"{n} = {sexpr v}") |> String.concat "; "
+
+        "{|" + body + "|}"
     | EUpdate(src, ups) ->
         let body =
             ups

@@ -3100,6 +3100,31 @@ expect "anonymous shape: _.field checks, seq<> composes, persists" '1.2.3.4
 2' "$out"
 out=$($BIN check "$adir/anon.weir" 2>&1) || fail "anon.weir must check clean: $out"
 
+# anonymous record LITERALS [D:anon-literals]: the write-side mirror —
+# heterogeneous fields write through to json (the Map spelling cannot),
+# the literal unifies with the adapter shape, and a multi-line literal
+# assembles ({| is ONE opener token to the sibling rule)
+cat > "$adir/anonlit.weir" <<'WEOF'
+let key = "xxxx-111"
+let n = 7
+[{| key = key; title = "t 0"; n = n |}] |> to json |> File.write "x.json"
+cat x.json
+let got = echo '{"ip": "9.9.9.9"}' |> from json {| ip: string |}
+let both = [got; {| ip = "8.8.8.8" |}]
+both |> Seq.iter (fun r -> print r.ip)
+let ml = {|
+    alpha = 1
+    beta = "two"
+|}
+print ml.beta
+WEOF
+out=$(cd "$adir" && $BIN anonlit.weir)
+expect "anon literal: heterogeneous write, adapter unification, multi-line" '{"key":"xxxx-111","title":"t 0","n":7}
+9.9.9.9
+8.8.8.8
+two' "$out"
+rm -f "$adir/x.json"
+
 # Option<scalar> at the JSON boundary [D:json-option]: present -> Some,
 # missing/null -> None, and to json OMITS the None key so it roundtrips.
 cat > "$adir/json-option.weir" <<'WEOF'

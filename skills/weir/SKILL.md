@@ -1005,11 +1005,28 @@ within tmp d
   (`{| a: {| b: int |} |}`, `{| rows: seq<{| id: string |}> |}`) —
   so a REPL session can sketch a whole foreign payload anonymously
   before declaring anything. The teaching stands: once a shape is
-  YOUR data model, name it. No anonymous literals.
+  YOUR data model, name it. The LITERAL writes the same shape:
+  `{| key = k; n = 3 |}` builds a value typed by its canonical name —
+  heterogeneous fields, unlike a `Map` — and it unifies with the
+  adapter shape of the same fields. Every field needs a CONCRETE type
+  at the literal (a name cannot hold a type variable — declare a
+  record for the generic case). No punning (`{| key |}`), no
+  `{| r with … |}`, no empty `{||}` — each refusal teaches.
 
 ```weir
 let x = ["{\"a\": {\"b\": 1}}"] |> from json {| a: {| b: int |} |}
 print (show x.a.b)
+```
+
+```weir
+// the write-side mirror: a one-off object needs no declaration
+let key = "xxxx-111"
+[{| key = key; n = 3 |}] |> to json |> Seq.iter print
+```
+```weir-error
+// no punning — a field is spelled out
+let k = 1
+let x = {| k |}
 ```
 
 ```weir

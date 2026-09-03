@@ -287,7 +287,29 @@ type TypeEnv =
       // name, so signatures/field-access/bare literals resolve); this
       // records provenance so the qualified literal `Git.Ctx { .. }`
       // can confirm the module owns that type. Empty for single-file.
-      ModuleTypes: Map<string, Set<string>> }
+      ModuleTypes: Map<string, Set<string>>
+      // anonymous LITERAL defs minted mid-statement [D:anon-literals]:
+      // a literal's canonical name exists only after inference — too
+      // late for the withAnonDefs pre-walk — so the check arm writes
+      // it here; `{ env with … }` copies share the instance, making
+      // the def visible to the REST of the statement (to json's
+      // admitted walk, field access, pattern rows). The arm also
+      // pushes to pendingAnonDefs, so the next statement's drain
+      // persists it into Types proper. Replaced fresh per typecheck
+      // entry — one run is one thread.
+      AnonLitDefs: System.Collections.Generic.Dictionary<string, TypeDef> }
+
+/// the ONE type-name lookup [D:anon-literals]: declared/registered
+/// types first, then the mid-statement anonymous-literal table —
+/// the table only ever holds '{'-canonical names, so the fallback
+/// is inert for every user-spellable name
+let typeDefFor (env: TypeEnv) (name: string) : TypeDef option =
+    match Map.tryFind name env.Types with
+    | Some d -> Some d
+    | None ->
+        match env.AnonLitDefs.TryGetValue name with
+        | true, d -> Some d
+        | _ -> None
 
 let editDistance (a: string) (b: string) : int =
     let d = Array2D.create (a.Length + 1) (b.Length + 1) 0

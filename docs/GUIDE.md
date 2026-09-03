@@ -1109,12 +1109,22 @@ the type inline — an **anonymous record type**:
 let ip = Http.fetch "https://api.ipify.org?format=json" |> from json {| ip: string |} |> _.ip
 ```
 
-`seq<{| ... |}>` covers the top-level-array case. The rule of reach:
-an anonymous shape is for *reading a foreign shape once*; declare a
-record for *your own data and anything reused*. Two anonymous shapes
-with the same fields are the same type (field order canonicalizes);
-a declared record with the same fields is deliberately a different
-type — weir's records stay nominal.
+`seq<{| ... |}>` covers the top-level-array case. The same spelling
+**constructs** — an anonymous record literal, for writing a one-off
+shape without declaring anything (heterogeneous fields, where a `Map`
+would force one value type):
+
+```weir
+let key = "xxxx-111"
+[{| key = key; n = 3 |}] |> to json |> Seq.iter print
+```
+
+The rule of reach: an anonymous shape is for *a foreign or one-off
+shape read or written once*; declare a record for *your own data and
+anything reused*. Two anonymous shapes with the same fields are the
+same type (field order canonicalizes) — a literal unifies with the
+adapter shape it matches; a declared record with the same fields is
+deliberately a different type — weir's records stay nominal.
 
 Two adapters, one distinction: `from json T` reads ONE document —
 across as many lines as the server felt like using — and gives you a

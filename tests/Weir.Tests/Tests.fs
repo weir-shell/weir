@@ -13680,6 +13680,107 @@ let anonRecordTests =
                   "the later statement resolves the field"
           } ]
 
+let anonLiteralTests =
+    // anonymous record LITERALS [D:anon-literals]: F#'s spelling; the
+    // canonical name is minted at CHECK (values sit in the form, not
+    // types) and the typed node is TERecord — eval/writers/LSP ride
+    // existing arms
+    let parseErr (src: string) =
+        match Weir.Parser.parseStmt src with
+        | Error msg -> msg
+        | Ok s -> failtest $"expected a parse rejection, got {s}"
+
+    testList
+        "anonymous record literals [D:anon-literals]"
+        [ test "the flagship: heterogeneous fields, typed by the canonical name" {
+              let te = checkOk "{| key = \"k\"; n = 3 |}"
+              Expect.equal te.Ty (TNamed("{| key: string; n: int |}", [])) "fields sort into the canonical name"
+
+              Expect.equal
+                  (formatValue (run "{| key = \"k\"; n = 3 |}"))
+                  "{ key = \"k\"; n = 3 }"
+                  "nameless render, written order"
+          }
+          test "a literal UNIFIES with the adapter shape of the same fields" {
+              let te = checkOk "[[\"{}\"]  |> from json {| ip: string |}; {| ip = \"x\" |}]"
+              Expect.equal te.Ty (TSeq(TNamed("{| ip: string |}", []))) "one canonical name, both sides"
+          }
+          test "the nominal law: a literal never becomes a declared record" {
+              let declaredEnv = env |> declare "type AnT = { a: int }"
+
+              match Weir.Parser.parseStmt "[{ a = 1 }; {| a = 1 |}]" with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck declaredEnv e with
+                  | Error terr -> Expect.stringContains terr.Message "expected AnT, got {| a: int |}" "nominal law"
+                  | Ok _ -> failtest "a literal must not unify with a declared record"
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "within-statement: field access and to json see the minted def" {
+              Expect.equal (run "{| a = 1 |}.a") (VInt 1L) "field access on the literal itself"
+
+              Expect.equal
+                  (forceSeq (run "[{| k = \"v\" |}] |> to json"))
+                  [ VStr "{\"k\":\"v\"}" ]
+                  "the admitted walk and the writer both resolve the name"
+          }
+          test "the def persists across statements (script + REPL share checkStatement)" {
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines "anonlit.weir" [ "let x = {| ip = \"z\" |}"; "let y = x.ip" ]
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the later statement resolves"
+          }
+          test "a same-shape hidden def never makes a bare literal ambiguous" {
+              // without the isUserName guard on the candidate scan, the
+              // drained anon def would collide with AG at statement 3
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "anonlit2.weir"
+                      [ "type AG = { ip: string }"
+                        "let a = {| ip = \"x\" |}"
+                        "let b = { ip = \"y\" }"
+                        "let c = b.ip" ]
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the bare literal stays unambiguous"
+          }
+          test "nested literals compose; the name recurses" {
+              let te = checkOk "{| a = {| b = 1 |} |}"
+              Expect.equal te.Ty (TNamed("{| a: {| b: int |} |}", [])) "the inner name renders inline"
+              Expect.equal (run "{| a = {| b = 1 |} |}.a.b") (VInt 1L) "and evaluates through"
+          }
+          test "duplicate fields refuse; the admitted law reaches through" {
+              Expect.stringContains (checkErr "{| a = 1; a = 2 |}").Message "duplicate field 'a'" ""
+
+              Expect.stringContains
+                  (checkErr "[{| f = double |}] |> to json").Message
+                  "not admitted"
+                  "jsonAdmitted walks the minted def"
+          }
+          test "monomorphic at the site — the ground refusal teaches (a no-anonymous-records edge)" {
+              let m = (checkErr "fun q -> {| a = q |}").Message
+              Expect.stringContains m "not fully known at the literal" "names the constraint"
+              Expect.stringContains m "declare a record" "and the repair"
+          }
+          test "equality and patterns follow declared records" {
+              Expect.equal (run "{| a = 1 |} == {| a = 1 |}") (VBool true) "Eq decomposes"
+              Expect.equal (run "{| a = 1 |} == {| a = 2 |}") (VBool false) ""
+              Expect.equal (run "let { a = n } = {| a = 7 |} in n") (VInt 7L) "a record pattern destructures it"
+          }
+          test "the fences: punning, empty, copy-update, type-spelling, keyword" {
+              Expect.stringContains (parseErr "let x = {| a; b = 2 |}") "fields take field = value" "punning teaches"
+
+              Expect.stringContains (parseErr "let x = {| b = 2; a |}") "fields take field = value" "at every position"
+              Expect.stringContains (parseErr "let x = {| |}") "at least one field" "empty refuses (F# admits it)"
+              Expect.stringContains (parseErr "let x = {||}") "at least one field" ""
+              Expect.stringContains (parseErr "let x = {| r with a = 2 |}") "no copy-and-update" "toward the park"
+              Expect.stringContains (parseErr "let x = {| a: int |}") "spells the anonymous TYPE" "':' confusion named"
+              Expect.stringContains (parseErr "let x = {| let = 1 |}") "'let' is a keyword" "the shared guard fires"
+          }
+          test "sexpr renders the form (parse-shape pin)" {
+              match Weir.Parser.parseStmt "let x = {| a = 1; b = \"t\" |}" with
+              | Ok(SLet(_, e)) -> Expect.equal (Weir.Ast.sexpr e) "{|a = 1; b = \"t\"|}" ""
+              | other -> failtest $"unexpected: {other}"
+          } ]
+
 let seqGapsTests =
     // the Seq-gaps cohort [D:seq-gaps] — every lazy member gets a
     // pull-count pin (the standing rule); every asserting member's
@@ -14946,6 +15047,7 @@ let allTests =
           recordKeysTests
           yamlSeqTests
           anonRecordTests
+          anonLiteralTests
           mapStringTests
           instantTests
           interpRawTests

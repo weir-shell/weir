@@ -651,6 +651,54 @@ let private keywordFieldGuard: Parser<ExprKind, unit> =
     )
     >>= fun (at, w) -> failFatallyAt at $"'{w}' is a keyword"
 
+// anonymous record literal [D:anon-literals]: `{| field = expr; … |}`,
+// F#'s spelling — the canonical synthetic-nominal name is minted at
+// CHECK (values sit here, not types; the parse-time pendingAnonDefs
+// push cannot serve this form). `{|` is one token, no interior ws
+// (FCS-matched; the grammars already tokenize it so). Fences are
+// fatal teachings [D:label-leaks]: punning and the `:` type-spelling
+// confusion fire per-field so `{| a = 1; b |}` teaches at 'b'; the
+// EMPTY form is refused though F# admits {||} — the named divergence
+// edge (COMING-FROM), Map.ofPairs [] already writes {}.
+let private anonRecordLit =
+    let punFence: Parser<string * Span * Expr, unit> =
+        attempt (
+            getPosition
+            .>> identSpanned
+            .>> ws
+            .>> (followedBy (pchar ';') <|> followedBy (pstring "|}"))
+        )
+        >>= fun at ->
+            failFatallyAt at "anonymous record fields take field = value — write {| key = key |}, not {| key |}"
+
+    let typeFence: Parser<string * Span * Expr, unit> =
+        attempt (getPosition .>> identSpanned .>> ws .>> followedBy (pchar ':'))
+        >>= fun at -> failFatallyAt at "':' spells the anonymous TYPE — a literal takes field = value: {| key = expr |}"
+
+    let withFence: Parser<ExprKind, unit> =
+        attempt (getPosition .>> identSpanned .>> ws .>> followedBy (keyword "with"))
+        >>= fun at ->
+            failFatallyAt
+                at
+                "anonymous records have no copy-and-update — update a declared record: { r with field = v }"
+
+    let emptyFence: Parser<ExprKind, unit> =
+        getPosition .>> followedBy (ws >>. pstring "|}")
+        >>= fun at ->
+            failFatallyAt at "an anonymous record needs at least one field — an empty object is Map.ofPairs []"
+
+    spanned (
+        pstring "{|"
+        >>. (emptyFence
+             <|> (ws
+                  >>. (keywordFieldGuard
+                       <|> withFence
+                       <|> (sepBy1 (punFence <|> typeFence <|> fieldAssign) (str_ws ";") .>> pstring "|}"
+                            |>> EAnonRecord))))
+    )
+    |>> mkExpr
+    .>> ws
+
 let private recordLit =
     spanned (
         pchar '{'
@@ -1050,6 +1098,7 @@ let private atom =
               unitLit
               opValue
               parens
+              anonRecordLit
               recordLit
               attempt comprehensionLit
               listLit
