@@ -5910,6 +5910,12 @@ echo "$out" | grep -q "unknown flag" && fail "in-scope + global must check clean
 printf '#sig cobratool\ncobratool run --jql x\nprint "d"\n' > sc2.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc2.weir 2>&1)
 echo "$out" | grep -qF "unknown flag '--jql' for cobratool run" || fail "the wrong-case flag warns naming the case: $out"
+# a SUB-LESS line checks the GLOBALS (the case intersection) — the
+# claude shape: flag-only usage must still squiggle [D:scoped-sigs]
+printf '#sig cobratool\ncobratool --debgu\ncobratool --debug\nprint "d"\n' > sc3.weir
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc3.weir 2>&1)
+echo "$out" | grep -qF "unknown flag '--debgu' for cobratool" || fail "a sub-less unknown must warn against the globals: $out"
+echo "$out" | grep -q "unknown flag '--debug'" && fail "a sub-less GLOBAL must check clean: $out" || true
 # ANSI in help/version output (the mac jira shape [D:sig-version-probe]):
 # escapes are stripped at the probe boundary — a colored all-caps banner
 # still detects, and no escape byte reaches the sig

@@ -24,6 +24,12 @@
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
+- A sub-less line on a scoped sig checks the GLOBALS — flag-only
+  usage (`claude --scop2 --scope`) squiggles again: the flags riding
+  every case are the global set, so the case intersection checks it;
+  hand-written unions that share nothing keep the partial-surface
+  skip.
+
 - **Sig generation scopes to subcommands.** The walk keeps its
   provenance: a walked surface now generates a union — the first
   subcommand token picks the case and only its flags check, so

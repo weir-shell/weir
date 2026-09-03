@@ -3469,12 +3469,33 @@ let sigCmdDiagnostics
                         match Map.tryFind "" si.Subs with
                         | Some fs -> Some(None, fs)
                         | None ->
-                            words
-                            |> List.tryFind (fun (w, _) -> not (w.StartsWith "-"))
-                            |> Option.bind (fun (w, _) -> Map.tryFind w si.Subs |> Option.map (fun fs -> Some w, fs))
+                            match
+                                words
+                                |> List.tryFind (fun (w, _) -> not (w.StartsWith "-"))
+                                |> Option.bind (fun (w, _) ->
+                                    Map.tryFind w si.Subs |> Option.map (fun fs -> Some w, fs))
+                            with
+                            | Some hit -> Some hit
+                            | None ->
+                                // a SUB-LESS line on a scoped sig checks the
+                                // GLOBALS — R2's own invariant: what rides
+                                // every case is global, so the intersection
+                                // IS the global set [D:scoped-sigs]. Empty
+                                // intersection (hand-written unions that
+                                // never duplicate) keeps the L2 skip —
+                                // claude's flag-only lines check, git's
+                                // sub-less lines stay silent
+                                match si.Subs |> Map.toList |> List.map snd with
+                                | [] -> None
+                                | (l0, s0) :: rest ->
+                                    let longs = rest |> List.fold (fun acc (l, _) -> Set.intersect acc l) l0
+
+                                    let shorts = rest |> List.fold (fun acc (_, sh) -> Set.intersect acc sh) s0
+
+                                    if longs.IsEmpty then None else Some(None, (longs, shorts))
 
                     match surface with
-                    | None -> [] // no matching subcommand: L2 stops here
+                    | None -> [] // no matching subcommand, no shared globals: L2 stops here
                     | Some(subName, (longs, shorts)) ->
                         // a scoped surface names its CASE in the warn
                         // [D:scoped-sigs] — the scoping's visible dividend

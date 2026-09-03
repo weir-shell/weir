@@ -2209,7 +2209,21 @@ let run (debug: bool) : int =
                                             let sets =
                                                 match sub |> Option.bind (fun t -> Map.tryFind t si.Subs) with
                                                 | Some fs -> [ fs ]
-                                                | None -> si.Subs |> Map.toList |> List.map snd
+                                                | None ->
+                                                    // sub-less: the GLOBALS (the case
+                                                    // intersection, the checker's own
+                                                    // rule); union-of-cases only when
+                                                    // nothing is shared [D:scoped-sigs]
+                                                    let all = si.Subs |> Map.toList |> List.map snd
+
+                                                    match all with
+                                                    | (l0, s0) :: rest ->
+                                                        let li =
+                                                            rest
+                                                            |> List.fold (fun acc (l, _) -> Set.intersect acc l) l0
+
+                                                        if li.IsEmpty then all else [ li, s0 ]
+                                                    | [] -> []
 
                                             sets
                                             |> Seq.collect fst
