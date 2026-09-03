@@ -304,6 +304,24 @@ match Pass with
 | Failing -> print "no"
 ```
 
+An arm body takes bare commands — dispatch to one per case, no sigil.
+In statement position each arm streams; make the match a `let` RHS and
+the chosen arm's output is captured instead:
+
+```weir
+let mode = "build"
+
+match mode with
+| "build" ->
+    sh -c "echo compiling"
+    sh -c "echo linking"
+| "test" -> sh -c "echo testing"
+| _ -> print $"unknown: {mode}"
+```
+
+The chain runs to the next `| pattern ->`, so an argv word that spells
+`x ->` needs quoting to stay an argument.
+
 Record patterns destructure by field name — in a `match` arm, a
 `let`, or a `for` binder (never a function param — params stay plain
 idents). Fields keep their declared case, binders are lowercase, and

@@ -1285,6 +1285,27 @@ for want in reset-ran clean-ran item-a item-b fetched d1b2a59f; do
 done
 echo "e2e ok: interior commands arm in if/lambda/block bodies; reifiers work as interior statements"
 
+# match arms take bare commands [D:match-arm-commands]: the case-runner
+# idiom — dispatch to a real command per arm, no sigil; a multi-line arm
+# body sequences, the tail streams; capture position still binds
+cat > "$iadir/matcharm.weir" <<'WEOF'
+let mode = "build"
+match mode with
+| "build" ->
+    sh -c "echo compiling"
+    sh -c "echo linking"
+| "test" -> sh -c "echo testing"
+| _ -> print $"unknown: {mode}"
+let latest = match 1 with | _ -> sh -c "echo v1.2.3"
+print $"picked {latest |> Seq.exactlyOne}"
+WEOF
+out=$(cd "$iadir" && $BIN matcharm.weir) || fail "match-arm command dispatch must run"
+for want in compiling linking "picked v1.2.3"; do
+    echo "$out" | grep -qF "$want" || fail "match arm: missing '$want': $out"
+done
+echo "$out" | grep -qF "testing" && fail "only the matched arm runs"
+echo "e2e ok: match arms dispatch bare commands (multi-line bodies, capture position intact)"
+
 # raise timings [D:interior-arming]: ARMED raises immediately (the tail
 # never runs); CAPTURE raises only at force (existing law, re-pinned)
 cat > "$iadir/armed.weir" <<'WEOF'

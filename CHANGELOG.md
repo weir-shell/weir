@@ -17,13 +17,23 @@
   punning, no empty `{||}`, no `{| r with … |}` — each refusal
   teaches its repair.
 
+- **Bare commands in match arms.** An arm body takes a command with no
+  sigil — the case-runner idiom, `| "build" -> sh -c "make"`. In
+  statement position each arm streams; a value-position match (a `let`
+  RHS) captures the chosen arm's output as `seq<string>`. The chain
+  ends at the next `| pattern ->`, so an argv word spelling `x ->`
+  needs quoting. This extends the interior-arming rule to the one
+  block position it had left out, and narrows `!()`'s remaining niche
+  to single-line sequencing (`!(setup); print "done"`).
+
 ### Docs
 
 - Redundant `!()` sigils swept from examples — a command is an
   ordinary statement inside any block body, so `if ready then` +
   indented bare command lines is the modeled idiom; the sigil
-  appears only where an expression position demands it, and the
-  one stale "block effect idiom" sentence now says so.
+  appears only where an expression position demands it (single-line
+  sequencing), and the one stale "block effect idiom" sentence now
+  says so.
 
 ## v0.0.14
 

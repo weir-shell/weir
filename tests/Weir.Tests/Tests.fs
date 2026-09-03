@@ -12895,6 +12895,87 @@ let ifSucceedsTests =
                   ""
           } ]
 
+let matchArmCommandTests =
+    // bare commands in match arms [D:match-arm-commands] — the arm body
+    // is interior-arming territory: a command chain ends at the next
+    // `| <pattern> ->`, and a statement-position match arms each arm's
+    // tail (streams) instead of discarding a captured seq<string>. Parse
+    // shape via cmdResolver (git/echo external); diagnostics via the real
+    // Script pipeline (armTail runs there, not in a bare typecheck).
+    let armBodyOf input =
+        match Weir.Parser.parseLine cmdResolver input with
+        | Ok(SExpr { Kind = EMatch(_, (_, _, body) :: _) }) -> body
+        | Ok other -> failtest $"expected a match, got {other}"
+        | Error m -> failtest $"parse failed: {m}"
+
+    let diags lines =
+        let ds, _, _, _ = Weir.Script.analyzeLines "m.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    testList
+        "match arm commands [D:match-arm-commands]"
+        [ test "an arm body is a command chain; a following arm does not swallow it" {
+              // the boundary: `| _ ->` ends the first arm's chain
+              match (armBodyOf "match 1 with | 1 -> echo hi | _ -> print \"no\"").Kind with
+              | ECmd("echo", _, _) -> ()
+              | other -> failtest $"expected the arm body to be a command, got {other}"
+          }
+          test "a statement-position match with command arms checks clean (arms stream)" {
+              Expect.isEmpty
+                  (diags [ "match 1 with"; "| 1 -> echo one"; "| _ -> echo other" ])
+                  "each arm's tail arms to unit — no discard"
+          }
+          test "mixed command / expression arms unify at unit" {
+              Expect.isEmpty
+                  (diags [ "match 2 with"; "| 1 -> echo picked"; "| _ -> print \"other\"" ])
+                  "the command arm arms, the print arm is already unit"
+          }
+          test "a multi-line arm body sequences, the tail arms" {
+              Expect.isEmpty
+                  (diags
+                      [ "match 1 with"
+                        "| 1 ->"
+                        "    let t = \"x\""
+                        "    echo got $t"
+                        "| _ -> print \"no\"" ])
+                  "the block-let body's command tail arms"
+          }
+          test "capture position is UNCHANGED — a value-typed match still binds seq<string>" {
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "cap.weir"
+                      [ "let out = match 1 with"; "          | _ -> echo captured"; "print out" ]
+
+              Expect.isEmpty
+                  (ds |> List.filter (fun d -> d.Severity = "error"))
+                  "the last-position chain stays a capture"
+          }
+          test "a reifier stage still binds to the `|` — the `->` is the discriminator" {
+              // `| orFail "m"` has no `->`, so it is a reifier, not an arm:
+              // the body desugars to the |orFailed spine, never two arms
+              let sx = Weir.Ast.sexpr (armBodyOf "match 1 with | _ -> git status | orFail \"m\"")
+              Expect.stringContains sx "orFail" "the reifier bound to the pipe"
+              Expect.stringContains sx "status" "the command stayed in the same chain (not split into an arm)"
+          }
+          test "a pipe stage spelling `pattern ->` reads as the next arm (the documented corner)" {
+              // `| y -> …` after a command is a NEW arm binding y; under a
+              // leading catch-all it is unreachable — the teaching that
+              // points at the quote repair
+              let ds = diags [ "match 1 with"; "| _ -> echo x | y -> print \"z\"" ]
+              Expect.exists ds (fun d -> d.Message.Contains "unreachable") "the corner surfaces as an unreachable arm"
+          }
+          test "nested match: inner arms stop at the inner boundary (depth counter)" {
+              Expect.isEmpty
+                  (diags
+                      [ "match 1 with"
+                        "| 1 ->"
+                        "    match 2 with"
+                        "    | 2 -> echo inner"
+                        "    | _ -> echo inner-other"
+                        "| _ -> echo outer-other" ])
+                  "the inner match's arms parse and arm independently"
+          } ]
+
 let retryPollTests =
     let sx (input: string) = show (parse input)
 
@@ -15022,6 +15103,7 @@ let allTests =
           tasksUnderneathTests
           seqPfirstTests
           ifSucceedsTests
+          matchArmCommandTests
           retryPollTests
           sigTests
           sizeTests
