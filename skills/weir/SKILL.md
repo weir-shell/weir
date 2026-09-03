@@ -109,7 +109,7 @@ print "unreached"
 let ok = 1 > 0
 
 if ok then
-    !(sh -c "echo step-one")
+    sh -c "echo step-one"
     print "step-two"
 
 let branches = $(git branch) |> Seq.length
@@ -649,7 +649,7 @@ refs
 ["r1"; "r2"]
     |> Seq.iter (fun r ->
         let tag = $"repo-{r}"
-        !(echo fetching $tag)
+        echo fetching $tag
         print $"done {r}")
 ```
 - `if c then a else b` is an expression; `else` is mandatory unless the
@@ -665,6 +665,12 @@ refs
   Constructor patterns need a scrutinee whose type is already KNOWN —
   params are not typed FROM patterns (`let f x = match x with
   | A -> ...` is a check error; match on typed data).
+  An arm body takes BARE COMMANDS [D:match-arm-commands] — the
+  case-runner idiom, no sigil: `| "build" -> sh -c "make"`. In
+  statement position each arm streams; a value-position match (a `let`
+  RHS) captures the last arm's chain as `seq<string>`. The chain ends
+  at the next `| <pattern> ->`, so an argv word spelling `x ->` needs
+  quoting to stay an argument.
 - `let x = e in body` inline; in multi-line scripts an indented `let`
   line closes at the next line of the same indent (F# light syntax).
 - String/seq ops are data-last for piping: `Seq.where (Str.contains "err")`.
@@ -1131,7 +1137,11 @@ conf |> Seq.iter print
   pull)`). There is NO line-end `!` block — that district was retired
   [D:district-retirement]: commands are ordinary statements inside any
   block, so `if clean then` + indented `git checkout main` /
-  `git pull` lines just works [D:interior-arming].
+  `git pull` lines just works [D:interior-arming], and a match arm
+  body takes them too [D:match-arm-commands]. `!()` is left for the
+  positions bare cannot reach: a command sequenced with an expression
+  on ONE line (`!(setup); print "done"` — `;` is argv inside a bare
+  command line).
 - The glyph law: weir has no `!`-negation — negation is the word
   `not`; `!` means DO IT. And no `\`-escape for commands — `^ls`
   forces the PATH binary.
@@ -1156,7 +1166,7 @@ conf |> Seq.iter print
 
 ```weir
 let clean = not (1 == 2)
-if clean then !(sh -c "echo acting")
+if clean then sh -c "echo acting"
 ```
 
 ```weir-error
@@ -1168,10 +1178,11 @@ if clean then !(sh -c "echo acting")
   output (`seq<string>`, pipes onward); `!(git push)` runs-and-streams
   (unit, raises on nonzero). On a top-level `let` RHS prefer the bare
   chain (`let b = git branch |> Seq.head`); sigils are for positions
-  bare cannot reach. The block effect idiom:
-  `if clean then` + indented `!(...)` lines. Interiors are ordinary
-  command chains (splices, pipes, `| complete`). `!` is NOT bash
-  history/extglob and `;` still does not chain inside them.
+  bare cannot reach — block bodies are NOT one of them:
+  `if clean then` + indented bare command lines just works, no
+  sigil. Interiors are ordinary command chains (splices, pipes,
+  `| complete`). `!` is NOT bash history/extglob and `;` still does
+  not chain inside them.
 - A top-level `let` RHS takes command lines — param-ful included
   (`let f r = git rev-parse $r |> Seq.exactlyOne`): `let files = git ls-files`
   binds `seq<string>`; `let r = git status | complete` binds the

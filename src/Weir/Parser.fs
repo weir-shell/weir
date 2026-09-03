@@ -133,6 +133,24 @@ let private withIfCond (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             ifCondOk.Value <- saved
 
+// TRUE while a match arm's BODY parses [D:match-arm-commands]: a command
+// chain there ends at the next arm's `| <pattern> ->`, so `| _ -> git pull`
+// streams without a sigil. A DEPTH counter, not a flag — a nested match's
+// inner arms restore the outer value on exit, and arm attribution stays
+// innermost-wins (the rule expressions already live by). Gated so the
+// `|`-boundary lookahead is paid only inside arm bodies.
+let private matchArmDepth = new System.Threading.ThreadLocal<int>(fun () -> 0)
+
+let private withMatchArm (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = matchArmDepth.Value
+        matchArmDepth.Value <- (if v then saved + 1 else 0)
+
+        try
+            p stream
+        finally
+            matchArmDepth.Value <- saved
+
 // the param-ful law one scope deeper [D:block-let-cmd]: a block-let
 // name shadows PATH for every later parse in its body
 let private withAmbientName (name: string) (p: Parser<'a, unit>) : Parser<'a, unit> =
@@ -1747,7 +1765,13 @@ let private matchArm =
     // commas, so the guard sits OUTSIDE the tuple by construction
     commaPats
     >>= fun p ->
-        withPatNames p (opt (keyword "when" >>. expr) .>> str_ws "->" .>>. withExprParen false seqExpr)
+        // the body is arm-body territory [D:match-arm-commands]: a command
+        // chain ends at the next `| <pattern> ->`, so `| _ -> git pull`
+        // streams without a sigil (the interior-arming positions, extended)
+        withPatNames
+            p
+            (opt (keyword "when" >>. expr) .>> str_ws "->"
+             .>>. withMatchArm true (withExprParen false seqExpr))
         |>> fun (guard, body) -> p, guard, body
 
 // within <kind> <binder> + block [D:within-scopes]: a scoped resource
@@ -3397,9 +3421,31 @@ let private doublePipeGuard: Parser<Seg, unit> =
             at
             "'||' does not chain commands in weir — branch on the exit instead: if cmd | succeeds then ... else ... (a literal '||' argument needs quotes)"
 
+// the match-arm boundary [D:match-arm-commands]: inside an arm body a
+// `|` that opens the NEXT arm (`| <pattern> ->` or `| <pattern> when`)
+// ends the command chain rather than reading as a pipe stage. The `->`
+// / `when` requirement is the discriminator — `| complete`, `| grep`,
+// `| orFail "m"` have neither, so a reifier or program stage still binds
+// to the `|`. Gated on the arm-body depth so no other chain pays the
+// pattern lookahead; a pure lookAhead, consuming nothing.
+let private armBoundaryAhead: Parser<unit, unit> =
+    fun stream ->
+        if matchArmDepth.Value > 0 then
+            (attempt (
+                lookAhead (
+                    pstring "|"
+                    >>. ws
+                    >>. commaPats
+                    >>. (followedBy (str_ws "->") <|> followedBy (keyword "when"))
+                )
+            ))
+                stream
+        else
+            ifail "not in a match arm" stream
+
 let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEnv: Expr option) (r: Resolver) =
     many (
-        pipeSepSpanned
+        notFollowedBy armBoundaryAhead >>. pipeSepSpanned
         .>>. (doublePipeGuard
               <|> completeMarker
               <|> succeedsMarker

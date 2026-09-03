@@ -3623,6 +3623,14 @@ and armTail (e: Expr) : Expr =
         | ELet(n, ns, v, b) ->
             { Kind = ELet(n, ns, v, armTail b)
               Span = e.Span }
+        // a statement-position match arms each arm's TAIL
+        // [D:match-arm-commands] — a command arm streams, exactly as an
+        // if body's; arms then unify at unit instead of at seq<string>
+        // (the discard the raw match would report). Value position never
+        // reaches armTail (gateExprs), so capture-typed matches stay.
+        | EMatch(scrut, arms) ->
+            { Kind = EMatch(scrut, arms |> List.map (fun (p, g, b) -> p, g, armTail b))
+              Span = e.Span }
         | _ -> e
 
 // an exit-code spine discarded where unit is demanded keeps its

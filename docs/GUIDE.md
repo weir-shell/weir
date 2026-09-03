@@ -304,6 +304,24 @@ match Pass with
 | Failing -> print "no"
 ```
 
+An arm body takes bare commands — dispatch to one per case, no sigil.
+In statement position each arm streams; make the match a `let` RHS and
+the chosen arm's output is captured instead:
+
+```weir
+let mode = "build"
+
+match mode with
+| "build" ->
+    sh -c "echo compiling"
+    sh -c "echo linking"
+| "test" -> sh -c "echo testing"
+| _ -> print $"unknown: {mode}"
+```
+
+The chain runs to the next `| pattern ->`, so an argv word that spells
+`x ->` needs quoting to stay an argument.
+
 Record patterns destructure by field name — in a `match` arm, a
 `let`, or a `for` binder (never a function param — params stay plain
 idents). Fields keep their declared case, binders are lowercase, and
@@ -409,10 +427,11 @@ silently accepts more, hiding a wrong-arity output; save `head` for
 One rule to know about `!`: weir has no `!`-negation. Negation is the
 word `not`; `!` means DO IT. Two markers bring full command chains
 into expressions — `$(...)` captures the output, `!(...)`
-runs-and-streams (unit, raises on nonzero). Prefer the bare `let`
-form when the whole right-hand side is the chain; `$()` is for
-everywhere the command is a sub-expression — inside records, holes,
-and nested splices:
+runs-and-streams (unit, raises on nonzero). Statement positions need
+NEITHER — a command is an ordinary statement at top level and inside
+any block body. Prefer the bare `let` form when the whole right-hand
+side is the chain; `$()` is for everywhere the command is a
+sub-expression — inside records, holes, and nested splices:
 
 ```weir
 let ready = 1 > 0
@@ -420,9 +439,6 @@ let ready = 1 > 0
 if ready then
     sh -c "echo preparing"
     sh -c "echo prepared"
-
-if ready then
-    !(sh -c "echo inline-form")
     print "mixed with expressions"
 
 let latest = git log -1 "--format=%h" |> Seq.exactlyOne

@@ -69,22 +69,33 @@ A value on the left of `|` becomes the child's stdin:
 ## Streaming, capture, and the markers
 
 A bare command statement streams. A `let` in front captures —
-`seq<string>`, one element per line, nothing streamed. Two markers
-bring command chains into expression positions: `$(...)` captures,
-`!(...)` runs-and-streams (unit, raises on nonzero). An env overlay
-bound to `e` attaches as `$e(...)` / `!e(...)`. There is no
-`!`-negation — negation is the word `not`; `!` means DO IT.
+`seq<string>`, one element per line, nothing streamed. A bare command
+is also an ordinary statement in any block body and any `match` arm,
+so most command lines need no marker at all:
 
 ```weir
 let files = git ls-files
 print $"{files |> Seq.length} tracked"
 
 if 2 > 1 then
-    !(git status --porcelain)
+    git status --porcelain
     print (($(git rev-parse HEAD) |> Seq.head) |> Str.sub 0 7)
 ```
 
-There is no syntax for a computed program NAME — branch the whole
+Two markers bring command chains into positions bare cannot reach:
+`$(...)` captures (a sub-expression — inside a hole, a record, a
+splice), `!(...)` runs-and-streams (unit, raises on nonzero). `$()`
+appears above, in the hole. `!()`'s own niche is sequencing a command
+with an expression on ONE line — a bare `;` is an argv word inside a
+command line, so the marker is what returns to expression land:
+
+```weir
+!(git fetch --quiet); print "fetched"
+```
+
+An env overlay bound to `e` attaches as `$e(...)` / `!e(...)`. There is
+no `!`-negation — negation is the word `not`; `!` means DO IT. And
+there is no syntax for a computed program NAME — branch the whole
 command line instead.
 
 ## Exit codes
