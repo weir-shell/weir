@@ -1064,6 +1064,48 @@ type Bad = { type: string }
   streaming form. Every adapter pairs with its own name across the
   arrow: `to json |> from json T`, `xs |> to json |> from json
   seq<T>`, `xs |> to jsonl |> from jsonl T`.
+  A TAGGED UNION crosses the wire [D:wire-unions]: `[<Tag "kind">]`
+  on a union declaration names its string discriminator field, and
+  the union is then admitted at BOTH formats — top level, record
+  field, seq element, `Map` value. Reading peeks the tag and picks
+  the case (internal tagging — the tag sits AMONG the payload's
+  fields, k8s's shape); each case carries a declared RECORD (or
+  nothing — a tag-only document); `[<Wire "v">]` on a case overrides
+  its tag value; ONE `[<Other>]` case (`of string` receives the raw
+  tag, or nullary) makes the union OPEN-WORLD — unmatched kinds land
+  there instead of erroring, and your match handles them visibly. No
+  `[<Other>]` = closed: an unmatched tag errors naming the cases; a
+  MISSING tag field always errors (malformed, not unknown). Writers
+  reinsert the tag FIRST; an `[<Other>]` value refuses to write
+  (nothing faithful). `from jsonl KDoc` therefore dispatches MIXED
+  NDJSON, `from json seq<KDoc>` a mixed array. An untagged union
+  stays refused, the error naming `[<Tag>]`.
+
+```weir
+type DeploySpec = { replicas: int }
+
+[<Tag "kind">]
+type KDoc =
+    | Deploy of DeploySpec
+    | Ping
+    | [<Other>] Unknown of string
+
+["{\"kind\":\"Deploy\",\"replicas\":3}"; "{\"kind\":\"Ping\"}"; "{\"kind\":\"CronJob\"}"]
+    |> from jsonl KDoc
+    |> Seq.iter (fun d ->
+        match d with
+        | Deploy s -> print $"deploy x{s.replicas}"
+        | Ping -> print "ping"
+        | Unknown k -> print $"skip {k}")
+
+Deploy { replicas = 2 } |> to json |> Seq.iter print
+```
+
+```weir-error
+// the payload law: a tagged case carries a declared record or nothing
+[<Tag "kind">]
+type Bad = C of int
+```
   The field law is RECURSIVE: a field is a scalar (`int`, `float`,
   `string`, `bool`), an `Option` of an admitted type, a record whose
   fields are all admitted, a `seq` of an admitted type, or a

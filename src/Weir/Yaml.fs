@@ -23,6 +23,14 @@ type Shape =
     | SSeq of Shape
     // seq<string * X> — an open mapping (labels/annotations)
     | SPairs of Shape
+    // a TAGGED union [D:wire-unions]: the tag field picks the case;
+    // cases carry (name, tagValue, payload record shape option); other
+    // is the [<Other>] fallback (name, carries-the-tag-string)
+    | SUnion of
+        name: string *
+        tag: string *
+        cases: (string * string * Shape option) list *
+        other: (string * bool) option
 
 // the INTERNAL node tree — quotedness and positions ride here; the
 // public `Yaml` union (prelude) carries neither, because construction

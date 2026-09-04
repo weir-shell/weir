@@ -464,11 +464,11 @@ let pins =
       // name registry keeps diverging exactly as fields do
       pin
           "attributes: union declaration hosts a registered name (F# has no Tag type)"
-          "[<Tag \"kind\">]\ntype K =\n    | A of int\n    | B\nlet v = B\n"
+          "type P = { n: int }\n[<Tag \"kind\">]\ntype K =\n    | A of P\n    | B\nlet v = B\n"
           (Diverges "attributes-registered")
       pin
           "attributes: union case hosts a registered name (F# has no Wire type)"
-          "type K = [<Wire \"x\">] A of int | B\nlet v = A 1\n"
+          "type P = { n: int }\n[<Tag \"k\">]\ntype K = [<Wire \"x\">] A of P | B\nlet v = B\n"
           (Diverges "attributes-registered")
       pin
           "attributes: F# accepts a real attribute on a union weir does not register"

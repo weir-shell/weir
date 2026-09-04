@@ -722,7 +722,11 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<>", a, b -> VBool(a <> b)
     | _ -> unreachable $"the checker rejects '{op}' on {formatValue l} and {formatValue r}"
 
-let private jsonLine (renames: Map<string, Map<string, string>>) (v: Value) : string =
+let private jsonLine
+    (renames: Map<string, Map<string, string>>)
+    (unions: Map<string, string * string * bool>)
+    (v: Value)
+    : string =
     let buffer = new System.Buffers.ArrayBufferWriter<byte>()
     use writer = new System.Text.Json.Utf8JsonWriter(buffer)
 
@@ -739,6 +743,26 @@ let private jsonLine (renames: Map<string, Map<string, string>>) (v: Value) : st
         // element level is a null line (a None FIELD is OMITTED, below)
         | VUnion("Some", Some inner) -> write inner
         | VUnion("None", None) -> writer.WriteNullValue()
+        // a TAGGED case writes its payload with the tag REINSERTED FIRST
+        // [D:wire-unions] (k8s's own convention); the [<Other>] case
+        // holds what was not understood — nothing faithful writes
+        | VUnion(c, payload) when unions.ContainsKey c ->
+            let tagField, tagValue, isOther = unions[c]
+
+            if isOther then
+                failwith
+                    $"to json: '{c}' is the [<Other>] fallback — it names a tag that matched no case, and nothing faithful can be written from it"
+
+            writer.WriteStartObject()
+            writer.WritePropertyName tagField
+            writer.WriteStringValue tagValue
+
+            (match payload with
+             | Some(VRecord(rname, fields)) -> writeFields rname fields
+             | None -> ()
+             | Some v -> unreachable $"the declaration law rejects a tagged payload of {formatValue v}")
+
+            writer.WriteEndObject()
         | VSeq items ->
             // a nested array [D:recursive-fields] — elements recurse;
             // an Option element writes null for None (an array slot
@@ -758,25 +782,28 @@ let private jsonLine (renames: Map<string, Map<string, string>>) (v: Value) : st
             writer.WriteEndObject()
         | VRecord(rname, fields) ->
             writer.WriteStartObject()
-
-            // the wire key comes back on WRITE [D:wire-keys] — the
-            // roundtrip's other half; the rename table rides the TETo
-            // node (attrs never reach values)
-            let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
-
-            for kv in fields do
-                // THE FORK [D:json-option]: a None field OMITS its key — a
-                // weir-produced payload looks like the ecosystem's (gh /
-                // kubectl / docker inspect omit rather than null). Missing
-                // and null both read back as None, so the roundtrip holds.
-                match snd kv with
-                | VUnion("None", None) -> ()
-                | _ ->
-                    writer.WritePropertyName(Map.tryFind (fst kv) rens |> Option.defaultValue (fst kv))
-                    write (snd kv)
-
+            writeFields rname fields
             writer.WriteEndObject()
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
+
+    // the field loop, shared by records and tagged payloads
+    // [D:wire-unions] — the tag rides FIRST, the payload's fields follow
+    and writeFields (rname: string) (fields: (string * Value) list) =
+        // the wire key comes back on WRITE [D:wire-keys] — the
+        // roundtrip's other half; the rename table rides the TETo
+        // node (attrs never reach values)
+        let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
+
+        for kv in fields do
+            // THE FORK [D:json-option]: a None field OMITS its key — a
+            // weir-produced payload looks like the ecosystem's (gh /
+            // kubectl / docker inspect omit rather than null). Missing
+            // and null both read back as None, so the roundtrip holds.
+            match snd kv with
+            | VUnion("None", None) -> ()
+            | _ ->
+                writer.WritePropertyName(Map.tryFind (fst kv) rens |> Option.defaultValue (fst kv))
+                write (snd kv)
 
     write v
     writer.Flush()
@@ -804,8 +831,9 @@ let private jsonDoc
     (who: string)
     (wantSeq: bool)
     (wantMap: bool)
-    (def: RecordDef)
+    (top: JsonTop)
     (defs: Map<string, RecordDef>)
+    (udefs: Map<string, UnionDef>)
     (shown: string)
     (text: string)
     : Value =
@@ -890,7 +918,52 @@ let private jsonDoc
                     $"{who}: field '{name}' expected an object ({n}), got {jsonKindName prop.ValueKind} in: {shown}"
 
             objRow $"{name}." defs[n] prop
+        | TNamed(n, []) when udefs.ContainsKey n ->
+            if prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
+                failwith
+                    $"{who}: field '{name}' expected an object ({n}), got {jsonKindName prop.ValueKind} in: {shown}"
+
+            readUnion $"{name}." udefs[n] prop
         | scalarTy -> readScalar name scalarTy prop
+
+    // the tag DISPATCH [D:wire-unions]: the discriminator field picks the
+    // case, the WHOLE object reads as its payload record (the tag rides
+    // among the fields — internal tagging, the ecosystem's shape); an
+    // unmatched value takes the [<Other>] fallback or refuses naming the
+    // cases; a MISSING tag field is a malformed document, never Other's
+    and readUnion (prefix: string) (udef: UnionDef) (root: System.Text.Json.JsonElement) : Value =
+        let tagField = udef.Tag |> Option.defaultValue "?"
+        let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
+
+        if not (root.TryGetProperty(tagField, &prop)) then
+            failwith $"{who}: missing tag field '{prefix}{tagField}' ({udef.Name}) in: {shown}"
+        elif prop.ValueKind <> System.Text.Json.JsonValueKind.String then
+            failwith
+                $"{who}: tag field '{prefix}{tagField}' ({udef.Name}) expected a string, got {jsonKindName prop.ValueKind} in: {shown}"
+        else
+            let tagValue = prop.GetString()
+
+            match
+                udef.Cases
+                |> List.tryFind (fun (c, _) -> Some c <> udef.OtherCase && Types.caseWire udef c = tagValue)
+            with
+            | Some(c, Some(TNamed(pn, []))) -> VUnion(c, Some(objRow prefix defs[pn] root))
+            | Some(c, None) -> VUnion(c, None)
+            | Some(c, Some ty) -> unreachable $"the declaration law rejects case '{c}' of {formatTy ty}"
+            | None ->
+                match udef.OtherCase with
+                | Some oc ->
+                    let hasPayload = udef.Cases |> List.exists (fun (c, p) -> c = oc && p.IsSome)
+
+                    VUnion(oc, (if hasPayload then Some(VStr tagValue) else None))
+                | None ->
+                    let cases =
+                        udef.Cases
+                        |> List.map (fun (c, _) -> Types.caseWire udef c)
+                        |> String.concat ", "
+
+                    failwith
+                        $"{who}: tag '{prefix}{tagField}' is '{tagValue}', which matches no case of {udef.Name} (cases: {cases}) in: {shown}"
 
     // one OBJECT element -> one row (the param shadows the document root
     // on purpose: the field readers below say `root` either way);
@@ -954,6 +1027,18 @@ let private jsonDoc
 
         VRecord(rdef.Name, ordered)
 
+    // record and TAGGED-UNION tops read the same way at every position
+    // below — one element, one dispatch [D:wire-unions]
+    let topName =
+        match top with
+        | TopRec d -> d.Name
+        | TopUnion u -> u.Name
+
+    let readTopEl (prefix: string) (el: System.Text.Json.JsonElement) =
+        match top with
+        | TopRec d -> objRow prefix d el
+        | TopUnion u -> readUnion prefix u el
+
     if wantMap then
         // the ID-keyed object [D:map-string]: the top level IS the map —
         // each property value reads as one row; duplicate keys LAST-WIN
@@ -964,21 +1049,21 @@ let private jsonDoc
                 (fun m p ->
                     if p.Value.ValueKind <> System.Text.Json.JsonValueKind.Object then
                         failwith
-                            $"{who}: key \"{p.Name}\" expected an object ({def.Name}), got {jsonKindName p.Value.ValueKind} in: {shown}"
+                            $"{who}: key \"{p.Name}\" expected an object ({topName}), got {jsonKindName p.Value.ValueKind} in: {shown}"
 
-                    Map.add p.Name (objRow $"[\"{p.Name}\"]." def p.Value) m)
+                    Map.add p.Name (readTopEl $"[\"{p.Name}\"]." p.Value) m)
                 Map.empty
             |> VMap
         | System.Text.Json.JsonValueKind.Array ->
             failwith
-                $"{who}: the top level is a JSON array, but the declared type is Map<string, {def.Name}> — declare seq<{def.Name}> to read an array, in: {shown}"
+                $"{who}: the top level is a JSON array, but the declared type is Map<string, {topName}> — declare seq<{topName}> to read an array, in: {shown}"
         | k ->
             failwith
-                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is Map<string, {def.Name}>, in: {shown}"
+                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is Map<string, {topName}>, in: {shown}"
     else
 
         match wantSeq, root.ValueKind with
-        | false, System.Text.Json.JsonValueKind.Object -> objRow "" def root
+        | false, System.Text.Json.JsonValueKind.Object -> readTopEl "" root
         | true, System.Text.Json.JsonValueKind.Array ->
             root.EnumerateArray()
             |> Seq.mapi (fun i el ->
@@ -986,21 +1071,21 @@ let private jsonDoc
                     failwith
                         $"{who}: array element {i + 1} is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
                 else
-                    objRow "" def el)
+                    readTopEl "" el)
             // forced BEFORE the document disposes; then seq for the ctor
             |> List.ofSeq
             |> List.toSeq
             |> VSeq
         | true, System.Text.Json.JsonValueKind.Object ->
             failwith
-                $"{who}: expected an array (the declared type is seq<{def.Name}>); got an object — write from json {def.Name}, in: {shown}"
+                $"{who}: expected an array (the declared type is seq<{topName}>); got an object — write from json {topName}, in: {shown}"
         | true, k ->
             failwith
-                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{def.Name}>, in: {shown}"
+                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{topName}>, in: {shown}"
         | false, System.Text.Json.JsonValueKind.Array when who = "from json" ->
             // the pointer is REAL now: the spelling exists
             failwith
-                $"{who}: the top level is a JSON array, not an object — declare seq<{def.Name}> to read it, in: {shown}"
+                $"{who}: the top level is a JSON array, not an object — declare seq<{topName}> to read it, in: {shown}"
         | false, k ->
             let contract =
                 if who = "from json" then
@@ -1020,8 +1105,9 @@ let private fromAdapter
     (fmt: string)
     (seqOf: bool)
     (mapOf: bool)
-    (def: RecordDef)
+    (top: JsonTop)
     (defs: Map<string, RecordDef>)
+    (udefs: Map<string, UnionDef>)
     : Value =
     match fmt with
     // ONE document -> T: join the elements back into the text they came
@@ -1041,7 +1127,7 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from json: empty input — expected one JSON document"
 
-                jsonDoc "from json" seqOf mapOf def defs (jsonSnippet text) text
+                jsonDoc "from json" seqOf mapOf top defs udefs (jsonSnippet text) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // one document per element -> seq<T> (NDJSON, `to json`'s shape)
     | "jsonl" ->
@@ -1052,7 +1138,7 @@ let private fromAdapter
                     lines
                     |> Seq.map (fun l ->
                         match l with
-                        | VStr s -> jsonDoc "from jsonl" false false def defs s s
+                        | VStr s -> jsonDoc "from jsonl" false false top defs udefs s s
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
@@ -1136,6 +1222,27 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
 
         VRecord(name, fieldValues)
+    // the tag DISPATCH [D:wire-unions]: the discriminator entry picks the
+    // case, the WHOLE mapping reads as its payload record; unmatched
+    // values take [<Other>] or refuse naming the cases; a missing tag
+    // is a malformed document, never Other's
+    | Yaml.SUnion(uname, tag, ucases, other), Yaml.NMap(entries, line) ->
+        match entries |> List.tryFind (fun (k, _) -> k = tag) with
+        | None -> failwith $"from yaml: line {line}: missing tag field '{tag}' ({uname})"
+        | Some(_, Yaml.NScalar(tagValue, _, _)) ->
+            match ucases |> List.tryFind (fun (_, w, _) -> w = tagValue) with
+            | Some(c, _, Some payloadShape) -> VUnion(c, Some(yamlConvert payloadShape node))
+            | Some(c, _, None) -> VUnion(c, None)
+            | None ->
+                match other with
+                | Some(oc, hasPayload) -> VUnion(oc, (if hasPayload then Some(VStr tagValue) else None))
+                | None ->
+                    let cases = ucases |> List.map (fun (_, w, _) -> w) |> String.concat ", "
+
+                    failwith
+                        $"from yaml: line {line}: tag '{tag}' is '{tagValue}', which matches no case of {uname} (cases: {cases})"
+        | Some(_, n) ->
+            failwith $"from yaml: line {Yaml.nodeLine n}: tag field '{tag}' ({uname}) expects a string scalar"
     | Yaml.SSeq inner, Yaml.NSeq(items, _) -> VSeq(items |> List.map (yamlConvert inner) |> List.toSeq)
     // a null where a seq/mapping sits is the EMPTY collection (the yaml
     // idiom: `ports:` with nothing below)
@@ -1155,6 +1262,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             | Yaml.SStr -> "a string scalar"
             | Yaml.SBool -> "a bool scalar"
             | Yaml.SRec(n, _) -> $"a mapping ({n})"
+            | Yaml.SUnion(n, _, _, _) -> $"a mapping ({n})"
             | Yaml.SSeq _ -> "a sequence"
             | Yaml.SPairs _ -> "a mapping"
             | Yaml.SOpt _ -> "an optional value"
@@ -1247,7 +1355,11 @@ let private renderString (s: string) : Rendered =
     else
         Inline(Yaml.renderScalar s)
 
-let rec private yamlRender (renames: Map<string, Map<string, string>>) (v: Value) : Rendered =
+let rec private yamlRender
+    (renames: Map<string, Map<string, string>>)
+    (unions: Map<string, string * string * bool>)
+    (v: Value)
+    : Rendered =
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
@@ -1259,7 +1371,7 @@ let rec private yamlRender (renames: Map<string, Map<string, string>>) (v: Value
             | _ ->
                 let key = Yaml.renderScalar k
 
-                match yamlRender renames v with
+                match yamlRender renames unions v with
                 | Inline "" -> [ $"{key}:" ]
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
@@ -1268,7 +1380,7 @@ let rec private yamlRender (renames: Map<string, Map<string, string>>) (v: Value
     let renderSeq (items: Value list) : string list =
         items
         |> List.collect (fun item ->
-            match yamlRender renames item with
+            match yamlRender renames unions item with
             | Inline "" -> [ "- null" ]
             | Inline s -> [ $"- {s}" ]
             | Block lines ->
@@ -1301,8 +1413,28 @@ let rec private yamlRender (renames: Map<string, Map<string, string>>) (v: Value
                 |> List.ofSeq
             )
         )
-    | VUnion("Some", Some inner) -> yamlRender renames inner
+    | VUnion("Some", Some inner) -> yamlRender renames unions inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
+    // a TAGGED case renders its payload with the tag entry FIRST
+    // [D:wire-unions]; the [<Other>] case refuses — nothing faithful
+    | VUnion(c, payload) when unions.ContainsKey c ->
+        let tagField, tagValue, isOther = unions[c]
+
+        if isOther then
+            failwith
+                $"to yaml: '{c}' is the [<Other>] fallback — it names a tag that matched no case, and nothing faithful can be written from it"
+
+        let payloadEntries =
+            match payload with
+            | Some(VRecord(rname, fields)) ->
+                let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
+
+                fields
+                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv)
+            | None -> []
+            | Some v -> unreachable $"the declaration law rejects a tagged payload of {formatValue v}"
+
+        Block(renderMap ((tagField, VStr tagValue) :: payloadEntries))
     | VRecord(rname, fields) ->
         // wire keys on the yaml wire too [D:wire-keys]
         let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
@@ -1330,13 +1462,20 @@ let rec private yamlRender (renames: Map<string, Map<string, string>>) (v: Value
             Block(renderSeq items)
     | v -> unreachable $"the checker rejects 'to yaml' on {formatValue v}"
 
-let private yamlToLines (renames: Map<string, Map<string, string>>) (v: Value) : string list =
-    match yamlRender renames v with
+let private yamlToLines
+    (renames: Map<string, Map<string, string>>)
+    (unions: Map<string, string * string * bool>)
+    (v: Value)
+    : string list =
+    match yamlRender renames unions v with
     | Inline s -> [ s ]
     | Block lines -> lines
     | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
 
-let private yamlToImpl (renames: Map<string, Map<string, string>>) : Value =
+let private yamlToImpl
+    (renames: Map<string, Map<string, string>>)
+    (unions: Map<string, string * string * bool>)
+    : Value =
     VBuiltin(fun v ->
         match v with
         // a top-level SEQ is `---`-separated DOCUMENTS — except a
@@ -1351,9 +1490,9 @@ let private yamlToImpl (renames: Map<string, Map<string, string>>) : Value =
                     | VTuple [ VStr _; _ ] -> true
                     | _ -> false))
             ->
-            VSeq(yamlToLines renames v |> List.map VStr |> List.toSeq)
+            VSeq(yamlToLines renames unions v |> List.map VStr |> List.toSeq)
         | VSeq items ->
-            let docs = items |> Seq.map (yamlToLines renames) |> List.ofSeq
+            let docs = items |> Seq.map (yamlToLines renames unions) |> List.ofSeq
 
             let lines =
                 match docs with
@@ -1361,7 +1500,7 @@ let private yamlToImpl (renames: Map<string, Map<string, string>>) : Value =
                 | first :: rest -> first @ (rest |> List.collect (fun d -> "---" :: d))
 
             VSeq(lines |> List.map VStr |> List.toSeq)
-        | v -> VSeq(yamlToLines renames v |> List.map VStr |> List.toSeq))
+        | v -> VSeq(yamlToLines renames unions v |> List.map VStr |> List.toSeq))
 
 let scalarString (what: string) (v: Value) : string =
     match v with
@@ -2323,20 +2462,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 |> ignore
 
         VStr(sb.ToString())
-    | TEFrom(fmt, def, defs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf def defs
+    | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
     | TEFromYaml(_, shape) -> yamlFromImpl shape
     | TEYaml(tpl, _) -> evalYamlTpl env tpl
-    | TETo("yaml", renames) -> yamlToImpl renames
-    | TETo("jsonl", renames) ->
+    | TETo("yaml", renames, unions) -> yamlToImpl renames unions
+    | TETo("jsonl", renames, unions) ->
         VBuiltin(fun v ->
             match v with
-            | VSeq items -> VSeq(items |> Seq.map (jsonLine renames >> VStr))
+            | VSeq items -> VSeq(items |> Seq.map (jsonLine renames unions >> VStr))
             | v -> unreachable $"the checker rejects 'to jsonl' on {formatValue v}")
-    | TETo(_, renames) ->
+    | TETo(_, renames, unions) ->
         // ONE document [D:to-jsonl] — the whole value through the same
         // renderer, once; an array document forces its seq (one line
         // cannot stream)
-        VBuiltin(fun v -> VSeq [ VStr(jsonLine renames v) ])
+        VBuiltin(fun v -> VSeq [ VStr(jsonLine renames unions v) ])
     | TEMatch(scrutinee, arms) ->
         let v0 = eval env scrutinee
 

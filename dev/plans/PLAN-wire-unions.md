@@ -105,7 +105,27 @@ Completion addenda:
 - Parser MOVED → 3× fresh 10k fuzz; oracle pins for both new
   positions (accept, matching F#); divergence row NARROWS in place.
 
-## Session U — wire unions (the core)
+## Session U — wire unions (the core) — EXECUTED 2026-09-04
+
+Completion addenda:
+- The mass concentrated in PLUMBING, not conversion: TEFrom's top
+  slot became a DU (TopRec|TopUnion), a unions closure rides beside
+  the records closure, and TETo carries a case-keyed write table (a
+  VUnion value has no type name) — which forced a ruling the plan
+  missed: two tagged unions sharing a case name reachable from one
+  serialized type refuse at the to-site (declarable under
+  ambiguous-ctor, constructible only via reads).
+- A declaration law the plan missed: tagged case names must not
+  spell a builtin's wire encoding (Some/None/Y-nodes) — the writers
+  key by case name. Checked BEFORE the payload law (check order is
+  teaching order — `Some of string` must hear about the name).
+- FRICTION, pre-existing (probed on main): `for d in xs do match d`
+  does not type the binder from its source; the piped Seq.iter
+  spelling works and the docs use it. The fix is its own session.
+- Two P-era pins tightened as their text predicted (the inert pin
+  retired FOR the binding pin; int payloads → record payloads).
+- Gates: unit 1443 (+8), e2e wireunion cell, the jsonl free win
+  pinned, LSP tag-led hover; parser untouched — no fuzz owed.
 
 THE FORM — internally tagged only (serde's `tag = "kind"`; the k8s
 and API-ecosystem shape): the tag field sits AMONG the payload's

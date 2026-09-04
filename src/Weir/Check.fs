@@ -85,6 +85,12 @@ let private isSpecialMember (m: string) (field: string) : bool =
     |> Option.defaultValue []
     |> List.contains field
 
+// the adapter slot's top level [D:wire-unions]: a declared record, or
+// a TAGGED union dispatching on its wire discriminator
+type JsonTop =
+    | TopRec of RecordDef
+    | TopUnion of UnionDef
+
 type TypedExpr = { Kind: TypedKind; Ty: Ty; Span: Span }
 
 and TypedKind =
@@ -121,11 +127,25 @@ and TypedKind =
     | TEAlways of body: TypedExpr * cleanup: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
-    | TEFrom of format: string * rowDef: RecordDef * defs: Map<string, RecordDef> * seqOf: bool * mapOf: bool
+    | TEFrom of
+        format: string *
+        top: JsonTop *
+        defs: Map<string, RecordDef> *
+        // tagged unions reachable from the declared shape [D:wire-unions]
+        // — the reader's dispatch tables (eval has no env.Types)
+        udefs: Map<string, UnionDef> *
+        seqOf: bool *
+        mapOf: bool
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
     // the RESOLVED target tree (the [D:env-enums] precedent)
     | TEFromYaml of tyName: string * shape: Yaml.Shape
-    | TETo of format: string * renames: Map<string, Map<string, string>>
+    | TETo of
+        format: string *
+        renames: Map<string, Map<string, string>> *
+        // caseName -> (tagField, tagValue, isOther) for every tagged
+        // union reachable from the serialized type [D:wire-unions] —
+        // a VUnion value carries no type name, so the writer keys cases
+        unions: Map<string, string * string * bool>
     | TEList of items: TypedExpr list
     | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
     | TESplat of TypedExpr
@@ -1090,7 +1110,19 @@ let rec private jsonAdmitted
             allOk def.Fields (fun (fn, fty) ->
                 jsonAdmitted span env (n :: seen) (if path = "" then fn else $"{path}.{fn}") fty)
         | Some(Record _) -> err span $"{at}'{n}' is generic; the JSON boundary needs monomorphic records"
-        | Some(Union _) -> err span $"{at}'{n}' is a union, which is not admitted; {jsonAdmittedSet}"
+        // a TAGGED union crosses [D:wire-unions]: every case's payload
+        // record must admit; the [<Other>] case is string-or-nothing by
+        // declaration, admitted by construction
+        | Some(Union udef) when udef.Tag.IsSome ->
+            allOk udef.Cases (fun (c, payload) ->
+                match payload with
+                | Some pty when Some c <> udef.OtherCase ->
+                    jsonAdmitted span env (n :: seen) (if path = "" then c else $"{path}.{c}") pty
+                | _ -> Ok())
+        | Some(Union _) ->
+            err
+                span
+                $"{at}'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration; {jsonAdmittedSet}"
         | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {jsonAdmittedSet}"
 
@@ -1138,8 +1170,74 @@ and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty
         | Some(Record def) ->
             def.Fields
             |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.add n def acc)
+        // the closure walks THROUGH a tagged union [D:wire-unions]: its
+        // payload records ride so the reader/renames reach them (payloads
+        // cannot reference the union back — declaration order forbids it)
+        | Some(Union udef) when udef.Tag.IsSome ->
+            udef.Cases
+            |> List.fold
+                (fun a (_, payload) ->
+                    match payload with
+                    | Some pty -> jsonDefsClosure env a pty
+                    | None -> a)
+                acc
         | _ -> acc
     | _ -> acc
+
+// the tagged unions a shape reaches [D:wire-unions] — the reader's
+// dispatch tables ride the TEFrom node (eval has no env)
+let rec private jsonUnionsClosure (env: TypeEnv) (acc: Map<string, UnionDef>) (ty: Ty) : Map<string, UnionDef> =
+    match ty with
+    | TNamed("Option", [ inner ]) -> jsonUnionsClosure env acc inner
+    | TSeq elem -> jsonUnionsClosure env acc elem
+    | TNamed("Map", [ TStr; inner ]) -> jsonUnionsClosure env acc inner
+    | TNamed(n, []) when not (acc.ContainsKey n) ->
+        match typeDefFor env n with
+        | Some(Record def) -> def.Fields |> List.fold (fun a (_, fty) -> jsonUnionsClosure env a fty) acc
+        | Some(Union udef) when udef.Tag.IsSome ->
+            udef.Cases
+            |> List.fold
+                (fun a (_, payload) ->
+                    match payload with
+                    | Some pty -> jsonUnionsClosure env a pty
+                    | None -> a)
+                (Map.add n udef acc)
+        | _ -> acc
+    | _ -> acc
+
+// the WRITER's case table [D:wire-unions]: caseName -> (tagField,
+// tagValue, isOther) over every tagged union the serialized type
+// reaches — a VUnion value carries no type name, so cases key the
+// table, and two reachable unions sharing a case name refuse HERE
+// (declarable under [D:ambiguous-ctor], unwritable in one closure)
+let private unionWriteTable
+    (span: Span)
+    (env: TypeEnv)
+    (ty: Ty)
+    : Result<Map<string, string * string * bool>, TypeError> =
+    let udefs = jsonUnionsClosure env Map.empty ty
+
+    let entries =
+        udefs
+        |> Map.toList
+        |> List.collect (fun (_, udef) ->
+            let tagField = udef.Tag |> Option.defaultValue ""
+
+            udef.Cases
+            |> List.map (fun (c, _) -> c, (udef.Name, tagField, caseWire udef c, Some c = udef.OtherCase)))
+
+    let rec go (seen: Map<string, string>) acc entries =
+        match entries with
+        | [] -> Ok acc
+        | (c, (uname: string, tagField, tagValue, isOther)) :: rest ->
+            match Map.tryFind c seen with
+            | Some prior when prior <> uname ->
+                err
+                    span
+                    $"case '{c}' belongs to tagged unions '{prior}' and '{uname}', both reachable from this type — the writer keys cases by name; rename one"
+            | _ -> go (Map.add c uname seen) (Map.add c (tagField, tagValue, isOther) acc) rest
+
+    go Map.empty Map.empty entries
 
 // ---- the yaml TREE law [D:yaml-v1] — richer than json's flat-row law
 // because YAML is a DOCUMENT format, not a row stream: scalars, nested
@@ -1185,7 +1283,36 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
                     (Ok [])
                 |> Result.map (fun fs -> Yaml.SRec(n, List.rev fs))
             | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
-            | Some(Union _) -> err span $"'{n}' is a union; the yaml tree law takes records, seqs, scalars, and Option"
+            // a TAGGED union dispatches on its wire discriminator
+            // [D:wire-unions]; case payloads shape recursively
+            | Some(Union udef) when udef.Tag.IsSome ->
+                udef.Cases
+                |> List.fold
+                    (fun acc (c, payload) ->
+                        acc
+                        |> Result.bind (fun cs ->
+                            if Some c = udef.OtherCase then
+                                Ok cs
+                            else
+                                match payload with
+                                | Some pty ->
+                                    yamlShape span env (seen.Add n) pty
+                                    |> Result.map (fun s -> (c, caseWire udef c, Some s) :: cs)
+                                | None -> Ok((c, caseWire udef c, None) :: cs)))
+                    (Ok [])
+                |> Result.map (fun cs ->
+                    let other =
+                        udef.OtherCase
+                        |> Option.map (fun oc ->
+                            let hasPayload = udef.Cases |> List.exists (fun (c, p) -> c = oc && p.IsSome)
+
+                            oc, hasPayload)
+
+                    Yaml.SUnion(n, udef.Tag.Value, List.rev cs, other))
+            | Some(Union _) ->
+                err
+                    span
+                    $"'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
             | None -> err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]: the hole means
@@ -1228,8 +1355,21 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty:
                     (fun acc (_, fty) -> acc |> Result.bind (fun () -> yamlableOut span env (seen.Add n) fty))
                     (Ok())
             | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
+            // a TAGGED union renders [D:wire-unions] — every payload must
+            | Some(Union udef) when udef.Tag.IsSome ->
+                udef.Cases
+                |> List.fold
+                    (fun acc (c, payload) ->
+                        acc
+                        |> Result.bind (fun () ->
+                            match payload with
+                            | Some pty when Some c <> udef.OtherCase -> yamlableOut span env (seen.Add n) pty
+                            | _ -> Ok()))
+                    (Ok())
             | Some(Union _) ->
-                err span $"'{n}' is a union; the yaml tree law takes records, seqs, scalars, Option, and Yaml nodes"
+                err
+                    span
+                    $"'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
             | None -> err span $"unknown type '{n}'"
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]
@@ -2692,8 +2832,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                          | TSeq elem -> TSeq(resolve ctx elem)
                          | ty -> ty)
 
+                let! unions = unionWriteTable toExpr.Span env targ.Ty
+
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty)
+                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, unions)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -2703,9 +2845,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Span = expr.Span }
             | "jsonl", TSeq elem ->
                 do! jsonableElem toExpr.Span env (resolve ctx elem)
+                let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty)
+                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, unions)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -2730,8 +2873,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     | TSeq elem -> yamlableOut toExpr.Span env Set.empty (resolve ctx elem)
                     | ty -> yamlableOut toExpr.Span env Set.empty ty
 
+                let! unions = unionWriteTable toExpr.Span env targ.Ty
+
                 let tto =
-                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty)
+                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, unions)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3186,6 +3331,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // [D:from-jsonl]. The plain name carries the common case;
             // nothing sniffs.
             | ("json" | "jsonl"), Some name ->
+                let resultTy =
+                    if mapOf then TNamed("Map", [ TStr; TNamed(name, []) ])
+                    elif fmt = "json" && not seqOf then TNamed(name, [])
+                    else TSeq(TNamed(name, []))
+
                 match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
                     do! jsonableRecord expr.Span env def
@@ -3194,18 +3344,34 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         def.Fields
                         |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.ofList [ def.Name, def ])
 
-                    let resultTy =
-                        if mapOf then TNamed("Map", [ TStr; TNamed(name, []) ])
-                        elif fmt = "json" && not seqOf then TNamed(name, [])
-                        else TSeq(TNamed(name, []))
+                    let udefs =
+                        def.Fields
+                        |> List.fold (fun a (_, fty) -> jsonUnionsClosure env a fty) Map.empty
 
                     return
-                        { Kind = TEFrom(fmt, def, defs, seqOf, mapOf)
+                        { Kind = TEFrom(fmt, TopRec def, defs, udefs, seqOf, mapOf)
+                          Ty = TFun(TSeq TStr, resultTy)
+                          Span = expr.Span }
+                // a TAGGED union in the slot [D:wire-unions]: each document
+                // dispatches on the tag — `from jsonl KDoc` reads mixed
+                // NDJSON, `from json seq<KDoc>` a mixed array
+                | Some(Union udef) when udef.Tag.IsSome ->
+                    do! jsonableElem expr.Span env (TNamed(name, []))
+
+                    let defs = jsonDefsClosure env Map.empty (TNamed(name, []))
+                    let udefs = jsonUnionsClosure env Map.empty (TNamed(name, []))
+
+                    return
+                        { Kind = TEFrom(fmt, TopUnion udef, defs, udefs, seqOf, mapOf)
                           Ty = TFun(TSeq TStr, resultTy)
                           Span = expr.Span }
                 | Some(Record _) ->
                     return! err expr.Span $"'from {fmt}' needs a monomorphic record; '{name}' is generic"
-                | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from {fmt}' needs a record"
+                | Some(Union _) ->
+                    return!
+                        err
+                            expr.Span
+                            $"'{name}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
             | ("json" | "jsonl"), None ->
                 let seqHint =
@@ -3232,8 +3398,23 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFromYaml(name, shape)
                           Ty = TFun(TSeq TStr, declared)
                           Span = expr.Span }
+                // a TAGGED union in the slot [D:wire-unions] — yamlShape
+                // builds the dispatch node; untagged keeps the teaching
+                | Some(Union udef) when udef.Tag.IsSome ->
+                    let declared = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
+
+                    let! shape = yamlShape expr.Span env Set.empty declared
+
+                    return
+                        { Kind = TEFromYaml(name, shape)
+                          Ty = TFun(TSeq TStr, declared)
+                          Span = expr.Span }
                 | Some(Record _) -> return! err expr.Span $"'from yaml' needs a monomorphic record; '{name}' is generic"
-                | Some(Union _) -> return! err expr.Span $"'{name}' is a union; 'from yaml' needs a record"
+                | Some(Union _) ->
+                    return!
+                        err
+                            expr.Span
+                            $"'{name}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
             | "yaml", None ->
                 return!
@@ -4681,15 +4862,145 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                 | Some ty -> validateTy env decl.Name selfArity allowed decl.Span ty
                                 | None -> Ok())
 
+                        // the tag BINDS here [D:wire-unions] — the union
+                        // becomes a wire type, and the declaration laws
+                        // fire only when [<Tag>] is present
+                        let tag =
+                            decl.Attrs
+                            |> List.tryPick (fun a ->
+                                match a.AName, a.AArg with
+                                | "Tag", Some(AStr s) -> Some s
+                                | _ -> None)
+
+                        let caseAttr name (specs: AttrSpec list) =
+                            specs |> List.tryFind (fun a -> a.AName = name)
+
+                        do!
+                            match tag with
+                            | None ->
+                                // a case attr with no [<Tag>] binds nothing —
+                                // refused, naming the missing half
+                                cases
+                                |> List.tryPick (fun (_, _, specs) ->
+                                    caseAttr "Wire" specs |> Option.orElse (caseAttr "Other" specs))
+                                |> function
+                                    | Some a ->
+                                        err
+                                            a.ASpan
+                                            $"'{a.AName}' on a case needs [<Tag \"…\">] on the union declaration — the tag is what gives a case a wire identity"
+                                    | None -> Ok()
+                            | Some tagField ->
+                                result {
+                                    do!
+                                        if decl.Params.IsEmpty then
+                                            Ok()
+                                        else
+                                            err
+                                                decl.Span
+                                                $"a tagged union is monomorphic — '{decl.Name}' is generic, and the wire boundary needs concrete cases"
+
+                                    // the writers key VUnion values by CASE NAME
+                                    // [D:wire-unions] — Option's and Yaml's own
+                                    // encodings must stay unmistakable
+                                    do!
+                                        match
+                                            cases
+                                            |> List.tryFind (fun (c, _, _) ->
+                                                [ "Some"
+                                                  "None"
+                                                  "YStr"
+                                                  "YInt"
+                                                  "YFloat"
+                                                  "YBool"
+                                                  "YNull"
+                                                  "YSeq"
+                                                  "YMap" ]
+                                                |> List.contains c)
+                                        with
+                                        | Some(c, _, _) ->
+                                            err
+                                                decl.Span
+                                                $"'{c}' is the wire spelling of a builtin (Option / Yaml nodes) — a tagged union's case needs another name"
+                                        | None -> Ok()
+                                    // every case: a record payload (or nullary);
+                                    // the [<Other>] case: string or nullary
+                                    do!
+                                        allOk cases (fun (c, payload, specs) ->
+                                            if (caseAttr "Other" specs).IsSome then
+                                                match payload with
+                                                | None
+                                                | Some TStr -> Ok()
+                                                | Some ty ->
+                                                    err
+                                                        decl.Span
+                                                        $"the [<Other>] case carries the unmatched tag as a string (or nothing) — '{c}' carries {formatTy ty}"
+                                            else
+                                                match payload with
+                                                | None -> Ok()
+                                                | Some(TNamed(pn, [])) ->
+                                                    match typeDefFor env pn with
+                                                    | Some(Record rdef) when rdef.Params.IsEmpty ->
+                                                        // the tag rides the UNION — a payload
+                                                        // spelling it (by name or wire key)
+                                                        // would write it twice
+                                                        match
+                                                            rdef.Fields
+                                                            |> List.tryFind (fun (f, _) ->
+                                                                Types.wireName rdef f = tagField)
+                                                        with
+                                                        | Some(f, _) ->
+                                                            err
+                                                                decl.Span
+                                                                $"the tag rides the union, not the payload — record '{pn}' declares '{f}' (wire key '{tagField}'), which is '{decl.Name}''s tag field"
+                                                        | None -> Ok()
+                                                    | Some(Record _) ->
+                                                        err
+                                                            decl.Span
+                                                            $"a tagged union's payload is monomorphic — '{pn}' is generic"
+                                                    | _ ->
+                                                        err
+                                                            decl.Span
+                                                            $"a tagged union's case carries a declared record (or nothing) — '{c}' carries {formatTy (TNamed(pn, []))}"
+                                                | Some ty ->
+                                                    err
+                                                        decl.Span
+                                                        $"a tagged union's case carries a declared record (or nothing) — '{c}' carries {formatTy ty}")
+
+                                    // two cases resolving to one tag value —
+                                    // the wire-key collision rule, one law over
+                                    let values =
+                                        cases
+                                        |> List.map (fun (c, _, specs) ->
+                                            match caseAttr "Wire" specs with
+                                            | Some { AArg = Some(AStr w) } -> c, w
+                                            | _ -> c, c)
+
+                                    match values |> List.groupBy snd |> List.tryFind (fun (_, xs) -> xs.Length > 1) with
+                                    | Some(w, ((c1, _) :: (c2, _) :: _)) ->
+                                        return!
+                                            err
+                                                decl.Span
+                                                $"two cases of {decl.Name} share the tag value '{w}' ('{c1}' and '{c2}') — wire identity must be unambiguous"
+                                    | _ -> return ()
+                                }
+
                         let def =
                             Union
                                 { Name = decl.Name
                                   Params = decl.Params
-                                  // attrs validated above, BOUND at the wire
-                                  // boundary session [D:wire-unions] — the
-                                  // def stays attr-free until a consumer needs
-                                  // them
-                                  Cases = cases |> List.map (fun (n, t, _) -> n, t) }
+                                  Cases = cases |> List.map (fun (n, t, _) -> n, t)
+                                  Tag = tag
+                                  CaseWires =
+                                    cases
+                                    |> List.choose (fun (c, _, specs) ->
+                                        match caseAttr "Wire" specs with
+                                        | Some { AArg = Some(AStr w) } -> Some(c, w)
+                                        | _ -> None)
+                                    |> Map.ofList
+                                  OtherCase =
+                                    cases
+                                    |> List.tryPick (fun (c, _, specs) ->
+                                        if (caseAttr "Other" specs).IsSome then Some c else None) }
 
                         let ctorTy payload =
                             match payload with

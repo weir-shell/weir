@@ -47,6 +47,21 @@ A missing array is an error, not a silent `[]` — absence is
 that is not a legal identifier maps with `[<Wire "key">]`; two
 fields resolving to one wire key refuse at the declaration.
 
+## Documents in several shapes
+
+A **tagged union** reads documents discriminated by a field:
+`[<Tag "kind">]` on the union names the discriminator, each case
+carries a declared record (or nothing — a tag-only document), and
+the tag value defaults to the case name (`[<Wire "v1">]` on a case
+overrides). Admitted at both formats, top level or nested — so
+`from jsonl KDoc` dispatches mixed NDJSON and `from json seq<KDoc>`
+a mixed array. One `[<Other>]` case (`of string`, or nullary) makes
+the union open-world: unmatched tags land there instead of
+erroring. A missing tag field always errors — malformed is not
+unknown. Writers reinsert the tag first; an `[<Other>]` value
+refuses to write. Untagged unions stay refused, the error naming
+`[<Tag>]`.
+
 ## Keys that are data
 
 `Map<string, T>` reads an ID-keyed object — as a field or as the
