@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.15
+## v0.0.16
 
 ### New features
 
@@ -34,6 +34,10 @@
   appears only where an expression position demands it (single-line
   sequencing), and the one stale "block effect idiom" sentence now
   says so.
+
+## v0.0.15
+
+_Tag burned — released from the wrong commit. Version number consumed; no artifacts._
 
 ## v0.0.14
 
