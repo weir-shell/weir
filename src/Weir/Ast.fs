@@ -198,12 +198,15 @@ type AttrSpec =
 
 type DeclBody =
     | DRecord of fields: (string * Ty * AttrSpec list) list
-    | DUnion of cases: (string * Ty option) list
+    | DUnion of cases: (string * Ty option * AttrSpec list) list
 
 type Decl =
     { Name: string
       Params: string list
       Body: DeclBody
+      // declaration-level attributes [D:attr-positions] — union decls
+      // host [<Tag>]; validated at checkDecl, bound at consumption
+      Attrs: AttrSpec list
       Span: Span }
 
 // every Expr embedded in a yaml template — splices, key splices, and

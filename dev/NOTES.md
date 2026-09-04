@@ -1,5 +1,34 @@
 # Spike Notes
 
+## attribute positions: the prerequisite that fit in an afternoon (2026-09-04)
+
+Session P of the wire-unions plan, and the sizing held because the
+hard part was NAMED before writing code: the assembler. A col-0
+attribute line above `type` is two statements by the col-0 law, so
+the join had to be taught — and the teaching already existed one
+level down, where a field's `>]` line dangles into its field. The
+statement-level twin: a pend that is ONLY a complete attr list
+joins the next col-0 line instead of closing. Guarding it on
+empty-brackets/lambdas/district took one condition; everything else
+(typeDecl's attr prefix, caseDecl's opt attrList, the
+position-scoped registry) was mechanical.
+
+Two error classes came out of the registry rework, and keeping them
+distinct is the part worth remembering: an UNKNOWN name keeps the
+did-you-mean ('Othr' → Other), a REGISTERED name in the wrong
+position teaches its HOME ('Tag' attaches to a union declaration).
+Collapsing those into one message would have made the common
+misspelling worse to fix.
+
+The FCS probes ran before any code: F# hosts attributes at both new
+positions, so the divergence row NARROWS — weir's border with F#
+got smaller by building this, which is the right direction for a
+prerequisite to move it. Tag and Other validate today and bind
+nothing (a tagged union still refuses every boundary, pinned) —
+the attribute law's validation-at-attachment / binding-at-
+consumption split carrying a whole release-sized gap without a
+special case.
+
 ## to json writes one document; to jsonl writes lines (2026-09-04)
 
 The write side had the read side's old backwardness — `to json` was

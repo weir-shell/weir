@@ -152,7 +152,10 @@ print $"branches: {branches}"
   two fields resolving to one wire key refuse at the declaration. The name set is CLOSED — an unregistered name
   (`[<Positional>]` among them: dropped, scripts take flags) is a
   check error with a did-you-mean. Attributes attach to record
-  fields only.
+  fields, union cases, and union type declarations (an attribute
+  line above `type` binds to it), and the registry is
+  POSITION-SCOPED — a registered name in the wrong position names
+  its home (`'Tag' attaches to a union declaration`).
 
 ```weir
 type Cli = {

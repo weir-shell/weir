@@ -4,6 +4,15 @@
 
 ### New features
 
+- **Attributes on unions.** Union declarations and union cases now
+  host attributes, F#'s syntax — `[<Tag "kind">]` above a `type`, `|
+  [<Other>] Unknown of string` on a case. The registry stays closed
+  and is now position-aware: a registered attribute in the wrong
+  position says where it belongs (`'Tag' attaches to a union
+  declaration`), an unknown one keeps the did-you-mean. `Tag` and
+  `Other` validate today, ahead of tagged unions at the JSON/YAML
+  boundaries.
+
 - **Breaking: `to json` writes ONE document; `to jsonl` writes
   NDJSON.** The write side now mirrors the read side: `value |> to
   json` renders one minified document — a record becomes an object,

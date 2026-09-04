@@ -459,6 +459,21 @@ let pins =
           "attributes: multiple in one list, semicolon-separated"
           "type T = { [<Short \"c\"; Default 5>] A: int }\nlet t = { A = 1 }\n"
           (Diverges "attributes-registered")
+      // the widened positions [D:attr-positions] — union decls and cases
+      // host attributes in BOTH languages (FCS-probed 2026-09-04); the
+      // name registry keeps diverging exactly as fields do
+      pin
+          "attributes: union declaration hosts a registered name (F# has no Tag type)"
+          "[<Tag \"kind\">]\ntype K =\n    | A of int\n    | B\nlet v = B\n"
+          (Diverges "attributes-registered")
+      pin
+          "attributes: union case hosts a registered name (F# has no Wire type)"
+          "type K = [<Wire \"x\">] A of int | B\nlet v = A 1\n"
+          (Diverges "attributes-registered")
+      pin
+          "attributes: F# accepts a real attribute on a union weir does not register"
+          "[<System.Obsolete>]\ntype K = A of int\nlet v = A 1\n"
+          (Diverges "attributes-registered")
 
       // --- named divergences, refereed from both sides ---
       pinT "equality spelling: == vs =" "let b = 1 == 1\n" "let b = 1 == 1\n" (Diverges "double-equals")

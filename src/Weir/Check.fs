@@ -4427,39 +4427,75 @@ let rec private validateTy
 // registered attribute names [D:attributes]: unknown names are check
 // errors; registered-but-unconsumed is legal-and-inert. Validation
 // happens at attachment; consumers bind at consumption.
-let private attrRegistry: Map<string, AttrArg option -> string option> =
+// where an attribute may attach [D:attr-positions] — the registry is
+// POSITION-SCOPED: a registered name in the wrong position teaches its
+// home; an unknown name keeps the did-you-mean
+type private AttrPos =
+    | FieldPos
+    | RecordDeclPos
+    | UnionDeclPos
+    | CasePos
+
+let private attrPosName =
+    function
+    | FieldPos -> "a record field"
+    | RecordDeclPos -> "a record declaration"
+    | UnionDeclPos -> "a union declaration"
+    | CasePos -> "a union case"
+
+let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPos list> =
     Map.ofList
         [ "Short",
-          (function
-          | Some(AStr "h") -> Some "argument 'h' is reserved for --help"
-          | Some(AStr s) when s.Length = 1 -> None
-          | _ -> Some "expects a one-character string, e.g. [<Short \"c\">]")
+          ((function
+           | Some(AStr "h") -> Some "argument 'h' is reserved for --help"
+           | Some(AStr s) when s.Length = 1 -> None
+           | _ -> Some "expects a one-character string, e.g. [<Short \"c\">]"),
+           [ FieldPos ])
           "NoShort",
-          (function
-          | None -> None
-          | Some _ -> Some "takes no argument")
+          ((function
+           | None -> None
+           | Some _ -> Some "takes no argument"),
+           [ FieldPos ])
           // [<Positional>] returns for SIGNATURES [D:command-signatures]:
           // foreign CLIs have operands and a signature describes theirs
           // (its drop was about weir's own CLIs); inert everywhere else,
           // the attribute law
           "Positional",
-          (function
-          | None -> None
-          | Some _ -> Some "takes no argument")
+          ((function
+           | None -> None
+           | Some _ -> Some "takes no argument"),
+           [ FieldPos ])
           // [<Doc>] RETIRED [D:doc-help] — a `///` above the field is the one
           // source; a stale `[<Doc "x">]` is now the ordinary unknown-attribute
           // error (the did-you-mean over the remaining names).
           "Default",
-          (function
-          | Some(AStr _ | AInt _ | ABool _ | ADur _ | AFloat _ | ASize _) -> None
-          | None -> Some "expects a literal (string, int, float, bool, duration, or size), e.g. [<Default 10>]")
+          ((function
+           | Some(AStr _ | AInt _ | ABool _ | ADur _ | AFloat _ | ASize _) -> None
+           | None -> Some "expects a literal (string, int, float, bool, duration, or size), e.g. [<Default 10>]"),
+           [ FieldPos ])
           // the wire key [D:wire-keys]: reserved words and illegal
           // identifiers are ordinary JSON/YAML keys — the field keeps a
-          // weir name, the attribute names the wire
+          // weir name, the attribute names the wire; a union CASE's tag
+          // value rides the same name [D:wire-unions]
           "Wire",
-          (function
-          | Some(AStr s) when s <> "" -> None
-          | _ -> Some "expects the wire key as a string, e.g. [<Wire \"type\">] kind: string") ]
+          ((function
+           | Some(AStr s) when s <> "" -> None
+           | _ -> Some "expects the wire key as a string, e.g. [<Wire \"type\">] kind: string"),
+           [ FieldPos; CasePos ])
+          // [D:wire-unions] pre-registration [D:attr-positions]: Tag and
+          // Other VALIDATE here and BIND at the boundary session — the
+          // attribute law's shape (validation at attachment, binding at
+          // consumption)
+          "Tag",
+          ((function
+           | Some(AStr s) when s <> "" -> None
+           | _ -> Some "expects the discriminator field as a string, e.g. [<Tag \"kind\">]"),
+           [ UnionDeclPos ])
+          "Other",
+          ((function
+           | None -> None
+           | Some _ -> Some "takes no argument"),
+           [ CasePos ]) ]
 
 // two fields resolving to ONE wire key is nonsense on every adapter —
 // refused at the declaration, not discovered at the boundary
@@ -4494,7 +4530,7 @@ let private validateWireCollisions (recName: string) (fields: (string * Ty * Att
 
     go Map.empty fields
 
-let private validateFieldAttrs (recName: string) (field: string, _: Ty, specs: AttrSpec list) =
+let private validateAttrsAt (pos: AttrPos) (owner: string) (specs: AttrSpec list) =
     let conflicts a b (seen: Set<string>) (spec: AttrSpec) = spec.AName = a && Set.contains b seen
 
     let rec go seen specs =
@@ -4502,20 +4538,29 @@ let private validateFieldAttrs (recName: string) (field: string, _: Ty, specs: A
         | [] -> Ok()
         | (a: AttrSpec) :: rest ->
             if Set.contains a.AName seen then
-                err a.ASpan $"duplicate attribute '{a.AName}' on field '{field}'"
+                err a.ASpan $"duplicate attribute '{a.AName}' on {owner}"
             elif conflicts "Short" "NoShort" seen a || conflicts "NoShort" "Short" seen a then
-                err a.ASpan $"field '{field}' has both Short and NoShort"
+                err a.ASpan $"{owner} has both Short and NoShort"
             else
                 match Map.tryFind a.AName attrRegistry with
                 | None ->
                     let hint = didYouMean a.AName (Map.keys attrRegistry)
                     err a.ASpan $"unknown attribute '{a.AName}'{hint}"
-                | Some validate ->
-                    match validate a.AArg with
-                    | Some msg -> err a.ASpan $"'{a.AName}' {msg}"
-                    | None -> go (Set.add a.AName seen) rest
+                | Some(validate, positions) ->
+                    if not (List.contains pos positions) then
+                        // the wrong position names the HOME, not did-you-mean
+                        // [D:attr-positions]
+                        let homes = positions |> List.map attrPosName |> String.concat " or "
+                        err a.ASpan $"'{a.AName}' attaches to {homes}, not {attrPosName pos}"
+                    else
+                        match validate a.AArg with
+                        | Some msg -> err a.ASpan $"'{a.AName}' {msg}"
+                        | None -> go (Set.add a.AName seen) rest
 
     go Set.empty specs
+
+let private validateFieldAttrs (_: string) (field: string, _: Ty, specs: AttrSpec list) =
+    validateAttrsAt FieldPos $"field '{field}'" specs
 
 let private validateShortCollisions (fields: (string * Ty * AttrSpec list) list) =
     let explicitShorts =
@@ -4574,6 +4619,10 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                     match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
                     | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
                     | None ->
+                        // no registered attribute attaches to a record
+                        // DECLARATION [D:attr-positions] — each teaches its home
+                        do! validateAttrsAt RecordDeclPos $"record '{decl.Name}'" decl.Attrs
+
                         let plain = fields |> List.map (fun (n, t, _) -> n, t)
 
                         do! allOk plain (snd >> validateTy env decl.Name selfArity allowed decl.Span)
@@ -4606,11 +4655,28 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                 }
             | DUnion cases ->
                 result {
-                    match firstDup (List.map fst cases) with
+                    match firstDup (cases |> List.map (fun (n, _, _) -> n)) with
                     | Some dup -> return! err decl.Span $"duplicate case '{dup}'"
                     | None ->
+                        do! validateAttrsAt UnionDeclPos $"union '{decl.Name}'" decl.Attrs
+
+                        do! allOk cases (fun (c, _, specs) -> validateAttrsAt CasePos $"case '{c}'" specs)
+
+                        // at most one fallback case [D:wire-unions] — two
+                        // wildcards cannot both catch
                         do!
-                            allOk cases (fun (_, payload) ->
+                            match
+                                cases
+                                |> List.collect (fun (_, _, specs) -> specs |> List.filter (fun a -> a.AName = "Other"))
+                            with
+                            | _ :: second :: _ ->
+                                err
+                                    second.ASpan
+                                    $"union '{decl.Name}' declares [<Other>] twice — one fallback case catches everything unmatched"
+                            | _ -> Ok()
+
+                        do!
+                            allOk cases (fun (_, payload, _) ->
                                 match payload with
                                 | Some ty -> validateTy env decl.Name selfArity allowed decl.Span ty
                                 | None -> Ok())
@@ -4619,7 +4685,11 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                             Union
                                 { Name = decl.Name
                                   Params = decl.Params
-                                  Cases = cases }
+                                  // attrs validated above, BOUND at the wire
+                                  // boundary session [D:wire-unions] — the
+                                  // def stays attr-free until a consumer needs
+                                  // them
+                                  Cases = cases |> List.map (fun (n, t, _) -> n, t) }
 
                         let ctorTy payload =
                             match payload with
@@ -4635,7 +4705,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
 
                         let values =
                             cases
-                            |> List.fold (fun vs (c, payload) -> Map.add c (ctorScheme payload) vs) env.Values
+                            |> List.fold (fun vs (c, payload, _) -> Map.add c (ctorScheme payload) vs) env.Values
 
                         return
                             { env with

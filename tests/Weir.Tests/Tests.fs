@@ -3402,18 +3402,89 @@ let attributeTests =
               | Ok _ -> failtest "expected a parse rejection"
               | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
           }
-          test "non-field positions name the scope decision" {
+          test "non-declaration positions name the scope decision [D:attr-positions]" {
               match Weir.Parser.parseExpr "[<Short \"c\">] 1" with
               | Ok _ -> failtest "expected a parse rejection"
-              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
-
-              match Weir.Parser.parseStmt "type U = [<Short \"c\">] A of int | B" with
-              | Ok _ -> failtest "expected a parse rejection"
-              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
+              | Error msg ->
+                  Expect.stringContains msg "attributes attach to record fields, union cases, and type declarations" ""
 
               match Weir.Parser.parseStmt "let f [<Short \"c\">] x = x" with
               | Ok _ -> failtest "expected a parse rejection"
-              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
+              | Error msg ->
+                  Expect.stringContains msg "attributes attach to record fields, union cases, and type declarations" ""
+          }
+          // the widened positions [D:attr-positions]: union decls and cases
+          // HOST attributes; the registry is position-scoped; Tag/Other
+          // validate here and bind at the wire boundary [D:wire-unions]
+          test "a union declaration hosts [<Tag>]; the decl stays inert" {
+              let env' = env |> declare "[<Tag \"kind\">] type KT = Alpha of int | Beta"
+
+              match Map.tryFind "KT" env'.Types with
+              | Some(Union def) -> Expect.equal (List.map fst def.Cases) [ "Alpha"; "Beta" ] "cases unchanged"
+              | other -> failtest $"expected a union def, got {other}"
+
+              // INERT: validated, bound nowhere — the boundary still refuses
+              let terr =
+                  match Weir.Check.typecheck env' (parse "[\"kind: Alpha\"] |> from yaml KT") with
+                  | Error terr -> terr
+                  | Ok _ -> failtest "a tagged union must stay unadmitted until [D:wire-unions]"
+
+              Expect.stringContains terr.Message "is a union" "today's refusal, unchanged"
+          }
+          test "a union case hosts [<Wire>]/[<Other>]" {
+              env
+              |> declare "type KC = [<Wire \"apps/v1\">] Apps of int | [<Other>] Rest of string"
+              |> ignore
+          }
+          test "a registered attribute in the wrong position teaches its HOME" {
+              let terr = env |> declErr "type U2 = [<Short \"c\">] A2 of int | B2"
+              Expect.stringContains terr.Message "'Short' attaches to a record field, not a union case" ""
+
+              let terr2 = env |> declErr "[<Tag \"kind\">] type R2 = { a: int }"
+              Expect.stringContains terr2.Message "'Tag' attaches to a union declaration, not a record declaration" ""
+
+              let terr3 = env |> declErr "type U3 = [<Tag \"kind\">] A3 of int | B3"
+              Expect.stringContains terr3.Message "'Tag' attaches to a union declaration, not a union case" ""
+          }
+          test "Tag wants a nonempty string; Other is argless; one Other per union" {
+              let terr = env |> declErr "[<Tag>] type U4 = A4 of int"
+              Expect.stringContains terr.Message "expects the discriminator field as a string" ""
+
+              let terr2 = env |> declErr "type U5 = [<Other \"x\">] A5 of int | B5"
+              Expect.stringContains terr2.Message "takes no argument" ""
+
+              let terr3 = env |> declErr "type U6 = [<Other>] A6 | [<Other>] B6"
+              Expect.stringContains terr3.Message "declares [<Other>] twice" ""
+          }
+          test "unknown case attribute keeps the did-you-mean" {
+              let terr = env |> declErr "type U7 = [<Othr>] A7 of int | B7"
+              Expect.stringContains terr.Message "unknown attribute 'Othr'" ""
+              Expect.stringContains terr.Message "Did you mean 'Other'?" ""
+          }
+          test "an attribute line binds to the declaration BELOW it (the assembler join)" {
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "attrjoin.weir"
+                      [ "[<Tag \"kind\">]"
+                        "type KJ ="
+                        "    | One of int"
+                        "    | Two"
+                        "let v = Two"
+                        "print $\"{v}\"" ]
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the own-line form parses"
+          }
+          test "an attribute line above a NON-declaration gets the position teaching, located" {
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines "attrbad.weir" [ "[<Tag \"kind\">]"; "let x = 1"; "print $\"{x}\"" ]
+
+              let errs = ds |> List.filter (fun d -> d.Severity = "error")
+              Expect.isNonEmpty errs "must refuse"
+
+              Expect.stringContains
+                  errs.Head.Message
+                  "attributes attach to record fields, union cases, and type declarations"
+                  "the position teaching"
           } ]
 
 let typedArgvTests =

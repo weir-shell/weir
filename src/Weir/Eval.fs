@@ -2880,9 +2880,9 @@ let inheritsStdout (te: Check.TypedExpr) : bool =
 let inheritCommandStatement (env: Env) (te: Check.TypedExpr) : unit =
     Proc.runInherited (commandStatementSpec env te)
 
-let constructorValues (cases: (string * Ty option) list) : (string * Value) list =
+let constructorValues (cases: (string * Ty option * AttrSpec list) list) : (string * Value) list =
     cases
-    |> List.map (fun (case, payload) ->
+    |> List.map (fun (case, payload, _) ->
         match payload with
         | None -> case, VUnion(case, None)
         | Some _ -> case, VBuiltin(fun v -> VUnion(case, Some v)))

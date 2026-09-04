@@ -554,10 +554,10 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             | None -> n
 
         if word = decl.Name then
-            Some(cases |> List.map caseSig |> String.concat " | ")
+            Some(cases |> List.map (fun (n, tyO, _) -> caseSig (n, tyO)) |> String.concat " | ")
         else
             cases
-            |> List.tryPick (fun (n, tyO) -> if n = word then Some(caseSig (n, tyO)) else None)
+            |> List.tryPick (fun (n, tyO, _) -> if n = word then Some(caseSig (n, tyO)) else None)
 
 /// a keyword, an operator, punctuation, whitespace, or the wildcard `_`
 /// hovers as NOTHING — never the enclosing node's type [D:hover-silence].

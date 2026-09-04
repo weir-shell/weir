@@ -3200,8 +3200,31 @@ echo "$errout" | grep -qF "duplicate short '-c'" || fail "explicit shorts collid
 echo "e2e ok: explicit short collision is a check error"
 
 errout=$($BIN -e 'let x = [<Short "c">] 1' 2>&1) && fail "expression-position attribute must reject"
-echo "$errout" | grep -qF "attributes attach to record fields" || fail "non-field position names the scope: $errout"
-echo "e2e ok: attribute positions outside record fields reject by name"
+echo "$errout" | grep -qF "attributes attach to record fields, union cases, and type declarations" || fail "non-declaration position names the scope: $errout"
+echo "e2e ok: attribute positions outside declarations reject by name"
+
+# widened positions [D:attr-positions]: union decls and cases host
+# attributes (validated, inert until [D:wire-unions] binds them); an
+# attribute line above `type` binds to it; wrong positions teach HOMES
+cat > "$adir/attrpos.weir" <<'WEOF'
+[<Tag "kind">]
+type KDoc =
+    | Deployment of int
+    | [<Other>] Unknown of string
+
+let v = Deployment 3
+print $"{v}"
+WEOF
+out=$($BIN "$adir/attrpos.weir")
+expect "attr positions: own-line union Tag + case Other run inert" "Deployment 3" "$out"
+$BIN check "$adir/attrpos.weir" >/dev/null 2>&1 || fail "attrpos.weir must check clean"
+$BIN fmt --check "$adir/attrpos.weir" >/dev/null 2>&1 || fail "fmt must accept union/case attributes"
+
+errout=$($BIN -e '[<Tag "kind">] type R = { a: int }' 2>&1) && fail "Tag on a record decl must reject"
+echo "$errout" | grep -qF "'Tag' attaches to a union declaration, not a record declaration" || fail "wrong position names the home: $errout"
+errout=$($BIN -e 'type U = [<Short "c">] A of int | B' 2>&1) && fail "Short on a case must reject"
+echo "$errout" | grep -qF "'Short' attaches to a record field, not a union case" || fail "wrong position names the home: $errout"
+echo "e2e ok: widened attribute positions — hosts inert, wrong positions teach homes"
 
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"
