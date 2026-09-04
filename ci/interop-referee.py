@@ -47,13 +47,13 @@ assert yaml.safe_load("k: abc")["k"] == "abc"
 assert yaml.safe_load("k: abc")["k"] != "xyz"
 assert json.loads('{"k": "abc"}')["k"] == "abc"
 
-# `to yaml` yields the document's lines; `to json` is NDJSON over a
-# seq (one line per element) — base64 collapses each doc to one line
+# `to yaml` yields the document's lines; `to json` writes ONE
+# document [D:to-jsonl] — base64 collapses each doc to one line
 script = ["type T = { A: string }"]
 for p in payloads:
     b64 = base64.b64encode(p.encode()).decode()
     script.append(f'print (Str.toBase64 (Str.join "\\n" ({{ A = Str.fromBase64 "{b64}" }} |> to yaml)))')
-    script.append(f'print (Str.toBase64 (Str.join "\\n" ([{{ A = Str.fromBase64 "{b64}" }}] |> to json)))')
+    script.append(f'print (Str.toBase64 (Str.join "\\n" ({{ A = Str.fromBase64 "{b64}" }} |> to json)))')
 
 with tempfile.NamedTemporaryFile("w", suffix=".weir", delete=False, encoding="utf-8") as f:
     f.write("\n".join(script) + "\n")

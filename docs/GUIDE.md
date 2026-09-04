@@ -1094,7 +1094,7 @@ let created =
 let resp =
     Http.send { Http.post $"{api}/items" with
                   auth = Bearer token
-                  body = Json ([{ name = "widget"; count = 3 }] |> to json) }
+                  body = Json ({ name = "widget"; count = 3 } |> to json) }
 
 if resp.status >= 400 then fail $"api said {resp.status}"
 ```
@@ -1132,7 +1132,7 @@ would force one value type):
 
 ```weir
 let key = "xxxx-111"
-[{| key = key; n = 3 |}] |> to json |> Seq.iter print
+{| key = key; n = 3 |} |> to json |> Seq.iter print
 ```
 
 The rule of reach: an anonymous shape is for *a foreign or one-off
@@ -1144,9 +1144,12 @@ deliberately a different type — weir's records stay nominal.
 
 Two adapters, one distinction: `from json T` reads ONE document —
 across as many lines as the server felt like using — and gives you a
-`T`; `from jsonl T` reads one document per line (NDJSON, the shape
-`to json` writes) and gives you a `seq<T>`. Neither inspects its
-input to guess which it is.
+`T`; `from jsonl T` reads one document per line (NDJSON) and gives
+you a `seq<T>`. Neither inspects its input to guess which it is.
+The write side mirrors it: `value |> to json` writes ONE minified
+document — a record is an object, a seq an array; `xs |> to jsonl`
+writes one document per element, lazily. Every adapter pairs with
+its own name: `to json |> from json T`, `to jsonl |> from jsonl T`.
 
 ```weir
 type Peer = { host: string; port: int }

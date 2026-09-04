@@ -1,10 +1,10 @@
 # Adapters
 
 `from` reads a wire format into a declared shape; `to` writes one.
-Three formats read (`json`, `jsonl`, `yaml`), two write (`json`,
-`yaml`). Neither guesses: `from json T` reads ONE document however
-many lines it spans; `from jsonl T` reads one document per line and
-yields `seq<T>`.
+Three formats each way (`json`, `jsonl`, `yaml` in; `json`, `jsonl`,
+`yaml` out). Neither guesses: `from json T` reads ONE document
+however many lines it spans; `from jsonl T` reads one document per
+line and yields `seq<T>`.
 
 ```weir
 type Peer = { host: string; port: int }
@@ -16,13 +16,21 @@ let peers = ["{\"host\": \"a\", \"port\": 1}"; "{\"host\": \"b\", \"port\": 2}"]
 print $"{peers |> Seq.length} peers"
 ```
 
-`to json` writes NDJSON — one minified document per element, the
-shape `from jsonl` reads back:
+The write side mirrors the read: `to json` writes ONE minified
+document — a record is an object, a seq an array (built whole; one
+line cannot stream) — and `to jsonl` writes NDJSON, one document per
+element, lazily. Every adapter pairs with its own name across the
+arrow: `to json |> from json T`, `to jsonl |> from jsonl T`.
 
 ```weir
 type P = { a: int }
+{ a = 1 } |> to json |> Seq.iter print
 [{ a = 1 }; { a = 2 }] |> to json |> Seq.iter print
+[{ a = 1 }; { a = 2 }] |> to jsonl |> Seq.iter print
 ```
+
+(prints `{"a":1}`, then `[{"a":1},{"a":2}]` — one array document —
+then the two NDJSON lines.)
 
 ## The admitted shapes
 
@@ -50,7 +58,11 @@ duplicate keys last-win; `to json` writes the object back.
 `from yaml T` reads with the same admission rules; quoting
 disambiguates scalars (`rate: 1.5` is a number, `"1.5"` a string —
 both directions). `to yaml` renders a `yaml` block's value; a
-multiline string renders as a block scalar. The `yaml` template
+multiline string renders as a block scalar. A seq renders a
+`---`-separated stream — a legitimate write (`kubectl apply -f`
+consumes one) even though `from yaml` reads a single document:
+real streams are heterogeneous, which a typed read cannot hold and
+a typed write cannot produce, so the door is one-way by design. The `yaml` template
 literal itself — checked structure, splices as nodes, `schema=` —
 is a language form, taught in the
 [guide](../GUIDE.md#commands-and-processes) with vendoring on the

@@ -1027,7 +1027,7 @@ print (show x.a.b)
 ```weir
 // the write-side mirror: a one-off object needs no declaration
 let key = "xxxx-111"
-[{| key = key; n = 3 |}] |> to json |> Seq.iter print
+{| key = key; n = 3 |} |> to json |> Seq.iter print
 ```
 ```weir-error
 // no punning — a field is spelled out
@@ -1043,7 +1043,7 @@ type Blob = {
 }
 let b = ["{\"type\": \"user\"}"] |> from json Blob
 print b.kind
-[b] |> to json |> Seq.iter print
+b |> to json |> Seq.iter print
 ```
 ```weir-error
 // bare, the keyword refuses — and the error names the attribute
@@ -1052,9 +1052,15 @@ type Bad = { type: string }
   `from json T` reads ONE DOCUMENT -> `T` (any number of lines — a
   pretty-printed body pipes straight in); `from json seq<T>` reads a
   top-level ARRAY document -> `seq<T>` (the list-endpoint shape);
-  `from jsonl T` reads one document per element -> `seq<T>` (NDJSON,
-  the shape `to json` writes). The DECLARED type decides what the top
-  level must be — nothing sniffs the input.
+  `from jsonl T` reads one document per element -> `seq<T>` (NDJSON).
+  The DECLARED type decides what the top level must be — nothing
+  sniffs the input. The write side mirrors it [D:to-jsonl]:
+  `value |> to json` writes ONE minified document (a record is an
+  object, a seq an ARRAY — building the one line forces the seq);
+  `xs |> to jsonl` writes one document per element, lazily — the
+  streaming form. Every adapter pairs with its own name across the
+  arrow: `to json |> from json T`, `xs |> to json |> from json
+  seq<T>`, `xs |> to jsonl |> from jsonl T`.
   The field law is RECURSIVE: a field is a scalar (`int`, `float`,
   `string`, `bool`), an `Option` of an admitted type, a record whose
   fields are all admitted, a `seq` of an admitted type, or a

@@ -1664,7 +1664,7 @@
     {
       "name": "from jsonl",
       "signature": null,
-      "summary": "Parse a JSON line stream \u2014 one document per element (NDJSON, the shape \u0060to json\u0060 writes) \u2014 into declared records.",
+      "summary": "Parse a JSON line stream \u2014 one document per element (NDJSON, the shape \u0060to jsonl\u0060 writes) \u2014 into declared records.",
       "example": null,
       "pointer": "a pipe stage: xs |\u003E from jsonl Config."
     },
@@ -1734,9 +1734,16 @@
     {
       "name": "to json",
       "signature": null,
-      "summary": "Render a sequence of records or primitives to JSON lines. A None field omits its key (so from json reads it back as None).",
+      "summary": "Render ONE value as ONE JSON document (minified, one line): a record is an object, a seq an array (forced \u2014 one line cannot stream). A None field omits its key (so from json reads it back as None).",
       "example": null,
-      "pointer": "a pipe stage: xs |\u003E to json."
+      "pointer": "a pipe stage: payload |\u003E to json."
+    },
+    {
+      "name": "to jsonl",
+      "signature": null,
+      "summary": "Render a sequence to JSON lines \u2014 one document per element (NDJSON, the shape \u0060from jsonl\u0060 reads), lazily.",
+      "example": null,
+      "pointer": "a pipe stage: xs |\u003E to jsonl."
     },
     {
       "name": "to yaml",

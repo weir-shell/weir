@@ -2680,7 +2680,28 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! targ = infer ctx env arg
 
             match fmt, resolve ctx targ.Ty with
-            | "json", TSeq elem ->
+            | "json", ty ->
+                // ONE document [D:to-jsonl]: the top level admits exactly
+                // what an element admits — record → object, seq → array,
+                // None → null; the per-element (NDJSON) form is 'to jsonl'
+                do!
+                    jsonableElem
+                        toExpr.Span
+                        env
+                        (match ty with
+                         | TSeq elem -> TSeq(resolve ctx elem)
+                         | ty -> ty)
+
+                let tto =
+                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty)
+                      Ty = TFun(targ.Ty, TSeq TStr)
+                      Span = toExpr.Span }
+
+                return
+                    { Kind = TEPipe(targ, tto)
+                      Ty = TSeq TStr
+                      Span = expr.Span }
+            | "jsonl", TSeq elem ->
                 do! jsonableElem toExpr.Span env (resolve ctx elem)
 
                 let tto =
@@ -2692,7 +2713,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     { Kind = TEPipe(targ, tto)
                       Ty = TSeq TStr
                       Span = expr.Span }
-            | "json", ty -> return! err arg.Span $"'to json' needs a seq, got {formatTy ty}"
+            | "jsonl", ty ->
+                return!
+                    err
+                        arg.Span
+                        $"'to jsonl' needs a seq (a document per element), got {formatTy ty} — one document is 'to json'"
             | "yaml", ty ->
                 // to yaml [D:yaml-v1]: a SEQ renders `---`-separated
                 // documents; a single yamlable value renders ONE document
@@ -2714,7 +2739,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     { Kind = TEPipe(targ, tto)
                       Ty = TSeq TStr
                       Span = expr.Span }
-            | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json, yaml"
+            | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json, jsonl, yaml"
         }
     | EPipe(arg, ({ Kind = ECmd _ } as cmdExpr)) ->
         result {
