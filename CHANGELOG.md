@@ -5,35 +5,41 @@
 ### New features
 
 - **Anonymous record literals.** `{| key = key; n = 3 |}` builds a
-  value with no declaration — the write-side mirror of the anonymous
-  TYPE the adapter slot already takes. Heterogeneous fields (where
-  `Map.ofPairs` forces one value type), typed by the same canonical
-  shape name, so a literal unifies with `from json {| … |}`'s result
-  and a declared record with the same fields stays a different type.
-  `[{| key = k; value = v |}] |> to json |> File.write "x.json"`
-  works in one line; multi-line literals assemble; hover shows the
-  canonical shape and dot-completion offers the fields. Fields must
-  have concrete types at the literal (the name IS the type); no
-  punning, no empty `{||}`, no `{| r with … |}` — each refusal
-  teaches its repair.
+  record value without declaring a type first — handy for one-off
+  shapes on their way out the door:
+  `[{| key = k; value = v |}] |> to json |> File.write "x.json"`.
+  Fields can mix types (where `Map.ofPairs` needs one value type),
+  multi-line literals work, and hover and dot-completion know the
+  fields. A literal has the same type as the matching anonymous type
+  (so it unifies with `from json {| … |}`'s result), while a declared
+  record with the same fields stays a distinct type. No field
+  punning, no empty `{||}`, no `{| r with … |}` — each error says
+  what to write instead.
 
-- **Bare commands in match arms.** An arm body takes a command with no
-  sigil — the case-runner idiom, `| "build" -> sh -c "make"`. In
-  statement position each arm streams; a value-position match (a `let`
-  RHS) captures the chosen arm's output as `seq<string>`. The chain
-  ends at the next `| pattern ->`, so an argv word spelling `x ->`
-  needs quoting. This extends the interior-arming rule to the one
-  block position it had left out, and narrows `!()`'s remaining niche
-  to single-line sequencing (`!(setup); print "done"`).
+- **Bare commands in match arms.** A match arm now runs a command
+  directly, no sigil needed:
+
+  ```weir
+  match target with
+  | "build" -> sh -c "make"
+  | "test" -> dotnet test
+  | other -> print $"unknown: {other}"
+  ```
+
+  In statement position the chosen arm streams its output; on a
+  `let` right-hand side it captures as `seq<string>`, like any
+  command. The command ends at the next `| pattern ->`, so an argv
+  word that happens to spell `x ->` needs quotes. With this,
+  commands run bare in every block position — `!()` remains only
+  for sequencing a command with an expression on one line
+  (`!(setup); print "done"`).
 
 ### Docs
 
-- Redundant `!()` sigils swept from examples — a command is an
-  ordinary statement inside any block body, so `if ready then` +
-  indented bare command lines is the modeled idiom; the sigil
-  appears only where an expression position demands it (single-line
-  sequencing), and the one stale "block effect idiom" sentence now
-  says so.
+- Examples no longer wrap commands in `!()` where a bare command
+  works — inside an `if` body or any other block, a command is just
+  a statement. The docs now show the sigil only where it is actually
+  required.
 
 ## v0.0.15
 
