@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.0.17
+
+### New features
+
+- **Breaking: `to json` writes ONE document; `to jsonl` writes
+  NDJSON.** The write side now mirrors the read side: `value |> to
+  json` renders one minified document — a record becomes an object,
+  a seq becomes an array — and the new `to jsonl` does what `to
+  json` did before, one document per element, lazily. No more
+  wrapping a single value in a list to serialize it
+  (`payload |> to json` replaces `[payload] |> to json`), and every
+  adapter now pairs with its own name: `to json |> from json T`,
+  `to jsonl |> from jsonl T`. `to yaml` is unchanged: a seq still
+  writes a `---`-separated stream — YAML's plural is the stream,
+  JSON's is the array.
+
+### Checks clean, behaves differently
+
+- `xs |> to json` on a seq previously wrote one JSON document per
+  element (NDJSON); it now writes ONE array document. Scripts that
+  meant NDJSON should say `to jsonl` — same bytes as before. This is
+  the section's first real entry since v0.0.2 defined it.
+
 ## v0.0.16
 
 ### New features

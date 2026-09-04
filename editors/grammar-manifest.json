@@ -8,6 +8,7 @@
     ],
     "to": [
       "json",
+      "jsonl",
       "yaml"
     ]
   },

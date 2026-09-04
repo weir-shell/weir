@@ -159,6 +159,27 @@ comp = read_msg()
 labels = [c["label"] for c in comp["result"]]
 expect("anon.ip" in labels and "anon.n" in labels, f"anon literal fields missing: {labels[:10]}")
 
+# the to-adapter slot [D:to-jsonl]: completion after `to ` offers
+# jsonl (derived from builtinDocs), and the word hovers its own doc
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": "let out = [1] |> to \n"}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 47, "method": "textDocument/completion",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 20}}})
+comp = read_msg()
+labels = [c["label"] for c in comp["result"]]
+expect(labels == ["json", "jsonl", "yaml"], f"to-adapter slot must offer exactly the writers: {labels[:10]}")
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": "let out = [1] |> to jsonl\nout |> Seq.iter print\n"}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 48, "method": "textDocument/hover",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 21}}})
+hov = read_msg()
+expect(hov["result"] and "one document per element" in hov["result"]["contents"]["value"],
+       f"to jsonl should hover its own doc: {hov}")
+
 # textEdit ranges: dot completion replaces the WHOLE dotted word (the
 # Env.Env.fromFile doubling), and paren-nested completion still offers
 # (micro's label-prefix filter needs textEdit to engage)

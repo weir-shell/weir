@@ -4429,14 +4429,19 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "a pipe stage: resp.body |> from json Config.")
           "from jsonl",
           bd
-              "Parse a JSON line stream — one document per element (NDJSON, the shape `to json` writes) — into declared records."
+              "Parse a JSON line stream — one document per element (NDJSON, the shape `to jsonl` writes) — into declared records."
               None
               (Some "a pipe stage: xs |> from jsonl Config.")
           "to json",
           bd
-              "Render a sequence of records or primitives to JSON lines. A None field omits its key (so from json reads it back as None)."
+              "Render ONE value as ONE JSON document (minified, one line): a record is an object, a seq an array (forced — one line cannot stream). A None field omits its key (so from json reads it back as None)."
               None
-              (Some "a pipe stage: xs |> to json.")
+              (Some "a pipe stage: payload |> to json.")
+          "to jsonl",
+          bd
+              "Render a sequence to JSON lines — one document per element (NDJSON, the shape `from jsonl` reads), lazily."
+              None
+              (Some "a pipe stage: xs |> to jsonl.")
           "from yaml",
           bd
               "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record TREE — nested records, seqs, seq<string * _> mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected."

@@ -930,12 +930,12 @@ let boundaryTests =
               skipOnWindows ()
               runReal "sh -c \"exit 3\"" |> ignore
           }
-          test "to json serializes records as ndjson" {
+          test "to jsonl serializes records as ndjson" {
               let src =
                   VSeq [ VRecord("JRow", [ "name", VStr "a.txt"; "bytes", VInt 0L; "readOnly", VBool false ]) ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> to json" |> forceSeq)
+                  (runWith [ "src", src ] "src |> to jsonl" |> forceSeq)
                   [ VStr """{"name":"a.txt","bytes":0,"readOnly":false}""" ]
                   ""
           }
@@ -953,7 +953,7 @@ let boundaryTests =
                   VSeq [ VRecord("JRow", [ "name", VStr "a"; "bytes", VInt 5L; "readOnly", VBool false ]) ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> to json |> from jsonl JRow"
+                  (runWith [ "src", src ] "src |> to jsonl |> from jsonl JRow"
                    |> forceSeq
                    |> List.length)
                   1
@@ -990,21 +990,55 @@ let boundaryTests =
                   [ VUnion("Some", Some(VInt 5L)); VUnion("None", None); VUnion("None", None) ]
                   "present -> Some; missing and null both -> None"
           }
-          test "to json omits a None field; the Option roundtrip holds [D:json-option]" {
+          test "to jsonl omits a None field; the Option roundtrip holds [D:json-option]" {
               let src = VSeq [ VStr """{"name":"a","age":5}"""; VStr """{"name":"b"}""" ]
 
               Expect.equal
-                  (runWith [ "src", src ] "src |> from jsonl JOpt |> to json" |> forceSeq)
+                  (runWith [ "src", src ] "src |> from jsonl JOpt |> to jsonl" |> forceSeq)
                   [ VStr """{"name":"a","age":5}"""; VStr """{"name":"b"}""" ]
                   "Some writes the scalar; None OMITS its key (the fork)"
 
               let once = runWith [ "src", src ] "src |> from jsonl JOpt" |> forceSeq
 
               let twice =
-                  runWith [ "src", src ] "src |> from jsonl JOpt |> to json |> from jsonl JOpt"
+                  runWith [ "src", src ] "src |> from jsonl JOpt |> to jsonl |> from jsonl JOpt"
                   |> forceSeq
 
-              Expect.equal twice once "to json |> from jsonl is identity with a None field"
+              Expect.equal twice once "to jsonl |> from jsonl is identity with a None field"
+          }
+          test "to json writes ONE document: a seq is an array, strict at the call [D:to-jsonl]" {
+              let pulled = ref 0
+
+              let src =
+                  VSeq(
+                      Seq.init 2 (fun i ->
+                          incr pulled
+                          VInt(int64 i))
+                  )
+
+              let v = runWith [ "src", src ] "src |> to json"
+              Expect.equal pulled.Value 2 "one line cannot stream — the array build forces the source"
+              Expect.equal (forceSeq v) [ VStr "[0,1]" ] "one array document"
+          }
+          test "the empty seq: to json writes '[]', to jsonl writes zero lines [D:to-jsonl]" {
+              Expect.equal
+                  (run "[\"x\"] |> where (fun _ -> false) |> to json" |> forceSeq)
+                  [ VStr "[]" ]
+                  "an empty array is still one document"
+
+              Expect.equal
+                  (run "[\"x\"] |> where (fun _ -> false) |> to jsonl" |> forceSeq)
+                  []
+                  "no elements, no documents"
+          }
+          test "roundtrips pair by name [D:to-jsonl]: an array document reads back via from json seq<T>" {
+              let src =
+                  VSeq [ VRecord("JRow", [ "name", VStr "a"; "bytes", VInt 1L; "readOnly", VBool false ]) ]
+
+              Expect.equal
+                  (runWith [ "src", src ] "src |> to json |> from json seq<JRow> |> Seq.length")
+                  (VInt 1L)
+                  "to json |> from json seq<T> — every adapter pairs with its own name"
           }
           test
               "json boundary: null-in-required teaches Option; nested Option and Option-of-record reject [D:json-option]" {
@@ -1752,7 +1786,7 @@ let boundaryTests =
               skipOnWindows ()
               // tr strips BSD wc's left-padding — the subject is the stdin
               // plumbing, not wc's platform formatting
-              Expect.equal (run "nats |> take 3 |> to json |> into \"wc -l | tr -d ' '\"" |> forceSeq) [ VStr "3" ] ""
+              Expect.equal (run "nats |> take 3 |> to jsonl |> into \"wc -l | tr -d ' '\"" |> forceSeq) [ VStr "3" ] ""
           }
           test "from can be let-bound" {
               expectValue
@@ -5112,7 +5146,7 @@ let adapterFormTests =
               match Weir.Lsp.hoverType t 1 20 with
               | Some h ->
                   Expect.stringContains h "to <adapter>" "the form"
-                  Expect.stringContains h "json, yaml" "the to-adapters"
+                  Expect.stringContains h "json, jsonl, yaml" "the to-adapters"
               | None -> failtest "to must answer"
           }
           test "the adapter WORD's own hover is unchanged — signature + doc, not touched" {
@@ -5128,12 +5162,12 @@ let adapterFormTests =
           test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
               Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "yaml" ] "every from-adapter"
               Expect.equal (sug "xs |> from j") [ "json"; "jsonl" ] "prefix-filtered"
-              Expect.equal (sug "xs |> to ") [ "json"; "yaml" ] "every to-adapter"
+              Expect.equal (sug "xs |> to ") [ "json"; "jsonl"; "yaml" ] "every to-adapter"
               Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "yaml" ]) "boundary: into is not from"
           }
           test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
               Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "yaml" ] "from"
-              Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "yaml" ] "to"
+              Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "jsonl"; "yaml" ] "to"
           }
           test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {
               Expect.equal (Weir.Lsp.hoverType [ "let m = \"read from json\""; "print m" ] 1 15) None "from in a string"
@@ -10694,13 +10728,13 @@ let httpTests =
               let e = env |> declare "type P = { name: string }"
 
               let v =
-                  evalWith e "{ Http.defaults with body = Json ([{ name = \"a\" }] |> to json) }"
+                  evalWith e "{ Http.defaults with body = Json ({ name = \"a\" } |> to json) }"
 
               match v with
               | VRecord("HttpRequest", f) ->
                   match Weir.Eval.recGet "body" f with
                   | VUnion("Json", Some(VSeq lines)) ->
-                      Expect.equal (lines |> Seq.map strOf |> List.ofSeq) [ "{\"name\":\"a\"}" ] "one NDJSON line"
+                      Expect.equal (lines |> Seq.map strOf |> List.ofSeq) [ "{\"name\":\"a\"}" ] "one document line"
                   | v -> failtest $"body not Json: {v}"
               | v -> failtest $"not a request: {v}"
           }
@@ -10840,7 +10874,7 @@ let recursiveFieldTests =
 
               let src = "{\"name\":\"a\",\"inner\":{\"v\":5},\"xs\":[1,2]}"
 
-              match Weir.Parser.parseStmt "[src |> from json Outer] |> to json" with
+              match Weir.Parser.parseStmt "src |> from json Outer |> to json" with
               | Ok(SExpr expr) ->
                   match Weir.Check.typecheck e expr with
                   | Ok te ->
@@ -12166,12 +12200,18 @@ let pinsWalkTests =
               | Error terr -> Expect.stringContains terr.Message "needs a monomorphic record" ""
               | Ok _ -> failtest "generic from json must refuse"
           }
-          test "'to json' non-seq and unknown formats teach" {
-              Expect.stringContains (checkErr "5 |> to json").Message "'to json' needs a seq" ""
+          test "'to json' takes ONE value; 'to jsonl' demands a seq; unknown formats teach [D:to-jsonl]" {
+              // the reshape's flagship: a scalar IS a document now
+              expectValue "5 |> to json" (VSeq [ VStr "5" ])
+
+              Expect.stringContains
+                  (checkErr "5 |> to jsonl").Message
+                  "'to jsonl' needs a seq (a document per element), got int — one document is 'to json'"
+                  ""
 
               Expect.stringContains
                   (checkErr "[1] |> to xml").Message
-                  "unknown output format 'xml'; available: json, yaml"
+                  "unknown output format 'xml'; available: json, jsonl, yaml"
                   ""
           }
           test "an else-less if with a non-unit then-branch teaches add-an-else" {
@@ -13368,7 +13408,7 @@ let floatBoundaryTests =
           test "to json: 1.0 emits as 1.0 (the show shape; a float field is not an integer field)" {
               let e = env |> declare "type FE = { r: float }"
 
-              match Weir.Check.typecheck e (parse "[{ r = 1.0 }] |> to json |> Seq.head") with
+              match Weir.Check.typecheck e (parse "{ r = 1.0 } |> to json |> Seq.head") with
               | Ok te -> Expect.equal (eval valueEnv te) (VStr "{\"r\":1.0}") ""
               | Error terr -> failtest terr.Message
           }
@@ -13800,7 +13840,7 @@ let anonLiteralTests =
               Expect.equal (run "{| a = 1 |}.a") (VInt 1L) "field access on the literal itself"
 
               Expect.equal
-                  (forceSeq (run "[{| k = \"v\" |}] |> to json"))
+                  (forceSeq (run "{| k = \"v\" |} |> to json"))
                   [ VStr "{\"k\":\"v\"}" ]
                   "the admitted walk and the writer both resolve the name"
           }
@@ -14067,7 +14107,7 @@ let recordOrderTests =
         [ test "an update preserves the field's POSITION" {
               let e = env |> declare "type RO = { z: int; a: int }"
 
-              match Weir.Parser.parseStmt "[RO { z = 1; a = 2 } |> (fun r -> { r with z = 9 })] |> to json" with
+              match Weir.Parser.parseStmt "RO { z = 1; a = 2 } |> (fun r -> { r with z = 9 }) |> to json" with
               | Ok(Weir.Ast.SExpr ex) ->
                   match Weir.Check.typecheck e ex with
                   | Ok te ->
@@ -14085,7 +14125,7 @@ let recordOrderTests =
               Expect.equal
                   (runWith
                       [ "src", VSeq [ VStr """{"z": 2, "a": 1}""" ] ]
-                      "[src |> from json {| a: int; z: int |}] |> to json"
+                      "src |> from json {| a: int; z: int |} |> to json"
                    |> forceSeq)
                   [ VStr """{"z":2,"a":1}""" ]
                   "read-modify-nothing writes the input's order"
@@ -14304,7 +14344,7 @@ let mapStringTests =
                   "the declared type, at check time"
           }
           test "the round-trip: to json writes the map back as ONE keyed object" {
-              let v = runWith [ "src", wbDoc ] "[src |> from json Map<string, JRow>] |> to json"
+              let v = runWith [ "src", wbDoc ] "src |> from json Map<string, JRow> |> to json"
 
               Expect.equal
                   (forceSeq v)

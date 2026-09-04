@@ -1,5 +1,41 @@
 # Spike Notes
 
+## to json writes one document; to jsonl writes lines (2026-09-04)
+
+The write side had the read side's old backwardness — `to json` was
+an NDJSON writer wearing the plain name — and it fell to the same
+ruling one month later, on the trigger [D:from-jsonl] parked:
+"to jsonl waits for a receipt". The receipt was the wrap. The
+anon-literals session opened on `[{| … |}] |> to json` — build a
+one-off object, then wrap it in a list to serialize it — and the
+question "why does to json take a seq" came back independently a
+day later. Two arrivals of the same friction is a trigger fired.
+
+The reshape cost almost nothing because the renderer already did
+both jobs: jsonLine renders ANY admitted value as one minified
+token (a nested seq field was already an array), so the new
+`to json` is that renderer applied once and `to jsonl` is the old
+per-element map, byte-identical. The probes deleted the scary line
+items up front: `to jsonl` was a CHECKER refusal, not a parse error
+(no parser movement, no fuzz owed), and all three grammars tokenize
+the adapter direction-agnostically (jsonl already coloured after
+`to`). The break is the honest cost — `xs |> to json` checks clean
+and means something else now — the first real entry in the
+checks-clean-behaves-differently changelog class since publication.
+A transitional refusal was considered and rejected: it would refuse
+the array-document form, which has no other spelling.
+
+The yaml half of the conversation produced a ruling, not a change.
+`to yaml` on a seq keeps writing a `---` stream although `from yaml`
+refuses to read one — and that asymmetry is PRINCIPLED: a typed
+write produces homogeneous documents (legitimate; kubectl consumes
+them), a typed read would have to hold heterogeneous ones (a real
+bundle is Deployment+Service+ConfigMap — [D:yaml-seq]'s reason).
+The one-way door is correctly one-way, recorded so no audit reflags
+it. And seq-at-the-top now deliberately differs per format: array
+is JSON's native plural — the stream form is the thing literally
+named jsonl — while the stream is YAML's.
+
 ## the marker that ate a word, and the glyph that gave it back (2026-08-27)
 
 The `text` marker survived the whole battery and died in the first

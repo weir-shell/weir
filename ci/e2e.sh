@@ -1968,7 +1968,7 @@ type Msg = {
 }
 let m = File.read "doc.json" |> from json Msg
 let m2 = { m with hits = m.hits + 1 }
-[m2] |> to json |> File.write "out.json"
+m2 |> to json |> File.write "out.json"
 print m.kind
 WEOF
     wkout=$( cd "$wkdir" && $BIN wk.weir )
@@ -3096,7 +3096,7 @@ type Pod = { name: string; ready: bool }
 type L = { kind: string; items: seq<Pod> }
 let l = File.read "items.json" |> from json L
 l.items |> Seq.iter (fun p -> print p.name)
-let rt = [l] |> to json |> Seq.head
+let rt = l |> to json |> Seq.head
 let l2 = [rt] |> from json L
 print (if (l2.items |> Seq.length) == 2 && l2.kind == l.kind then "round-trip-ok" else "ROUND-TRIP-BROKE")
 WEOF
@@ -3128,7 +3128,7 @@ out=$($BIN check "$adir/anon.weir" 2>&1) || fail "anon.weir must check clean: $o
 cat > "$adir/anonlit.weir" <<'WEOF'
 let key = "xxxx-111"
 let n = 7
-[{| key = key; title = "t 0"; n = n |}] |> to json |> File.write "x.json"
+{| key = key; title = "t 0"; n = n |} |> to json |> File.write "x.json"
 cat x.json
 let got = echo '{"ip": "9.9.9.9"}' |> from json {| ip: string |}
 let both = [got; {| ip = "8.8.8.8" |}]
@@ -3147,17 +3147,37 @@ two' "$out"
 rm -f "$adir/x.json"
 
 # Option<scalar> at the JSON boundary [D:json-option]: present -> Some,
-# missing/null -> None, and to json OMITS the None key so it roundtrips.
+# missing/null -> None, and to jsonl OMITS the None key so it roundtrips.
 cat > "$adir/json-option.weir" <<'WEOF'
 type R = { name: string; age: Option<int> }
 let rows = ["{\"name\":\"a\",\"age\":5}"; "{\"name\":\"b\"}"; "{\"name\":\"c\",\"age\":null}"]
-rows |> from jsonl R |> to json |> Seq.iter print
+rows |> from jsonl R |> to jsonl |> Seq.iter print
 WEOF
 out=$($BIN "$adir/json-option.weir")
 expect "json Option: Some writes, None (missing or null) omits the key" \
 '{"age":5,"name":"a"}
 {"name":"b"}
 {"name":"c"}' "$out"
+
+# to json writes ONE document, to jsonl one per element [D:to-jsonl]:
+# the top level follows the value's type (record -> object, seq ->
+# array), and every adapter pairs with its own name across the arrow
+cat > "$adir/to-jsonl.weir" <<'WEOF'
+type P = { name: string; count: int }
+let items = [{ name = "a"; count = 1 }; { name = "b"; count = 2 }]
+{ name = "solo"; count = 0 } |> to json |> Seq.iter print
+items |> to json |> Seq.iter print
+items |> to jsonl |> Seq.iter print
+let back = items |> to json |> from json seq<P>
+print (show (back |> Seq.length))
+WEOF
+out=$($BIN "$adir/to-jsonl.weir")
+expect "to json: one document (object or array); to jsonl: NDJSON; the seq roundtrip pairs by name" \
+'{"name":"solo","count":0}
+[{"name":"a","count":1},{"name":"b","count":2}]
+{"name":"a","count":1}
+{"name":"b","count":2}
+2' "$out"
 
 cat > "$adir/attrs-env.weir" <<'WEOF'
 type EC = {
@@ -6206,7 +6226,7 @@ PYEOF2
     cat > "$hdir/mangle.weir" <<WEOF
 type P = { name: string; count: int }
 let items = [{ name = "a"; count = 1 }; { name = "b"; count = 2 }; { name = "c"; count = 3 }]
-let sent = items |> to json
+let sent = items |> to jsonl
 let resp = Http.send { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/x"; body = Json sent }
 let ok = (sent |> Seq.length) == (resp.body |> Seq.length)
 print \$"lines={resp.body |> Seq.length} match={ok}"

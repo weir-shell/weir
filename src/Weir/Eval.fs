@@ -2327,11 +2327,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEFromYaml(_, shape) -> yamlFromImpl shape
     | TEYaml(tpl, _) -> evalYamlTpl env tpl
     | TETo("yaml", renames) -> yamlToImpl renames
-    | TETo(_, renames) ->
+    | TETo("jsonl", renames) ->
         VBuiltin(fun v ->
             match v with
             | VSeq items -> VSeq(items |> Seq.map (jsonLine renames >> VStr))
-            | v -> unreachable $"the checker rejects 'to json' on {formatValue v}")
+            | v -> unreachable $"the checker rejects 'to jsonl' on {formatValue v}")
+    | TETo(_, renames) ->
+        // ONE document [D:to-jsonl] — the whole value through the same
+        // renderer, once; an array document forces its seq (one line
+        // cannot stream)
+        VBuiltin(fun v -> VSeq [ VStr(jsonLine renames v) ])
     | TEMatch(scrutinee, arms) ->
         let v0 = eval env scrutinee
 

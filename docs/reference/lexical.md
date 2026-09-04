@@ -65,7 +65,7 @@ here without a docs edit.
 | reserved to teach | `def`, `return`, `try`, `while` |
 
 `within` takes a kind word after it — `cd`, `env`, `lock`, `proc`, `tmp` — and the
-adapters read `from` `json`, `jsonl`, `yaml` and write `to` `json`, `yaml`;
+adapters read `from` `json`, `jsonl`, `yaml` and write `to` `json`, `jsonl`, `yaml`;
 kind and adapter words are ordinary identifiers everywhere else.
 <!-- keywords:end -->
 
