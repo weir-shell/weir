@@ -336,7 +336,7 @@ let private factLine (c: Cap) : string * string =
     | EnvWrite(via, Some ns) -> "environment", $"""sets {ns |> String.concat ", "} for children ({via})"""
     | EnvWrite(via, None) -> "environment", $"sets variables for children ({via}; names not statically known)"
     | SecretLoad w -> "secrets", $"loads {w}"
-    | SecretArgv p -> "secrets", $"a Secret reaches the argv of {p} (ps-visible — the stated non-claim)"
+    | SecretArgv p -> "secrets", $"a Secret reaches the argv of {p} (visible in ps — weir does not hide argv)"
     | ProcScope -> "processes", "a scoped background process (within proc)"
     | ProcCtl m -> "processes", m
     | Terminates via -> "terminates", via

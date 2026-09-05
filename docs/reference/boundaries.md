@@ -86,6 +86,6 @@ comments — no `export`, no `$VAR` expansion).
 
 ## What both refuse
 
-`Bytes` (the exits are named), and for `Instant` fields both parse
-ISO 8601. A `Secret` passed as a flag is ps-visible — the stated
-non-claim.
+`Bytes` (each refusal names the conversion to use), and for
+`Instant` fields both parse ISO 8601. A `Secret` passed as a flag
+is visible in `ps` output — weir does not hide argv.

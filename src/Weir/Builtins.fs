@@ -3375,18 +3375,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // answer like any member — the docs live here, one source
           "retry",
           bd
-              "Re-run a body until its predicate passes: `retry attempts=5 delay=30s` + an indented body. A bool body IS the predicate; a value body takes `until r` + a predicate block and yields the value. Exhaustion raises; raises inside the body propagate (make failure data with | succeeds / | complete)."
+              "Re-run a body until its predicate passes: `retry attempts=5 delay=30s` + an indented body. A bool body is the predicate; a value body takes `until r` + a predicate block and yields the value. Exhaustion raises; raises inside the body propagate (make failure data with | succeeds / | complete)."
               (Some "retry attempts=2 delay=1ms true")
               (Some "options are a record underneath: retry { Retry.defaults with attempts = 3 }")
           "poll",
           bd
-              "retry's time-bounded twin: `poll timeout=5m interval=10s` + a readiness body. `watch=<proc>` fails FAST when the scoped process dies (its last output rides the error) and stamps the watched state on a timeout."
+              "retry's time-bounded twin: `poll timeout=5m interval=10s` + a readiness body. `watch=<proc>` fails fast when the scoped process dies (its last output rides the error) and stamps the watched state on a timeout."
               (Some "poll timeout=1s interval=1ms true")
               (Some
                   "the wait-for-ready shape: within proc srv = … then poll timeout=10s watch=srv + Net.portOpen <port>")
           "within",
           bd
-              ("A scoped resource for an indented block, released on EVERY exit (normal and raise): "
+              ("A scoped resource for an indented block, released on every exit (normal and raise): "
                + (Ast.withinKinds
                   |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
                   |> String.concat "; ")
@@ -3408,13 +3408,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "text" ]
           "Instant.parseWith",
           bd
-              "Read a timestamp by a NAMED format — %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z (%% literal), other text literal. PREFIX semantics: a log line's tail rides free. No %z means UTC. Raises on mismatch, naming the position."
+              "Read a timestamp by a named format — %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z (%% literal), other text literal. Prefix semantics: a log line's tail rides free. No %z means UTC. Raises on mismatch, naming the position."
               (Some "Instant.parseWith \"%Y/%m/%d %H:%M:%S\" \"2026/08/14 09:15:00 GET /health\"")
               None
           |> named [ "format"; "text" ]
           "Instant.tryParseWith",
           bd
-              "Some instant, or None when the line does not match (an unknown DIRECTIVE still raises — that is a format bug, not a data miss)."
+              "Some instant, or None when the line does not match (an unknown directive still raises — that is a format bug, not a data miss)."
               (Some "Instant.tryParseWith \"%Y-%m-%d\" \"no timestamp here\"")
               None
           |> named [ "format"; "text" ]
@@ -3488,7 +3488,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "p" ]
           "Proc.wait",
           bd
-              "Block until the child exits NATURALLY; its exit code as data. The way to let a scoped process finish — the scope's own exit kills."
+              "Block until the child exits naturally; its exit code as data. The way to let a scoped process finish — the scope's own exit kills."
               None
               None
           |> named [ "p" ]
@@ -3504,7 +3504,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- Net: readiness probes [D:scoped-procs] ----
           "Net.portOpen",
           bd
-              "True when 127.0.0.1:<port> accepts a TCP connection (250ms attempt) — poll's readiness body. Remote hosts on a receipt."
+              "True when 127.0.0.1:<port> accepts a TCP connection (250ms attempt) — poll's readiness check. Local ports only for now."
               (Some "Net.portOpen 1")
               None
           |> named [ "port" ]
@@ -3544,7 +3544,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "xs" ])
           "Seq.exactlyOne",
           (bd
-              "The one element — a cardinality ASSERTION: raises on none AND on more (head silently accepts a second element, hiding a wrong-arity source). The spelling for command output expected to be one line."
+              "The one element — a cardinality assertion: raises on none and on more (head silently accepts a second element, hiding a wrong-arity source). Use it for command output expected to be exactly one line."
               (Some "[\"one line\"] |> Seq.exactlyOne |> print")
               None
            |> named [ "xs" ])
@@ -3610,13 +3610,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "f"; "xs" ])
           "Seq.windowed",
           (bd
-              "Sliding windows of size n, LAZY (produced as the source is pulled; a short source yields the EMPTY seq — no partial window; windows view the same memoized elements). Raises when n <= 0."
+              "Sliding windows of size n, lazy (produced as the source is pulled; a short source yields the empty seq — no partial window; windows view the same memoized elements). Raises when n <= 0."
               (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.force |> Seq.force")
               None
            |> named [ "n"; "xs" ])
           "Seq.last",
           (bd
-              "The last element — ASSERTS the source is non-empty (the X/tryX rule; raises 'last: empty sequence'), and FORCES the whole source by necessity: an infinite source does not return."
+              "The last element — asserts the source is non-empty (raises 'last: empty sequence'; Seq.tryLast answers None instead), and forces the whole source by necessity: an infinite source does not return."
               (Some "[1; 2; 3] |> Seq.last")
               None
            |> named [ "xs" ])
@@ -3671,7 +3671,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "xs" ]
           "Seq.rev",
           bd
-              "Reverse. FORCES the whole input on the first pull (never an infinite seq)."
+              "Reverse. Forces the whole input on the first pull (never an infinite seq)."
               (Some "[1; 2; 3] |> Seq.rev |> Seq.force")
               None
           |> named [ "xs" ]
@@ -3773,7 +3773,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "xs" ]
           "Seq.average",
           bd
-              "The mean of ints AS A FLOAT (raises on empty — absence is Option's job). Float/Size/Duration own their means (Float.average …)."
+              "The mean of ints as a float (raises on empty — absence is Option's job). Float/Size/Duration own their means (Float.average …)."
               (Some "[1; 2] |> Seq.average")
               None
           |> named [ "xs" ]
@@ -3825,7 +3825,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "n"; "f"; "xs" ]
           "Seq.pfirst",
           bd
-              "Race an arm over every element; the FIRST SUCCESS wins. Losers' spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm's failure is DISCARDED — if only one arm can succeed, the others' errors are hidden, so a misconfigured fan-out still looks healthy."
+              "Race an arm over every element; the first success wins. Losers' spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm's failure is discarded — if only one arm can succeed, the others' errors are hidden, so a misconfigured fan-out still looks healthy."
               (Some "[3; 1; 2] |> Seq.pfirst (fun n -> n * 10)")
               (Some "a race, not a retry: same fetch against N mirrors, first answer wins.")
           |> named [ "f"; "xs" ]
@@ -3836,13 +3836,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- Option ----
           "Option.iter",
           (bd
-              "Run a unit effect on the Some value; None runs NOTHING (a Some-only side effect with no match ceremony)."
+              "Run a unit effect on the Some value; None runs nothing (a Some-only side effect with no match ceremony)."
               (Some "Some \"x\" |> Option.iter print")
               None
            |> named [ "f"; "opt" ])
           "Option.orElse",
           (bd
-              "The option itself when Some, else the FALLBACK (fallback first, so it pipes data-last). Stays in Option — Option.defaultValue is the one that UNWRAPS. The fallback is an ordinary eager argument (an orElseWith twin is parked on the defaultWith precedent)."
+              "The option itself when Some, else the fallback (fallback first, so it pipes data-last). Stays in Option — Option.defaultValue is the one that unwraps. The fallback is an ordinary argument, evaluated even when the option is Some."
               (Some "None |> Option.orElse (Some 1)")
               None
            |> named [ "fallback"; "opt" ])
@@ -3868,14 +3868,14 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "value" ])
           "show",
           (bd
-              "Render a value to its string form — the SAME text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely."
+              "Render a value to its string form — the same text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely."
               (Some "[1; 2; 3] |> Seq.map show |> Seq.force")
               None
            |> named [ "value" ])
           "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
           "cd",
           (bd
-              "Change the session's directory, returning the OLD one (restore by binding: `let prev = cd \"/tmp\"`). A bare name applies a BINDING (`cd target`); `~` expands; `within cd` is the scoped spelling."
+              "Change the session's directory, returning the old one (restore by binding: `let prev = cd \"/tmp\"`). A bare name applies a binding (`cd target`); `~` expands; `within cd` is the scoped spelling."
               (Some "cd \".\"")
               None
            |> named [ "path" ])
@@ -3917,7 +3917,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "sep"; "s" ])
           "Str.splitOnce",
           (bd
-              "Split at the FIRST occurrence into (before, after) — the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin)."
+              "Split at the first occurrence into (before, after) — the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin)."
               (Some "Str.splitOnce \"=\" \"key=a=b\" |> snd |> print")
               None
            |> named [ "sep"; "s" ])
@@ -3945,19 +3945,19 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.sha256",
           (bd
-              "The SHA-256 digest of the string's UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only — more algorithms on receipt."
+              "The SHA-256 digest of the string's UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only for now."
               (Some "Str.sha256 \"hello\"")
               None
            |> named [ "s" ])
           "Str.toBase64",
           (bd
-              "Base64 of the string's UTF-8 bytes — ONE unwrapped line (no 76-column MIME wrap, no -w0 tax)."
+              "Base64 of the string's UTF-8 bytes — one unwrapped line (no 76-column MIME wrap, no -w0 tax)."
               (Some "Str.toBase64 \"caf\u00e9\"")
               None
            |> named [ "s" ])
           "Str.fromBase64",
           (bd
-              "Decode standard base64 (padded or unpadded) to text; raises on invalid input OR when the bytes are not valid UTF-8 (never U+FFFD corruption)."
+              "Decode standard base64 (padded or unpadded) to text; raises on invalid input or when the bytes are not valid UTF-8 (never U+FFFD corruption)."
               (Some "Str.fromBase64 \"Y2Fmw6k=\"")
               None
            |> named [ "s" ])
@@ -3972,7 +3972,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.fromUtf8",
           (bd
-              "Decode Bytes as text; raises when the bytes are not valid UTF-8 OR contain NUL (the encoding law's gate — corruption never wears a success)."
+              "Decode Bytes as text; raises when the bytes are not valid UTF-8 or contain NUL — corrupt data never decodes silently."
               None
               None
            |> named [ "b" ])
@@ -4016,7 +4016,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "a"; "b" ])
           "Path.under",
           (bd
-              "The confining join: combine, normalise, then RAISE if the result escapes base — segment-wise, so uploads-evil is not under uploads. combine is for paths you control; under is for paths you do not. Purely textual (never follows symlinks or touches the disk); absolute and Windows-shaped second arguments refuse on every platform."
+              "The confining join: combine, normalise, then raise if the result escapes base — segment-wise, so uploads-evil is not under uploads. combine is for paths you control; under is for paths you do not. Purely textual (never follows symlinks or touches the disk); absolute and Windows-shaped second arguments refuse on every platform."
               (Some "Path.under (Path.tempRoot ()) \"a/b\"")
               None
            |> named [ "base"; "name" ])
@@ -4028,7 +4028,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "()" ])
           "Path.newTempDir",
           (bd
-              "CREATE a fresh unique directory under the temp root and return its path (within tmp's naming). Cleanup is the caller's or the OS's — use `within tmp dir` for removal on scope exit (which the exit hook also sweeps on Ctrl+C/kill); newTempDir DELIBERATELY outlives the block and is never swept."
+              "Create a fresh unique directory under the temp root and return its path (the same naming `within tmp` uses). Cleanup is the caller's or the OS's — use `within tmp dir` for removal on scope exit (which the exit hook also sweeps on Ctrl+C/kill); a newTempDir directory outlives every scope and is never removed automatically."
               (Some "Path.newTempDir () |> Str.startsWith (Path.tempRoot ())")
               None
            |> named [ "()" ])
@@ -4052,7 +4052,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "File.copy",
           (bd
-              "Copy src to dst — (src, dst), the universal convention (neither arg is 'the data', so data-last does not apply). REFUSES an existing destination (raises naming it); delete first to overwrite."
+              "Copy src to dst — (src, dst), the universal convention (neither arg is 'the data', so data-last does not apply). refuses an existing destination (raises naming it); delete first to overwrite."
               (Some
                   "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.copy $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
               None
@@ -4073,14 +4073,14 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "File.stat",
           (bd
-              "The path's FileRow — ls's own row for ONE path, so `Path.glob ... |> Seq.map File.stat` turns strings into rows. Describes a symlink ITSELF (kind Symlink, target Some), not what it points at. Raises when absent — and a glob hit can vanish before stat reaches it (the glob TIMING seam)."
+              "The path's FileRow — ls's own row for one path, so `Path.glob ... |> Seq.map File.stat` turns strings into rows. Describes the symlink itself (kind Symlink, target Some), not what it points at. Raises when absent — and a file found by glob can vanish before stat reaches it."
               (Some
                   "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint (File.stat f).name\nDir.deleteAll d")
               None
            |> named [ "path" ])
           "Dir.create",
           (bd
-              "Create a directory AND its parents; succeeds silently when it already exists (idempotent — an existing directory IS the post-condition; the one deliberate exception to refuse-overwrite)."
+              "Create a directory and its parents; succeeds silently when it already exists (idempotent — unlike the copy/move members, which refuse existing destinations)."
               (Some "Dir.create (Path.tempRoot ())")
               None
            |> named [ "path" ])
@@ -4089,25 +4089,25 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "Dir.delete",
           (bd
-              "Delete an EMPTY directory (refuses a non-empty one, naming Dir.deleteAll; raises when absent)."
+              "Delete an empty directory (refuses a non-empty one, naming Dir.deleteAll; raises when absent)."
               (Some "Dir.delete (Path.newTempDir ())")
               None
            |> named [ "path" ])
           "Dir.deleteAll",
           (bd
-              "DELETE THE DIRECTORY AND EVERYTHING UNDER IT, recursively. The destructive one — there is no undo."
+              "Delete the directory and everything under it, recursively. The destructive one — there is no undo."
               (Some "let d = Path.newTempDir ()\nDir.create $\"{d}/tree-a/tree-b\"\nDir.deleteAll d")
               None
            |> named [ "path" ])
           "Dir.list",
           (bd
-              "The directory's entries as FULL paths — files and directories both, SORTED (the glob precedent), eager. Filter with Seq.where + File.exists/Dir.exists; `Path.glob \"**\"` is the recursive spelling."
+              "The directory's entries as full paths — files and directories both, sorted by name, eager. Filter with Seq.where + File.exists/Dir.exists; use `Path.glob \"**\"` for a recursive listing."
               (Some "let d = Path.newTempDir ()\nprint $\"{Dir.list d |> Seq.length}\"\nDir.delete d")
               None
            |> named [ "path" ])
           "Dir.stat",
           (bd
-              "The directory's entries as ROWS — Dir.list's seq<FileRow> form, ls's own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager."
+              "The directory's entries as rows — Dir.list's seq<FileRow> form, ls's own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager."
               (Some "let d = Path.newTempDir ()\nprint $\"{Dir.stat d |> Seq.length}\"\nDir.delete d")
               None
            |> named [ "path" ])
@@ -4119,7 +4119,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "src"; "dst" ])
           "Dir.copy",
           (bd
-              "Copy a directory and its contents — (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory MEANS its contents: there is no non-recursive form."
+              "Copy a directory and its contents — (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory means its contents: there is no non-recursive form."
               (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
               None
            |> named [ "src"; "dst" ])
@@ -4155,7 +4155,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path"; "lines" ])
           "File.mode",
           (bd
-              "The path's permissions as rwxr-xr-x-shaped text, an Option — None on Windows (the platform limit stated, never invented). The READ follows a symlink (the File.* rule); existence does not — a dangling link raises naming the dangle. The receipt: the 0600 check before File.readSecret is File.mode p == Some \"rw-------\"."
+              "The path's permissions as rwxr-xr-x-shaped text, an Option — None on Windows (there is no POSIX mode to report). The read follows a symlink, like the other File.* queries; existence does not — a dangling link raises naming the dangle. The typical use — checking for 0600 before File.readSecret: File.mode p == Some \"rw-------\"."
               (Some "File.mode \".\" |> Option.defaultValue \"none\"")
               None
            |> named [ "path" ])
@@ -4169,7 +4169,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "message" ])
           "Log.debug",
           (bd
-              "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is DATA — every Log member writes to stderr, a law with no stream knob."
+              "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is data — every Log member writes to stderr; there is no option to log to stdout."
               (Some "Log.debug \"cache miss\"")
               None
            |> named [ "message" ])
@@ -4187,25 +4187,25 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "message" ])
           "Log.traceWith",
           (bd
-              "Log.trace's thunk twin: the message computes ONLY when the level passes (weir has no lazy argument position — the Option.defaultWith precedent for the expensive argument)."
+              "Log.trace's thunk twin: the message computes only when the level passes (a plain Log.trace evaluates its message either way — use the thunk form when building the message is expensive)."
               (Some "Log.traceWith (fun () -> \"expensive detail\")")
               None
            |> named [ "thunk" ])
           "Log.debugWith",
           (bd
-              "Log.debug's thunk twin: the message computes ONLY when the level passes."
+              "Log.debug's thunk twin: the message computes only when the level passes."
               (Some "Log.debugWith (fun () -> \"expensive detail\")")
               None
            |> named [ "thunk" ])
           "Log.infoWith",
           (bd
-              "Log.info's thunk twin: the message computes ONLY when the level passes."
+              "Log.info's thunk twin: the message computes only when the level passes."
               (Some "Log.infoWith (fun () -> \"expensive detail\")")
               None
            |> named [ "thunk" ])
           "Log.warnWith",
           (bd
-              "Log.warn's thunk twin: the message computes ONLY when the level passes."
+              "Log.warn's thunk twin: the message computes only when the level passes."
               (Some "Log.warnWith (fun () -> \"expensive detail\")")
               None
            |> named [ "thunk" ])
@@ -4228,7 +4228,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               "Load the environment into a typed record (scalars, Option, bool)."
               None
-              (Some "the field law: field names are verbatim; check-time validates the field TYPES.")
+              (Some "the field law: field names are verbatim; check-time validates the field types.")
 
           // ---- Args ----
           "Args.flag",
@@ -4247,9 +4247,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Self.pid", bd "This process's id." None None
           "Self.args", bd "The invoked script's argument vector (a process fact — the same in every module)." None None
           "Self.stdin", bd "This process's standard input, as lazy lines (a process fact)." None None
-          "Self.scriptPath", bd "The path of the FILE reading it — a module sees its own path." None None
+          "Self.scriptPath", bd "The path of the file reading it — a module sees its own path." None None
           "Self.entryPath",
-          bd "The path of the INVOKED script (a process fact — the same in every module, unlike scriptPath)." None None
+          bd "The path of the invoked script (a process fact — the same in every module, unlike scriptPath)." None None
 
           // ---- Float: finite-only [D:floats] ---------------------------
           "Float.ofInt",
@@ -4293,18 +4293,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Poll.defaults", bd "The poll template: timeout = 1m, interval = 1s." None None
           "Http.defaults",
           bd
-              "The request template RECORD: method = Get, empty url, NoAuth, no body, 30s timeout. `Http.send { Http.defaults with url = u }`. Sibling that reads alike: `Http.get url` is a CONSTRUCTOR returning one of these."
+              "The request template record: method = Get, empty url, NoAuth, no body, 30s timeout. `Http.send { Http.defaults with url = u }`. `Http.get url` and the other method constructors return one of these."
               None
               None
           "Http.send",
           (bd
-              "Run a request. Status is DATA (a 404 binds; only transport failure raises). A Json body carries `to json` lines byte-exact; auth is a Secret-carrying union; show masks secrets."
+              "Run a request. Status is data (a 404 binds; only transport failure raises). A Json body carries `to json` lines byte-exact; auth is a Secret-carrying union; show masks secrets."
               None
               None
            |> named [ "request" ])
           "Http.get",
           (bd
-              "A request CONSTRUCTOR — returns an HttpRequest, makes NO request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`. The URL-in-body-out shorthand is Http.fetch."
+              "A request constructor — returns an HttpRequest, makes no request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`. The URL-in-body-out shorthand is Http.fetch."
               (Some "Http.get \"http://x/y\"")
               None
            |> named [ "url" ])
@@ -4324,13 +4324,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "url" ])
           "Http.fetch",
           (bd
-              "The raising GET shorthand: takes a BARE URL (never a request — a built request runs through Http.send), returns body only, RAISES on non-2xx naming the status (the `curl -sf` / JS `fetch(url)` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
+              "The raising GET shorthand: takes a bare URL (never a request — a built request runs through Http.send), returns body only, raises on non-2xx naming the status (the `curl -sf` / JS `fetch(url)` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
               None
               None
            |> named [ "url" ])
           "Http.withQuery",
           (bd
-              "Append a percent-encoded query string to a url — params first, the url last (data-last: `url |> Http.withQuery [(k, v)]`); keys and values are escaped, so a space or `&` cannot break the url. (NOT `Http.query` the method constructor.)"
+              "Append a percent-encoded query string to a url — params first, the url last (data-last: `url |> Http.withQuery [(k, v)]`); keys and values are escaped, so a space or `&` cannot break the url. (not `Http.query` the method constructor.)"
               (Some "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
               None
            |> named [ "params"; "base" ])
@@ -4338,7 +4338,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- Size: bytes as a type [D:size] --------------------------
           "Bytes.fromBase64",
           (bd
-              "Decode standard base64 (padded or unpadded) to Bytes; raises on malformed input. The binary door Str.fromBase64 deliberately is not."
+              "Decode standard base64 (padded or unpadded) to Bytes; raises on malformed input. Use it for binary payloads; Str.fromBase64 is the text-only twin."
               (Some "Bytes.fromBase64 \"iVBORw0KGgo=\"")
               None
            |> named [ "s" ])
@@ -4347,7 +4347,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Bytes.toBase64",
           (bd
-              "Base64 of the bytes — ONE unwrapped line; the deliberate text exit (print and the boundaries refuse raw bytes)."
+              "Base64 of the bytes — one unwrapped line; the way to carry bytes as text (print and the JSON/YAML boundaries refuse raw bytes)."
               None
               None
            |> named [ "b" ])
@@ -4366,13 +4366,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Secret.of",
           (bd
-              "ASSERT that a string is secret — the SAFE direction, for computed secrets (a generated token, a derived key). show renders ***; Secret.reveal is the one exit."
+              "Mark a computed string (a generated token, a derived key) as secret. show renders ***; Secret.reveal is the only way back to the plain value."
               (Some "Secret.of \"hunter2\"")
               None
            |> named [ "s" ])
           "Secret.reveal",
           (bd
-              "The one guarded exit: the secret's plain value. Every use of the value (a header, a hash) is a deliberate reveal — the audit is the call site."
+              "The secret's plain value — the only way out of the Secret type. Every use (a header, a hash) is a deliberate reveal; audit the call sites."
               (Some "Secret.reveal (Secret.of \"x\")")
               None
            |> named [ "s" ])
@@ -4427,7 +4427,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- boundary forms: adapters between text and typed data ----
           "from json",
           bd
-              "Parse ONE JSON document (any number of lines — a pretty-printed HTTP body pipes straight in) into a declared record. Fields are int/string/bool/float or Option of one; an Option field reads a missing key or null as None."
+              "Parse one JSON document (any number of lines — a pretty-printed HTTP body pipes straight in) into a declared record. Fields are int/string/bool/float or Option of one; an Option field reads a missing key or null as None."
               None
               (Some "a pipe stage: resp.body |> from json Config.")
           "from jsonl",
@@ -4437,7 +4437,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "a pipe stage: xs |> from jsonl Config.")
           "to json",
           bd
-              "Render ONE value as ONE JSON document (minified, one line): a record is an object, a seq an array (forced — one line cannot stream). A None field omits its key (so from json reads it back as None)."
+              "Render one value as one JSON document (minified, one line): a record is an object, a seq an array (forced — one line cannot stream). A None field omits its key (so from json reads it back as None)."
               None
               (Some "a pipe stage: payload |> to json.")
           "to jsonl",
@@ -4447,7 +4447,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "a pipe stage: xs |> to jsonl.")
           "from yaml",
           bd
-              "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record TREE — nested records, seqs, seq<string * _> mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected."
+              "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record tree — nested records, seqs, seq<string * _> mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected."
               None
               (Some "a pipe stage: lines |> from yaml Deployment — yields seq<Deployment>, one per document.")
           "to yaml",
@@ -4479,7 +4479,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
           "FileRow",
           bd
-              "A directory entry: name, kind (Regular | Directory | Symlink — a fact, not an answer), target (Some for a symlink, None otherwise — the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant — the file's own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From `ls` — files AND subdirectories, SORTED by name (ordinal: case-sensitive, uppercase first; never the locale). name is for MATCHING and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions."
+              "A directory entry: name, kind (Regular | Directory | Symlink — a fact, not an answer), target (Some for a symlink, None otherwise — the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant — the file's own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From `ls` — files and subdirectories, sorted by name (ordinal: case-sensitive, uppercase first; never the locale). name is for matching and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions."
               None
               None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
