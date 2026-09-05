@@ -1,6 +1,6 @@
 # Scopes
 
-`within` holds a resource for a block and releases it on EVERY
+`within` holds a resource for a block and releases it on every
 exit — normal completion, a raise, `exit n`, SIGINT and SIGTERM.
 `kill -9` of weir itself is the one exception (the lock is the one
 kind the kernel still releases). The block is an ordinary
@@ -32,7 +32,7 @@ print (Str.sub 0 12 digest)
 ## `cd`
 
 Runs its block in the directory and restores on every exit. A
-missing path errors BEFORE the block runs, naming the absolute
+missing path errors before the block runs, naming the absolute
 path.
 
 ## `env`
@@ -54,7 +54,7 @@ print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
 ## Bare `within` and `always`
 
 Holds nothing; the `always` block runs on every exit. When both the
-body and the cleanup fail, the ORIGINAL error propagates and the
+body and the cleanup fail, the original error propagates and the
 cleanup's failure goes to stderr with a marker; teardown continues
 outward:
 
@@ -75,7 +75,7 @@ exhaustion, safe across processes and `pmap` arms alike.
 ## `proc`
 
 Binds a handle to a background process; at every block exit the
-process TREE is killed and reaped. Scoped children release
+process tree is killed and reaped. Scoped children release
 last-in-first-out; a child's own exit is data (`Proc.wait`), not a
 raise. The full teaching — `watch=`, spill files, `Proc.tail` —
 lives in the [guide](../GUIDE.md#parallelism). A process that must

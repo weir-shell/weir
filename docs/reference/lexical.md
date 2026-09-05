@@ -70,7 +70,7 @@ kind and adapter words are ordinary identifiers everywhere else.
 <!-- keywords:end -->
 
 The reserved kinds are deliberate. Two words — `rec` and `mutable`
-— are reserved with NO meaning, so the F# reflex gets an error
+— are reserved with no meaning, so the F# reflex gets an error
 rather than a binding:
 
 ```weir-error
@@ -78,7 +78,7 @@ let rec f x = x // 'rec' is reserved; weir has no let rec
 print "y"
 ```
 
-And four are reserved specifically TO TEACH: weir keeps words it
+And four are reserved specifically to teach: weir keeps words it
 does not have, so a reflex from another language names weir's
 spelling — `while` points at `retry`/`poll` and seq iteration,
 `return` at a function's last expression, `try` at `| complete` and
@@ -138,10 +138,10 @@ a line-end marker, not a string form. `<<<` opens a plain block:
 the indented lines below are the content, one `seq<string>` element
 per line — every byte is content, `$` and `{` included; interior
 blank lines and deeper indentation survive, relative to the first
-line, and trailing blank lines CLIP (the block-scalar ruling: the
+line, and trailing blank lines clip (the block-scalar ruling: the
 blank before the next statement is layout, not content). `$<<<`
 is the interpolated twin with the string forms' hole rules —
-`{expr}` substitutes, `{{` and `}}` are literal braces, `$` STILL
+`{expr}` substitutes, `{{` and `}}` are literal braces, `$` still
 stays a byte. Any line ending in the marker glyph arms a block,
 exactly as `yaml` does; without an indented block below it, that is
 the error. The glyph is not an operator and reserves no identifier.
@@ -234,7 +234,7 @@ left-associative:
 
 A prefix `-` binds at operand positions (`2 * -3`).
 
-`%` is TRUNCATED remainder — the sign follows the dividend, F#'s
+`%` is truncated remainder — the sign follows the dividend, F#'s
 and .NET's convention (`-7 % 3` is `-1`; Python's floored `%` gives
 `2` there). Integer-only; a zero divisor raises
 ([Types](types.md#scalars)).
@@ -276,7 +276,7 @@ The complete set:
 | `_` | patterns | the wildcard |
 
 The glyph law: weir has no `!`-negation. Negation is the word
-`not`; `!` means DO IT:
+`not`; `!` means *do it*:
 
 ```weir-error
 if !true then print "x" // '!' is not negation — write 'not true'
@@ -287,9 +287,9 @@ if !true then print "x" // '!' is not negation — write 'not true'
 A `#` line is addressed to the tooling, not the language — one
 glyph, two lifetimes:
 
-- **session** directives run NOW, in the REPL: `#help`, `#quit`,
+- **session** directives run now, in the REPL: `#help`, `#quit`,
   `#echo`
-- **file** directives are read at CHECK time: `#sig`, `#schema` —
+- **file** directives are read at check time: `#sig`, `#schema` —
   and `#session`, read from the REPL's init file only
 
 The [REPL manual](../repl.md) covers the session set and the init
@@ -299,7 +299,7 @@ the file set.
 ## Attributes
 
 `[<...>]` on record fields — check-time data, fully erased at
-runtime. The registry is CLOSED; five names exist:
+runtime. The registry is closed; five names exist:
 
 - `[<Short "c">]` — pin a one-character short flag (`"h"` is
   reserved for `--help`)

@@ -10,7 +10,7 @@ translation that stops being true fails the build.
 
 ## Coming from bash / POSIX sh
 
-The headline is the argv law: `$x` splices as ONE argv word, `$@xs`
+The headline is the argv law: `$x` splices as one argv word, `$@xs`
 splices N words (one per element), and nothing is ever re-split or
 re-joined. The quoting discipline you have spent years internalizing
 (`"$x"`, `"$@"`, `IFS`) is the default and only behavior — word
@@ -38,11 +38,11 @@ print $"branches: {branches}"
 That `printf` receives one argument, brackets and all — no re-split.
 
 **The one thing that will catch you out:** capture is a sequence of
-LINES, not a string. `$(cmd)` in bash gives one string with trailing
+lines, not a string. `$(cmd)` in bash gives one string with trailing
 newlines stripped; in weir it gives `seq<string>`, and when a value
-pipes back INTO a command (`expr | cmd`), each element is written as
+pipes back into a command (`expr | cmd`), each element is written as
 one line — with its newline. So `["x"] | sha256sum` hashes `x\n`,
-which is what `printf 'x\n' | sha256sum` prints and NOT what
+which is what `printf 'x\n' | sha256sum` prints and not what
 `printf 'x' | sha256sum` prints. One of the few places weir surprises
 a bash hand in the unfavourable direction; hash deliberately.
 
@@ -89,7 +89,7 @@ module instead of a subcommand.
 | fish | weir |
 |---|---|
 | `set out (git branch)` | `let out = git branch` — a `seq<string>`, one element per line (the newline split you already expect) |
-| `echo $files` (one word per element) | `echo $@files` — the N-word splat is EXPLICIT; `$x` is always exactly ONE word |
+| `echo $files` (one word per element) | `echo $@files` — the N-word splat is explicit; `$x` is always exactly one word |
 | `set files *.txt` (glob in argv) | `let files = Path.glob "*.txt"` — a function returning a typed seq |
 | `string split , $s` / `string trim` | `Str.split "," s` / `Str.trim` |
 | `string match -r 'v(\d+)' $s` | `match s with \| Regex @"v(\d+)" v -> v \| _ -> "0"` — the binding is typed, the miss arm is forced |
@@ -107,12 +107,12 @@ let lines = $(printf "one\ntwo") |> Seq.map Str.toUpper
 lines |> Seq.iter print
 ```
 
-That `printf` receives `a b` as ONE argument (then `c`) — the fish
+That `printf` receives `a b` as one argument (then `c`) — the fish
 list rule, kept. The capture splits on newlines — the fish
 substitution rule, kept, and now typed.
 
 **The one thing that will catch you out:** fish expands an unset or
-empty variable to ZERO arguments and the command runs anyway; weir
+empty variable to zero arguments and the command runs anyway; weir
 refuses the script before anything runs. `$x` is always exactly one
 argv word — an empty seq cannot vanish from argv, an unbound name is
 a check error, and a seq splices only through the explicit `$@x`.
@@ -133,7 +133,7 @@ echo $nope
 - Autoloaded functions (`~/.config/fish/functions`) —
   `import "./lib.weir" as Lib` names the dependency in the script.
 - `and` / `or` command chaining — a nonzero exit already raises when
-  the stream is forced, so sequential lines ARE the `and` chain; for
+  the stream is forced, so sequential lines are the `and` chain; for
   the boolean there is `cmd | succeeds`.
 - Abbreviations and `alias` — weir has no rewriting layer; a short
   name is a `let`.
@@ -159,9 +159,9 @@ computation expressions, no `let rec`, no implicit widening.
 | `try … finally` | bare `within` + `always` — cleanup on every exit (normal, raise, `exit`, signals); resource cleanup is a kind (`within tmp/proc/lock`) |
 | `while` / `let rec` | `retry`/`poll` for condition loops (bounded); pipelines/`Seq.fold` to transform/accumulate; `for … do` ≡ `Seq.iter` for effects |
 | `open Seq` | no `open` — access is always qualified; `import "./lib/x.weir" as X` shares code |
-| `$@"…"` / `$$"""…"""` | `$"""…{hole}…"""` only — ONE raw interpolated spelling; no multi-`$` brace scheme (a literal brace belongs to `$"…"`'s `{{`); all string kinds are single-line |
+| `$@"…"` / `$$"""…"""` | `$"""…{hole}…"""` only — one raw interpolated spelling; no multi-`$` brace scheme (a literal brace belongs to `$"…"`'s `{{`); all string kinds are single-line |
 | `[\| 1; 2 \|]` arrays, `list` | one sequence type, `seq<'a>` — `[1; 2]` literals are eager seqs |
-| `{\| ip = "x" \|}` anonymous records | the same spellings, types AND literals — but a literal's fields need concrete types (`fun x -> {\| a = x \|}` refuses; F# admits the generic form), no empty `{\|\|}` (F# admits it), no punning, no `{\| r with … \|}` |
+| `{\| ip = "x" \|}` anonymous records | the same spellings, types and literals — but a literal's fields need concrete types (`fun x -> {\| a = x \|}` refuses; F# admits the generic form), no empty `{\|\|}` (F# admits it), no punning, no `{\| r with … \|}` |
 | `(+)` and `(>) 10` | `(+)` works (`Seq.reduce (+)`); partial application refuses — `(>) 10` means `fun x -> 10 > x`, the direction nobody reads right; write the lambda |
 
 ```weir
@@ -180,10 +180,10 @@ idiom, because floats are finite-only here. See
 [GUIDE.md](GUIDE.md#rates-and-percentages-floats-finite-only).)
 
 `=` on collections is the other equality surprise, in the opposite
-direction: weir's `==` REFUSES seqs at check time, which reads as a
+direction: weir's `==` refuses seqs at check time, which reads as a
 limitation until you learn what F# was doing — `=` on a `seq<'T>`
-compiles and its answer depends on the RUNTIME type (structural if the
-object happens to be a list or array, REFERENCE equality for a
+compiles and its answer depends on the runtime type (structural if the
+object happens to be a list or array, reference equality for a
 computed seq: `Seq.map id [1;2] = Seq.map id [1;2]` is `false`).
 Refusing beats an answer that changes with provenance; compare a
 value you mean — `Seq.length`, a `Str.join`-ed string, or the
@@ -234,13 +234,13 @@ statically typed language.
 git status --porcelain |> Seq.choose (fun l -> match l with | Regex @"^.. (.*)$" path -> Some path | _ -> None) |> print
 ```
 
-**The one thing that will catch you out:** the pipeline is TWO
+**The one thing that will catch you out:** the pipeline is two
 channels, not one. PowerShell has a single object pipeline — cmdlets
 consume and produce objects uniformly. Weir's `|` carries text
 to and from external programs; `|>` carries values between functions;
 the right-hand side decides, and a mismatch errors naming the other
 spelling. The conversion between them is yours to declare:
-PowerShell's cmdlets ARE its adapters, whereas weir orchestrates
+PowerShell's cmdlets are its adapters, whereas weir orchestrates
 programs that emit text, and `from json T` /
 `from yaml T` are where text becomes structure — against your
 declared shape.
@@ -284,10 +284,10 @@ splice is one word, and no shell ever re-parses your line.
 | `f"{n} files"` | `$"{n} files"` |
 | `with tempfile.TemporaryDirectory() as d:` | `within tmp d` + an indented block |
 | `os.environ.get("PORT")` | `Env.get "PORT"` — or `Env.load Config`, typed, one error for all fields |
-| `argparse` | `Args.load Cli` — the flags DERIVE from a record you declare |
+| `argparse` | `Args.load Cli` — the flags derive from a record you declare |
 | `json.loads(...)` → dict soup | `\|> from json T` → your declared record |
 | `requests.post(url, json=payload)` | `Http.send { Http.defaults with method = Post; url = u; body = Json (payload \|> to json) }` — status is data, `Secret` auth, body byte-exact |
-| `-7 % 3 == 2` (floored) | `-7 % 3 == -1` — weir's `%` is TRUNCATED (F#/.NET/C): the sign follows the dividend; they agree whenever both operands are positive |
+| `-7 % 3 == 2` (floored) | `-7 % 3 == -1` — weir's `%` is truncated (F#/.NET/C): the sign follows the dividend; they agree whenever both operands are positive |
 
 ```weir
 type Cfg = { name: string; port: int }
@@ -297,7 +297,7 @@ print $"{cfg.name}:{cfg.port}"
 ```
 
 **The one thing that will catch you out:** whitespace is significant
-DIFFERENTLY. There is no `:` opening a block — a block is the deeper
+differently. There is no `:` opening a block — a block is the deeper
 lines under its head (the offside rule), a statement starts at column
 0 and ends at the next column-0 line, and blank lines inside a
 statement are transparent. Minute one: an `if` body is just indented
@@ -324,7 +324,7 @@ within tmp d
   attribute mutation.
 - Exceptions and `try/except` — `fail` stops; a fallible step becomes
   data with `| complete` and you branch on it.
-- Dicts — `Map<string, T>` covers keys that are DATA (ID-keyed JSON
+- Dicts — `Map<string, T>` covers keys that are data (ID-keyed JSON
   objects, counters): `Map.ofPairs`/`get`/`tryGet`/`pairs`, string
   keys only, and `from json Map<string, T>` at the boundary. Keys
   known at write time are a declared record instead.
@@ -346,9 +346,9 @@ millisecond startup, no `node_modules`, no `package.json`.
 | ``$`git add ${file}` `` (zx escapes) | `git add $file` — one argv word by construction, nothing to escape |
 | `$.nothrow` / `.exitCode` | `cmd \| complete` / `cmd \| exitCode` |
 | `await Promise.all(xs.map(f))` / `p-map` | `xs \|> Seq.pmap f` — bounded (`Seq.pmapWith n` sets the ceiling), results in input order, first error by input order |
-| `await Promise.any(xs.map(f))` | `xs \|> Seq.pfirst f` — first arm to SUCCEED wins, losers' processes tree-killed (`Seq.pfirstWith n` sets the ceiling); losers' failures swallowed |
+| `await Promise.any(xs.map(f))` | `xs \|> Seq.pfirst f` — first arm to succeed wins, losers' processes tree-killed (`Seq.pfirstWith n` sets the ceiling); losers' failures swallowed |
 | `globby`, `fs/promises` | `Path.glob`, `File.*` / `Dir.*` |
-| `zod` schema `.parse(...)` at runtime | `from json T` and vendored JSON-schema contracts, at CHECK time |
+| `zod` schema `.parse(...)` at runtime | `from json T` and vendored JSON-schema contracts, at check time |
 | `await fetch(url).then(r => r.json())` | `Http.send { Http.defaults with url = u }` then `resp.body \|> from json T`; a plain GET is `curl url \|> from json T` |
 
 ```weir
@@ -406,7 +406,7 @@ print $"building {sha}"
 is its own shell — a `cd` on one line is gone on the next. A weir
 file is one program: a `cd` persists until scoped (`within cd "dir"`
 restores on exit). And `$@` is a genuine false friend: Make's "the
-target", weir's argv SPLAT (`$@xs` splices N words).
+target", weir's argv splat (`$@xs` splices N words).
 
 **Not here, and what to write instead:** dependency-ordered targets —
 keep the graph in Make (or a runner) and put weir inside the recipe;
@@ -416,7 +416,7 @@ the next section is that story.
 
 Task runners are thin wrappers around shell strings; weir is the
 language the recipe body would be written in. So this is not
-weir-versus-just: weir replaces the shell INSIDE the recipe, and a
+weir-versus-just: weir replaces the shell inside the recipe, and a
 `justfile` whose recipe line is `weir deploy.weir --env prod` is a
 reasonable end state.
 
@@ -476,7 +476,7 @@ body block directly.
 ## Coming from Perl
 
 The regex reflexes land well here: weir has a `Regex` pattern that
-matches and extracts in one match arm, compiled at CHECK time (an
+matches and extracts in one match arm, compiled at check time (an
 invalid pattern is a check error) with binder arity checked against
 the capture count.
 
@@ -500,12 +500,12 @@ names captures at the binder (`(k, v)` above), so the name sits next
 to the pattern instead of inside it; lookbehind `(?<=`/`(?<!` works.
 
 **The one thing that will catch you out:** sigils. Perl's `$`/`@`/`%`
-denote a variable's TYPE; weir's `$` is a splice — a value entering a
+denote a variable's type; weir's `$` is a splice — a value entering a
 command line or a string — and there is no sigil on ordinary
 variables at all. `use strict` is unconditional and unnamed.
 
 ```weir-error
-// a Regex pattern must be a RAW string (@"a\+") — an ordinary string
+// a Regex pattern must be a raw string (@"a\+") — an ordinary string
 // is rejected here, which is what makes the double-escape footgun
 // unrepresentable rather than merely avoidable
 let m = match "a+b" with | Regex "a\\+" () -> "hit" | _ -> "miss"
@@ -531,7 +531,7 @@ meaning:
 | `$()` | bash: capture as one newline-stripped string | capture as `seq<string>`, one element per line |
 | `=` | F#: equality | binding only; equality is `==` |
 | `\|` | F#: nothing (`\|>` pipes) | text to/from an external program; `\|>` stays the function pipe — the right-hand side decides |
-| `!` | bash: history/negation | DO IT — `!(cmd)` runs-and-streams; negation is the word `not` |
+| `!` | bash: history/negation | *do it* — `!(cmd)` runs-and-streams; negation is the word `not` |
 | `//` | C-family: always a comment | a comment only at line start or after whitespace — `http://a` in argv stays data; a bare `//` word needs quoting |
 
 ## What nobody arrives knowing
@@ -575,7 +575,7 @@ print $"typed rows: {rows}"
   stays a string — the reverse-Norway law), and
   `yaml schema=<name>` validates against a vendored JSON schema at
   check time. The cost: it is a subset (anchors and flow style
-  reject), splices check by TYPE (a string against a `pattern`/`enum`
+  reject), splices check by type (a string against a `pattern`/`enum`
   constraint does not check), and `for`-generated content is
   structurally unchecked.
 - **External contracts** — schemas vendored and pinned
@@ -586,7 +586,7 @@ print $"typed rows: {rows}"
   checker can see.
 - **The exit-code forms under one law** — output goes where the
   meaning goes: `succeeds` and `complete` are silent/captured because
-  their output IS the result; `orFail` and `exitCode` stream because
+  their output is the result; `orFail` and `exitCode` stream because
   their output is for the human. The cost: `succeeds` is
   `exitCode == 0` exactly (grep's no-match counts as false — reach
   for `complete` when codes are data), and `complete` captures in

@@ -34,7 +34,7 @@ usage: weir                                    the REPL
   strict.
 - `weir script.weir args...` — run a script; `#!/usr/bin/env weir`
   works. The script's argv is `Self.args`, or typed via `Args.load`.
-- `weir -e '<program>'` — evaluate a program whose LAST statement is
+- `weir -e '<program>'` — evaluate a program whose last statement is
   an expression; newlines are statement boundaries exactly as in a
   file. A lone declaration is refused with its kind named.
 
@@ -114,7 +114,7 @@ When the tool updates, `weir add sig` again.
 
 ### Partial by default
 
-A generated signature is PARTIAL — unknown flags warn, not error,
+A generated signature is partial — unknown flags warn, not error,
 because a scraped surface may be incomplete. Verify the surface by
 hand, add `let exhaustive = true` to the signature file, and unknown
 flags become errors.
@@ -123,7 +123,7 @@ Generation probes, in order: the tool's fish completions, shipped
 fish completion files, then `--help` — and when the help advertises
 subcommands, each subcommand's own help (breadth-first, four
 levels — `kustomize edit add resource` reaches).
-A walked surface generates SCOPED: the longest matching subcommand
+A walked surface generates scoped: the longest matching subcommand
 path picks its case (`jira issue list` beats `jira issue`) and a
 case checks its own flags plus its ancestors' and the globals
 (`docker ps --detach` warns naming `docker ps`); a
@@ -177,7 +177,7 @@ Stated plainly so the green check is not over-read:
 
 - a spliced `int` checks against an `integer` constraint;
 - a spliced `string` against a `pattern` or `enum` constraint does
-  NOT — the value is runtime data;
+  not — the value is runtime data;
 - `for`-generated content is structurally unchecked.
 
 The schema validates what the checker can see. The teaching version
@@ -248,7 +248,7 @@ one directory:
   modules/<name>.weir# vendored modules (weir add module)
 ```
 
-A script finds its `.weir/` by walking UP from its own directory to
+A script finds its `.weir/` by walking up from its own directory to
 the first one — the walk stops at a `.git` boundary (directory or
 file, so worktrees behave) or the filesystem root, and the error
 names both what was looked for and where the walk stopped. One
@@ -269,7 +269,7 @@ never needs it.
 - **Pinned** — exact identity, no ranges; comparisons are pairwise,
   not a dependency graph.
 - **Check-time only** — deleting every contract leaves every script
-  running identically; contracts constrain what the CHECKER accepts
+  running identically; contracts constrain what the checker accepts
   and contribute nothing at run time.
 - **Declared, not discovered** — a `.weir/` directory's mere
   existence never changes how a file checks; a script opts in with

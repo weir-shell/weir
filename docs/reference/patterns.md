@@ -16,7 +16,7 @@ type V =
     | Pass
     | Failing
 match Pass with
-| pass -> print "ok" // 'pass' BINDS — did you mean 'Pass'?
+| pass -> print "ok" // 'pass' binds — did you mean 'Pass'?
 | Failing -> print "no"
 ```
 
@@ -89,7 +89,7 @@ print n
 
 ## Records
 
-A record pattern names any SUBSET of fields — unnamed fields are
+A record pattern names any subset of fields — unnamed fields are
 ignored. Fields keep their declared case; binders are lowercase:
 
 ```weir
@@ -103,7 +103,7 @@ let r =
 print r
 ```
 
-A field may hold a literal, which makes the pattern REFUTABLE —
+A field may hold a literal, which makes the pattern refutable —
 filter and destructure in one arm. A refutable record pattern never
 completes a match alone:
 

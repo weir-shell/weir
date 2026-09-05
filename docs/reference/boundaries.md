@@ -1,7 +1,7 @@
 # Boundaries: argv and env
 
 Both load the same way: declare a record, load once, typed
-thereafter. Loading is strict and COLLECTED — every problem arrives
+thereafter. Loading is strict and collected — every problem arrives
 together in one boundary error, before any effect runs.
 
 ## `Args.load`
@@ -37,7 +37,7 @@ shapes, `Args.flag` and `Args.value` scan the raw `Self.args`.
 
 A union of record-payload cases: the first token picks the case,
 the rest parse as its flags, and the dispatch `match` is
-exhaustiveness-checked. Shared flags live ONCE on a containing
+exhaustiveness-checked. Shared flags live once on a containing
 record; they float around the case token:
 
 ```weir-error
@@ -59,7 +59,7 @@ only — a computed default keeps the field `Option` plus one line.
 ## `Env.load`
 
 The same declaration law over environment variables: field names
-match var names VERBATIM (no case-mapping; `[<Wire "NAME">]` for a
+match var names verbatim (no case-mapping; `[<Wire "NAME">]` for a
 name that is not a legal identifier), `[<Default>]` fills absences,
 and a `Secret` field is the standard way a token enters. Env bools
 are text (`FLAG=false`), not presence.
