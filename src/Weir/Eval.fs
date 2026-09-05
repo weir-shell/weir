@@ -1277,7 +1277,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
 
         failwith $"from yaml: line {Yaml.nodeLine node}: expected {want}, got {got}"
 
-let private yamlFromImpl (shape: Yaml.Shape) : Value =
+let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
     VBuiltin(fun v ->
         match v with
         | VSeq lines ->
@@ -1291,6 +1291,11 @@ let private yamlFromImpl (shape: Yaml.Shape) : Value =
 
             match Yaml.parseDocs numbered with
             | Error msg -> failwith $"from yaml: {msg}"
+            | Ok docs when stream ->
+                // the stream cardinality [D:wire-unions]: N documents,
+                // each converted through the SAME per-document shape —
+                // an empty stream is zero documents, not an error
+                VSeq(docs |> List.map (yamlConvert shape) |> List.toSeq)
             | Ok [] -> failwith "from yaml: empty input — expected one document"
             | Ok [ doc ] ->
                 // ONE document; the declared shape names the top level
@@ -1303,10 +1308,10 @@ let private yamlFromImpl (shape: Yaml.Shape) : Value =
                     failwith $"from yaml: the top level is a sequence, not a mapping — declare seq<{n}> to read it"
                 | _ -> yamlConvert shape doc
             | Ok docs ->
-                // multi-document streams retired [D:yaml-seq]: weir cannot
-                // type a heterogeneous stream, and homogeneous ones are rare
+                // the one-document spelling stays one-document
+                // [D:yaml-seq] — the stream form is the repair now
                 failwith
-                    $"from yaml: reads one document; this input has {List.length docs} documents — split on '---' and parse each"
+                    $"from yaml: reads one document; this input has {List.length docs} documents — read a stream with 'from yaml stream T'"
         | v -> unreachable $"the checker rejects 'from yaml' on {formatValue v}")
 
 // the renderer: VALUE-driven (records/seqs/scalars/Option/Yaml nodes).
@@ -2463,7 +2468,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         VStr(sb.ToString())
     | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
-    | TEFromYaml(_, shape) -> yamlFromImpl shape
+    | TEFromYaml(_, shape, stream) -> yamlFromImpl shape stream
     | TEYaml(tpl, _) -> evalYamlTpl env tpl
     | TETo("yaml", renames, unions) -> yamlToImpl renames unions
     | TETo("jsonl", renames, unions) ->

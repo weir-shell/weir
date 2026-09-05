@@ -3280,6 +3280,56 @@ U "x" |> to json' 2>&1) && fail "an Other value must refuse to write"
 echo "$errout" | grep -qF "nothing faithful can be written" || fail "Other write refusal teaches: $errout"
 echo "e2e ok: wire unions — mixed NDJSON via from jsonl, tag dispatch both formats, Other refuses to write"
 
+# the stream cardinality [D:wire-unions] session S: `from yaml stream T`
+# reads N `---` documents each as T — the heterogeneous BUNDLE is
+# stream over a tagged union, and to yaml's stream write roundtrips
+cat > "$adir/bundle.weir" <<'WEOF'
+type DepSpec = { replicas: int; image: string }
+type SvcSpec = { port: int }
+
+[<Tag "kind">]
+type KDoc =
+    | Deployment of DepSpec
+    | Service of SvcSpec
+    | [<Other>] Unknown of string
+
+let bundle = <<<
+    kind: Deployment
+    replicas: 3
+    image: nginx
+    ---
+    kind: Service
+    port: 80
+    ---
+    kind: CronJob
+    schedule: daily
+
+bundle
+|> from yaml stream KDoc
+|> Seq.iter (fun d ->
+    match d with
+    | Deployment dep -> print $"deploy {dep.image} x{dep.replicas}"
+    | Service s -> print $"svc {s.port}"
+    | Unknown k -> print $"skip {k}")
+
+let back = [Service { port = 1 }; Deployment { replicas = 2; image = "redis" }] |> to yaml
+let n = back |> from yaml stream KDoc |> Seq.length
+print $"roundtrip {n}"
+WEOF
+out=$($BIN "$adir/bundle.weir")
+expect "yaml stream: the mixed bundle dispatches; the stream write reads back" 'deploy nginx x3
+svc 80
+skip CronJob
+roundtrip 2' "$out"
+
+errout=$($BIN -e 'type R = { a: int }
+["x"] |> from json stream R' 2>&1) && fail "from json stream must reject"
+echo "$errout" | grep -qF "'from json stream' does not exist" || fail "the json stream fence teaches: $errout"
+errout=$($BIN -e 'type R2 = { a: int }
+["a: 1"; "---"; "a: 2"] |> from yaml R2' 2>&1) && fail "one-doc form must still refuse a stream"
+echo "$errout" | grep -qF "read a stream with 'from yaml stream T'" || fail "the teaching re-points: $errout"
+echo "e2e ok: yaml stream — bundle dispatch, roundtrip, fences re-point"
+
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"
 
@@ -4783,7 +4833,7 @@ expect "the Norway problem never fires on read (bool is exactly true/false)" "ex
 # and the seq form reads a top-level sequence document
 printf 'type D = { kind: string }\nlet d = ["kind: A"; "---"; "kind: B"] |> from yaml D\nprint d.kind\n' > "$ydir/md.weir"
 out=$($BIN "$ydir/md.weir" 2>&1 || true)
-expect "a --- stream teaches: one document, the count, the route" "from yaml: reads one document; this input has 2 documents — split on '---' and parse each" "$out"
+expect "a --- stream teaches: one document, the count, the route" "from yaml: reads one document; this input has 2 documents — read a stream with 'from yaml stream T'" "$out"
 printf 'type H = { host: string }\nlet hs = ["- host: a"; "- host: b"] |> from yaml seq<H>\nhs |> Seq.iter (fun h -> print h.host)\n' > "$ydir/seqdoc.weir"
 out=$($BIN "$ydir/seqdoc.weir")
 expect "from yaml seq<T> reads a top-level sequence document" "a

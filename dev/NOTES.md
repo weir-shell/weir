@@ -1,5 +1,33 @@
 # Spike Notes
 
+## the stream word: the arc closes where it opened (2026-09-05)
+
+Session S was the smallest of the three, exactly as the probes
+predicted — parseDocs already returned the document list, so the
+eval half was "stop refusing length > 1 under the stream flag" plus
+a map. The arc that started as a COHERENCE BUG (a teaching pointing
+at work the language made hard: "split on '---' and parse each")
+closes by re-pointing that same teaching at a spelling that now
+exists: "read a stream with 'from yaml stream T'".
+
+One deviation from the plan, worth its reason: NO grammar churn.
+The plan budgeted the tree-sitter target ritual for colouring the
+stream word, but `stream` sits OUTSIDE the (from|to)+adapter token —
+colouring it means widening that token to three words in three
+grammars, for colour alone, plus the zed pin ritual. Shipped
+uncoloured, trigger stated. The counter-lesson to the form-word
+colour rule: a modifier word's colour is worth having, not worth a
+cross-repo ritual before anyone has seen it uncoloured.
+
+Two small finds. The from-yaml completion slot offered NOTHING
+before this session — json/jsonl completed record names, yaml was
+skipped in the same elif, an accident nobody had hit; the stream
+work fixed it in passing. And `to yaml stream` had to refuse AT
+PARSE (the to-adapter takes no argument, so the word would have
+fallen into application-position type-error noise) — the fence
+fires on the exact word and teaches that the seq already means the
+stream on the write side.
+
 ## wire unions: the widest diff, and where it actually concentrated (2026-09-04)
 
 Session U touched both formats' read and write paths, as sized —

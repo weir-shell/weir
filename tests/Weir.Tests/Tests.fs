@@ -1268,7 +1268,7 @@ let boundaryTests =
 
                       Expect.stringContains
                           ex.Message
-                          "from yaml: reads one document; this input has 2 documents — split on '---' and parse each"
+                          "from yaml: reads one document; this input has 2 documents — read a stream with 'from yaml stream T'"
                           "the retirement teaches, names the count and the route"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
@@ -1957,6 +1957,74 @@ let wireUnionTests =
                   Expect.throwsC (fun () -> evalWith kenv "Unknown \"CronJob\" |> to json" |> forceSeq |> ignore) id
 
               Expect.stringContains ex.Message "nothing faithful can be written" ""
+          }
+          // ---- session S [D:wire-unions]: the stream cardinality ----
+          test "from yaml stream reads N documents, each as T — the bundle is stream over the union" {
+              let mixed =
+                  evalWith
+                      kenv
+                      "[\"kind: Deployment\"; \"replicas: 3\"; \"---\"; \"kind: Service\"; \"port: 80\"; \"---\"; \"kind: X\"] |> from yaml stream KDoc"
+
+              match forceSeq mixed with
+              | [ VUnion("Deployment", Some _); VUnion("Service", Some _); VUnion("Unknown", Some(VStr "X")) ] -> ()
+              | other -> failtest $"the bundle broke: {other}"
+
+              Expect.equal
+                  (evalWith kenv "[\"kind: Ping\"] |> from yaml stream KDoc |> Seq.length")
+                  (VInt 1L)
+                  "one document is a one-element stream"
+
+              Expect.equal
+                  (evalWith kenv "[\"x\"] |> Seq.where (fun _ -> false) |> from yaml stream KDoc |> Seq.length")
+                  (VInt 0L)
+                  "an empty stream is zero documents, not an error"
+          }
+          test "stream composes with records and seq-documents; the write roundtrips" {
+              let henv = env |> declare "type SRow = { a: int }"
+
+              Expect.equal
+                  (evalWith henv "[\"a: 1\"; \"---\"; \"a: 2\"] |> from yaml stream SRow |> Seq.length")
+                  (VInt 2L)
+                  "a homogeneous stream is legal (the [D:yaml-seq] clause U falsified)"
+
+              Expect.equal
+                  (evalWith henv "([{ a = 1 }; { a = 2 }] |> to yaml |> from yaml stream SRow) |> Seq.length")
+                  (VInt 2L)
+                  "to yaml's stream write reads back through the stream form"
+
+              Expect.equal
+                  (evalWith
+                      henv
+                      "[\"- a: 1\"; \"- a: 2\"; \"---\"; \"- a: 3\"] |> from yaml stream seq<SRow> |> Seq.length")
+                  (VInt 2L)
+                  "stream seq<T>: each document is a sequence document"
+          }
+          test "the stream fences and the re-pointed teaching" {
+              Expect.stringContains
+                  (checkErr "[\"x\"] |> from json stream JRow").Message
+                  "'from json stream' does not exist — NDJSON is 'from jsonl JRow'"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "[\"x\"] |> from yaml stream Map<string, JRow>").Message
+                  "Map< > has no place in the stream slot"
+                  ""
+
+              match Weir.Parser.parseStmt "[{ V = 1 }] |> to yaml stream" with
+              | Ok _ -> failtest "'to yaml stream' must refuse at parse"
+              | Error msg -> Expect.stringContains msg "there is no 'to … stream'" ""
+
+              let henv = env |> declare "type SR2 = { a: int }"
+
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          evalWith henv "[\"a: 1\"; \"---\"; \"a: 2\"] |> from yaml SR2"
+                          |> forceSeq
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "read a stream with 'from yaml stream T'" "the teaching re-points"
           }
           test "two reachable tagged unions sharing a case name refuse at the write site" {
               // `Shared` is ambiguous at bare USE [D:ambiguous-ctor], so the

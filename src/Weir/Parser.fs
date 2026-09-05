@@ -1653,6 +1653,11 @@ let private anonShape, private anonShapeRef =
 let private fromExpr =
     spanned (
         keyword "from" >>. ident
+        // the STREAM cardinality word [D:wire-unions]: `from yaml stream T`
+        // reads N `---` documents, each as T. Marker-local like `schema=` —
+        // never a reserved identifier (the slot's names are uppercase, so
+        // the lowercase word is unambiguous here)
+        .>>. opt (attempt (pstring "stream" .>> notFollowedBy (satisfy isIdentCont)) .>> ws)
         .>>. opt (
             // the slot takes a record NAME, the narrow seq<…> wrap
             // [D:from-json-seq], or an anonymous shape `{| f: ty |}`
@@ -1699,17 +1704,25 @@ let private fromExpr =
             )
         )
     )
-    |>> fun ((fmt, arg), span) ->
+    |>> fun (((fmt, streamW), arg), span) ->
         let shape, seqOf =
             match arg with
             | Some(sh, s) -> Some sh, s
             | None -> None, false
 
-        { Kind = EFrom(fmt, shape, seqOf)
+        { Kind = EFrom(fmt, shape, seqOf, streamW.IsSome)
           Span = span }
 
 let private toExpr =
-    spanned (keyword "to" >>. ident)
+    spanned (
+        keyword "to" >>. ident
+        // there is no write-side stream word [D:wire-unions]: `to yaml`
+        // on a seq already writes the `---` stream, `to jsonl` NDJSON
+        .>> ((attempt (pstring "stream" .>> notFollowedBy (satisfy isIdentCont))
+              >>. failFatally
+                      "there is no 'to … stream' — 'to yaml' on a seq already writes a '---' stream; 'to jsonl' writes NDJSON")
+             <|> preturn ())
+    )
     |>> fun (fmt, span) -> { Kind = ETo fmt; Span = span }
 
 // every name a pattern BINDS [D:interior-arming]: arm bodies and for

@@ -4,6 +4,21 @@
 
 ### New features
 
+- **`from yaml stream T` — multi-document yaml.** A `---`-separated
+  stream reads as `seq<T>`, each document one `T`. Point it at a
+  tagged union and a kubernetes apply file types end to end:
+
+  ```weir
+  bundle |> from yaml stream KDoc |> Seq.iter (fun d -> ...)
+  ```
+
+  A homogeneous stream of one record type works too; an empty
+  stream is zero documents. `from yaml T` still reads exactly one
+  document — its multi-document error now names the stream form
+  instead of telling you to split by hand. There is no `to … stream`
+  word: `to yaml` on a seq already writes the stream, and that
+  write reads back through the stream form.
+
 - **Tagged unions cross the wire.** Documents that come in several
   shapes discriminated by a field — kubernetes kinds, webhook event
   types — now read into a union: `[<Tag "kind">]` names the

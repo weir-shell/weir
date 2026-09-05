@@ -136,7 +136,7 @@ and ExprKind =
     | EMatch of scrutinee: Expr * arms: (Pattern * Expr option * Expr) list
     | EIf of cond: Expr * thn: Expr * els: Expr option
     | ESeq of first: Expr * rest: Expr
-    | EFrom of format: string * shape: FromShape option * seqOf: bool
+    | EFrom of format: string * shape: FromShape option * seqOf: bool * streamOf: bool
     | ETo of format: string
     | EList of items: Expr list
     | ETuple of items: Expr list
@@ -439,17 +439,18 @@ let rec sexpr (e: Expr) : string =
     | EIf(c, t, None) -> $"(if {sexpr c} {sexpr t})"
     | EIf(c, t, Some e) -> $"(if {sexpr c} {sexpr t} {sexpr e})"
     | ESeq(a, b) -> $"(seq {sexpr a} {sexpr b})"
-    | EFrom(fmt, None, _) -> $"(from {fmt})"
-    | EFrom(fmt, Some(FromName ty), false) -> $"(from {fmt} {ty})"
-    | EFrom(fmt, Some(FromName ty), true) -> $"(from {fmt} seq<{ty}>)"
-    | EFrom(fmt, Some(FromAnon fields), s) ->
+    | EFrom(fmt, None, _, _) -> $"(from {fmt})"
+    | EFrom(fmt, Some(FromName ty), false, true) -> $"(from {fmt} stream {ty})"
+    | EFrom(fmt, Some(FromName ty), false, _) -> $"(from {fmt} {ty})"
+    | EFrom(fmt, Some(FromName ty), true, _) -> $"(from {fmt} seq<{ty}>)"
+    | EFrom(fmt, Some(FromAnon fields), s, _) ->
         let shape = anonRecordName fields
 
         if s then
             $"(from {fmt} seq<{shape}>)"
         else
             $"(from {fmt} {shape})"
-    | EFrom(fmt, Some(FromMap inner), _) ->
+    | EFrom(fmt, Some(FromMap inner), _, _) ->
         let shape =
             match inner with
             | FromName n -> n
