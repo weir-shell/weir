@@ -86,7 +86,7 @@ is a language form, taught in the
 [guide](../GUIDE.md#commands-and-processes) with vendoring on the
 [tooling page](../tooling.md#yaml-schemas).
 
-## Refusals with named exits
+## What does not serialize
 
 `Instant` has no wire convention, so JSON refuses it naming
 `Instant.epochMs` and `show`. `Bytes` refuses naming

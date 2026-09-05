@@ -63,7 +63,7 @@ print "unreached"
   returning a typed seq; splat a batch with
   `git add $@(Path.glob "*.txt" |> Seq.force)`.
 - Redirects — `>`/`>>` pass through as literal argv words with a
-  warning naming the spelling: `cmd |> File.write "out.txt"`
+  warning suggesting `cmd |> File.write "out.txt"`
   (`File.append` for `>>`).
 - `&&`, `;` chaining — one command per line; a failure already stops
   the script, so sequential lines are the `&&` chain.
@@ -263,8 +263,8 @@ did-you-mean.
 - `trap`/`try` — the exit-code forms:
   [GUIDE.md](GUIDE.md#exit-codes-from-command-to-value).
 - On Windows: bare names resolve through the full `PATHEXT` list
-  (platform parity), and the `.bat`/`.cmd` hazard is a stated
-  non-claim — a batch interpreter re-parses its command line, so
+  (platform parity), and the `.bat`/`.cmd` hazard is a documented
+  limit — a batch interpreter re-parses its command line, so
   argv word integrity holds up to that hand-off (native executables
   receive words verbatim). See `SECURITY.md`.
 

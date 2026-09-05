@@ -25,7 +25,7 @@
         {
           "name": "fromBase64",
           "signature": "Bytes.fromBase64 (s: string) : Bytes",
-          "summary": "Decode standard base64 (padded or unpadded) to Bytes; raises on malformed input. The binary door Str.fromBase64 deliberately is not.",
+          "summary": "Decode standard base64 (padded or unpadded) to Bytes; raises on malformed input. Use it for binary payloads; Str.fromBase64 is the text-only twin.",
           "example": "Bytes.fromBase64 \u0022iVBORw0KGgo=\u0022",
           "pointer": null
         },
@@ -46,7 +46,7 @@
         {
           "name": "toBase64",
           "signature": "Bytes.toBase64 (b: Bytes) : string",
-          "summary": "Base64 of the bytes \u2014 one unwrapped line; the deliberate text exit (print and the boundaries refuse raw bytes).",
+          "summary": "Base64 of the bytes \u2014 one unwrapped line; the way to carry bytes as text (print and the JSON/YAML boundaries refuse raw bytes).",
           "example": null,
           "pointer": null
         },
@@ -72,7 +72,7 @@
         {
           "name": "create",
           "signature": "Dir.create (path: string) : unit",
-          "summary": "Create a directory and its parents; succeeds silently when it already exists (idempotent \u2014 an existing directory is the post-condition; the one deliberate exception to refuse-overwrite).",
+          "summary": "Create a directory and its parents; succeeds silently when it already exists (idempotent \u2014 unlike the copy/move members, which refuse existing destinations).",
           "example": "Dir.create (Path.tempRoot ())",
           "pointer": null
         },
@@ -100,7 +100,7 @@
         {
           "name": "list",
           "signature": "Dir.list (path: string) : seq\u003Cstring\u003E",
-          "summary": "The directory\u0027s entries as full paths \u2014 files and directories both, sorted (the glob precedent), eager. Filter with Seq.where \u002B File.exists/Dir.exists; \u0060Path.glob \u0022**\u0022\u0060 is the recursive spelling.",
+          "summary": "The directory\u0027s entries as full paths \u2014 files and directories both, sorted by name, eager. Filter with Seq.where \u002B File.exists/Dir.exists; use \u0060Path.glob \u0022**\u0022\u0060 for a recursive listing.",
           "example": "let d = Path.newTempDir ()\nprint $\u0022{Dir.list d |\u003E Seq.length}\u0022\nDir.delete d",
           "pointer": null
         },
@@ -276,7 +276,7 @@
         {
           "name": "mode",
           "signature": "File.mode (path: string) : Option\u003Cstring\u003E",
-          "summary": "The path\u0027s permissions as rwxr-xr-x-shaped text, an Option \u2014 None on Windows (the platform limit stated, never invented). The read follows a symlink (the File.* rule); existence does not \u2014 a dangling link raises naming the dangle. The receipt: the 0600 check before File.readSecret is File.mode p == Some \u0022rw-------\u0022.",
+          "summary": "The path\u0027s permissions as rwxr-xr-x-shaped text, an Option \u2014 None on Windows (there is no POSIX mode to report). The read follows a symlink, like the other File.* queries; existence does not \u2014 a dangling link raises naming the dangle. The typical use \u2014 checking for 0600 before File.readSecret: File.mode p == Some \u0022rw-------\u0022.",
           "example": "File.mode \u0022.\u0022 |\u003E Option.defaultValue \u0022none\u0022",
           "pointer": null
         },
@@ -325,7 +325,7 @@
         {
           "name": "stat",
           "signature": "File.stat (path: string) : FileRow",
-          "summary": "The path\u0027s FileRow \u2014 ls\u0027s own row for one path, so \u0060Path.glob ... |\u003E Seq.map File.stat\u0060 turns strings into rows. Describes the symlink itself (kind Symlink, target Some), not what it points at. Raises when absent \u2014 and a glob hit can vanish before stat reaches it (the glob timing seam).",
+          "summary": "The path\u0027s FileRow \u2014 ls\u0027s own row for one path, so \u0060Path.glob ... |\u003E Seq.map File.stat\u0060 turns strings into rows. Describes the symlink itself (kind Symlink, target Some), not what it points at. Raises when absent \u2014 and a file found by glob can vanish before stat reaches it.",
           "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/a.txt\u0022\n[\u0022x\u0022] |\u003E File.write f\nprint (File.stat f).name\nDir.deleteAll d",
           "pointer": null
         },
@@ -419,7 +419,7 @@
         {
           "name": "defaults",
           "signature": "Http.defaults : HttpRequest",
-          "summary": "The request template record: method = Get, empty url, NoAuth, no body, 30s timeout. \u0060Http.send { Http.defaults with url = u }\u0060. Sibling that reads alike: \u0060Http.get url\u0060 is a constructor returning one of these.",
+          "summary": "The request template record: method = Get, empty url, NoAuth, no body, 30s timeout. \u0060Http.send { Http.defaults with url = u }\u0060. \u0060Http.get url\u0060 and the other method constructors return one of these.",
           "example": null,
           "pointer": null
         },
@@ -562,7 +562,7 @@
         {
           "name": "debug",
           "signature": "Log.debug (message: string) : unit",
-          "summary": "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is data \u2014 every Log member writes to stderr, a law with no stream knob.",
+          "summary": "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is data \u2014 every Log member writes to stderr; there is no option to log to stdout.",
           "example": "Log.debug \u0022cache miss\u0022",
           "pointer": null
         },
@@ -597,7 +597,7 @@
         {
           "name": "traceWith",
           "signature": "Log.traceWith (thunk: unit -\u003E string) : unit",
-          "summary": "Log.trace\u0027s thunk twin: the message computes only when the level passes (weir has no lazy argument position \u2014 the Option.defaultWith precedent for the expensive argument).",
+          "summary": "Log.trace\u0027s thunk twin: the message computes only when the level passes (a plain Log.trace evaluates its message either way \u2014 use the thunk form when building the message is expensive).",
           "example": "Log.traceWith (fun () -\u003E \u0022expensive detail\u0022)",
           "pointer": null
         },
@@ -698,7 +698,7 @@
         {
           "name": "portOpen",
           "signature": "Net.portOpen (port: int) : bool",
-          "summary": "True when 127.0.0.1:\u003Cport\u003E accepts a TCP connection (250ms attempt) \u2014 poll\u0027s readiness body. Remote hosts on a receipt.",
+          "summary": "True when 127.0.0.1:\u003Cport\u003E accepts a TCP connection (250ms attempt) \u2014 poll\u0027s readiness check. Local ports only for now.",
           "example": "Net.portOpen 1",
           "pointer": null
         }
@@ -738,7 +738,7 @@
         {
           "name": "orElse",
           "signature": "Option.orElse (fallback: Option\u003C\u0027a\u003E) (opt: Option\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
-          "summary": "The option itself when Some, else the fallback (fallback first, so it pipes data-last). Stays in Option \u2014 Option.defaultValue is the one that unwraps. The fallback is an ordinary eager argument (an orElseWith twin is parked on the defaultWith precedent).",
+          "summary": "The option itself when Some, else the fallback (fallback first, so it pipes data-last). Stays in Option \u2014 Option.defaultValue is the one that unwraps. The fallback is an ordinary argument, evaluated even when the option is Some.",
           "example": "None |\u003E Option.orElse (Some 1)",
           "pointer": null
         }
@@ -785,7 +785,7 @@
         {
           "name": "newTempDir",
           "signature": "Path.newTempDir ((): unit) : string",
-          "summary": "Create a fresh unique directory under the temp root and return its path (within tmp\u0027s naming). Cleanup is the caller\u0027s or the OS\u0027s \u2014 use \u0060within tmp dir\u0060 for removal on scope exit (which the exit hook also sweeps on Ctrl\u002BC/kill); newTempDir deliberately outlives the block and is never swept.",
+          "summary": "Create a fresh unique directory under the temp root and return its path (the same naming \u0060within tmp\u0060 uses). Cleanup is the caller\u0027s or the OS\u0027s \u2014 use \u0060within tmp dir\u0060 for removal on scope exit (which the exit hook also sweeps on Ctrl\u002BC/kill); a newTempDir directory outlives every scope and is never removed automatically.",
           "example": "Path.newTempDir () |\u003E Str.startsWith (Path.tempRoot ())",
           "pointer": null
         },
@@ -889,14 +889,14 @@
         {
           "name": "of",
           "signature": "Secret.of (s: string) : Secret",
-          "summary": "Assert that a string is secret \u2014 the safe direction, for computed secrets (a generated token, a derived key). show renders ***; Secret.reveal is the one exit.",
+          "summary": "Mark a computed string (a generated token, a derived key) as secret. show renders ***; Secret.reveal is the only way back to the plain value.",
           "example": "Secret.of \u0022hunter2\u0022",
           "pointer": null
         },
         {
           "name": "reveal",
           "signature": "Secret.reveal (s: Secret) : string",
-          "summary": "The one guarded exit: the secret\u0027s plain value. Every use of the value (a header, a hash) is a deliberate reveal \u2014 the audit is the call site.",
+          "summary": "The secret\u0027s plain value \u2014 the only way out of the Secret type. Every use (a header, a hash) is a deliberate reveal; audit the call sites.",
           "example": "Secret.reveal (Secret.of \u0022x\u0022)",
           "pointer": null
         }
@@ -978,7 +978,7 @@
         {
           "name": "exactlyOne",
           "signature": "Seq.exactlyOne (xs: seq\u003C\u0027a\u003E) : \u0027a",
-          "summary": "The one element \u2014 a cardinality assertion: raises on none and on more (head silently accepts a second element, hiding a wrong-arity source). The spelling for command output expected to be one line.",
+          "summary": "The one element \u2014 a cardinality assertion: raises on none and on more (head silently accepts a second element, hiding a wrong-arity source). Use it for command output expected to be exactly one line.",
           "example": "[\u0022one line\u0022] |\u003E Seq.exactlyOne |\u003E print",
           "pointer": null
         },
@@ -1069,7 +1069,7 @@
         {
           "name": "last",
           "signature": "Seq.last (xs: seq\u003C\u0027a\u003E) : \u0027a",
-          "summary": "The last element \u2014 asserts the source is non-empty (the X/tryX rule; raises \u0027last: empty sequence\u0027), and forces the whole source by necessity: an infinite source does not return.",
+          "summary": "The last element \u2014 asserts the source is non-empty (raises \u0027last: empty sequence\u0027; Seq.tryLast answers None instead), and forces the whole source by necessity: an infinite source does not return.",
           "example": "[1; 2; 3] |\u003E Seq.last",
           "pointer": null
         },
@@ -1408,7 +1408,7 @@
         {
           "name": "fromUtf8",
           "signature": "Str.fromUtf8 (b: Bytes) : string",
-          "summary": "Decode Bytes as text; raises when the bytes are not valid UTF-8 or contain NUL (the encoding law\u0027s gate \u2014 corruption never wears a success).",
+          "summary": "Decode Bytes as text; raises when the bytes are not valid UTF-8 or contain NUL \u2014 corrupt data never decodes silently.",
           "example": null,
           "pointer": null
         },
@@ -1457,7 +1457,7 @@
         {
           "name": "sha256",
           "signature": "Str.sha256 (s: string) : string",
-          "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only \u2014 more algorithms on receipt.",
+          "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only for now.",
           "example": "Str.sha256 \u0022hello\u0022",
           "pointer": null
         },

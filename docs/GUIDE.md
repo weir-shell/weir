@@ -1330,10 +1330,10 @@ A `Secret` is a marker the renderers respect:
 
 - `show` gives `***`
 - interpolation and the wire boundaries refuse it outright
-- `Secret.reveal` is the one place the value comes back out It controls where a value
+- `Secret.reveal` is the one place the value comes back out. It controls where a value
 can flow at the boundaries weir itself renders; it is not storage
 and not memory protection ([SECURITY.md](../SECURITY.md) states
-those non-claims). The point is coverage: a token cannot slip into a
+those limits explicitly). The point is coverage: a token cannot slip into a
 log line or a shown record by accident.
 
 The primary producer is `Env.load` — env is the standard CI secret
@@ -1720,7 +1720,7 @@ deploy.weir can (capability, not behaviour — an untaken branch still counts):
     Http.fetch https://api.example.com/items  deploy.weir:8:12
   secrets:
     loads token (Env.load Cfg)  deploy.weir:2:11
-    a Secret reaches the argv of curl (ps-visible — the stated non-claim)  deploy.weir:9:9
+    a Secret reaches the argv of curl (visible in ps — weir does not hide argv)  deploy.weir:9:9
 ```
 
 Three honesty rules:

@@ -85,7 +85,7 @@ spelling — `while` points at `retry`/`poll` and seq iteration,
 the `within` scopes, `def` at `let`:
 
 ```weir-error
-while true do print "x" // 'while' is not a weir word — the teaching names retry/poll
+while true do print "x" // 'while' is not a weir word — the error points at retry/poll
 ```
 
 ## Strings
