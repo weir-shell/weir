@@ -639,14 +639,27 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             | Error _ -> []
         elif word = "" && Weir.Parser.isYamlMarkerPiece (before.TrimEnd()) then
             [ "schema=" ]
-        elif before.EndsWith "from json" || before.EndsWith "from jsonl" then
-            env.Types
-            |> Map.toList
-            |> List.choose (fun (n, def) ->
-                match def with
-                | Record _ when n.StartsWith word -> Some n
-                | _ -> None)
-            |> List.sort
+        elif
+            before.EndsWith "from json"
+            || before.EndsWith "from jsonl"
+            || before.EndsWith "from yaml"
+            || before.EndsWith "from yaml stream"
+        then
+            // record names complete in the type slot; yaml's slot also
+            // offers the stream cardinality word [D:wire-unions]
+            let names =
+                env.Types
+                |> Map.toList
+                |> List.choose (fun (n, def) ->
+                    match def with
+                    | Record _ when n.StartsWith word -> Some n
+                    | _ -> None)
+                |> List.sort
+
+            if before.EndsWith "from yaml" && "stream".StartsWith word && word <> "stream" then
+                "stream" :: names
+            else
+                names
         else
             // command HEADS at a statement head (before is empty): PATH
             // executables + command-callable builtins join the name pool; in

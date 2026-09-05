@@ -1134,8 +1134,13 @@ type Bad = C of int
   ONE document (a mapping) -> `T`; `from yaml seq<T>` reads one
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
-  true/false; anchors/flow rejected). A `---` STREAM teaches — split
-  and parse each document (weir cannot type a heterogeneous stream).
+  true/false; anchors/flow rejected). `from yaml stream T` reads a
+  `---` STREAM — N documents, EACH as T -> `seq<T>` [D:wire-unions];
+  the heterogeneous bundle (a k8s apply file) is `from yaml stream
+  KDoc` over a tagged union — stream is the cardinality, the union
+  is the per-document dispatch, composed. An empty stream is zero
+  documents; the one-document forms refuse a stream naming the
+  stream spelling. There is no `to … stream` word:
   `value |> to yaml` (a seq = multi-doc; `None` fields omit;
   ambiguous strings like `"no"`/`"007"` auto-quote). `Yaml`
   nodes (`YMap [("k", YStr "v")]`, `YSeq`, `YInt`…) render directly —

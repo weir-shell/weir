@@ -1209,6 +1209,31 @@ value defaults to its name; `[<Wire "pull_request">]` on a case
 overrides it. The `[<Other>]` case refuses to *write* — it names
 what wasn't understood, and nothing faithful can be emitted.
 
+And a `---`-separated yaml **stream** — the kubernetes apply file —
+is `from yaml stream T`: N documents, each read as `T`. The stream
+word is pure cardinality (a homogeneous stream of one record type
+is equally legal); point it at a tagged union and the mixed bundle
+types end to end:
+
+```weir
+type DeploySpec2 = { replicas: int }
+
+[<Tag "kind">]
+type K8s =
+    | Deployment of DeploySpec2
+    | [<Other>] Skipped of string
+
+["kind: Deployment"; "replicas: 3"; "---"; "kind: CronJob"]
+    |> from yaml stream K8s
+    |> Seq.iter (fun d ->
+        match d with
+        | Deployment s -> print $"deploy x{s.replicas}"
+        | Skipped k -> print $"skip {k}")
+```
+
+`to yaml` on a seq already writes the stream (no `to … stream`
+word), and that write reads back through the stream form.
+
 Fields nest: the rule is recursive. A field is one of:
 
 - a scalar — `int`, `float`, `string`, `bool`

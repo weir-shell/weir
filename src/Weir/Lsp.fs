@@ -1028,7 +1028,7 @@ let definitionTarget
 
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = topName then typeSite topName None else None)
-                    | Check.TEFromYaml(tyName, _) ->
+                    | Check.TEFromYaml(tyName, _, _) ->
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
                     // `Env.load T` / `Args.load T`: the target TYPE name jumps to
@@ -1508,7 +1508,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     match nd.Kind with
                     | Check.TEFrom(_, Check.TopRec d, _, _, _, _) -> named d.Name
                     | Check.TEFrom(_, Check.TopUnion u, _, _, _, _) -> named u.Name
-                    | Check.TEFromYaml(tyName, _) -> named tyName
+                    | Check.TEFromYaml(tyName, _, _) -> named tyName
                     | Check.TEEnvLoad(def, _) -> named def.Name
                     | Check.TEArgsLoad target ->
                         (match target with

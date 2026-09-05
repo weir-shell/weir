@@ -138,7 +138,7 @@ and TypedKind =
         mapOf: bool
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
     // the RESOLVED target tree (the [D:env-enums] precedent)
-    | TEFromYaml of tyName: string * shape: Yaml.Shape
+    | TEFromYaml of tyName: string * shape: Yaml.Shape * stream: bool
     | TETo of
         format: string *
         renames: Map<string, Map<string, string>> *
@@ -3275,7 +3275,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                           Ty = TNamed(name, [])
                           Span = expr.Span }
         }
-    | EFrom(fmt, shape, seqOf) ->
+    | EFrom(fmt, shape, seqOf, streamOf) ->
         result {
             // resolve the slot's payload to a NAME [D:anon-records]: a
             // declared name passes through; an anonymous shape resolves
@@ -3305,7 +3305,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // top level as declared); jsonl refuses — one object per line
             // is already plural in the way the wrap means
             do!
-                if seqOf && fmt = "jsonl" then
+                // the stream cardinality word is YAML's [D:wire-unions] —
+                // json's stream form is the thing literally named jsonl
+                if streamOf && fmt <> "yaml" then
+                    let n = defaultArg tyName "T"
+
+                    err
+                        expr.Span
+                        $"'from {fmt} stream' does not exist — NDJSON is 'from jsonl {n}'; one array document is 'from json seq<{n}>'"
+                elif streamOf && mapOf then
+                    err expr.Span "'from yaml stream' reads documents — Map< > has no place in the stream slot"
+                elif seqOf && fmt = "jsonl" then
                     let n = defaultArg tyName "T"
                     err expr.Span $"'from jsonl T' already yields seq<T> — write from jsonl {n}"
                 elif mapOf && fmt = "jsonl" then
@@ -3384,29 +3394,32 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | "yaml", Some name ->
                 // from yaml T reads ONE DOCUMENT -> T (a mapping at the
                 // top); from yaml seq<T> reads one SEQUENCE document ->
-                // seq<T> [D:yaml-seq] — the declared type decides the top
-                // level, never the input. Multi-document streams are not
-                // supported: weir cannot type a heterogeneous stream, and
-                // homogeneous ones are rare (the retirement's reason).
+                // seq<T> [D:yaml-seq]; from yaml stream T reads N `---`
+                // documents, EACH as T -> seq<T> [D:wire-unions] — the
+                // heterogeneous bundle is stream over a tagged union,
+                // two orthogonal spellings composed. The declared type
+                // decides the top level, never the input.
                 match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
-                    let declared = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
+                    let perDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
+                    let declared = if streamOf then TSeq perDoc else perDoc
 
-                    let! shape = yamlShape expr.Span env Set.empty declared
+                    let! shape = yamlShape expr.Span env Set.empty perDoc
 
                     return
-                        { Kind = TEFromYaml(name, shape)
+                        { Kind = TEFromYaml(name, shape, streamOf)
                           Ty = TFun(TSeq TStr, declared)
                           Span = expr.Span }
                 // a TAGGED union in the slot [D:wire-unions] — yamlShape
                 // builds the dispatch node; untagged keeps the teaching
                 | Some(Union udef) when udef.Tag.IsSome ->
-                    let declared = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
+                    let perDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
+                    let declared = if streamOf then TSeq perDoc else perDoc
 
-                    let! shape = yamlShape expr.Span env Set.empty declared
+                    let! shape = yamlShape expr.Span env Set.empty perDoc
 
                     return
-                        { Kind = TEFromYaml(name, shape)
+                        { Kind = TEFromYaml(name, shape, streamOf)
                           Ty = TFun(TSeq TStr, declared)
                           Span = expr.Span }
                 | Some(Record _) -> return! err expr.Span $"'from yaml' needs a monomorphic record; '{name}' is generic"
@@ -3420,7 +3433,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 return!
                     err
                         expr.Span
-                        "'from yaml' needs a record name, e.g. from yaml Deployment — or seq<Deployment> for a top-level sequence"
+                        "'from yaml' needs a record name, e.g. from yaml Deployment — or seq<Deployment> for a top-level sequence, or stream Deployment for '---' documents"
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
@@ -4308,8 +4321,8 @@ let anonDefs (expr: Expr) : (string * TypeDef) list =
 
     let rec walk (e: Expr) =
         (match e.Kind with
-         | EFrom(_, Some(FromAnon fields), _)
-         | EFrom(_, Some(FromMap(FromAnon fields)), _) ->
+         | EFrom(_, Some(FromAnon fields), _, _)
+         | EFrom(_, Some(FromMap(FromAnon fields)), _, _) ->
              let name = anonRecordName fields
 
              if not (acc.ContainsKey name) then

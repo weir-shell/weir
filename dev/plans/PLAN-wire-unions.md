@@ -174,7 +174,25 @@ either shape).
 - The free win pinned in e2e: `from jsonl KDoc` dispatches mixed
   NDJSON — zero new surface, the decomposition's receipt.
 
-## Session S — `from yaml stream T`
+## Session S — `from yaml stream T` — EXECUTED 2026-09-05
+
+Completion addenda:
+- Probe 4 held exactly: parseDocs already returned the list; the
+  eval half was a flag and a map. The multi-doc refusal re-points at
+  the stream form — the coherence bug that opened this arc closes.
+- DEVIATION, ruled in the row: NO grammar churn. `stream` sits
+  outside the (from|to)+adapter token; colouring it means widening
+  that token in three grammars plus the zed ritual, for colour
+  alone. Shipped uncoloured; trigger = it reading poorly in real
+  use. The manifest/lexical/tree-sitter budget went unspent.
+- `to … stream` refuses AT PARSE (the to-stage takes no argument —
+  the word would otherwise fall into application-position noise).
+- Found in passing: the from-yaml completion slot offered nothing
+  (json/jsonl only — an accident); fixed with the stream item.
+- `stream seq<T>` composes (each document a sequence document);
+  Map fences; empty stream = zero documents.
+- Gates: unit 1446 (+3, 2 re-points), e2e bundle cell + teaching
+  re-point, fuzz 3×10k owed (parser moved) and run.
 
 - Spelling: `stream` as a FORM word between adapter and type —
   `from yaml stream T` → `seq<T>`, each `---` document read as T.
