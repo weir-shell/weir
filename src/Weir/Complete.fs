@@ -639,6 +639,10 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             | Error _ -> []
         elif word = "" && Weir.Parser.isYamlMarkerPiece (before.TrimEnd()) then
             [ "schema=" ]
+        elif before.EndsWith "to yaml" && "stream".StartsWith word && word <> "stream" then
+            // the write-side stream word [D:yaml-seq-doc] — the one thing
+            // that follows a to-adapter
+            [ "stream" ]
         elif
             before.EndsWith "from json"
             || before.EndsWith "from jsonl"

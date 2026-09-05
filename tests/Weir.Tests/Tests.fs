@@ -1833,6 +1833,11 @@ let wireUnionTests =
         | Ok typed -> eval kvenv typed
         | Error terr -> failtest $"check failed: {formatError terr}"
 
+    let checkErrIn te input =
+        match Weir.Check.typecheck te (parse input) with
+        | Error terr -> terr
+        | Ok _ -> failtest "expected a type error"
+
     let kenv =
         env
         |> declare "type DepSpec = { replicas: int }"
@@ -2007,9 +2012,9 @@ let wireUnionTests =
                   "a homogeneous stream is legal (the [D:yaml-seq] clause U falsified)"
 
               Expect.equal
-                  (evalWith henv "([{ a = 1 }; { a = 2 }] |> to yaml |> from yaml stream SRow) |> Seq.length")
+                  (evalWith henv "([{ a = 1 }; { a = 2 }] |> to yaml stream |> from yaml stream SRow) |> Seq.length")
                   (VInt 2L)
-                  "to yaml's stream write reads back through the stream form"
+                  "to yaml stream's write reads back through the stream read"
 
               Expect.equal
                   (evalWith
@@ -2017,6 +2022,41 @@ let wireUnionTests =
                       "[\"- a: 1\"; \"- a: 2\"; \"---\"; \"- a: 3\"] |> from yaml stream seq<SRow> |> Seq.length")
                   (VInt 2L)
                   "stream seq<T>: each document is a sequence document"
+          }
+          test "to yaml writes ONE document: a seq is a SEQUENCE document; the stream takes the word [D:yaml-seq-doc]" {
+              Expect.equal
+                  (run "[1; 2; 3] |> to yaml" |> forceSeq)
+                  [ VStr "- 1"; VStr "- 2"; VStr "- 3" ]
+                  "a scalar seq is one sequence document, not a stream"
+
+              let henv = env |> declare "type YR = { a: int }"
+
+              Expect.equal
+                  (evalWith henv "[{ a = 1 }; { a = 2 }] |> to yaml" |> forceSeq)
+                  [ VStr "- a: 1"; VStr "- a: 2" ]
+                  "a record seq is one sequence document"
+
+              Expect.equal
+                  (evalWith henv "([{ a = 1 }; { a = 2 }] |> to yaml |> from yaml seq<YR>) |> Seq.length")
+                  (VInt 2L)
+                  "to yaml |> from yaml seq<T> — the pairing that was crossed until now"
+
+              Expect.equal
+                  (evalWith henv "[{ a = 9 }] |> to yaml stream" |> forceSeq)
+                  [ VStr "a: 9" ]
+                  "the stream word writes documents (a one-element stream has no separator)"
+
+              Expect.equal
+                  (run "[(\"k\", \"v\")] |> to yaml" |> forceSeq)
+                  [ VStr "k: v" ]
+                  "a pair-seq stays ONE mapping document"
+
+              Expect.stringContains
+                  (checkErrIn henv "{ a = 1 } |> to yaml stream").Message
+                  "'to yaml stream' needs a seq (a document per element), got YR — one document is 'to yaml'"
+                  ""
+
+              expectParse "xs |> to yaml stream" "(xs |> (to yaml stream))"
           }
           test "the stream fences and the re-pointed teaching" {
               Expect.stringContains
@@ -2029,9 +2069,10 @@ let wireUnionTests =
                   "Map< > has no place in the stream slot"
                   ""
 
-              match Weir.Parser.parseStmt "[{ V = 1 }] |> to yaml stream" with
-              | Ok _ -> failtest "'to yaml stream' must refuse at parse"
-              | Error msg -> Expect.stringContains msg "there is no 'to … stream'" ""
+              Expect.stringContains
+                  (checkErr "[1] |> to json stream").Message
+                  "'to json stream' does not exist — one document per element is 'to jsonl'"
+                  ""
 
               let henv = env |> declare "type SR2 = { a: int }"
 
@@ -13760,7 +13801,7 @@ let floatBoundaryTests =
               let e = env |> declare "type FY = { rate: float; label: string }"
 
               let rendered =
-                  match Weir.Check.typecheck e (parse "[{ rate = 1.5; label = \"1.5\" }] |> to yaml |> Seq.force") with
+                  match Weir.Check.typecheck e (parse "{ rate = 1.5; label = \"1.5\" } |> to yaml |> Seq.force") with
                   | Ok te -> eval valueEnv te
                   | Error terr -> failtest terr.Message
 

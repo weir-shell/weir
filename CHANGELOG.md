@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.0.19
+
+### New features
+
+- **Breaking: `to yaml` writes ONE document; `to yaml stream`
+  writes the `---` bundle.** The write side now mirrors the read
+  side exactly, completing the grid json got in v0.0.17:
+  `[1; 2; 3] |> to yaml` renders one sequence document (`- 1`,
+  `- 2`, `- 3` — json's array, one format over), a record seq
+  renders a sequence of mappings, and the multi-document bundle
+  takes the same word the reader uses: `docs |> to yaml stream`.
+  Every form now reads back through its own name — `to yaml |>
+  from yaml seq<T>` and `to yaml stream |> from yaml stream T`
+  both roundtrip (the first never did before). A pair-seq still
+  renders one mapping document.
+
+### Checks clean, behaves differently
+
+- `xs |> to yaml` on a seq previously wrote `---`-separated
+  documents; it now writes ONE sequence document. Scripts that
+  meant the bundle should say `to yaml stream` — same bytes as
+  before.
+
 ## v0.0.18
 
 ### Docs

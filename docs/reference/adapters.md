@@ -76,11 +76,13 @@ both directions). `from yaml stream T` reads a `---`-separated
 stream — N documents, each as `T`, so the heterogeneous bundle (a
 kubernetes apply file) is `from yaml stream KDoc` over a tagged
 union: the stream word is the cardinality, the union the
-per-document dispatch. An empty stream is zero documents. `to yaml`
-renders a `yaml` block's value; a multiline string renders as a
-block scalar; a seq writes the `---` stream (there is no
-`to … stream` word — the seq already means it), and the write reads
-back through the stream form. The `yaml` template
+per-document dispatch. An empty stream is zero documents. The write
+side mirrors the read exactly: `to yaml` writes ONE document — a
+record is a mapping, a seq a sequence document, a pair-seq one
+mapping — and `to yaml stream` writes one document per element, so
+every form reads back through its own name (`to yaml |> from yaml
+seq<T>`, `to yaml stream |> from yaml stream T`). A multiline
+string renders as a block scalar. The `yaml` template
 literal itself — checked structure, splices as nodes, `schema=` —
 is a language form, taught in the
 [guide](../GUIDE.md#commands-and-processes) with vendoring on the

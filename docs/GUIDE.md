@@ -1229,8 +1229,10 @@ for d in ["kind: Deployment"; "replicas: 3"; "---"; "kind: CronJob"] |> from yam
     | Skipped k -> print $"skip {k}"
 ```
 
-`to yaml` on a seq already writes the stream (no `to … stream`
-word), and that write reads back through the stream form.
+The write side pairs the same way: `to yaml` on a seq writes one
+*sequence document* (json's array, one format over — it reads back
+with `from yaml seq<T>`), and `to yaml stream` writes the
+`---`-separated bundle that `from yaml stream T` reads.
 
 Fields nest: the rule is recursive. A field is one of:
 
