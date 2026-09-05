@@ -1172,6 +1172,43 @@ let hosts = ["[{\"host\": \"a\"}, {\"host\": \"b\"}]"] |> from json seq<Peer2> |
 hosts |> print
 ```
 
+When documents come in *several* shapes discriminated by a field —
+kubernetes kinds, webhook event types — declare a **tagged union**:
+`[<Tag "kind">]` names the discriminator, each case carries the
+record for one kind, and reading dispatches on the tag. An
+`[<Other>]` case opts the union into open-world reading: kinds you
+didn't declare land there (carrying the raw tag) instead of
+erroring, and your `match` decides what happens to them — nothing
+is silently dropped. Without it the union is closed and an unknown
+tag errors naming the declared cases.
+
+```weir
+type PushEv = { branch: string }
+type IssueEv = { title: string }
+
+[<Tag "event">]
+type Hook =
+    | Push of PushEv
+    | Issue of IssueEv
+    | [<Other>] Ignored of string
+
+["{\"event\":\"Push\",\"branch\":\"main\"}"; "{\"event\":\"Star\"}"]
+    |> from jsonl Hook
+    |> Seq.iter (fun h ->
+        match h with
+        | Push p -> print $"push to {p.branch}"
+        | Issue i -> print $"issue: {i.title}"
+        | Ignored e -> print $"ignored {e}")
+```
+
+The same union reads a mixed array (`from json seq<Hook>`), a yaml
+document (`from yaml Hook`), a record field, or a `Map` value — and
+writes back with the tag reinserted first (`Push { branch = "x" }
+|> to json` gives `{"event":"Push","branch":"x"}`). A case's tag
+value defaults to its name; `[<Wire "pull_request">]` on a case
+overrides it. The `[<Other>]` case refuses to *write* — it names
+what wasn't understood, and nothing faithful can be emitted.
+
 Fields nest: the rule is recursive. A field is one of:
 
 - a scalar — `int`, `float`, `string`, `bool`

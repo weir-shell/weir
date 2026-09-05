@@ -3200,8 +3200,85 @@ echo "$errout" | grep -qF "duplicate short '-c'" || fail "explicit shorts collid
 echo "e2e ok: explicit short collision is a check error"
 
 errout=$($BIN -e 'let x = [<Short "c">] 1' 2>&1) && fail "expression-position attribute must reject"
-echo "$errout" | grep -qF "attributes attach to record fields" || fail "non-field position names the scope: $errout"
-echo "e2e ok: attribute positions outside record fields reject by name"
+echo "$errout" | grep -qF "attributes attach to record fields, union cases, and type declarations" || fail "non-declaration position names the scope: $errout"
+echo "e2e ok: attribute positions outside declarations reject by name"
+
+# widened positions [D:attr-positions]: union decls and cases host
+# attributes (validated, inert until [D:wire-unions] binds them); an
+# attribute line above `type` binds to it; wrong positions teach HOMES
+cat > "$adir/attrpos.weir" <<'WEOF'
+type DepSpec = { replicas: int }
+
+[<Tag "kind">]
+type KDoc =
+    | Deployment of DepSpec
+    | [<Other>] Unknown of string
+
+let v = Deployment { replicas = 3 }
+print $"{v}"
+WEOF
+out=$($BIN "$adir/attrpos.weir")
+expect "attr positions: own-line union Tag + case Other declare clean" "Deployment ({ replicas = 3 })" "$out"
+$BIN check "$adir/attrpos.weir" >/dev/null 2>&1 || fail "attrpos.weir must check clean"
+$BIN fmt --check "$adir/attrpos.weir" >/dev/null 2>&1 || fail "fmt must accept union/case attributes"
+
+errout=$($BIN -e '[<Tag "kind">] type R = { a: int }' 2>&1) && fail "Tag on a record decl must reject"
+echo "$errout" | grep -qF "'Tag' attaches to a union declaration, not a record declaration" || fail "wrong position names the home: $errout"
+errout=$($BIN -e 'type U = [<Short "c">] A of int | B' 2>&1) && fail "Short on a case must reject"
+echo "$errout" | grep -qF "'Short' attaches to a record field, not a union case" || fail "wrong position names the home: $errout"
+echo "e2e ok: widened attribute positions — hosts declare, wrong positions teach homes"
+
+# tagged unions cross the wire [D:wire-unions]: the tag field picks the
+# case, [<Other>] is the declared open-world posture, writers reinsert
+# the tag FIRST — and `from jsonl KDoc` dispatches mixed NDJSON with
+# zero surface beyond the union itself (the decomposition's receipt)
+cat > "$adir/wireunion.weir" <<'WEOF'
+type DepSpec = { replicas: int; image: string }
+type SvcSpec = { port: int }
+
+[<Tag "kind">]
+type KDoc =
+    | Deployment of DepSpec
+    | Service of SvcSpec
+    | Ping
+    | [<Other>] Unknown of string
+
+let docs = <<<
+    {"kind":"Deployment","replicas":3,"image":"nginx"}
+    {"kind":"Service","port":80}
+    {"kind":"Ping"}
+    {"kind":"CronJob","schedule":"weekly"}
+
+docs
+|> from jsonl KDoc
+|> Seq.iter (fun d ->
+    match d with
+    | Deployment dep -> print $"deploy {dep.image} x{dep.replicas}"
+    | Service s -> print $"svc {s.port}"
+    | Ping -> print "ping"
+    | Unknown k -> printerr $"skipped kind: {k}")
+
+let one = ["kind: Deployment"; "replicas: 2"; "image: redis"] |> from yaml KDoc
+print (match one with | Deployment d -> $"yaml {d.image}" | _ -> "?")
+
+Service { port = 443 } |> to json |> Seq.iter print
+Service { port = 443 } |> to yaml |> Seq.iter print
+WEOF
+out=$(cd "$adir" && $BIN wireunion.weir 2>/dev/null)
+expect "wire unions: jsonl dispatch, yaml dispatch, tag-first writes" 'deploy nginx x3
+svc 80
+ping
+yaml redis
+{"kind":"Service","port":443}
+kind: Service
+port: 443' "$out"
+
+errout=$($BIN -e 'type NP = { n: int }
+[<Tag "k">]
+type KO = A of NP | [<Other>] U of string
+U "x" |> to json' 2>&1) && fail "an Other value must refuse to write"
+echo "$errout" | grep -qF "nothing faithful can be written" || fail "Other write refusal teaches: $errout"
+echo "e2e ok: wire unions — mixed NDJSON via from jsonl, tag dispatch both formats, Other refuses to write"
 
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"

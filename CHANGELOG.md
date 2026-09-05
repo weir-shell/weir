@@ -4,6 +4,37 @@
 
 ### New features
 
+- **Tagged unions cross the wire.** Documents that come in several
+  shapes discriminated by a field — kubernetes kinds, webhook event
+  types — now read into a union: `[<Tag "kind">]` names the
+  discriminator, each case carries the record for one kind, and
+  reading dispatches on the tag at both boundaries (JSON and YAML,
+  top level or nested — so `from jsonl KDoc` reads mixed NDJSON and
+  `from json seq<KDoc>` a mixed array):
+
+  ```weir
+  [<Tag "kind">]
+  type KDoc =
+      | Deployment of DepSpec
+      | Service of SvcSpec
+      | [<Other>] Unknown of string
+  ```
+
+  One `[<Other>]` case opts into open-world reading — kinds you
+  didn't declare land there carrying the raw tag, and your `match`
+  decides their fate; without it an unknown tag errors naming the
+  declared cases. Writers reinsert the tag first, so the roundtrip
+  holds; a case's tag value defaults to its name, `[<Wire "v1">]`
+  overrides. Untagged unions stay off the wire, the error naming
+  the attribute.
+
+- **Attributes on unions.** Union declarations and union cases now
+  host attributes, F#'s syntax — `[<Tag "kind">]` above a `type`, `|
+  [<Other>] Unknown of string` on a case. The registry stays closed
+  and is now position-aware: a registered attribute in the wrong
+  position says where it belongs (`'Tag' attaches to a union
+  declaration`), an unknown one keeps the did-you-mean.
+
 - **Breaking: `to json` writes ONE document; `to jsonl` writes
   NDJSON.** The write side now mirrors the read side: `value |> to
   json` renders one minified document — a record becomes an object,

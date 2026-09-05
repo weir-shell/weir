@@ -39,7 +39,10 @@ let fileRow: RecordDef =
 let fileKind: UnionDef =
     { Name = "FileKind"
       Params = []
-      Cases = [ "Regular", None; "Directory", None; "Symlink", None ] }
+      Cases = [ "Regular", None; "Directory", None; "Symlink", None ]
+      Tag = None
+      CaseWires = Map.empty
+      OtherCase = None }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 

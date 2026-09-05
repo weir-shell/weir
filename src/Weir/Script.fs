@@ -1619,15 +1619,41 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                         else
                             let cls = classifyPiece (raw.TrimEnd())
 
-                            close current acc
+                            // a statement-level attribute line binds to the
+                            // DECLARATION below it [D:attr-positions] — a pend
+                            // that is ONLY a complete attr list joins the next
+                            // col-0 line instead of closing (the field-attr `>]`
+                            // dangle, one level up); the joined text re-parses
+                            // as one statement, so a non-decl follower gets the
+                            // parser's position teaching, located
+                            let attrOnlyPend =
+                                match current with
+                                | Some p when
+                                    p.Brackets.IsEmpty
+                                    && p.Lambdas.IsEmpty
+                                    && p.District.IsNone
+                                    && (let t = p.LL.Text.TrimEnd() in t.StartsWith "[<" && t.EndsWith ">]")
+                                    ->
+                                    Some p
+                                | _ -> None
+
+                            let joinedLL, accR =
+                                match attrOnlyPend with
+                                | Some p -> Some p.LL, Ok acc
+                                | None -> None, close current acc
+
+                            accR
                             |> Result.bind (fun acc ->
                                 bracketFold lineNo 0 [] (raw.TrimEnd())
                                 |> Result.map (fun brackets ->
                                     Some
                                         { LL =
-                                            { Text = raw
-                                              Head = lineNo
-                                              Segments = [ (0, lineNo, 0) ] }
+                                            match joinedLL with
+                                            | Some ll -> applyJoin JSpace ll (raw.TrimEnd()) lineNo 0
+                                            | None ->
+                                                { Text = raw
+                                                  Head = lineNo
+                                                  Segments = [ (0, lineNo, 0) ] }
                                           Lets = []
                                           LastIndent = 0
                                           District =

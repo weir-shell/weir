@@ -1,5 +1,68 @@
 # Spike Notes
 
+## wire unions: the widest diff, and where it actually concentrated (2026-09-04)
+
+Session U touched both formats' read and write paths, as sized —
+but the mass was not where the plan feared. The converters were
+easy: each format grew ONE dispatch (json's readUnion, yaml's
+SUnion shape arm), and the writers ONE tagged arm each, reusing the
+record-field loops that already existed. What took the care was the
+PLUMBING of type information to places that have no env: TEFrom's
+top slot had to honestify into a DU (TopRec | TopUnion), a second
+closure (unions beside records) had to ride the node, and the WRITE
+side needed a case-keyed table because a VUnion value does not know
+its type name — which surfaced a real ruling: two tagged unions
+sharing a case name, both reachable from one serialized type, are
+declarable ([D:ambiguous-ctor] only guards bare USE) but unwritable
+in one table, so the to-site refuses naming both unions. The pin
+had to construct the collision VIA A READ — the ambiguity law
+blocks building it with constructors, which is itself the evidence
+the edge is real but thin.
+
+Two smaller finds. The builtin-name law (a tagged case may not
+spell Some/None or a Yaml node case) originally sat AFTER the
+payload law and taught the wrong repair for `Some of string` —
+check order is teaching order. And a PRE-EXISTING inference gap
+surfaced under the flagship example: `for d in xs do match d with
+| Case …` fails because the for-binder does not type from its
+source, while the piped `Seq.iter (fun d -> match …)` works —
+probed on main, not U's regression, docs use the piped spelling,
+and the fix is its own small session.
+
+The decomposition's receipt landed as predicted: `from jsonl KDoc`
+dispatches mixed NDJSON with zero new surface. The e2e cell reads
+four kinds — one of them undeclared, skipped visibly through
+[<Other>] — then writes tag-first in both formats.
+
+## attribute positions: the prerequisite that fit in an afternoon (2026-09-04)
+
+Session P of the wire-unions plan, and the sizing held because the
+hard part was NAMED before writing code: the assembler. A col-0
+attribute line above `type` is two statements by the col-0 law, so
+the join had to be taught — and the teaching already existed one
+level down, where a field's `>]` line dangles into its field. The
+statement-level twin: a pend that is ONLY a complete attr list
+joins the next col-0 line instead of closing. Guarding it on
+empty-brackets/lambdas/district took one condition; everything else
+(typeDecl's attr prefix, caseDecl's opt attrList, the
+position-scoped registry) was mechanical.
+
+Two error classes came out of the registry rework, and keeping them
+distinct is the part worth remembering: an UNKNOWN name keeps the
+did-you-mean ('Othr' → Other), a REGISTERED name in the wrong
+position teaches its HOME ('Tag' attaches to a union declaration).
+Collapsing those into one message would have made the common
+misspelling worse to fix.
+
+The FCS probes ran before any code: F# hosts attributes at both new
+positions, so the divergence row NARROWS — weir's border with F#
+got smaller by building this, which is the right direction for a
+prerequisite to move it. Tag and Other validate today and bind
+nothing (a tagged union still refuses every boundary, pinned) —
+the attribute law's validation-at-attachment / binding-at-
+consumption split carrying a whole release-sized gap without a
+special case.
+
 ## to json writes one document; to jsonl writes lines (2026-09-04)
 
 The write side had the read side's old backwardness — `to json` was

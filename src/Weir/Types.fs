@@ -272,7 +272,20 @@ let wireName (def: RecordDef) (field: string) : string =
 type UnionDef =
     { Name: string
       Params: string list
-      Cases: (string * Ty option) list }
+      Cases: (string * Ty option) list
+      // the wire discriminator [D:wire-unions]: Some field-name when
+      // the union is tagged — the key that admits it at the json/yaml
+      // boundaries. CaseWires holds the [<Wire>] OVERRIDES only (a
+      // case's tag value defaults to its name — caseWire resolves);
+      // OtherCase names the [<Other>] fallback. All three inert when
+      // Tag is None.
+      Tag: string option
+      CaseWires: Map<string, string>
+      OtherCase: string option }
+
+/// a tagged case's tag VALUE — the [<Wire>] override or the case name
+let caseWire (def: UnionDef) (case: string) : string =
+    Map.tryFind case def.CaseWires |> Option.defaultValue case
 
 type TypeDef =
     | Record of RecordDef

@@ -554,10 +554,23 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             | None -> n
 
         if word = decl.Name then
-            Some(cases |> List.map caseSig |> String.concat " | ")
+            // a tagged union shows its discriminator [D:wire-unions] —
+            // the hover carries the wire fact the cases alone cannot
+            let tagPrefix =
+                decl.Attrs
+                |> List.tryPick (fun a ->
+                    match a.AName, a.AArg with
+                    | "Tag", Some(Types.AStr t) -> Some $"[<Tag \"{t}\">] "
+                    | _ -> None)
+                |> Option.defaultValue ""
+
+            Some(
+                tagPrefix
+                + (cases |> List.map (fun (n, tyO, _) -> caseSig (n, tyO)) |> String.concat " | ")
+            )
         else
             cases
-            |> List.tryPick (fun (n, tyO) -> if n = word then Some(caseSig (n, tyO)) else None)
+            |> List.tryPick (fun (n, tyO, _) -> if n = word then Some(caseSig (n, tyO)) else None)
 
 /// a keyword, an operator, punctuation, whitespace, or the wildcard `_`
 /// hovers as NOTHING — never the enclosing node's type [D:hover-silence].
@@ -1007,9 +1020,14 @@ let definitionTarget
                                 None)
                     // `from json T`: the adapter's type name jumps to its
                     // declaration [PLAN-diagnostics-arc A3]
-                    | Check.TEFrom(_, rowDef, _, _, _) ->
+                    | Check.TEFrom(_, top, _, _, _, _) ->
+                        let topName =
+                            match top with
+                            | Check.TopRec d -> d.Name
+                            | Check.TopUnion u -> u.Name
+
                         wordAt useLl.Text jcol
-                        |> Option.bind (fun w -> if w = rowDef.Name then typeSite rowDef.Name None else None)
+                        |> Option.bind (fun w -> if w = topName then typeSite topName None else None)
                     | Check.TEFromYaml(tyName, _) ->
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
@@ -1488,7 +1506,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                             None
 
                     match nd.Kind with
-                    | Check.TEFrom(_, rowDef, _, _, _) -> named rowDef.Name
+                    | Check.TEFrom(_, Check.TopRec d, _, _, _, _) -> named d.Name
+                    | Check.TEFrom(_, Check.TopUnion u, _, _, _, _) -> named u.Name
                     | Check.TEFromYaml(tyName, _) -> named tyName
                     | Check.TEEnvLoad(def, _) -> named def.Name
                     | Check.TEArgsLoad target ->
@@ -1517,9 +1536,9 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 | Check.TEVar name -> Some(Builtins.reifierSurface name |> Option.defaultValue name)
                 | Check.TEEnvLoad _ when word = Some "load" -> Some "Env.load"
                 | Check.TEArgsLoad _ when word = Some "load" -> Some "Args.load"
-                | Check.TEFrom(fmt, _, _, _, _) when word = Some "from" || word = Some fmt -> Some $"from {fmt}"
+                | Check.TEFrom(fmt, _, _, _, _, _) when word = Some "from" || word = Some fmt -> Some $"from {fmt}"
                 | Check.TEFromYaml _ when word = Some "from" || word = Some "yaml" -> Some "from yaml"
-                | Check.TETo(fmt, _) when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
+                | Check.TETo(fmt, _, _) when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
                 | _ -> None)
             |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)
 

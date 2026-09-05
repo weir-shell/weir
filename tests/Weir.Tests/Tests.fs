@@ -946,7 +946,7 @@ let boundaryTests =
 
               // the first refusing field moved with the reshape: kind's
               // union now leads (declaration order) [D:filerow]
-              Expect.stringContains m "'FileKind' is a union, which is not admitted" "the refusal names the union field"
+              Expect.stringContains m "'FileKind' is an untagged union" "the refusal names the union field"
           }
           test "json roundtrip preserves rows (the jsonable stand-in)" {
               let src =
@@ -1794,6 +1794,194 @@ let boundaryTests =
                   (VSeq [ VStr "x" ])
           } ]
 
+let wireUnionTests =
+    // tagged unions at the wire [D:wire-unions] — the tag field picks
+    // the case (internal tagging), [<Other>] is the declared open-world
+    // posture, writers reinsert the tag FIRST
+    // `declare` extends the TYPE env only — the eval env needs the
+    // constructor VALUES beside it (the run-helper's REPL env does this
+    // for inline declarations)
+    let kvenv =
+        valueEnv
+        |> Map.add "Deployment" (VBuiltin(fun v -> VUnion("Deployment", Some v)))
+        |> Map.add "Service" (VBuiltin(fun v -> VUnion("Service", Some v)))
+        |> Map.add "Ping" (VUnion("Ping", None))
+        |> Map.add "Unknown" (VBuiltin(fun v -> VUnion("Unknown", Some v)))
+        |> Map.add "Dep" (VBuiltin(fun v -> VUnion("Dep", Some v)))
+
+    let evalWith te input =
+        match Weir.Check.typecheck te (parse input) with
+        | Ok typed -> eval kvenv typed
+        | Error terr -> failtest $"check failed: {formatError terr}"
+
+    let kenv =
+        env
+        |> declare "type DepSpec = { replicas: int }"
+        |> declare "type SvcSpec = { port: int }"
+        |> declare
+            "[<Tag \"kind\">] type KDoc = Deployment of DepSpec | Service of SvcSpec | Ping | [<Other>] Unknown of string"
+
+    testList
+        "wire unions [D:wire-unions]"
+        [ test "declaration laws refuse, each teaching" {
+              let e1 = env |> declErr "[<Tag \"kind\">] type B1 = C1 of int"
+              Expect.stringContains e1.Message "carries a declared record (or nothing) — 'C1' carries int" ""
+
+              let e2 =
+                  env
+                  |> declare "type BadP = { kind: string }"
+                  |> declErr "[<Tag \"kind\">] type B2 = C2 of BadP"
+
+              Expect.stringContains e2.Message "the tag rides the union, not the payload" ""
+
+              let e3 =
+                  env |> declErr "[<Tag \"k\">] type B3 = [<Wire \"x\">] C3 | [<Wire \"x\">] D3"
+
+              Expect.stringContains e3.Message "share the tag value 'x'" ""
+
+              let e4 = env |> declErr "[<Tag \"k\">] type B4<'a> = C4 of int"
+              Expect.stringContains e4.Message "a tagged union is monomorphic" ""
+
+              let e5 = env |> declErr "[<Tag \"k\">] type B5 = Some of string | C5"
+              Expect.stringContains e5.Message "is the wire spelling of a builtin" ""
+          }
+          test "json read dispatches on the tag; payload, nullary, and Other all land" {
+              let v =
+                  evalWith
+                      kenv
+                      "[\"{\\\"kind\\\":\\\"Deployment\\\",\\\"replicas\\\":3}\"; \"{\\\"kind\\\":\\\"Ping\\\"}\"; \"{\\\"kind\\\":\\\"CronJob\\\"}\"] |> from jsonl KDoc"
+
+              match forceSeq v with
+              | [ VUnion("Deployment", Some(VRecord("DepSpec", [ "replicas", VInt 3L ])))
+                  VUnion("Ping", None)
+                  VUnion("Unknown", Some(VStr "CronJob")) ] -> ()
+              | other -> failtest $"dispatch broke: {other}"
+          }
+          test "a missing tag is malformed (never Other's); an unmatched tag without Other names the cases" {
+              let ex =
+                  Expect.throwsC (fun () -> evalWith kenv "[\"{\\\"replicas\\\":1}\"] |> from json KDoc" |> ignore) id
+
+              Expect.stringContains ex.Message "missing tag field 'kind' (KDoc)" ""
+
+              let closed =
+                  env
+                  |> declare "type CP = { n: int }"
+                  |> declare "[<Tag \"k\">] type Closed = OnlyCase of CP"
+
+              let ex2 =
+                  Expect.throwsC
+                      (fun () ->
+                          evalWith closed "[\"{\\\"k\\\":\\\"Nope\\\",\\\"n\\\":1}\"] |> from json Closed"
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex2.Message "matches no case of Closed (cases: OnlyCase)" ""
+          }
+          test "yaml read dispatches; Other catches; missing tag teaches" {
+              let v = evalWith kenv "[\"kind: Service\"; \"port: 80\"] |> from yaml KDoc"
+
+              Expect.equal v (VUnion("Service", Some(VRecord("SvcSpec", [ "port", VInt 80L ])))) "dispatch"
+
+              let o = evalWith kenv "[\"kind: CronJob\"; \"x: 1\"] |> from yaml KDoc"
+              Expect.equal o (VUnion("Unknown", Some(VStr "CronJob"))) "the fallback carries the tag"
+
+              let ex =
+                  Expect.throwsC (fun () -> evalWith kenv "[\"port: 80\"] |> from yaml KDoc" |> ignore) id
+
+              Expect.stringContains ex.Message "missing tag field 'kind' (KDoc)" ""
+          }
+          test "the array document and the field/Map positions admit" {
+              let n =
+                  evalWith
+                      kenv
+                      "[\"[{\\\"kind\\\":\\\"Ping\\\"},{\\\"kind\\\":\\\"Deployment\\\",\\\"replicas\\\":1}]\"] |> from json seq<KDoc> |> Seq.length"
+
+              Expect.equal n (VInt 2L) "seq<KDoc> reads a mixed array"
+
+              let wenv = kenv |> declare "type Wrap = { name: string; doc: KDoc }"
+
+              let w =
+                  evalWith
+                      wenv
+                      "[\"{\\\"name\\\":\\\"x\\\",\\\"doc\\\":{\\\"kind\\\":\\\"Ping\\\"}}\"] |> from json Wrap |> _.doc"
+
+              Expect.equal w (VUnion("Ping", None)) "a union FIELD dispatches"
+
+              let m =
+                  evalWith
+                      kenv
+                      "[\"{\\\"a\\\":{\\\"kind\\\":\\\"Ping\\\"}}\"] |> from json Map<string, KDoc> |> Map.get \"a\""
+
+              Expect.equal m (VUnion("Ping", None)) "a Map VALUE dispatches"
+          }
+          test "writers reinsert the tag FIRST; wire overrides and nullary hold; roundtrips pair" {
+              Expect.equal
+                  (evalWith kenv "Deployment { replicas = 2 } |> to json" |> forceSeq)
+                  [ VStr "{\"kind\":\"Deployment\",\"replicas\":2}" ]
+                  "tag first, payload after"
+
+              Expect.equal
+                  (evalWith kenv "Ping |> to json" |> forceSeq)
+                  [ VStr "{\"kind\":\"Ping\"}" ]
+                  "a nullary case is a tag-only document"
+
+              Expect.equal
+                  (evalWith kenv "[Ping; Service { port = 1 }] |> to jsonl" |> forceSeq)
+                  [ VStr "{\"kind\":\"Ping\"}"; VStr "{\"kind\":\"Service\",\"port\":1}" ]
+                  "mixed NDJSON writes"
+
+              Expect.equal
+                  (evalWith kenv "Service { port = 443 } |> to yaml" |> forceSeq)
+                  [ VStr "kind: Service"; VStr "port: 443" ]
+                  "yaml: the tag entry leads"
+
+              let wire =
+                  env
+                  |> declare "type WP = { n: int }"
+                  |> declare "[<Tag \"kind\">] type KW = [<Wire \"apps/v1.Dep\">] Dep of WP"
+
+              Expect.equal
+                  (evalWith wire "Dep { n = 1 } |> to json" |> forceSeq)
+                  [ VStr "{\"kind\":\"apps/v1.Dep\",\"n\":1}" ]
+                  "the [<Wire>] value writes"
+
+              Expect.equal
+                  (evalWith
+                      kenv
+                      "(Deployment { replicas = 5 } |> to json |> from json KDoc) == Deployment { replicas = 5 }")
+                  (VBool true)
+                  "to json |> from json KDoc is identity"
+          }
+          test "the [<Other>] value refuses to WRITE — nothing faithful" {
+              let ex =
+                  Expect.throwsC (fun () -> evalWith kenv "Unknown \"CronJob\" |> to json" |> forceSeq |> ignore) id
+
+              Expect.stringContains ex.Message "nothing faithful can be written" ""
+          }
+          test "two reachable tagged unions sharing a case name refuse at the write site" {
+              // `Shared` is ambiguous at bare USE [D:ambiguous-ctor], so the
+              // colliding value arrives via a READ — the closure still
+              // reaches both unions, and the writer cannot key the case
+              let e2 =
+                  env
+                  |> declare "type P1 = { a: int }"
+                  |> declare "[<Tag \"k\">] type U1 = Shared of P1"
+                  |> declare "[<Tag \"k\">] type UU2 = [<Wire \"other\">] Shared2 of P1 | Shared"
+                  |> declare "type Both = { x: U1; y: UU2 }"
+
+              let terr =
+                  match
+                      Weir.Check.typecheck
+                          e2
+                          (parse
+                              "let x = [\"{\\\"k\\\":\\\"Shared\\\",\\\"a\\\":1}\"] |> from json U1 in ({ x = x; y = Shared2 { a = 2 } } |> to json)")
+                  with
+                  | Error terr -> terr
+                  | Ok _ -> failtest "a shared case name across reachable unions must refuse"
+
+              Expect.stringContains terr.Message "belongs to tagged unions 'U1' and 'UU2'" ""
+          } ]
+
 let boundaryCheckTests =
     testList
         "Boundary check errors"
@@ -1804,7 +1992,7 @@ let boundaryCheckTests =
               Expect.stringContains (checkErr "[\"x\"] |> from json Missing").Message "unknown type 'Missing'" ""
           }
           test "from json rejects unions" {
-              Expect.stringContains (checkErr "[\"x\"] |> from json Job").Message "needs a record" ""
+              Expect.stringContains (checkErr "[\"x\"] |> from json Job").Message "is an untagged union" ""
           }
           test "unknown format is rejected" {
               Expect.stringContains (checkErr "[\"x\"] |> from toml").Message "unknown format 'toml'" ""
@@ -1817,7 +2005,7 @@ let boundaryCheckTests =
           }
           test "to json on a union seq is rejected" {
               let e = "let xs = nats |> map (fun n -> Running n) in xs |> to json"
-              Expect.stringContains (checkErr e).Message "is a union, which is not admitted" ""
+              Expect.stringContains (checkErr e).Message "is an untagged union" ""
           }
           test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" } ]
 
@@ -3402,18 +3590,87 @@ let attributeTests =
               | Ok _ -> failtest "expected a parse rejection"
               | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
           }
-          test "non-field positions name the scope decision" {
+          test "non-declaration positions name the scope decision [D:attr-positions]" {
               match Weir.Parser.parseExpr "[<Short \"c\">] 1" with
               | Ok _ -> failtest "expected a parse rejection"
-              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
-
-              match Weir.Parser.parseStmt "type U = [<Short \"c\">] A of int | B" with
-              | Ok _ -> failtest "expected a parse rejection"
-              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
+              | Error msg ->
+                  Expect.stringContains msg "attributes attach to record fields, union cases, and type declarations" ""
 
               match Weir.Parser.parseStmt "let f [<Short \"c\">] x = x" with
               | Ok _ -> failtest "expected a parse rejection"
-              | Error msg -> Expect.stringContains msg "attributes attach to record fields" ""
+              | Error msg ->
+                  Expect.stringContains msg "attributes attach to record fields, union cases, and type declarations" ""
+          }
+          // the widened positions [D:attr-positions]: union decls and cases
+          // HOST attributes; the registry is position-scoped; Tag/Other
+          // validate here and bind at the wire boundary [D:wire-unions]
+          test "a union declaration hosts [<Tag>]; the def carries the binding [D:wire-unions]" {
+              let env' =
+                  env
+                  |> declare "type KTP = { n: int }"
+                  |> declare "[<Tag \"kind\">] type KT = Alpha of KTP | Beta"
+
+              match Map.tryFind "KT" env'.Types with
+              | Some(Union def) ->
+                  Expect.equal (List.map fst def.Cases) [ "Alpha"; "Beta" ] "cases unchanged"
+                  Expect.equal def.Tag (Some "kind") "the tag binds"
+              | other -> failtest $"expected a union def, got {other}"
+          }
+          test "a union case hosts [<Wire>]/[<Other>] (tagged — the attrs bind now [D:wire-unions])" {
+              env
+              |> declare "type AP = { n: int }"
+              |> declare "[<Tag \"kind\">] type KC = [<Wire \"apps/v1\">] Apps of AP | [<Other>] Rest of string"
+              |> ignore
+          }
+          test "a registered attribute in the wrong position teaches its HOME" {
+              let terr = env |> declErr "type U2 = [<Short \"c\">] A2 of int | B2"
+              Expect.stringContains terr.Message "'Short' attaches to a record field, not a union case" ""
+
+              let terr2 = env |> declErr "[<Tag \"kind\">] type R2 = { a: int }"
+              Expect.stringContains terr2.Message "'Tag' attaches to a union declaration, not a record declaration" ""
+
+              let terr3 = env |> declErr "type U3 = [<Tag \"kind\">] A3 of int | B3"
+              Expect.stringContains terr3.Message "'Tag' attaches to a union declaration, not a union case" ""
+          }
+          test "Tag wants a nonempty string; Other is argless; one Other per union" {
+              let terr = env |> declErr "[<Tag>] type U4 = A4 of int"
+              Expect.stringContains terr.Message "expects the discriminator field as a string" ""
+
+              let terr2 = env |> declErr "type U5 = [<Other \"x\">] A5 of int | B5"
+              Expect.stringContains terr2.Message "takes no argument" ""
+
+              let terr3 = env |> declErr "type U6 = [<Other>] A6 | [<Other>] B6"
+              Expect.stringContains terr3.Message "declares [<Other>] twice" ""
+          }
+          test "unknown case attribute keeps the did-you-mean" {
+              let terr = env |> declErr "type U7 = [<Othr>] A7 of int | B7"
+              Expect.stringContains terr.Message "unknown attribute 'Othr'" ""
+              Expect.stringContains terr.Message "Did you mean 'Other'?" ""
+          }
+          test "an attribute line binds to the declaration BELOW it (the assembler join)" {
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "attrjoin.weir"
+                      [ "[<Tag \"kind\">]"
+                        "type KJ ="
+                        "    | One"
+                        "    | Two"
+                        "let v = Two"
+                        "print $\"{v}\"" ]
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the own-line form parses"
+          }
+          test "an attribute line above a NON-declaration gets the position teaching, located" {
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines "attrbad.weir" [ "[<Tag \"kind\">]"; "let x = 1"; "print $\"{x}\"" ]
+
+              let errs = ds |> List.filter (fun d -> d.Severity = "error")
+              Expect.isNonEmpty errs "must refuse"
+
+              Expect.stringContains
+                  errs.Head.Message
+                  "attributes attach to record fields, union cases, and type declarations"
+                  "the position teaching"
           } ]
 
 let typedArgvTests =
@@ -10911,7 +11168,7 @@ let recursiveFieldTests =
               match Weir.Check.typecheck e (parse "[\"{}\"] |> from json Top") with
               | Error terr ->
                   Expect.stringContains terr.Message "field 'mid.u'" "the dotted path locates the failure"
-                  Expect.stringContains terr.Message "is a union, which is not admitted" "the why"
+                  Expect.stringContains terr.Message "is an untagged union" "the why"
                   Expect.stringContains terr.Message "record of admitted fields, seq of an admitted" "the categories"
               | Ok _ -> failtest "a union field must refuse"
           }
@@ -15198,6 +15455,7 @@ let allTests =
           polymorphismTests
           boundaryTests
           boundaryCheckTests
+          wireUnionTests
           shorthandTests
           completionTests
           rowTests

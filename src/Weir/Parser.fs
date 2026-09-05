@@ -284,9 +284,10 @@ let private barePipeHint: Parser<unit, unit> =
          <|> failFatallyAt pipePos "'|' chains commands; pipe expressions with '|>'")
     <|> preturn ()
 
-// non-field positions name the scope decision [D:attributes]
+// non-declaration positions name the scope decision [D:attr-positions]
 let private attrsRejectHere: Parser<unit, unit> =
-    followedBy (pstring "[<") >>. failFatally "attributes attach to record fields"
+    followedBy (pstring "[<")
+    >>. failFatally "attributes attach to record fields, union cases, and type declarations"
 
 let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
@@ -3652,18 +3653,21 @@ anonShapeRef.Value <-
         (sepBy1 (fieldNameDecl .>> str_ws ":" .>>. tySyn) (str_ws ";"))
 
 let private caseDecl =
+    // a case hosts attributes [D:attr-positions] — [<Wire>]/[<Other>]
+    // ride here; validation is the checker's (position-scoped registry)
     // peek-validate-then-consume: a post-consumption fail reports past
     // the word (its trailing ws even crosses physical lines) — lookAhead
     // restores the position so the error lands ON the constructor
-    (attrsRejectHere >>% Unchecked.defaultof<_>)
-    <|> (lookAhead rawWord
-         >>= fun w ->
-             if keywords.Contains w then
-                 failFatally $"'{w}' is a keyword"
-             elif not (Char.IsUpper w[0]) then
-                 failFatally "constructor names must start with an uppercase letter"
-             else
-                 rawWord .>> ws >>= fun w -> opt (keyword "of" >>. tySyn) |>> fun ty -> w, ty)
+    opt attrList
+    .>>. (lookAhead rawWord
+          >>= fun w ->
+              if keywords.Contains w then
+                  failFatally $"'{w}' is a keyword"
+              elif not (Char.IsUpper w[0]) then
+                  failFatally "constructor names must start with an uppercase letter"
+              else
+                  rawWord .>> ws >>= fun w -> opt (keyword "of" >>. tySyn) |>> fun ty -> w, ty)
+    |>> fun (attrs, (w, ty)) -> w, ty, defaultArg attrs []
 
 let private unionBody = opt (str_ws "|") >>. sepBy1 caseDecl (str_ws "|") |>> DUnion
 
@@ -3672,17 +3676,30 @@ let private typeParams =
     |>> Option.defaultValue []
 
 let private typeDecl =
-    pipe4
-        getPosition
-        (keyword "type" >>. ident .>>. typeParams .>> str_ws "=")
-        (recordBody <|> unionBody)
-        getPosition
-        (fun p (name, tps) body e ->
-            SType
-                { Name = name
-                  Params = tps
-                  Body = body
-                  Span = { Start = pos p; End = pos e } })
+    // a declaration-level attribute list precedes `type`
+    // [D:attr-positions] ([<Tag "kind">] type K = …); once attrs are
+    // consumed the decl is COMMITTED — anything but `type` next gets
+    // the position teaching, never a backtrack into expression land
+    getPosition .>>. opt attrList
+    >>= fun (p, attrs) ->
+        let core =
+            pipe3
+                (keyword "type" >>. ident .>>. typeParams .>> str_ws "=")
+                (recordBody <|> unionBody)
+                getPosition
+                (fun (name, tps) body e ->
+                    SType
+                        { Name = name
+                          Params = tps
+                          Body = body
+                          Attrs = defaultArg attrs []
+                          Span = { Start = pos p; End = pos e } })
+
+        match attrs with
+        | Some _ ->
+            core
+            <|> failFatally "attributes attach to record fields, union cases, and type declarations"
+        | None -> core
 
 // A top-level let RHS admits command mode (agent-dogfooding finding, two
 // independent hits): the RHS occupies the rest of the logical line, so
