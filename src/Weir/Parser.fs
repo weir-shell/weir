@@ -2124,7 +2124,12 @@ let private forExprBody =
                     let span = { Start = pos p; End = body.Span.End }
                     let mk k = { Kind = k; Span = span }
                     let iter = mk (EVar "|seqIter")
-                    mk (EApp(mk (EApp(iter, mk (ELambdaPat(binder, body)))), source))
+                    // the PIPE shape, not plain application [D:for-binder]:
+                    // EPipe infers the SOURCE first, so the binder's type
+                    // is known when the body checks — a constructor match
+                    // on the binder resolves (the applied shape checked
+                    // the lambda blind and refused it)
+                    mk (EPipe(source, mk (EApp(iter, mk (ELambdaPat(binder, body))))))
 
 // [for p in xs -> e] [D:for-do]: F#'s list comprehension, desugared to
 // `xs |> Seq.map (fun p -> e) |> Seq.force` -- Seq.force keeps the list
@@ -2147,8 +2152,10 @@ comprehensionLitRef.Value <-
         let field name =
             mk (EVar(if name = "map" then "|seqMap" else "|seqForce"))
 
+        // the PIPE shape [D:for-binder] — the comprehension's twin of the
+        // statement form's fix: source first, so the binder types
         let mapped =
-            mk (EApp(mk (EApp(field "map", mk (ELambdaPat(binder, elem)))), source))
+            mk (EPipe(source, mk (EApp(field "map", mk (ELambdaPat(binder, elem))))))
 
         mk (EApp(field "force", mapped)))
     .>> ws

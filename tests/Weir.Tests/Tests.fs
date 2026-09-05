@@ -1096,9 +1096,9 @@ let boundaryTests =
               Expect.isError (Weir.Parser.parseLine cmdResolver "let module = 1") "module reserved"
           }
           test "for/do desugars to Seq.iter — the typed tree never sees `for` [D:for-do]" {
-              expectParse "for x in [1; 2] do print (show x)" "((|seqIter (funpat x (print (show x)))) [1; 2])"
+              expectParse "for x in [1; 2] do print (show x)" "([1; 2] |> (|seqIter (funpat x (print (show x)))))"
               // tuple binder rides binderPat
-              expectParse "for (k, v) in pairs do print k" "((|seqIter (funpat (k, v) (print k))) pairs)"
+              expectParse "for (k, v) in pairs do print k" "(pairs |> (|seqIter (funpat (k, v) (print k))))"
           }
           test "for/do equivalence: both spellings evaluate identically [D:for-do]" {
               skipOnWindows ()
@@ -1118,8 +1118,27 @@ let boundaryTests =
           test "the comprehension desugars to Seq.map |> Seq.force, bypassing EList [D:for-do]" {
               // the session finding: same desugar path as the statement form —
               // list-literal inference (empty-list var, unification) untouched
-              expectParse "[for x in xs -> x * 2]" "(|seqForce ((|seqMap (funpat x (* x 2))) xs))"
+              expectParse "[for x in xs -> x * 2]" "(|seqForce (xs |> (|seqMap (funpat x (* x 2)))))"
               Expect.equal (run "[for x in [1; 2; 3] -> x * 10]" |> forceSeq) [ VInt 10L; VInt 20L; VInt 30L ] ""
+          }
+          test "the for binder TYPES from its source — a constructor match resolves [D:for-binder]" {
+              // the desugar is the PIPE shape, so the source infers before
+              // the body — surfaced by the wire-unions flagship loop, where
+              // `for d in docs do match d with | Case …` refused with
+              // \"this one has type 'a1\" while the piped spelling worked
+              let e = env |> declare "type FB = FA of int | FBu"
+
+              match
+                  Weir.Check.typecheck
+                      e
+                      (parse "for d in [FA 1; FBu] do (match d with | FA n -> print $\"{n}\" | FBu -> print \"b\")")
+              with
+              | Ok _ -> ()
+              | Error terr -> failtest $"the binder must type from the source: {formatError terr}"
+
+              match Weir.Check.typecheck e (parse "[for d in [FA 1; FBu] -> match d with | FA n -> n | FBu -> 0]") with
+              | Ok _ -> ()
+              | Error terr -> failtest $"the comprehension binder must type too: {formatError terr}"
           }
           test "for and do are reserved words; sudo at EOL does not dangle [D:for-do]" {
               Expect.isError (Weir.Parser.parseLine cmdResolver "let for = 1") "for reserved"
