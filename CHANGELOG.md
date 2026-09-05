@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.0.18
+
+### Docs
+
+- Help text reads as prose. The hover/`#help` docs (and the
+  reference pages built from them) dropped their emphasis caps and
+  in-house shorthand: `to json` now says "render one value as one
+  JSON document" rather than "ONE value as ONE JSON document", and
+  phrases like "more algorithms on receipt" or "the X/tryX rule"
+  became plain statements ("sha256 only for now"; "Seq.tryLast
+  answers None instead"). Same facts, said normally. The
+  `weir check --can` secrets line joined in: a Secret in argv is now
+  reported as "visible in ps — weir does not hide argv".
+
+- The homepage shows the language above the fold — beat 1's refusal
+  sits beside the install lines — and shared links unfurl with a
+  preview card (the mark, the tagline, and that same genuine
+  refusal).
+
+### Chores
+
+- The installer distinguishes "gh not authenticated" from "network
+  or attestation unavailable" when verifying build provenance —
+  `gh attestation` requires auth even for public repos, and the note
+  now says `gh auth login` is the repair. The embedded checksum
+  remains the primary verification either way.
+
 ## v0.0.17
 
 ### New features
