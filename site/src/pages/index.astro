@@ -2,12 +2,15 @@
 // The hero [D:hero]: the maintenance story, told in three beats that
 // each answer one alternative — bash/PowerShell/Nushell (the check is
 // the test), PowerShell at tool scale (a real CLI, free), F# scripts
-// (one static binary). The catastrophe material (splice/Steam/pgpool)
-// illustrates "predictable" BELOW the fold; --can is a second-visit
-// feature and sits below too. Every quoted output on this page comes
-// from a run of the shipped binary and is pinned (unit byte-pin for the
-// splice refusal; the e2e hero-currency cell for everything quoted) —
-// never the docs gate, which asserts executability, not output.
+// (one static binary). Beat 1 sits IN the fold ([D:og-card]'s sibling
+// move: a language's product is code, so the fold shows a refusal
+// beside the install lines). The catastrophe material
+// (splice/Steam/pgpool) illustrates "predictable" BELOW the fold;
+// --can is a second-visit feature and sits below too. Every quoted
+// output on this page comes from a run of the shipped binary and is
+// pinned (unit byte-pin for the splice refusal; the e2e hero-currency
+// cell for everything quoted) — never the docs gate, which asserts
+// executability, not output.
 import Base from "../layouts/Base.astro";
 import queilThemes from "../lib/queil-weir.mjs";
 import { Code } from "astro:components";
@@ -90,49 +93,58 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 ---
 
 <Base>
-  <h1>For scripts that became tools.</h1>
-  <p class="what">weir is a typed shell-scripting language.</p>
-  <p class="sub">
-    Commands, pipes and files, like bash — with a checker up front.
-    The whole file is checked, every command included, and nothing
-    runs until everything checks. One static binary: no runtime, no
-    compile step, the same on Linux, macOS and Windows.
-  </p>
-  <div class="install-lines">
-    <div class="install-line">
-      <span class="os">Linux · macOS</span>
-      <pre><code id="install-cmd">curl -fsSL https://weir.sh/install.sh | sh</code></pre>
-      <button class="copy-btn" data-copy="install-cmd" aria-label="Copy install command" title="Copy">
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
-      </button>
+  <div class="hero-grid">
+    <div class="hero-intro">
+      <h1>For scripts that became tools.</h1>
+      <p class="what">weir is a typed shell-scripting language.</p>
+      <p class="sub">
+        Commands, pipes and files, like bash — with a checker up front.
+        The whole file is checked, every command included, and nothing
+        runs until everything checks. One static binary: no runtime, no
+        compile step, the same on Linux, macOS and Windows.
+      </p>
+      <div class="install-lines">
+        <div class="install-line">
+          <span class="os">Linux · macOS</span>
+          <pre><code id="install-cmd">curl -fsSL https://weir.sh/install.sh | sh</code></pre>
+          <button class="copy-btn" data-copy="install-cmd" aria-label="Copy install command" title="Copy">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+          </button>
+        </div>
+        <div class="install-line">
+          <span class="os">Windows</span>
+          <pre><code id="install-cmd-win">irm https://weir.sh/install.ps1 | iex</code></pre>
+          <button class="copy-btn" data-copy="install-cmd-win" aria-label="Copy Windows install command" title="Copy">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+          </button>
+        </div>
+        <p class="install-more">
+          <a href="/docs/install/">More install options</a> — Docker,
+          checksums, air-gapped.
+        </p>
+      </div>
     </div>
-    <div class="install-line">
-      <span class="os">Windows</span>
-      <pre><code id="install-cmd-win">irm https://weir.sh/install.ps1 | iex</code></pre>
-      <button class="copy-btn" data-copy="install-cmd-win" aria-label="Copy Windows install command" title="Copy">
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
-      </button>
+    <div class="hero-demo">
+      <p class="hero-label">
+        release.weir — a typed flag, two commands, one misspelled:
+      </p>
+      <Code code={beat1Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
+      <p class="hero-label">Run it:</p>
+      <pre class="refusal wrap">{beat1Refusal}</pre>
+      <p class="hero-caption">
+        <strong>Nothing ran</strong> — the bundle was never created,
+        nothing uploaded, no half-finished state.
+      </p>
     </div>
-    <p class="install-more">
-      <a href="/docs/install/">More install options</a> — Docker,
-      checksums, air-gapped.
-    </p>
   </div>
 
   <h2>The check is the test</h2>
   <p>
-    A small release tool: a typed flag, two commands. One of them is
-    misspelled.
-  </p>
-  <Code code={beat1Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
-  <p>Run it:</p>
-  <pre class="refusal">{beat1Refusal}</pre>
-  <p>
-    <strong>Nothing ran.</strong> The bundle was never created, nothing
-    was uploaded, no half-finished state. Your shell finds out when it
-    gets there; weir resolves every command — including the ones on
-    your PATH — and checks every type in the file before the first
-    one runs.
+    That refusal is the whole idea. Your shell finds out when it gets
+    there; weir resolves every command — including the ones on your
+    PATH — and checks every type in the file before the first one
+    runs. The output above is not a mock-up: every quoted output on
+    this page comes from running the shipped binary, verified in CI.
   </p>
 
   <h2>A real CLI, free</h2>
@@ -272,6 +284,25 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 </Base>
 
 <style is:global>
+  /* the fold shows the language: intro left, a live refusal right —
+     full-bleed like the hero band, stacking on narrow screens. The
+     demo's quoted output wraps (class "wrap") instead of scrolling,
+     so the whole refusal is visible in the column */
+  .hero-grid {
+    width: min(72rem, calc(100vw - 2.5rem));
+    margin-left: 50%;
+    transform: translateX(-50%);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(23rem, 1fr));
+    gap: 2rem;
+    align-items: start;
+  }
+  .hero-demo { margin-top: var(--space-4); }
+  .hero-demo .astro-code { font-size: 0.85rem; }
+  .refusal.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+  @media (max-width: 46rem) {
+    .hero-demo { margin-top: 0; }
+  }
   /* the hero's rhythm: headline+rule+category are ONE unit (tight),
      the paragraph another, the install block a third — gaps group */
   h1 { margin: var(--space-3) 0 0; }

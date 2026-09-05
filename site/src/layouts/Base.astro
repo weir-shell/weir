@@ -20,6 +20,20 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- the link-preview card [D:og-card]: og.png is a committed render
+         of the mark plus a genuine beat-1 refusal; absolute URL because
+         scrapers do not resolve relative image paths -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="weir" />
+    <meta property="og:title" content={title ? `${title} · weir` : "weir — a typed shell-scripting language"} />
+    <meta
+      property="og:description"
+      content="Commands, pipes and files, like bash — with a checker up front. The whole file is checked, every command included, before anything runs."
+    />
+    <meta property="og:image" content="https://weir.sh/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
     <link rel="preload" href="/fonts/iosevka-term-ext-regular.woff2" as="font" type="font/woff2" crossorigin />
     <script is:inline>
       // theme before first paint [D:queil-theme]: stored choice wins,
