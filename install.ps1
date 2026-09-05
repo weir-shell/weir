@@ -64,10 +64,17 @@ try {
 
     # signed build provenance, best-effort: if the GitHub CLI is present,
     # confirm this repo's Actions built the binary. Not required.
+    # gh attestation REQUIRES auth even for public repos — the
+    # unauthenticated case names its repair instead of guessing.
     if (Get-Command gh -ErrorAction SilentlyContinue) {
-        gh attestation verify (Join-Path $tmp $name) --repo $repo *> $null
-        if ($LASTEXITCODE -eq 0) { Write-Host "provenance: verified (gh attestation)" }
-        else { Write-Host "note: gh present but provenance not verified — the checksum stands" }
+        gh auth status *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "note: gh present but not authenticated — 'gh auth login' enables provenance verification; the checksum stands"
+        } else {
+            gh attestation verify (Join-Path $tmp $name) --repo $repo *> $null
+            if ($LASTEXITCODE -eq 0) { Write-Host "provenance: verified (gh attestation)" }
+            else { Write-Host "note: gh present but provenance not verified (network, or attestation unavailable) — the checksum stands" }
+        }
     }
 
     New-Item -ItemType Directory -Force -Path $dest | Out-Null

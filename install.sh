@@ -74,11 +74,16 @@ WEIR_SUMS
     # if the GitHub CLI is present, verify the binary was built by this
     # repo's Actions (OIDC identity) — a second, independent origin. Not
     # required (most curl|sh users lack gh); the embedded checksum stands
-    # on its own.
+    # on its own. gh attestation REQUIRES auth even for public repos, so
+    # the unauthenticated case names its repair instead of guessing.
     if command -v gh >/dev/null 2>&1; then
-        gh attestation verify "$tmp/$name" --repo "$REPO" >/dev/null 2>&1 \
-            && echo "provenance: verified (gh attestation)" \
-            || echo "note: gh present but provenance not verified (network, or attestation unavailable) — the checksum stands"
+        if ! gh auth status >/dev/null 2>&1; then
+            echo "note: gh present but not authenticated — 'gh auth login' enables provenance verification; the checksum stands"
+        elif gh attestation verify "$tmp/$name" --repo "$REPO" >/dev/null 2>&1; then
+            echo "provenance: verified (gh attestation)"
+        else
+            echo "note: gh present but provenance not verified (network, or attestation unavailable) — the checksum stands"
+        fi
     fi
 
     mkdir -p "$DEST"
