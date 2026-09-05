@@ -1,5 +1,25 @@
 # Spike Notes
 
+## the for binder: one shape, not a checker session (2026-09-05)
+
+The inference gap the wire-unions flagship surfaced dissolved into
+a one-shape fix. The cause was never the checker: [D:for-do]
+desugared to plain application `(iter lambda) source`, which infers
+the lambda — and checks its body — before the source is seen, so
+the binder sits at a fresh var exactly where a constructor pattern
+demands a known scrutinee. The hand-piped spelling always worked
+because EPipe infers its argument first. The fix makes the sugar
+desugar to the piped shape it claims to be sugar for — `source |>
+(iter lambda)` — and the comprehension twin moved identically.
+Zero checker movement; three sexpr pins moved; the GUIDE and e2e
+bundle examples flipped back to the `for` spelling they had to
+route around, which makes the flagship loop the fix's living pin.
+
+The lesson worth the ink: when a sugar checks differently from its
+expansion's idiomatic spelling, suspect the DESUGAR SHAPE before
+the checker — the checker was consistent all along; the sugar was
+expanding to the unidiomatic form.
+
 ## the stream word: the arc closes where it opened (2026-09-05)
 
 Session S was the smallest of the three, exactly as the probes

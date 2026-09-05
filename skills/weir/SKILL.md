@@ -552,7 +552,9 @@ print $"{key} -> {value}"
   (`delay=(d * 2)`).
 - No `let rec`, no mutation. Iteration: pipelines TRANSFORM
   (`|> Seq.map/where/fold`); `for x in xs do body` EFFECTS (it IS
-  `Seq.iter` — desugared, eager, body must be unit). A bare command
+  `Seq.iter` — desugared to the piped shape, eager, body must be
+  unit; the binder TYPES from the source [D:for-binder], so a
+  `match x with | Case …` body dispatches). A bare command
   body works and is implicit `!(…)`: `for f in files do git add $f`
   streams and raises per iteration; `do !` opens a command block.
   Comprehension: `[for x in xs -> e]` (eager). No guard clause —

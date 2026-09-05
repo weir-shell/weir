@@ -1223,12 +1223,10 @@ type K8s =
     | Deployment of DeploySpec2
     | [<Other>] Skipped of string
 
-["kind: Deployment"; "replicas: 3"; "---"; "kind: CronJob"]
-    |> from yaml stream K8s
-    |> Seq.iter (fun d ->
-        match d with
-        | Deployment s -> print $"deploy x{s.replicas}"
-        | Skipped k -> print $"skip {k}")
+for d in ["kind: Deployment"; "replicas: 3"; "---"; "kind: CronJob"] |> from yaml stream K8s do
+    match d with
+    | Deployment s -> print $"deploy x{s.replicas}"
+    | Skipped k -> print $"skip {k}"
 ```
 
 `to yaml` on a seq already writes the stream (no `to … stream`

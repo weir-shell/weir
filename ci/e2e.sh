@@ -3304,13 +3304,11 @@ let bundle = <<<
     kind: CronJob
     schedule: daily
 
-bundle
-|> from yaml stream KDoc
-|> Seq.iter (fun d ->
+for d in bundle |> from yaml stream KDoc do
     match d with
     | Deployment dep -> print $"deploy {dep.image} x{dep.replicas}"
     | Service s -> print $"svc {s.port}"
-    | Unknown k -> print $"skip {k}")
+    | Unknown k -> print $"skip {k}"
 
 let back = [Service { port = 1 }; Deployment { replicas = 2; image = "redis" }] |> to yaml
 let n = back |> from yaml stream KDoc |> Seq.length

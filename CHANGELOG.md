@@ -62,6 +62,16 @@
   writes a `---`-separated stream — YAML's plural is the stream,
   JSON's is the array.
 
+### Bugfixes
+
+- A `for` loop's binder now types from its source, so
+  `for d in docs do match d with | Deployment s -> …` works — it
+  used to refuse with "constructor patterns need a union value"
+  while the equivalent `docs |> Seq.iter (fun d -> match d …)`
+  passed. The loop desugars to the piped shape now (the spelling it
+  was always sugar for), and the comprehension form is fixed the
+  same way.
+
 ### Checks clean, behaves differently
 
 - `xs |> to json` on a seq previously wrote one JSON document per
