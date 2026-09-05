@@ -46,7 +46,7 @@
         {
           "name": "toBase64",
           "signature": "Bytes.toBase64 (b: Bytes) : string",
-          "summary": "Base64 of the bytes \u2014 ONE unwrapped line; the deliberate text exit (print and the boundaries refuse raw bytes).",
+          "summary": "Base64 of the bytes \u2014 one unwrapped line; the deliberate text exit (print and the boundaries refuse raw bytes).",
           "example": null,
           "pointer": null
         },
@@ -65,28 +65,28 @@
         {
           "name": "copy",
           "signature": "Dir.copy (src: string) (dst: string) : unit",
-          "summary": "Copy a directory and its contents \u2014 (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory MEANS its contents: there is no non-recursive form.",
+          "summary": "Copy a directory and its contents \u2014 (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory means its contents: there is no non-recursive form.",
           "example": "let d = Path.newTempDir ()\nDir.copy d $\u0022{d}-c\u0022\nDir.deleteAll d\nDir.deleteAll $\u0022{d}-c\u0022",
           "pointer": null
         },
         {
           "name": "create",
           "signature": "Dir.create (path: string) : unit",
-          "summary": "Create a directory AND its parents; succeeds silently when it already exists (idempotent \u2014 an existing directory IS the post-condition; the one deliberate exception to refuse-overwrite).",
+          "summary": "Create a directory and its parents; succeeds silently when it already exists (idempotent \u2014 an existing directory is the post-condition; the one deliberate exception to refuse-overwrite).",
           "example": "Dir.create (Path.tempRoot ())",
           "pointer": null
         },
         {
           "name": "delete",
           "signature": "Dir.delete (path: string) : unit",
-          "summary": "Delete an EMPTY directory (refuses a non-empty one, naming Dir.deleteAll; raises when absent).",
+          "summary": "Delete an empty directory (refuses a non-empty one, naming Dir.deleteAll; raises when absent).",
           "example": "Dir.delete (Path.newTempDir ())",
           "pointer": null
         },
         {
           "name": "deleteAll",
           "signature": "Dir.deleteAll (path: string) : unit",
-          "summary": "DELETE THE DIRECTORY AND EVERYTHING UNDER IT, recursively. The destructive one \u2014 there is no undo.",
+          "summary": "Delete the directory and everything under it, recursively. The destructive one \u2014 there is no undo.",
           "example": "let d = Path.newTempDir ()\nDir.create $\u0022{d}/tree-a/tree-b\u0022\nDir.deleteAll d",
           "pointer": null
         },
@@ -100,7 +100,7 @@
         {
           "name": "list",
           "signature": "Dir.list (path: string) : seq\u003Cstring\u003E",
-          "summary": "The directory\u0027s entries as FULL paths \u2014 files and directories both, SORTED (the glob precedent), eager. Filter with Seq.where \u002B File.exists/Dir.exists; \u0060Path.glob \u0022**\u0022\u0060 is the recursive spelling.",
+          "summary": "The directory\u0027s entries as full paths \u2014 files and directories both, sorted (the glob precedent), eager. Filter with Seq.where \u002B File.exists/Dir.exists; \u0060Path.glob \u0022**\u0022\u0060 is the recursive spelling.",
           "example": "let d = Path.newTempDir ()\nprint $\u0022{Dir.list d |\u003E Seq.length}\u0022\nDir.delete d",
           "pointer": null
         },
@@ -114,7 +114,7 @@
         {
           "name": "stat",
           "signature": "Dir.stat (path: string) : seq\u003CFileRow\u003E",
-          "summary": "The directory\u0027s entries as ROWS \u2014 Dir.list\u0027s seq\u003CFileRow\u003E form, ls\u0027s own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager.",
+          "summary": "The directory\u0027s entries as rows \u2014 Dir.list\u0027s seq\u003CFileRow\u003E form, ls\u0027s own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager.",
           "example": "let d = Path.newTempDir ()\nprint $\u0022{Dir.stat d |\u003E Seq.length}\u0022\nDir.delete d",
           "pointer": null
         }
@@ -255,7 +255,7 @@
         {
           "name": "copy",
           "signature": "File.copy (src: string) (dst: string) : unit",
-          "summary": "Copy src to dst \u2014 (src, dst), the universal convention (neither arg is \u0027the data\u0027, so data-last does not apply). REFUSES an existing destination (raises naming it); delete first to overwrite.",
+          "summary": "Copy src to dst \u2014 (src, dst), the universal convention (neither arg is \u0027the data\u0027, so data-last does not apply). refuses an existing destination (raises naming it); delete first to overwrite.",
           "example": "let d = Path.newTempDir ()\n[\u0022x\u0022] |\u003E File.write $\u0022{d}/a.txt\u0022\nFile.copy $\u0022{d}/a.txt\u0022 $\u0022{d}/b.txt\u0022\nDir.deleteAll d",
           "pointer": null
         },
@@ -276,7 +276,7 @@
         {
           "name": "mode",
           "signature": "File.mode (path: string) : Option\u003Cstring\u003E",
-          "summary": "The path\u0027s permissions as rwxr-xr-x-shaped text, an Option \u2014 None on Windows (the platform limit stated, never invented). The READ follows a symlink (the File.* rule); existence does not \u2014 a dangling link raises naming the dangle. The receipt: the 0600 check before File.readSecret is File.mode p == Some \u0022rw-------\u0022.",
+          "summary": "The path\u0027s permissions as rwxr-xr-x-shaped text, an Option \u2014 None on Windows (the platform limit stated, never invented). The read follows a symlink (the File.* rule); existence does not \u2014 a dangling link raises naming the dangle. The receipt: the 0600 check before File.readSecret is File.mode p == Some \u0022rw-------\u0022.",
           "example": "File.mode \u0022.\u0022 |\u003E Option.defaultValue \u0022none\u0022",
           "pointer": null
         },
@@ -325,7 +325,7 @@
         {
           "name": "stat",
           "signature": "File.stat (path: string) : FileRow",
-          "summary": "The path\u0027s FileRow \u2014 ls\u0027s own row for ONE path, so \u0060Path.glob ... |\u003E Seq.map File.stat\u0060 turns strings into rows. Describes a symlink ITSELF (kind Symlink, target Some), not what it points at. Raises when absent \u2014 and a glob hit can vanish before stat reaches it (the glob TIMING seam).",
+          "summary": "The path\u0027s FileRow \u2014 ls\u0027s own row for one path, so \u0060Path.glob ... |\u003E Seq.map File.stat\u0060 turns strings into rows. Describes the symlink itself (kind Symlink, target Some), not what it points at. Raises when absent \u2014 and a glob hit can vanish before stat reaches it (the glob timing seam).",
           "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/a.txt\u0022\n[\u0022x\u0022] |\u003E File.write f\nprint (File.stat f).name\nDir.deleteAll d",
           "pointer": null
         },
@@ -419,7 +419,7 @@
         {
           "name": "defaults",
           "signature": "Http.defaults : HttpRequest",
-          "summary": "The request template RECORD: method = Get, empty url, NoAuth, no body, 30s timeout. \u0060Http.send { Http.defaults with url = u }\u0060. Sibling that reads alike: \u0060Http.get url\u0060 is a CONSTRUCTOR returning one of these.",
+          "summary": "The request template record: method = Get, empty url, NoAuth, no body, 30s timeout. \u0060Http.send { Http.defaults with url = u }\u0060. Sibling that reads alike: \u0060Http.get url\u0060 is a constructor returning one of these.",
           "example": null,
           "pointer": null
         },
@@ -433,14 +433,14 @@
         {
           "name": "fetch",
           "signature": "Http.fetch (url: string) : seq\u003Cstring\u003E",
-          "summary": "The raising GET shorthand: takes a BARE URL (never a request \u2014 a built request runs through Http.send), returns body only, RAISES on non-2xx naming the status (the \u0060curl -sf\u0060 / JS \u0060fetch(url)\u0060 analogue). Http.fetch raises where Http.send returns \u2014 two names, no boolean.",
+          "summary": "The raising GET shorthand: takes a bare URL (never a request \u2014 a built request runs through Http.send), returns body only, raises on non-2xx naming the status (the \u0060curl -sf\u0060 / JS \u0060fetch(url)\u0060 analogue). Http.fetch raises where Http.send returns \u2014 two names, no boolean.",
           "example": null,
           "pointer": null
         },
         {
           "name": "get",
           "signature": "Http.get (url: string) : HttpRequest",
-          "summary": "A request CONSTRUCTOR \u2014 returns an HttpRequest, makes NO request: \u0060Http.get u\u0060 = \u0060{ Http.defaults with method = Get; url = u }\u0060; run it with Http.send. Add optionals with \u0060with\u0060: \u0060Http.send { Http.get u with auth = Bearer t }\u0060. The URL-in-body-out shorthand is Http.fetch.",
+          "summary": "A request constructor \u2014 returns an HttpRequest, makes no request: \u0060Http.get u\u0060 = \u0060{ Http.defaults with method = Get; url = u }\u0060; run it with Http.send. Add optionals with \u0060with\u0060: \u0060Http.send { Http.get u with auth = Bearer t }\u0060. The URL-in-body-out shorthand is Http.fetch.",
           "example": "Http.get \u0022http://x/y\u0022",
           "pointer": null
         },
@@ -489,14 +489,14 @@
         {
           "name": "send",
           "signature": "Http.send (request: HttpRequest) : HttpResponse",
-          "summary": "Run a request. Status is DATA (a 404 binds; only transport failure raises). A Json body carries \u0060to json\u0060 lines byte-exact; auth is a Secret-carrying union; show masks secrets.",
+          "summary": "Run a request. Status is data (a 404 binds; only transport failure raises). A Json body carries \u0060to json\u0060 lines byte-exact; auth is a Secret-carrying union; show masks secrets.",
           "example": null,
           "pointer": null
         },
         {
           "name": "withQuery",
           "signature": "Http.withQuery (params: seq\u003Cstring * string\u003E) (base: string) : string",
-          "summary": "Append a percent-encoded query string to a url \u2014 params first, the url last (data-last: \u0060url |\u003E Http.withQuery [(k, v)]\u0060); keys and values are escaped, so a space or \u0060\u0026\u0060 cannot break the url. (NOT \u0060Http.query\u0060 the method constructor.)",
+          "summary": "Append a percent-encoded query string to a url \u2014 params first, the url last (data-last: \u0060url |\u003E Http.withQuery [(k, v)]\u0060); keys and values are escaped, so a space or \u0060\u0026\u0060 cannot break the url. (not \u0060Http.query\u0060 the method constructor.)",
           "example": "\u0022http://x/s\u0022 |\u003E Http.withQuery [(\u0022q\u0022, \u0022a b\u0022)]",
           "pointer": null
         }
@@ -536,7 +536,7 @@
         {
           "name": "parseWith",
           "signature": "Instant.parseWith (format: string) (text: string) : Instant",
-          "summary": "Read a timestamp by a NAMED format \u2014 %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z (%% literal), other text literal. PREFIX semantics: a log line\u0027s tail rides free. No %z means UTC. Raises on mismatch, naming the position.",
+          "summary": "Read a timestamp by a named format \u2014 %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z (%% literal), other text literal. Prefix semantics: a log line\u0027s tail rides free. No %z means UTC. Raises on mismatch, naming the position.",
           "example": "Instant.parseWith \u0022%Y/%m/%d %H:%M:%S\u0022 \u00222026/08/14 09:15:00 GET /health\u0022",
           "pointer": null
         },
@@ -550,7 +550,7 @@
         {
           "name": "tryParseWith",
           "signature": "Instant.tryParseWith (format: string) (text: string) : Option\u003CInstant\u003E",
-          "summary": "Some instant, or None when the line does not match (an unknown DIRECTIVE still raises \u2014 that is a format bug, not a data miss).",
+          "summary": "Some instant, or None when the line does not match (an unknown directive still raises \u2014 that is a format bug, not a data miss).",
           "example": "Instant.tryParseWith \u0022%Y-%m-%d\u0022 \u0022no timestamp here\u0022",
           "pointer": null
         }
@@ -562,14 +562,14 @@
         {
           "name": "debug",
           "signature": "Log.debug (message: string) : unit",
-          "summary": "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is DATA \u2014 every Log member writes to stderr, a law with no stream knob.",
+          "summary": "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is data \u2014 every Log member writes to stderr, a law with no stream knob.",
           "example": "Log.debug \u0022cache miss\u0022",
           "pointer": null
         },
         {
           "name": "debugWith",
           "signature": "Log.debugWith (thunk: unit -\u003E string) : unit",
-          "summary": "Log.debug\u0027s thunk twin: the message computes ONLY when the level passes.",
+          "summary": "Log.debug\u0027s thunk twin: the message computes only when the level passes.",
           "example": "Log.debugWith (fun () -\u003E \u0022expensive detail\u0022)",
           "pointer": null
         },
@@ -583,7 +583,7 @@
         {
           "name": "infoWith",
           "signature": "Log.infoWith (thunk: unit -\u003E string) : unit",
-          "summary": "Log.info\u0027s thunk twin: the message computes ONLY when the level passes.",
+          "summary": "Log.info\u0027s thunk twin: the message computes only when the level passes.",
           "example": "Log.infoWith (fun () -\u003E \u0022expensive detail\u0022)",
           "pointer": null
         },
@@ -597,7 +597,7 @@
         {
           "name": "traceWith",
           "signature": "Log.traceWith (thunk: unit -\u003E string) : unit",
-          "summary": "Log.trace\u0027s thunk twin: the message computes ONLY when the level passes (weir has no lazy argument position \u2014 the Option.defaultWith precedent for the expensive argument).",
+          "summary": "Log.trace\u0027s thunk twin: the message computes only when the level passes (weir has no lazy argument position \u2014 the Option.defaultWith precedent for the expensive argument).",
           "example": "Log.traceWith (fun () -\u003E \u0022expensive detail\u0022)",
           "pointer": null
         },
@@ -611,7 +611,7 @@
         {
           "name": "warnWith",
           "signature": "Log.warnWith (thunk: unit -\u003E string) : unit",
-          "summary": "Log.warn\u0027s thunk twin: the message computes ONLY when the level passes.",
+          "summary": "Log.warn\u0027s thunk twin: the message computes only when the level passes.",
           "example": "Log.warnWith (fun () -\u003E \u0022expensive detail\u0022)",
           "pointer": null
         }
@@ -724,7 +724,7 @@
         {
           "name": "iter",
           "signature": "Option.iter (f: \u0027a -\u003E unit) (opt: Option\u003C\u0027a\u003E) : unit",
-          "summary": "Run a unit effect on the Some value; None runs NOTHING (a Some-only side effect with no match ceremony).",
+          "summary": "Run a unit effect on the Some value; None runs nothing (a Some-only side effect with no match ceremony).",
           "example": "Some \u0022x\u0022 |\u003E Option.iter print",
           "pointer": null
         },
@@ -738,7 +738,7 @@
         {
           "name": "orElse",
           "signature": "Option.orElse (fallback: Option\u003C\u0027a\u003E) (opt: Option\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
-          "summary": "The option itself when Some, else the FALLBACK (fallback first, so it pipes data-last). Stays in Option \u2014 Option.defaultValue is the one that UNWRAPS. The fallback is an ordinary eager argument (an orElseWith twin is parked on the defaultWith precedent).",
+          "summary": "The option itself when Some, else the fallback (fallback first, so it pipes data-last). Stays in Option \u2014 Option.defaultValue is the one that unwraps. The fallback is an ordinary eager argument (an orElseWith twin is parked on the defaultWith precedent).",
           "example": "None |\u003E Option.orElse (Some 1)",
           "pointer": null
         }
@@ -785,7 +785,7 @@
         {
           "name": "newTempDir",
           "signature": "Path.newTempDir ((): unit) : string",
-          "summary": "CREATE a fresh unique directory under the temp root and return its path (within tmp\u0027s naming). Cleanup is the caller\u0027s or the OS\u0027s \u2014 use \u0060within tmp dir\u0060 for removal on scope exit (which the exit hook also sweeps on Ctrl\u002BC/kill); newTempDir DELIBERATELY outlives the block and is never swept.",
+          "summary": "Create a fresh unique directory under the temp root and return its path (within tmp\u0027s naming). Cleanup is the caller\u0027s or the OS\u0027s \u2014 use \u0060within tmp dir\u0060 for removal on scope exit (which the exit hook also sweeps on Ctrl\u002BC/kill); newTempDir deliberately outlives the block and is never swept.",
           "example": "Path.newTempDir () |\u003E Str.startsWith (Path.tempRoot ())",
           "pointer": null
         },
@@ -806,7 +806,7 @@
         {
           "name": "under",
           "signature": "Path.under (base: string) (name: string) : string",
-          "summary": "The confining join: combine, normalise, then RAISE if the result escapes base \u2014 segment-wise, so uploads-evil is not under uploads. combine is for paths you control; under is for paths you do not. Purely textual (never follows symlinks or touches the disk); absolute and Windows-shaped second arguments refuse on every platform.",
+          "summary": "The confining join: combine, normalise, then raise if the result escapes base \u2014 segment-wise, so uploads-evil is not under uploads. combine is for paths you control; under is for paths you do not. Purely textual (never follows symlinks or touches the disk); absolute and Windows-shaped second arguments refuse on every platform.",
           "example": "Path.under (Path.tempRoot ()) \u0022a/b\u0022",
           "pointer": null
         }
@@ -858,7 +858,7 @@
         {
           "name": "wait",
           "signature": "Proc.wait (p: Proc) : int",
-          "summary": "Block until the child exits NATURALLY; its exit code as data. The way to let a scoped process finish \u2014 the scope\u0027s own exit kills.",
+          "summary": "Block until the child exits naturally; its exit code as data. The way to let a scoped process finish \u2014 the scope\u0027s own exit kills.",
           "example": null,
           "pointer": null
         }
@@ -889,7 +889,7 @@
         {
           "name": "of",
           "signature": "Secret.of (s: string) : Secret",
-          "summary": "ASSERT that a string is secret \u2014 the SAFE direction, for computed secrets (a generated token, a derived key). show renders ***; Secret.reveal is the one exit.",
+          "summary": "Assert that a string is secret \u2014 the safe direction, for computed secrets (a generated token, a derived key). show renders ***; Secret.reveal is the one exit.",
           "example": "Secret.of \u0022hunter2\u0022",
           "pointer": null
         },
@@ -915,7 +915,7 @@
         {
           "name": "average",
           "signature": "Seq.average (xs: seq\u003Cint\u003E) : float",
-          "summary": "The mean of ints AS A FLOAT (raises on empty \u2014 absence is Option\u0027s job). Float/Size/Duration own their means (Float.average \u2026).",
+          "summary": "The mean of ints as a float (raises on empty \u2014 absence is Option\u0027s job). Float/Size/Duration own their means (Float.average \u2026).",
           "example": "[1; 2] |\u003E Seq.average",
           "pointer": null
         },
@@ -978,7 +978,7 @@
         {
           "name": "exactlyOne",
           "signature": "Seq.exactlyOne (xs: seq\u003C\u0027a\u003E) : \u0027a",
-          "summary": "The one element \u2014 a cardinality ASSERTION: raises on none AND on more (head silently accepts a second element, hiding a wrong-arity source). The spelling for command output expected to be one line.",
+          "summary": "The one element \u2014 a cardinality assertion: raises on none and on more (head silently accepts a second element, hiding a wrong-arity source). The spelling for command output expected to be one line.",
           "example": "[\u0022one line\u0022] |\u003E Seq.exactlyOne |\u003E print",
           "pointer": null
         },
@@ -1069,7 +1069,7 @@
         {
           "name": "last",
           "signature": "Seq.last (xs: seq\u003C\u0027a\u003E) : \u0027a",
-          "summary": "The last element \u2014 ASSERTS the source is non-empty (the X/tryX rule; raises \u0027last: empty sequence\u0027), and FORCES the whole source by necessity: an infinite source does not return.",
+          "summary": "The last element \u2014 asserts the source is non-empty (the X/tryX rule; raises \u0027last: empty sequence\u0027), and forces the whole source by necessity: an infinite source does not return.",
           "example": "[1; 2; 3] |\u003E Seq.last",
           "pointer": null
         },
@@ -1125,7 +1125,7 @@
         {
           "name": "pfirst",
           "signature": "Seq.pfirst (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : \u0027b",
-          "summary": "Race an arm over every element; the FIRST SUCCESS wins. Losers\u0027 spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm\u0027s failure is DISCARDED \u2014 if only one arm can succeed, the others\u0027 errors are hidden, so a misconfigured fan-out still looks healthy.",
+          "summary": "Race an arm over every element; the first success wins. Losers\u0027 spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm\u0027s failure is discarded \u2014 if only one arm can succeed, the others\u0027 errors are hidden, so a misconfigured fan-out still looks healthy.",
           "example": "[3; 1; 2] |\u003E Seq.pfirst (fun n -\u003E n * 10)",
           "pointer": "a race, not a retry: same fetch against N mirrors, first answer wins."
         },
@@ -1195,7 +1195,7 @@
         {
           "name": "rev",
           "signature": "Seq.rev (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
-          "summary": "Reverse. FORCES the whole input on the first pull (never an infinite seq).",
+          "summary": "Reverse. Forces the whole input on the first pull (never an infinite seq).",
           "example": "[1; 2; 3] |\u003E Seq.rev |\u003E Seq.force",
           "pointer": null
         },
@@ -1321,7 +1321,7 @@
         {
           "name": "windowed",
           "signature": "Seq.windowed (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003Cseq\u003C\u0027a\u003E\u003E",
-          "summary": "Sliding windows of size n, LAZY (produced as the source is pulled; a short source yields the EMPTY seq \u2014 no partial window; windows view the same memoized elements). Raises when n \u003C= 0.",
+          "summary": "Sliding windows of size n, lazy (produced as the source is pulled; a short source yields the empty seq \u2014 no partial window; windows view the same memoized elements). Raises when n \u003C= 0.",
           "example": "[1; 2; 3] |\u003E Seq.windowed 2 |\u003E Seq.map Seq.force |\u003E Seq.force",
           "pointer": null
         },
@@ -1401,14 +1401,14 @@
         {
           "name": "fromBase64",
           "signature": "Str.fromBase64 (s: string) : string",
-          "summary": "Decode standard base64 (padded or unpadded) to text; raises on invalid input OR when the bytes are not valid UTF-8 (never U\u002BFFFD corruption).",
+          "summary": "Decode standard base64 (padded or unpadded) to text; raises on invalid input or when the bytes are not valid UTF-8 (never U\u002BFFFD corruption).",
           "example": "Str.fromBase64 \u0022Y2Fmw6k=\u0022",
           "pointer": null
         },
         {
           "name": "fromUtf8",
           "signature": "Str.fromUtf8 (b: Bytes) : string",
-          "summary": "Decode Bytes as text; raises when the bytes are not valid UTF-8 OR contain NUL (the encoding law\u0027s gate \u2014 corruption never wears a success).",
+          "summary": "Decode Bytes as text; raises when the bytes are not valid UTF-8 or contain NUL (the encoding law\u0027s gate \u2014 corruption never wears a success).",
           "example": null,
           "pointer": null
         },
@@ -1471,7 +1471,7 @@
         {
           "name": "splitOnce",
           "signature": "Str.splitOnce (sep: string) (s: string) : string * string",
-          "summary": "Split at the FIRST occurrence into (before, after) \u2014 the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin).",
+          "summary": "Split at the first occurrence into (before, after) \u2014 the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin).",
           "example": "Str.splitOnce \u0022=\u0022 \u0022key=a=b\u0022 |\u003E snd |\u003E print",
           "pointer": null
         },
@@ -1492,7 +1492,7 @@
         {
           "name": "toBase64",
           "signature": "Str.toBase64 (s: string) : string",
-          "summary": "Base64 of the string\u0027s UTF-8 bytes \u2014 ONE unwrapped line (no 76-column MIME wrap, no -w0 tax).",
+          "summary": "Base64 of the string\u0027s UTF-8 bytes \u2014 one unwrapped line (no 76-column MIME wrap, no -w0 tax).",
           "example": "Str.toBase64 \u0022caf\u00E9\u0022",
           "pointer": null
         },
@@ -1601,7 +1601,7 @@
     {
       "name": "FileRow",
       "signature": null,
-      "summary": "A directory entry: name, kind (Regular | Directory | Symlink \u2014 a fact, not an answer), target (Some for a symlink, None otherwise \u2014 the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant \u2014 the file\u0027s own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From \u0060ls\u0060 \u2014 files AND subdirectories, SORTED by name (ordinal: case-sensitive, uppercase first; never the locale). name is for MATCHING and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions.",
+      "summary": "A directory entry: name, kind (Regular | Directory | Symlink \u2014 a fact, not an answer), target (Some for a symlink, None otherwise \u2014 the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant \u2014 the file\u0027s own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From \u0060ls\u0060 \u2014 files and subdirectories, sorted by name (ordinal: case-sensitive, uppercase first; never the locale). name is for matching and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions.",
       "example": null,
       "pointer": null
     },
@@ -1615,7 +1615,7 @@
     {
       "name": "cd",
       "signature": "cd (path: string) : string",
-      "summary": "Change the session\u0027s directory, returning the OLD one (restore by binding: \u0060let prev = cd \u0022/tmp\u0022\u0060). A bare name applies a BINDING (\u0060cd target\u0060); \u0060~\u0060 expands; \u0060within cd\u0060 is the scoped spelling.",
+      "summary": "Change the session\u0027s directory, returning the old one (restore by binding: \u0060let prev = cd \u0022/tmp\u0022\u0060). A bare name applies a binding (\u0060cd target\u0060); \u0060~\u0060 expands; \u0060within cd\u0060 is the scoped spelling.",
       "example": "cd \u0022.\u0022",
       "pointer": null
     },
@@ -1657,7 +1657,7 @@
     {
       "name": "from json",
       "signature": null,
-      "summary": "Parse ONE JSON document (any number of lines \u2014 a pretty-printed HTTP body pipes straight in) into a declared record. Fields are int/string/bool/float or Option of one; an Option field reads a missing key or null as None.",
+      "summary": "Parse one JSON document (any number of lines \u2014 a pretty-printed HTTP body pipes straight in) into a declared record. Fields are int/string/bool/float or Option of one; an Option field reads a missing key or null as None.",
       "example": null,
       "pointer": "a pipe stage: resp.body |\u003E from json Config."
     },
@@ -1671,7 +1671,7 @@
     {
       "name": "from yaml",
       "signature": null,
-      "summary": "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record TREE \u2014 nested records, seqs, seq\u003Cstring * _\u003E mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected.",
+      "summary": "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record tree \u2014 nested records, seqs, seq\u003Cstring * _\u003E mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected.",
       "example": null,
       "pointer": "a pipe stage: lines |\u003E from yaml Deployment \u2014 yields seq\u003CDeployment\u003E, one per document."
     },
@@ -1692,7 +1692,7 @@
     {
       "name": "poll",
       "signature": null,
-      "summary": "retry\u0027s time-bounded twin: \u0060poll timeout=5m interval=10s\u0060 \u002B a readiness body. \u0060watch=\u003Cproc\u003E\u0060 fails FAST when the scoped process dies (its last output rides the error) and stamps the watched state on a timeout.",
+      "summary": "retry\u0027s time-bounded twin: \u0060poll timeout=5m interval=10s\u0060 \u002B a readiness body. \u0060watch=\u003Cproc\u003E\u0060 fails fast when the scoped process dies (its last output rides the error) and stamps the watched state on a timeout.",
       "example": "poll timeout=1s interval=1ms true",
       "pointer": "the wait-for-ready shape: within proc srv = \u2026 then poll timeout=10s watch=srv \u002B Net.portOpen \u003Cport\u003E"
     },
@@ -1713,14 +1713,14 @@
     {
       "name": "retry",
       "signature": null,
-      "summary": "Re-run a body until its predicate passes: \u0060retry attempts=5 delay=30s\u0060 \u002B an indented body. A bool body IS the predicate; a value body takes \u0060until r\u0060 \u002B a predicate block and yields the value. Exhaustion raises; raises inside the body propagate (make failure data with | succeeds / | complete).",
+      "summary": "Re-run a body until its predicate passes: \u0060retry attempts=5 delay=30s\u0060 \u002B an indented body. A bool body is the predicate; a value body takes \u0060until r\u0060 \u002B a predicate block and yields the value. Exhaustion raises; raises inside the body propagate (make failure data with | succeeds / | complete).",
       "example": "retry attempts=2 delay=1ms true",
       "pointer": "options are a record underneath: retry { Retry.defaults with attempts = 3 }"
     },
     {
       "name": "show",
       "signature": "show (value: \u0027a) : string",
-      "summary": "Render a value to its string form \u2014 the SAME text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely.",
+      "summary": "Render a value to its string form \u2014 the same text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely.",
       "example": "[1; 2; 3] |\u003E Seq.map show |\u003E Seq.force",
       "pointer": null
     },
@@ -1734,7 +1734,7 @@
     {
       "name": "to json",
       "signature": null,
-      "summary": "Render ONE value as ONE JSON document (minified, one line): a record is an object, a seq an array (forced \u2014 one line cannot stream). A None field omits its key (so from json reads it back as None).",
+      "summary": "Render one value as one JSON document (minified, one line): a record is an object, a seq an array (forced \u2014 one line cannot stream). A None field omits its key (so from json reads it back as None).",
       "example": null,
       "pointer": "a pipe stage: payload |\u003E to json."
     },
@@ -1755,7 +1755,7 @@
     {
       "name": "within",
       "signature": null,
-      "summary": "A scoped resource for an indented block, released on EVERY exit (normal and raise): \u0060tmp\u0060 \u2014 a fresh directory, removed when the block exits; \u0060cd\u0060 \u2014 the working directory for the block, restored after; \u0060env\u0060 \u2014 an environment overlay for the block\u0027s children; \u0060proc\u0060 \u2014 a background process, tree-killed and reaped when the block exits; \u0060lock\u0060 \u2014 an advisory file lock, held for the block, released on every exit (kill -9 included).",
+      "summary": "A scoped resource for an indented block, released on every exit (normal and raise): \u0060tmp\u0060 \u2014 a fresh directory, removed when the block exits; \u0060cd\u0060 \u2014 the working directory for the block, restored after; \u0060env\u0060 \u2014 an environment overlay for the block\u0027s children; \u0060proc\u0060 \u2014 a background process, tree-killed and reaped when the block exits; \u0060lock\u0060 \u2014 an advisory file lock, held for the block, released on every exit (kill -9 included).",
       "example": "within tmp d print d",
       "pointer": "within proc srv = \u003Ccommand\u003E binds a Proc handle; the tree is killed and reaped at scope exit"
     }

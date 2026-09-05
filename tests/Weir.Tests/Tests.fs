@@ -5500,7 +5500,7 @@ let adapterFormTests =
               match Weir.Lsp.hoverType lines 2 27 with
               | Some h ->
                   Expect.stringContains h "seq<string> -> Config" "the adapter's own type"
-                  Expect.stringContains h "Parse ONE JSON document" "the adapter's own doc"
+                  Expect.stringContains h "Parse one JSON document" "the adapter's own doc"
               | None -> failtest "the adapter word must still hover"
           }
           test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
