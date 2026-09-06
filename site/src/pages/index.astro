@@ -108,6 +108,8 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
         runs until everything checks. One static binary: no runtime, no
         compile step, the same on Linux, macOS and Windows.
       </p>
+    </div>
+    <div class="hero-install">
       <div class="install-lines">
         <div class="install-line">
           <span class="os">Linux · macOS</span>
@@ -309,16 +311,25 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     margin-left: 50%;
     transform: translateX(-50%);
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(23rem, 1fr));
-    gap: 2rem;
+    gap: 0 2rem;
     align-items: start;
+    /* mobile: the language before the install lines — nobody pipes
+       curl|sh on a phone, so the demo earns the fold there */
+    grid-template-areas: "intro" "demo" "install";
   }
-  .hero-demo { margin-top: var(--space-4); }
+  .hero-intro { grid-area: intro; }
+  .hero-demo { grid-area: demo; }
+  .hero-install { grid-area: install; }
+  @media (min-width: 50rem) {
+    .hero-grid {
+      grid-template-areas: "intro demo" "install demo";
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto 1fr;
+    }
+    .hero-demo { margin-top: var(--space-4); }
+  }
   .hero-demo .astro-code { font-size: 0.85rem; }
   .refusal.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
-  @media (max-width: 46rem) {
-    .hero-demo { margin-top: 0; }
-  }
   /* the hero's rhythm: headline+rule+category are ONE unit (tight),
      the paragraph another, the install block a third — gaps group */
   h1 {
