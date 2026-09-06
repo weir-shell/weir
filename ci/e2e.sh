@@ -6856,6 +6856,18 @@ WEOF
 b1=$(cd "$herodir" && "$BIN" release.weir 2>&1) && fail "the beat-1 tool must refuse"
 echo "$b1" | grep -qF "unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c" || fail "beat-1 refusal drifted: $b1"
 [ ! -e "$herodir/bundle.tar.gz" ] || fail "beat 1's money line is false — tar RAN before the refusal"
+# the hero [D:hero-2]: a short typed boundary, quoted exactly — no
+# external command (File.read is a builtin), so the pin needs only a
+# package.json fixture, nothing to stub
+printf '%s\n' '{"name": "acme-api", "version": "2.4.0", "private": true}' > "$herodir/package.json"
+cat > "$herodir/version.weir" <<'WEOF'
+type Pkg = { name: string; version: string }
+
+let pkg = File.read "package.json" |> from json Pkg
+print $"{pkg.name} {pkg.version}"
+WEOF
+hout=$(cd "$herodir" && "$BIN" version.weir 2>&1) || fail "the hero typed parse failed: $hout"
+[ "$hout" = 'acme-api 2.4.0' ] || fail "the hero output drifted — update index.astro: $hout"
 # beat 2: --help derived from the record, quoted exactly
 cat > "$herodir/deploy.weir" <<'WEOF'
 type Cli = {
