@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.0.20
+
+### Editors
+
+- Go-to-definition and hover reach into declarations. A type name
+  written in a declaration — the payload after `of`, a field's type
+  in a record — now jumps to its definition and hovers its shape;
+  before, only expression-position names resolved. The attribute
+  names (`[<Tag>]`, `[<Other>]`, `[<Wire>]`, `[<Short>]`…) hover a
+  one-line explanation, and the `stream` cardinality word both
+  hovers its meaning and colours as an adapter keyword instead of a
+  plain identifier.
+
+### Docs
+
+- The website was rebuilt: the fold leads with a worked example, the
+  three-bar mark and its hues carry the identity, quoted outputs sit
+  in terminal frames captioned with the command that produced them,
+  and the prose is set in Iosevka Aile — the sans sibling of the
+  code font. (Deploys independently of the release.)
+
 ## v0.0.19
 
 ### New features
