@@ -26,7 +26,7 @@ let root = "build"
 rm -rf $root/* // argv words do not concatenate — write $"{root}/*"
 ```
 
-What command lines do NOT do: no glob expansion (`Path.glob` is a
+What command lines do not do: no glob expansion (`Path.glob` is a
 function), no `$VAR` expansion (splice weir bindings), no `&&`
 (write two statements), no redirects (`>` passes through as a
 literal word, with a warning naming `File.write`). For bash
@@ -86,7 +86,7 @@ Two markers bring command chains into positions bare cannot reach:
 `$(...)` captures (a sub-expression — inside a hole, a record, a
 splice), `!(...)` runs-and-streams (unit, raises on nonzero). `$()`
 appears above, in the hole. `!()`'s own niche is sequencing a command
-with an expression on ONE line — a bare `;` is an argv word inside a
+with an expression on one line — a bare `;` is an argv word inside a
 command line, so the marker is what returns to expression land:
 
 ```weir
@@ -94,8 +94,8 @@ command line, so the marker is what returns to expression land:
 ```
 
 An env overlay bound to `e` attaches as `$e(...)` / `!e(...)`. There is
-no `!`-negation — negation is the word `not`; `!` means DO IT. And
-there is no syntax for a computed program NAME — branch the whole
+no `!`-negation — negation is the word `not`; `!` means *do it*. And
+there is no syntax for a computed program name — branch the whole
 command line instead.
 
 ## Exit codes

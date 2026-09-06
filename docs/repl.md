@@ -67,7 +67,7 @@ is honored, and piped sessions are always plain text.
 
 `init.weir` beside the [config file](tooling.md#configuration)
 (`$XDG_CONFIG_HOME/weir/`, else `~/.config/weir/`; `%APPDATA%\weir\`
-on Windows) loads before the first prompt. It is DECLARATION-ONLY —
+on Windows) loads before the first prompt. It is declaration-only —
 `type` and `let`, the module rule applied to the prompt — plus one
 `#session` directive for the settings a declaration cannot express:
 
@@ -97,7 +97,7 @@ Aliases are functions — `let pu () = …` already takes params and
 spans lines, so there is no separate alias concept; calling a
 nullary one costs `()`.
 
-Loading is ALL-OR-NOTHING: a broken init prints its located weir
+Loading is all-or-nothing: a broken init prints its located weir
 error plus `init: NOT loaded`, and the session starts with none of
 it — safe precisely because nothing in the file can run. A missing
 init is silent; a loaded one reports one line
@@ -116,8 +116,8 @@ The fixed bindings (this is not a keybinding-config feature):
 
 | key | in the buffer |
 |---|---|
-| <kbd>Enter</kbd> | submit if complete, else newline; on an empty final line, submit ANYWAY (the escape from a pending buffer — the error shows, the input is kept) |
-| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | force a newline (formatting; an entry stays one statement). <kbd>Shift+Enter</kbd> is NOT bindable — terminals do not distinguish it from <kbd>Enter</kbd>. Windows Terminal claims left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
+| <kbd>Enter</kbd> | submit if complete, else newline; on an empty final line, submit anyway (the escape from a pending buffer — the error shows, the input is kept) |
+| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | force a newline (formatting; an entry stays one statement). <kbd>Shift+Enter</kbd> is not bindable — terminals do not distinguish it from <kbd>Enter</kbd>. Windows Terminal claims left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
 | <kbd>Up</kbd> / <kbd>Down</kbd> | move between lines; <kbd>Up</kbd> on the first line recalls history |
 | <kbd>Ctrl+R</kbd> | history search (fzf when installed; entries display one-line, ⏎-joined) |
 | <kbd>Esc</kbd> / <kbd>Ctrl+C</kbd> | abandon the whole buffer |

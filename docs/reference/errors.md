@@ -3,7 +3,7 @@
 ## Check, then run
 
 `weir check` reports every diagnostic — located, coded, collected —
-with no evaluation. A missing command is a WARNING at check (exit
+with no evaluation. A missing command is a warning at check (exit
 0; scripts for uninstalled tools stay editable) and a refusal at
 run:
 
@@ -22,7 +22,7 @@ editors, CI gates and agent loops.
 ## Which error you see
 
 When a line has more than one thing wrong, one error reaches you:
-the error at the FURTHEST point the parser reached in your file —
+the error at the furthest point the parser reached in your file —
 so a later mistake cannot hide an earlier one, and across separate
 statements each broken statement reports its own. The position is
 always physical, a real spot in your file. Teaching hints replace
@@ -32,7 +32,7 @@ pipeline.
 
 ## Raising
 
-A failing command raises when its stream is FORCED; the four
+A failing command raises when its stream is forced; the four
 exit-code forms bind it as data instead
 ([commands](commands.md#exit-codes)). Builtins raise with located,
 weir-shaped messages (`File.read: no such file: …`). There is no

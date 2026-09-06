@@ -26,7 +26,7 @@ What you get, in any LSP editor:
   canonical 4-space weir
 
 weir scripts are often extensionless (`#!/usr/bin/env weir`), so
-each setup below registers BOTH the `.weir` extension and shebang
+each setup below registers both the `.weir` extension and shebang
 detection.
 
 Debugging: `weir lsp --debug` logs every dispatched method and
@@ -145,7 +145,7 @@ comment syntax, `.weir` + shebang association
 ;;   M-x eglot
 ```
 
-UNTESTED: Emacs could not be installed in the verification container.
+untested: Emacs could not be installed in the verification container.
 The mode is ~20 lines of standard associations; treat it as a
 starting point and report friction. Note eglot has no built-in
 semantic-tokens support — expect diagnostics/hover/completion only.
@@ -175,14 +175,14 @@ clone in the extension's work dir — delete it before retrying.
   `weir --version` from the same environment your editor starts in
   (GUI editors often see a shorter PATH than your shell; the VS Code
   client also probes `~/.local/bin` and reports an actionable error).
-  Where a server-path setting exists, it takes the BINARY path only —
+  Where a server-path setting exists, it takes the binary path only —
   the client adds `lsp` itself; `weir lsp` in the setting is the
   spawn-ENOENT trap.
 - **No attach**: the filetype/language didn't match — confirm the
   buffer's filetype is `weir` (`:set ft?` in vim; `hx --health weir`;
   `M-x describe-mode`). Extensionless scripts need the shebang rules
   above.
-- **No colors**: semantic tokens need client support AND visible
+- **No colors**: semantic tokens need client support and visible
   highlight groups — Neovim needs the `nvim_set_hl` links above;
   Helix and eglot don't consume semantic tokens at all.
 - **Seeing the server's own errors**: the server logs nothing by
@@ -196,6 +196,6 @@ clone in the extension's work dir — delete it before retrying.
 The server analyzes the text the client sends, plus the files those
 documents reach by `import` or `#sig` (an open dependency from its
 buffer, an unopened one from disk) — never anything else. A
-cross-file definition jump OPENS a file only by the client's own
+cross-file definition jump opens a file only by the client's own
 action. See [SECURITY.md](../SECURITY.md)'s non-claims for the
 boundary as stated.

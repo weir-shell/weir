@@ -4,7 +4,7 @@
 
 Two kinds of statement produce output or effects on their own:
 
-- a COMMAND LINE streams its output as the child produces it;
+- a command line streams its output as the child produces it;
 - every other statement must be unit — bind a value (`let x = …`)
   or print it (`expr |> print`).
 
@@ -33,7 +33,7 @@ let xs = [
 print $"{xs |> Seq.length}"
 ```
 
-One layout form is armed by the line's END: a statement line ending
+One layout form is armed by the line's end: a statement line ending
 in the `yaml` marker or the `<<<`/`$<<<` heredoc glyph opens a
 district — the indented block below is that literal's content, not
 weir statements, and the first shallower line closes it. The
@@ -69,7 +69,7 @@ print target.Name
 
 ## Sequencing with `;`
 
-`;` sequences statements on one line — and it binds INTO an `if` or
+`;` sequences statements on one line — and it binds into an `if` or
 `match` body, block-shaped. Both statements below belong to the
 then-branch; nothing prints:
 
@@ -78,7 +78,7 @@ if 1 > 2 then print "a" ; print "b"
 print "after"
 ```
 
-To sequence AFTER an `if`, put the next statement on its own line
+To sequence after an `if`, put the next statement on its own line
 (or parenthesize the `if`). In a command line, `;` is a literal
 argv word — it does not chain commands; one command per line.
 

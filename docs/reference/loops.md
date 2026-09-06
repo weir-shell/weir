@@ -38,8 +38,8 @@ share them: `let fast = { Retry.defaults with attempts = 3 }`, then
 
 ## `Seq.pmap` / `Seq.piter`
 
-Parallel fan-out over a seq: results in INPUT order, every arm
-runs, and the first error BY INPUT ORDER rethrows after the join:
+Parallel fan-out over a seq: results in input order, every arm
+runs, and the first error by input order rethrows after the join:
 
 ```weir
 [30; 10; 20] |> Seq.pmap (fun ms -> ms * 2) |> Seq.force |> Seq.map show |> print

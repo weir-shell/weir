@@ -2,7 +2,7 @@
 
 `from` reads a wire format into a declared shape; `to` writes one.
 Three formats each way (`json`, `jsonl`, `yaml` in; `json`, `jsonl`,
-`yaml` out). Neither guesses: `from json T` reads ONE document
+`yaml` out). Neither guesses: `from json T` reads one document
 however many lines it spans; `from jsonl T` reads one document per
 line and yields `seq<T>`.
 
@@ -16,7 +16,7 @@ let peers = ["{\"host\": \"a\", \"port\": 1}"; "{\"host\": \"b\", \"port\": 2}"]
 print $"{peers |> Seq.length} peers"
 ```
 
-The write side mirrors the read: `to json` writes ONE minified
+The write side mirrors the read: `to json` writes one minified
 document — a record is an object, a seq an array (built whole; one
 line cannot stream) — and `to jsonl` writes NDJSON, one document per
 element, lazily. Every adapter pairs with its own name across the
@@ -77,7 +77,7 @@ stream — N documents, each as `T`, so the heterogeneous bundle (a
 kubernetes apply file) is `from yaml stream KDoc` over a tagged
 union: the stream word is the cardinality, the union the
 per-document dispatch. An empty stream is zero documents. The write
-side mirrors the read exactly: `to yaml` writes ONE document — a
+side mirrors the read exactly: `to yaml` writes one document — a
 record is a mapping, a seq a sequence document, a pair-seq one
 mapping — and `to yaml stream` writes one document per element, so
 every form reads back through its own name (`to yaml |> from yaml

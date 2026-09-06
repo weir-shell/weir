@@ -3,7 +3,7 @@
 ## Scalars
 
 `int` (64-bit; arithmetic overflow raises rather than wrapping,
-while a range TERMINATES at the type boundary — every yielded value
+while a range terminates at the type boundary — every yielded value
 is correct), `float`
 (always finite — a would-be `NaN` or `Infinity` raises; `==` on
 floats is a check error naming `Float.near`), `string`, `bool`,
@@ -16,7 +16,7 @@ sides is a type error naming `Float.ofInt`:
 print $"{3 / 2.0}" // no implicit widening; use Float.ofInt 3
 ```
 
-`%` is integer remainder, TRUNCATED — the sign follows the dividend
+`%` is integer remainder, truncated — the sign follows the dividend
 (`-7 % 3` is `-1`, F#'s and .NET's convention; Python's floored `%`
 gives `2`). A zero divisor raises, `/`'s own discipline. Floats are
 refused — weir floats are finite-only and IEEE remainder can
@@ -43,7 +43,7 @@ exist, and the errors name the explicit conversions
 
 Lazy. Pipelines pull what they need; ranges are lazy generators;
 `[a; b; c]` literals are eager values. Re-enumerating a bound
-pipeline RE-RUNS its effects — external commands included;
+pipeline re-runs its effects — external commands included;
 `Seq.force` materializes once and is the standard escape. Command
 capture is `seq<string>`, one element per line.
 
@@ -108,7 +108,7 @@ consumed by `match` or the `Option` module
 
 ## `Map`
 
-`Map<string, T>` — keys are DATA, and JSON object keys are
+`Map<string, T>` — keys are data, and JSON object keys are
 strings, so string keys only. `ofPairs` (last key wins), `get`
 (raises, naming the key), `tryGet`, `has`, `pairs`/`keys`/`values`
 (key-sorted). No `m[k]` indexing, and `==` is not defined:
@@ -132,7 +132,7 @@ it whole.
 `let f x y = …` is curried; partial application is first-class.
 Bindings generalize — a polymorphic `let id x = x` stays
 polymorphic. Two deliberate limits: a bare parameter cannot be
-APPLIED as a function, and `+` on two unknowns cannot infer — anchor
+applied as a function, and `+` on two unknowns cannot infer — anchor
 one side:
 
 ```weir-error
@@ -143,7 +143,7 @@ print (apply (fun n -> n) 1)
 ## Constraints
 
 Equality, rendering, and ordering flow through three built-in
-constraint families — inferred, never annotated, and CLOSED: no
+constraint families — inferred, never annotated, and closed: no
 user type classes. A helper like `let same x y = x == y` works on
 any type in the family and rejects at the use site otherwise
 (functions and seqs do not compare; floats teach `Float.near`).

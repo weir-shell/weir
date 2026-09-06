@@ -25,7 +25,7 @@ hole rules — with `$` still a literal byte there
 ## The bare-hole default
 
 A hole must give its expression a concrete type. When the
-expression is an UNRESOLVED parameter, a bare hole defaults it to
+expression is an unresolved parameter, a bare hole defaults it to
 `string` — so this function takes a string, and an int argument is
 a type error that names the repair:
 
