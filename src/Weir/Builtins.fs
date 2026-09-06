@@ -4490,6 +4490,22 @@ let builtinDocs: Map<string, BuiltinDoc> =
 /// adapters' own hovers already read, so the `from`/`to` discovery hover,
 /// the completion, and the colorizer cannot drift from it. `dir` is
 /// "from" or "to". Map is key-sorted, so the order is stable.
+/// the attribute registry's user-facing docs [D:lsp-typename] — one
+/// line per name, shown on hover inside `[<…>]`. Keyed by the bare
+/// name; the checker owns validation, this owns the explanation.
+let attrDocs: Map<string, string> =
+    Map.ofList
+        [ "Short", "[<Short \"c\">] — the flag's one-character short form (Args.load); overrides the derived letter"
+          "NoShort", "[<NoShort>] — suppress this flag's short form (Args.load)"
+          "Positional", "[<Positional>] — a signature's operand, not a flag (command signatures)"
+          "Default", "[<Default v>] — the value used when the flag/env var is absent (Args.load/Env.load)"
+          "Wire",
+          "[<Wire \"key\">] — the field's (or tagged case's) wire key, when it differs from the weir name (json/yaml/env)"
+          "Tag",
+          "[<Tag \"field\">] — marks a union as WIRE-TAGGED: the named field discriminates the case at the json/yaml boundary"
+          "Other",
+          "[<Other>] — the open-world fallback case: wire tags matching no declared case land here (carries the raw tag as a string, or nothing)" ]
+
 let adapterNames (dir: string) : string list =
     builtinDocs
     |> Map.toList

@@ -5998,6 +5998,55 @@ let semanticTokenTests =
               let argsLines = [ "type Cli = { verbose: bool }"; "let c = Args.load Cli" ]
               Expect.equal (Weir.Lsp.definitionFor argsLines 2 20) (Some(1, 6, 3)) "Args.load Cli -> the type decl"
           }
+          test "definitionFor: a type NAME inside a declaration jumps to its decl [D:lsp-typename] (user receipt)" {
+              // a field's type in a record decl, and the payload after `of` —
+              // neither is an expression node, so the word-level fallback owns them
+              let recLines =
+                  [ "type Spec = { replicas: int }"; "type Deployment = { spec: Spec }" ]
+
+              Expect.equal (Weir.Lsp.definitionFor recLines 2 28) (Some(1, 6, 4)) "field type Spec -> its decl"
+
+              let unionLines =
+                  [ "type Rollout = { n: int }"
+                    "[<Tag \"kind\">]"
+                    "type K = Deployment of Rollout" ]
+
+              Expect.equal (Weir.Lsp.definitionFor unionLines 3 24) (Some(1, 6, 7)) "payload after `of` -> its decl"
+          }
+          test "hoverType: a type name inside a declaration hovers its shape [D:lsp-typename] (user receipt)" {
+              let lines = [ "type Spec = { replicas: int }"; "type Deployment = { spec: Spec }" ]
+
+              Expect.equal (Weir.Lsp.hoverType lines 2 29) (Some "{ replicas: int }") "the field's type shows its shape"
+          }
+          test "hoverType: Tag/Other and the stream word answer [D:lsp-typename] (user receipt)" {
+              let attrLines =
+                  [ "type R = { a: int }"
+                    "[<Tag \"kind\">]"
+                    "type K ="
+                    "    | A of R"
+                    "    | [<Other>] X of string" ]
+
+              Expect.isTrue
+                  (Weir.Lsp.hoverType attrLines 2 4
+                   |> Option.exists (fun s -> s.Contains "WIRE-TAGGED"))
+                  "Tag hovers its meaning"
+
+              Expect.isTrue
+                  (Weir.Lsp.hoverType attrLines 5 11
+                   |> Option.exists (fun s -> s.Contains "open-world"))
+                  "Other hovers its meaning"
+
+              let streamLines =
+                  [ "type R = { a: int }"
+                    "[<Tag \"k\">]"
+                    "type K = A of R"
+                    "let d = [\"x\"] |> from yaml stream K" ]
+
+              Expect.isTrue
+                  (Weir.Lsp.hoverType streamLines 4 31
+                   |> Option.exists (fun s -> s.Contains "cardinality"))
+                  "stream hovers its cardinality meaning"
+          }
           test "hoverType: pattern-let binders hover their own types [D:pat-binder-hover] (user receipt)" {
               // `let key, title = Str.splitOnce …` — both names hover;
               // the RHS keeps its expression hover past the `=`
