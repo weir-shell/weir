@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.20
+## v0.0.21
 
 ### Editors
 
@@ -11,7 +11,8 @@
   names (`[<Tag>]`, `[<Other>]`, `[<Wire>]`, `[<Short>]`…) hover a
   one-line explanation, and the `stream` cardinality word both
   hovers its meaning and colours as an adapter keyword instead of a
-  plain identifier.
+  plain identifier (in every editor grammar — VS Code, micro, and
+  now tree-sitter/Zed).
 
 ### Docs
 
@@ -20,6 +21,13 @@
   in terminal frames captioned with the command that produced them,
   and the prose is set in Iosevka Aile — the sans sibling of the
   code font. (Deploys independently of the release.)
+
+## v0.0.20
+
+_Tag burned — the release gate went red when a grammar push landed
+between the tag and its build, and the tag's pinned grammar rev can
+no longer match the moved grammar main. No artifacts; version
+consumed. The content shipped as v0.0.21._
 
 ## v0.0.19
 

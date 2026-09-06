@@ -20,6 +20,20 @@ main-side fix cannot save it).
   project. (`weir.sh` production DNS can wait until the rehearsal has
   passed; staging cannot.)
 
+## Grammar before tag, never between (the v0.0.20 burn)
+
+The release gate runs `zed-rev-current`, which compares the TAGGED
+commit's `extension.toml` rev against the grammar repo's LIVE main. So
+any tree-sitter-weir push after the tag — even to add a feature —
+moves grammar main past what the frozen tag pins, and that tag's gate
+goes red forever (its pinned commit cannot be edited). v0.0.20 burned
+this way: pin bumped to grammar rev A in the tag, then grammar rev B
+pushed, and the tagged release could never build. THE ORDER, always:
+settle and PUSH the grammar first, bump the pin to that sha, merge,
+THEN tag — and push no grammar between the tag and its finished
+release. If a grammar change is not ready, it waits for the next
+release; do not tag on a promise to push grammar after.
+
 ## The first release IS the rehearsal
 
 There is no separate rc rehearsal [D:first-release-rehearsal]. Under
