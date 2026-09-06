@@ -6878,11 +6878,7 @@ metadata:
   name: reindex
 YAML
 WEOF
-cat > "$herodir/bin/kubeconform" <<'WEOF'
-#!/bin/sh
-cat > /dev/null
-WEOF
-chmod +x "$herodir/bin/kustomize" "$herodir/bin/kubeconform"
+chmod +x "$herodir/bin/kustomize"
 cat > "$herodir/pr-check.weir" <<'WEOF'
 type Spec = { replicas: int }
 type Workload = { spec: Spec }
@@ -6890,22 +6886,18 @@ type Workload = { spec: Spec }
 [<Tag "kind">]
 type K8s =
     | Deployment of Workload
-    | [<Other>] Unchecked of string
+    | [<Other>] Skipped of string
 
-let manifests = kustomize build overlays/prod |> Seq.force
-
-manifests | kubeconform -strict
-
-for doc in manifests |> from yaml stream K8s do
+for doc in $(kustomize build overlays/prod) |> from yaml stream K8s do
     match doc with
     | Deployment d when d.spec.replicas < 2 -> fail "single-replica Deployment"
     | Deployment d -> print $"ok: {d.spec.replicas} replicas"
-    | Unchecked kind -> print $"schema-only: {kind}"
+    | Skipped kind -> print $"skipped: {kind}"
 WEOF
 hout=$(cd "$herodir" && PATH="$herodir/bin:$PATH" "$BIN" pr-check.weir 2>&1) || fail "the hero PR check failed: $hout"
 [ "$hout" = 'ok: 3 replicas
-schema-only: Service
-schema-only: CronJob' ] || fail "the hero output drifted — update index.astro: $hout"
+skipped: Service
+skipped: CronJob' ] || fail "the hero output drifted — update index.astro: $hout"
 # beat 2: --help derived from the record, quoted exactly
 cat > "$herodir/deploy.weir" <<'WEOF'
 type Cli = {
