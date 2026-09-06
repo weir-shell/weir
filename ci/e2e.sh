@@ -6881,11 +6881,11 @@ WEOF
 chmod +x "$herodir/bin/kustomize"
 cat > "$herodir/pr-check.weir" <<'WEOF'
 type Spec = { replicas: int }
-type Workload = { spec: Spec }
+type Deployment = { spec: Spec }
 
 [<Tag "kind">]
 type K8s =
-    | Deployment of Workload
+    | Deployment of Deployment
     | [<Other>] Skipped of string
 
 for doc in $(kustomize build prod/) |> from yaml stream K8s do
