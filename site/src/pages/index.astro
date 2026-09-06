@@ -1,16 +1,15 @@
 ---
-// The hero [D:hero]: the maintenance story, told in three beats that
-// each answer one alternative — bash/PowerShell/Nushell (the check is
-// the test), PowerShell at tool scale (a real CLI, free), F# scripts
-// (one static binary). Beat 1 sits IN the fold ([D:og-card]'s sibling
-// move: a language's product is code, so the fold shows a refusal
-// beside the install lines). The catastrophe material
-// (splice/Steam/pgpool) illustrates "predictable" BELOW the fold;
-// --can is a second-visit feature and sits below too. Every quoted
-// output on this page comes from a run of the shipped binary and is
-// pinned (unit byte-pin for the splice refusal; the e2e hero-currency
-// cell for everything quoted) — never the docs gate, which asserts
-// executability, not output.
+// The hero [D:hero] [D:hero-2]: the fold leads with the TYPED crown
+// jewel (a kubernetes bundle read as a tagged union over a yaml
+// stream) — the typed nature is more than typo-catching, so the typo
+// beat follows as a section, kubeclt-spelled for the audience the
+// yaml features court. Sections are gleam-shaped [D:site-style]:
+// short prose BESIDE its example (desktop), stacked on mobile, the
+// install lines below the demo on phones (nobody pipes curl|sh
+// there). Every quoted output on this page comes from a run of the
+// shipped binary and is pinned (unit byte-pin for the splice
+// refusal; the e2e hero-currency cell for everything quoted) —
+// never the docs gate, which asserts executability, not output.
 import Base from "../layouts/Base.astro";
 import queilThemes from "../lib/queil-weir.mjs";
 import { Code } from "astro:components";
@@ -23,20 +22,41 @@ const weirGrammar = JSON.parse(
   ),
 );
 
+const heroWeir = `type Rollout = { replicas: int }
+type Expose = { port: int }
+
+[<Tag "kind">]
+type K8s =
+    | Deployment of Rollout
+    | Service of Expose
+    | [<Other>] Skipped of string
+
+for doc in File.read "app.yaml" |> from yaml stream K8s do
+    match doc with
+    | Deployment d -> print $"rolling out {d.replicas} replicas"
+    | Service s -> print $"exposing :{s.port}"
+    | Skipped kind -> print $"skipped: {kind}"`;
+
+// verbatim from running the script over a three-document bundle
+// (Deployment, Service, CronJob) — e2e-pinned
+const heroOut = `rolling out 3 replicas
+exposing :80
+skipped: CronJob`;
+
 const beat1Weir = `type Cli = {
-    /// print what would happen, upload nothing
+    /// print what would happen, deploy nothing
     dryRun: bool
 }
 
 let cli = Args.load Cli
 tar czf bundle.tar.gz dist/
-if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist`;
+if not cli.dryRun then kubeclt apply -f k8s/`;
 
 // verbatim from running the script above — e2e-pinned
 const beat1Refusal = `release.weir:8:24: parse error:
-if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist
+if not cli.dryRun then kubeclt apply -f k8s/
                        ^
-unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c`;
+unknown command 'kubeclt' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c`;
 
 const beat2Weir = `type Cli = {
     /// print what would happen, deploy nothing
@@ -103,10 +123,9 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       <h1>For scripts that became tools.</h1>
       <p class="what">weir is a typed shell-scripting language.</p>
       <p class="sub">
-        Commands, pipes and files, like bash — with a checker up front.
-        The whole file is checked, every command included, and nothing
-        runs until everything checks. One static binary: no runtime, no
-        compile step, the same on Linux, macOS and Windows.
+        Commands, pipes and files, like bash — checked whole before
+        anything runs. One static binary, identical on Linux, macOS
+        and Windows.
       </p>
     </div>
     <div class="hero-install">
@@ -132,54 +151,66 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       </div>
     </div>
     <div class="hero-demo">
-      <p class="hero-label">
-        release.weir — a typed flag, two commands, one misspelled:
+      <Code code={heroWeir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
+      <figure class="term">
+        <figcaption>$ weir deploy.weir</figcaption>
+        <pre class="report">{heroOut}</pre>
+      </figure>
+      <p class="hero-caption">
+        A kubernetes bundle, read as a tagged union over a yaml
+        stream — unknown kinds are a case you handle, not a crash.
       </p>
+    </div>
+  </div>
+
+  <section class="feature">
+    <div class="feature-prose">
+      <h2>The check is the test</h2>
+      <p>
+        Every command resolves — your PATH included — and every type
+        checks before the first effect runs. One misspelled word and
+        the whole script refuses: <code>tar</code> never created a
+        byte.
+      </p>
+      <p class="fine">
+        Nothing on this page is a mock-up — every quoted output comes
+        from running the shipped binary, verified in CI.
+      </p>
+    </div>
+    <div class="feature-demo">
       <Code code={beat1Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
       <figure class="term">
         <figcaption>$ weir release.weir</figcaption>
         <pre class="refusal wrap">{beat1Refusal}</pre>
       </figure>
-      <p class="hero-caption">
-        <strong>Nothing ran</strong> — the bundle was never created,
-        nothing uploaded, no half-finished state.
+    </div>
+  </section>
+
+  <section class="feature">
+    <div class="feature-prose">
+      <h2>A real CLI, free</h2>
+      <p>
+        Declare the shape; the interface is derived. The
+        <code>///</code> docs become the help text, so you cannot
+        forget to update <code>--help</code> — and unknown flags,
+        missing requireds and bad values arrive together, in one
+        error, before any effect.
       </p>
     </div>
-  </div>
-
-  <h2>The check is the test</h2>
-  <p>
-    That refusal is the whole idea. Your shell finds out when it gets
-    there; weir resolves every command — including the ones on your
-    PATH — and checks every type in the file before the first one
-    runs. The output above is not a mock-up: every quoted output on
-    this page comes from running the shipped binary, verified in CI.
-  </p>
-
-  <h2>A real CLI, free</h2>
-  <p>Declare the shape; the interface is derived.</p>
-  <Code code={beat2Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
-  <figure class="term">
-    <figcaption>$ weir deploy.weir --help</figcaption>
-    <pre class="report">{beat2Help}</pre>
-  </figure>
-  <p>
-    <code>dryRun</code> became <code>--dry-run</code> with an
-    unambiguous <code>-d</code>; the <code>///</code> docs became the
-    help text. You did not write an argument parser, and you cannot
-    forget to update <code>--help</code>. Unknown flags, missing
-    requireds and unparseable values arrive together, in one boundary
-    error, before any effect runs.
-  </p>
+    <div class="feature-demo">
+      <Code code={beat2Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
+      <figure class="term">
+        <figcaption>$ weir deploy.weir --help</figcaption>
+        <pre class="report">{beat2Help}</pre>
+      </figure>
+    </div>
+  </section>
 
   <h2>Predictable, illustrated</h2>
   <p>
     Two bash mechanisms have deleted real machines: an unquoted
     variable <em>splitting</em> into words, and a path <em>glued</em>
-    from pieces that came apart. pgpool-II was patching the first by
-    hand in review as recently as September 2025 — quoting variables
-    in an <code>rm</code> so an empty expansion could not widen it.
-    Valve shipped the second in 2015:
+    from pieces that came apart. Valve shipped the second in 2015:
   </p>
   <div class="hero-band">
     <div class="hero-pair">
@@ -187,13 +218,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
         <p class="hero-label">steam.sh, shipped:</p>
         <Code code={steamBash} lang="bash" themes={queilThemes} defaultColor={false} />
         <p class="hero-caption">
-
-          When the folder was moved, the <code>cd</code> inside the
-          substitution failed — and <code>&#36;(…)</code> came back
-          <em>empty</em>. Not unset: empty. <code>"$STEAMROOT/"*</code>
-          became <code>/*</code>, and the last line deleted everything
-          users owned,
-          <a href="https://github.com/ValveSoftware/steam-for-linux/issues/3671">mounted
+          When the folder moved, <code>&#36;(…)</code> came back
+          <em>empty</em> — <code>"$STEAMROOT/"*</code> became
+          <code>/*</code>, and the last line deleted everything users
+          owned, <a href="https://github.com/ValveSoftware/steam-for-linux/issues/3671">mounted
           backup drives included</a>.
         </p>
       </div>
@@ -208,87 +236,58 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     </div>
   </div>
   <p>
-    weir removes both ingredients, separately. A spliced value is
-    always exactly one argv word — splitting is not a thing that can
-    happen, quoted or not. And gluing is not either:
-    <code>$steamroot/*</code> is refused at check time,
-    unconditionally — the pieces would be separate arguments, so the
-    shape is unrepresentable; building that word takes a deliberate
-    <code>$"&#123;steamroot&#125;/*"</code>. The root itself is the
-    second layer: <code>Self.scriptPath</code> is an absolute path by
-    construction, and taking its directory cannot fail — there is no
-    <code>cd</code>-and-echo substitution to quietly come back empty. Neither failure is a
-    mistake weir detects; both are sentences weir cannot say.
+    Weir removes both ingredients: a spliced value is always exactly
+    one argv word, and gluing is unrepresentable — neither failure is
+    a mistake weir detects, both are sentences weir cannot say.
   </p>
 
-  <h2>See what a script can do before you run it</h2>
-  <p>
-    Command names are literal and nothing expands inside argv, so the
-    set of things a script can reach is statically knowable — and
-    <code>weir check --can</code> reports it, with a source line for
-    every claim:
-  </p>
-  <figure class="term">
-    <figcaption>$ weir check --can tools/fuzz.weir</figcaption>
-    <pre class="report">{canReport}</pre>
-  </figure>
+  <section class="feature">
+    <div class="feature-prose">
+      <h2>See what a script can do before you run it</h2>
+      <p>
+        Command names are literal and nothing expands inside argv, so
+        a script's reach is statically knowable —
+        <code>weir check --can</code> reports it, with a source line
+        for every claim.
+      </p>
+    </div>
+    <div class="feature-demo">
+      <figure class="term">
+        <figcaption>$ weir check --can tools/fuzz.weir</figcaption>
+        <pre class="report">{canReport}</pre>
+      </figure>
+    </div>
+  </section>
 
   <h2>Why not the alternatives</h2>
-  <p class="hero-caption">In the author's words.</p>
   <p>
-    <strong>PowerShell</strong> was fine for small scripts. At tool
-    scale it got hard to maintain — the quirks compound, and it is not
-    typed where it counts.
-  </p>
-  <p>
+    In the author's words: <strong>PowerShell</strong> compounds its
+    quirks at tool scale and is not typed where it counts.
     <strong>F# scripts</strong> had the types — weir is F#-shaped
-    because F# scripting was the closest thing that worked. What did
-    not work: compilation times, caching that is hard to get right,
-    wrappers to make scripting fit the task, CLR bloat in the
-    language, a runtime dependency — and I needed the
-    <em>scripts</em> to behave identically in Linux CI and on
-    macOS/Windows dev machines, not just the platform to exist there.
-  </p>
-  <p>
-    <strong>Nushell</strong> is nice, but not strongly typed enough —
-    the type system is still being worked out, and it did not meet the
-    predictability bar.
+    because they were closest — but not the start-up time, the
+    caching, or identical behaviour across Linux CI and macOS/Windows
+    dev machines. <strong>Nushell</strong> is nice, but its type
+    system is still being worked out. Weir selects from F#, which
+    works, and adds the shell-specific parts.
   </p>
 
   <h2>Provenance</h2>
   <p>
     weir was written almost entirely by an AI agent, directed by one
-    person through plans, reviews and rulings — about two months, part
-    time. That is a statement about economics, not capability: a
-    language like this was always possible, and never affordable —
-    three or four years of a non-specialist's evenings, or two months.
-    The design risk was compressed the same way: weir does not invent
-    a language. It selects from F#, which works, and adds the
-    shell-specific parts.
+    person through plans, reviews and rulings — about two months,
+    part time. That is a statement about economics, not capability.
+    What makes it checkable rather than a claim: every fenced example
+    in the docs executes in CI (error demos must <em>fail</em>); an
+    F# fidelity oracle referees every divergence claim; an external
+    referee pushes eighty hostile payloads through PyYAML and
+    Python's <code>json</code>; and five adversarial reviews sit,
+    findings and all, in the
+    <a href="https://github.com/weir-shell/weir/blob/main/docs/DECISIONS.md">public ledger</a>.
   </p>
-  <p>What makes that checkable rather than a claim:</p>
-  <ul>
-    <li>every fenced example in the docs executes in CI, and
-      error-demonstrating blocks must <em>fail</em></li>
-    <li>every shipped module member is asserted present in the rule
-      file — the docs' completeness is a checked property, not a
-      hope</li>
-    <li>an F# fidelity oracle referees every divergence claim through
-      the same checker the runner uses</li>
-    <li>the parser's recursion graph is enumerated — a new unguarded
-      axis is a CI failure, not a review finding</li>
-    <li>an external referee pushes eighty hostile payloads through
-      PyYAML and Python's <code>json</code>, because weir refereeing
-      its own output missed four defects</li>
-    <li>five adversarial reviews, findings and all, in the
-      <a href="https://github.com/weir-shell/weir/blob/main/docs/DECISIONS.md">public
-      ledger</a></li>
-  </ul>
   <p>
     <strong>Don't trust it; check it.</strong> <code>git clone</code>
     and <code>./ci/local.sh</code> run the whole battery. The longer
-    story — what broke, what the instruments missed, and what still
-    needed a human — is <a href="/docs/method/">The method</a>.
+    story is <a href="/docs/method/">The method</a>.
   </p>
 
   <h2>Learn more</h2>
@@ -302,34 +301,6 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 </Base>
 
 <style is:global>
-  /* the fold shows the language: intro left, a live refusal right —
-     full-bleed like the hero band, stacking on narrow screens. The
-     demo's quoted output wraps (class "wrap") instead of scrolling,
-     so the whole refusal is visible in the column */
-  .hero-grid {
-    width: min(72rem, calc(100vw - 2.5rem));
-    margin-left: 50%;
-    transform: translateX(-50%);
-    display: grid;
-    gap: 0 2rem;
-    align-items: start;
-    /* mobile: the language before the install lines — nobody pipes
-       curl|sh on a phone, so the demo earns the fold there */
-    grid-template-areas: "intro" "demo" "install";
-  }
-  .hero-intro { grid-area: intro; }
-  .hero-demo { grid-area: demo; }
-  .hero-install { grid-area: install; }
-  @media (min-width: 50rem) {
-    .hero-grid {
-      grid-template-areas: "intro demo" "install demo";
-      grid-template-columns: 1fr 1fr;
-      grid-template-rows: auto 1fr;
-    }
-    .hero-demo { margin-top: var(--space-4); }
-  }
-  .hero-demo .astro-code { font-size: 0.85rem; }
-  .refusal.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
   /* the hero's rhythm: headline+rule+category are ONE unit (tight),
      the paragraph another, the install block a third — gaps group */
   h1 {
@@ -397,6 +368,47 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   }
   .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
   .copy-btn.copied { color: var(--ok); border-color: var(--ok); }
+  .hero-grid {
+    width: min(72rem, calc(100vw - 2.5rem));
+    margin-left: 50%;
+    transform: translateX(-50%);
+    display: grid;
+    gap: 0 2.5rem;
+    align-items: start;
+    /* mobile: the language before the install lines — nobody pipes
+       curl|sh on a phone, so the demo earns the fold there */
+    grid-template-areas: "intro" "demo" "install";
+  }
+  .hero-intro { grid-area: intro; }
+  .hero-demo { grid-area: demo; }
+  .hero-install { grid-area: install; }
+  @media (min-width: 50rem) {
+    .hero-grid {
+      grid-template-areas: "intro demo" "install demo";
+      grid-template-columns: 1fr 1.15fr;
+      grid-template-rows: auto 1fr;
+    }
+    .hero-demo { margin-top: var(--space-4); }
+  }
+  .hero-demo .astro-code { font-size: 0.85rem; }
+  .refusal.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* feature sections [D:hero-2]: short prose BESIDE its example —
+     the gleam shape; stacked on narrow screens */
+  .feature {
+    width: min(72rem, calc(100vw - 2.5rem));
+    margin-left: 50%;
+    transform: translateX(-50%);
+    display: grid;
+    gap: 0 2.5rem;
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 50rem) {
+    .feature { grid-template-columns: minmax(0, 24rem) 1fr; }
+  }
+  .feature .fine { font-size: var(--text-sm); color: var(--muted); }
+  .feature-demo { margin-top: var(--space-3); }
+  .feature-demo .astro-code { font-size: 0.85rem; }
   .hero-band {
     width: min(72rem, calc(100vw - 2.5rem));
     margin-left: 50%;

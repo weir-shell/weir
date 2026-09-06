@@ -6845,17 +6845,48 @@ herodir=$(mkweirtmp)
 # beat 1: the misspelled command refuses at RUN, before anything executes
 cat > "$herodir/release.weir" <<'WEOF'
 type Cli = {
-    /// print what would happen, upload nothing
+    /// print what would happen, deploy nothing
     dryRun: bool
 }
 
 let cli = Args.load Cli
 tar czf bundle.tar.gz dist/
-if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist
+if not cli.dryRun then kubeclt apply -f k8s/
 WEOF
 b1=$(cd "$herodir" && "$BIN" release.weir 2>&1) && fail "the beat-1 tool must refuse"
-echo "$b1" | grep -qF "unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c" || fail "beat-1 refusal drifted: $b1"
+echo "$b1" | grep -qF "unknown command 'kubeclt' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c" || fail "beat-1 refusal drifted: $b1"
 [ ! -e "$herodir/bundle.tar.gz" ] || fail "beat 1's money line is false — tar RAN before the refusal"
+# the hero [D:hero-2]: the bundle loop's happy run, quoted exactly
+cat > "$herodir/app.yaml" <<'WEOF'
+kind: Deployment
+replicas: 3
+---
+kind: Service
+port: 80
+---
+kind: CronJob
+schedule: daily
+WEOF
+cat > "$herodir/hero.weir" <<'WEOF'
+type Rollout = { replicas: int }
+type Expose = { port: int }
+
+[<Tag "kind">]
+type K8s =
+    | Deployment of Rollout
+    | Service of Expose
+    | [<Other>] Skipped of string
+
+for doc in File.read "app.yaml" |> from yaml stream K8s do
+    match doc with
+    | Deployment d -> print $"rolling out {d.replicas} replicas"
+    | Service s -> print $"exposing :{s.port}"
+    | Skipped kind -> print $"skipped: {kind}"
+WEOF
+hout=$(cd "$herodir" && "$BIN" hero.weir 2>&1) || fail "the hero bundle loop failed: $hout"
+[ "$hout" = 'rolling out 3 replicas
+exposing :80
+skipped: CronJob' ] || fail "the hero output drifted — update index.astro: $hout"
 # beat 2: --help derived from the record, quoted exactly
 cat > "$herodir/deploy.weir" <<'WEOF'
 type Cli = {

@@ -37,9 +37,9 @@ const mark = (x, y, s) => `
 const term = [
   { t: "$ weir release.weir", c: P.muted },
   { t: "release.weir:8:24: parse error:", c: P.fg },
-  { t: "if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist", c: P.fg },
+  { t: "if not cli.dryRun then kubeclt apply -f k8s/", c: P.fg },
   { t: "                       ^", c: P.danger },
-  { t: "unknown command 'rsnyc' — not found on PATH. weir resolves", c: P.danger },
+  { t: "unknown command 'kubeclt' — not found on PATH. weir resolves", c: P.danger },
   { t: "command names before running…  (nothing ran — tar included)", c: P.danger },
 ];
 
