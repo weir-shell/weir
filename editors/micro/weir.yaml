@@ -44,8 +44,9 @@ rules:
     - statement: "\\bwithin[ \\t]+(tmp|cd|env|proc|lock)\\b"
     # the from/to ADAPTER word is form, not a name [D:form-word-hover] —
     # same whole-match paint (the richer engines scope the adapter apart)
+    # the optional `stream` modifier rides the match
     # rule: adapter-word
-    - statement: "\\b(from|to)[ \\t]+(jsonl|json|yaml)\\b"
+    - statement: "\\b(from|to)[ \\t]+(jsonl|json|yaml)([ \\t]+stream)?\\b"
     # reserved (rejected by the parser, but color them so muscle-memory
     # F# reads as "claimed", not "identifier")
     # rule: reserved

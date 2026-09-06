@@ -1054,7 +1054,24 @@ let definitionTarget
                          | Ok(_, file) -> Some(Some file, 1, 1, 0)
                          | Error _ -> None)
                     | _ -> None)
-                |> Option.orElseWith sigSite)
+                |> Option.orElseWith sigSite
+                // a TYPE NAME the node walk does not claim
+                // [D:lsp-typename]: declarations are not expressions —
+                // the payload after `of`, a field's type in a record
+                // decl — so a word-level fallback resolves any declared
+                // user type name
+                |> Option.orElseWith (fun () ->
+                    wordAt useLl.Text jcol
+                    |> Option.bind (fun w ->
+                        if
+                            w.Length > 0
+                            && Char.IsUpper w[0]
+                            && Types.isUserName w
+                            && Map.containsKey w env.Types
+                        then
+                            typeSite w None
+                        else
+                            None)))
 
 /// the single-file view of definitionTarget: Some (physLine, physCol,
 /// nameLength) when the definition is in THIS file, None otherwise —
@@ -1184,11 +1201,48 @@ let private functionFormHover (text: string) (jcol: int) : string option =
                 "function | <pattern> -> <expr> | … — a one-parameter fun whose body matches that parameter (fun x -> match x with …); arms take guards exactly as match does"
         | _ -> None)
 
+// the ATTRIBUTE names answer inside their brackets [D:lsp-typename]:
+// [<Tag>]/[<Other>]/[<Short>]… are no expression nodes, so the word
+// falls to a registry-doc lookup, gated to a position between `[<`
+// and `>]` (the same letters as a binder stay silent)
+let private attrHover (text: string) (jcol: int) : string option =
+    wordAt text jcol
+    |> Option.bind (fun w -> Map.tryFind w Builtins.attrDocs)
+    |> Option.filter (fun _ ->
+        let upto = text.Substring(0, min (max (jcol - 1) 0) text.Length)
+        upto.LastIndexOf "[<" > upto.LastIndexOf ">]")
+
+// the STREAM cardinality word answers as a form [D:form-word-hover] —
+// only beside its adapter (a binding named stream stays a binding)
+let private streamFormHover (text: string) (jcol: int) : string option =
+    wordAt text jcol
+    |> Option.bind (fun w ->
+        if w <> "stream" then
+            None
+        else
+            let wordStart =
+                let mutable st = jcol - 1
+
+                while st > 0 && isWord text[st - 1] do
+                    st <- st - 1
+
+                st
+
+            let before = text.Substring(0, wordStart).TrimEnd()
+
+            if before.EndsWith "from yaml" || before.EndsWith "to yaml" then
+                Some
+                    "stream — the cardinality word: `from yaml stream T` reads a '---' stream, one document per element -> seq<T>; `to yaml stream` writes one document per element"
+            else
+                None)
+
 let private formWordHover (env: TypeEnv) (text: string) (jcol: int) : string option =
     withinFormHover text jcol
     |> Option.orElse (adapterFormHover text jcol)
     |> Option.orElse (retryPollFormHover env text jcol)
     |> Option.orElse (functionFormHover text jcol)
+    |> Option.orElse (streamFormHover text jcol)
+    |> Option.orElse (attrHover text jcol)
 
 /// is the (1-based) physical column inside a string literal or a trailing
 /// comment on this physical line? [D:within-kinds] The form hovers run
@@ -1525,6 +1579,19 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     Some(formatSignature name (lambdaParamNames te) sch.Ty)
                 | Script.KType decl -> word |> Option.bind (declHover decl)
                 | _ -> None)
+            // a referenced TYPE NAME anywhere hovers its shape
+            // [D:lsp-typename]: a field's type in a record decl, the
+            // payload after `of` — no expression node covers these, so
+            // the word resolves against env.Types (declHover already
+            // answered the declaring field/case, so this only fills
+            // references it did not claim)
+            |> Option.orElseWith (fun () ->
+                word
+                |> Option.bind (fun w ->
+                    if w.Length > 0 && Char.IsUpper w[0] && Types.isUserName w then
+                        typeDefHover chk.Env w
+                    else
+                        None))
 
         // the boundary-form nodes span the WHOLE form (`Env.load TokenEnv`),
         // so gate each to the word that names it — hovering the module `Env`

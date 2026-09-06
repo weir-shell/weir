@@ -144,12 +144,15 @@
       }
     },
     "adapter-word": {
-      "match": "\\b(from|to)[ \\t]+(jsonl|json|yaml)\\b",
+      "match": "\\b(from|to)[ \\t]+(jsonl|json|yaml)(?:[ \\t]+(stream))?\\b",
       "captures": {
         "1": {
           "name": "keyword.control.weir"
         },
         "2": {
+          "name": "keyword.other.adapter.weir"
+        },
+        "3": {
           "name": "keyword.other.adapter.weir"
         }
       }
