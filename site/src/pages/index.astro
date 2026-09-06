@@ -390,7 +390,11 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     .feature { grid-template-columns: minmax(0, 24rem) 1fr; }
   }
   .feature .fine { font-size: var(--text-sm); color: var(--muted); }
-  .feature-demo { margin-top: var(--space-3); }
+  /* min-width: 0 lets a wide code line SCROLL (pre's overflow-x) instead
+     of expanding the grid track past the viewport — a grid child
+     defaults to min-width: auto, which clipped snippets on phones */
+  .feature-demo { margin-top: var(--space-3); min-width: 0; }
+  .feature-prose { min-width: 0; }
   .feature-demo .astro-code { font-size: 0.85rem; }
   .hero-band {
     width: min(72rem, calc(100vw - 2.5rem));
