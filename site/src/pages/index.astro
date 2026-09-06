@@ -95,6 +95,11 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 <Base>
   <div class="hero-grid">
     <div class="hero-intro">
+      <svg class="mark-lg" viewBox="18 32 92 62" width="76" height="51" aria-hidden="true">
+        <rect class="b1" x="20" y="34" width="56" height="12" rx="6" />
+        <rect class="b2" x="36" y="57" width="56" height="12" rx="6" />
+        <rect class="b3" x="52" y="80" width="56" height="12" rx="6" />
+      </svg>
       <h1>For scripts that became tools.</h1>
       <p class="what">weir is a typed shell-scripting language.</p>
       <p class="sub">
@@ -129,8 +134,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
         release.weir — a typed flag, two commands, one misspelled:
       </p>
       <Code code={beat1Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
-      <p class="hero-label">Run it:</p>
-      <pre class="refusal wrap">{beat1Refusal}</pre>
+      <figure class="term">
+        <figcaption>$ weir release.weir</figcaption>
+        <pre class="refusal wrap">{beat1Refusal}</pre>
+      </figure>
       <p class="hero-caption">
         <strong>Nothing ran</strong> — the bundle was never created,
         nothing uploaded, no half-finished state.
@@ -150,7 +157,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   <h2>A real CLI, free</h2>
   <p>Declare the shape; the interface is derived.</p>
   <Code code={beat2Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
-  <pre class="report">{beat2Help}</pre>
+  <figure class="term">
+    <figcaption>$ weir deploy.weir --help</figcaption>
+    <pre class="report">{beat2Help}</pre>
+  </figure>
   <p>
     <code>dryRun</code> became <code>--dry-run</code> with an
     unambiguous <code>-d</code>; the <code>///</code> docs became the
@@ -188,7 +198,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       <div class="hero-cell">
         <p class="hero-label">The same shape, in weir:</p>
         <Code code={spliceWeir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
-        <pre class="refusal">{spliceRefusal}</pre>
+        <figure class="term">
+          <figcaption>$ weir check steam.weir</figcaption>
+          <pre class="refusal">{spliceRefusal}</pre>
+        </figure>
       </div>
     </div>
   </div>
@@ -213,7 +226,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <code>weir check --can</code> reports it, with a source line for
     every claim:
   </p>
-  <pre class="report">{canReport}</pre>
+  <figure class="term">
+    <figcaption>$ weir check --can tools/fuzz.weir</figcaption>
+    <pre class="report">{canReport}</pre>
+  </figure>
 
   <h2>Why not the alternatives</h2>
   <p class="hero-caption">In the author's words.</p>
@@ -305,16 +321,21 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   }
   /* the hero's rhythm: headline+rule+category are ONE unit (tight),
      the paragraph another, the install block a third — gaps group */
-  h1 { margin: var(--space-3) 0 0; }
+  h1 {
+    margin: var(--space-3) 0 0;
+    font-size: clamp(2.1rem, 4.5vw, 2.6rem);
+    letter-spacing: -0.015em;
+  }
   h1::after {
     content: "";
     display: block;
-    width: 3.5rem;
+    width: 4.5rem;
     height: 3px;
-    background: var(--accent);
+    background: linear-gradient(90deg, var(--b1) 0 34%, var(--b2) 34% 67%, var(--b3) 67% 100%);
     border-radius: 2px;
     margin-top: var(--space-2);
   }
+  .mark-lg { display: block; margin-bottom: var(--space-2); }
   .what {
     font-size: var(--text-lg);
     font-weight: 600;
@@ -379,6 +400,29 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   .hero-cell pre { margin-top: 0.35rem; }
   .hero-label { margin-bottom: 0; color: var(--muted); font-size: 0.9rem; }
   .hero-caption { font-size: 0.9rem; color: var(--muted); }
+  /* terminal chrome [D:site-style]: the caption is the COMMAND that
+     produced the quoted output — provenance made visible, never
+     decoration (the outputs stay e2e-pinned bytes) */
+  .term {
+    margin: var(--space-3) 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .term figcaption {
+    font: 0.78rem/1 "Iosevka Term Ext", ui-monospace, monospace;
+    color: var(--muted);
+    background: var(--code-bg);
+    padding: 0.55rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .term pre {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+  }
+  .term .refusal { border-left: 3px solid var(--danger); }
+  .term .report { border-left: 3px solid var(--accent); }
   .refusal, .report {
     background: var(--code-bg);
     border: 1px solid var(--border);
