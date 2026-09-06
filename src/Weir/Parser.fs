@@ -1716,14 +1716,15 @@ let private fromExpr =
 let private toExpr =
     spanned (
         keyword "to" >>. ident
-        // there is no write-side stream word [D:wire-unions]: `to yaml`
-        // on a seq already writes the `---` stream, `to jsonl` NDJSON
-        .>> ((attempt (pstring "stream" .>> notFollowedBy (satisfy isIdentCont))
-              >>. failFatally
-                      "there is no 'to … stream' — 'to yaml' on a seq already writes a '---' stream; 'to jsonl' writes NDJSON")
-             <|> preturn ())
+        // the write-side stream word [D:yaml-seq-doc]: `to yaml stream`
+        // writes one document per element — the mirror of `from yaml
+        // stream T`. json's stream form keeps its own name (jsonl);
+        // the checker fences `to json stream` toward it.
+        .>>. opt (attempt (pstring "stream" .>> notFollowedBy (satisfy isIdentCont)) .>> ws)
     )
-    |>> fun (fmt, span) -> { Kind = ETo fmt; Span = span }
+    |>> fun ((fmt, streamW), span) ->
+        { Kind = ETo(fmt, streamW.IsSome)
+          Span = span }
 
 // every name a pattern BINDS [D:interior-arming]: arm bodies and for
 // bodies must know their binders at PARSE, or the assume resolver

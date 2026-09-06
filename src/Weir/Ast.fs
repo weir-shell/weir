@@ -137,7 +137,7 @@ and ExprKind =
     | EIf of cond: Expr * thn: Expr * els: Expr option
     | ESeq of first: Expr * rest: Expr
     | EFrom of format: string * shape: FromShape option * seqOf: bool * streamOf: bool
-    | ETo of format: string
+    | ETo of format: string * streamOf: bool
     | EList of items: Expr list
     | ETuple of items: Expr list
     | ELetPat of binder: Pattern * value: Expr * body: Expr
@@ -458,7 +458,8 @@ let rec sexpr (e: Expr) : string =
             | FromMap _ -> "…"
 
         $"(from {fmt} Map<string, {shape}>)"
-    | ETo fmt -> $"(to {fmt})"
+    | ETo(fmt, true) -> $"(to {fmt} stream)"
+    | ETo(fmt, false) -> $"(to {fmt})"
     | EList items ->
         let body = items |> List.map sexpr |> String.concat "; "
         $"[{body}]"

@@ -1142,9 +1142,14 @@ type Bad = C of int
   KDoc` over a tagged union — stream is the cardinality, the union
   is the per-document dispatch, composed. An empty stream is zero
   documents; the one-document forms refuse a stream naming the
-  stream spelling. There is no `to … stream` word:
-  `value |> to yaml` (a seq = multi-doc; `None` fields omit;
-  ambiguous strings like `"no"`/`"007"` auto-quote). `Yaml`
+  stream spelling. The write side pairs the same way
+  [D:yaml-seq-doc]: `value |> to yaml` writes ONE document — a
+  record is a mapping, a seq a SEQUENCE document (`[1; 2] |> to
+  yaml` is `- 1` / `- 2`, json's array one format over), a pair-seq
+  ONE mapping; `xs |> to yaml stream` writes one document per
+  element (the bundle write — `to yaml stream |> from yaml stream
+  T` roundtrips, `to yaml |> from yaml seq<T>` too). `None` fields
+  omit; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
   nodes (`YMap [("k", YStr "v")]`, `YSeq`, `YInt`…) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
   order [D:record-order] (wire order for an anonymous shape).

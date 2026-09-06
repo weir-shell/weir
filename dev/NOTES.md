@@ -1,5 +1,31 @@
 # Spike Notes
 
+## the yaml plural, corrected by a counter-example (2026-09-05)
+
+`[1;2;3] |> to yaml` printed three scalar documents separated by
+`---`, and the user put it next to `to json` ([1,2,3]) and
+`to jsonl` (three lines) — at which point the "each format's native
+plural" defense from [D:to-jsonl] collapsed: the grid json earned
+(plain name = one document, stream form = per element) was what
+yaml owed too, and `from yaml seq<T>` had been reading a sequence
+document NO writer could produce since the day it landed. The
+crossed pairing predated the stream word; the defense had been
+covering for it.
+
+Two mechanical pleasures in the fix. The parse fence from session S
+("there is no 'to … stream'") REVERSED into the form itself — the
+fence's exact position was where the word belonged. And the eval
+got simpler, not bigger: the non-stream seq path just falls through
+to yamlRender's own VSeq arm, the rendering nested sequences always
+had — the multi-doc join now runs only under the flag. When a
+correction DELETES a special case, the correction is probably
+right.
+
+The lesson for the ledger: a defense of the form "X is each
+format's native way" needs a roundtrip receipt before it ships —
+the one thing that would have caught this at [D:to-jsonl] time was
+asking "and what reads it back?"
+
 ## the for binder: one shape, not a checker session (2026-09-05)
 
 The inference gap the wire-unions flagship surfaced dissolved into

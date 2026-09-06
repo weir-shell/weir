@@ -145,7 +145,9 @@ and TypedKind =
         // caseName -> (tagField, tagValue, isOther) for every tagged
         // union reachable from the serialized type [D:wire-unions] —
         // a VUnion value carries no type name, so the writer keys cases
-        unions: Map<string, string * string * bool>
+        unions: Map<string, string * string * bool> *
+        // `to yaml stream` [D:yaml-seq-doc]: one document per element
+        stream: bool
     | TEList of items: TypedExpr list
     | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
     | TESplat of TypedExpr
@@ -2815,9 +2817,19 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                               Span = expr.Span }
                     }
                 | _ -> checkSpine ctx env head args None
-    | EPipe(arg, ({ Kind = ETo fmt } as toExpr)) ->
+    | EPipe(arg, ({ Kind = ETo(fmt, streamOf) } as toExpr)) ->
         result {
             let! targ = infer ctx env arg
+
+            // the write-side stream word is YAML's [D:yaml-seq-doc] —
+            // json's per-element form is the thing named jsonl
+            do!
+                if streamOf && fmt <> "yaml" then
+                    err
+                        toExpr.Span
+                        $"'to {fmt} stream' does not exist — one document per element is 'to jsonl'; one array document is 'to json'"
+                else
+                    Ok()
 
             match fmt, resolve ctx targ.Ty with
             | "json", ty ->
@@ -2835,7 +2847,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, unions)
+                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -2848,7 +2860,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, unions)
+                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -2861,12 +2873,35 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err
                         arg.Span
                         $"'to jsonl' needs a seq (a document per element), got {formatTy ty} — one document is 'to json'"
+            | "yaml", ty when streamOf ->
+                // `to yaml stream` [D:yaml-seq-doc]: one document per
+                // element — the bundle write, mirror of `from yaml
+                // stream T`. Demands a seq, like jsonl.
+                do!
+                    match ty with
+                    | TSeq elem -> yamlableOut toExpr.Span env Set.empty (resolve ctx elem)
+                    | ty ->
+                        err
+                            arg.Span
+                            $"'to yaml stream' needs a seq (a document per element), got {formatTy ty} — one document is 'to yaml'"
+
+                let! unions = unionWriteTable toExpr.Span env targ.Ty
+
+                let tto =
+                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, unions, true)
+                      Ty = TFun(targ.Ty, TSeq TStr)
+                      Span = toExpr.Span }
+
+                return
+                    { Kind = TEPipe(targ, tto)
+                      Ty = TSeq TStr
+                      Span = expr.Span }
             | "yaml", ty ->
-                // to yaml [D:yaml-v1]: a SEQ renders `---`-separated
-                // documents; a single yamlable value renders ONE document
-                // (yaml is a document format — the seq-only rule is json's,
-                // a row format's). A top-level seq<string * _> is ONE
-                // mapping document, not documents-of-pairs.
+                // to yaml [D:yaml-seq-doc]: ONE document — a record is a
+                // mapping, a seq a SEQUENCE document (json's array, one
+                // format over), pairing with `from yaml T`/`from yaml
+                // seq<T>`. A top-level seq<string * _> stays ONE mapping
+                // document. The `---` stream is `to yaml stream`.
                 do!
                     match ty with
                     | TSeq(TTuple [ TStr; _ ]) -> yamlableOut toExpr.Span env Set.empty ty
@@ -2876,7 +2911,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, unions)
+                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 

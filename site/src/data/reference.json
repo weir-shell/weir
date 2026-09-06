@@ -1748,7 +1748,7 @@
     {
       "name": "to yaml",
       "signature": null,
-      "summary": "Render a value tree (records, seqs, scalars, Option, Yaml nodes) to YAML lines. A seq renders ---separated documents; a None field omits its key; strings that could be mis-typed (no, 007, 1e5) are quoted.",
+      "summary": "Render one value as one YAML document: a record is a mapping, a seq a sequence document, a pair-seq one mapping. \u0060to yaml stream\u0060 writes one document per element (the \u0060---\u0060 bundle). A None field omits its key; strings that could be mis-typed (no, 007, 1e5) are quoted.",
       "example": null,
       "pointer": "a pipe stage: deployment |\u003E to yaml."
     },

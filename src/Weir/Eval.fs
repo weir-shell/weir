@@ -1480,23 +1480,15 @@ let private yamlToLines
 let private yamlToImpl
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
+    (stream: bool)
     : Value =
     VBuiltin(fun v ->
         match v with
-        // a top-level SEQ is `---`-separated DOCUMENTS — except a
-        // pair-seq, which is ONE mapping document (the check-side rule)
-        | VSeq items when
-            (let l = List.ofSeq items
-
-             not l.IsEmpty
-             && l
-                |> List.forall (fun i ->
-                    match i with
-                    | VTuple [ VStr _; _ ] -> true
-                    | _ -> false))
-            ->
-            VSeq(yamlToLines renames unions v |> List.map VStr |> List.toSeq)
-        | VSeq items ->
+        // `to yaml stream` [D:yaml-seq-doc]: one document per element —
+        // the bundle write. Without the word a seq is ONE SEQUENCE
+        // document (yamlRender's own VSeq arm — json's array, one
+        // format over), and a pair-seq is ONE mapping document.
+        | VSeq items when stream ->
             let docs = items |> Seq.map (yamlToLines renames unions) |> List.ofSeq
 
             let lines =
@@ -2470,13 +2462,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
     | TEFromYaml(_, shape, stream) -> yamlFromImpl shape stream
     | TEYaml(tpl, _) -> evalYamlTpl env tpl
-    | TETo("yaml", renames, unions) -> yamlToImpl renames unions
-    | TETo("jsonl", renames, unions) ->
+    | TETo("yaml", renames, unions, stream) -> yamlToImpl renames unions stream
+    | TETo("jsonl", renames, unions, _) ->
         VBuiltin(fun v ->
             match v with
             | VSeq items -> VSeq(items |> Seq.map (jsonLine renames unions >> VStr))
             | v -> unreachable $"the checker rejects 'to jsonl' on {formatValue v}")
-    | TETo(_, renames, unions) ->
+    | TETo(_, renames, unions, _) ->
         // ONE document [D:to-jsonl] — the whole value through the same
         // renderer, once; an array document forces its seq (one line
         // cannot stream)

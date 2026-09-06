@@ -4452,7 +4452,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "a pipe stage: lines |> from yaml Deployment — yields seq<Deployment>, one per document.")
           "to yaml",
           bd
-              "Render a value tree (records, seqs, scalars, Option, Yaml nodes) to YAML lines. A seq renders ---separated documents; a None field omits its key; strings that could be mis-typed (no, 007, 1e5) are quoted."
+              "Render one value as one YAML document: a record is a mapping, a seq a sequence document, a pair-seq one mapping. `to yaml stream` writes one document per element (the `---` bundle). A None field omits its key; strings that could be mis-typed (no, 007, 1e5) are quoted."
               None
               (Some "a pipe stage: deployment |> to yaml.")
 

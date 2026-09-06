@@ -3282,7 +3282,7 @@ echo "e2e ok: wire unions — mixed NDJSON via from jsonl, tag dispatch both for
 
 # the stream cardinality [D:wire-unions] session S: `from yaml stream T`
 # reads N `---` documents each as T — the heterogeneous BUNDLE is
-# stream over a tagged union, and to yaml's stream write roundtrips
+# stream over a tagged union, and to yaml stream's write roundtrips
 cat > "$adir/bundle.weir" <<'WEOF'
 type DepSpec = { replicas: int; image: string }
 type SvcSpec = { port: int }
@@ -3310,7 +3310,7 @@ for d in bundle |> from yaml stream KDoc do
     | Service s -> print $"svc {s.port}"
     | Unknown k -> print $"skip {k}"
 
-let back = [Service { port = 1 }; Deployment { replicas = 2; image = "redis" }] |> to yaml
+let back = [Service { port = 1 }; Deployment { replicas = 2; image = "redis" }] |> to yaml stream
 let n = back |> from yaml stream KDoc |> Seq.length
 print $"roundtrip {n}"
 WEOF
