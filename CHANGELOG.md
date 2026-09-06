@@ -16,6 +16,14 @@
   both roundtrip (the first never did before). A pair-seq still
   renders one mapping document.
 
+### Docs
+
+- The docs pages finished what v0.0.18 started in the help text:
+  the guide, the reference, and the translation tables dropped
+  their emphasis caps — "the process TREE is killed" reads "the
+  process tree is killed" now. Acronyms and file names stand, and
+  `!` still means *do it*, in italics.
+
 ### Checks clean, behaves differently
 
 - `xs |> to yaml` on a seq previously wrote `---`-separated
