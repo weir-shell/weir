@@ -6888,9 +6888,9 @@ type K8s =
     | Deployment of Workload
     | [<Other>] Skipped of string
 
-for doc in $(kustomize build overlays/prod) |> from yaml stream K8s do
+for doc in $(kustomize build prod/) |> from yaml stream K8s do
     match doc with
-    | Deployment d when d.spec.replicas < 2 -> fail "single-replica Deployment"
+    | Deployment d when d.spec.replicas < 2 -> fail "one replica"
     | Deployment d -> print $"ok: {d.spec.replicas} replicas"
     | Skipped kind -> print $"skipped: {kind}"
 WEOF

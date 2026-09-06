@@ -94,6 +94,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         --space-3: 1rem;
         --space-4: 1.75rem;
         --space-5: 3rem;
+        --space-6: 4.25rem;
       }
       html.dark {
         --bg: #0e1113;
@@ -227,7 +228,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
       header nav a:hover { color: var(--accent); }
       /* the measure: 65–70 characters — readability beats width, and it
          matters more the denser the content */
-      main { max-width: 68ch; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+      main { max-width: 68ch; margin: 0 auto; padding: 3rem 1.25rem 5rem; }
       /* the side navigation: sticky, scrolls its own overflow, never
          the page's. The measure is untouched — the grid centers the
          pair, and narrow viewports fall back to one column. */
@@ -313,20 +314,10 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
       }
       h1, h2, h3 { line-height: 1.25; }
       h1 { font-size: var(--text-2xl); }
-      h2 { font-size: var(--text-xl); margin-top: var(--space-5); border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
-      /* the mark's stagger, miniaturised, marks every section
-         [D:site-style] — identity by repetition, three layered bars */
-      h2::before {
-        content: "";
-        display: inline-block;
-        width: 1rem;
-        height: 0.72rem;
-        margin-right: 0.55rem;
-        background:
-          linear-gradient(var(--b1), var(--b1)) 0 0 / 0.62rem 3px no-repeat,
-          linear-gradient(var(--b2), var(--b2)) 0.19rem 0.31rem / 0.62rem 3px no-repeat,
-          linear-gradient(var(--b3), var(--b3)) 0.38rem 0.62rem / 0.62rem 3px no-repeat;
-      }
+      /* the h2 triplet marker RETIRED [D:hero-2]: at 3px-bar scale it
+         read as a malformed logo beside every heading — the h1
+         underline and the hero mark carry the hues alone */
+      h2 { font-size: var(--text-xl); margin-top: var(--space-6); border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
       main a:hover { color: var(--b2); }
       h3 { font-size: var(--text-lg); }
       table { border-collapse: collapse; display: block; overflow-x: auto; }

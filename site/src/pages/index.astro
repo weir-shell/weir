@@ -31,9 +31,9 @@ type K8s =
     | Deployment of Workload
     | [<Other>] Skipped of string
 
-for doc in $(kustomize build overlays/prod) |> from yaml stream K8s do
+for doc in $(kustomize build prod/) |> from yaml stream K8s do
     match doc with
-    | Deployment d when d.spec.replicas < 2 -> fail "single-replica Deployment"
+    | Deployment d when d.spec.replicas < 2 -> fail "one replica"
     | Deployment d -> print $"ok: {d.spec.replicas} replicas"
     | Skipped kind -> print $"skipped: {kind}"`;
 
@@ -390,7 +390,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     }
     .hero-demo { margin-top: var(--space-4); }
   }
-  .hero-demo .astro-code { font-size: 0.85rem; }
+  .hero-demo .astro-code { font-size: 0.8rem; }
   .refusal.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
   /* feature sections [D:hero-2]: short prose BESIDE its example —
      the gleam shape; stacked on narrow screens */
@@ -400,7 +400,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     transform: translateX(-50%);
     display: grid;
     gap: 0 4rem;
-    margin-top: var(--space-4);
+    margin-top: var(--space-5);
     align-items: start;
     grid-template-columns: 1fr;
   }
