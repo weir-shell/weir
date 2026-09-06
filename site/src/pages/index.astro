@@ -1,10 +1,10 @@
 ---
-// The hero [D:hero] [D:hero-2]: the fold leads with the user's REAL
-// PR check, TRIMMED to its core — kustomize build's stream read as
-// a tagged union, a guard arm as the policy gate. It gates, it does
-// not deploy: flux/argocd own apply, so the script sits WITH
-// GitOps, not against it (kubeclt apply was the anti-pattern; the
-// typo beat is rsnyc — the backup script is timeless glue). Sections are gleam-shaped [D:site-style]:
+// The hero [D:hero] [D:hero-2]: the fold leads with a SHORT typed
+// boundary — declare a record, `from json` parses a file into it,
+// fields typed. No external command (File.read is a builtin), so
+// there is nothing to stub and nothing to break; the earlier
+// kustomize/k8s hero read too long and depended on a stub tool.
+// The typo beat below is rsnyc — the backup script is timeless glue. Sections are gleam-shaped [D:site-style]:
 // short prose BESIDE its example (desktop), stacked on mobile, the
 // install lines below the demo on phones (nobody pipes curl|sh
 // there). Every quoted output on this page comes from a run of the
@@ -23,25 +23,13 @@ const weirGrammar = JSON.parse(
   ),
 );
 
-const heroWeir = `type Spec = { replicas: int }
-type Deployment = { spec: Spec }
+const heroWeir = `type Pkg = { name: string; version: string }
 
-[<Tag "kind">]
-type K8s =
-    | Deployment of Deployment
-    | [<Other>] Skipped of string
+let pkg = File.read "package.json" |> from json Pkg
+print $"{pkg.name} {pkg.version}"`;
 
-for doc in $(kustomize build prod/) |> from yaml stream K8s do
-    match doc with
-    | Deployment d when d.spec.replicas < 2 -> fail "one replica"
-    | Deployment d -> print $"ok: {d.spec.replicas} replicas"
-    | Skipped kind -> print $"skipped: {kind}"`;
-
-// verbatim from running the check over a three-document build
-// (Deployment, Service, CronJob) — e2e-pinned against a stub tool
-const heroOut = `ok: 3 replicas
-skipped: Service
-skipped: CronJob`;
+// verbatim from running the script over a package.json — e2e-pinned
+const heroOut = `acme-api 2.4.0`;
 
 const beat1Weir = `type Cli = {
     /// print what would happen, upload nothing
@@ -152,12 +140,12 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="hero-demo">
       <Code code={heroWeir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
       <figure class="term">
-        <figcaption>$ weir pr-check.weir</figcaption>
+        <figcaption>$ weir version.weir</figcaption>
         <pre class="report">{heroOut}</pre>
       </figure>
       <p class="hero-caption">
-        A PR gate over real manifests — a breach fails the merge;
-        flux applies what passed.
+        Declare the shape; <code>from json</code> parses a config file
+        or a tool's output into it — typed fields, not string-poking.
       </p>
     </div>
   </div>
