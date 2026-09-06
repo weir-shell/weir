@@ -34,7 +34,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
-    <link rel="preload" href="/fonts/iosevka-aile-regular.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/iosevka-etoile-regular.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/iosevka-term-ext-regular.woff2" as="font" type="font/woff2" crossorigin />
     <script is:inline>
       // theme before first paint [D:queil-theme]: stored choice wins,
@@ -53,18 +53,18 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
          (how the code blocks shipped unpadded: the rule existed, the
          scoping kept it from matching). */
       /* the prose face [D:site-style]: Iosevka Aile — the humanist
-         SANS sibling of the Term mono, so the page and its code share
+         SLAB-SERIF sibling of the Term mono, so the page and its code share
          one type family instead of a generic system stack. Subset to
          the site's charset (~73KB/weight). */
       @font-face {
-        font-family: "Iosevka Aile";
-        src: url("/fonts/iosevka-aile-regular.woff2") format("woff2");
+        font-family: "Iosevka Etoile";
+        src: url("/fonts/iosevka-etoile-regular.woff2") format("woff2");
         font-weight: 400;
         font-display: swap;
       }
       @font-face {
-        font-family: "Iosevka Aile";
-        src: url("/fonts/iosevka-aile-bold.woff2") format("woff2");
+        font-family: "Iosevka Etoile";
+        src: url("/fonts/iosevka-etoile-bold.woff2") format("woff2");
         font-weight: 600 700;
         font-display: swap;
       }
@@ -146,7 +146,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         background: var(--bg);
         color: var(--fg);
         /* dense technical prose: taller leading than display text wants */
-        font: 16px/1.7 "Iosevka Aile", system-ui, -apple-system, "Segoe UI", sans-serif;
+        font: 16px/1.7 "Iosevka Etoile", system-ui, -apple-system, "Segoe UI", sans-serif;
       }
       header {
         border-bottom: 1px solid var(--border);
