@@ -1,9 +1,11 @@
 ---
-// The hero [D:hero] [D:hero-2]: the fold leads with the TYPED crown
-// jewel (a kubernetes bundle read as a tagged union over a yaml
-// stream) — the typed nature is more than typo-catching, so the typo
-// beat follows as a section, kubeclt-spelled for the audience the
-// yaml features court. Sections are gleam-shaped [D:site-style]:
+// The hero [D:hero] [D:hero-2]: the fold leads with the user's REAL
+// PR check — kustomize build piped into kubeconform, then the same
+// captured stream read as a tagged union for policy. It gates, it
+// does not deploy: flux/argocd own apply, so the script sits WITH
+// GitOps, not against it (kubeclt apply was the anti-pattern; the
+// typo beat is rsnyc — the backup script is timeless glue). The
+// force-once-consume-twice law is on display on purpose. Sections are gleam-shaped [D:site-style]:
 // short prose BESIDE its example (desktop), stacked on mobile, the
 // install lines below the demo on phones (nobody pipes curl|sh
 // there). Every quoted output on this page comes from a run of the
@@ -22,41 +24,44 @@ const weirGrammar = JSON.parse(
   ),
 );
 
-const heroWeir = `type Rollout = { replicas: int }
-type Expose = { port: int }
+const heroWeir = `type Spec = { replicas: int }
+type Workload = { spec: Spec }
 
 [<Tag "kind">]
 type K8s =
-    | Deployment of Rollout
-    | Service of Expose
-    | [<Other>] Skipped of string
+    | Deployment of Workload
+    | [<Other>] Unchecked of string
 
-for doc in File.read "app.yaml" |> from yaml stream K8s do
+let manifests = kustomize build overlays/prod |> Seq.force
+
+manifests | kubeconform -strict
+
+for doc in manifests |> from yaml stream K8s do
     match doc with
-    | Deployment d -> print $"rolling out {d.replicas} replicas"
-    | Service s -> print $"exposing :{s.port}"
-    | Skipped kind -> print $"skipped: {kind}"`;
+    | Deployment d when d.spec.replicas < 2 -> fail "single-replica Deployment"
+    | Deployment d -> print $"ok: {d.spec.replicas} replicas"
+    | Unchecked kind -> print $"schema-only: {kind}"`;
 
-// verbatim from running the script over a three-document bundle
-// (Deployment, Service, CronJob) — e2e-pinned
-const heroOut = `rolling out 3 replicas
-exposing :80
-skipped: CronJob`;
+// verbatim from running the check over a three-document build
+// (Deployment, Service, CronJob) — e2e-pinned against stub tools
+const heroOut = `ok: 3 replicas
+schema-only: Service
+schema-only: CronJob`;
 
 const beat1Weir = `type Cli = {
-    /// print what would happen, deploy nothing
+    /// print what would happen, upload nothing
     dryRun: bool
 }
 
 let cli = Args.load Cli
 tar czf bundle.tar.gz dist/
-if not cli.dryRun then kubeclt apply -f k8s/`;
+if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist`;
 
 // verbatim from running the script above — e2e-pinned
 const beat1Refusal = `release.weir:8:24: parse error:
-if not cli.dryRun then kubeclt apply -f k8s/
+if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist
                        ^
-unknown command 'kubeclt' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c`;
+unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c`;
 
 const beat2Weir = `type Cli = {
     /// print what would happen, deploy nothing
@@ -153,12 +158,14 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="hero-demo">
       <Code code={heroWeir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
       <figure class="term">
-        <figcaption>$ weir deploy.weir</figcaption>
+        <figcaption>$ weir pr-check.weir</figcaption>
         <pre class="report">{heroOut}</pre>
       </figure>
       <p class="hero-caption">
-        A kubernetes bundle, read as a tagged union over a yaml
-        stream — unknown kinds are a case you handle, not a crash.
+        A real PR check: kustomize's stream is captured once and used
+        twice — piped into kubeconform for schema validity, then read
+        as a tagged union for the policy the schema cannot state. A
+        breach fails the merge; flux applies what passed.
       </p>
     </div>
   </div>

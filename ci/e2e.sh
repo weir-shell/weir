@@ -6845,48 +6845,67 @@ herodir=$(mkweirtmp)
 # beat 1: the misspelled command refuses at RUN, before anything executes
 cat > "$herodir/release.weir" <<'WEOF'
 type Cli = {
-    /// print what would happen, deploy nothing
+    /// print what would happen, upload nothing
     dryRun: bool
 }
 
 let cli = Args.load Cli
 tar czf bundle.tar.gz dist/
-if not cli.dryRun then kubeclt apply -f k8s/
+if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist
 WEOF
 b1=$(cd "$herodir" && "$BIN" release.weir 2>&1) && fail "the beat-1 tool must refuse"
-echo "$b1" | grep -qF "unknown command 'kubeclt' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c" || fail "beat-1 refusal drifted: $b1"
+echo "$b1" | grep -qF "unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c" || fail "beat-1 refusal drifted: $b1"
 [ ! -e "$herodir/bundle.tar.gz" ] || fail "beat 1's money line is false — tar RAN before the refusal"
-# the hero [D:hero-2]: the bundle loop's happy run, quoted exactly
-cat > "$herodir/app.yaml" <<'WEOF'
+# the hero [D:hero-2]: the PR check's happy run, quoted exactly —
+# kustomize/kubeconform are STUBS (the fake-tool pattern): the pin is
+# weir's capture/stdin-feed/typed-stream composition, not the tools
+mkdir -p "$herodir/bin"
+cat > "$herodir/bin/kustomize" <<'WEOF'
+#!/bin/sh
+cat <<'YAML'
 kind: Deployment
-replicas: 3
+metadata:
+  name: api
+spec:
+  replicas: 3
 ---
 kind: Service
-port: 80
+metadata:
+  name: api
 ---
 kind: CronJob
-schedule: daily
+metadata:
+  name: reindex
+YAML
 WEOF
-cat > "$herodir/hero.weir" <<'WEOF'
-type Rollout = { replicas: int }
-type Expose = { port: int }
+cat > "$herodir/bin/kubeconform" <<'WEOF'
+#!/bin/sh
+cat > /dev/null
+WEOF
+chmod +x "$herodir/bin/kustomize" "$herodir/bin/kubeconform"
+cat > "$herodir/pr-check.weir" <<'WEOF'
+type Spec = { replicas: int }
+type Workload = { spec: Spec }
 
 [<Tag "kind">]
 type K8s =
-    | Deployment of Rollout
-    | Service of Expose
-    | [<Other>] Skipped of string
+    | Deployment of Workload
+    | [<Other>] Unchecked of string
 
-for doc in File.read "app.yaml" |> from yaml stream K8s do
+let manifests = kustomize build overlays/prod |> Seq.force
+
+manifests | kubeconform -strict
+
+for doc in manifests |> from yaml stream K8s do
     match doc with
-    | Deployment d -> print $"rolling out {d.replicas} replicas"
-    | Service s -> print $"exposing :{s.port}"
-    | Skipped kind -> print $"skipped: {kind}"
+    | Deployment d when d.spec.replicas < 2 -> fail "single-replica Deployment"
+    | Deployment d -> print $"ok: {d.spec.replicas} replicas"
+    | Unchecked kind -> print $"schema-only: {kind}"
 WEOF
-hout=$(cd "$herodir" && "$BIN" hero.weir 2>&1) || fail "the hero bundle loop failed: $hout"
-[ "$hout" = 'rolling out 3 replicas
-exposing :80
-skipped: CronJob' ] || fail "the hero output drifted — update index.astro: $hout"
+hout=$(cd "$herodir" && PATH="$herodir/bin:$PATH" "$BIN" pr-check.weir 2>&1) || fail "the hero PR check failed: $hout"
+[ "$hout" = 'ok: 3 replicas
+schema-only: Service
+schema-only: CronJob' ] || fail "the hero output drifted — update index.astro: $hout"
 # beat 2: --help derived from the record, quoted exactly
 cat > "$herodir/deploy.weir" <<'WEOF'
 type Cli = {
