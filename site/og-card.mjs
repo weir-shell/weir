@@ -15,12 +15,12 @@ const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 
 // html.dark's tokens (Base.astro) + the mark's dark set (favicon.svg)
 const P = {
-  bg: "#0e1113",
+  bg: "#15181b",
   fg: "#d6dade",
   muted: "#98a2ac",
   accent: "#7fb2f0",
-  codeBg: "#161b1e",
-  border: "#2a3138",
+  codeBg: "#1d2125",
+  border: "#2d343b",
   danger: "#ff8098",
   b1: "#7fb2f0",
   b2: "#4fc1e8",
