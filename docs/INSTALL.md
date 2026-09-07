@@ -33,7 +33,17 @@ signed build provenance, best-effort — a second, independent origin.)
 
 A pinned script installs the version it was cut for. To move to a newer
 release, re-fetch the script from `weir.sh` (it always serves the
-latest) or grab the binary manually below.
+latest) or grab the binary manually below. To pin or downgrade, fetch
+the installer from a **specific release** instead of `weir.sh` — every
+release attaches its own generated `install.sh`/`install.ps1`, baked
+with that version's checksums:
+
+```
+curl -fsSL https://github.com/weir-shell/weir/releases/download/<tag>/install.sh | sh
+```
+
+There are no package-manager builds yet (`brew`, `winget`, `apt`) — the
+script above or a manual download below.
 
 > The files named `install.sh` / `install.ps1` in the repo are
 > **templates** (`@WEIR_TAG@` / `@WEIR_SHA256SUMS@` placeholders);
@@ -42,8 +52,8 @@ latest) or grab the binary manually below.
 
 ## Manual download
 
-Grab the binary for your platform from
-[releases](https://github.com/weir-shell/weir/releases):
+Grab the binary for your platform — and that release's `SHA256SUMS` —
+from [releases](https://github.com/weir-shell/weir/releases):
 
 | platform | artifact |
 |---|---|
@@ -54,18 +64,27 @@ Grab the binary for your platform from
 | Windows x64 | `weir-<tag>-win-x64.exe` |
 | Windows arm64 | `weir-<tag>-win-arm64.exe` |
 
-Verify, then install:
+Verify, then install — this is the installer's own portable check
+(one line out of `SHA256SUMS`, no GNU-only flags):
 
 ```
-sha256sum -c --ignore-missing SHA256SUMS     # macOS: shasum -a 256 -c
+grep " weir-<tag>-<rid>$" SHA256SUMS | sha256sum -c -   # macOS: shasum -a 256 -c -
 chmod +x weir-<tag>-<rid>
 mv weir-<tag>-<rid> ~/.local/bin/weir
 ```
 
+`~/.local/bin` must be on your `PATH` — the `curl | sh` installer warns
+when it isn't, but a manual install won't. On Windows the target is
+`%LOCALAPPDATA%\Programs\weir`, also not on `PATH` by default.
+
 Windows: `Get-FileHash -Algorithm SHA256 weir-<tag>-win-<arch>.exe`
 and compare against the `SHA256SUMS` line.
 
-`weir --version` reports the release tag (`v0.1.0+<sha>`).
+A binary you download through a browser hits the first-run dialogs
+below — the manual path is the one that gets quarantined; the
+`curl | sh` installer sidesteps it.
+
+`weir --version` reports the release tag (`v<tag>+<sha>`).
 
 ## Container image
 

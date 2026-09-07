@@ -3905,7 +3905,7 @@ out=$($BIN "$sfdir/cli.weir" --help)
 echo "$out" | grep -qF "global options:" || fail "two-tier help missing global section: $out"
 echo "$out" | grep -qF "commands:" || fail "two-tier help missing commands: $out"
 out=$($BIN "$sfdir/cli.weir" run --help)
-echo "$out" | grep -qF "usage: run [flags]" || fail "case-scoped help: $out"
+echo "$out" | grep -qF "usage: cli.weir run [flags]" || fail "case-scoped help: $out"
 echo "$out" | grep -qF -- "-q, --quiet" || fail "scoped help shows the scope-derived short: $out"
 echo "e2e ok: two-tier and case-scoped help"
 
@@ -6842,34 +6842,74 @@ echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's
 # included deliberately: fuzz.weir drift must move the homepage in the
 # same commit.
 herodir=$(mkweirtmp)
-# beat 1: the misspelled command refuses at RUN, before anything executes
-cat > "$herodir/release.weir" <<'WEOF'
-type Cli = {
-    /// print what would happen, upload nothing
-    dryRun: bool
-}
-
-let cli = Args.load Cli
-tar czf bundle.tar.gz dist/
-if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist
-WEOF
-b1=$(cd "$herodir" && "$BIN" release.weir 2>&1) && fail "the beat-1 tool must refuse"
-echo "$b1" | grep -qF "unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c" || fail "beat-1 refusal drifted: $b1"
-[ ! -e "$herodir/bundle.tar.gz" ] || fail "beat 1's money line is false — tar RAN before the refusal"
-# the hero [D:hero-2]: a short typed boundary, quoted exactly — no
-# external command (File.read is a builtin), so the pin needs only a
-# package.json fixture, nothing to stub
+# the hero [D:hero-3]: the typed boundary ENDS in a real command —
+# from json parses the version, git tag consumes it. The fixture is a
+# real repo (identity via -c flags; a lightweight tag needs a commit)
 printf '%s\n' '{"name": "acme-api", "version": "2.4.0", "private": true}' > "$herodir/package.json"
-cat > "$herodir/version.weir" <<'WEOF'
+( cd "$herodir" && git init -q . && git add package.json && git -c user.email=e2e@weir -c user.name=e2e commit -qm fixture )
+cat > "$herodir/tag.weir" <<'WEOF'
 type Pkg = { name: string; version: string }
 
 let pkg = File.read "package.json" |> from json Pkg
-print $"{pkg.name} {pkg.version}"
+git tag $"v{pkg.version}"
+print $"tagged {pkg.name} v{pkg.version}"
 WEOF
-hout=$(cd "$herodir" && "$BIN" version.weir 2>&1) || fail "the hero typed parse failed: $hout"
-[ "$hout" = 'acme-api 2.4.0' ] || fail "the hero output drifted — update index.astro: $hout"
+hout=$(cd "$herodir" && "$BIN" tag.weir 2>&1) || fail "the hero run failed: $hout"
+[ "$hout" = 'tagged acme-api v2.4.0' ] || fail "the hero output drifted — update index.astro: $hout"
+( cd "$herodir" && git tag -l ) | grep -qxF "v2.4.0" || fail "the hero's git tag was not created"
+# beat 1 [D:hero-3]: the check at three distances — a tool's flag
+# (#sig, generated from a stub then marked exhaustive: the stub's
+# 2-flag surface IS fully known), a manifest's key (the REAL vendored
+# ConfigMap schema, served locally like the contracts cell), a program
+# name (PATH). All three findings in ONE weir check report, and the
+# check must write NOTHING.
+b1dir=$(mkweirtmp)
+mkdir -p "$b1dir/bin" "$b1dir/serve"
+cat > "$b1dir/bin/bicep" <<'WEOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "bicep 0.30.3";;
+  --help) printf 'Flags:\n      --outfile <x>   output path\n      --stdout        write to stdout\n';;
+  *) echo "ran:$@";;
+esac
+WEOF
+chmod +x "$b1dir/bin/bicep"
+( cd "$b1dir" && git init -q . )
+( cd "$b1dir" && PATH="$(pathEntry "$b1dir/bin"):$PATH" "$BIN" add sig bicep >/dev/null ) || fail "beat-1 sig generation"
+printf '\nlet exhaustive = true\n' >> "$b1dir/.weir/sigs/bicep.weir"
+cp "$ROOT/tests/fixtures/configmap-v1.json" "$b1dir/serve/"
+b1port=$((18790 + RANDOM % 100))
+python3 -m http.server $b1port --bind 127.0.0.1 --directory "$b1dir/serve" >/dev/null 2>&1 &
+b1srv=$!
+awaitHttp "http://127.0.0.1:$b1port/configmap-v1.json" || { kill $b1srv 2>/dev/null || true; fail "beat-1 schema server never came up"; }
+( cd "$b1dir" && "$BIN" add schema http://127.0.0.1:$b1port/configmap-v1.json --as k8s-configmap >/dev/null ) || { kill $b1srv 2>/dev/null || true; fail "beat-1 add schema"; }
+kill $b1srv 2>/dev/null || true
+cat > "$b1dir/deploy.weir" <<'WEOF'
+#sig bicep
+
+bicep build --outfil main.json
+
+let config = yaml schema=k8s-configmap
+    apiVerison: v1
+    kind: ConfigMap
+    metadata:
+        name: site-config
+    data:
+        template: main.json
+
+config |> to yaml |> File.write "config.yaml"
+rsnyc -av main.json config.yaml backup:/srv/site
+WEOF
+b1=$(cd "$b1dir" && PATH="$(pathEntry "$b1dir/bin"):$PATH" "$BIN" check deploy.weir 2>&1) && fail "beat-1 check must exit nonzero"
+for line in \
+    "deploy.weir:3:13: error [sig]: unknown flag '--outfil' for bicep. Did you mean '--outfile'? (#sig bicep, line 1; exhaustive signature)" \
+    "deploy.weir:6:5: error [schema]: schema k8s-configmap: unknown field 'apiVerison' — did you mean 'apiVersion'?" \
+    "deploy.weir:14:1: warning [cmd-not-found]: command not found on PATH: rsnyc — weir resolves commands at check time; the script runs once it is installed"; do
+    echo "$b1" | grep -qF "$line" || fail "beat-1 check output drifted — update index.astro; missing: $line"
+done
+[ ! -e "$b1dir/config.yaml" ] || fail "beat 1's money line is false — check WROTE a file"
 # beat 2: --help derived from the record, quoted exactly
-cat > "$herodir/deploy.weir" <<'WEOF'
+cat > "$herodir/ship.weir" <<'WEOF'
 type Cli = {
     /// print what would happen, deploy nothing
     dryRun: bool
@@ -6884,11 +6924,12 @@ type Cli = {
 let cli = Args.load Cli
 print $"deploying to {cli.target} (dry-run: {cli.dryRun})"
 WEOF
-b2=$(cd "$herodir" && "$BIN" deploy.weir --help 2>&1) || true
+b2=$(cd "$herodir" && "$BIN" ship.weir --help 2>&1) || true
 for line in \
+    "usage: ship.weir [flags]" \
     "  -d, --dry-run               print what would happen, deploy nothing" \
     "      --target <string>       required — the environment to deploy to" \
-    "      --timeout               optional — wait this long for the health check"; do
+    "      --timeout <duration>    optional — wait this long for the health check"; do
     echo "$b2" | grep -qF "$line" || fail "beat-2 --help drifted — update index.astro; missing: $line"
 done
 # the concatenation refusal (below the fold) — the LIKE-FOR-LIKE steam
@@ -6908,6 +6949,6 @@ for line in \
     "fail  tools/fuzz.weir:68:9"; do
     echo "$hcan" | grep -qF "$line" || fail "the homepage's --can quote drifted — update index.astro; missing: $line"
 done
-echo "e2e ok: homepage hero currency (beat-1 refusal + tar-never-ran, beat-2 --help, the splice refusal, the --can quote — all match live runs)"
+echo "e2e ok: homepage hero currency (hero tag run + tag created, beat-1 three-distance check + wrote-nothing, beat-2 --help, the splice refusal, the --can quote — all match live runs)"
 
 echo "e2e battery: all green"

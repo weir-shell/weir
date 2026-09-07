@@ -1,10 +1,11 @@
 ---
-// The hero [D:hero] [D:hero-2]: the fold leads with a SHORT typed
-// boundary — declare a record, `from json` parses a file into it,
-// fields typed. No external command (File.read is a builtin), so
-// there is nothing to stub and nothing to break; the earlier
-// kustomize/k8s hero read too long and depended on a stub tool.
-// The typo beat below is rsnyc — the backup script is timeless glue. Sections are gleam-shaped [D:site-style]:
+// The hero [D:hero] [D:hero-3]: the fold leads with a SHORT typed
+// boundary that ENDS in a real command — `from json` parses the
+// version, `git tag` consumes it (the typed value crosses into argv
+// as exactly one word). Beat 1 shows the check at three distances
+// [D:hero-3]: a tool's flag (#sig), a manifest's key (yaml schema=),
+// and a program name (PATH) — three mistakes, none of them weir, one
+// `weir check` report. Sections are gleam-shaped [D:site-style]:
 // short prose BESIDE its example (desktop), stacked on mobile, the
 // install lines below the demo on phones (nobody pipes curl|sh
 // there). Every quoted output on this page comes from a run of the
@@ -27,25 +28,31 @@ const weirGrammar = JSON.parse(
 const heroWeir = `type Pkg = { name: string; version: string }
 
 let pkg = File.read "package.json" |> from json Pkg
-print $"{pkg.name} {pkg.version}"`;
+git tag $"v{pkg.version}"
+print $"tagged {pkg.name} v{pkg.version}"`;
 
-// verbatim from running the script over a package.json — e2e-pinned
-const heroOut = `acme-api 2.4.0`;
+// verbatim from running the script in a git repo — e2e-pinned
+const heroOut = `tagged acme-api v2.4.0`;
 
-const beat1Weir = `type Cli = {
-    /// print what would happen, upload nothing
-    dryRun: bool
-}
+const beat1Weir = `#sig bicep
 
-let cli = Args.load Cli
-tar czf bundle.tar.gz dist/
-if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist`;
+bicep build --outfil main.json
 
-// verbatim from running the script above — e2e-pinned
-const beat1Refusal = `release.weir:8:24: parse error:
-if not cli.dryRun then rsnyc -av bundle.tar.gz backup:/srv/dist
-                       ^
-unknown command 'rsnyc' — not found on PATH. weir resolves command names before running: install the tool, or run it through sh -c`;
+let config = yaml schema=k8s-configmap
+    apiVerison: v1
+    kind: ConfigMap
+    metadata:
+        name: site-config
+    data:
+        template: main.json
+
+config |> to yaml |> File.write "config.yaml"
+rsnyc -av main.json config.yaml backup:/srv/site`;
+
+// verbatim from \`weir check deploy.weir\` — e2e-pinned
+const beat1Check = `deploy.weir:3:13: error [sig]: unknown flag '--outfil' for bicep. Did you mean '--outfile'? (#sig bicep, line 1; exhaustive signature)
+deploy.weir:6:5: error [schema]: schema k8s-configmap: unknown field 'apiVerison' — did you mean 'apiVersion'?
+deploy.weir:14:1: warning [cmd-not-found]: command not found on PATH: rsnyc — weir resolves commands at check time; the script runs once it is installed`;
 
 const beat2Weir = `type Cli = {
     /// print what would happen, deploy nothing
@@ -60,11 +67,11 @@ const beat2Weir = `type Cli = {
 
 let cli = Args.load Cli`;
 
-// verbatim from \`weir deploy.weir --help\` (v0.0.3) — e2e-pinned
-const beat2Help = `usage: [flags]
+// verbatim from \`weir ship.weir --help\` (v0.0.22) — e2e-pinned
+const beat2Help = `usage: ship.weir [flags]
   -d, --dry-run               print what would happen, deploy nothing
       --target <string>       required — the environment to deploy to
-      --timeout               optional — wait this long for the health check`;
+      --timeout <duration>    optional — wait this long for the health check`;
 
 const spliceWeir = `let steamroot = Self.scriptPath |> Path.dir
 rm -rf $steamroot/*`;
@@ -120,12 +127,13 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="hero-demo">
       <Code code={heroWeir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
       <figure class="term">
-        <figcaption>$ weir version.weir</figcaption>
+        <figcaption>$ weir tag.weir</figcaption>
         <pre class="report">{heroOut}</pre>
       </figure>
       <p class="hero-caption">
-        Declare the shape; <code>from json</code> parses a config file
-        or a tool's output into it — typed fields, not string-poking.
+        Declare the shape; <code>from json</code> parses a file or a
+        tool's output into it — and the typed value crosses back into
+        a real command's argv as exactly one word.
       </p>
     </div>
     <div class="hero-install">
@@ -155,12 +163,14 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 
   <section class="feature">
     <div class="feature-prose">
-      <h2>The check is the test</h2>
+      <h2>The check reaches past your code</h2>
       <p>
-        Every command resolves — your PATH included — and every type
-        checks before the first effect runs. One misspelled word and
-        the whole script refuses: <code>tar</code> never created a
-        byte.
+        This script has three mistakes, and none of them are weir: a
+        tool's flag, checked against a generated signature
+        (<code>weir add sig bicep</code>); a manifest's key, checked
+        against a vendored schema (<code>weir add schema</code>); and
+        a program name, checked against your PATH. One report, every
+        finding located — and nothing ran.
       </p>
       <p class="fine">
         Nothing on this page is a mock-up — every quoted output comes
@@ -170,8 +180,8 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="feature-demo">
       <Code code={beat1Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
       <figure class="term">
-        <figcaption>$ weir release.weir</figcaption>
-        <pre class="refusal wrap">{beat1Refusal}</pre>
+        <figcaption>$ weir check deploy.weir</figcaption>
+        <pre class="refusal wrap">{beat1Check}</pre>
       </figure>
     </div>
   </section>
@@ -190,13 +200,13 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="feature-demo">
       <Code code={beat2Weir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
       <figure class="term">
-        <figcaption>$ weir deploy.weir --help</figcaption>
+        <figcaption>$ weir ship.weir --help</figcaption>
         <pre class="report">{beat2Help}</pre>
       </figure>
     </div>
   </section>
 
-  <h2>Predictable, illustrated</h2>
+  <h2>Two ingredients, removed</h2>
   <p>
     Two bash mechanisms have deleted real machines: an unquoted
     variable <em>splitting</em> into words, and a path <em>glued</em>
@@ -249,9 +259,50 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     </div>
   </section>
 
+  <h2>What falls out</h2>
+  <ul class="falls-out">
+    <li>
+      <a href="/docs/guide/#parallelism"><code>within proc</code></a> —
+      a background process gets a scope, never a <code>&amp;</code>;
+      the tree is killed and reaped on every exit.
+    </li>
+    <li>
+      <a href="/docs/guide/#secrets-tokens-that-cannot-leak-into-logs"><code>Secret</code></a> —
+      a token that cannot reach a log line, a shown record, or the
+      wire; <code>Secret.reveal</code> is the only exit, so the audit
+      is the call sites.
+    </li>
+    <li>
+      <a href="/docs/guide/#retrying-and-polling"><code>retry</code> and <code>poll</code></a> —
+      bounded loops; an unbounded loop is unrepresentable, and
+      <code>watch=</code> fails the wait the moment the child dies,
+      with its last output.
+    </li>
+    <li>
+      <a href="/docs/guide/#exit-codes-from-command-to-value">exit codes as data</a> —
+      <code>| complete</code> and <code>| succeeds</code> make a
+      command's outcome a value, and <code>Seq.exactlyOne</code> says
+      <em>one line</em> where <code>head</code> would silently accept
+      two.
+    </li>
+    <li>
+      <a href="/docs/guide/#commands-and-processes"><code>within lock</code></a> —
+      an advisory file lock the kernel releases on any death,
+      <code>kill -9</code> included.
+    </li>
+    <li>
+      <a href="/docs/tooling/#yaml-schemas">the <code>yaml</code> block</a> —
+      splices are nodes, never text, so YAML injection is
+      unrepresentable — the argv law, one format over.
+    </li>
+  </ul>
+
   <h2>Why not the alternatives</h2>
   <p>
-    In the author's words: <strong>PowerShell</strong> compounds its
+    In the author's words: <strong>bash</strong> has no types — a
+    misspelled command, an unset variable, a value that splits into two
+    words all wait until the shell reaches that line, mid-run.
+    <strong>PowerShell</strong> compounds its
     quirks at tool scale and is not typed where it counts.
     <strong>F# scripts</strong> had the types — weir is F#-shaped
     because they were closest — but not the start-up time, the
@@ -269,7 +320,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     What makes it checkable rather than a claim: every fenced example
     in the docs executes in CI (error demos must <em>fail</em>); an
     F# fidelity oracle referees every divergence claim; an external
-    referee pushes eighty hostile payloads through PyYAML and
+    referee pushes 103 hostile payloads through PyYAML and
     Python's <code>json</code>; and five adversarial reviews sit,
     findings and all, in the
     <a href="https://github.com/weir-shell/weir/blob/main/docs/DECISIONS.md">public ledger</a>.
@@ -412,6 +463,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   .hero-cell pre { margin-top: 0.35rem; }
   .hero-label { margin-bottom: 0; color: var(--muted); font-size: 0.9rem; }
   .hero-caption { font-size: 0.9rem; color: var(--muted); }
+  .falls-out li { margin-bottom: 0.55rem; }
   /* terminal chrome [D:site-style]: the caption is the COMMAND that
      produced the quoted output — provenance made visible, never
      decoration (the outputs stay e2e-pinned bytes) */

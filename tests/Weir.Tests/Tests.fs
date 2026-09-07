@@ -1462,6 +1462,20 @@ let boundaryTests =
               | Error e -> Expect.stringContains e "'<<<' needs an indented block" "the no-block error names the glyph"
               | other -> failtest $"expected an assembly error, got {other}"
 
+              // the continuation refusal [D:district-terminates]: before
+              // this arm, a pipe after the block GLUED into the last
+              // content line — `alpha |> Seq.length` as BYTES, silent
+              // corruption; now the natural attempt teaches the bound form
+              match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    alpha"; 3, "|> Seq.length" ] with
+              | Error e ->
+                  Expect.stringContains e "past its heredoc block" "the continuation refusal names the block"
+                  Expect.stringContains e "then use the binding" "the refusal teaches the two-statement form"
+              | other -> failtest $"expected the continuation refusal, got {other}"
+
+              match Weir.Script.assemble [ 1, "let d = yaml"; 2, "    k: v"; 3, "|> to yaml" ] with
+              | Error e -> Expect.stringContains e "past its yaml block" "the yaml twin refuses the same way"
+              | other -> failtest $"expected the yaml continuation refusal, got {other}"
+
               match Weir.Script.assemble [ 1, "let t = $<<<"; 2, "        a"; 3, "    b" ] with
               | Error e -> Expect.stringContains e "this heredoc line outdents" "the outdent error names the form"
               | other -> failtest $"expected an assembly error, got {other}"

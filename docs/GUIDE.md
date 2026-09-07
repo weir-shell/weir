@@ -6,7 +6,8 @@ does. Every fenced `weir`
 block in this guide is executed against the release binary in CI —
 if an example here stops working, the build fails. (Blocks needing a
 live endpoint or a real token are marked demo and are the exception;
-everything else runs.)
+deliberate error examples are marked error and gated to *fail* — so a
+break there fails the build too; everything else runs.)
 
 ## Why weir
 
@@ -21,7 +22,8 @@ Three properties, in the order they matter:
    fields you declared, not string soup; `|> from jsonl T` reads
    NDJSON streams, and the `Regex` match pattern covers everything
    line-shaped.
-3. **It starts in ~7ms** — a single AOT binary, fine for shebangs.
+3. **It starts in ~6ms** (an expression line; the timing gate pins the
+   median) — a single AOT binary, fine for shebangs.
 
 ## Running weir
 
@@ -68,7 +70,7 @@ Before any of it runs, the whole file is checked — and
 `weir check file.weir` gives you every finding at once without
 running line one.
 
-`print` takes strings, ints, bools, or `seq<string>` (one line per
+`print` takes strings, ints, floats, bools, or `seq<string>` (one line per
 element — `weir script | grep x` composes). For anything else there
 is a hole — interpolation renders any `Show` value, records
 included:
@@ -93,18 +95,45 @@ echo done // trailing works on command lines too
 ```
 
 `///` is the doc comment, and it pays its way: it attaches to the
-declaration below and surfaces on hover — and on a CLI record, its
-first line becomes the flag's `--help` text. One source; help and
-hover cannot drift. Watch the `///` lines come back out:
+declaration right below it (a blank line breaks the link; an
+attribute line is transparent, so `///` above or below a field's
+`[<...>]` both attach) and renders on hover and in completion — on
+let bindings, `type` declarations, record fields, and union cases.
+A doc must sit at its declaration's indent; `weir fmt` keeps it
+there. On an `Args.load` field the doc does double duty: its first
+line becomes the flag's `--help` text (hover still shows the whole
+doc). One source; help and hover cannot drift. Watch the `///`
+lines come back out:
 
 ```weir
-["type Cli = {"; "    /// run without uploading"; "    dryRun: bool"; ""; "    /// where the bundle goes"; "    target: string"; "}"; ""; "let cli = Args.load Cli"; "print $\"dry={cli.dryRun} target={cli.target}\""] |> File.write "tool.weir"
+let src = <<<
+    type Cli = {
+        /// run without uploading
+        dryRun: bool
+
+        /// where the bundle goes
+        target: string
+    }
+
+    let cli = Args.load Cli
+    print $"dry={cli.dryRun} target={cli.target}"
+
+src |> File.write "tool.weir"
 weir tool.weir --help
 ```
 
 The edge rules (why `http://a` survives as an argv word, why a
 comment cannot live inside an interpolation hole) are on
 [Lexical](reference/lexical.md#comments).
+
+## Statement layout
+
+A statement starts at column 0, indented lines continue it, and the
+next column-0 line ends it — blank lines and comment lines are
+transparent, so blocks group freely with gaps. An indented `let`
+closes at the next line of the same indent — F# light syntax. This
+is the whole language's rule, commands included; the full block
+rules are on [Statements](reference/statements.md).
 
 ## Values and pipelines
 
@@ -323,8 +352,9 @@ The chain runs to the next `| pattern ->`, so an argv word that spells
 `x ->` needs quoting to stay an argument.
 
 Record patterns destructure by field name — in a `match` arm, a
-`let`, or a `for` binder (never a function param — params stay plain
-idents). Fields keep their declared case, binders are lowercase, and
+`let`, a `for` binder, or a function param (bare, no parens:
+`let label { names = n } = n` accepts any record carrying the
+field). Fields keep their declared case, binders are lowercase, and
 there is no punning: `{ names = n }`, never `{ names }`. A field
 pattern may hold a literal, which makes the arm refutable — filter
 and destructure in one motion:
@@ -544,7 +574,17 @@ interpolated twin with exactly the string forms' hole rules:
 `{expr}` substitutes, `{{` and `}}` are literal braces, and `$`
 still stays a byte — shell text passes through untouched. A glyph,
 not a word: no binding is reserved, and the marker can never read
-as a splice.
+as a splice. Two shape rules: the marker may end a `let` line or
+sit alone, indented, on the line below it; and the block must be
+**bound** — it runs to its statement's end, so nothing can follow
+it in the same statement, and a pipe after the block is an error
+teaching this form. Bind at top level, then pipe the binding:
+
+```weir-error
+let s = <<<
+    content
+|> File.write "x.txt" // nothing follows a block in its own statement — bind, then pipe the binding
+```
 
 ```weir
 let host = "db.example"
@@ -697,30 +737,9 @@ boundary: the schema validates what the checker can see, and
 (`weir add schema`), the lock, and the full boundary live in
 [schemas.md](tooling.md#yaml-schemas).
 
-Nonzero exit raises when the stream is forced. To inspect instead of
-raise, make the run data:
-
-```weir
-let r = git log --oneline -1 | complete
-print $"exit {r.exitCode}"
-```
-
-Multi-line scripts: a statement starts at column 0, indented lines
-continue it, and the next column-0 line ends it — blank lines and
-comment lines are transparent, so blocks group freely with gaps. An
-indented `let` closes at the next line of the same indent — F# light
-syntax.
-
-Doc comments: a `///` line attaches to the declaration right below it
-(a blank line breaks the link; an attribute line is transparent, so
-`///` above or below a field's `[<...>]` both attach) and renders on
-hover and in completion
-— on let bindings, `type` declarations, record fields, and union
-cases. The editor shows the type first, then the doc. A doc must sit at
-its declaration's indent; `weir fmt` keeps it there. On an `Args.load`
-field the doc does double duty: its first line is the field's `--help`
-text (hover still shows the whole doc). One source — help and hover
-cannot drift.
+Nonzero exit raises when the stream is forced; to inspect instead of
+raise, make the run data — the reifiers and the full code table are
+[two sections down](#exit-codes-from-command-to-value).
 
 ## Exit codes: from command to value
 
@@ -1077,7 +1096,7 @@ terminals. `Bytes.length` is a `Size`; `==` is byte equality; there
 is no ordering. And to hash a file without loading it,
 `File.sha256 path` streams internally.
 
-## Making requests: `Http`
+## Data in and out: `Http` and the adapters
 
 A typed body reaching the wire through `curl` is one flag away from
 silent corruption — `-d @-` strips newlines, `--data-binary @-`
@@ -1154,11 +1173,20 @@ its own name: `to json |> from json T`, `to jsonl |> from jsonl T`.
 ```weir
 type Peer = { host: string; port: int }
 
-let body = ["{"; "  \"host\": \"a.example\","; "  \"port\": 9000"; "}"]
+let body = <<<
+    {
+      "host": "a.example",
+      "port": 9000
+    }
+
 let peer = body |> from json Peer
 print $"{peer.host}:{peer.port}"
 
-let peers = ["{\"host\": \"a\", \"port\": 1}"; "{\"host\": \"b\", \"port\": 2}"] |> from jsonl Peer
+let ndjson = <<<
+    {"host": "a", "port": 1}
+    {"host": "b", "port": 2}
+
+let peers = ndjson |> from jsonl Peer
 peers |> Seq.iter (fun p -> print $"{p.host}:{p.port}")
 ```
 
@@ -1168,7 +1196,10 @@ itself: `from json seq<Peer>` reads it as one `Peer` per element.
 ```weir
 type Peer2 = { host: string }
 
-let hosts = ["[{\"host\": \"a\"}, {\"host\": \"b\"}]"] |> from json seq<Peer2> |> Seq.map _.host
+let arr = <<<
+    [{"host": "a"}, {"host": "b"}]
+
+let hosts = arr |> from json seq<Peer2> |> Seq.map _.host
 hosts |> print
 ```
 
@@ -1545,10 +1576,27 @@ and not runnable itself. Import it by literal path, first in the
 file:
 
 ```weir
-["module Greet"; ""; "/// the shared helper"; "let hello name = $\"hi {name}\""] |> File.write "greet.weir"
-["import \"./greet.weir\" as G"; ""; "print (G.hello \"weir\")"] |> File.write "use-greet.weir"
+let greetSrc = <<<
+    module Greet
+
+    /// the shared helper
+    let hello name = $"hi {name}"
+
+let useSrc = <<<
+    import "./greet.weir" as G
+
+    print (G.hello "weir")
+
+greetSrc |> File.write "greet.weir"
+useSrc |> File.write "use-greet.weir"
 weir use-greet.weir
 ```
+
+(Note the plain `<<<`, not `$<<<`: the module body contains
+`$"hi {name}"`, and the interpolated twin would substitute `{name}`
+at *write* time instead of leaving it as weir source. Every byte
+below a plain marker is content — generated weir is the same case
+as shell text.)
 
 Access is always qualified — `G.hello`, `G.Ctx` for an imported
 type, `G.Ctx { field = v }` to construct its records. Without `as`,
@@ -1566,7 +1614,11 @@ not the REPL. The wrong-kind errors are named as well:
 
 ```weir
 ["print 1"] |> File.write "plain.weir"
-["import \"./plain.weir\""; "print \"unreachable\""] |> File.write "use-plain.weir"
+let src = <<<
+    import "./plain.weir"
+    print "unreachable"
+
+src |> File.write "use-plain.weir"
 let r = weir use-plain.weir | complete
 print (if r.exitCode <> 0 then "importing a non-module is a named check error" else "unexpected")
 ```

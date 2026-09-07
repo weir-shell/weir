@@ -139,6 +139,18 @@ jobs:
           WEIR_RELEASE_TAG: ${{ steps.rel.outputs.tag }}
         run: cd site && npm ci && npm run build
 
+      # duplicate-anchor gate [D:ref-anchors]: two headings slugifying
+      # identically make the second unreachable — caught on the BUILT
+      # dist, before it ships. Needs a weir binary; the released one is
+      # fine (the gate uses long-stable surface). Pre-first-release:
+      # no binary to fetch, stated skip.
+      - name: anchors unique in the built site
+        run: |
+          tag="${{ steps.rel.outputs.tag }}"
+          if [ -z "$tag" ]; then echo "no release yet — skipping the anchor gate (no weir binary to fetch)"; exit 0; fi
+          curl -fsSL "https://github.com/${{ github.repository }}/releases/download/$tag/install.sh" | sh
+          ~/.local/bin/weir ci/site-anchors.weir
+
       # pre-deploy staleness guard: what we are ABOUT to serve pins the
       # tag we resolved — catches a stale public/ artifact before it ships
       - name: verify the artifact before it ships

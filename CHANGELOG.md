@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.0.22
+
+### Fixed
+
+- **A heredoc or `yaml` block silently absorbed a following pipe.**
+  Writing `let n = <<<` … then `|> Seq.length` on the closing line
+  did not pipe — the pipe text was glued into the block's last
+  content line as bytes (`["alpha |> Seq.length"]`), and a `yaml`
+  block corrupted its values the same way (`v |> to yaml` as the
+  mapping's value). The natural attempt now refuses with a located
+  error teaching the working form: bind the block as its own
+  top-level statement, then pipe the binding. Lines deeper inside
+  the content keep every byte, unchanged.
+- `--help` shows a value placeholder for every value-taking flag —
+  `--timeout <duration>`, `--max <size>`, `--rate <float>`,
+  `<instant>`, `<secret>` — where only `<int>` and `<string>`
+  rendered one before. `bool` flags stay presence-only.
+- `usage:` names the invoked script: `usage: deploy.weir [flags]`
+  instead of the bare `usage: [flags]`, in every form (records,
+  subcommands, shared flags, case-scoped help).
+- `#help print` and the reference no longer leak an internal type
+  sentinel (`'__print`); the accepted set is stated in the member's
+  own text. Unit-parameter members render uniformly
+  (`Instant.now () : Instant`, `Path.newTempDir () : string`).
+
+### Docs
+
+- Function parameters do take patterns — `let dist (x, y) = …`,
+  `let label { names = n } = n` — and three documents said
+  otherwise; corrected, with running examples. The guide and
+  reference each state the statement-layout and heredoc shape
+  rules once, in one home; the heredoc-built fixtures now read as
+  the files they write.
+- The homepage leads with a script that ends in a real command, and
+  its first section shows the check reaching three surfaces at once
+  — a tool's flag (against a generated signature), a manifest's key
+  (against a vendored schema), and a program name (against PATH) —
+  in one report. The reference's duplicate anchors are fixed and
+  gated.
+
 ## v0.0.21
 
 ### Editors

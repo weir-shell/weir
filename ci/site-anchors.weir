@@ -1,0 +1,33 @@
+#!/usr/bin/env weir
+// Duplicate-anchor gate [D:ref-anchors]: two headings slugifying
+// identically make the second unreachable — the one-page reference's
+// anchor-stability cost, paid here as a build failure instead of a
+// reader's dead link. Scans every built page for ids appearing twice.
+
+type Cli = {
+    /// the astro build output directory
+    [<Default "site/dist">]
+    dist: string
+}
+
+let cli = Args.load Cli
+
+let pages = Path.glob $"{cli.dist}/**/*.html" |> Seq.force
+
+if pages |> Seq.isEmpty then fail $"no html under {cli.dist} — build the site first"
+
+let dupsOf page =
+    File.read page
+    |> Seq.collect (fun line -> Str.rmatchAll @"\bid=""([^""]+)""" line |> Seq.map Seq.head)
+    |> Seq.countBy (fun x -> x)
+    |> Seq.where (fun (_, n) -> n > 1)
+    |> Seq.map (fun (i, n) -> $"{page}: id \"{i}\" x{n}")
+    |> Seq.force
+
+let dups = pages |> Seq.collect dupsOf |> Seq.force
+
+if not (dups |> Seq.isEmpty) then
+    dups |> Seq.iter printerr
+    fail $"{dups |> Seq.length} duplicate id(s) — two headings slugify identically"
+
+print $"site-anchors ok: {pages |> Seq.length} page(s), every id unique"

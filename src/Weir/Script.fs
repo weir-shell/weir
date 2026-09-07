@@ -1273,14 +1273,22 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     Error
                                                         $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
                                             | Some dst ->
-                                                // at or left of the marker: the district closes and
-                                                // its marker line is the sibling level for what
-                                                // follows (like a compound closing); then this line
-                                                // reprocesses under the normal rules
-                                                go
-                                                    { p with
-                                                        District = None
-                                                        LastIndent = dst.MarkerIndent }
+                                                // at or left of the marker while the statement still
+                                                // pends [D:district-terminates]: reprocessing this line
+                                                // as a continuation GLUED its text into the district's
+                                                // content (the flattened statement carries no content
+                                                // terminator, so `|> Seq.length` after a heredoc became
+                                                // bytes of the last content line — silent corruption),
+                                                // and every sibling/let-close join hit a bare parse
+                                                // wall. The block runs to its statement's end by
+                                                // construction; refuse and teach the bound form.
+                                                let noun, marker =
+                                                    match dst.Marker with
+                                                    | MarkerKind.Heredoc -> "heredoc", "<<<"
+                                                    | _ -> "yaml", "yaml"
+
+                                                Error
+                                                    $"line {lineNo}: this line would continue the statement past its {noun} block, but the block runs to the statement's end — nothing can follow it in the same statement. Bind the block as its own top-level statement (let x = {marker}), then use the binding on the next line"
                                             // the multiline lambda's closer and leak guard
                                             // [D:multiline-lambda]: a `)`-headed line continues
                                             // the statement at ANY indent; any other line at or
@@ -2010,6 +2018,7 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
         )
 
     Session.ScriptArgs <- scriptArgs
+    Session.EntryPath <- scriptPath
 
     let valueEnv =
         valueEnv

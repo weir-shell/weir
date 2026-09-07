@@ -1612,12 +1612,26 @@ let private wrapOpt (ty: Ty) (v: Value) : Value =
 // collect-then-raise over Session.ScriptArgs; --help short-circuits
 // BEFORE validation (help must work on invalid invocations)
 
+// the <value> hint on a value-taking flag [D:argv-help-slots]: every
+// non-bool field takes a value, so every one gets a slot named for its
+// type (bare and Option alike — an optional still takes a value). bool
+// is presence-only, so it never shows one.
 let private argvValueSlot (ty: Ty) : string =
     match ty with
     | TInt
     | TNamed("Option", [ TInt ]) -> " <int>"
     | TStr
     | TNamed("Option", [ TStr ]) -> " <string>"
+    | TFloat
+    | TNamed("Option", [ TFloat ]) -> " <float>"
+    | TDur
+    | TNamed("Option", [ TDur ]) -> " <duration>"
+    | TSize
+    | TNamed("Option", [ TSize ]) -> " <size>"
+    | TInstant
+    | TNamed("Option", [ TInstant ]) -> " <instant>"
+    | TSecret
+    | TNamed("Option", [ TSecret ]) -> " <secret>"
     | _ -> ""
 
 let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef) : string list =
@@ -1706,9 +1720,18 @@ let private argvFindCase (sharedDef: RecordDef) (argv: string list) : (int * str
 
     go 0 argv
 
+// usage names the invoked script [D:argv-help-slots]: `usage: deploy.weir
+// [flags]`, the convention every --help follows. The name is the entry
+// script's basename (script-only); the REPL/-e leave it empty and usage
+// falls back to the bare form.
+let private usageProg () : string =
+    match Session.EntryPath with
+    | "" -> ""
+    | p -> System.IO.Path.GetFileName p + " "
+
 let private argvUsage (target: ArgsTarget) (argv: string list) : string =
     match target with
-    | ArgsRecord def -> String.concat "\n" ("usage: [flags]" :: argvUsageLines def)
+    | ArgsRecord def -> String.concat "\n" ($"usage: {usageProg ()}[flags]" :: argvUsageLines def)
     | ArgsUnion(udef, payloads) ->
         let caseLines = udef.Cases |> List.map (fun (c, _) -> "  " + c.ToLowerInvariant())
 
@@ -1719,7 +1742,7 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
                 | Some rdef when not rdef.Fields.IsEmpty -> $"{c.ToLowerInvariant()} flags:" :: argvUsageLines rdef
                 | _ -> [])
 
-        String.concat "\n" ([ "usage: <command> [flags]"; "commands:" ] @ caseLines @ blocks)
+        String.concat "\n" ([ $"usage: {usageProg ()}<command> [flags]"; "commands:" ] @ caseLines @ blocks)
     | ArgsShared(outer, uf, udef, payloads) ->
         let sharedDef = Argv.sharedOf outer uf
 
@@ -1744,7 +1767,7 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
         | Some(c, p) ->
             String.concat
                 "\n"
-                ([ $"usage: {c.ToLowerInvariant()} [flags]"; "global options:" ]
+                ([ $"usage: {usageProg ()}{c.ToLowerInvariant()} [flags]"; "global options:" ]
                  @ argvUsageLinesWith (scopeShortsFor c p) sharedDef
                  @ caseBlock c p)
         | None ->
@@ -1769,7 +1792,7 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
 
             String.concat
                 "\n"
-                ([ "usage: [global flags] <command> [flags]"; "global options:" ]
+                ([ $"usage: {usageProg ()}[global flags] <command> [flags]"; "global options:" ]
                  @ argvUsageLinesWith stable sharedDef
                  @ [ "commands:" ]
                  @ caseLines

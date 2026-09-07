@@ -127,6 +127,23 @@ let drainAnonDefs () : (string * (string * Ty) list) list =
 /// names -> `name : ty`, no empty parens. The plain arrow `formatTy`
 /// stays the fallback (unnamed values) and the truth for type errors.
 let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
+    // presentation guards [D:sig-render]: an internal sentinel
+    // quantifier ('__print) renders as plain 'a — the accepted set is
+    // the member's prose, and a double-underscore name is not a type a
+    // user can write; a unit param renders as bare `()` — the
+    // declaration form (`let cleanup () =`), never an annotated binder
+    let rec sanitize t =
+        match t with
+        | TVar v when v.StartsWith "__" -> TVar "a"
+        | TFun(a, b) -> TFun(sanitize a, sanitize b)
+        | TSeq t -> TSeq(sanitize t)
+        | TTuple ts -> TTuple(List.map sanitize ts)
+        | TNamed(n, args) -> TNamed(n, List.map sanitize args)
+        | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (fn, ft) -> fn, sanitize ft))
+        | t -> t
+
+    let ty = sanitize ty
+
     let rec split names t =
         match names, t with
         | n :: rest, TFun(dom, cod) ->
@@ -138,7 +155,12 @@ let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
     | [], _ -> $"{name} : {formatTy ty}"
     | ps, result ->
         let rendered =
-            ps |> List.map (fun (n, t) -> $"({n}: {formatTy t})") |> String.concat " "
+            ps
+            |> List.map (fun (n, t) ->
+                match t with
+                | TUnit -> "()"
+                | _ -> $"({n}: {formatTy t})")
+            |> String.concat " "
 
         $"{name} {rendered} : {formatTy result}"
 
