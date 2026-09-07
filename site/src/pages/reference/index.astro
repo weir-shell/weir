@@ -3,8 +3,10 @@
 // sections first (rendered from docs/reference/*.md — their fences run
 // in CI), then every generated module entry behind a signature index.
 // The side nav carries both halves. Anchors are the reference's API:
-// written pages keep their heading slugs, modules keep
-// #<module>-<member> — they must not change.
+// written pages keep their heading slugs, member entries keep
+// #<module>-<member> — they must not change. Module LISTING heads are
+// #module-<name> (the written pages' own headings own the bare
+// names); ci/site-anchors.weir gates the page against duplicate ids.
 import Base from "../../layouts/Base.astro";
 import queilThemes from "../../lib/queil-weir.mjs";
 import { Code } from "astro:components";
@@ -49,6 +51,12 @@ for (const entry of written) {
 
 const anchor = (group, name) =>
   `${group.toLowerCase()}-${name.toLowerCase().replaceAll(" ", "-")}`;
+// the module LISTING heads carry a module- prefix so they cannot
+// collide with the written pages' own headings (Types' `seq` vs the
+// Seq listing — the one-page anchor-stability cost, paid in the
+// generator, gated by ci/site-anchors.weir). Member anchors keep
+// their published #<module>-<member> form untouched.
+const moduleAnchor = (name) => `module-${name.toLowerCase()}`;
 const groups = [
   ...ref.modules.map((m) => ({ name: m.name, members: m.members })),
   { name: "Forms", members: ref.forms },
@@ -56,12 +64,14 @@ const groups = [
 const memberCount = groups.reduce((n, g) => n + g.members.length, 0);
 
 const toc = [
+  // a written page is addressed by its own h1 slug — the section
+  // wrapper carries NO id, so a page cannot collide with itself
   ...rendered.flatMap((p) => [
-    { depth: 2, slug: p.id, text: p.title },
+    { depth: 2, slug: p.headings.find((h) => h.depth === 1)?.slug ?? p.id, text: p.title },
     ...p.headings.filter((h) => h.depth === 2).map((h) => ({ depth: 3, slug: h.slug, text: h.text })),
   ]),
   { depth: 2, slug: "modules", text: "Modules" },
-  ...groups.map((g) => ({ depth: 3, slug: g.name.toLowerCase(), text: g.name })),
+  ...groups.map((g) => ({ depth: 3, slug: moduleAnchor(g.name), text: g.name })),
 ];
 ---
 
@@ -75,16 +85,16 @@ const toc = [
   </p>
 
   {rendered.map((p) => (
-    <section class="written-page" id={p.id}>
+    <section class="written-page">
       <p.Content />
     </section>
   ))}
 
-  <h2 id="modules">Modules</h2>
+  <h1 id="modules" class="module-head">Modules</h1>
   <nav class="sig-index">
     {groups.map((g) => (
       <section>
-        <h3><a href={`#${g.name.toLowerCase()}`}>{g.name}</a></h3>
+        <h3><a href={`#${moduleAnchor(g.name)}`}>{g.name}</a></h3>
         <ul>
           {g.members.map((m) => (
             <li>
@@ -98,7 +108,7 @@ const toc = [
 
   {groups.map((g) => (
     <section>
-      <h3 class="module-head" id={g.name.toLowerCase()}>{g.name}</h3>
+      <h2 class="module-head" id={moduleAnchor(g.name)}>{g.name}</h2>
       {g.members.map((m) => (
         <section>
           <h4 id={anchor(g.name, m.name)}>

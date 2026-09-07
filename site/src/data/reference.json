@@ -514,7 +514,7 @@
         },
         {
           "name": "now",
-          "signature": "Instant.now (unit: unit) : Instant",
+          "signature": "Instant.now () : Instant",
           "summary": "The current instant (UTC).",
           "example": "Instant.now () \u003E Instant.parse \u00222020-01-01\u0022",
           "pointer": null
@@ -784,7 +784,7 @@
         },
         {
           "name": "newTempDir",
-          "signature": "Path.newTempDir ((): unit) : string",
+          "signature": "Path.newTempDir () : string",
           "summary": "Create a fresh unique directory under the temp root and return its path (the same naming \u0060within tmp\u0060 uses). Cleanup is the caller\u0027s or the OS\u0027s \u2014 use \u0060within tmp dir\u0060 for removal on scope exit (which the exit hook also sweeps on Ctrl\u002BC/kill); a newTempDir directory outlives every scope and is never removed automatically.",
           "example": "Path.newTempDir () |\u003E Str.startsWith (Path.tempRoot ())",
           "pointer": null
@@ -798,7 +798,7 @@
         },
         {
           "name": "tempRoot",
-          "signature": "Path.tempRoot ((): unit) : string",
+          "signature": "Path.tempRoot () : string",
           "summary": "The system temp directory (a pure query; no trailing separator, platform-native).",
           "example": "Path.tempRoot ()",
           "pointer": null
@@ -1698,15 +1698,15 @@
     },
     {
       "name": "print",
-      "signature": "print (value: \u0027__print) : unit",
-      "summary": "Write a value and a trailing newline to stdout.",
+      "signature": "print (value: \u0027a) : unit",
+      "summary": "Write a value and a trailing newline to stdout. Takes a string, int, float, bool, or seq\u003Cstring\u003E (one line per element); for anything else, render through an interpolation hole ($\u0022{row}\u0022) or show.",
       "example": "print \u0022hi\u0022",
       "pointer": null
     },
     {
       "name": "printerr",
-      "signature": "printerr (value: \u0027__print) : unit",
-      "summary": "Write a value and a newline to stderr.",
+      "signature": "printerr (value: \u0027a) : unit",
+      "summary": "Write a value and a newline to stderr \u2014 diagnostics there, data on stdout. Same accepted set as print: string, int, float, bool, or seq\u003Cstring\u003E.",
       "example": "printerr \u0022oops\u0022",
       "pointer": null
     },

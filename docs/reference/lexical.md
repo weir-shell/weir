@@ -145,6 +145,12 @@ is the interpolated twin with the string forms' hole rules —
 stays a byte. Any line ending in the marker glyph arms a block,
 exactly as `yaml` does; without an indented block below it, that is
 the error. The glyph is not an operator and reserves no identifier.
+The marker may end a `let` line or sit alone, indented, on the line
+below it, and the block is an ordinary `seq<string>` value. A `|>`
+line *deeper* than the first content line is content (every byte
+is); a `|>` at or left of the marker *closes* the block and composes
+with it — `<<<` … then `|> Seq.length` at the marker's column pipes
+the whole block. Bind it or pipe it like any `seq<string>`.
 
 ```weir
 let n = 2
@@ -234,10 +240,9 @@ left-associative:
 
 A prefix `-` binds at operand positions (`2 * -3`).
 
-`%` is truncated remainder — the sign follows the dividend, F#'s
-and .NET's convention (`-7 % 3` is `-1`; Python's floored `%` gives
-`2` there). Integer-only; a zero divisor raises
-([Types](types.md#scalars)).
+`%` is integer remainder; its sign convention (truncated, not
+Python's floored) and the float refusal are
+[Types](types.md#scalars).
 
 The one precedence rule that bites: `|>` and `>>` share the loosest
 level, so `xs |> f >> g` is `(xs |> f) >> g` — and the error says
@@ -339,10 +344,8 @@ let c = 'a' // no char type; "a" is a one-character string
 
 ## Statement layout
 
-A statement starts at column 0; indented lines continue it; the next
-column-0 line ends it. Blank lines and comment lines are
-transparent, so blocks group freely with gaps. The block rules live
-in the [guide](../GUIDE.md#commands-and-processes).
+A statement starts at column 0; the full layout and block rules are
+[Statements](statements.md#layout).
 
 ## In command argv
 

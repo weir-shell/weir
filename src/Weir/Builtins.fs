@@ -3861,10 +3861,16 @@ let builtinDocs: Map<string, BuiltinDoc> =
 
           // ---- bare / hot-path ----
           "print",
-          (bd "Write a value and a trailing newline to stdout." (Some "print \"hi\"") None
+          (bd
+              "Write a value and a trailing newline to stdout. Takes a string, int, float, bool, or seq<string> (one line per element); for anything else, render through an interpolation hole ($\"{row}\") or show."
+              (Some "print \"hi\"")
+              None
            |> named [ "value" ])
           "printerr",
-          (bd "Write a value and a newline to stderr." (Some "printerr \"oops\"") None
+          (bd
+              "Write a value and a newline to stderr — diagnostics there, data on stdout. Same accepted set as print: string, int, float, bool, or seq<string>."
+              (Some "printerr \"oops\"")
+              None
            |> named [ "value" ])
           "show",
           (bd

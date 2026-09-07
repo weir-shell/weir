@@ -25,8 +25,19 @@ shapes, decided by shape, never by what exists:
   name, or the capitalized filename
 
 ```weir
-["module RefMod"; ""; "/// doubles"; "let twice n = n * 2"] |> File.write "refmod.weir"
-["import \"./refmod.weir\" as M"; ""; "print $\"{M.twice 21}\""] |> File.write "use-refmod.weir"
+let modSrc = <<<
+    module RefMod
+
+    /// doubles
+    let twice n = n * 2
+
+let useSrc = <<<
+    import "./refmod.weir" as M
+
+    print $"{M.twice 21}"
+
+modSrc |> File.write "refmod.weir"
+useSrc |> File.write "use-refmod.weir"
 weir use-refmod.weir
 ```
 

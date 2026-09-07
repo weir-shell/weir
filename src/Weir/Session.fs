@@ -137,6 +137,11 @@ let registerChild (p: System.Diagnostics.Process) : unit =
 // the REPL leaves this empty)
 let mutable ScriptArgs: string list = []
 
+// the invoked script's path, for the Args `--help` usage line
+// [D:argv-help-slots] — script-only, like ScriptArgs; the REPL/-e
+// leave it empty, where usage omits the program name
+let mutable EntryPath: string = ""
+
 
 // ---- the temp-dir exit hook [D:exit-hook] --------------------------
 // REGISTRATION, not scanning: the hook removes only directories THIS

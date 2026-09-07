@@ -78,3 +78,26 @@ if served <> latest then
     fail $"weir.sh/install.sh pins '{served}' but releases/latest is '{latest}' — users are getting an older weir; redeploy the site (site.yml workflow_dispatch)"
 
 print $"site staleness ok: weir.sh serves {served} == releases/latest"
+
+// edge-injection probe [D:edge-rewrites]: Cloudflare features (email
+// obfuscation, Rocket Loader, Mirage) rewrite served HTML BETWEEN the
+// build and the reader, so no source-side gate can see the damage —
+// the guide's `weir add module` example shipped as a mailto decoy for
+// as long as obfuscation was on. Any cdn-cgi path in a served page
+// means an edge feature is transforming the site; all are off by
+// intent. Probed on every CI run, like the staleness half above.
+let livePages =
+    [ "https://weir.sh/"
+      "https://weir.sh/docs/guide/"
+      "https://weir.sh/docs/install/"
+      "https://weir.sh/reference/" ]
+
+for url in livePages do
+    let page = Http.get url |> Http.send
+    if page.status == 200 then
+        let hits = page.body |> Seq.where (Str.contains "cdn-cgi") |> Seq.force
+        if not (hits |> Seq.isEmpty) then
+            hits |> Seq.iter printerr
+            fail $"{url} serves cdn-cgi content — an edge feature is rewriting HTML between build and reader; turn it off in Cloudflare"
+
+print $"edge-injection ok: {livePages |> Seq.length} live page(s), no cdn-cgi rewrites"

@@ -1,8 +1,19 @@
 # Patterns
 
-Where patterns bind: `match` arms, `let`, and `for` binders.
-Function parameters are not pattern positions — a param is a plain
-identifier, or `()`.
+Where patterns bind: `match` arms, `let`, `for` binders, and
+function parameters — a param is a plain identifier, `()`, a
+parenthesized tuple pattern (`let dist (x, y) = …`), or a record
+pattern (bare, no parens: `let label { names = n } = n`). Binder
+positions demand *irrefutable* patterns; a pattern that can fail
+(`Some x`, a literal) is rejected there — use `match`.
+
+```weir
+type Crew = { names: string }
+let label { names = n } = n
+let swap (a, b) = (b, a)
+print (label { names = "kestrel" })
+print $"{swap (1, 2)}"
+```
 
 ## Variables, and the casing law
 
@@ -51,7 +62,7 @@ print t
 shorthands — `_.field` and `_[i]` — which are lambdas, not
 patterns.
 
-## Tuples
+## Tuple patterns
 
 `(a, b)` destructures a pair; arity must agree with the value's.
 The binder form works in `let` too:
@@ -87,7 +98,7 @@ let n =
 print n
 ```
 
-## Records
+## Record patterns
 
 A record pattern names any subset of fields — unnamed fields are
 ignored. Fields keep their declared case; binders are lowercase:
@@ -126,7 +137,7 @@ and the brace spelling is the same whether the value's type was
 declared or anonymous:
 
 ```weir-error
-let f {| id = i |} = i // no {| |} patterns; params are plain idents besides
+let f {| id = i |} = i // no {| |} patterns — the plain brace spelling destructures anonymous shapes too
 print (f 1)
 ```
 

@@ -25,11 +25,13 @@ const refData = JSON.parse(
   readFileSync(new URL("./src/data/reference.json", import.meta.url), "utf8"),
 );
 const moduleRedirects = Object.fromEntries([
+  // module-listing anchors carry the module- prefix (the written
+  // pages' headings own the bare names — the dup-anchor fix)
   ...refData.modules.map((m) => [
     `/reference/${m.name.toLowerCase()}`,
-    `/reference/#${m.name.toLowerCase()}`,
+    `/reference/#module-${m.name.toLowerCase()}`,
   ]),
-  ["/reference/forms", "/reference/#forms"],
+  ["/reference/forms", "/reference/#module-forms"],
   ["/reference/all", "/reference/"],
   ["/reference/lexical", "/reference/#lexical"],
   // the tooling sub-pages merged into one page with a side nav
@@ -42,6 +44,14 @@ const moduleRedirects = Object.fromEntries([
 
 export default defineConfig({
   site: "https://weir.sh",
+  // compressHTML OFF [D:site-skeleton]: the default minifier strips the
+  // whitespace-only gap between prose text and an inline element, so a
+  // line-broken `The <code>///</code>` rendered as `The<code>///</code>`
+  // — space eaten. Off, the source whitespace renders as authored (the
+  // intended prose spacing); code lives in <pre>, unaffected either way.
+  // Do NOT re-enable without restoring explicit spaces at every text↔
+  // inline-element line break on index.astro.
+  compressHTML: false,
   redirects: moduleRedirects,
   markdown: {
     shikiConfig: {

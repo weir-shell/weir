@@ -454,8 +454,10 @@ print $"{key} -> {value}"
   parallel
   fetches are `urls |> Seq.pmap (fun u -> Http.send { Http.defaults with
   url = u })`.
-- Params are plain idents OR `()` (a unit param: `let cleanup () =`;
-  `cleanup 5` is a type error). Other pattern params stay rejected.
+- Params are idents, `()` (a unit param: `let cleanup () =`;
+  `cleanup 5` is a type error), parenthesized irrefutable patterns
+  (`let dist (x, y) =`), or bare record patterns [D:record-patterns].
+  REFUTABLE patterns stay rejected ("this pattern can fail; use match").
 - No async/task/await — processes and pipelines are the concurrency
   model. A task that truly needs async belongs in full F#, not weir.
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
@@ -1184,7 +1186,20 @@ type Bad = C of int
   line ENDING in the glyph arms a block (no indented block below is
   an error), and nothing else may legally end in `<<<`. YAML
   `key: |` scalars stay fully literal — a `$<<<` block is the
-  interpolated spelling.
+  interpolated spelling. The block is a `seq<string>` VALUE — pipe it
+  or bind it like any other; a `|>` on the line that closes the block
+  (at or left of the marker) composes with the whole block. The
+  `yaml` district behaves the same (its value is a `Yaml` node).
+
+```weir
+["a"; "b"] |> Seq.iter print
+let n =
+    <<<
+        one
+        two
+    |> Seq.length
+print $"{n}"
+```
 
 ```weir
 let region = "eu-1"

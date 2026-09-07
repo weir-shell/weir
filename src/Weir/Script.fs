@@ -976,9 +976,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 (fun state (lineNo, raw) ->
                     match state with
                     | Error e -> Error e
-                    | Ok _ when raw.Contains Parser.sibSep ->
-                        // unproduceability [D:sibling-sentinel]: the machine
-                        // sibling token can never come from source — reject it
+                    | Ok _ when raw.Contains Parser.sibSep || raw.Contains Parser.districtClose ->
+                        // unproduceability [D:sibling-sentinel] [D:district-terminates]:
+                        // the machine sibling token and the district-close
+                        // terminator can never come from source — reject both
                         // at the one place text becomes logical lines
                         Error $"line {lineNo}: illegal control character in source"
                     | Ok(current, acc, blankSinceHead) ->
@@ -1273,13 +1274,22 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     Error
                                                         $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
                                             | Some dst ->
-                                                // at or left of the marker: the district closes and
-                                                // its marker line is the sibling level for what
-                                                // follows (like a compound closing); then this line
-                                                // reprocesses under the normal rules
+                                                // at or left of the marker while the statement still
+                                                // pends [D:district-terminates]: the district closes and
+                                                // the line reprocesses under the normal rules — a
+                                                // following `|>`, `in`, or sibling composes with the
+                                                // block's value. The flattened logical line carried no
+                                                // content terminator, so before this the continuation
+                                                // GLUED into the last content line (silent corruption);
+                                                // appending districtClose marks the extent, and
+                                                // districtTail stops there so the expression grammar
+                                                // resumes on the reprocessed line.
                                                 go
                                                     { p with
                                                         District = None
+                                                        LL =
+                                                            { p.LL with
+                                                                Text = p.LL.Text + Parser.districtCloseStr }
                                                         LastIndent = dst.MarkerIndent }
                                             // the multiline lambda's closer and leak guard
                                             // [D:multiline-lambda]: a `)`-headed line continues
@@ -2010,6 +2020,7 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
         )
 
     Session.ScriptArgs <- scriptArgs
+    Session.EntryPath <- scriptPath
 
     let valueEnv =
         valueEnv
