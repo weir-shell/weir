@@ -15,12 +15,13 @@ import Base from "../layouts/Base.astro";
 import queilThemes from "../lib/queil-weir.mjs";
 import { Code } from "astro:components";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
+// process.cwd() (the site dir), not import.meta.url — Astro 7 bundles
+// page frontmatter into prerender chunks, so import.meta.url no longer
+// anchors the source file (showcase/reference already read this way)
 const weirGrammar = JSON.parse(
-  readFileSync(
-    new URL("../../../editors/vscode/syntaxes/weir.tmLanguage.json", import.meta.url),
-    "utf8",
-  ),
+  readFileSync(resolve(process.cwd(), "../editors/vscode/syntaxes/weir.tmLanguage.json"), "utf8"),
 );
 
 const heroWeir = `type Pkg = { name: string; version: string }
