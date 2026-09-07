@@ -5,6 +5,7 @@
 // across micro/tmLanguage/tree-sitter. A generator with its own
 // highlighter (syntect/Chroma) would mean maintaining a fourth grammar.
 import { defineConfig } from "astro/config";
+import { unified } from "@astrojs/markdown-remark";
 import { readFileSync } from "node:fs";
 import { rewriteDocLinks } from "./src/remark/rewrite-doc-links.mjs";
 import queilThemes from "./src/lib/queil-weir.mjs";
@@ -53,6 +54,9 @@ export default defineConfig({
       themes: queilThemes,
       defaultColor: false,
     },
-    remarkPlugins: [rewriteDocLinks],
+    // Astro 7 [D:site-skeleton]: remark plugins ride the unified()
+    // processor (the markdown-level remarkPlugins key is deprecated);
+    // shikiConfig stays at this level — the processor's renderer reads it
+    processor: unified({ remarkPlugins: [rewriteDocLinks] }),
   },
 });
