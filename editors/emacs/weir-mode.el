@@ -17,6 +17,7 @@
 (add-to-list 'auto-mode-alist '("\\.weir\\'" . weir-mode))
 (add-to-list 'interpreter-mode-alist '("weir" . weir-mode))
 
+(defvar eglot-server-programs) ; declared for the byte-compiler; real def loads with eglot
 (with-eval-after-load 'eglot
   (add-to-list 'eglot-server-programs '(weir-mode . ("weir" "lsp"))))
 
