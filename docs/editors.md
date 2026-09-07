@@ -145,10 +145,13 @@ comment syntax, `.weir` + shebang association
 ;;   M-x eglot
 ```
 
-untested: Emacs could not be installed in the verification container.
-The mode is ~20 lines of standard associations; treat it as a
-starting point and report friction. Note eglot has no built-in
-semantic-tokens support — expect diagnostics/hover/completion only.
+Validated on Emacs 30.2: `weir-mode` byte-compiles clean, `.weir`
+files and `#!/usr/bin/env weir` scripts select it, and `M-x eglot`
+connects to `weir lsp` — diagnostics, hover, completion,
+go-to-definition and formatting all arrive. eglot does not consume
+semantic tokens, so there is no command-head/argv/splice colouring
+(tree-sitter highlighting is the fast-follow); expect the LSP
+features, not colour.
 
 ## VS Code
 

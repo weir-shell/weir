@@ -306,8 +306,11 @@ print $"staged files here: {staged}"
 
 type Peer = { host: string; port: int; note: Option<string> }
 
+// a heredoc block is a seq<string> value — it pipes straight into the
+// json adapter, no escaped-quote seq literal needed
 let peer =
-    ["{\"host\": \"a.example\", \"port\": 9000}"]
+    <<<
+        {"host": "a.example", "port": 9000}
     |> from json Peer
 
 print $"peer {peer.host}:{peer.port} (note {peer.note})"
@@ -381,6 +384,9 @@ shouts |> print
 
 // ---- YAML: nodes, adapters, and the checked template district ---------
 
+// YMap/YStr (with YInt, YSeq, …) are YAML node VALUES built directly —
+// a YMap keeps YOUR insertion order, where a record renders in declared
+// field order; both are one `to yaml` away from text
 let ordered = YMap ["zulu", YStr "keeps"; "alpha", YStr "your order"]
 ordered |> to yaml |> print
 
@@ -397,7 +403,8 @@ peers |> Seq.iter (fun p -> print $"peer {p.host}:{p.port}")
 // the yaml DISTRICT: a checked block literal. Structure errors are
 // check errors; splices are typed VALUES, so no YAML injection exists
 // for the same reason no argv injection does; a None splice omits its
-// entry; `for` yields dynamic keys; ambiguous scalars auto-quote.
+// entry; `for k, v in pairs` destructures each pair to a dynamic key
+// (`$k:`) and its value; ambiguous scalars auto-quote.
 // a REAL Service shape (the live-check finding: `annotation` was a
 // typo the schema validator caught unprompted, and replicas/rollout
 // were Deployment concepts on a Service — the district now describes
