@@ -1740,8 +1740,9 @@ Dir.create "wb"
 ## Declaring a tool: command signatures
 
 Weir checks that `bicep` exists; a signature closes the next gap —
-`bicep buidl --outfil x` becomes a check-time catch instead of a 3am
-failure. Generate one from the installed binary, then declare it per
+`bicep build --outfil x` becomes a check-time catch instead of a 3am
+failure (a flat signature checks flags, so `--outfil` is the caught
+typo). Generate one from the installed binary, then declare it per
 script (prose here because signatures need a `.weir/` tree; the e2e
 battery holds the runnable truth):
 

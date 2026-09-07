@@ -87,8 +87,9 @@ These maintain the [`.weir/` tree](#project-layout-weir):
 ## Command signatures
 
 Weir checks that a command exists before running a script. A
-signature closes the next gap: with one declared, `bicep buidl
---outfil x` is a located check error instead of a 3am failure.
+signature closes the next gap: with one declared, `bicep build
+--outfil x` is a located check error instead of a 3am failure — a
+flat signature checks flags, so `--outfil` is the caught typo.
 
 ### The cycle
 
@@ -167,9 +168,10 @@ checking works offline and in CI. A locked-but-missing schema file
 is re-materialized by `weir restore`, hash-verified against the
 lock; `weir verify` reports absent or modified schemas.
 
-For Kubernetes, use the `-standalone-strict` schema variants —
-their `additionalProperties: false` is what makes unknown-field
-checking fire; the plain variants accept any unknown key.
+For Kubernetes, use the schema files whose names end
+`…-standalone-strict.json` — their `additionalProperties: false` is
+what makes unknown-field checking fire; the plain variants accept any
+unknown key.
 
 ### The validation boundary
 
@@ -210,8 +212,10 @@ weir add module https://raw.githubusercontent.com/org/repo/<sha>/lib/retry.weir 
 vendored modules are leaves for now, a current boundary rather than
 a permanent one. Nothing lands in `.weir/` unless all three hold.
 Then import it anywhere under the project by name — the `weir:`
-namespace resolves via the same upward walk `#sig` uses, so the
-spelling is depth-independent:
+namespace resolves via the same upward `.weir/` walk `#sig` uses
+(stopping at a `.git` boundary or the filesystem root; see above), so
+the spelling is depth-independent — and it resolves the same way for a
+module vendored outside any git repo:
 
 ```text
 import "weir:retry" as Retry

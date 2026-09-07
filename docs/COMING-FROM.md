@@ -268,6 +268,55 @@ did-you-mean.
   argv word integrity holds up to that hand-off (native executables
   receive words verbatim). See `SECURITY.md`.
 
+## Coming from Nushell
+
+Nushell is the closest neighbour weir has — its own origin story says
+so. A structured, typed pipeline where `ls | where size > 1kb |
+length` carries real values, not text to re-parse, is exactly the
+instinct weir shares. Most of it transfers, down to safety: a spliced
+variable is one argument on both (`^echo $x` with `$x = "a b"` passes
+a single word, as does weir's `echo $x`), so neither has the
+word-splitting injection footgun.
+
+| Nushell | weir |
+|---|---|
+| `ls \| where size > 1kb` | `ls \|> Seq.where (fun f -> f.bytes > 1KiB)` |
+| `$rows \| each { \|r\| $r.name }` | `rows \|> Seq.map _.name` |
+| `'…' \| from json \| get host` | `… \|> from json T` then `r.host` |
+| `^cmd \| complete \| get exit_code` | `cmd \| complete` → `.exitCode` |
+| `$"(…)"` | `$"{…}"` |
+
+```weir
+ls |> Seq.where (fun f -> f.bytes > 1KiB) |> Seq.length |> print
+```
+
+**Where the two part company: when the check happens.** Nushell
+parses and type-checks before running — a bad operator (`"s" + 5`) is
+a parse error even in a branch that never runs, more than most shells
+manage. But the check stops short of the command surface and the data
+shapes. An external is resolved when execution reaches it, so a script
+runs its good half and then fails on a missing command
+(`print "before"; frobnicate` prints `before`, then errors). A typed
+parameter is advisory (`def greet [name: string]` accepts `greet 5`).
+And `from json` yields a dynamic record — a missing field is a
+run-time `column_not_found`, raised where the access runs.
+
+Weir moves all three to check time. Every command head resolves before
+line one — dead branches included, and `weir check --can` reports the
+whole reach — so a missing tool never lets the good half run (the same
+`print "before"` / missing-command file refuses outright, nothing
+printed). `from json T`, `Args.load T` and `yaml schema=` name the
+shape, so a missing field, an unknown flag or a misspelled manifest key
+is a check error with a did-you-mean, not a surprise at run time.
+
+**The trade, honestly:** nu is an interactive shell first — a REPL you
+live in, a plugin system, a large structured-command library — and
+weir is not trying to be that (its REPL is for *evaluating* weir, not
+living in it). What weir adds is the check: the nu one-liner that grew
+into a script fails where it runs; the weir version fails where you
+check it, before any effect. Want the shell — nu. Want the script it
+turned into, checked whole — weir.
+
 ## Coming from Python
 
 Lead with what a Python script cannot do. First: the whole weir file
@@ -536,7 +585,7 @@ meaning:
 
 ## What nobody arrives knowing
 
-Nine sections of diffs; this one is not a diff. These are the things
+Every section above is a diff; this one is not. These are the things
 no source language prepares you for — each with what it costs.
 
 - **Check-before-effects across the whole file** — types, match
@@ -565,11 +614,16 @@ print $"typed rows: {rows}"
 ^ls -a
 ```
 
-- **`within` scopes** — `tmp`/`cd`/`env` with cleanup on the raise
-  path, in a language with no `defer`, no `try/finally`, no
-  `IDisposable`. The cost: a hard interrupt is the stated gap —
-  SIGINT terminates without running cleanup (the `weir-tmp-` prefix
-  keeps leftovers identifiable).
+- **`within` scopes** — five kinds (`tmp`, `cd`, `env`, `lock`,
+  `proc`), cleanup on every exit path, in a language with no `defer`,
+  no `try/finally`, no `IDisposable`. `within proc` is the answer to
+  a backgrounded `&` (its process tree is killed and reaped);
+  `within lock` the answer to `flock`. Cleanup runs on normal exit,
+  `fail`, `exit n`, SIGINT and SIGTERM alike — the one carve-out is
+  `kill -9`, which nothing can catch. The cost is the mirror of that
+  guarantee: tree-kill lands as SIGKILL on the children too, so a
+  scoped child's own SIGTERM handler never runs — a process that must
+  flush on shutdown is a daemon, not a `within proc`.
 - **The `yaml` district** — a checked block literal: structure errors
   are check errors, ambiguous scalars auto-quote on render (`"no"`
   stays a string — the reverse-Norway law), and

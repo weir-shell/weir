@@ -2,7 +2,10 @@
 // The showcase page: examples/showcase.weir rendered whole — the one
 // full-language artifact that was CI-run and README-linked but never
 // on the site. The source is read from the repo; a showcase edit is a
-// site edit with no sync step.
+// site edit with no sync step. It is still ONE file: the `// ---- x ----`
+// banners already in the script become section anchors so a reader can
+// jump in (the intro promises navigable topics), rendered as contiguous
+// code segments — the single-script truth kept, navigation added.
 import Base from "../layouts/Base.astro";
 import queilThemes from "../lib/queil-weir.mjs";
 import { Code } from "astro:components";
@@ -13,15 +16,55 @@ const weirGrammar = JSON.parse(
   readFileSync(resolve(process.cwd(), "../editors/vscode/syntaxes/weir.tmLanguage.json"), "utf8"),
 );
 const source = readFileSync(resolve(process.cwd(), "../examples/showcase.weir"), "utf8");
+
+// split at the script's own `// ---- <title> ---------` banners: the
+// leading block is the file header, each banner opens a titled section.
+// Banners sit at top level (never inside a heredoc/yaml district), so a
+// segment never cuts a multi-line construct.
+const bannerRe = /^\/\/ ---- (.+?) -+$/;
+const slug = (t) =>
+  t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+const sections = [];
+let cur = { title: null, slug: "header", lines: [] };
+for (const line of source.split("\n")) {
+  const m = line.match(bannerRe);
+  if (m) {
+    sections.push(cur);
+    cur = { title: m[1].trim(), slug: slug(m[1].trim()), lines: [] };
+  } else {
+    cur.lines.push(line);
+  }
+}
+sections.push(cur);
+const bodies = sections.map((s) => ({ ...s, code: s.lines.join("\n").replace(/^\n+|\n+$/g, "") }));
+
+const toc = bodies
+  .filter((s) => s.title)
+  .map((s) => ({ depth: 2, slug: s.slug, text: s.title }));
 ---
 
-<Base title="Showcase">
+<Base title="Showcase" toc={toc}>
   <h1>The showcase</h1>
   <p>
     One script touring the whole language — commands, pipelines,
     records, matching, scopes, retries, the boundaries. It runs in CI
     against every release, on Linux, macOS and Windows: what you read
-    here executed.
+    here executed. It runs the same on all three <em>by construction</em>,
+    not by a test matrix — the only external commands it names are
+    <code>weir</code> itself and <code>git</code>, so there is nothing
+    platform-specific for a resolver to find.
   </p>
-  <Code code={source} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
+  {bodies.map((s) => (
+    <section class="showcase-section">
+      {s.title && <h2 id={s.slug}>{s.title}</h2>}
+      {s.code && <Code code={s.code} lang={weirGrammar} themes={queilThemes} defaultColor={false} />}
+    </section>
+  ))}
 </Base>
+
+<style>
+  /* the sections are one script — tight gaps keep the single-file read,
+     the headings are just entry points */
+  .showcase-section h2 { font-size: var(--text-base); margin: var(--space-4) 0 var(--space-2); }
+  .showcase-section:first-of-type h2 { margin-top: 0; }
+</style>
