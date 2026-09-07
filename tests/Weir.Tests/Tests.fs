@@ -1462,19 +1462,25 @@ let boundaryTests =
               | Error e -> Expect.stringContains e "'<<<' needs an indented block" "the no-block error names the glyph"
               | other -> failtest $"expected an assembly error, got {other}"
 
-              // the continuation refusal [D:district-terminates]: before
-              // this arm, a pipe after the block GLUED into the last
-              // content line — `alpha |> Seq.length` as BYTES, silent
-              // corruption; now the natural attempt teaches the bound form
+              // a district that closes mid-statement COMPOSES [D:district-terminates]:
+              // before, a pipe after the block glued into the last content
+              // line as BYTES (`alpha |> Seq.length`, silent corruption);
+              // now the assembler terminates the content and the pipe pipes
               match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    alpha"; 3, "|> Seq.length" ] with
-              | Error e ->
-                  Expect.stringContains e "past its heredoc block" "the continuation refusal names the block"
-                  Expect.stringContains e "then use the binding" "the refusal teaches the two-statement form"
-              | other -> failtest $"expected the continuation refusal, got {other}"
+              | Ok [ ll ] ->
+                  Expect.isTrue (ll.Text.Contains Weir.Parser.districtClose) "the content carries the close terminator"
+                  match Weir.Parser.parseLine realResolver ll.Text with
+                  | Ok(SLet(_, e)) ->
+                      match typecheck env e with
+                      | Ok te -> Expect.equal (Weir.Eval.eval valueEnv te) (Weir.Eval.VInt 1L) "the pipe composes: one line"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"expected SLet, got {other}"
+              | other -> failtest $"expected the block to compose, got {other}"
 
+              // the yaml twin composes the same way
               match Weir.Script.assemble [ 1, "let d = yaml"; 2, "    k: v"; 3, "|> to yaml" ] with
-              | Error e -> Expect.stringContains e "past its yaml block" "the yaml twin refuses the same way"
-              | other -> failtest $"expected the yaml continuation refusal, got {other}"
+              | Ok [ ll ] -> Expect.isTrue (ll.Text.Contains Weir.Parser.districtClose) "the yaml block carries the terminator too"
+              | other -> failtest $"expected the yaml block to compose, got {other}"
 
               match Weir.Script.assemble [ 1, "let t = $<<<"; 2, "        a"; 3, "    b" ] with
               | Error e -> Expect.stringContains e "this heredoc line outdents" "the outdent error names the form"

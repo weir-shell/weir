@@ -146,11 +146,11 @@ stays a byte. Any line ending in the marker glyph arms a block,
 exactly as `yaml` does; without an indented block below it, that is
 the error. The glyph is not an operator and reserves no identifier.
 The marker may end a `let` line or sit alone, indented, on the line
-below it — and the block must be **bound**, never piped directly:
-it runs to its statement's end, so nothing can follow it in the
-same statement. A `|>` line deeper than the first content line is
-content (every byte is); one at or left of the marker is an error
-teaching the bound form. Bind at top level, then pipe the binding.
+below it, and the block is an ordinary `seq<string>` value. A `|>`
+line *deeper* than the first content line is content (every byte
+is); a `|>` at or left of the marker *closes* the block and composes
+with it — `<<<` … then `|> Seq.length` at the marker's column pipes
+the whole block. Bind it or pipe it like any `seq<string>`.
 
 ```weir
 let n = 2

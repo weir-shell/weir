@@ -976,9 +976,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 (fun state (lineNo, raw) ->
                     match state with
                     | Error e -> Error e
-                    | Ok _ when raw.Contains Parser.sibSep ->
-                        // unproduceability [D:sibling-sentinel]: the machine
-                        // sibling token can never come from source — reject it
+                    | Ok _ when raw.Contains Parser.sibSep || raw.Contains Parser.districtClose ->
+                        // unproduceability [D:sibling-sentinel] [D:district-terminates]:
+                        // the machine sibling token and the district-close
+                        // terminator can never come from source — reject both
                         // at the one place text becomes logical lines
                         Error $"line {lineNo}: illegal control character in source"
                     | Ok(current, acc, blankSinceHead) ->
@@ -1274,21 +1275,22 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
                                             | Some dst ->
                                                 // at or left of the marker while the statement still
-                                                // pends [D:district-terminates]: reprocessing this line
-                                                // as a continuation GLUED its text into the district's
-                                                // content (the flattened statement carries no content
-                                                // terminator, so `|> Seq.length` after a heredoc became
-                                                // bytes of the last content line — silent corruption),
-                                                // and every sibling/let-close join hit a bare parse
-                                                // wall. The block runs to its statement's end by
-                                                // construction; refuse and teach the bound form.
-                                                let noun, marker =
-                                                    match dst.Marker with
-                                                    | MarkerKind.Heredoc -> "heredoc", "<<<"
-                                                    | _ -> "yaml", "yaml"
-
-                                                Error
-                                                    $"line {lineNo}: this line would continue the statement past its {noun} block, but the block runs to the statement's end — nothing can follow it in the same statement. Bind the block as its own top-level statement (let x = {marker}), then use the binding on the next line"
+                                                // pends [D:district-terminates]: the district closes and
+                                                // the line reprocesses under the normal rules — a
+                                                // following `|>`, `in`, or sibling composes with the
+                                                // block's value. The flattened logical line carried no
+                                                // content terminator, so before this the continuation
+                                                // GLUED into the last content line (silent corruption);
+                                                // appending districtClose marks the extent, and
+                                                // districtTail stops there so the expression grammar
+                                                // resumes on the reprocessed line.
+                                                go
+                                                    { p with
+                                                        District = None
+                                                        LL =
+                                                            { p.LL with
+                                                                Text = p.LL.Text + Parser.districtCloseStr }
+                                                        LastIndent = dst.MarkerIndent }
                                             // the multiline lambda's closer and leak guard
                                             // [D:multiline-lambda]: a `)`-headed line continues
                                             // the statement at ANY indent; any other line at or

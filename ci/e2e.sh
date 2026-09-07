@@ -3280,6 +3280,42 @@ U "x" |> to json' 2>&1) && fail "an Other value must refuse to write"
 echo "$errout" | grep -qF "nothing faithful can be written" || fail "Other write refusal teaches: $errout"
 echo "e2e ok: wire unions — mixed NDJSON via from jsonl, tag dispatch both formats, Other refuses to write"
 
+# a district composes like the seq<string> it produces [D:district-terminates]:
+# a `|>` on the block's closing line pipes the WHOLE block, and the bytes
+# match the bound spelling exactly (interior blank, deeper indent, trailing
+# clip). Before, the trailing pipe glued into the last content line.
+dtdir=$(mkweirtmp)
+cat > "$dtdir/bound.weir" <<'WEOF'
+let s = <<<
+    line one
+      deeper
+
+    after blank
+s |> File.write "out.txt"
+WEOF
+cat > "$dtdir/piped.weir" <<'WEOF'
+<<<
+    line one
+      deeper
+
+    after blank
+|> File.write "out.txt"
+WEOF
+( cd "$dtdir" && mkdir b p && ( cd b && "$BIN" ../bound.weir ) && ( cd p && "$BIN" ../piped.weir ) )
+cmp -s "$dtdir/b/out.txt" "$dtdir/p/out.txt" || fail "piped district must write byte-identical to the bound form: $(diff "$dtdir/b/out.txt" "$dtdir/p/out.txt")"
+# the composing shapes run (pipe to a Seq op, yaml block to an adapter)
+dtn=$(cd "$dtdir" && "$BIN" -e 'let n =
+    <<<
+        one
+        two
+    |> Seq.length
+n')
+[ "$dtn" = "2 : int" ] || fail "a heredoc |> Seq.length must compose: $dtn"
+# the sentinel cannot be smuggled from source
+dterr=$(printf 'print "a\036b"\n' > "$dtdir/ctl.weir" && "$BIN" check "$dtdir/ctl.weir" 2>&1) && fail "a source control char must reject"
+echo "$dterr" | grep -qF "illegal control character" || fail "the district-close sentinel must be unproduceable from source: $dterr"
+echo "e2e ok: district piping — |> composes with the block, piped≡bound bytes, the close sentinel is unproduceable"
+
 # the stream cardinality [D:wire-unions] session S: `from yaml stream T`
 # reads N `---` documents each as T — the heterogeneous BUNDLE is
 # stream over a tagged union, and to yaml stream's write roundtrips

@@ -2,17 +2,19 @@
 
 ## v0.0.22
 
+### New features
+
+- **A heredoc or `yaml` block pipes like any `seq<string>`.**
+  `<<<` … then `|> Seq.length` on the closing line now composes with
+  the whole block, and the block may sit anywhere an expression can —
+  piped, bound in a body, followed by a sibling. (A `|>` deeper than
+  the content is still content; one at the marker's column closes the
+  block and pipes it.) Previously only a top-level `let` binding was
+  accepted, and a trailing pipe was silently glued into the last
+  content line — that corruption is gone.
+
 ### Fixed
 
-- **A heredoc or `yaml` block silently absorbed a following pipe.**
-  Writing `let n = <<<` … then `|> Seq.length` on the closing line
-  did not pipe — the pipe text was glued into the block's last
-  content line as bytes (`["alpha |> Seq.length"]`), and a `yaml`
-  block corrupted its values the same way (`v |> to yaml` as the
-  mapping's value). The natural attempt now refuses with a located
-  error teaching the working form: bind the block as its own
-  top-level statement, then pipe the binding. Lines deeper inside
-  the content keep every byte, unchanged.
 - `--help` shows a value placeholder for every value-taking flag —
   `--timeout <duration>`, `--max <size>`, `--rate <float>`,
   `<instant>`, `<secret>` — where only `<int>` and `<string>`

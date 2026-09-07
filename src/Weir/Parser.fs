@@ -185,6 +185,18 @@ let sibSep = '\u001F'
 
 let sibSepStr = System.String(sibSep, 1)
 
+// the district CONTENT terminator [D:district-terminates]: a district
+// (`yaml`/`<<<`) that closes MID-STATEMENT — a following `|>`, `in`, or
+// sibling — has the assembler append this after its content, so
+// districtTail knows where content ends and the expression grammar
+// resumes (heredocDistrict is already an opp term, so the pipe composes
+// for free). Same unproduceability contract as sibSep: a source line
+// carrying it is rejected where text becomes logical lines.
+[<Literal>]
+let districtClose = '\u001E'
+
+let districtCloseStr = System.String(districtClose, 1)
+
 /// Line-end `yaml` arms a district; `to yaml` / `from yaml` are the
 /// boundary adapters [D:yaml-district]. One predicate, shared with the
 /// REPL colorizer's marker tint — never a second classifier.
@@ -2596,7 +2608,9 @@ and private parseTplBlockBody
 // decode a district's sentinel tail into (col, rel, content) lines and
 // the end column — shared by the yaml and text districts [D:text-block]
 let private districtTail: Parser<(int * int * string)[] * int, unit> =
-    getPosition .>>. manyChars anyChar
+    getPosition
+    .>>. manySatisfy (fun c -> c <> districtClose)
+    .>> opt (pchar districtClose >>. ws)
     |>> fun (tailP, tail) ->
         let parts = tail.Split sibSep
         // parts[0] is the empty prefix before the first sentinel

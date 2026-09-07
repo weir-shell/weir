@@ -574,16 +574,21 @@ interpolated twin with exactly the string forms' hole rules:
 `{expr}` substitutes, `{{` and `}}` are literal braces, and `$`
 still stays a byte — shell text passes through untouched. A glyph,
 not a word: no binding is reserved, and the marker can never read
-as a splice. Two shape rules: the marker may end a `let` line or
-sit alone, indented, on the line below it; and the block must be
-**bound** — it runs to its statement's end, so nothing can follow
-it in the same statement, and a pipe after the block is an error
-teaching this form. Bind at top level, then pipe the binding:
+as a splice. The marker may end a `let` line or sit alone,
+indented, on the line below it, and the block is an ordinary
+`seq<string>` value — pipe it or bind it like any other. A `|>` on
+the line that closes the block composes with the whole block:
 
-```weir-error
+```weir
 let s = <<<
-    content
-|> File.write "x.txt" // nothing follows a block in its own statement — bind, then pipe the binding
+    host db.example
+    retries 3
+s |> File.write "conf.txt"
+
+<<<
+    one
+    two
+|> Seq.length |> print
 ```
 
 ```weir

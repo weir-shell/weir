@@ -1186,15 +1186,19 @@ type Bad = C of int
   line ENDING in the glyph arms a block (no indented block below is
   an error), and nothing else may legally end in `<<<`. YAML
   `key: |` scalars stay fully literal — a `$<<<` block is the
-  interpolated spelling. The block runs to its STATEMENT'S end —
-  nothing follows it in the same statement (a pipe after it errors,
-  teaching the form); bind at TOP LEVEL, then pipe the binding.
-  The `yaml` district obeys the same rule.
+  interpolated spelling. The block is a `seq<string>` VALUE — pipe it
+  or bind it like any other; a `|>` on the line that closes the block
+  (at or left of the marker) composes with the whole block. The
+  `yaml` district behaves the same (its value is a `Yaml` node).
 
-```weir-error
-let s = <<<
-    content
-|> File.write "x.txt" // the block runs to the statement's end — bind, then pipe the binding
+```weir
+["a"; "b"] |> Seq.iter print
+let n =
+    <<<
+        one
+        two
+    |> Seq.length
+print $"{n}"
 ```
 
 ```weir
