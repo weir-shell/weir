@@ -6898,10 +6898,13 @@ hout=$(cd "$herodir" && "$BIN" tag.weir 2>&1) || fail "the hero run failed: $hou
 # 2-flag surface IS fully known), a manifest's key (the REAL vendored
 # ConfigMap schema, served locally like the contracts cell), a program
 # name (PATH). All three findings in ONE weir check report, and the
-# check must write NOTHING.
-b1dir=$(mkweirtmp)
-mkdir -p "$b1dir/bin" "$b1dir/serve"
-cat > "$b1dir/bin/bicep" <<'WEOF'
+# check must write NOTHING. HTTP-e2e shaped (a served schema + a spawned
+# stub), so POSIX + python3 only — never on Windows, like the sibling
+# schema cells; the Linux/macOS currency gate is what pins the page.
+if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
+    b1dir=$(mkweirtmp)
+    mkdir -p "$b1dir/bin" "$b1dir/serve"
+    cat > "$b1dir/bin/bicep" <<'WEOF'
 #!/bin/sh
 case "$1" in
   --version) echo "bicep 0.30.3";;
@@ -6909,18 +6912,18 @@ case "$1" in
   *) echo "ran:$@";;
 esac
 WEOF
-chmod +x "$b1dir/bin/bicep"
-( cd "$b1dir" && git init -q . )
-( cd "$b1dir" && PATH="$(pathEntry "$b1dir/bin"):$PATH" "$BIN" add sig bicep >/dev/null ) || fail "beat-1 sig generation"
-printf '\nlet exhaustive = true\n' >> "$b1dir/.weir/sigs/bicep.weir"
-cp "$ROOT/tests/fixtures/configmap-v1.json" "$b1dir/serve/"
-b1port=$((18790 + RANDOM % 100))
-python3 -m http.server $b1port --bind 127.0.0.1 --directory "$b1dir/serve" >/dev/null 2>&1 &
-b1srv=$!
-awaitHttp "http://127.0.0.1:$b1port/configmap-v1.json" || { kill $b1srv 2>/dev/null || true; fail "beat-1 schema server never came up"; }
-( cd "$b1dir" && "$BIN" add schema http://127.0.0.1:$b1port/configmap-v1.json --as k8s-configmap >/dev/null ) || { kill $b1srv 2>/dev/null || true; fail "beat-1 add schema"; }
-kill $b1srv 2>/dev/null || true
-cat > "$b1dir/deploy.weir" <<'WEOF'
+    chmod +x "$b1dir/bin/bicep"
+    ( cd "$b1dir" && git init -q . )
+    ( cd "$b1dir" && PATH="$(pathEntry "$b1dir/bin"):$PATH" "$BIN" add sig bicep >/dev/null ) || fail "beat-1 sig generation"
+    printf '\nlet exhaustive = true\n' >> "$b1dir/.weir/sigs/bicep.weir"
+    cp "$ROOT/tests/fixtures/configmap-v1.json" "$b1dir/serve/"
+    b1port=$((18790 + RANDOM % 100))
+    python3 -m http.server $b1port --bind 127.0.0.1 --directory "$b1dir/serve" >/dev/null 2>&1 &
+    b1srv=$!
+    awaitHttp "http://127.0.0.1:$b1port/configmap-v1.json" || { kill $b1srv 2>/dev/null || true; fail "beat-1 schema server never came up"; }
+    ( cd "$b1dir" && "$BIN" add schema http://127.0.0.1:$b1port/configmap-v1.json --as k8s-configmap >/dev/null ) || { kill $b1srv 2>/dev/null || true; fail "beat-1 add schema"; }
+    kill $b1srv 2>/dev/null || true
+    cat > "$b1dir/deploy.weir" <<'WEOF'
 #sig bicep
 
 bicep build --outfil main.json
@@ -6936,14 +6939,23 @@ let config = yaml schema=k8s-configmap
 config |> to yaml |> File.write "config.yaml"
 rsnyc -av main.json config.yaml backup:/srv/site
 WEOF
-b1=$(cd "$b1dir" && PATH="$(pathEntry "$b1dir/bin"):$PATH" "$BIN" check deploy.weir 2>&1) && fail "beat-1 check must exit nonzero"
-for line in \
-    "deploy.weir:3:13: error [sig]: unknown flag '--outfil' for bicep. Did you mean '--outfile'? (#sig bicep, line 1; exhaustive signature)" \
-    "deploy.weir:6:5: error [schema]: schema k8s-configmap: unknown field 'apiVerison' — did you mean 'apiVersion'?" \
-    "deploy.weir:14:1: warning [cmd-not-found]: command not found on PATH: rsnyc — weir resolves commands at check time; the script runs once it is installed"; do
-    echo "$b1" | grep -qF "$line" || fail "beat-1 check output drifted — update index.astro; missing: $line"
-done
-[ ! -e "$b1dir/config.yaml" ] || fail "beat 1's money line is false — check WROTE a file"
+    # the check resolves against ONLY the stub bin [D:hero-3]: rsnyc's
+    # cmd-not-found is did-you-mean-agnostic just when no near command is
+    # on PATH (a box WITH rsync would splice "Did you mean 'rsync'?" and
+    # the byte-pin — and the page — would drift). bicep still resolves
+    # (it is the one entry); the check spawns nothing.
+    b1=$(cd "$b1dir" && PATH="$(pathEntry "$b1dir/bin")" "$BIN" check deploy.weir 2>&1) && fail "beat-1 check must exit nonzero"
+    for line in \
+        "deploy.weir:3:13: error [sig]: unknown flag '--outfil' for bicep. Did you mean '--outfile'? (#sig bicep, line 1; exhaustive signature)" \
+        "deploy.weir:6:5: error [schema]: schema k8s-configmap: unknown field 'apiVerison' — did you mean 'apiVersion'?" \
+        "deploy.weir:14:1: warning [cmd-not-found]: command not found on PATH: rsnyc — weir resolves commands at check time; the script runs once it is installed"; do
+        echo "$b1" | grep -qF "$line" || fail "beat-1 check output drifted — update index.astro; missing: $line"
+    done
+    [ ! -e "$b1dir/config.yaml" ] || fail "beat 1's money line is false — check WROTE a file"
+    echo "e2e ok: homepage beat-1 three-distance check (sig flag + schema key + PATH, one report, wrote nothing)"
+else
+    echo "e2e skip: homepage beat-1 three-distance check (POSIX + python3 — HTTP e2e not on Windows)"
+fi
 # beat 2: --help derived from the record, quoted exactly
 cat > "$herodir/ship.weir" <<'WEOF'
 type Cli = {
