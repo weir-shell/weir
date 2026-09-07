@@ -1334,6 +1334,14 @@ let boundaryTests =
                   | Ok te -> Expect.equal te.Ty (TNamed("Yaml", [])) "a district types as Yaml"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
+
+              // the effect-loop reflex teaches [D:yaml-district]: a district
+              // `for` is bodyless, so a trailing `do` is named, not dumped
+              let withDo = asm [ "let d = yaml"; "    xs:"; "        for x in [1] do"; "            - $x" ]
+
+              match Weir.Parser.parseLine realResolver withDo with
+              | Error e -> Expect.stringContains e "takes no `do`" "the district for names the do mistake"
+              | other -> failtest $"expected the do-teaching error, got {other}"
           }
           test "district eval: splices lift, for instantiates, Option omits [D:yaml-district]" {
               let asm lines' =
