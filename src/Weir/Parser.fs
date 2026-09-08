@@ -2255,7 +2255,19 @@ let private tplValueSlot (col: int) (text: string) : Result<YamlTpl, string * in
 let private tplForHeader (col: int) (text: string) : Result<Pattern * Expr, string * int> =
     match runFragment col text (keyword "for" >>. binderPat .>> keyword "in" .>>. expr) with
     | Result.Ok(b, src) -> Result.Ok(b, src)
-    | Result.Error m -> Result.Error($"in this for: {m}", col)
+    | Result.Error m ->
+        // the effect-loop reflex: `do` is a reserved word, never an expr
+        // tail, so a trailing one is the `for x in xs do` mistake — a
+        // district `for` is bodyless, the entries sit indented below it
+        let trimmed = text.TrimEnd()
+
+        if trimmed = "do" || trimmed.EndsWith " do" || trimmed.EndsWith "\tdo" then
+            Result.Error(
+                "a district `for` takes no `do` — the indented lines below it are the body (YAML entries with `$` splices); drop the `do`",
+                col
+            )
+        else
+            Result.Error($"in this for: {m}", col)
 
 // block scalar content in a district [D:block-scalars]: the lines are
 // BYTES — consumed here, before the splice/for scanners ever see them,
