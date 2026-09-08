@@ -503,7 +503,7 @@ let pins =
 
       // --- corpus-born pins (dotnet/fsharp @ 5928e91, ComponentTests mining) ---
       pin "let parameter sugar (corpus-born feature, 2026-07-20)" "let f x = x + 1\n" Same
-      pin "HOF param application" "let apply f x = f x\n" (Diverges "no-hof-inference")
+      pin "HOF param application" "let apply f x = f x\n" Same // [D:higher-order-params]: weir now infers it, as F# does
       pin "operator on two unresolved params" "let add x y = x + y\n" (Diverges "no-operator-defaulting")
       pin
           "corpus: literal int pattern (row RETIRED 2026-07-21 — the fidelity gain)"

@@ -22,7 +22,6 @@ argument that killed the subtractive fork.
 | interp-scalar-only | different | non-scalar interpolation holes | reject (show is the renderer) | accept | SEMANTICS: interpolation, show |
 | no-printf-family | rejected | printfn / sprintf / %d | reject (interpolation is the mechanism) | accept | SEMANTICS: interpolation |
 | no-mutation | rejected | mutable / <- assignment (reserved word) | reject | accept | SEMANTICS: evaluation |
-| no-hof-inference | rejected | applying a bare parameter as a function | reject | accept | SEMANTICS: governing principle |
 | no-operator-defaulting | rejected | + on two unresolved params | reject (int-or-string guess refused) | accept (defaults int) | SEMANTICS: var-var operators |
 | no-oo | rejected | classes, interfaces, members, inheritance | reject | accept | a typed shell, not an object language |
 | no-computation-expressions | rejected | builder blocks (seq { }, async { }, custom CEs) | reject | accept | pipelines are the composition story; comprehension sugar, if ever, is parser-only — not CE machinery |

@@ -284,16 +284,16 @@ print $"{same 1 1} {same "a" "b"}"
 ```
 
 Binding names start lowercase; uppercase is for types, modules, and
-constructors. Two deliberate limits you will
-meet: a bare parameter cannot be *applied* as a function
-(polymorphism flows from typed builtins, not lambda guessing), and
-`+` on two unknowns cannot infer (int or string?) — anchor one side:
-`x + 0`.
+constructors. A higher-order parameter infers like any other — a
+passed function applies in the body:
 
-```weir-error
-let apply f x = f x // a bare parameter cannot be applied as a function
-print (apply (fun n -> n) 1)
+```weir
+let apply f x = f x
+print (apply (fun n -> n + 1) 1)
 ```
+
+The one inference limit you will meet: `+` on two unknowns cannot
+infer (int or string?) — anchor one side, `x + 0`.
 
 Unit params make thunks: `let cleanup () = ...` runs at
 `cleanup ()`, and `cleanup 5` is a type error:

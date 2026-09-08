@@ -131,14 +131,16 @@ it whole.
 
 `let f x y = …` is curried; partial application is first-class.
 Bindings generalize — a polymorphic `let id x = x` stays
-polymorphic. Two deliberate limits: a bare parameter cannot be
-applied as a function, and `+` on two unknowns cannot infer — anchor
-one side:
+polymorphic, and a higher-order parameter infers — `let apply f x = f x`
+types as `('a -> 'b) -> 'a -> 'b` and applies like any function:
 
-```weir-error
-let apply f x = f x // a bare parameter cannot be applied as a function
-print (apply (fun n -> n) 1)
+```weir
+let apply f x = f x
+print (apply (fun n -> n + 1) 1)
 ```
+
+The one inference limit: `+` on two unknowns cannot infer (int or
+string?) — anchor one side with `x + 0`.
 
 ## Constraints
 
