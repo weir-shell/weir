@@ -866,10 +866,11 @@ print $"{n >= 0}"
 [1; 2] |> Seq.map (fun print -> print)
 ```
 
-```weir-error
-// no range indexing — accessors are offset-and-length
-let xs = [1; 2; 3]
-print $"{xs[1..2]}"
+```weir
+// range slicing [D:range-slicing]: inclusive, clamping, on seqs and strings
+let xs = [10; 20; 30; 40]
+xs[1..2] |> Seq.iter print
+print "abcdef"[1..3]
 ```
 
 ```weir-error
@@ -1411,11 +1412,15 @@ print (f 1)
 - Element access: `xs[0]` (raises; = `Seq.item 0 xs`; F# 6 whitespace
   rule — `f [0]` WITH a space is applying a list) / `Seq.tryItem`
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
-  Accessors are **offset-and-length**, never ranges: `Str.sub start len`
-  for strings, `Seq.skip`/`Seq.take` for sequences, `xs[i]` for one
-  element. `..` builds sequences and never indexes, so `xs[1..4]` is
-  refused with that rule; `xs.[i]` (F#'s dotted indexer) is refused
-  naming the dotless spelling [D:accessor-teaching].
+  Slicing is `xs[a..b]` [D:range-slicing]: INCLUSIVE both ends, CLAMPING
+  (out-of-range and reversed give the empty result, never a raise), on
+  strings AND seqs (`"abc"[0..1]` is `"ab"`, `xs[3..100]` truncates),
+  with open ends `xs[..b]`/`xs[a..]`. `xs[i]` stays the single-element
+  accessor (raises out of range; = `Seq.item i xs`) and `Str.sub start
+  len` the offset-and-length string form. From-the-end (`xs[^1]`) is
+  declined — `^` is the command-force sigil; `Seq.last`/`Seq.rev` reach
+  the end. `xs.[i]` (F#'s dotted indexer) is refused naming the dotless
+  spelling [D:accessor-teaching].
   Membership: `Seq.contains x xs` (equatable elements),
   `Seq.exists`/`Seq.forall` with predicates. Dedupe is
   `Seq.distinct` (lazy, first occurrence wins, equatable elements —

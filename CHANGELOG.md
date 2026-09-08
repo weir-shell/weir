@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.0.23
+
+### New features
+
+- **Range slicing: `x[a..b]`.** Inclusive at both ends and clamping —
+  an out-of-range or reversed range gives the empty result, never a
+  raise — on strings and sequences alike, with open ends `x[..b]` and
+  `x[a..]`. `"weir"[1..2]` is `"ei"`; `xs[3..100]` truncates to what
+  is there; an infinite sequence stays usable (`nats[2..5]` returns).
+  `x[i]` remains the single-element accessor (raises out of range),
+  and from-the-end (`x[^1]`) is not supported — `^` is the
+  command-force sigil, so `Seq.last`/`Seq.rev` reach the end.
+- **Higher-order parameters infer.** `let apply f x = f x` and
+  `fun f -> f 1` now typecheck: a parameter applied in a body is
+  inferred as a function, exactly as F# does. This was previously
+  refused as "a bare parameter cannot be applied."
+
+### Changed
+
+- A `yaml`/`<<<` district written with a trailing `do`
+  (`for x in xs do`) now names the mistake — a district `for` is
+  bodyless, the entries sit indented below it — instead of a bare
+  parser expecting-list.
+
+### Docs
+
+- A **Coming from Nushell** section — weir's closest neighbour —
+  written and checked against a real `nu`. The **Emacs** editor
+  section is validated on Emacs 30.2 (it was marked untested). The
+  reference page's duplicate section anchors are fixed and gated, and
+  the showcase gains an "On this page" navigation. Smaller
+  corrections: `within` cleanup runs on SIGINT/SIGTERM (it was
+  described as a leak), the `within` family is five kinds, and the
+  homepage leads with the check reaching a tool's flags and a
+  manifest's schema, not just a program name.
+
 ## v0.0.22
 
 ### New features

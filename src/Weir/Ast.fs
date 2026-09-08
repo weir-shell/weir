@@ -125,6 +125,11 @@ and ExprKind =
     | EApp of fn: Expr * arg: Expr
     | EPipe of arg: Expr * fn: Expr
     | EField of target: Expr * field: string * fieldSpan: Span
+    // a slice `x[lo..hi]` [D:range-slicing]: inclusive, clamping; lo/hi
+    // absent for the open ends (`x[..hi]`, `x[lo..]`). Type-directed at
+    // CHECK (string -> substring, seq -> subsequence), the one node whose
+    // meaning the parser cannot fix.
+    | ESlice of target: Expr * lo: Expr option * hi: Expr option
     | EBinOp of op: string * left: Expr * right: Expr
     // an operator as a VALUE, unapplied only [D:operator-values] —
     // the checker desugars it to `fun a b -> a op b` verbatim
@@ -310,6 +315,7 @@ let exprChildren (e: Expr) : Expr list =
     | EApp(f, x) -> [ f; x ]
     | EPipe(x, f) -> [ x; f ]
     | EField(t, _, _) -> [ t ]
+    | ESlice(t, lo, hi) -> t :: (Option.toList lo @ Option.toList hi)
     | EBinOp(_, l, r) -> [ l; r ]
     | EOpValue _ -> []
     | ERecord fields
@@ -409,6 +415,9 @@ let rec sexpr (e: Expr) : string =
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"
     | EField(t, f, _) -> $"{sexpr t}.{f}"
+    | ESlice(t, lo, hi) ->
+        let part = Option.map sexpr >> Option.defaultValue ""
+        $"(slice {sexpr t} [{part lo}..{part hi}])"
     | EBinOp(op, l, r) -> $"({op} {sexpr l} {sexpr r})"
     | EOpValue op -> $"({op})"
     | ERecord fields ->
