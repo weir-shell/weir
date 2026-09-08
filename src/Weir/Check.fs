@@ -3720,17 +3720,24 @@ and private checkSpine
         let! thead = infer ctx env head
         let arity = args.Length + (if piped.IsSome then 1 else 0)
 
-        // a HOLE-bound head (its let statement errored; the binding is
-        // the cascade-suppression hole) applied: shape the hole into an
-        // arrow of fresh vars so the application stays SILENT — the one
-        // real error was already reported [PLAN-diagnostics-arc B6]
+        // applying a callee whose type is still an unconstrained variable
+        // IS the constraint that it is a function [D:higher-order-params]:
+        // unify it with a fresh arrow so the arguments constrain the params
+        // and the result flows — textbook HM, and exactly what the CALL site
+        // already does (a param not applied in its body infers its arrow
+        // from the caller). Two var flavours, one move: a __hole var (a
+        // cascade-suppression binding whose let already errored) shapes into
+        // __hole fresh vars so the application stays SILENT [PLAN-diagnostics-arc
+        // B6]; an ordinary parameter uses ordinary fresh vars and infers.
         do!
             match finalTy ctx thead.Ty with
-            | TVar v when v.StartsWith "__hole" ->
+            | TVar v ->
+                let stem = if v.StartsWith "__hole" then "__hole" else "a"
+
                 let arrow =
                     List.replicate arity ()
-                    |> List.foldBack (fun () acc -> TFun(TVar(freshName ctx "__hole"), acc))
-                    <| TVar(freshName ctx "__hole")
+                    |> List.foldBack (fun () acc -> TFun(TVar(freshName ctx stem), acc))
+                    <| TVar(freshName ctx stem)
 
                 bind ctx env head.Span (TVar v) arrow
             | _ -> Ok()

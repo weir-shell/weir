@@ -23,16 +23,17 @@ let private checkErr input =
 let tripwires =
     testList
         "Tripwires"
-        [ test "occurs check is shielded by funParams (checklist 1.1)" {
-              // Language rule, not accident: weir never unifies a type
-              // variable with a function type at application, so un-annotated
-              // higher-order lambdas do not infer (HOFs flow from typed
-              // builtins). This same rule blocks the standard occurs-check
-              // cycle constructions before `occurs` is consulted. Adding
-              // arrow-var unification (higher-order inference) reopens 1.1:
-              // add direct cyclic-row/occurs tests first.
-              Expect.stringContains (checkErr "fun f -> f 1").Message "not a function" ""
-              Expect.stringContains (checkErr "fun f -> f.x f").Message "not a function" ""
+        [ test "the occurs check catches self-application directly (checklist 1.1, reopened by [D:higher-order-params])" {
+              // funParams USED to shield 1.1: refusing to apply a bare
+              // variable, occurs-cycle constructions never reached `occurs`.
+              // [D:higher-order-params] added arrow-var unification at
+              // application — HOFs now infer (`fun f -> f 1` is
+              // (int -> 'a) -> 'a) — which reopened 1.1. These are the direct
+              // tests the shield's own comment demanded: self-application now
+              // reaches `occurs` and is rejected as an infinite type, still
+              // WITHOUT hanging (the typecheck terminates to reach the pin).
+              Expect.stringContains (checkErr "fun f -> f f").Message "infinite type" ""
+              Expect.stringContains (checkErr "fun f -> f.x f").Message "infinite type" ""
           }
           test "no annotation syntax means no trust boundary (checklist 2.3)" {
               // There is no type-ascription syntax, so an annotation cannot

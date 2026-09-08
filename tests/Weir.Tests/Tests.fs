@@ -2607,8 +2607,8 @@ let rowTests =
           test "ambiguous operands stay an error" {
               Expect.stringContains (checkErr "fun x -> x + x").Message "cannot infer the operand types" ""
           }
-          test "applying a variable as a function is rejected" {
-              Expect.stringContains (checkErr "fun f -> f 1").Message "not a function" ""
+          test "applying a variable as a function infers the arrow [D:higher-order-params]" {
+              Expect.stringContains (formatTy (checkOk "fun f -> f 1").Ty) "int ->" ""
           }
           test "generalization does not capture enclosing lambda parameters" {
               checkErr "fun y -> let g = fun x -> y in (g 1 + 1) + (g 2 + \"s\")" |> ignore
@@ -8672,9 +8672,11 @@ let paramSugarTests =
               | Ok { Kind = ELet(_, _, { Kind = ELambdaPat({ PKind = PTuple _ }, _) }, _) } -> ()
               | other -> failtest $"tuple param should desugar to ELambdaPat, got {other}"
           }
-          test "HOF restriction unchanged through the sugar" {
-              let terr = checkErr "let apply f x = f x in apply double 1"
-              Expect.stringContains (formatError terr) "not a function" ""
+          test "HOF works through the let-parameter sugar [D:higher-order-params]" {
+              // the sugar `let apply f x = …` shares the body checker, so a
+              // higher-order parameter infers there exactly as in a lambda
+              let te = checkOk "let apply f x = f x in apply double 1"
+              Expect.equal (formatTy te.Ty) "int" ""
           }
           test "operator ambiguity unchanged through the sugar" {
               let terr = checkErr "let add x y = x + y in add 1 2"
@@ -10569,7 +10571,10 @@ let adversarialTests =
                   ""
           }
           test "1.1 self-application rejects without hanging" {
-              Expect.stringContains (checkErr "fun f -> f.x f").Message "not a function" ""
+              // [D:higher-order-params]: funParams no longer masks this as
+              // "not a function" — the occurs check catches the cycle
+              // directly (and still terminates to reach this pin)
+              Expect.stringContains (checkErr "fun f -> f.x f").Message "infinite type" ""
           }
           test "1.2 var-var row merge unifies field types, not just names" {
               Expect.stringContains

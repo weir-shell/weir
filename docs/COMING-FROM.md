@@ -209,8 +209,8 @@ print word
 - Classes, interfaces, members — records and functions.
 - `mutable`, `<-` — copy-and-update: `{ r with F = v }`.
 - Type annotations on params, `(e : ty)` ascription — inference plus
-  anchoring (`x + 0` to pin int); a bare param cannot be applied as a
-  function.
+  anchoring (`x + 0` to pin int); a higher-order parameter needs no
+  annotation, it infers (`let apply f x = f x`).
 - Anonymous records — every record has a declared, exact field set.
 
 ## Coming from PowerShell
