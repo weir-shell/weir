@@ -12217,20 +12217,21 @@ let accessorTeachingTests =
     // side findings, each independent of the parked feature
     testList
         "accessor teachings [D:accessor-teaching]"
-        [ test "range indexing teaches the offset-and-length rule, not an application error" {
-              // was: caret on the TARGET, "not a function taking 1 argument"
-              // (the interior backtracked into a list-literal application)
+        [ test "range slicing checks — type-directed on strings and sequences [D:range-slicing]" {
+              // was refused with "no range indexing"; now the first
+              // type-directed node — the target's type picks str vs seq
               for src in
                   [ "let xs = [1; 2; 3] in xs[1..2]"
                     "let xs = [1; 2; 3] in xs[..2]"
                     "let xs = [1; 2; 3] in xs[1..]" ] do
-                  match Weir.Parser.parseExpr src with
-                  | Ok _ -> failtest $"'{src}' must be refused"
-                  | Error m ->
-                      Expect.stringContains m "no range indexing" $"'{src}' names the refusal"
-                      Expect.stringContains m "offset-and-length" $"'{src}' names the rule"
-                      Expect.stringContains m "Str.sub" $"'{src}' names the string spelling"
-                      Expect.stringContains m "Seq.skip" $"'{src}' names the seq spelling"
+                  Expect.stringContains (formatTy (checkOk src).Ty) "seq" $"'{src}' slices to a seq"
+
+              Expect.equal (formatTy (checkOk "\"abcdef\"[1..3]").Ty) "string" "a string slices to a string"
+          }
+          test "from-the-end indexing (^n) is declined — ^ is command-force [D:range-slicing]" {
+              match Weir.Parser.parseExpr "let xs = [1; 2; 3] in xs[^1]" with
+              | Ok _ -> failtest "xs[^1] must be refused"
+              | Error m -> Expect.stringContains m "from-the-end" "names the decline"
           }
           test "the F# dotted indexer teaches the dotless spelling" {
               match Weir.Parser.parseExpr "let xs = [1; 2; 3] in xs.[0]" with

@@ -104,6 +104,9 @@ and TypedKind =
     | TEApp of fn: TypedExpr * arg: TypedExpr
     | TEPipe of arg: TypedExpr * fn: TypedExpr
     | TEField of target: TypedExpr * field: string
+    // a slice [D:range-slicing]; onString picks the eval (substring vs
+    // subsequence) — the type-directed choice the checker resolved
+    | TESlice of target: TypedExpr * lo: TypedExpr option * hi: TypedExpr option * onString: bool
     | TEBinOp of op: string * left: TypedExpr * right: TypedExpr
     | TERecord of record: string * fields: (string * TypedExpr) list
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
@@ -3071,6 +3074,46 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                           Span = expr.Span }
             | ty -> return! err target.Span $"only records have fields; this expression has type {formatTy ty}"
         }
+    | ESlice(target, lo, hi) ->
+        // the language's first TYPE-DIRECTED node [D:range-slicing]: the
+        // target's resolved type picks substring vs subsequence. Bounds are
+        // ints; an unconstrained target defaults to a sequence (the `x[i]`
+        // precedent — `|seqItem` unifies to seq), so a string slice needs a
+        // known-string target and `fun xs -> xs[a..b]` is seq-typed.
+        result {
+            let! ttarget = infer ctx env target
+
+            let inferBound (o: Expr option) =
+                match o with
+                | None -> Ok None
+                | Some e -> check ctx env e TInt |> Result.map Some
+
+            let! tlo = inferBound lo
+            let! thi = inferBound hi
+
+            match resolve ctx ttarget.Ty with
+            | TStr ->
+                return
+                    { Kind = TESlice(ttarget, tlo, thi, true)
+                      Ty = TStr
+                      Span = expr.Span }
+            | TSeq elem ->
+                return
+                    { Kind = TESlice(ttarget, tlo, thi, false)
+                      Ty = TSeq elem
+                      Span = expr.Span }
+            | TVar _ ->
+                let elem = TVar(freshName ctx "a")
+                do! bind ctx env target.Span ttarget.Ty (TSeq elem)
+
+                return
+                    { Kind = TESlice(ttarget, tlo, thi, false)
+                      Ty = TSeq elem
+                      Span = expr.Span }
+            | other ->
+                return!
+                    err target.Span $"a slice `x[a..b]` works on a string or a sequence; this expression is {formatTy other}"
+        }
     | EOpValue op ->
         // desugar to EXACTLY `fun a b -> a op b` [D:operator-values]:
         // every typing question — overload-by-context, int defaulting,
@@ -4276,6 +4319,8 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEApp(f, a) -> TEApp(finalizeExpr ctx f, finalizeExpr ctx a)
         | TEPipe(a, f) -> TEPipe(finalizeExpr ctx a, finalizeExpr ctx f)
         | TEField(t, f) -> TEField(finalizeExpr ctx t, f)
+        | TESlice(t, lo, hi, s) ->
+            TESlice(finalizeExpr ctx t, Option.map (finalizeExpr ctx) lo, Option.map (finalizeExpr ctx) hi, s)
         | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
         | TEUpdate(src, ups) -> TEUpdate(finalizeExpr ctx src, ups |> List.map (fun (p, v) -> p, finalizeExpr ctx v))
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
@@ -4566,6 +4611,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEApp(f, a) -> [ f; a ]
     | TEPipe(a, f) -> [ a; f ]
     | TEField(t, _) -> [ t ]
+    | TESlice(t, lo, hi, _) -> t :: (Option.toList lo @ Option.toList hi)
     | TEBinOp(_, l, r) -> [ l; r ]
     | TERecord(_, fields) -> fields |> List.map snd
     | TEMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))

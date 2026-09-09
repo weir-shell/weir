@@ -2249,11 +2249,16 @@ uedbg=$(WEIR_LOG=debug $BIN -e 'let r = 1..3 in 0' 2>&1 || true)
 echo "$uedbg" | grep -qF "backtracked after" || fail "WEIR_LOG=debug must KEEP the trace: $uedbg"
 echo "e2e ok: Unknown Error(s) joins the backtrack suppression (both ways)"
 
-# the accessor teachings at the binary [D:accessor-teaching] — the
-# costing found the range shape silently becoming an APPLICATION
-rgout=$($BIN -e 'let xs = [1; 2; 3] in xs[1..2]' 2>&1 || true)
-echo "$rgout" | grep -qF "no range indexing" || fail "range indexing teaches the rule: $rgout"
-echo "$rgout" | grep -qF "not a function" && fail "the application accident must not surface: $rgout"
+# range slicing at the binary [D:range-slicing] — inclusive/clamping,
+# type-directed (str vs seq), with the from-end (^n) decline
+rgout=$($BIN -e 'let xs = [10; 20; 30; 40] in xs[1..2] |> Seq.force' 2>&1)
+echo "$rgout" | grep -qF "20; 30" || fail "range slicing (inclusive) drifted: $rgout"
+strout=$($BIN -e '"abcdefghi"[3..7]' 2>&1)
+echo "$strout" | grep -qF "defgh" || fail "string slice drifted: $strout"
+feout=$($BIN -e 'let xs = [1; 2; 3] in xs[^1]' 2>&1 || true)
+echo "$feout" | grep -qF "from-the-end" || fail "from-end (^n) must teach the decline: $feout"
+# the accessor teachings that STAND [D:accessor-teaching]: the dotted
+# indexer and Map-index still refuse (only the range form flipped)
 dtout=$($BIN -e 'let xs = [1; 2; 3] in xs.[0]' 2>&1 || true)
 echo "$dtout" | grep -qF "without the dot" || fail "the dotted indexer teaches: $dtout"
 mkout=$($BIN -e 'let m = Map.ofPairs [("a", 1)] in m["a"]' 2>&1 || true)

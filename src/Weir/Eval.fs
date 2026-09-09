@@ -2417,6 +2417,42 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | Some v -> v
             | None -> unreachable $"the checker rejects unknown field '{field}' on {name}"
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
+    | TESlice(target, lo, hi, onString) ->
+        // inclusive, clamping [D:range-slicing]: an absent bound is an open
+        // end (lo -> 0, hi -> last), out-of-range and reversed yield the
+        // empty result, never a raise. A bounded seq truncates (so an
+        // infinite source does not hang); an open end skips lazily.
+        let boundOr dflt o =
+            match o with
+            | None -> dflt
+            | Some e ->
+                match eval env e with
+                | VInt n -> int n
+                | v -> unreachable $"the checker guarantees an int slice bound; got {formatValue v}"
+
+        let a = max 0 (boundOr 0 lo)
+
+        if onString then
+            match eval env target with
+            | VStr s ->
+                let n = s.Length
+                let b = match hi with
+                        | None -> n - 1
+                        | Some _ -> min (boundOr 0 hi) (n - 1)
+
+                if a > b then VStr "" else VStr(s.Substring(a, b - a + 1))
+            | v -> unreachable $"the checker guarantees a string slice target; got {formatValue v}"
+        else
+            match eval env target with
+            | VSeq items ->
+                let dropped = items |> Seq.indexed |> Seq.skipWhile (fun (i, _) -> i < a) |> Seq.map snd
+
+                match hi with
+                | None -> VSeq dropped
+                | Some _ ->
+                    let b = boundOr 0 hi
+                    if a > b then VSeq Seq.empty else VSeq(dropped |> Seq.truncate (b - a + 1))
+            | v -> unreachable $"the checker guarantees a sequence slice target; got {formatValue v}"
     | TEBinOp("&&", l, r) ->
         (match eval env l with
          | VBool false -> VBool false

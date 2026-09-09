@@ -1174,32 +1174,51 @@ let private postfixAtom =
     // one suffix step; the chain is a LOOP, not recursion — a long
     // field chain (a.b.b.…) must not grow the parser stack
     // [D:depth-guard]
-    // the accessor rule, taught at both attempts [D:accessor-teaching].
-    // DETECT inside the attempt, FATAL outside it — a fatal raised within
-    // an attempt is swallowed [D:anchor-residue-ab], so the shape test and
-    // the raise are separate steps (the keywordFieldGuard pattern).
-    let accessorRule =
-        "weir accessors are offset-and-length, never ranges: Str.sub start len, "
-        + "Seq.skip/Seq.take, xs[i] for one element — `..` builds sequences, it never indexes"
-
     let oneSuffix (target: Expr) : Parser<Expr, unit> =
         let immediate (p: Position) =
             int p.Line = target.Span.End.Line && int p.Column = target.Span.End.Col
 
-        // xs[a..b], xs[..b], xs[a..] — the interior is a general
-        // expression and `..` is not one, so without this the whole form
-        // silently backtracks to APPLICATION of the target to a list
-        // literal and reports a function-arity error on the target
-        let rangeIndexGuard =
+        // xs[^n] — F#'s from-the-end index [D:range-slicing]: declined,
+        // because `^` is weir's command-force sigil (`^ls`), one glyph one
+        // meaning. Detected right after `[` so the reflex gets a pointer,
+        // not a bare expecting-list.
+        let fromEndGuard =
             attempt (
                 getPosition
                 >>= fun p ->
                     if immediate p then
-                        pchar '[' >>. ws >>. opt indexExpr .>> str_ws ".." >>% p
+                        pchar '[' >>. ws >>. followedBy (pchar '^') >>% p
                     else
                         ifail "whitespace before [ means application"
             )
-            >>= fun at -> failFatallyAt at $"no range indexing — {accessorRule}"
+            >>= fun at ->
+                failFatallyAt
+                    at
+                    "from-the-end indexing (`^n`) is not a weir feature — `^` is the command-force sigil; reach the end with Seq.last/Seq.tryLast, or Seq.rev"
+
+        // xs[a..b], xs[..b], xs[a..], xs[..] — a slice [D:range-slicing].
+        // The interior bounds are general expressions and `..` is not one,
+        // so `opt indexExpr` stops before the `..`; an absent bound is an
+        // open end. Leads indexNext (which has no `..`): tried first, it
+        // backtracks to the single-index form when no `..` is present.
+        let sliceNext =
+            attempt (
+                getPosition
+                >>= fun p ->
+                    if immediate p then
+                        pchar '[' >>. ws >>. opt indexExpr .>> str_ws ".."
+                        .>>. opt indexExpr
+                        .>> pchar ']'
+                        .>>. getPosition
+                        .>> ws
+                        |>> fun ((lo, hi), endP) ->
+                            { Kind = ESlice(target, lo, hi)
+                              Span =
+                                { Start = target.Span.Start
+                                  End = pos endP } }
+                    else
+                        ifail "whitespace before [ means application"
+            )
 
         // xs.[i] — F# 5's indexer spelling; the same muscle-memory
         // population the while/return/try reservations serve
@@ -1224,9 +1243,10 @@ let private postfixAtom =
                         ifail "whitespace before [ means application"
             )
 
-        // the guards lead: each detects a shape the ordinary suffixes
-        // would silently mis-parse, and only a fatal escapes them
-        dotBracketGuard <|> rangeIndexGuard <|> fieldNext <|> indexNext
+        // the guards lead: dotBracketGuard detects xs.[i] (fatal teach),
+        // fromEndGuard the `[^n` reflex, sliceNext the `..` forms,
+        // indexNext the single index
+        dotBracketGuard <|> fromEndGuard <|> sliceNext <|> fieldNext <|> indexNext
 
     let suffixes (target: Expr) : Parser<Expr, unit> =
         fun stream ->

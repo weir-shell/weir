@@ -1,10 +1,25 @@
 # weir — range slicing, the F# way (`x[a..b]`)
 
-Status: PLANNED — the reopening of [D:range-slice-costing], whose park
-said it reopens "only if the convention argument is answered." It is
-answered: F#-FIDELITY answers it, and weir already referees against F#
-(`ci/fsharp-oracle.sh`). Nothing here is implemented; this is the
-spec, the rulings, the declined part, and the costed remainder.
+Status: EXECUTED (landed 2026-09-08) [D:range-slicing]. The reopening
+of [D:range-slice-costing], whose park said it reopens "only if the
+convention argument is answered." It was answered by F#-FIDELITY. The
+plan below is the spec that shipped; it matched the fsy-verified cells
+cell-for-cell.
+
+Completion addenda (2026-09-08):
+- The type-directed node is `ESlice`/`TESlice`: the parser builds it,
+  the checker's infer arm resolves the target and records `onString`,
+  eval clamps. `x[i]` stayed the parse-time `|seqItem` desugar
+  (single-element, still raises out of range).
+- The clamping primitive is inline in eval, not a builtin: an open end
+  is a lazy `skipWhile`, a bounded seq a `truncate` (so `nats[2..5]`
+  returns rather than hanging) — verified terminating.
+- From-end declined as planned: `x[^n]` gets a teaching pointer
+  (`fromEndGuard`), `x[-1]` single-index keeps its raise.
+- Cascade: `[D:accessor-teaching]`'s `no range indexing` teaching
+  retired (rangeIndexGuard -> sliceNext); the `no-range-slicing`
+  divergence removed; 4 fidelity Same pins added; unit/e2e/SKILL
+  de-taught. `Str.sub`/`xs.[i]` teachings stand.
 
 ## What reopens it
 

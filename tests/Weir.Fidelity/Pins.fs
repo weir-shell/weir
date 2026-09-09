@@ -312,6 +312,11 @@ let pins =
       pin "stepped descending range, spaced" "let r = [10 .. -1 .. 1]\n" Same
       pin "F#-rejects-this: open range" "let r = [1..]\n" Same
       pin "F#-rejects-this: triple-dotted range" "let r = [1..2..3..4]\n" Same
+      // --- slicing [D:range-slicing]: weir and F# both accept x[a..b] ---
+      pin "slice a list, inclusive" "let xs = [1..10]\nlet s = xs[3..7]\n" Same
+      pin "slice a string" "let w = \"abcdefghi\"\nlet s = w[3..7]\n" Same
+      pin "slice, open-ended start" "let xs = [1..10]\nlet s = xs[..3]\n" Same
+      pin "slice, open-ended end" "let xs = [1..10]\nlet s = xs[7..]\n" Same
 
       // --- multiline bracket probes (PLAN-multiline-brackets) ---
       pin
