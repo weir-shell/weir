@@ -12247,6 +12247,14 @@ let matchPipeOffsideTests =
               | Ok [ ll ] -> Expect.stringContains ll.Text "| n -> n |> print" "the dangling body's pipe joins the arm"
               | other -> failtest $"expected one extended logical line, got {other}"
           }
+          test "each arm keeps its own body column (a later shallower arm is not judged by an earlier one)" {
+              // arm 1's inline body sits deep (col 12); arm 2 dangles with a
+              // shallow body (col 4) and a pipe under it — must extend, not be
+              // measured against arm 1 [D:match-pipe-offside]
+              match assemble [ "match x with"; "| Some p -> File.read p"; "| None ->"; "    fetch"; "    |> join" ] with
+              | Ok [ ll ] -> Expect.stringContains ll.Text "| None -> fetch |> join" "arm 2's pipe joins arm 2's body"
+              | other -> failtest $"expected one logical line, got {other}"
+          }
           test "a |> left of a dangling arm's body is rejected" {
               // dangling body resolves to column 4; a pipe at column 1 is left of it
               match assemble [ "match 5 with"; "| n ->"; "    n"; " |> print" ] with
