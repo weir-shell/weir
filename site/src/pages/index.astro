@@ -208,9 +208,13 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 
   <h2>Two ingredients, removed</h2>
   <p>
-    Two bash mechanisms have deleted real machines: an unquoted
-    variable <em>splitting</em> into words, and a path <em>glued</em>
-    from pieces that came apart. Valve shipped the second in 2015:
+    Two bash mechanisms wreck machines. One is an unquoted variable
+    <em>splitting</em> into words — still quoted away by hand in
+    production, as pgpool did to an <code>rm -rf</code> in a
+    node-recovery script in <a href="https://github.com/pgpool/pgpool2/commit/58446a6">September
+    2025</a>, a maintainer catching it before it fired. The other is a
+    path <em>glued</em> from pieces that came apart; Valve shipped that
+    in 2015, and it wiped real drives:
   </p>
   <div class="hero-band">
     <div class="hero-pair">
