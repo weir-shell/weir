@@ -84,10 +84,9 @@ argv word — it does not chain commands; one command per line.
 
 ## `match` arms and a trailing `|>`
 
-Arms align exactly, and their column is the match's offside line.
-A `|>` follows that line the way F# reads it: indented past the arm
-body it extends the arm, but back at the arm column it **closes the
-match and pipes the whole of it** — no parentheses needed:
+A trailing `|>` reads by its column against the arm. At the arm's
+`|` it **closes the match and pipes the whole of it** — no
+parentheses needed:
 
 ```weir
 match 5 with
@@ -97,8 +96,9 @@ match 5 with
 ```
 
 That prints `50` — the whole match, piped to `print` — not `0 |>
-print` buried in the last arm. Indent the `|>` under an arm body
-instead and it continues *that arm* — inline or on its own line:
+print` buried in the last arm. Line the `|>` up **at or under the
+arm body** and it continues *that arm* instead — inline or on its
+own line:
 
 ```weir
 match 5 with
@@ -106,9 +106,10 @@ match 5 with
        |> print
 ```
 
-The only rejected spot is the gap between the `|` and the pattern:
-weir names it and points you either back to the `|` (to pipe the
-whole match) or under the body (to continue the arm).
+Anything in between — left of the body but right of the `|` — is
+rejected: weir names the body column and points you either back to
+the `|` (to pipe the whole match) or under the body (to continue the
+arm). Line it up; there is no guessing.
 
 ## `if` / `elif` / `else`
 

@@ -3402,7 +3402,7 @@ echo "$pos" | grep -qF "true { n = 5 }" || fail "positive twin drifted: $pos"
 echo "e2e ok: function types — construct/call/destructure; ==/to json/to yaml/show refuse a function-bearing record and tagged union naming the field; scalar twin unaffected"
 
 # match-pipe offside [D:match-pipe-offside]: |> at the arm | closes the
-# match; under the arm body continues the arm; the |-to-pattern gap
+# match; at or under the arm body continues the arm; left of the body
 # rejects. On the AOT binary.
 mpo=$($BIN -e 'match 5 with
 | 5 -> 50
@@ -3416,11 +3416,10 @@ mpo=$($BIN -e 'match 5 with
        |> print' 2>&1) || fail "a |> under the arm body must extend the arm: $mpo"
 echo "$mpo" | grep -qxF "6" || fail "arm-extending pipe result drifted: $mpo"
 mpo=$($BIN -e 'match 5 with
-| n ->
-    n
- |> print' 2>&1) && fail "a |> in the |-to-pattern gap must reject"
-echo "$mpo" | grep -qF "between the arm's" || fail "gap teaching drifted: $mpo"
-echo "e2e ok: match-pipe offside — |> at the arm column closes the match; under the body continues the arm; the gap rejects"
+| _ -> "t"
+  |> print' 2>&1) && fail "a |> left of the arm body must reject"
+echo "$mpo" | grep -qF "left of the arm body" || fail "body-floor teaching drifted: $mpo"
+echo "e2e ok: match-pipe offside — |> at the arm column closes the match; at/under the body continues the arm; left of the body rejects"
 
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"
