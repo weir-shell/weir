@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.26
+
+### Changed
+
+- **The match-arm pipe floor is the arm body's column.** Corrects
+  v0.0.25: a continuation `|>` now extends an arm only when it lines up
+  **at or under the arm body**; anywhere left of the body (but right of
+  the `|`) is rejected with a message naming the body column. v0.0.25
+  used the arm's *pattern* column as the floor, which quietly swallowed
+  a `|>` sitting at the pattern — well left of the body — into the arm.
+  `|>` at the `|` still closes the whole match. The floor is cleaner
+  than F#'s relaxed offside (which tolerates a `|>` hanging a few
+  columns left of the body); weir is stricter there — line the pipe up
+  under the body.
+
 ## v0.0.25
 
 ### Changed

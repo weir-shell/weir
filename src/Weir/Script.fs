@@ -294,6 +294,34 @@ let private isIdentToken (t: string) =
 let isYamlMarkerPiece = Parser.isYamlMarkerPiece
 let isHeredocMarkerPiece = Parser.isHeredocMarkerPiece
 
+/// the arm arrow `->` at bracket-depth 0, outside strings
+/// [D:match-pipe-offside] — the match arm's body offside. Patterns carry
+/// no arrow and a guard lambda's arrow nests in parens, so the FIRST such
+/// `->` is the arm's; a string literal in the pattern is skipped.
+let armArrowIndex (s: string) : int option =
+    let mutable depth = 0
+    let mutable inStr = false
+    let mutable i = 0
+    let mutable found = -1
+
+    while found < 0 && i < s.Length - 1 do
+        let c = s[i]
+
+        if inStr then
+            if c = '\\' then i <- i + 1
+            elif c = '"' then inStr <- false
+        else
+            match c with
+            | '"' -> inStr <- true
+            | '(' | '[' | '{' -> depth <- depth + 1
+            | ')' | ']' | '}' -> depth <- depth - 1
+            | '-' when depth = 0 && s[i + 1] = '>' -> found <- i
+            | _ -> ()
+
+        i <- i + 1
+
+    if found >= 0 then Some found else None
+
 let classifyPiece (piece: string) : PieceClass =
     let lastToken =
         match piece.LastIndexOf ' ' with
@@ -800,12 +828,13 @@ type private Pend =
       // sibling pipe columns, innermost first [D:pipe-alignment]: a
       // consecutive `|` line must sit exactly on a group column; the
       // first pipe after a non-pipe line opens a group. Per group:
-      // (groupCol, contentCol, isForward) [D:match-pipe-offside]. isForward
-      // = a `|>` group vs a bare `|` (match/union arm) group; contentCol =
-      // the arm's pattern column (first non-space after `|`), the arm-body
-      // offside. A forward `|>` landing on a bare arm group, F#'s offside:
-      // at the `|` CLOSES the match, in the `|`-to-pattern gap REJECTS, at
-      // or past the pattern EXTENDS the arm body.
+      // (groupCol, bodyCol, isForward) [D:match-pipe-offside]. isForward =
+      // a `|>` group vs a bare `|` (match/union arm) group; bodyCol = the
+      // arm BODY's column (after the arm `->`; for a dangling arm resolved
+      // to the body line's indent when it arrives; MaxValue until then).
+      // A forward `|>` landing on a bare arm group: at the `|` CLOSES the
+      // match, at or under the body EXTENDS the arm, left of the body
+      // REJECTS.
       PipeGroups: (int * int * bool) list
       LastWasPipe: bool
       District: District option
@@ -1387,11 +1416,22 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         let groups =
                                                             p.PipeGroups |> List.skipWhile (fun (g, _, _) -> g > indent)
 
-                                                        // the arm's pattern column, the arm-body offside
-                                                        // [D:match-pipe-offside]: first non-space after `|`
-                                                        let contentCol =
-                                                            let afterBar = piece.Substring 1
-                                                            indent + 1 + (afterBar.Length - afterBar.TrimStart().Length)
+                                                        // the arm BODY's column [D:match-pipe-offside]: the
+                                                        // token after the arm `->` for an inline body;
+                                                        // MaxValue for a dangling arm (resolved to the body
+                                                        // line's indent when it arrives) or a `|`-decl with
+                                                        // no arrow
+                                                        let bodyCol =
+                                                            match armArrowIndex piece with
+                                                            | Some i ->
+                                                                let after = piece.Substring(i + 2)
+                                                                let t = after.TrimStart()
+
+                                                                if t = "" then
+                                                                    System.Int32.MaxValue
+                                                                else
+                                                                    indent + (i + 2) + (after.Length - t.Length)
+                                                            | None -> System.Int32.MaxValue
 
                                                         // `closes` rides through to the wrap; `extends`
                                                         // joins the arm body and opens a forward group
@@ -1414,14 +1454,20 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     // at the `|` column: close the match,
                                                                     // pipe the whole
                                                                     Ok(true, groups)
-                                                                | (g, c, _) :: _ when indent < c ->
-                                                                    // between the `|` and the pattern:
-                                                                    // neither closes nor continues
+                                                                | (g, bc, _) :: _ when indent < bc ->
+                                                                    // left of the arm body: neither closes
+                                                                    // nor continues
+                                                                    let bodyDesc =
+                                                                        if bc = System.Int32.MaxValue then
+                                                                            "the arm body"
+                                                                        else
+                                                                            $"the arm body (column {bc})"
+
                                                                     Error
-                                                                        $"line {lineNo}: this pipe sits between the arm's '|' (column {g}) and its body (column {c}) — put it at the '|' to pipe the whole match, or under the body to continue the arm"
+                                                                        $"line {lineNo}: this pipe sits left of {bodyDesc} — put it at the '|' (column {g}) to pipe the whole match, or under the body to continue the arm"
                                                                 | _ ->
-                                                                    // at or past the pattern: extend the
-                                                                    // arm body, opening a forward group
+                                                                    // at or under the body: extend the arm
+                                                                    // body, opening a forward group
                                                                     Ok(false, (indent, indent, true) :: groups)
                                                             elif not p.LastWasPipe || p.PrevDangles then
                                                                 // first pipe after a non-pipe line
@@ -1439,7 +1485,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 | _ ->
                                                                     Ok(
                                                                         false,
-                                                                        (indent, (if isFwd then indent else contentCol), isFwd)
+                                                                        (indent, (if isFwd then indent else bodyCol), isFwd)
                                                                         :: groups
                                                                     )
                                                             else
@@ -1679,7 +1725,17 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         Brackets = brackets
                                                                         ParenDepth = depth
                                                                         PipeGroups =
-                                                                            p.PipeGroups
+                                                                            // the first body line of a
+                                                                            // DANGLING arm resolves its body
+                                                                            // column [D:match-pipe-offside]
+                                                                            (match p.PipeGroups with
+                                                                             | (g, bc, false) :: rest when
+                                                                                 bc = System.Int32.MaxValue
+                                                                                 && p.PrevDangles
+                                                                                 && indent > g
+                                                                                 ->
+                                                                                 (g, indent, false) :: rest
+                                                                             | pg -> pg)
                                                                             |> List.skipWhile (fun (g, _, _) ->
                                                                                 g > lastIndent)
                                                                         LastWasPipe = false },

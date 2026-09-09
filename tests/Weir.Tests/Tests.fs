@@ -12229,21 +12229,29 @@ let matchPipeOffsideTests =
               | other -> failtest $"expected one wrapped logical line, got {other}"
           }
           test "a |> under the arm body extends the arm (inline body)" {
-              match assemble [ "match 5 with"; "| n -> n"; "     |> print" ] with
+              // body `n` sits at column 7; the pipe lines up under it
+              match assemble [ "match 5 with"; "| n -> n"; "       |> print" ] with
               | Ok [ ll ] ->
                   Expect.isFalse (ll.Text.Contains "(match") "no wrap — the arm is extended, not closed"
                   Expect.stringContains ll.Text "| n -> n |> print" "the pipe joins the arm body"
               | other -> failtest $"expected one extended logical line, got {other}"
+          }
+          test "a |> left of the arm body (but past the '|') is rejected" {
+              // inline body at column 7; a pipe at column 4 is left of it
+              match assemble [ "match 5 with"; "| _ -> \"t\""; "    |> print" ] with
+              | Error e -> Expect.stringContains e "left of the arm body" "names the body floor"
+              | Ok lls -> failtest $"a |> left of the body must reject, assembled {lls}"
           }
           test "a |> under the arm body extends the arm (dangling body)" {
               match assemble [ "match 5 with"; "| n ->"; "    n"; "    |> print" ] with
               | Ok [ ll ] -> Expect.stringContains ll.Text "| n -> n |> print" "the dangling body's pipe joins the arm"
               | other -> failtest $"expected one extended logical line, got {other}"
           }
-          test "a |> in the gap between the '|' and the pattern is rejected" {
+          test "a |> left of a dangling arm's body is rejected" {
+              // dangling body resolves to column 4; a pipe at column 1 is left of it
               match assemble [ "match 5 with"; "| n ->"; "    n"; " |> print" ] with
-              | Error e -> Expect.stringContains e "between the arm's '|'" "the gap error explains both fixes"
-              | Ok lls -> failtest $"a gap |> must reject, assembled {lls}"
+              | Error e -> Expect.stringContains e "left of the arm body" "the error explains both fixes"
+              | Ok lls -> failtest $"a |> left of a dangling body must reject, assembled {lls}"
           }
           test "a plain multi-line pipeline is NOT wrapped (no spurious close)" {
               match assemble [ "xs"; "|> Seq.sum"; "|> print" ] with
