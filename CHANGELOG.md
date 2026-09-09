@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.27
+## v0.0.28
 
 ### Fixed
 
@@ -11,6 +11,10 @@
   was wrongly rejected as "left of the arm body". Each arm's body offside
   is now tracked independently; `ci/grammar-currency.weir` and the like
   parse again.
+
+## v0.0.27
+
+_Tag burned — released from the wrong commit. Version number consumed; no artifacts._
 
 ## v0.0.26
 
