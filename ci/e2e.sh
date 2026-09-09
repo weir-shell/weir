@@ -3369,6 +3369,38 @@ errout=$($BIN -e 'type R2 = { a: int }
 echo "$errout" | grep -qF "read a stream with 'from yaml stream T'" || fail "the teaching re-points: $errout"
 echo "e2e ok: yaml stream — bundle dispatch, roundtrip, fences re-point"
 
+# function types [D:function-types]: writable/constructible/callable, but
+# the four data ops refuse a function-bearing type at CHECK, naming the field
+ftout=$($BIN -e 'type Rule = { matches: string -> bool }
+let r = { matches = fun s -> s == "x" }
+let run { matches = m } x = m x
+print $"{r.matches "x"} {run r "y"}"' 2>&1) || fail "a function field must construct + call + destructure: $ftout"
+echo "$ftout" | grep -qxF "true false" || fail "function-field construct/call/destructure drifted: $ftout"
+e=$($BIN -e 'type R = { f: unit -> int }
+let a = { f = fun () -> 1 }
+if a == a then 0 else 1' 2>&1) && fail "== on a function-bearing record must refuse"
+echo "$e" | grep -qF "not defined for R" || fail "record == recurses to the function ban: $e"
+e=$($BIN -e 'type R = { f: unit -> int }
+{ f = fun () -> 1 } |> to json' 2>&1) && fail "to json on a function record must refuse"
+echo "$e" | grep -qF "field 'f'" || fail "to json names the field: $e"
+e=$($BIN -e 'type R = { f: unit -> int }
+{ f = fun () -> 1 } |> to yaml' 2>&1) && fail "to yaml on a function record must refuse"
+echo "$e" | grep -qF "field 'f'" || fail "to yaml names the field (the F2 fix): $e"
+e=$($BIN -e 'type R = { f: unit -> int }
+let a = { f = fun () -> 1 }
+print $"{a}"' 2>&1) && fail "show of a function record must refuse"
+echo "$e" | grep -qF "cannot be shown" || fail "show refuses the function field: $e"
+e=$($BIN -e 'type P = { f: unit -> int }
+[<Tag "k">]
+type K = C of P
+C { f = fun () -> 1 } |> to json' 2>&1) && fail "to json on a tagged union function payload must refuse"
+echo "$e" | grep -qF "field 'C.f'" || fail "to json names the union path: $e"
+pos=$($BIN -e 'type S = { n: int }
+let s = { n = 5 }
+print $"{s == s} {show s}"' 2>&1) || fail "the scalar twin must serialise/compare/show: $pos"
+echo "$pos" | grep -qF "true { n = 5 }" || fail "positive twin drifted: $pos"
+echo "e2e ok: function types — construct/call/destructure; ==/to json/to yaml/show refuse a function-bearing record and tagged union naming the field; scalar twin unaffected"
+
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"
 

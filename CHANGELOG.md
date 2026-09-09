@@ -16,6 +16,16 @@
   `fun f -> f 1` now typecheck: a parameter applied in a body is
   inferred as a function, exactly as F# does. This was previously
   refused as "a bare parameter cannot be applied."
+- **A function type is writable.** An arrow may now be written in any
+  type position — a union payload (`Custom of (string -> bool)`), a
+  record field (`{ matches: string -> bool }`), a generic argument —
+  with F#'s precedence: `->` is right-associative and looser than `*`
+  and generics, and a function domain parenthesises
+  (`(unit -> int) -> string`). Such a value constructs and its
+  functions call; the data boundaries (`==`, `to json`, `to yaml`,
+  `show`) refuse it, naming the offending field, so a scalar-only
+  record still serialises while a function-bearing one is turned back
+  at the wire.
 
 ### Changed
 
