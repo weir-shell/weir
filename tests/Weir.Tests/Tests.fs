@@ -12211,6 +12211,38 @@ let recordPatternRowTests =
                   "the ctor law is untouched"
           } ]
 
+let matchPipeOffsideTests =
+    // [D:match-pipe-offside]: a `|>` dedented to the arm column closes the
+    // match — the assembler wraps `(match …) |> f`, which the parser reads
+    // as an outer pipe. The behavior lives entirely in Script.assemble.
+    let assemble lines =
+        Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+
+    testList
+        "match pipe offside [D:match-pipe-offside]"
+        [ test "a |> at the arm column wraps and pipes the whole match" {
+              match assemble [ "match 5 with"; "| 5 -> 50"; "| _ -> 0"; "|> print" ] with
+              | Ok [ ll ] ->
+                  Expect.stringContains ll.Text "(match 5 with" "the match opens a paren"
+                  Expect.stringContains ll.Text "| _ -> 0) |> print" "the paren closes before the pipe"
+              | other -> failtest $"expected one wrapped logical line, got {other}"
+          }
+          test "a |> deeper than the arm body is rejected (the kept strictness)" {
+              match assemble [ "match 5 with"; "| 5 -> 50"; "| _ -> 0"; "   |> print" ] with
+              | Error _ -> ()
+              | Ok lls -> failtest $"a deeper |> must reject, assembled {lls}"
+          }
+          test "a plain multi-line pipeline is NOT wrapped (no spurious close)" {
+              match assemble [ "xs"; "|> Seq.sum"; "|> print" ] with
+              | Ok [ ll ] -> Expect.isFalse (ll.Text.Contains "(xs") "a pipeline head stays unwrapped"
+              | other -> failtest $"expected one logical line, got {other}"
+          }
+          test "the closing pipe still typechecks end to end" {
+              match typecheck env (parse "match 5 with\n| 5 -> 50\n| _ -> 0\n|> (fun n -> n + 1)") with
+              | Ok te -> Expect.equal te.Ty TInt "the whole match, piped, is int"
+              | Error terr -> failtest (formatError terr)
+          } ]
+
 let functionTypeTests =
     // F1 [D:function-types]: the arrow production in tySyn. The round-trip
     // (reader matches the formatTy writer) is the load-bearing pin; the
@@ -15660,6 +15692,7 @@ let allTests =
           recordPatternTests
           refutableRecordPatternTests
           recordPatternRowTests
+          matchPipeOffsideTests
           functionTypeTests
           accessorTeachingTests
           invariantModeTests

@@ -82,6 +82,25 @@ To sequence after an `if`, put the next statement on its own line
 (or parenthesize the `if`). In a command line, `;` is a literal
 argv word — it does not chain commands; one command per line.
 
+## `match` arms and a trailing `|>`
+
+Arms align exactly, and their column is the match's offside line.
+A `|>` follows that line the way F# reads it: indented past the arm
+body it extends the arm, but back at the arm column it **closes the
+match and pipes the whole of it** — no parentheses needed:
+
+```weir
+match 5 with
+| 5 -> 50
+| _ -> 0
+|> print
+```
+
+That prints `50` — the whole match, piped to `print` — not `0 |>
+print` buried in the last arm. A `|>` indented deeper than the arm
+body is rejected (align exactly); write the one-line
+`| _ -> 0 |> f` form to pipe inside an arm.
+
 ## `if` / `elif` / `else`
 
 `if` is an expression. `else` is optional only when the then-branch
