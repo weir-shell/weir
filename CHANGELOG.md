@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.24
+
+### Changed
+
+- **A trailing `|>` closes the match, F#'s offside.** A `|>` dedented
+  to the arm column now closes the whole `match` and pipes it —
+  `match x with | … | _ -> v` then `|> f` on its own line is
+  `(match …) |> f`, not `f` buried in the last arm (which used to make
+  the arms disagree). This matches F#: a `|>` indented past the arm
+  body still extends the arm, and — the one kept divergence — weir
+  rejects that deeper form rather than F#'s warn-accept, so write the
+  one-line `| _ -> v |> f` to pipe inside an arm.
+
 ## v0.0.23
 
 ### New features

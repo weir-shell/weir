@@ -417,6 +417,22 @@ let pins =
           "let v =\n    match 1 with\n    | 1 ->\n        match 2 with\n        | 2 -> \"a\"\n        | _ -> \"b\"\n    | _ -> \"c\"\n"
           Same
 
+      // --- a trailing pipe and the match's offside [D:match-pipe-offside] ---
+      // a `|>` dedented to the arm column CLOSES the match and pipes the
+      // whole of it (F#'s offside) — was an unrecorded divergence where
+      // weir buried the pipe in the last arm
+      pin
+          "a |> at the arm column closes the match and pipes the whole"
+          "let v =\n    match 1 with\n    | 1 -> 10\n    | _ -> 20\n    |> (fun n -> n + 1)\n"
+          Same
+      // the KEPT divergence: a `|>` indented DEEPER than the arm body
+      // extends that arm in F#, but weir rejects it — the pipe-alignment
+      // strictness [D:pipe-alignment]; the one-line `| a -> b |> f` works
+      pin
+          "a |> deeper than the arm body: weir rejects, F# extends the arm"
+          "let v =\n    match 1 with\n    | _ -> 20\n           |> (fun n -> n + 1)\n"
+          (Diverges "match-pipe-offside")
+
       // --- function reservation probe (block-let-cmd rider) ---
       pin "F#-rejects-this: function as a binder name" "let function = 1\n" Same
 

@@ -3401,6 +3401,21 @@ print $"{s == s} {show s}"' 2>&1) || fail "the scalar twin must serialise/compar
 echo "$pos" | grep -qF "true { n = 5 }" || fail "positive twin drifted: $pos"
 echo "e2e ok: function types — construct/call/destructure; ==/to json/to yaml/show refuse a function-bearing record and tagged union naming the field; scalar twin unaffected"
 
+# match-pipe offside [D:match-pipe-offside]: a |> at the arm column
+# closes the match and pipes the whole; deeper rejects; on the AOT binary
+mpo=$($BIN -e 'match 5 with
+| 5 -> 50
+| _ -> 0
+|> (fun n -> n + 1)
+|> print' 2>&1) || fail "a trailing |> must close the match and pipe it: $mpo"
+echo "$mpo" | grep -qxF "51" || fail "closing pipe result drifted: $mpo"
+mpo=$($BIN -e 'match 5 with
+| 5 -> 50
+| _ -> 0
+   |> print' 2>&1) && fail "a |> deeper than the arm body must reject"
+echo "$mpo" | grep -qF "indented off its siblings" || fail "deeper |> teaching drifted: $mpo"
+echo "e2e ok: match-pipe offside — a |> at the arm column closes the match and pipes the whole; deeper rejects"
+
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"
 
