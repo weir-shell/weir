@@ -1490,9 +1490,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     )
                                                             else
                                                                 match groups with
+                                                                | (g, _, false) :: rest when g = indent && not isFwd ->
+                                                                    // a NEW arm aligns with its siblings:
+                                                                    // reset the group's body column to THIS
+                                                                    // arm's — each arm has its own body
+                                                                    // offside [D:match-pipe-offside]
+                                                                    Ok(false, (g, bodyCol, false) :: rest)
                                                                 | (g, _, _) :: _ when g = indent ->
-                                                                    // aligned sibling (arm, union case,
-                                                                    // or pipeline stage)
+                                                                    // aligned sibling (pipeline stage)
                                                                     Ok(false, groups)
                                                                 | (g, _, _) :: _ ->
                                                                     Error

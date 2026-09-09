@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.27
+
+### Fixed
+
+- **Each match arm keeps its own body column.** A regression in v0.0.26:
+  a continuation `|>` in one arm was judged against an *earlier* arm's
+  body column, so a later arm with a shallower body (e.g. a `| None ->`
+  whose pipeline sits left of a preceding `| Some p -> …`'s inline body)
+  was wrongly rejected as "left of the arm body". Each arm's body offside
+  is now tracked independently; `ci/grammar-currency.weir` and the like
+  parse again.
+
 ## v0.0.26
 
 ### Changed

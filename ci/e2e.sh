@@ -3419,7 +3419,16 @@ mpo=$($BIN -e 'match 5 with
 | _ -> "t"
   |> print' 2>&1) && fail "a |> left of the arm body must reject"
 echo "$mpo" | grep -qF "left of the arm body" || fail "body-floor teaching drifted: $mpo"
-echo "e2e ok: match-pipe offside — |> at the arm column closes the match; at/under the body continues the arm; left of the body rejects"
+# each arm keeps its own body column: arm 1 inline+deep, arm 2 dangling+shallow
+mpo=$($BIN -e 'let x = Some 1
+match x with
+| Some p -> p |> (fun n -> n + 1)
+| None ->
+    0
+    |> (fun n -> n + 9)
+|> print' 2>&1) || fail "a later arm's pipe must be judged by its own body: $mpo"
+echo "$mpo" | grep -qxF "2" || fail "per-arm body column drifted: $mpo"
+echo "e2e ok: match-pipe offside — |> at the arm column closes; at/under the body continues the arm; each arm keeps its own body column; left of the body rejects"
 
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"
