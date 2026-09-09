@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.0.25
+
+### Changed
+
+- **A `|>` under a match arm continues that arm.** Completing v0.0.24's
+  offside work: a `|>` indented at or past an arm's pattern now extends
+  that arm's body — the same whether the body is inline or on its own
+  line — instead of being rejected. The full rule: `|>` at the arm's
+  `|` closes the whole match; under the arm body continues the arm; in
+  the gap between the `|` and the pattern it's rejected with a message
+  naming both fixes. This replaces v0.0.24's reject-the-deeper-form
+  behavior, which was inconsistent (it depended on whether the arm body
+  was inline or dangling) and diverged from F#.
+
 ## v0.0.24
 
 ### Changed

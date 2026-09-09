@@ -12212,9 +12212,10 @@ let recordPatternRowTests =
           } ]
 
 let matchPipeOffsideTests =
-    // [D:match-pipe-offside]: a `|>` dedented to the arm column closes the
-    // match — the assembler wraps `(match …) |> f`, which the parser reads
-    // as an outer pipe. The behavior lives entirely in Script.assemble.
+    // [D:match-pipe-offside]: F#'s offside for a `|>` after a match. At the
+    // arm `|` it CLOSES the match (assembler wraps `(match …) |> f`); at or
+    // past the arm's pattern column it EXTENDS the arm body; in the gap
+    // between the two it rejects. All in Script.assemble.
     let assemble lines =
         Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
 
@@ -12227,19 +12228,41 @@ let matchPipeOffsideTests =
                   Expect.stringContains ll.Text "| _ -> 0) |> print" "the paren closes before the pipe"
               | other -> failtest $"expected one wrapped logical line, got {other}"
           }
-          test "a |> deeper than the arm body is rejected (the kept strictness)" {
-              match assemble [ "match 5 with"; "| 5 -> 50"; "| _ -> 0"; "   |> print" ] with
-              | Error _ -> ()
-              | Ok lls -> failtest $"a deeper |> must reject, assembled {lls}"
+          test "a |> under the arm body extends the arm (inline body)" {
+              match assemble [ "match 5 with"; "| n -> n"; "     |> print" ] with
+              | Ok [ ll ] ->
+                  Expect.isFalse (ll.Text.Contains "(match") "no wrap — the arm is extended, not closed"
+                  Expect.stringContains ll.Text "| n -> n |> print" "the pipe joins the arm body"
+              | other -> failtest $"expected one extended logical line, got {other}"
+          }
+          test "a |> under the arm body extends the arm (dangling body)" {
+              match assemble [ "match 5 with"; "| n ->"; "    n"; "    |> print" ] with
+              | Ok [ ll ] -> Expect.stringContains ll.Text "| n -> n |> print" "the dangling body's pipe joins the arm"
+              | other -> failtest $"expected one extended logical line, got {other}"
+          }
+          test "a |> in the gap between the '|' and the pattern is rejected" {
+              match assemble [ "match 5 with"; "| n ->"; "    n"; " |> print" ] with
+              | Error e -> Expect.stringContains e "between the arm's '|'" "the gap error explains both fixes"
+              | Ok lls -> failtest $"a gap |> must reject, assembled {lls}"
           }
           test "a plain multi-line pipeline is NOT wrapped (no spurious close)" {
               match assemble [ "xs"; "|> Seq.sum"; "|> print" ] with
               | Ok [ ll ] -> Expect.isFalse (ll.Text.Contains "(xs") "a pipeline head stays unwrapped"
               | other -> failtest $"expected one logical line, got {other}"
           }
+          test "a misaligned pipeline stage is still caught" {
+              match assemble [ "xs"; "|> Seq.sum"; "  |> print" ] with
+              | Error _ -> ()
+              | Ok lls -> failtest $"a deeper pipeline stage must reject, assembled {lls}"
+          }
           test "the closing pipe still typechecks end to end" {
               match typecheck env (parse "match 5 with\n| 5 -> 50\n| _ -> 0\n|> (fun n -> n + 1)") with
               | Ok te -> Expect.equal te.Ty TInt "the whole match, piped, is int"
+              | Error terr -> failtest (formatError terr)
+          }
+          test "the extending pipe typechecks as the arm body" {
+              match typecheck env (parse "match 5 with\n| n -> n\n       |> (fun k -> k + 1)") with
+              | Ok te -> Expect.equal te.Ty TInt "the extended arm body is int"
               | Error terr -> failtest (formatError terr)
           } ]
 

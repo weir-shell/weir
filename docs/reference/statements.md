@@ -97,9 +97,18 @@ match 5 with
 ```
 
 That prints `50` — the whole match, piped to `print` — not `0 |>
-print` buried in the last arm. A `|>` indented deeper than the arm
-body is rejected (align exactly); write the one-line
-`| _ -> 0 |> f` form to pipe inside an arm.
+print` buried in the last arm. Indent the `|>` under an arm body
+instead and it continues *that arm* — inline or on its own line:
+
+```weir
+match 5 with
+| n -> n
+       |> print
+```
+
+The only rejected spot is the gap between the `|` and the pattern:
+weir names it and points you either back to the `|` (to pipe the
+whole match) or under the body (to continue the arm).
 
 ## `if` / `elif` / `else`
 

@@ -418,19 +418,23 @@ let pins =
           Same
 
       // --- a trailing pipe and the match's offside [D:match-pipe-offside] ---
-      // a `|>` dedented to the arm column CLOSES the match and pipes the
-      // whole of it (F#'s offside) — was an unrecorded divergence where
-      // weir buried the pipe in the last arm
+      // F#'s offside by the `|>`'s column, three placements, all Same:
+      // (1) at the arm column CLOSES the match and pipes the whole
       pin
           "a |> at the arm column closes the match and pipes the whole"
           "let v =\n    match 1 with\n    | 1 -> 10\n    | _ -> 20\n    |> (fun n -> n + 1)\n"
           Same
-      // the KEPT divergence: a `|>` indented DEEPER than the arm body
-      // extends that arm in F#, but weir rejects it — the pipe-alignment
-      // strictness [D:pipe-alignment]; the one-line `| a -> b |> f` works
+      // (2) under the arm body EXTENDS the arm (both compilers)
       pin
-          "a |> deeper than the arm body: weir rejects, F# extends the arm"
+          "a |> under the arm body extends the arm"
           "let v =\n    match 1 with\n    | _ -> 20\n           |> (fun n -> n + 1)\n"
+          Same
+      // (3) in the gap between the `|` and the pattern weir REJECTS
+      // uniformly; F#'s relaxed offside is context-dependent (extends it
+      // in this nested form, parse-errors it at top level) — weir stricter
+      pin
+          "a |> in the bar-to-pattern gap: weir rejects, F# (nested) extends"
+          "let v =\n    match 1 with\n    | n ->\n        n\n     |> (fun k -> k + 1)\n"
           (Diverges "match-pipe-offside")
 
       // --- function reservation probe (block-let-cmd rider) ---
