@@ -179,6 +179,18 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   (applying it does not pick an overload), and PATTERNS are unaffected: a
   case in a pattern resolves against the scrutinee's type. Imported unions
   never collide — their cases are not in scope bare.
+- A FUNCTION TYPE is writable [D:function-types] in any type position — a
+  union payload (`Custom of (string -> bool)`), a record field
+  (`{ matches: string -> bool }`), a generic arg. `->` is right-associative
+  and looser than `*` and generics (`int * string -> bool` is
+  `(int * string) -> bool`); parenthesise a function domain
+  (`(unit -> int) -> string`). A function-bearing value CONSTRUCTS and its
+  function CALLS (destructure-and-call too: `let run { matches = m } x = m x`),
+  but the four data operations REFUSE it at check time, naming the field:
+  `==` (functions never compare), `to json`/`to yaml` (the field is not
+  admitted), and `show`/interpolation (functions never render). So whether a
+  record is serialisable is a property of its fields — a scalar-only record
+  still serialises, compares, and shows.
 
 ```weir-error
 type Level = Warn

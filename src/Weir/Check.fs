@@ -1327,39 +1327,48 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
         err span $"type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option)"
 
 // the to-side: the same law, plus `Yaml` NODES render directly
-let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<unit, TypeError> =
+let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (path: string) (ty: Ty) : Result<unit, TypeError> =
+    // path threads the field name so a function (or any un-yamlable type)
+    // nested in a record/union is NAMED, matching the JSON law
+    // [D:function-types] — the two boundaries admit different sets, but
+    // both point at the offending field, not just its type
+    let at = if path = "" then "" else $"field '{path}': "
+
     match ty with
     | TSize ->
         err
             span
-            "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
-    | TBytes -> err span "Bytes is not representable in yaml — Bytes.toBase64 into a string field"
+            $"{at}Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TBytes -> err span $"{at}Bytes is not representable in yaml — Bytes.toBase64 into a string field"
     | TDur ->
         err
             span
-            "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
+            $"{at}Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
     | TSecret ->
-        err span "a Secret must not cross to yaml — Secret.reveal it into a string first if you truly mean to write it"
+        err span $"{at}a Secret must not cross to yaml — Secret.reveal it into a string first if you truly mean to write it"
     | TInt
     | TFloat
     | TStr
     | TBool
     | TNamed("Yaml", []) -> Ok()
-    | TNamed("Option", [ TNamed("Option", _) ]) -> err span "Option<Option<…>> has no yaml rendering; flatten the type"
-    | TNamed("Option", [ inner ]) -> yamlableOut span env seen inner
-    | TSeq(TTuple [ TStr; v ]) -> yamlableOut span env seen v
-    | TSeq elem -> yamlableOut span env seen elem
+    | TNamed("Option", [ TNamed("Option", _) ]) -> err span $"{at}Option<Option<…>> has no yaml rendering; flatten the type"
+    | TNamed("Option", [ inner ]) -> yamlableOut span env seen path inner
+    | TSeq(TTuple [ TStr; v ]) -> yamlableOut span env seen path v
+    | TSeq elem -> yamlableOut span env seen path elem
     | TNamed(n, []) ->
         if seen.Contains n then
-            err span $"'{n}' is recursive; the yaml boundary needs finite trees"
+            err span $"{at}'{n}' is recursive; the yaml boundary needs finite trees"
         else
             match typeDefFor env n with
             | Some(Record def) when def.Params.IsEmpty ->
                 def.Fields
                 |> List.fold
-                    (fun acc (_, fty) -> acc |> Result.bind (fun () -> yamlableOut span env (seen.Add n) fty))
+                    (fun acc (fn, fty) ->
+                        acc
+                        |> Result.bind (fun () ->
+                            yamlableOut span env (seen.Add n) (if path = "" then fn else $"{path}.{fn}") fty))
                     (Ok())
-            | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
+            | Some(Record _) -> err span $"{at}'{n}' is generic; the yaml boundary needs monomorphic records"
             // a TAGGED union renders [D:wire-unions] — every payload must
             | Some(Union udef) when udef.Tag.IsSome ->
                 udef.Cases
@@ -1368,21 +1377,22 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (ty:
                         acc
                         |> Result.bind (fun () ->
                             match payload with
-                            | Some pty when Some c <> udef.OtherCase -> yamlableOut span env (seen.Add n) pty
+                            | Some pty when Some c <> udef.OtherCase ->
+                                yamlableOut span env (seen.Add n) (if path = "" then c else $"{path}.{c}") pty
                             | _ -> Ok()))
                     (Ok())
             | Some(Union _) ->
                 err
                     span
-                    $"'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
-            | None -> err span $"unknown type '{n}'"
+                    $"{at}'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
+            | None -> err span $"{at}unknown type '{n}'"
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]
         Ok()
     | ty ->
         err
             span
-            $"type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option, Yaml)"
+            $"{at}type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option, Yaml)"
 
 // One Regex instance per distinct literal, shared by check and eval
 // (the snippet-hash-cache precedent). INTERPRETED mode only —
@@ -2882,7 +2892,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // stream T`. Demands a seq, like jsonl.
                 do!
                     match ty with
-                    | TSeq elem -> yamlableOut toExpr.Span env Set.empty (resolve ctx elem)
+                    | TSeq elem -> yamlableOut toExpr.Span env Set.empty "" (resolve ctx elem)
                     | ty ->
                         err
                             arg.Span
@@ -2907,9 +2917,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // document. The `---` stream is `to yaml stream`.
                 do!
                     match ty with
-                    | TSeq(TTuple [ TStr; _ ]) -> yamlableOut toExpr.Span env Set.empty ty
-                    | TSeq elem -> yamlableOut toExpr.Span env Set.empty (resolve ctx elem)
-                    | ty -> yamlableOut toExpr.Span env Set.empty ty
+                    | TSeq(TTuple [ TStr; _ ]) -> yamlableOut toExpr.Span env Set.empty "" ty
+                    | TSeq elem -> yamlableOut toExpr.Span env Set.empty "" (resolve ctx elem)
+                    | ty -> yamlableOut toExpr.Span env Set.empty "" ty
 
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 

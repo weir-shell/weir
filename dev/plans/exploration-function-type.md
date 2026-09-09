@@ -1,5 +1,11 @@
 # Exploration — a written function type
 
+Status: EXECUTED (2026-09-09) [D:function-types] — both F1 (the arrow
+production) and F2 (refuse-and-call) shipped together, as this doc
+predicted: construction/calling fell out free, and F2 was a propagation
+check the leaf refusals already satisfied (the one fix was threading the
+field name through `to yaml` to match json). The costing below held.
+
 A COSTING and DESIGN exploration, not an implementation. Output is a
 shape and a cost. This is FEATURE 1 of two — the SYNTAX (an arrow in
 the type grammar). FEATURE 2 — whether a function-bearing type may be

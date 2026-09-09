@@ -142,6 +142,18 @@ print (apply (fun n -> n + 1) 1)
 The one inference limit: `+` on two unknowns cannot infer (int or
 string?) — anchor one side with `x + 0`.
 
+A function type is also **writable** — in a union payload, a record
+field, or a generic argument: `Custom of (string -> bool)`,
+`{ matches: string -> bool }`. `->` is right-associative and binds
+looser than `*` and generics (`int * string -> bool` is
+`(int * string) -> bool`), and a function domain parenthesises
+(`(unit -> int) -> string`). Such a value constructs and its function
+calls, but the data boundaries refuse it, naming the field: `==`,
+`to json`, `to yaml`, and `show` all reject a type transitively
+containing a function. So *serialisable* is a property of a record's
+fields, not a blanket guarantee — a scalar-only record still crosses
+every boundary.
+
 ## Constraints
 
 Equality, rendering, and ordering flow through three built-in

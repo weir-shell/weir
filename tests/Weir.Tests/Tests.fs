@@ -12211,6 +12211,35 @@ let recordPatternRowTests =
                   "the ctor law is untouched"
           } ]
 
+let functionTypeTests =
+    // F1 [D:function-types]: the arrow production in tySyn. The round-trip
+    // (reader matches the formatTy writer) is the load-bearing pin; the
+    // rest fix the precedence the exploration settled.
+    let fieldTy shape =
+        match Weir.Parser.parseStmt $"type RT = {{ f: {shape} }}" with
+        | Ok(SType { Body = DRecord fields }) -> fields |> List.pick (fun (n, ty, _) -> if n = "f" then Some ty else None)
+        | other -> failtest $"parse of field type '{shape}' failed: {other}"
+
+    testList
+        "function types [D:function-types]"
+        [ test "a function type round-trips through the renderer (six shapes)" {
+              for shape in
+                  [ "unit -> int"
+                    "(unit -> int) -> 'a"
+                    "int -> string -> bool"
+                    "seq<int> -> string"
+                    "(int * string) -> bool"
+                    "string -> bool" ] do
+                  let ty = fieldTy shape
+                  Expect.equal (fieldTy (formatTy ty)) ty $"'{shape}' round-trips through formatTy"
+          }
+          test "precedence and associativity are F#'s" {
+              Expect.equal (fieldTy "int -> string -> bool") (TFun(TInt, TFun(TStr, TBool))) "-> is right-associative"
+              Expect.equal (fieldTy "int * string -> bool") (TFun(TTuple [ TInt; TStr ], TBool)) "* binds tighter than ->"
+              Expect.equal (fieldTy "seq<int> -> string") (TFun(TSeq TInt, TStr)) "generics bind tighter than ->"
+              Expect.equal (fieldTy "(unit -> int) -> string") (TFun(TFun(TUnit, TInt), TStr)) "a function domain parenthesises"
+          } ]
+
 let accessorTeachingTests =
     // the indexer's diagnostics [D:accessor-teaching] + weir owning its
     // runtime text [D:message-ownership] — the slicing costing's three
@@ -15631,6 +15660,7 @@ let allTests =
           recordPatternTests
           refutableRecordPatternTests
           recordPatternRowTests
+          functionTypeTests
           accessorTeachingTests
           invariantModeTests
           lsSortTests

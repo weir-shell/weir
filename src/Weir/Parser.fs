@@ -3596,6 +3596,12 @@ tySynRef.Value <-
     deepen (
         choice
             [
+              // a parenthesised type [D:function-types]: needed for a
+              // function DOMAIN (`(unit -> string) -> string`) and so the
+              // rendered form round-trips — formatTy parenthesises a
+              // function domain, so the reader must accept those parens.
+              // Committing on '(' is right: nothing else opens with it.
+              between (str_ws "(") (str_ws ")") tySyn
               // the one-level rule REVERSED [D:anon-nesting]: the shape
               // parses anywhere a type is written — the canonical name IS
               // the type (synthetic-nominal recursion for free); the fields
@@ -3630,12 +3636,18 @@ tySynRef.Value <-
                   | w ->
                       ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
                       |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
-        // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]
+        // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]; `a -> b` is
+        // a function type [D:function-types] — RIGHT-associative and LOOSER
+        // than `*` and generics (`int * string -> bool` is
+        // `(int * string) -> bool`), matching the render path formatTy uses
         |> fun atom ->
-            sepBy1 atom (attempt (str_ws "*"))
-            |>> function
-                | [ one ] -> one
-                | many -> TTuple many
+            let tuple =
+                sepBy1 atom (attempt (str_ws "*"))
+                |>> function
+                    | [ one ] -> one
+                    | many -> TTuple many
+
+            chainr1 tuple (str_ws "->" >>% (fun a b -> TFun(a, b)))
     )
 
 // literal-only attribute arguments [D:attributes]
