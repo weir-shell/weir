@@ -799,12 +799,14 @@ type private Pend =
       LastIndent: int
       // sibling pipe columns, innermost first [D:pipe-alignment]: a
       // consecutive `|` line must sit exactly on a group column; the
-      // first pipe after a non-pipe line opens a group. The bool is the
-      // group's KIND [D:match-pipe-offside]: true for a forward-pipe
-      // (`|>`) group, false for a bare `|` group (match/union arms) — a
-      // `|>` that lands on a bare arm group CLOSES the match, F#'s
-      // offside, rather than joining it
-      PipeGroups: (int * bool) list
+      // first pipe after a non-pipe line opens a group. Per group:
+      // (groupCol, contentCol, isForward) [D:match-pipe-offside]. isForward
+      // = a `|>` group vs a bare `|` (match/union arm) group; contentCol =
+      // the arm's pattern column (first non-space after `|`), the arm-body
+      // offside. A forward `|>` landing on a bare arm group, F#'s offside:
+      // at the `|` CLOSES the match, in the `|`-to-pattern gap REJECTS, at
+      // or past the pattern EXTENDS the arm body.
+      PipeGroups: (int * int * bool) list
       LastWasPipe: bool
       District: District option
       // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
@@ -1362,7 +1364,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         |> List.filter (fun (_, _, d) -> d <= depth)
                                                                     PipeGroups =
                                                                         p.PipeGroups
-                                                                        |> List.skipWhile (fun (g, _) -> g > backTo)
+                                                                        |> List.skipWhile (fun (g, _, _) -> g > backTo)
                                                                     LastWasPipe = false
                                                                     Brackets = brackets },
                                                             acc,
@@ -1383,16 +1385,44 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     | _ ->
                                                         // deeper groups die at this line's column
                                                         let groups =
-                                                            p.PipeGroups |> List.skipWhile (fun (g, _) -> g > indent)
+                                                            p.PipeGroups |> List.skipWhile (fun (g, _, _) -> g > indent)
 
-                                                        // the bool rides through as `closes`
-                                                        // [D:match-pipe-offside]: a `|>` aligned with a
-                                                        // bare `|` (arm) group closes the match rather
-                                                        // than joining it
+                                                        // the arm's pattern column, the arm-body offside
+                                                        // [D:match-pipe-offside]: first non-space after `|`
+                                                        let contentCol =
+                                                            let afterBar = piece.Substring 1
+                                                            indent + 1 + (afterBar.Length - afterBar.TrimStart().Length)
+
+                                                        // `closes` rides through to the wrap; `extends`
+                                                        // joins the arm body and opens a forward group
                                                         let aligned =
                                                             if cls.Kind = PieceKind.ElseHead then
                                                                 // else/elif keep their standing rules
                                                                 Ok(false, groups)
+                                                            elif
+                                                                // a forward `|>` landing on a bare `|`
+                                                                // (arm/union) group follows F#'s offside
+                                                                // [D:match-pipe-offside], regardless of
+                                                                // whether the arm body was inline or dangled
+                                                                isFwd
+                                                                && (match groups with
+                                                                    | (_, _, false) :: _ -> true
+                                                                    | _ -> false)
+                                                            then
+                                                                match groups with
+                                                                | (g, _, _) :: _ when indent = g ->
+                                                                    // at the `|` column: close the match,
+                                                                    // pipe the whole
+                                                                    Ok(true, groups)
+                                                                | (g, c, _) :: _ when indent < c ->
+                                                                    // between the `|` and the pattern:
+                                                                    // neither closes nor continues
+                                                                    Error
+                                                                        $"line {lineNo}: this pipe sits between the arm's '|' (column {g}) and its body (column {c}) — put it at the '|' to pipe the whole match, or under the body to continue the arm"
+                                                                | _ ->
+                                                                    // at or past the pattern: extend the
+                                                                    // arm body, opening a forward group
+                                                                    Ok(false, (indent, indent, true) :: groups)
                                                             elif not p.LastWasPipe || p.PrevDangles then
                                                                 // first pipe after a non-pipe line
                                                                 // opens a group — anchored at or
@@ -1406,14 +1436,19 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 | (h, _, _) :: _ when indent < h ->
                                                                     Error
                                                                         $"line {lineNo}: this arm sits left of its match (head at column {h}) — align arms at or right of it"
-                                                                | _ -> Ok(false, (indent, isFwd) :: groups)
+                                                                | _ ->
+                                                                    Ok(
+                                                                        false,
+                                                                        (indent, (if isFwd then indent else contentCol), isFwd)
+                                                                        :: groups
+                                                                    )
                                                             else
                                                                 match groups with
-                                                                | (g, isFwdG) :: _ when g = indent ->
-                                                                    // a `|>` on a bare arm group dedents
-                                                                    // to close the match [D:match-pipe-offside]
-                                                                    Ok(isFwd && not isFwdG, groups)
-                                                                | (g, _) :: _ ->
+                                                                | (g, _, _) :: _ when g = indent ->
+                                                                    // aligned sibling (arm, union case,
+                                                                    // or pipeline stage)
+                                                                    Ok(false, groups)
+                                                                | (g, _, _) :: _ ->
                                                                     Error
                                                                         $"line {lineNo}: this line is indented off its siblings (they sit at column {g}) — align the group exactly"
                                                                 | [] ->
@@ -1488,9 +1523,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         // as a pipeline [D:match-pipe-offside]
                                                                         PipeGroups =
                                                                             if closes then
-                                                                                (indent, true)
+                                                                                (indent, indent, true)
                                                                                 :: (groups
-                                                                                    |> List.filter (fun (g, _) -> g < indent))
+                                                                                    |> List.filter (fun (g, _, _) -> g < indent))
                                                                             else
                                                                                 groups
                                                                         LastWasPipe = not (isUntil || isAlways)
@@ -1645,7 +1680,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         ParenDepth = depth
                                                                         PipeGroups =
                                                                             p.PipeGroups
-                                                                            |> List.skipWhile (fun (g, _) ->
+                                                                            |> List.skipWhile (fun (g, _, _) ->
                                                                                 g > lastIndent)
                                                                         LastWasPipe = false },
                                                                 acc,
