@@ -1,18 +1,5 @@
 # Changelog
 
-## v0.0.30
-
-### Changed
-
-- **A value-bound lambda hovers as its type, not a partial signature.**
-  `let fun2 = fun () -> fun () -> 1` now hovers as `fun2 : unit -> unit
-  -> int` (the flat value type, like F#'s `val fun2 : …`) instead of
-  `fun2 () : unit -> int`. The rule: a binding with a named parameter
-  still hovers as its signature (`apply (f) (x) : …`); a binding whose
-  parameters are all `()` (unit) — or none — hovers as the flat type,
-  since `()` names nothing. This makes the binding hover agree with the
-  use-site hover.
-
 ## v0.0.29
 
 ### Fixed
@@ -27,6 +14,25 @@
   cross — so the fields split cleanly with no parentheses. (An explicit
   one-line `;` between a lambda field and the next still needs the lambda
   parenthesized.)
+- **`File.write` preserves an existing file's UTF-8 BOM.** Reading a file
+  that starts with a UTF-8 BOM, transforming its lines, and writing it
+  back no longer silently strips the BOM (config files like `.csproj`
+  that MSBuild saves with one were being churned). `File.write` now
+  re-emits the BOM when it is overwriting a file that already had one; a
+  new file, or an existing file without a BOM, stays bare — so this
+  never *adds* a BOM. Byte-exact round-trips still use
+  `File.readBytes`/`File.writeBytes`.
+
+### Changed
+
+- **A value-bound lambda hovers as its type, not a partial signature.**
+  `let fun2 = fun () -> fun () -> 1` now hovers as `fun2 : unit -> unit
+  -> int` (the flat value type, like F#'s `val fun2 : …`) instead of
+  `fun2 () : unit -> int`. The rule: a binding with a named parameter
+  still hovers as its signature (`apply (f) (x) : …`); a binding whose
+  parameters are all `()` (unit) — or none — hovers as the flat type,
+  since `()` names nothing. This makes the binding hover agree with the
+  use-site hover.
 
 ## v0.0.28
 

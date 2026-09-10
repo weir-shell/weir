@@ -5117,6 +5117,19 @@ $BIN "$hbdir/crlf.weir" > "$hbdir/crlf.txt"
 cmp -s "$hbdir/got.txt" "$hbdir/crlf.txt" || fail "CRLF source must behave byte-identically to LF"
 echo "e2e ok: CRLF source normalizes at read — output byte-identical"
 
+# File.write preserves an existing file's UTF-8 BOM [D:encoding-law], never
+# adds one — the round-trip-edit case (a BOM'd .csproj kept its BOM)
+bomdir=$(mktemp -d)
+printf '\xEF\xBB\xBF<Project>\n</Project>\n' > "$bomdir/bom.csproj"
+printf '<Project>\n</Project>\n' > "$bomdir/plain.csproj"
+$BIN -e "File.read \"$bomdir/bom.csproj\" |> Seq.force |> File.write \"$bomdir/bom.csproj\""
+[ "$(od -An -tx1 -N3 "$bomdir/bom.csproj" | tr -d ' ')" = "efbbbf" ] || fail "File.write dropped an existing UTF-8 BOM"
+$BIN -e "File.read \"$bomdir/plain.csproj\" |> Seq.force |> File.write \"$bomdir/plain.csproj\""
+[ "$(od -An -tx1 -N3 "$bomdir/plain.csproj" | tr -d ' ')" = "efbbbf" ] && fail "File.write must NOT add a BOM to a no-BOM file"
+$BIN -e "[\"x\"] |> File.write \"$bomdir/new.txt\""
+[ "$(od -An -tx1 -N3 "$bomdir/new.txt" | tr -d ' ')" = "efbbbf" ] && fail "File.write must NOT add a BOM to a new file"
+echo "e2e ok: File.write preserves an existing UTF-8 BOM, never adds one"
+
 # fmt: value-preserving on the fixture; its ONLY byte change is
 # normalizing the whitespace-only line to empty (a stated house rule —
 # both spellings are a blank content line); idempotent after

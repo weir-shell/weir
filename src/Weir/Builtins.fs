@@ -1742,6 +1742,10 @@ let private seqMembers: (string * Ty * Value) list =
 // wearing a success.
 let private utf8Strict = System.Text.UTF8Encoding(false, true)
 
+// the same, emitting a leading BOM — File.write reaches for it ONLY to
+// preserve a BOM an overwritten file already had [D:encoding-law]
+let private utf8Bom = System.Text.UTF8Encoding(true, true)
+
 // liberal-in: unpadded standard-alphabet base64 pads before decoding;
 // encoding emits padded (the one stated default). URL-safe (-_) is
 // PARKED with the JWT trigger [D:encoding-law].
@@ -2257,9 +2261,28 @@ let private fileMembers: (string * Ty * Value) list =
                   writeGuard "File.write" r
 
                   ioGuarded "File.write" r (fun () ->
+                      // ONE handle for peek + truncate + write — a separate
+                      // read-open racing the write-open trips a Windows sharing
+                      // violation [D:encoding-law]. Peek the existing first
+                      // bytes to decide the BOM, truncate, then write.
+                      use fs =
+                          new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
+
+                      // preserve an existing UTF-8 BOM; a new or no-BOM file
+                      // stays bare, so this never ADDS a BOM
+                      let head = Array.zeroCreate 3
+                      let n = fs.Read(head, 0, 3)
+                      let keepBom = n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+
+                      fs.SetLength 0L
+                      fs.Seek(0L, SeekOrigin.Begin) |> ignore
+
                       // LF bytes on every platform [D:lf-output] — a
-                      // written file is data (hashes, sigs, diffs)
-                      use w = new StreamWriter(r, false)
+                      // written file is data (hashes, sigs, diffs). leaveOpen:
+                      // `use fs` owns the handle
+                      use w =
+                          new StreamWriter(fs, (if keepBom then utf8Bom else utf8Strict), 1024, true)
+
                       w.NewLine <- "\n"
 
                       for l in lines do
