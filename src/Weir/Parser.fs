@@ -197,6 +197,22 @@ let districtClose = '\u001E'
 
 let districtCloseStr = System.String(districtClose, 1)
 
+// the record/list FIELD separator [D:field-sep-sentinel]: the assembler
+// joins newline-separated record fields and list elements with THIS, not
+// a bare `;`, so a field value's own `;`-sequencing (a lambda body, a
+// block) cannot swallow the separator and the next field. seqExpr does
+// NOT sequence on it (only `;` and sibSep) — it ends the field, and the
+// record/list sepBy splits on it. Same unproduceability contract as sibSep.
+[<Literal>]
+let fieldSep = '\u001D'
+
+let fieldSepStr = System.String(fieldSep, 1)
+
+/// a record/list/decl field separator: an explicit `;` OR the assembler's
+/// field sentinel [D:field-sep-sentinel] — a field value's `;` cannot
+/// reach here (seqExpr stops at the sentinel), so fields split cleanly
+let private fieldSepP: Parser<unit, unit> = (str_ws ";" <|> str_ws fieldSepStr) |>> ignore
+
 /// Line-end `yaml` arms a district; `to yaml` / `from yaml` are the
 /// boundary adapters [D:yaml-district]. One predicate, shared with the
 /// REPL colorizer's marker tint — never a second classifier.
@@ -277,7 +293,8 @@ let private reifierWordEnd: Parser<unit, unit> =
             && c <> ')'
             && c <> ';'
             && c <> '|'
-            && c <> sibSep)
+            && c <> sibSep
+            && c <> fieldSep)
     )
 
 let private barePipeHint: Parser<unit, unit> =
@@ -724,7 +741,7 @@ let private anonRecordLit =
              <|> (ws
                   >>. (keywordFieldGuard
                        <|> withFence
-                       <|> (sepBy1 (punFence <|> typeFence <|> fieldAssign) (str_ws ";") .>> pstring "|}"
+                       <|> (sepBy1 (punFence <|> typeFence <|> fieldAssign) fieldSepP .>> pstring "|}"
                             |>> EAnonRecord))))
     )
     |>> mkExpr
@@ -742,7 +759,7 @@ let private recordLit =
                        // at ITS site instead of rewinding the whole literal
                        // into the update alternative's shallower dump
                        attempt (lookAhead (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=')))
-                       >>. (sepBy1 fieldAssign (str_ws ";") .>> pchar '}')
+                       >>. (sepBy1 fieldAssign fieldSepP .>> pchar '}')
                        |>> ERecord
                        // `{ expr }` with no `with` is an unambiguous shape
                        // with a nameable repair — first-reached teaching
@@ -754,7 +771,7 @@ let private recordLit =
                                       failFatallyAt
                                           p
                                           "a record update needs 'with' — { r with field = v }; to group an expression, use parentheses")))
-                       .>>. sepBy1 updateAssign (str_ws ";")
+                       .>>. sepBy1 updateAssign fieldSepP
                        .>> pchar '}'
                        |>> EUpdate ])
     )
@@ -824,7 +841,7 @@ let private listLit =
                 [ rangeBody
                   .>> (pchar ']' <?> "']' (complex range endpoints need parentheses: [a..(f x)])")
                   |>> Choice1Of2
-                  sepBy commaExpr (str_ws ";") .>> pchar ']' |>> Choice2Of2 ]
+                  sepBy commaExpr fieldSepP .>> pchar ']' |>> Choice2Of2 ]
     )
     |>> buildBracket
     .>> ws
@@ -1554,7 +1571,7 @@ let private patParens = between (str_ws "(") (str_ws ")") commaPats
 
 // seq patterns [D:seq-patterns]: [] and fixed-arity [p; q]
 let private patSeq =
-    spanned (str_ws "[" >>. sepBy pat (str_ws ";") .>> pchar ']') .>> ws
+    spanned (str_ws "[" >>. sepBy pat fieldSepP .>> pchar ']') .>> ws
     |>> fun (ps, span) ->
         match ps with
         | [] -> { PKind = PSeqNil; PSpan = span }
@@ -1570,7 +1587,7 @@ let private patRecordArm =
     spanned (
         pchar '{'
         >>. ws
-        >>. sepBy (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=') .>>. pat) (str_ws ";")
+        >>. sepBy (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=') .>>. pat) fieldSepP
         .>> pchar '}'
     )
     .>> ws
@@ -2974,6 +2991,8 @@ let private cmdWordChar c =
     // command mode STOPS at the machine sibling boundary
     // [D:sibling-sentinel]; a user ';' is still a bareword (prior-bleed)
     && c <> sibSep
+    // and at the record/list field boundary [D:field-sep-sentinel]
+    && c <> fieldSep
 
 let private cmdWord = many1Satisfy cmdWordChar
 
@@ -3695,7 +3714,7 @@ let private attrSpec =
     spanned (ident .>>. opt attrArgLit)
     |>> fun ((name, arg), sp) -> { AName = name; AArg = arg; ASpan = sp }
 
-let private attrList = str_ws "[<" >>. sepBy1 attrSpec (str_ws ";") .>> str_ws ">]"
+let private attrList = str_ws "[<" >>. sepBy1 attrSpec fieldSepP .>> str_ws ">]"
 
 // a record-decl field name DOMINATES on a keyword [D:anchor-before-read]:
 // typeDecl is committed past `type T = {`, so the fatal propagates (no
@@ -3717,7 +3736,7 @@ let private fieldDecl =
     |>> fun ((attrs, name), ty) -> name, ty, defaultArg attrs []
 
 let private recordBody =
-    str_ws "{" >>. sepBy1 fieldDecl (str_ws ";") .>> str_ws "}" |>> DRecord
+    str_ws "{" >>. sepBy1 fieldDecl fieldSepP .>> str_ws "}" |>> DRecord
 
 // `{| f: ty; … |}` — the adapter slot's anonymous shape
 // [D:anon-records]: field names follow the declared-record law
@@ -3729,7 +3748,7 @@ anonShapeRef.Value <-
     between
         (attempt (pstring "{|") .>> ws)
         (str_ws "|}")
-        (sepBy1 (fieldNameDecl .>> str_ws ":" .>>. tySyn) (str_ws ";"))
+        (sepBy1 (fieldNameDecl .>> str_ws ":" .>>. tySyn) fieldSepP)
 
 let private caseDecl =
     // a case hosts attributes [D:attr-positions] — [<Wire>]/[<Other>]

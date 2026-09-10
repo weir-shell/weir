@@ -863,7 +863,7 @@ type private Pend =
 // the insertion.
 type private Join =
     | JIn // let-close: text + " in " + piece
-    | JSibling // bracket field/element separators: " ; "
+    | JSibling // bracket field/element separators [D:field-sep-sentinel]
     | JStmtSibling // statement-sibling sequencing [D:sibling-sentinel]:
     // " <sentinel> " — same width as " ; " so span arithmetic is
     // identical, but command mode stops at it (a user ';' does not)
@@ -880,7 +880,10 @@ let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) 
             let sep = " in "
             ll.Text + sep + piece, ll.Text.Length + sep.Length
         | JSibling ->
-            let sep = " ; "
+            // the field sentinel [D:field-sep-sentinel], same 3-char width
+            // as " ; " so span arithmetic is unchanged — a field value's `;`
+            // (a lambda body) cannot swallow it; the record/list sepBy splits
+            let sep = " " + Parser.fieldSepStr + " "
             ll.Text + sep + piece, ll.Text.Length + sep.Length
         | JStmtSibling ->
             // same 3-char width as " ; " — translate arithmetic unchanged
@@ -1011,7 +1014,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 (fun state (lineNo, raw) ->
                     match state with
                     | Error e -> Error e
-                    | Ok _ when raw.Contains Parser.sibSep || raw.Contains Parser.districtClose ->
+                    | Ok _ when
+                        raw.Contains Parser.sibSep
+                        || raw.Contains Parser.districtClose
+                        || raw.Contains Parser.fieldSep
+                        ->
                         // unproduceability [D:sibling-sentinel] [D:district-terminates]:
                         // the machine sibling token and the district-close
                         // terminator can never come from source — reject both
@@ -2298,7 +2305,12 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     // list the sentinel as an expected token; the machine sentinel must
     // never surface — render both the raw char and FParsec's  escape
     // (its expected-set rendering) as ';'
-    let msg = msg.Replace(Parser.sibSepStr, ";").Replace("\\u001f", ";")
+    let msg =
+        msg
+            .Replace(Parser.sibSepStr, ";")
+            .Replace("\\u001f", ";")
+            .Replace(Parser.fieldSepStr, ";")
+            .Replace("\\u001d", ";")
     let lines = msg.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
     let isCaret (l: string) =

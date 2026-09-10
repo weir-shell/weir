@@ -3430,6 +3430,22 @@ match x with
 echo "$mpo" | grep -qxF "2" || fail "per-arm body column drifted: $mpo"
 echo "e2e ok: match-pipe offside — |> at the arm column closes; at/under the body continues the arm; each arm keeps its own body column; left of the body rejects"
 
+# field-sep sentinel [D:field-sep-sentinel]: a bare lambda field/element
+# does not swallow the next field/element (was "unbound <next>")
+fs=$($BIN -e 'let r = {|
+    act = fun () -> "y"
+    name = "x"
+    |}
+print $"{r.name} {r.act ()}"' 2>&1) || fail "a bare lambda record field must not swallow the next: $fs"
+echo "$fs" | grep -qxF "x y" || fail "field-sep record drifted: $fs"
+fs=$($BIN -e 'let xs = [
+    fun () -> 1
+    fun () -> 2
+    ]
+print (show (Seq.length xs))' 2>&1) || fail "a bare lambda list element must not swallow the next: $fs"
+echo "$fs" | grep -qxF "2" || fail "field-sep list drifted: $fs"
+echo "e2e ok: field-sep sentinel — a bare lambda field/element does not swallow the next"
+
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"
 
