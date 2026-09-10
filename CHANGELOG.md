@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.29
+
+### Fixed
+
+- **A bare lambda field/element no longer swallows the next one.** In a
+  multi-line record literal or list, an unparenthesized lambda value —
+  `{| act = fun () -> () <newline> name = "x" |}` — used to have its body
+  run past the field separator and consume the following field (`error:
+  unbound variable 'name'`); the same bit list elements. Record and list
+  fields are now separated by a dedicated sentinel the assembler inserts
+  for newline joins, which a field value's own `;`-sequencing cannot
+  cross — so the fields split cleanly with no parentheses. (An explicit
+  one-line `;` between a lambda field and the next still needs the lambda
+  parenthesized.)
+
 ## v0.0.28
 
 ### Fixed

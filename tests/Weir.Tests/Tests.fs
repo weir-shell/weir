@@ -18,9 +18,15 @@ let private parse input =
 // machine sentinel, not ';' (command mode stops at it; a user ';' does
 // not). Assembler-text pins spell the join as a readable ';'; asmSib
 // rewrites that display ';' to the sentinel the assembler emits.
-// Bracket field/element separators stay a literal ';' — never wrap those.
 let private asmSib (s: string) =
     s.Replace(" ; ", " " + Weir.Parser.sibSepStr + " ")
+
+// [D:field-sep-sentinel] record fields and list elements joined across
+// lines get the FIELD sentinel, not ';' (a field value's own ';' cannot
+// cross it). Same display-';'-to-sentinel rewrite as asmSib, for the
+// bracket/record-continuation pins.
+let private asmField (s: string) =
+    s.Replace(" ; ", " " + Weir.Parser.fieldSepStr + " ")
 
 // the span-free sexpr renderer moved to Ast (shared with fmt's
 // respace safety check [D:fmt-respace]); these aliases keep the pins
@@ -4410,7 +4416,9 @@ let bracketContinuationTests =
     // headed / standalone / nested / at-boundary
     let joined lines =
         match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
-        | Ok [ ll ] -> ll.Text
+        // field/element joins use the sentinel [D:field-sep-sentinel]; show
+        // it back as ';' so these structural pins read (the asmSib inverse)
+        | Ok [ ll ] -> ll.Text.Replace(" " + Weir.Parser.fieldSepStr + " ", " ; ")
         | other -> failtest $"unexpected: {other}"
 
     let assembleErr lines =
@@ -4476,7 +4484,7 @@ let bracketContinuationTests =
                         4, "let t = { A = 1; B = 2 }" ]
               with
               | Ok [ ty; letLine ] ->
-                  Expect.equal ty.Text "type T = { A: int ; B: int }" ""
+                  Expect.equal ty.Text (asmField "type T = { A: int ; B: int }") ""
                   Expect.equal letLine.Text "let t = { A = 1; B = 2 }" ""
               | other -> failtest $"unexpected: {other}"
           }
@@ -9737,7 +9745,7 @@ let offsideTests =
           }
           test "record continuation: bare fields get separators" {
               match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "      Count = 2 }" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\" ; Count = 2 }" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmField "let t = { Name = \"a\" ; Count = 2 }") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "record continuation: trailing ; means no double separator" {
@@ -9935,7 +9943,7 @@ let offsideTests =
                         3, "      In ="
                         4, "        { V = 42 } }" ]
               with
-              | Ok [ ll ] -> Expect.equal ll.Text "let o = { Name = \"outer\" ; In = { V = 42 } }" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmField "let o = { Name = \"outer\" ; In = { V = 42 } }") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "classifyPiece: StartsField is ident-guarded" {
@@ -9951,7 +9959,7 @@ let offsideTests =
           }
           test "interp-hole braces do not count (scanner is string-aware)" {
               match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = $\"i{1}b\""; 3, "      Count = 2 }" ] with
-              | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = $\"i{1}b\" ; Count = 2 }" ""
+              | Ok [ ll ] -> Expect.equal ll.Text (asmField "let t = { Name = $\"i{1}b\" ; Count = 2 }") ""
               | other -> failtest $"unexpected: {other}"
           }
           test "blank inside an open brace is the located record error" {
@@ -14381,7 +14389,27 @@ let anonLiteralTests =
 
     testList
         "anonymous record literals [D:anon-literals]"
-        [ test "the flagship: heterogeneous fields, typed by the canonical name" {
+        [ test "a bare lambda field does not swallow the next field [D:field-sep-sentinel]" {
+              // multi-line: the assembler joins the fields with the field
+              // sentinel, so `act`'s lambda body cannot sequence into `name`
+              let lines =
+                  [ "let r = {|"
+                    "    act = fun () -> ()"
+                    "    name = \"x\""
+                    "    |}"
+                    "print r.name" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "r.weir" lines
+              let errs = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.isEmpty errs $"the lambda field must not swallow 'name': {errs}"
+          }
+          test "a bare lambda element does not swallow the next list element [D:field-sep-sentinel]" {
+              let lines = [ "let xs = ["; "    fun () -> 1"; "    fun () -> 2"; "    ]"; "print (show (Seq.length xs))" ]
+              let diags, _, _, _ = Weir.Script.analyzeLines "l.weir" lines
+              let errs = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.isEmpty errs $"the lambda element must not swallow the next: {errs}"
+          }
+          test "the flagship: heterogeneous fields, typed by the canonical name" {
               let te = checkOk "{| key = \"k\"; n = 3 |}"
               Expect.equal te.Ty (TNamed("{| key: string; n: int |}", [])) "fields sort into the canonical name"
 
