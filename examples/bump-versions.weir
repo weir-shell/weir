@@ -1,0 +1,32 @@
+#!/usr/bin/env weir
+// Bump every packable project's VersionPrefix minor (X.Y.Z -> X.Y+1.0)
+// and reset its release notes to this release's reason. Run from inside
+// the repo (it uses `git ls-files`, so cwd must be under the worktree).
+//
+// A real-world line-transform: read a file, rewrite matching lines with
+// Regex active patterns, write it back. This script is what surfaced the
+// File.write UTF-8-BOM round-trip fix — .csproj files MSBuild saves with
+// a BOM keep it now (see CHANGELOG v0.0.29).
+
+let notes = "chore: update deps"
+
+let bumpLine line =
+    match line with
+    | Regex @"<VersionPrefix>(\d+)\.(\d+)\.(\d+)</VersionPrefix>" (maj, mnr, pat) ->
+        let old = $"<VersionPrefix>{maj}.{mnr}.{pat}</VersionPrefix>"
+        let next = $"<VersionPrefix>{maj}.{Str.toInt mnr + 1}.0</VersionPrefix>"
+        line |> Str.replace old next
+    | Regex @"<PackageReleaseNotes>(.*)</PackageReleaseNotes>" prev ->
+        let old = $"<PackageReleaseNotes>{prev}</PackageReleaseNotes>"
+        line |> Str.replace old $"<PackageReleaseNotes>{notes}</PackageReleaseNotes>"
+    | _ -> line
+
+let projects = git ls-files
+    |> Seq.where (Str.endsWith ".csproj")
+    |> Seq.force
+
+for path in projects do
+    let lines = File.read path |> Seq.force
+    if lines |> Seq.exists (Str.contains "<IsPackable>true</IsPackable>") then
+        lines |> Seq.map bumpLine |> File.write path
+        print path
