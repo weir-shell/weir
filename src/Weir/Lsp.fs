@@ -614,6 +614,16 @@ let rec private lambdaParamNames (te: Check.TypedExpr) : string list =
     | Check.TELambda(p, _, body) -> p :: lambdaParamNames body
     | _ -> []
 
+/// render a let binding's hover [D:annotated-signature]: the param
+/// SIGNATURE (`f (x) : ret`) when there is a named param, else the flat
+/// value type (`name : ty`) — matching F#, which names only named params,
+/// so an all-`()` (unit) or param-less binding hovers as its value type
+let private sigOrFlat (name: string) (ps: string list) (ty: Ty) : string =
+    if ps |> List.filter (fun p -> p <> "()") |> List.isEmpty then
+        $"{name} : {formatTy ty}"
+    else
+        formatSignature name ps ty
+
 /// the annotated signature of the inner-let binding `name` at the column —
 /// the sibling of innerLetType that renders names, not just the arrow type
 let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : string option =
@@ -622,7 +632,7 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
     | None ->
         match te.Kind with
         | Check.TELet(n, _, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
-            Some(formatSignature n (lambdaParamNames tvalue) tvalue.Ty)
+            Some(sigOrFlat n (lambdaParamNames tvalue) tvalue.Ty)
         | _ -> None
 
 // ---- cross-file navigation [D:lsp-cross-file] ---------------------
@@ -1483,7 +1493,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                          |> Option.bind (fun te ->
                              match te.Ty, lambdaParamNames te with
                              | TFun _, [] -> None // unnamed function -> arrow
-                             | mty, ps -> Some(formatSignature name ps mty))
+                             | mty, ps -> Some(sigOrFlat name ps mty))
                      | _ -> None)
                 | _ -> None)
 
@@ -1576,7 +1586,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 // a top-level let hovers as its annotated signature, ON the
                 // binder name only — never a fallback for an unresolved spot
                 | Script.KLet(name, sch, te) when word = Some name ->
-                    Some(formatSignature name (lambdaParamNames te) sch.Ty)
+                    Some(sigOrFlat name (lambdaParamNames te) sch.Ty)
                 | Script.KType decl -> word |> Option.bind (declHover decl)
                 | _ -> None)
             // a referenced TYPE NAME anywhere hovers its shape

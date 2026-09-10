@@ -5300,6 +5300,24 @@ let lspCrossFileTests =
               withTree (fun entry lines _ _ -> Expect.equal (Weir.Lsp.definitionTarget entry lines 8 9) None "")
           } ]
 
+let letBindingHoverTests =
+    // [D:annotated-signature] a binding with a NAMED param hovers as its
+    // param signature; an all-`()` (unit) or param-less binding hovers as
+    // the flat value type, like F# (which names only named params)
+    testList
+        "let binding hover: signature vs flat value type"
+        [ test "a value bound to an all-unit lambda hovers the flat type, not a () signature" {
+              Expect.equal
+                  (Weir.Lsp.hoverType [ "let fun2 = fun () -> fun () -> 1"; "let y = fun2" ] 1 8)
+                  (Some "fun2 : unit -> unit -> int")
+                  "flat value type — matches F#'s val fun2 : unit -> unit -> int"
+          }
+          test "a function with a NAMED param keeps its signature" {
+              match Weir.Lsp.hoverType [ "let apply f x = f x"; "let z = apply" ] 1 9 with
+              | Some h -> Expect.stringContains h "apply (f" "the named-param signature is kept"
+              | None -> failtest "apply must hover"
+          } ]
+
 let withinKindsTests =
     // one table [D:within-kinds], three consumers: hover, completion,
     // and the grammar inventories (the last checked mechanically in
@@ -15823,6 +15841,7 @@ let allTests =
           multilineLambdaTests
           semanticTokenTests
           lspCrossFileTests
+          letBindingHoverTests
           withinKindsTests
           withinAlwaysLockTests
           wireKeyTests
