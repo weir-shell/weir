@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.30
+
+### Changed
+
+- **A value-bound lambda hovers as its type, not a partial signature.**
+  `let fun2 = fun () -> fun () -> 1` now hovers as `fun2 : unit -> unit
+  -> int` (the flat value type, like F#'s `val fun2 : …`) instead of
+  `fun2 () : unit -> int`. The rule: a binding with a named parameter
+  still hovers as its signature (`apply (f) (x) : …`); a binding whose
+  parameters are all `()` (unit) — or none — hovers as the flat type,
+  since `()` names nothing. This makes the binding hover agree with the
+  use-site hover.
+
 ## v0.0.29
 
 ### Fixed
