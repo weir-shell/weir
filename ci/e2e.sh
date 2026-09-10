@@ -5117,6 +5117,22 @@ $BIN "$hbdir/crlf.weir" > "$hbdir/crlf.txt"
 cmp -s "$hbdir/got.txt" "$hbdir/crlf.txt" || fail "CRLF source must behave byte-identically to LF"
 echo "e2e ok: CRLF source normalizes at read — output byte-identical"
 
+# File.write preserves an existing file's UTF-8 BOM [D:encoding-law], never
+# adds one — the round-trip-edit case (a BOM'd .csproj kept its BOM). weir
+# runs under `cd` with RELATIVE paths so its cwd matches the shell's — a
+# Git-Bash /tmp path and native weir's D:\tmp disagree otherwise.
+bomdir=$(mktemp -d)
+printf '\xEF\xBB\xBF<Project>\n</Project>\n' > "$bomdir/bom.csproj"
+printf '<Project>\n</Project>\n' > "$bomdir/plain.csproj"
+bom3() { od -An -tx1 -N3 "$1" | tr -d ' '; }
+(cd "$bomdir" && $BIN -e 'File.read "bom.csproj" |> Seq.force |> File.write "bom.csproj"') || fail "File.write round-trip raised on a BOM file"
+[ "$(bom3 "$bomdir/bom.csproj")" = "efbbbf" ] || fail "File.write dropped an existing UTF-8 BOM"
+(cd "$bomdir" && $BIN -e 'File.read "plain.csproj" |> Seq.force |> File.write "plain.csproj"') || fail "File.write round-trip raised on a no-BOM file"
+[ "$(bom3 "$bomdir/plain.csproj")" = "efbbbf" ] && fail "File.write must NOT add a BOM to a no-BOM file"
+(cd "$bomdir" && $BIN -e '["x"] |> File.write "new.txt"') || fail "File.write raised on a new file"
+[ "$(bom3 "$bomdir/new.txt")" = "efbbbf" ] && fail "File.write must NOT add a BOM to a new file"
+echo "e2e ok: File.write preserves an existing UTF-8 BOM, never adds one"
+
 # fmt: value-preserving on the fixture; its ONLY byte change is
 # normalizing the whitespace-only line to empty (a stated house rule —
 # both spellings are a blank content line); idempotent after
