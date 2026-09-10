@@ -3826,7 +3826,7 @@ and private checkSpine
 
                     let hint =
                         if onContinuation then
-                            "; these are an indented continuation of the line above — a separate statement must start at that line's indent, not deeper"
+                            "; these are read as an indented continuation of the line above. A separate statement must line up with it, not sit deeper — and a block body written inline (after '->' or 'then') takes no second statement below it: start the body on its own line so its statements share a column"
                         else
                             ""
 
