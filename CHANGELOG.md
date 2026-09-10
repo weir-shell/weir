@@ -25,6 +25,12 @@
 
 ### Changed
 
+- **The over-application error teaches the dangling block form.** When a
+  statement is slurped as an indented continuation of the line above
+  (`'f' takes at most N argument(s)`), the hint no longer says only
+  "start at that line's indent, not deeper" — it now adds that a block
+  body written inline (after `->` or `then`) takes no second statement
+  below it, so multiple statements start on their own line.
 - **A value-bound lambda hovers as its type, not a partial signature.**
   `let fun2 = fun () -> fun () -> 1` now hovers as `fun2 : unit -> unit
   -> int` (the flat value type, like F#'s `val fun2 : …`) instead of
