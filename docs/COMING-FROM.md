@@ -127,9 +127,16 @@ echo $nope
 
 **Not here, and what to write instead:**
 
-- Universal variables (`set -U`) and interactive config — weir is a
-  script language, not your login shell; persistent config is a file
-  read at the boundary (`Env.load` / `Args.load` / `from json T`).
+- Universal variables (`set -U`) and interactive config — weir is not
+  your login shell, but the REPL has an init file:
+  `~/.config/weir/init.weir` (`$XDG_CONFIG_HOME/weir/`, `%APPDATA%\weir\`
+  on Windows), declaration-only — `let`/`type` for prompt helpers — plus
+  one `#session { cwd, env, logLevel, echoCap }` directive. `#session
+  env` sets session environment variables once (`Env.vars`, every spawn,
+  and `within env` all see them) — the persistent, cross-session
+  analogue of `set -U`. A *script's* config is a different thing:
+  `Env.load` / `Args.load` / `from json T`, read and typed at the
+  boundary.
 - Autoloaded functions (`~/.config/fish/functions`) —
   `import "./lib.weir" as Lib` names the dependency in the script.
 - `and` / `or` command chaining — a nonzero exit already raises when
@@ -657,6 +664,16 @@ print $"typed rows: {rows}"
   `1m30s` are teaching errors — the compound shapes live in text, via
   `Duration.parse`), and a Duration crosses JSON only as
   `Duration.toMillis` into an int field.
+- **The REPL init file** — an rc file's shape, but check-before-run:
+  `~/.config/weir/init.weir` loads before the first prompt,
+  declaration-only (`let`/`type` for prompt helpers — no commands run at
+  startup), plus one `#session { cwd, env, logLevel, echoCap }` directive
+  for the settings a declaration cannot express. It is not a login shell
+  (no job control, aliases, or prompt scripting). The cost: loading is
+  all-or-nothing — a broken init reports its located error and the
+  session starts with *none* of it (safe only because nothing in the
+  file can run), so a helper you rely on vanishes silently-but-reported
+  rather than half-loading.
 - **Docs that run** — every fenced block on this page, in the GUIDE,
   and in the skill file executes against the release binary in CI, so
   a translation that rots fails the build. The cost: examples are
