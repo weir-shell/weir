@@ -291,6 +291,32 @@ let wireName (def: RecordDef) (field: string) : string =
         |> Option.defaultValue field
     | None -> field
 
+/// the XML attribute a field reads [D:from-xml]: Some name when the field
+/// carries [<Attr>] (name defaults to the field) — else None (an element)
+let xmlAttr (def: RecordDef) (field: string) : string option =
+    match Map.tryFind field def.Attrs with
+    | Some specs ->
+        specs
+        |> List.tryPick (fun (n, a) ->
+            match n, a with
+            | "Attr", Some(AStr s) -> Some s
+            | "Attr", None -> Some field
+            | _ -> None)
+    | None -> None
+
+/// the element name a seq< > field reads [D:from-xml]: the [<Elem "X">]
+/// override, else the supplied fallback (the element type / field name)
+let xmlElem (def: RecordDef) (field: string) (fallback: string) : string =
+    match Map.tryFind field def.Attrs with
+    | Some specs ->
+        specs
+        |> List.tryPick (fun (n, a) ->
+            match n, a with
+            | "Elem", Some(AStr s) -> Some s
+            | _ -> None)
+        |> Option.defaultValue fallback
+    | None -> fallback
+
 type UnionDef =
     { Name: string
       Params: string list

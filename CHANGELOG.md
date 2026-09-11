@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.0.30
+
+### Added
+
+- **`from xml T` reads XML into a declared record.** A read-only, typed
+  boundary over an XML subset — point it at a `.csproj`/`.slnx` (or any
+  XML document) and walk the result as ordinary weir data. The document's
+  root element is the top record; a field name matches a child element by
+  local name (a default `xmlns` is stripped, so field names stay plain);
+  `[<Attr>]` (optionally `[<Attr "Include">]`) reads an attribute;
+  `[<Elem "ProjectReference">]` names the repeated child a `seq< >` field
+  reads (defaulting to the element type's name for `seq<record>`, the
+  field name for `seq<string>`); a nested record reads a child element
+  recursively. Every leaf is text, so fields are `string`,
+  `Option<string>` (present-or-absent), a record, or a `seq` of either —
+  numbers and booleans are declared `string` and converted (`Str.toInt`),
+  which the checker teaches. There is no `to xml`: XML is read-only.
+
+  ```
+  type Ref  = { [<Attr>] Include: string }
+  type Pg   = { IsPackable: Option<string> }
+  type Proj = { [<Elem "PropertyGroup">] groups: seq<Pg>
+                [<Elem "ProjectReference">] refs: seq<Ref> }
+  File.read "App.csproj" |> from xml Proj
+  ```
+
 ## v0.0.29
 
 ### Fixed

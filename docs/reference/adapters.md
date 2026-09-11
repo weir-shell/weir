@@ -88,6 +88,41 @@ is a language form, taught in the
 [guide](../GUIDE.md#commands-and-processes) with vendoring on the
 [tooling page](../tooling.md#yaml-schemas).
 
+## XML
+
+`from xml T` reads one XML document into `T` — read-only, over a
+subset. The document's root element is the top record; a field name
+matches a child element by local name (a default `xmlns`, like
+MSBuild's, is stripped so field names stay plain); `[<Attr>]` (or
+`[<Attr "Include">]`) reads an attribute; `[<Elem "ProjectReference">]`
+names the repeated child a `seq< >` field reads (defaulting to the
+element type's name for `seq<record>`, the field name for
+`seq<string>`); a nested record reads a child element recursively.
+
+```weir
+type Ref  = { [<Attr>] Include: string }
+type Pg   = { IsPackable: Option<string> }
+type Proj = { [<Elem "PropertyGroup">] groups: seq<Pg>
+              [<Elem "ProjectReference">] refs: seq<Ref> }
+let proj =
+    [ "<Project>"
+      "  <PropertyGroup><IsPackable>false</IsPackable></PropertyGroup>"
+      "  <ProjectReference Include=\"../Core/Core.csproj\" />"
+      "</Project>" ]
+    |> from xml Proj
+print $"{Seq.length proj.refs} refs, {Seq.length proj.groups} property groups"
+```
+
+Every XML leaf is text, so a field is `string`, `Option<string>` (a
+present-or-absent element or attribute), a record, or a `seq` of a
+string or record — nothing else. A numeric or boolean field is
+declared `string` and converted (`Str.toInt`); the checker teaches
+this rather than guessing a convention XML does not carry. `[<Attr>]`
+fits only `string`/`Option<string>`, `[<Elem>]` only a `seq`, and the
+top level is one root element — there is no `from xml seq<T>` (a
+repeated child is a `seq< >` field). XML is read-only: there is no
+`to xml`.
+
 ## What does not serialize
 
 `Instant` has no wire convention, so JSON refuses it naming

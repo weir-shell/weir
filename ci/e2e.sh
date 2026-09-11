@@ -3112,6 +3112,53 @@ expect "recursive fields: seq of records inside an object" "kube-dns" "$out"
 expect "recursive fields: to json round-trips the nesting" "round-trip-ok" "$out"
 rm -rf "$rfdir"
 
+# from xml [D:from-xml]: the read-only boundary against a REAL .csproj on
+# disk (File.read, not a literal) — attributes, optional text, repeated
+# children, a stripped default xmlns, and the missing-attribute runtime
+# teaching. The receipt is project traversal: parse groups and refs.
+xdir=$(mkweirtmp)
+cat > "$xdir/App.csproj" <<'XEOF'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><IsPackable>false</IsPackable></PropertyGroup>
+  <PropertyGroup><IsPublishable>true</IsPublishable></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Core/Core.csproj" />
+    <ProjectReference Include="../Util/Util.csproj" />
+  </ItemGroup>
+</Project>
+XEOF
+cat > "$xdir/old.csproj" <<'XEOF'
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><AssemblyName>Legacy</AssemblyName></PropertyGroup>
+</Project>
+XEOF
+cat > "$xdir/xml.weir" <<'WEOF'
+type Ref = { [<Attr>] Include: string }
+type Pg  = { IsPackable: Option<string>; IsPublishable: Option<string> }
+type Ig  = { [<Elem "ProjectReference">] refs: seq<Ref> }
+type Proj = { [<Elem "PropertyGroup">] groups: seq<Pg>; [<Elem "ItemGroup">] items: seq<Ig> }
+let p = File.read "App.csproj" |> from xml Proj
+print $"{Seq.length p.groups} groups"
+p.items |> Seq.iter (fun g -> g.refs |> Seq.iter (fun r -> print r.Include))
+type Ns = { AssemblyName: string }
+type Old = { [<Elem "PropertyGroup">] groups: seq<Ns> }
+let o = File.read "old.csproj" |> from xml Old
+o.groups |> Seq.iter (fun g -> print g.AssemblyName)
+WEOF
+out=$(cd "$xdir" && $BIN xml.weir)
+expect "from xml: PropertyGroups read from a real .csproj" "2 groups" "$out"
+expect "from xml: [<Attr>] + [<Elem>] read a repeated ProjectReference" '../Core/Core.csproj
+../Util/Util.csproj' "$out"
+expect "from xml: a default xmlns is stripped (matched by local name)" "Legacy" "$out"
+xerr=$(cd "$xdir" && $BIN -e 'type Ns = { AssemblyName: string }
+type Old = { [<Elem "PropertyGroup">] groups: seq<Ns> }
+File.read "old.csproj" |> from xml Old |> _.groups |> Seq.iter (fun g -> print g.AssemblyName)' 2>&1) || true
+echo "$xerr" | grep -qF "Legacy" || fail "from xml -e inline read: $xerr"
+xto=$($BIN -e '[1] |> to xml' 2>&1) && fail "to xml must not exist" || true
+echo "$xto" | grep -qF "XML is read-only" || fail "to xml refusal teaches: $xto"
+echo "e2e ok: from xml — real .csproj groups/refs, stripped xmlns, no to xml"
+rm -rf "$xdir"
+
 # anonymous record types [D:anon-records]: the shape inline in the
 # adapter slot — `_.field` checks, seq<> composes, the shape persists
 # across statements, and a declared record stays a DIFFERENT type
