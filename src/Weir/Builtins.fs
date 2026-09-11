@@ -905,6 +905,21 @@ let private mapOptionImpl: Value =
             | VUnion("None", None) -> vNone
             | v -> unreachable $"the checker rejects 'mapOption' on {formatValue v}"))
 
+let private optionBindImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun opt ->
+            match opt with
+            | VUnion("Some", Some v) -> apply f v
+            | VUnion("None", None) -> vNone
+            | v -> unreachable $"the checker rejects 'Option.bind' on {formatValue v}"))
+
+let private optionFlattenImpl: Value =
+    VBuiltin(fun opt ->
+        match opt with
+        | VUnion("Some", Some inner) -> inner
+        | VUnion("None", None) -> vNone
+        | v -> unreachable $"the checker rejects 'Option.flatten' on {formatValue v}")
+
 let private seqInt = TSeq(TInt)
 let private seqStr = TSeq TStr
 let private tA = TVar "a"
@@ -1994,6 +2009,10 @@ let private optionMembers: (string * Ty * Value) list =
       TFun(TNamed("Option", [ tA ]), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tA ]))),
       optionOrElseImpl
       "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
+      "bind",
+      TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))),
+      optionBindImpl
+      "flatten", TFun(TNamed("Option", [ TNamed("Option", [ tA ]) ]), TNamed("Option", [ tA ])), optionFlattenImpl
       "defaultValue", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl
       "defaultWith", TFun(TFun(TUnit, tA), TFun(TNamed("Option", [ tA ]), tA)), defaultWithImpl ]
 
@@ -3872,6 +3891,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Option.map",
           (bd "Apply a function inside a Some, pass None through." (Some "Option.map (fun x -> x + 1) (Some 5)") None
            |> named [ "f"; "opt" ])
+          "Option.bind",
+          (bd
+              "Apply a function that itself returns an Option, flattening the result — the chain reaches through nested optionals."
+              (Some "Some 5 |> Option.bind (fun x -> Some (x + 1))")
+              None
+           |> named [ "f"; "opt" ])
+          "Option.flatten",
+          (bd
+              "Collapse a nested Option<Option<T>> into Option<T> (Some (Some x) -> Some x; any None -> None)."
+              (Some "Option.flatten (Some (Some 5))")
+              None
+           |> named [ "opt" ])
           "Option.defaultValue",
           bd "The Some value, or a fallback when None." (Some "Option.defaultValue 0 (Some 5)") None
           |> named [ "fallback"; "opt" ]

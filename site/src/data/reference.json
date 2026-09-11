@@ -708,6 +708,13 @@
       "name": "Option",
       "members": [
         {
+          "name": "bind",
+          "signature": "Option.bind (f: \u0027a -\u003E Option\u003C\u0027b\u003E) (opt: Option\u003C\u0027a\u003E) : Option\u003C\u0027b\u003E",
+          "summary": "Apply a function that itself returns an Option, flattening the result \u2014 the chain reaches through nested optionals.",
+          "example": "Some 5 |\u003E Option.bind (fun x -\u003E Some (x \u002B 1))",
+          "pointer": null
+        },
+        {
           "name": "defaultValue",
           "signature": "Option.defaultValue (fallback: \u0027a) (opt: Option\u003C\u0027a\u003E) : \u0027a",
           "summary": "The Some value, or a fallback when None.",
@@ -719,6 +726,13 @@
           "signature": "Option.defaultWith (fallback: unit -\u003E \u0027a) (opt: Option\u003C\u0027a\u003E) : \u0027a",
           "summary": "Like defaultValue, but the fallback is computed only when None.",
           "example": "Option.defaultWith (fun () -\u003E 0) None",
+          "pointer": null
+        },
+        {
+          "name": "flatten",
+          "signature": "Option.flatten (opt: Option\u003COption\u003C\u0027a\u003E\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "Collapse a nested Option\u003COption\u003CT\u003E\u003E into Option\u003CT\u003E (Some (Some x) -\u003E Some x; any None -\u003E None).",
+          "example": "Option.flatten (Some (Some 5))",
           "pointer": null
         },
         {
