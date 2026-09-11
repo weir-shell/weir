@@ -144,7 +144,7 @@
       }
     },
     "adapter-word": {
-      "match": "\\b(from|to)[ \\t]+(jsonl|json|yaml)(?:[ \\t]+(stream))?\\b",
+      "match": "\\b(from|to)[ \\t]+(jsonl|json|yaml|xml)(?:[ \\t]+(stream))?\\b",
       "captures": {
         "1": {
           "name": "keyword.control.weir"

@@ -4484,6 +4484,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Render one value as one YAML document: a record is a mapping, a seq a sequence document, a pair-seq one mapping. `to yaml stream` writes one document per element (the `---` bundle). A None field omits its key; strings that could be mis-typed (no, 007, 1e5) are quoted."
               None
               (Some "a pipe stage: deployment |> to yaml.")
+          "from xml",
+          bd
+              "Parse one XML document (a .csproj/.slnx or any XML) into a declared record — READ-ONLY. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [<Attr>] reads an attribute, [<Elem \"X\">] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option<string>, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no `to xml`."
+              None
+              (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
 
           // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
           // Surface names; the typed tree carries the un-typeable |completed

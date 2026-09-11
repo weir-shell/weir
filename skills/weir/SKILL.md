@@ -1185,6 +1185,31 @@ type Bad = C of int
   `$VAR` and `for` lines inside it are bytes (embedded scripts stay
   verbatim); templated content interpolates upstream and splices as a
   whole value. Paste a manifest, replace values with `$`.
+- XML is a READ-ONLY typed boundary [D:from-xml]: `from xml T` reads
+  one document into `T` (point it at a `.csproj`/`.slnx`). The root
+  element is the top record; a field name matches a CHILD ELEMENT by
+  LOCAL name (a default `xmlns` — MSBuild's — is stripped, so field
+  names stay plain); `[<Attr>]`/`[<Attr "Include">]` reads an
+  ATTRIBUTE; `[<Elem "ProjectReference">]` names the REPEATED child a
+  `seq< >` field reads (default: the element type's name for
+  `seq<record>`, the field name for `seq<string>`); a nested record
+  reads a child element. Every leaf is TEXT — a field is `string`,
+  `Option<string>` (present-or-absent), a record, or a `seq` of a
+  string-or-record; a numeric/bool field is declared `string` and
+  converted (`Str.toInt`), the checker teaches it. `[<Attr>]` fits only
+  `string`/`Option<string>`, `[<Elem>]` only a `seq`, the top level is
+  one root (`from xml seq<T>` refuses — a repeat is a `seq< >` field),
+  and there is NO `to xml`.
+
+```weir
+type Ref  = { [<Attr>] Include: string }
+type Proj = { [<Elem "ProjectReference">] refs: seq<Ref> }
+let refs =
+    ["<Project><ProjectReference Include=\"../Core/Core.csproj\" /></Project>"]
+    |> from xml Proj
+    |> _.refs
+refs |> Seq.iter (fun r -> print r.Include)
+```
 - `<<<` / `$<<<` heredoc blocks [D:text-block]: line-end `<<<` opens
   the PLAIN multiline literal — every byte below the marker is
   content (`$` and `{` included), interior blank lines and deeper

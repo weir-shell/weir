@@ -4,6 +4,7 @@ open Weir.Types
 open Weir.Ast
 open Weir.Argv
 open Weir.Check
+open System.Xml.Linq
 
 let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 
@@ -1101,6 +1102,105 @@ let private jsonSnippet (text: string) : string =
     let t = text.Trim()
     if t.Length <= 120 then t else t.Substring(0, 117) + "..."
 
+// ---- the read-only XML boundary [D:from-xml] ------------------------------
+
+/// read one XML document under the DECLARED shape [D:from-xml]: the root
+/// element is the top record, field names match child elements (matched by
+/// LOCAL name — a default xmlns is stripped), [<Attr>] reads an attribute,
+/// [<Elem "X">] a repeated child, a record a nested element. Every leaf is
+/// text (an element's inner text or an attribute value) — no numbers reach
+/// here, the checker admits string / Option<string> / record / seq only.
+let private xmlDoc
+    (who: string)
+    (top: JsonTop)
+    (defs: Map<string, RecordDef>)
+    (shown: string)
+    (text: string)
+    : Value =
+    let root =
+        try
+            (XDocument.Parse text).Root
+        with _ ->
+            // never System.Xml's words, mirroring the JSON boundary
+            failwith $"{who}: not valid XML: {shown}"
+
+    // children / attributes matched by LOCAL name — namespaces (msbuild's
+    // default xmlns) are ignored so field names stay plain [D:from-xml]
+    let childElems (el: XElement) (name: string) =
+        el.Elements() |> Seq.filter (fun e -> e.Name.LocalName = name)
+
+    let childElem (el: XElement) (name: string) = childElems el name |> Seq.tryHead
+
+    let attr (el: XElement) (name: string) =
+        el.Attributes()
+        |> Seq.filter (fun a -> a.Name.LocalName = name)
+        |> Seq.tryHead
+        |> Option.map (fun a -> a.Value)
+
+    // one element -> one row; `prefix` is the dotted path above it
+    let rec objRowXml (prefix: string) (rdef: RecordDef) (el: XElement) : Value =
+        let readField (name: string, ty: Ty) =
+            let shownName = prefix + name
+
+            let value =
+                match Types.xmlAttr rdef name with
+                // [<Attr>]: an attribute's text — present-or-none for Option
+                | Some aname ->
+                    match ty, attr el aname with
+                    | TNamed("Option", [ TStr ]), Some s -> VUnion("Some", Some(VStr s))
+                    | TNamed("Option", [ TStr ]), None -> VUnion("None", None)
+                    | TStr, Some s -> VStr s
+                    | TStr, None ->
+                        failwith
+                            $"{who}: missing attribute '{aname}' on <{el.Name.LocalName}> for field '{shownName}' in: {shown}"
+                    | _ -> unreachable "the checker restricts [<Attr>] to string / Option<string>"
+                | None ->
+                    match ty with
+                    // a child element's inner text (required / optional)
+                    | TStr ->
+                        match childElem el name with
+                        | Some c -> VStr c.Value
+                        | None ->
+                            failwith
+                                $"{who}: missing element <{name}> in <{el.Name.LocalName}> for field '{shownName}' in: {shown}"
+                    | TNamed("Option", [ TStr ]) ->
+                        match childElem el name with
+                        | Some c -> VUnion("Some", Some(VStr c.Value))
+                        | None -> VUnion("None", None)
+                    // repeated children: [<Elem "X">] names them, else the
+                    // element type (a record) or the field name (strings)
+                    | TSeq elem ->
+                        let elemName =
+                            match elem with
+                            | TNamed(n, []) when defs.ContainsKey n -> Types.xmlElem rdef name n
+                            | _ -> Types.xmlElem rdef name name
+
+                        childElems el elemName
+                        |> Seq.mapi (fun i c ->
+                            match elem with
+                            | TStr -> VStr c.Value
+                            | TNamed(n, []) when defs.ContainsKey n -> objRowXml $"{shownName}[{i + 1}]." defs[n] c
+                            | _ -> unreachable "the checker restricts an XML seq to strings or records")
+                        |> List.ofSeq
+                        |> List.toSeq
+                        |> VSeq
+                    // a nested element read as a record
+                    | TNamed(n, []) when defs.ContainsKey n ->
+                        match childElem el name with
+                        | Some c -> objRowXml (shownName + ".") defs[n] c
+                        | None ->
+                            failwith
+                                $"{who}: missing element <{name}> in <{el.Name.LocalName}> for field '{shownName}' in: {shown}"
+                    | _ -> unreachable $"the checker rejects XML field type {formatTy ty}"
+
+            name, value
+
+        VRecord(rdef.Name, rdef.Fields |> List.map readField)
+
+    match top with
+    | TopRec d -> objRowXml "" d root
+    | TopUnion _ -> unreachable "the checker admits only records at the XML boundary"
+
 let private fromAdapter
     (fmt: string)
     (seqOf: bool)
@@ -1141,6 +1241,25 @@ let private fromAdapter
                         | VStr s -> jsonDoc "from jsonl" false false top defs udefs s s
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
+            | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
+    // ONE document -> T, reading the root element [D:from-xml]; the lines
+    // join back into the text they came from, as json does
+    | "xml" ->
+        VBuiltin(fun v ->
+            match v with
+            | VSeq lines ->
+                let text =
+                    lines
+                    |> Seq.map (fun l ->
+                        match l with
+                        | VStr s -> s
+                        | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
+                    |> String.concat "\n"
+
+                if text.Trim() = "" then
+                    failwith "from xml: empty input — expected one XML document"
+
+                xmlDoc "from xml" top defs (jsonSnippet text) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     | f -> unreachable $"the checker rejects unknown format '{f}'"
 

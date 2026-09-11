@@ -46,7 +46,7 @@ rules:
     # same whole-match paint (the richer engines scope the adapter apart)
     # the optional `stream` modifier rides the match
     # rule: adapter-word
-    - statement: "\\b(from|to)[ \\t]+(jsonl|json|yaml)([ \\t]+stream)?\\b"
+    - statement: "\\b(from|to)[ \\t]+(jsonl|json|yaml|xml)([ \\t]+stream)?\\b"
     # reserved (rejected by the parser, but color them so muscle-memory
     # F# reads as "claimed", not "identifier")
     # rule: reserved

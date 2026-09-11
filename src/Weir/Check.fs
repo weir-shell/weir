@@ -1140,6 +1140,91 @@ let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, T
         err span "a Secret must not cross to JSON — Secret.reveal it into a string first if you truly mean to write it"
     | elem -> jsonAdmitted span env [] "" elem
 
+// the read-only XML boundary [D:from-xml]: XML carries text, so every
+// leaf is a string — an element's inner text or, with [<Attr>], one of
+// its attributes. seq< > reads repeated child elements; a record reads a
+// nested element. No numbers/bools (declare string, convert with
+// Str.toInt), no Map/union (XML has no keyed-object or tag convention).
+let private xmlAdmittedSet =
+    "XML fields are string, Option<string>, a record, or seq of a string or record — every leaf is text"
+
+// [<Attr>] reads an attribute's text and [<Elem>] names a repeated child;
+// each only fits certain field types, checked where the def is in hand
+let private xmlFieldOk (span: Span) (def: RecordDef) (name: string) (fty: Ty) (fpath: string) : Result<unit, TypeError> =
+    let isAttr = (xmlAttr def name).IsSome
+
+    let hasElem =
+        match Map.tryFind name def.Attrs with
+        | Some specs -> specs |> List.exists (fun (n, _) -> n = "Elem")
+        | None -> false
+
+    if isAttr then
+        match fty with
+        | TStr
+        | TNamed("Option", [ TStr ]) -> Ok()
+        | _ ->
+            err
+                span
+                $"field '{fpath}': [<Attr>] reads an attribute's text — the field must be string or Option<string>, not {formatTy fty}"
+    elif hasElem then
+        match fty with
+        | TSeq _ -> Ok()
+        | _ -> err span $"field '{fpath}': [<Elem>] names a repeated child element — the field must be a seq, not {formatTy fty}"
+    else
+        Ok()
+
+let rec private xmlAdmitted
+    (span: Span)
+    (env: TypeEnv)
+    (seen: string list)
+    (path: string)
+    (ty: Ty)
+    : Result<unit, TypeError> =
+    let at = if path = "" then "" else $"field '{path}': "
+
+    match ty with
+    | TStr -> Ok()
+    | TInt
+    | TFloat
+    | TBool ->
+        err
+            span
+            $"{at}XML values are text — declare {formatTy ty} as string (convert with Str.toInt / Str.toFloat / Str.toBool)"
+    | TNamed("Option", [ TStr ]) -> Ok()
+    | TNamed("Option", [ inner ]) ->
+        err
+            span
+            $"{at}XML reads Option<string> only (a present-or-absent element or attribute); got Option<{formatTy inner}>"
+    | TSeq elem ->
+        match elem with
+        | TStr -> Ok()
+        | TNamed(n, []) when (match typeDefFor env n with Some(Record _) -> true | _ -> false) ->
+            xmlAdmitted span env seen path elem
+        | _ -> err span $"{at}an XML seq holds strings or records; got seq<{formatTy elem}>"
+    | TNamed(n, []) when seen |> List.contains n ->
+        let cycle =
+            ((seen |> List.rev |> List.skipWhile ((<>) n)) @ [ n ]) |> String.concat " → "
+
+        err span $"{at}the type cycle {cycle} cannot cross the XML boundary — it needs finite trees"
+    | TNamed(n, []) ->
+        match typeDefFor env n with
+        | Some(Record def) when def.Params.IsEmpty ->
+            allOk def.Fields (fun (fn, fty) ->
+                let fpath = if path = "" then fn else $"{path}.{fn}"
+
+                xmlFieldOk span def fn fty fpath
+                |> Result.bind (fun () -> xmlAdmitted span env (n :: seen) fpath fty))
+        | Some(Record _) -> err span $"{at}'{n}' is generic; the XML boundary needs monomorphic records"
+        | Some(Union _) ->
+            err span $"{at}'{n}' is a union — XML has no tagged-union reading; {xmlAdmittedSet}"
+        | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+    | ty -> err span $"{at}type {formatTy ty} is not admitted; {xmlAdmittedSet}"
+
+let private xmlableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
+    allOk def.Fields (fun (name, ty) ->
+        xmlFieldOk span def name ty name
+        |> Result.bind (fun () -> xmlAdmitted span env [ def.Name ] name ty))
+
 // the defs a shape reaches, for the reader [D:recursive-fields]: eval
 // converts nested objects without an env, so the closure rides the
 // typed node (the yamlShape pattern, by table instead of by tree)
@@ -2932,6 +3017,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     { Kind = TEPipe(targ, tto)
                       Ty = TSeq TStr
                       Span = expr.Span }
+            | "xml", _ ->
+                // XML is a read boundary only [D:from-xml] — there is no
+                // 'to xml' (writing wants element order, namespaces, and a
+                // schema weir does not carry)
+                return! err toExpr.Span "'to xml' does not exist — XML is read-only ('from xml T'); write JSON or YAML instead"
             | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json, jsonl, yaml"
         }
     | EPipe(arg, ({ Kind = ECmd _ } as cmdExpr)) ->
@@ -3417,6 +3507,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 elif mapOf && fmt = "yaml" then
                     let n = defaultArg tyName "T"
                     err expr.Span $"'from yaml' does not take Map<string, {n}> yet — 'from json' does"
+                elif fmt = "xml" && (seqOf || mapOf || streamOf) then
+                    // XML has a single root element [D:from-xml] — no seq /
+                    // stream / Map wrap; a repeated child is a seq< > FIELD
+                    let n = defaultArg tyName "T"
+                    err expr.Span $"'from xml' reads one document's root element — write from xml {n} (XML has a single root)"
                 else
                     Ok()
 
@@ -3522,7 +3617,30 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err
                         expr.Span
                         "'from yaml' needs a record name, e.g. from yaml Deployment — or seq<Deployment> for a top-level sequence, or stream Deployment for '---' documents"
-            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml"
+            // from xml T reads one document's ROOT element -> T
+            // [D:from-xml]: field names match child elements, [<Attr>]
+            // reads an attribute, [<Elem "X">] names a repeated child, a
+            // record is a nested element. Read-only, monomorphic records
+            // only; no union, no seq/stream/Map top level (one root).
+            | "xml", Some name ->
+                match typeDefFor env name with
+                | Some(Record def) when def.Params.IsEmpty ->
+                    do! xmlableRecord expr.Span env def
+
+                    let defs =
+                        def.Fields
+                        |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.ofList [ def.Name, def ])
+
+                    return
+                        { Kind = TEFrom("xml", TopRec def, defs, Map.empty, false, false)
+                          Ty = TFun(TSeq TStr, TNamed(name, []))
+                          Span = expr.Span }
+                | Some(Record _) -> return! err expr.Span $"'from xml' needs a monomorphic record; '{name}' is generic"
+                | Some(Union _) ->
+                    return! err expr.Span $"'from xml' needs a record; '{name}' is a union — XML has no tagged-union reading"
+                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+            | "xml", None -> return! err expr.Span "'from xml' needs a record name, e.g. from xml Project"
+            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, xml"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
     | EYaml(tpl, schema) ->
@@ -4774,6 +4892,21 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
            | Some(AStr s) when s <> "" -> None
            | _ -> Some "expects the wire key as a string, e.g. [<Wire \"type\">] kind: string"),
            [ FieldPos; CasePos ])
+          // the XML boundary markers [D:from-xml]: [<Attr>] reads a field
+          // from an attribute (name defaults to the field), [<Elem "X">]
+          // names the repeated element a seq< > field reads. Inert on the
+          // json/yaml adapters — an XML-only field annotation.
+          "Attr",
+          ((function
+           | None -> None
+           | Some(AStr s) when s <> "" -> None
+           | _ -> Some "expects nothing or the attribute name, e.g. [<Attr>] or [<Attr \"Include\">]"),
+           [ FieldPos ])
+          "Elem",
+          ((function
+           | Some(AStr s) when s <> "" -> None
+           | _ -> Some "expects the element name as a string, e.g. [<Elem \"ProjectReference\">] refs: seq<Ref>"),
+           [ FieldPos ])
           // [D:wire-unions] pre-registration [D:attr-positions]: Tag and
           // Other VALIDATE here and BIND at the boundary session — the
           // attribute law's shape (validation at attachment, binding at

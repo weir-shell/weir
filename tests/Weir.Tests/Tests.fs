@@ -73,6 +73,17 @@ let private env =
         |> declare "type UpdS = { UpN: string; UpS: string }"
         // attributed twin for the erasure pin [D:attributes]
         |> declare "type AttrE = { [<Short \"q\">] Q: int }"
+        // the XML-boundary fixtures [D:from-xml]: an attribute-bearing
+        // leaf, an optional-text property group, and the csproj-shaped root
+        |> declare "type XRef = { [<Attr>] Include: string }"
+        |> declare "type XPg = { IsPackable: Option<string>; IsPublishable: Option<string> }"
+        |> declare
+            "type XProj = { [<Elem \"PropertyGroup\">] groups: seq<XPg>; [<Elem \"ProjectReference\">] refs: seq<XRef> }"
+        // the XML-boundary rejects: a numeric leaf, [<Attr>] on a non-text
+        // field, [<Elem>] on a non-seq — each teaches at check time
+        |> declare "type XInt = { xmlNum: int }"
+        |> declare "type XBadAttr = { [<Attr>] xs: seq<string> }"
+        |> declare "type XBadElem = { [<Elem \"X\">] s: string }"
 
     { e with
         Values =
@@ -1297,6 +1308,92 @@ let boundaryTests =
                           "the retirement teaches, names the count and the route"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
+          }
+          test "from xml: the csproj shape reads — attributes, optional text, repeated children [D:from-xml]" {
+              let doc =
+                  VSeq
+                      [ VStr "<Project Sdk=\"Microsoft.NET.Sdk\">"
+                        VStr "  <PropertyGroup><IsPackable>false</IsPackable></PropertyGroup>"
+                        VStr "  <PropertyGroup><IsPublishable>true</IsPublishable></PropertyGroup>"
+                        VStr "  <ProjectReference Include=\"../Core/Core.csproj\" />"
+                        VStr "  <ProjectReference Include=\"../Util/Util.csproj\" />"
+                        VStr "</Project>" ]
+
+              Expect.equal
+                  (runWith [ "src", doc ] "src |> from xml XProj")
+                  (VRecord(
+                      "XProj",
+                      [ "groups",
+                        VSeq
+                            [ VRecord("XPg", [ "IsPackable", VUnion("Some", Some(VStr "false")); "IsPublishable", VUnion("None", None) ])
+                              VRecord("XPg", [ "IsPackable", VUnion("None", None); "IsPublishable", VUnion("Some", Some(VStr "true")) ]) ]
+                        "refs",
+                        VSeq
+                            [ VRecord("XRef", [ "Include", VStr "../Core/Core.csproj" ])
+                              VRecord("XRef", [ "Include", VStr "../Util/Util.csproj" ]) ] ]
+                  ))
+                  "field names match child elements, [<Attr>] reads an attribute, [<Elem>] repeats"
+          }
+          test "from xml: a default xmlns is stripped — fields match by LOCAL name [D:from-xml]" {
+              let env2 = env |> declare "type XNs = { AssemblyName: string }"
+              let env3 = env2 |> declare "type XRoot = { [<Elem \"PropertyGroup\">] groups: seq<XNs> }"
+
+              let doc =
+                  VSeq
+                      [ VStr "<Project xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">"
+                        VStr "  <PropertyGroup><AssemblyName>Legacy</AssemblyName></PropertyGroup>"
+                        VStr "</Project>" ]
+
+              match Weir.Parser.parseStmt "src |> from xml XRoot" with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck env3 e with
+                  | Ok te ->
+                      Expect.equal
+                          (Weir.Eval.eval (Map.add "src" doc valueEnv) te)
+                          (VRecord("XRoot", [ "groups", VSeq [ VRecord("XNs", [ "AssemblyName", VStr "Legacy" ]) ] ]))
+                          "namespaces are ignored so field names stay plain"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "from xml: a missing required attribute fails, naming the element and path [D:from-xml]" {
+              let doc = VSeq [ VStr "<Project><ProjectReference /></Project>" ]
+
+              let ex =
+                  Expect.throwsC (fun () -> runWith [ "src", doc ] "src |> from xml XProj" |> ignore) id
+
+              Expect.stringContains ex.Message "missing attribute 'Include'" "the runtime names the absent attribute"
+          }
+          test "from xml: invalid input and empty input each TEACH [D:from-xml]" {
+              let bad = Expect.throwsC (fun () -> runWith [ "src", VSeq [ VStr "not xml <" ] ] "src |> from xml XProj" |> ignore) id
+              Expect.stringContains bad.Message "not valid XML" "never System.Xml's words"
+
+              let empty = Expect.throwsC (fun () -> runWith [ "src", VSeq [ VStr "" ] ] "src |> from xml XProj" |> ignore) id
+              Expect.stringContains empty.Message "empty input — expected one XML document" ""
+          }
+          test "from xml: check-time laws — text-only leaves, [<Attr>]/[<Elem>] fit, no wrap, read-only [D:from-xml]" {
+              Expect.stringContains (checkErr "src |> from xml XInt").Message "XML values are text" "numbers must be declared string"
+
+              Expect.stringContains
+                  (checkErr "src |> from xml XBadAttr").Message
+                  "[<Attr>] reads an attribute's text — the field must be string or Option<string>"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "src |> from xml XBadElem").Message
+                  "[<Elem>] names a repeated child element — the field must be a seq"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "src |> from xml seq<XProj>").Message
+                  "reads one document's root element — write from xml XProj"
+                  "no seq/stream/Map wrap: XML has a single root"
+
+              Expect.stringContains (checkErr "src |> from xml").Message "'from xml' needs a record name" ""
+
+              Expect.stringContains
+                  (checkErr "[{ Include = \"x\" }] |> to xml").Message
+                  "'to xml' does not exist — XML is read-only ('from xml T')"
+                  ""
           }
           test "the yaml district assembles: sentinel-glued verbatim lines [D:yaml-district]" {
               match
@@ -5577,7 +5674,7 @@ let adapterFormTests =
               match Weir.Lsp.hoverType lines 2 22 with
               | Some h ->
                   Expect.stringContains h "from <adapter>" "the form"
-                  Expect.stringContains h "json, jsonl, yaml" "every from-adapter, derived"
+                  Expect.stringContains h "json, jsonl, xml, yaml" "every from-adapter, derived (xml reads, never writes)"
               | None -> failtest "from must answer"
 
               let t = [ "let back = rows |> to yaml" ]
@@ -5599,14 +5696,14 @@ let adapterFormTests =
               | None -> failtest "the adapter word must still hover"
           }
           test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
-              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "yaml" ] "every from-adapter"
+              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "xml"; "yaml" ] "every from-adapter (xml reads)"
               Expect.equal (sug "xs |> from j") [ "json"; "jsonl" ] "prefix-filtered"
-              Expect.equal (sug "xs |> to ") [ "json"; "jsonl"; "yaml" ] "every to-adapter"
-              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "yaml" ]) "boundary: into is not from"
+              Expect.equal (sug "xs |> to ") [ "json"; "jsonl"; "yaml" ] "every to-adapter (no to xml)"
+              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "xml"; "yaml" ]) "boundary: into is not from"
           }
           test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
-              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "yaml" ] "from"
-              Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "jsonl"; "yaml" ] "to"
+              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "xml"; "yaml" ] "from (xml reads)"
+              Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "jsonl"; "yaml" ] "to (no to xml)"
           }
           test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {
               Expect.equal (Weir.Lsp.hoverType [ "let m = \"read from json\""; "print m" ] 1 15) None "from in a string"
@@ -12805,7 +12902,7 @@ let pinsWalkTests =
 
               Expect.stringContains
                   (checkErr "[1] |> to xml").Message
-                  "unknown output format 'xml'; available: json, jsonl, yaml"
+                  "'to xml' does not exist — XML is read-only ('from xml T')"
                   ""
           }
           test "an else-less if with a non-unit then-branch teaches add-an-else" {

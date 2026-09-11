@@ -1314,6 +1314,37 @@ object back. The `Map` members:
 There is no `m[k]` indexing — use `Map.get` — and `==` is not
 defined for maps.
 
+**XML reads the same way, read-only.** `from xml T` turns one XML
+document into a record — point it at a `.csproj`/`.slnx` and walk it as
+data. The root element is the top record; a field name matches a child
+element by *local* name (a default `xmlns`, like MSBuild's, is stripped
+so field names stay plain); `[<Attr>]` reads an attribute;
+`[<Elem "ProjectReference">]` names the repeated child a `seq< >` field
+reads; a nested record reads a child element:
+
+```weir
+type Ref  = { [<Attr>] Include: string }
+type Proj = { [<Elem "PropertyGroup">] groups: seq<{| IsPackable: Option<string> |}>
+              [<Elem "ProjectReference">] refs: seq<Ref> }
+
+let proj =
+    [ "<Project Sdk=\"Microsoft.NET.Sdk\">"
+      "  <PropertyGroup><IsPackable>false</IsPackable></PropertyGroup>"
+      "  <ProjectReference Include=\"../Core/Core.csproj\" />"
+      "  <ProjectReference Include=\"../Util/Util.csproj\" />"
+      "</Project>" ]
+    |> from xml Proj
+
+proj.refs |> Seq.iter (fun r -> print r.Include)
+```
+
+Every XML leaf is text, so a field is `string`, `Option<string>`
+(present-or-absent), a record, or a `seq` of a string-or-record — a
+numeric field is declared `string` and converted (`Str.toInt`), which
+the checker teaches rather than guessing a convention XML lacks. The
+top level is a single root, so there is no `from xml seq<T>` (a repeat
+is a `seq< >` field), and no `to xml`: the boundary is read-only.
+
 `Http.query` is the QUERY method (RFC 10008). QUERY is idempotent by
 definition, so `retry attempts=5` around an `Http.query` is safe by
 the method's own guarantee — the same wrapper around a POST is a

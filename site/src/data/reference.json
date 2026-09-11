@@ -1669,6 +1669,13 @@
       "pointer": "a pipe stage: xs |\u003E from jsonl Config."
     },
     {
+      "name": "from xml",
+      "signature": null,
+      "summary": "Parse one XML document (a .csproj/.slnx or any XML) into a declared record \u2014 READ-ONLY. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [\u003CAttr\u003E] reads an attribute, [\u003CElem \u0022X\u0022\u003E] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option\u003Cstring\u003E, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no \u0060to xml\u0060.",
+      "example": null,
+      "pointer": "a pipe stage: File.read \u0022App.csproj\u0022 |\u003E from xml Proj."
+    },
+    {
       "name": "from yaml",
       "signature": null,
       "summary": "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record tree \u2014 nested records, seqs, seq\u003Cstring * _\u003E mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected.",
