@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`Path.normalize` — lexical `..`/`.` collapse.** No filesystem touch,
+  no cwd, symlinks never followed. `Path.combine` keeps `..` (paths you
+  control) and `Path.under` refuses an escape (paths you do not);
+  `normalize` is the third spelling, for the legitimate escape both
+  siblings decline — a project reference leaving its own directory.
+  Relative paths keep their leading `..`s; at an absolute root `..`
+  swallows.
+
 - **Fixed: a lazy command escaping a `within` scope now spawns under the
   scope it was written in.** Command values are lazy; one bound inside
   `within cd`/`within env` and forced after the block used to spawn under

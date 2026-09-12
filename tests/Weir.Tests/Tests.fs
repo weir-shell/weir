@@ -8795,6 +8795,17 @@ let agentFindingsTests =
               let terr = checkErr "fst (1, 2, 3)"
               Expect.stringContains terr.Message "int * int * int" ""
           }
+          test "Path.normalize collapses lexically — the escape both siblings decline" {
+              expectValue "Path.normalize \"src/App/../Core/x.fsproj\"" (VStr "src/Core/x.fsproj")
+              expectValue "Path.normalize \"./a/./b/\"" (VStr "a/b")
+              // the receipt shape: a reference legitimately leaving its
+              // directory — leading '..'s survive on a relative path
+              expectValue "Path.normalize \"../shared/x\"" (VStr "../shared/x")
+              expectValue "Path.normalize \"a/b/../..\"" (VStr ".")
+              // an absolute root swallows '..' (realpath's rule)
+              expectValue "Path.normalize \"/a/../../b\"" (VStr "/b")
+              expectValue "Path.combine \"/repo/src/App\" \"../Core/Core.csproj\" |> Path.normalize" (VStr "/repo/src/Core/Core.csproj")
+          }
           test "Path.under confines; Path.combine does not [D:path-under]" {
               // RUNS ON EVERY PLATFORM. An earlier skipOnWindows left this member with
               // ZERO Windows coverage and pointed at an e2e row that did not exist; the

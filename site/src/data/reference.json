@@ -828,6 +828,13 @@
           "pointer": null
         },
         {
+          "name": "normalize",
+          "signature": "Path.normalize (path: string) : string",
+          "summary": "Collapse \u0027.\u0027 and \u0027..\u0027 segments lexically \u2014 no filesystem touch, no cwd, symlinks never followed. combine keeps \u0027..\u0027 (paths you control), under refuses an escape (paths you do not); normalize is the third spelling, for the legitimate escape both siblings decline. A relative path keeps its leading \u0027..\u0027s; at an absolute root \u0027..\u0027 swallows.",
+          "example": "Path.normalize \u0022src/App/../Core/Core.csproj\u0022",
+          "pointer": null
+        },
+        {
           "name": "stem",
           "signature": "Path.stem (path: string) : string",
           "summary": "The file name without its extension.",
