@@ -164,7 +164,7 @@ computation expressions, no `let rec`, no implicit widening.
 | `printfn "%d files" n` | `print $"{n} files"` — no printf family, interpolation is the mechanism |
 | `try … with` | no catching: `fail "msg"` raises; `cmd \| complete` makes failure data |
 | `try … finally` | bare `within` + `always` — cleanup on every exit (normal, raise, `exit`, signals); resource cleanup is a kind (`within tmp/proc/lock`) |
-| `while` / `let rec` | `retry`/`poll` for condition loops (bounded); pipelines/`Seq.fold` to transform/accumulate; `for … do` ≡ `Seq.iter` for effects |
+| `while` / `let rec` | neither exists — `let rec` refuses at parse (`'rec' is a keyword`); `retry`/`poll` for condition loops (bounded); pipelines/`Seq.fold` to transform/accumulate; `for … do` ≡ `Seq.iter` for effects |
 | `open Seq` | no `open` — access is always qualified; `import "./lib/x.weir" as X` shares code |
 | `$@"…"` / `$$"""…"""` | `$"""…{hole}…"""` only — one raw interpolated spelling; no multi-`$` brace scheme (a literal brace belongs to `$"…"`'s `{{`); all string kinds are single-line |
 | `[\| 1; 2 \|]` arrays, `list` | one sequence type, `seq<'a>` — `[1; 2]` literals are eager seqs |

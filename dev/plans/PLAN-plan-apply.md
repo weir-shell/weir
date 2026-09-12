@@ -11,6 +11,17 @@ data instead of performing them — yielding an inspectable, diffable `Plan`
 value you can show, confirm, then `apply`. Terraform's plan/apply loop as
 a general language primitive, not a per-tool reimplementation.
 
+Scope honesty, stated in the pitch and not only the boundaries: this is a
+FULL guarantee only for weir-NATIVE mutation (`File`/`Dir`/`Http`). In a
+shell most scripts are mostly `proc`, and a plan cannot see past
+`bicep deploy` or `kubectl apply` — a `proc`-heavy script gets a PARTIAL
+plan with opaque process nodes, covering the minority of what it does.
+KSL is the ideal receipt precisely BECAUSE it is fs-only, and that is
+unusual. This is dry-run for weir-native effects — file/config
+orchestration, generation — NOT "dry-run for any script", and the
+homepage's three-distance check is a different (narrower, already-shipped)
+thing; do not conflate them.
+
 ## Why it belongs to weir specifically
 
 - It is the value-level DUAL of [PLAN-pure]. #1 asks statically "does this
@@ -56,7 +67,15 @@ A `plan` block's result type can carry which effects it captured
 - Testing effectful code with NO mocks: `plan { thing } == expectedOps` —
   assert on the plan value, no filesystem stubbing. For an automation
   language this is the feature that makes ops code testable.
-- Audit/preview: the plan is a renderable, diffable, storable change log.
+- Audit/preview: the plan is a renderable, diffable, storable change log —
+  BOUNDED by function-types' refusals (shipped v0.0.23): a STORABLE plan
+  cannot contain thunks. An op with a function payload (a deferred content
+  thunk, KSL's `File(path, content: unit -> string)`) inherits "show
+  cannot render functions" and every wire's function rejection — such a
+  plan can apply, but not serialize or fully render. Either force thunks
+  at capture time (evaluate `content ()` into a data op while planning) or
+  accept preview-shows-the-op-name-only; the
+  renderable/diffable/storable claim holds only for all-data payloads.
 
 ## Boundaries — where to STOP (feature, not a product)
 
@@ -94,7 +113,10 @@ language-provided plan/apply.
 
 ## Open questions
 
-1. `plan` a `within`-family block, or its own construct? (Rec: family.)
+1. `plan` a `within`-family block, or its own construct? (Rec: family —
+   and it then inherits [PLAN-pure]'s prerequisite: the `withinKinds`
+   kind-first restructure + union [D:host-strictness]; `plan` would be the
+   SEVENTH kind entering that table.)
 2. Does `Plan` carry its captured-effect set in the type? (Rec: yes, once
    [PLAN-pure] lands the labels.)
 3. `proc` in a plan: opaque-capture or hard refuse? (Defer to the receipt.)

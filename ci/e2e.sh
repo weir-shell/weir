@@ -118,6 +118,18 @@ if git -C "$(dirname "$0")/.." ls-files -z 2>/dev/null \
 fi
 echo "e2e ok: no conflict markers in tracked files"
 
+# client-name gate: dev/ may name client projects; RENDERED surfaces must
+# not — no file under docs/, skills/, or site/ (nor the root pages the
+# site loads: CHANGELOG, README) may carry the names. The site's loaders
+# reach ../docs and ../CHANGELOG.md, so docs/ IS a rendered surface; the
+# conflict-marker/cdn-cgi shape, applied to the client constraint.
+if git -C "$(dirname "$0")/.." ls-files -zco --exclude-standard -- docs skills site CHANGELOG.md README.md 2>/dev/null \
+    | xargs -0 grep -lIE '\bdbt\b|\bKSL\b' 2>/dev/null | grep -q .; then
+    bad=$(git -C "$(dirname "$0")/.." ls-files -zco --exclude-standard -- docs skills site CHANGELOG.md README.md | xargs -0 grep -lIE '\bdbt\b|\bKSL\b' 2>/dev/null)
+    fail "a client name appears in a rendered doc surface (client names live under dev/ only): $bad"
+fi
+echo "e2e ok: no client names in rendered doc surfaces"
+
 # ---- pins-walk: three runtime messages only e2e can see [D:pins-walk] ------
 pwdir=$(mkweirtmp)
 # THE set-e analogue's WORDS were never asserted (the raise itself was)
