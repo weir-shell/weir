@@ -7367,6 +7367,40 @@ let optionSweepTests =
               expectValue "Option.flatten (Some None)" (VUnion("None", None))
               expectValue "Option.flatten None" (VUnion("None", None))
           }
+          test "Frontier.fold: a diamond+cycle folds each node ONCE, FIFO breadth-first [D:structural-walk]" {
+              // 1 -> {2, 3}; 2 -> 4; 3 -> 4; 4 -> 1 (a cycle): the visited
+              // set makes the sum each-once and the order pin is the FIFO law
+              let graph =
+                  "(fun acc n -> (acc + show n, if n == 1 then [2; 3] elif n == 2 then [4] elif n == 3 then [4] else [1]))"
+
+              expectValue $"[1] |> Frontier.fold (fun n -> show n) \"\" {graph}" (VStr "1234")
+          }
+          test "Frontier.fold: a \"\" key opts the node out of dedup (the tree convention) [D:structural-walk]" {
+              expectValue "[1; 1] |> Frontier.fold (fun n -> \"\") 0 (fun acc n -> (acc + n, []))" (VInt 2L)
+          }
+          test "Frontier.fold: the step budget turns a non-finite walk into a teaching error [D:structural-walk]" {
+              let ex =
+                  Expect.throwsC
+                      (fun () -> run "[1] |> Frontier.fold (fun n -> show n) 0 (fun acc n -> (acc, [n + 1]))" |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "exceeded 100000 steps" "bounded, never a hang"
+          }
+          test "Frontier.fold: a step that is not (acc, children) rejects at check [D:structural-walk]" {
+              Expect.stringContains
+                  (checkErr "[1] |> Frontier.fold (fun n -> show n) 0 (fun acc n -> acc + n)").Message
+                  "expected int * seq<int>, got int"
+                  ""
+          }
+          test "Graph.reach: reachable nodes, cycle-safe, each once, breadth-first [D:structural-walk]" {
+              expectValue
+                  "Graph.reach (fun n -> show n) (fun n -> if n == 1 then [2; 3] elif n == 2 then [4] elif n == 3 then [4] else [1]) 1"
+                  (VSeq [ VInt 1L; VInt 2L; VInt 3L; VInt 4L ])
+          }
+          test "Tree.walk: unit-valued, parent before children; a non-seq step rejects at check [D:structural-walk]" {
+              expectValue "1 |> Tree.walk (fun n -> if n < 3 then [n + 1] else [])" VUnit
+              Expect.stringContains (checkErr "1 |> Tree.walk (fun n -> n)").Message "expected seq<int>, got int" ""
+          }
           test "Seq.tryFind is data-last and Option-returning" {
               expectValue
                   "ls |> Seq.tryFind _.hidden |> Option.map _.name |> Option.defaultValue \"none\""

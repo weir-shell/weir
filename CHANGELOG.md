@@ -4,6 +4,29 @@
 
 ### Added
 
+- **Graph and tree walks without recursion: `Graph.reach`, `Tree.walk`,
+  `Frontier.fold`.** The frontier/visited worklist as builtins, bounded by
+  construction — the visited set caps a finite graph, and a 100000-step
+  budget turns a non-finite walk into an error, never a hang.
+  `Graph.reach keyOf neighbors start` yields every node reachable from a
+  start node, breadth-first, each exactly once (cycles and diamonds are
+  safe); the neighbor function is the graph. `Tree.walk step root` walks a
+  tree for effects, parent before children — the step runs each node's
+  effect and returns its children, so a child may depend on its parent's
+  effect (create the directory, then the files inside it). Both derive
+  from `Frontier.fold keyOf seed step frontier`, whose step folds an
+  accumulator and discovers children at once
+  (`fun acc n -> (acc', children)`); a `""` key opts a node out of dedup.
+
+  ```
+  let deps = Map.ofPairs [("app", ["core"; "util"]); ("util", ["core"])]
+  let neighbors p = Map.tryGet p deps |> Option.defaultValue []
+  Graph.reach (fun p -> p) neighbors "app"   // ["app"; "core"; "util"]
+  ```
+- **`Option.bind` and `Option.flatten`.** `bind` applies a function that
+  itself returns an `Option`, flattening as it goes — the chain reaches
+  through nested optionals (`user.address |> Option.bind _.zip`);
+  `flatten` collapses `Option<Option<T>>` to `Option<T>`.
 - **`from xml T` reads XML into a declared record.** A read-only, typed
   boundary over an XML subset — point it at a `.csproj`/`.slnx` (or any
   XML document) and walk the result as ordinary weir data. The document's

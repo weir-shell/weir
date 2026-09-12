@@ -3171,6 +3171,31 @@ echo "$xto" | grep -qF "XML is read-only" || fail "to xml refusal teaches: $xto"
 echo "e2e ok: from xml — real .csproj groups/refs, stripped xmlns, no to xml"
 rm -rf "$xdir"
 
+# structural walks [D:structural-walk]: Graph.reach over a dep graph
+# (cycle-safe, breadth-first, each node once) and Tree.walk's
+# parent-before-child effect order — the two laws, pinned in the binary
+wdir=$(mkweirtmp)
+cat > "$wdir/walk.weir" <<'WEOF'
+let deps = Map.ofPairs [("app", ["core"; "util"]); ("util", ["core"]); ("core", ["app"])]
+let neighbors p = Map.tryGet p deps |> Option.defaultValue []
+Graph.reach (fun p -> p) neighbors "app" |> Seq.iter print
+let step n =
+    print (show n)
+    if n < 3 then [n + 1] else []
+1 |> Tree.walk step
+WEOF
+out=$($BIN "$wdir/walk.weir")
+expect "Graph.reach: cycle-safe BFS, each node once" 'app
+core
+util
+1
+2
+3' "$out"
+werr=$($BIN -e '[1] |> Frontier.fold (fun n -> show n) 0 (fun acc n -> (acc, [n + 1]))' 2>&1) && fail "a non-finite walk must error" || true
+echo "$werr" | grep -qF "exceeded 100000 steps" || fail "the step budget teaches: $werr"
+echo "e2e ok: structural walks — Graph.reach BFS each-once, Tree.walk parent-first, budget teaches"
+rm -rf "$wdir"
+
 # anonymous record types [D:anon-records]: the shape inline in the
 # adapter slot — `_.field` checks, seq<> composes, the shape persists
 # across statements, and a declared record stays a DIFFERENT type
