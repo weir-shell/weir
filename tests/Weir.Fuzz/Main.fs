@@ -615,8 +615,8 @@ let tests =
                                        (showProgram lines))
 
                               if not stop then
-                                  let ca = Weir.Script.checkStatement true Weir.Script.assumeResolver noImports ta ll
-                                  let cb = Weir.Script.checkStatement true Weir.Script.resolver noImports tb ll
+                                  let ca = Weir.Script.checkStatement true None Weir.Script.assumeResolver noImports ta ll
+                                  let cb = Weir.Script.checkStatement true None Weir.Script.resolver noImports tb ll
 
                                   match ca, cb with
                                   | Ok a, Ok b ->
