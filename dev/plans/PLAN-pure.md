@@ -1,0 +1,135 @@
+# weir — `pure`: an opt-in purity assertion in an effect-normal language
+
+Status: APPROVED (2026-09-11). Ship Stage 0 (infer + display) first, then
+Stage 1 (enforce). The four open questions below were approved as their
+recommended answers.
+
+## The driver, and the sizing argument
+
+No hard external receipt — this is a positioning bet the designer chose,
+out of the dbt-migration design chat (nested optionals → effect
+visibility → trusting vendored automation). State that plainly rather
+than manufacture a receipt: the *sizing* argument is what justifies it.
+Stage 0 is nearly free — it reuses the reachability walk `--can` already
+performs — and it is display-only, so it validates the whole analysis
+(HOF behaviour, transitive vendored-source crossing) against real ported
+code BEFORE a single keyword is added. The bet is the sentence no
+shell-adjacent language can say: *in a language where effects run free,
+you can carve out and verify a pure island exactly where it pays* — the
+cacheable core, the trusted predicate, the dry-run-able transform.
+
+## Governing principle — effect-normal, so `pure` is opt-in
+
+weir is a shell: effects are the ambient NORM, purity the exception. This
+is the inverse of Haskell, and it dictates everything:
+
+- `pure` is strictly an OPT-IN assertion — never a default, never a gate.
+  Effects run free and un-nagged; nothing is rejected for being effectful
+  unless it sits inside a `pure` region the author explicitly wrote.
+- Display is ASYMMETRIC: surface the rare `(pure)`; stay silent on the
+  effectful norm. Painting an effect row on every function announces the
+  sky is up. Effect LISTS live in `--can`, on demand — never in hover.
+- There is no implicit purity inference that gates or warns. The default
+  posture (effects are normal) is untouched; `pure` only does something
+  where it is written.
+
+## Effect model (v1 = binary)
+
+One distinction: does the transitive reachable set contain ANY effect, or
+not. Reuse the `--can` reachability walk — it already crosses vendored
+source transitively, and vendored code is sha-pinned SOURCE (the
+no-decompile rule guarantees source exists), so purity is a VERIFIED fact
+about the pinned tree, not a trusted boundary declaration.
+
+Implementation discipline that makes every later tier a refinement: tag
+each builtin INTERNALLY with its real label (`fs.read`, `fs.write`,
+`net`, `proc`, `env`, `clock`) but EXPOSE only the boolean in v1. Then
+`only …` / `deterministic` later expose labels already recorded — never a
+re-tag. `pure == only ∅`, so the bottom of the lattice shipped now is the
+bottom of the lattice extended later. No corner painted.
+
+## Stage 0 — infer + display (zero new syntax)
+
+- Tag builtins pure/effectful (labels recorded, boolean exposed).
+- Compute effect-emptiness of a function/expression via the `--can` walk.
+  HOFs resolve at the CALL SITE (a HOF is pure iff its function args are —
+  the existing walk captures this; NO effect-polymorphism).
+- Surface `(pure)` in hover / `#sig` ONLY when it holds. Effectful
+  signatures render exactly as today — no effect rows, no nag.
+- Value: de-risks the analysis (HOF behaviour, vendored crossing) before
+  any grammar change. `(pure)` on the `from xml`→record shapers is the
+  demo that tells us Stage 1 earns its keep.
+
+## Stage 1 — enforce (opt-in only)
+
+- `pure` BLOCK — one new `withinKinds` sibling (indentation block, no
+  argument). Body must have an empty effect set; a reachable effect is a
+  check error naming the offender and the trace:
+      type error: this 'pure' block forbids effects, but 'buildImage'
+      spawns a process — reached via buildImage → runBicep → 'bicep lint'
+      (a command) [vendored: acme.build]
+- `let pure f = …` MODIFIER — slots into the F# post-`let` modifier chain
+  (`let rec`, `let inline`) and composes: `let rec pure f`. Desugars to a
+  body-spanning `pure` block. Single token, no list-parsing.
+- `proc` reachable ⇒ not pure. The escape hatch is closed by
+  construction; no special `proc` handling needed because there is no
+  `only` yet.
+- No implicit purity anywhere — nothing gated unless `pure` is written.
+
+## Explicitly deferred (each with its trigger)
+
+- `only <effects>` ceiling block + effect vocabulary / granularity
+  (`fs.read` vs `fs.write`, a coarse `fs`, an `io` bundle) — TRIGGER:
+  ported code keeps wanting "pure except it reads." Watch this frequency
+  in the dbt port; it is the signal for the very next tier.
+- `proc = ⊤` rules / refusing a vacuous `only … proc` (a ceiling that
+  admits proc bounds nothing) — lands WITH `only`.
+- `deterministic` tier (ambient-input vs external-mutation split) —
+  TRIGGER: a cache / reproducibility need.
+- `within tmp` region discharge (writes confined to a scoped, deleted dir
+  counted pure) — TRIGGER: a pure transform wanting scratch space; needs
+  region tracking, so v1 stays conservative (`within tmp` colours
+  `fs.write`).
+- Effect-polymorphic SIGNATURES (the HOF-exact arrow) — TRIGGER: HOF
+  exactness demanded. Reachability mode carries v1.
+- `let only …` / effect lists in a `let` head — NOT planned. The mouthful
+  is the language telling us it is the wrong shape.
+- Secret taint propagation; demoting `proc` below ⊤ via OS sandboxing
+  (`proc.net-` / read-only-fs jails) — separate horizons, own receipts.
+
+## Footprint (Stage 1)
+
+- Check.fs: builtin effect-label table + reachability→emptiness (reuse
+  `--can`); pure-region check + teaching error carrying the trace.
+- Ast.fs / Parser.fs / Script.fs: one block head (`pure`) in the
+  `withinKinds` family; `pure` let-modifier in the let-head grammar.
+- Lsp.fs: `(pure)` badge in hover / `#sig` (asymmetric — pure only).
+- Builtins.fs: effect labels on the builtin table.
+- Docs/tests: SKILL/GUIDE bullet + runnable blocks; e2e cells (pure body
+  accepted; effectful body + vendored-spawn trace rejected; `let pure`
+  form; composition with `within proc`); unit pins; a `[D:pure]`
+  DECISIONS row.
+- Gate ripple: `pure` becomes a keyword AND a `withinKind` → regenerate
+  editors/grammar-manifest.json + docs/reference/lexical.md, update
+  editors/micro + tmLanguage, and `grammar-currency` goes RED until
+  weir-shell/tree-sitter-weir learns `pure` (the split-repo ritual, as
+  with `xml`).
+
+## Positioning claim
+
+"In a language where effects run free, you can carve out and verify a
+pure island exactly where it pays." Surface the exception; stay silent on
+the rule.
+
+## Open questions — approved answers
+
+1. Stage 0 (display-only) ships as its own increment first. YES — free,
+   de-risks the analysis.
+2. `pure` is a `withinKinds` sibling (reuses assembler / offside), not its
+   own construct. YES.
+3. `pure` becomes a reserved keyword (needed for the block head and
+   `let pure`), accepting the tree-sitter-weir ritual + temporary red
+   `grammar-currency` — same posture as `xml`. YES.
+4. Internal effect label set = `{ fs.read, fs.write, net, proc, env,
+   clock }`, exposed as a boolean in v1. Confirmed; a coarse `fs` is a
+   later granularity call driven by the deferred `only` trigger.
