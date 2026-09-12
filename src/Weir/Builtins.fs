@@ -1950,6 +1950,47 @@ let private pathUnderImpl: Value =
                         escape ()
             | _ -> unreachable "the checker rejects 'Path.under' on these arguments"))
 
+// the LEXICAL normalize: collapse '.' and '..' segments in TEXT — no
+// filesystem touch, no cwd resolution, symlinks never followed. The
+// third spelling beside its siblings: combine KEEPS '..' (paths you
+// control), under REFUSES an escape (paths you do not), normalize
+// COLLAPSES the text — for the legitimate escape (a project reference
+// leaving its own directory) both siblings decline. A relative path
+// keeps its leading '..'s; at an absolute root '..' swallows.
+let private pathNormalize (p: string) : string =
+    let seps =
+        [| System.IO.Path.DirectorySeparatorChar
+           System.IO.Path.AltDirectorySeparatorChar |]
+
+    let rooted = p.Length > 0 && Array.contains p[0] seps
+
+    // a Windows drive head ("C:") never pops — platform-gated so a
+    // POSIX file literally named "c:" stays an ordinary segment
+    let driveHead (out: ResizeArray<string>) =
+        System.OperatingSystem.IsWindows()
+        && out.Count = 1
+        && out[0].Length = 2
+        && out[0][1] = ':'
+
+    let out = ResizeArray<string>()
+
+    for s in p.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) do
+        match s with
+        | "." -> ()
+        | ".." ->
+            if out.Count > 0 && out[out.Count - 1] <> ".." && not (driveHead out) then
+                out.RemoveAt(out.Count - 1)
+            elif not rooted then
+                out.Add ".."
+        | s -> out.Add s
+
+    let sep = string System.IO.Path.DirectorySeparatorChar
+    let body = String.concat sep (List.ofSeq out)
+
+    if rooted then sep + body
+    elif body = "" then "."
+    else body
+
 let private pathMembers: (string * Ty * Value) list =
     [ "extension", TFun(TStr, TStr), str1 "extension" Path.GetExtension
       "fileName", TFun(TStr, TStr), str1 "fileName" Path.GetFileName
@@ -1961,6 +2002,7 @@ let private pathMembers: (string * Ty * Value) list =
           | null -> ""
           | d -> d)
       "combine", TFun(TStr, TFun(TStr, TStr)), pathCombineImpl
+      "normalize", TFun(TStr, TStr), str1 "normalize" pathNormalize
       "under", TFun(TStr, TFun(TStr, TStr)), pathUnderImpl
       "glob", TFun(TStr, TSeq TStr), globImpl
       // the QUERY (pure): the system temp root, no trailing separator
@@ -4395,6 +4437,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Path.under (Path.tempRoot ()) \"a/b\"")
               None
            |> named [ "base"; "name" ])
+          "Path.normalize",
+          (bd
+              "Collapse '.' and '..' segments lexically — no filesystem touch, no cwd, symlinks never followed. combine keeps '..' (paths you control), under refuses an escape (paths you do not); normalize is the third spelling, for the legitimate escape both siblings decline. A relative path keeps its leading '..'s; at an absolute root '..' swallows."
+              (Some "Path.normalize \"src/App/../Core/Core.csproj\"")
+              None
+           |> named [ "path" ])
           "Path.tempRoot",
           (bd
               "The system temp directory (a pure query; no trailing separator, platform-native)."
