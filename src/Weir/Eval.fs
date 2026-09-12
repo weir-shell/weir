@@ -2477,22 +2477,56 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TELambda(param, _, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
     | TEPipe(arg, { Kind = TECmd(prog, cargs, cenvO) }) ->
-        let argv = argvOf env cargs
+        // collect the COMMAND CHAIN left of this hop [D:byte-pipes]: a
+        // command feeding a command is a raw byte hop (a hop makes no
+        // value — [D:colour-inherit]'s rationale, completed); only the
+        // chain's far-left VALUE head (if any) is a text edge
+        let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
+            match e.Kind with
+            | TECmd(p2, a2, e2) ->
+                None,
+                { Proc.Prog = Proc.resolveProg p2
+                  Proc.Args = argvOf env a2
+                  Proc.Env = overlayOf env e2
+                  Proc.Input = None }
+                :: acc
+            | TEPipe(l, { Kind = TECmd(p2, a2, e2) }) ->
+                collect
+                    l
+                    ({ Proc.Prog = Proc.resolveProg p2
+                       Proc.Args = argvOf env a2
+                       Proc.Env = overlayOf env e2
+                       Proc.Input = None }
+                     :: acc)
+            | _ -> Some e, acc
+
+        let valueHead, leftSpecs = collect arg []
 
         let stdin =
-            match eval env arg with
-            | VSeq items ->
-                items
-                |> Seq.map (fun v ->
-                    match v with
-                    | VStr s -> s
-                    | v -> unreachable $"the checker rejects non-string stdin: {formatValue v}")
-            | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
+            match valueHead with
+            | None -> None
+            | Some he ->
+                match eval env he with
+                | VSeq items ->
+                    Some(
+                        items
+                        |> Seq.map (fun v ->
+                            match v with
+                            | VStr s -> s
+                            | v -> unreachable $"the checker rejects non-string stdin: {formatValue v}")
+                    )
+                | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
 
-        VSeq(
-            Seq.delay (fun () -> Proc.linesWith (overlayOf env cenvO) (Proc.resolveProg prog) argv (Some stdin))
-            |> Seq.map VStr
-        )
+        let specs =
+            (match leftSpecs with
+             | first :: rest -> { first with Proc.Input = stdin } :: rest
+             | [] -> [])
+            @ [ { Proc.Prog = Proc.resolveProg prog
+                  Proc.Args = argvOf env cargs
+                  Proc.Env = overlayOf env cenvO
+                  Proc.Input = (if leftSpecs.IsEmpty then stdin else None) } ]
+
+        VSeq(Seq.delay (fun () -> Proc.chainLinesOf specs) |> Seq.map VStr)
     // the armed statement command STREAMS at a tty [D:stream-echo]:
     // |print(linesOf) held a partial line (an interactive prompt) until
     // its newline — the chunk relay flushes as bytes arrive. Content is

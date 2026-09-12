@@ -847,6 +847,13 @@ print x
 - Interactive TTY tools (fzf-class) work in command pipelines — they
   draw on /dev/tty while stdio pipes; a user cancel (exit 130) RAISES
   like any nonzero exit, aborting the script at the fault.
+- A command→command pipe hop is a RAW BYTE PIPE [D:byte-pipes]: no
+  decode, no line split, no appended newline — `gzip -c f | sh -c
+  "cat > out"` is byte-identical to bash. Only the chain's ENDS are
+  text edges: a VALUE head feeds stdin as UTF-8 lines, and the tail's
+  output becomes `seq<string>` under the usual line law when a value
+  is made (`$()`, reifiers, `|>`). A failing stage raises at the
+  LEFTMOST fault.
 - A bare STATEMENT command at a tty INHERITS stdout
   [D:colour-inherit]: the child sees the terminal (isatty true), so
   tools that colour for a tty colour under weir — and weir never

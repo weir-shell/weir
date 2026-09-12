@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Command pipes carry bytes.** A command→command hop is now a raw byte
+  pipe — no decode, no line split, no appended newline — so binary flows
+  through pipelines untouched (`gzip -c f | sh -c "cat > out"` is
+  byte-identical to bash; previously every non-UTF-8 byte was silently
+  replaced with U+FFFD). Only the ends of a chain are text edges: a value
+  head feeds stdin as UTF-8 lines, and output becomes `seq<string>` where
+  a value is made (`$()`, reifiers, `|>`). A failing stage raises at the
+  leftmost fault, as before.
+
 - **Pure functions are visibly pure: the `(pure)` hover badge.** A
   top-level function whose body can reach no effect — no
   file/dir/env/process/network/console touch, no command, no clock,

@@ -3251,6 +3251,27 @@ echo "$yerr2" | grep -qF "only inside a \`yaml patch\` district" || fail "the to
 echo "e2e ok: yaml patch — kustomization RMW (upsert/append/tombstones, unknown keys kept, idempotent), render+scope laws"
 rm -rf "$ydir"
 
+# byte pipes [D:byte-pipes]: a command→command hop is a RAW byte pipe —
+# no decode, no line split, no appended newline. gzip through a weir
+# pipe must be byte-identical to gzip through a bash pipe; chains and
+# the leftmost-failure raise ride the same cell.
+bdir=$(mkweirtmp)
+printf 'abc' > "$bdir/plain.txt"
+gzip -nc "$bdir/plain.txt" > "$bdir/ref.gz"
+cat > "$bdir/bp.weir" <<'WEOF'
+gzip -nc plain.txt | sh -c "cat > weir.gz"
+["b"; "a"; "c"] | sort | tr a-z A-Z
+WEOF
+out=$(cd "$bdir" && $BIN bp.weir)
+cmp "$bdir/ref.gz" "$bdir/weir.gz" || fail "binary through a pipe hop must be byte-identical"
+expect "byte pipes: a value head + two raw hops" 'A
+B
+C' "$out"
+berr=$($BIN -e 'sh -c "echo hi; exit 3" | sh -c "cat" | sh -c "cat"' 2>&1) && fail "a failing stage must raise" || true
+echo "$berr" | grep -qF "command failed with exit code 3" || fail "the leftmost failing stage raises: $berr"
+echo "e2e ok: byte pipes — raw hops byte-identical, chains compose, leftmost failure raises"
+rm -rf "$bdir"
+
 # anonymous record types [D:anon-records]: the shape inline in the
 # adapter slot — `_.field` checks, seq<> composes, the shape persists
 # across statements, and a declared record stays a DIFFERENT type

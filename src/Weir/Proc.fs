@@ -403,6 +403,83 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     p.WaitForExit()
     p.ExitCode, linesView outBytes true, linesView errBytes false
 
+// ---- the byte chain [D:byte-pipes]: raw command→command hops -------
+// A hop makes NO value, so weir does not hold the bytes
+// ([D:colour-inherit]'s own rationale, completed): stage stdout copies
+// 1:1 into the next stage's stdin — no decode, no line split, no
+// appended newline. Only the chain's ENDS are edges: the head may take
+// a text stdin feed (Input on the first spec), the tail's stdout is
+// read under the same line law as any single command.
+let private pumpBytes (src: System.IO.Stream) (dst: System.IO.Stream) (closeDst: unit -> unit) =
+    System.Threading.Tasks.Task.Run(fun () ->
+        try
+            try
+                let buf = Array.zeroCreate<byte> 65536
+                let mutable n = src.Read(buf, 0, buf.Length)
+
+                while n > 0 do
+                    dst.Write(buf, 0, n)
+                    n <- src.Read(buf, 0, buf.Length)
+
+                dst.Flush()
+            with _ ->
+                ()
+        finally
+            closeDst ())
+
+let chainLinesOf (specs: Spec list) : seq<string> =
+    match specs with
+    | [] -> Seq.empty
+    | [ one ] -> linesOf one
+    | _ ->
+        seq {
+            let procs =
+                // the head owns the (optional) text stdin feed; every
+                // downstream stage's stdin is the raw pipe from its left
+                specs
+                |> List.mapi (fun i sp ->
+                    if i = 0 then
+                        sp, start true false sp
+                    else
+                        sp, spawn true false true sp.Prog sp.Args sp.Env)
+
+            try
+                // wire stage i's stdout into stage i+1's stdin, bytes 1:1
+                procs
+                |> List.pairwise
+                |> List.iter (fun ((_, a), (_, b)) ->
+                    pumpBytes
+                        a.StandardOutput.BaseStream
+                        b.StandardInput.BaseStream
+                        (fun () ->
+                            try
+                                b.StandardInput.Close()
+                            with _ ->
+                                ())
+                    |> ignore)
+
+                // the tail is the command→expression edge: same line law
+                // as a single command
+                let _, last = List.last procs
+                let out = last.StandardOutput
+                let mutable line = out.ReadLine()
+
+                while line <> null do
+                    yield line
+                    line <- out.ReadLine()
+
+                for _, p in procs do
+                    p.WaitForExit()
+
+                // leftmost failing stage raises — where the fault began
+                match procs |> List.tryFind (fun (_, p) -> p.ExitCode <> 0) with
+                | Some(sp, p) -> raiseNonzero sp p.ExitCode
+                | None -> ()
+            finally
+                for _, p in procs do
+                    reap p
+        }
+
 // ---- the public wrappers (signatures unchanged) --------------------
 
 // Child-env overlay [D:child-env-overlay]: `lines` IS the empty
