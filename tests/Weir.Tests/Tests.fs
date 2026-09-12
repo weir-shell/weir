@@ -15775,7 +15775,7 @@ let withinTests =
               let asmLine = "within tmp d" + Weir.Parser.sibSepStr + "print d"
 
               match Weir.Parser.parseLine realResolver asmLine with
-              | Ok(SExpr { Kind = EWithin("tmp", Some("d", _), None, None, _) }) -> ()
+              | Ok(SExpr { Kind = EWithin(WithinTmp, Some("d", _), None, None, _) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "the binder is a string; the scope's type is the body's" {

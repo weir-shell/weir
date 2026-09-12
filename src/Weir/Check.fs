@@ -122,7 +122,7 @@ and TypedKind =
     | TESize of bytes: int64
     | TESeq of first: TypedExpr * rest: TypedExpr
     | TEWithin of
-        kind: string *
+        kind: WithinKindId *
         binder: string option *
         arg: TypedExpr option *
         opts: TypedExpr option *
@@ -4179,28 +4179,42 @@ and private isExitCodeSpine (e: Expr) =
     | _ -> false
 
 /// the scope's ARG and BINDER contracts [D:within-scopes] — ONE resolver for
-/// both type directions. The kinds table is the membership; a kind resolved
-/// in one direction and not the other drops its node silently, and the eval
-/// side cannot tell a dropped node from a kind that never carries one.
+/// both type directions, dispatched KIND-FIRST on the union
+/// [D:within-kind-union] so a new kind must claim its arg contract or the
+/// build fails. A kind resolved in one direction and not the other drops
+/// its node silently, and the eval side cannot tell a dropped node from a
+/// kind that never carries one.
 and private withinContracts
     (ctx: Ctx)
     (env: TypeEnv)
-    (kind: string)
+    (kind: WithinKindId)
     (binder: (string * Span) option)
     (arg: Expr option)
     (opts: Expr option)
     : Result<TypedExpr option * TypedExpr option * TypeEnv, TypeError> =
     result {
         let! targ =
-            match kind, arg with
-            | "cd", Some a -> check ctx env a TStr |> Result.map Some
-            | "env", Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
-            | "lock", Some a -> check ctx env a TStr |> Result.map Some
+            match kind with
+            | WithinCd ->
+                match arg with
+                | Some a -> check ctx env a TStr |> Result.map Some
+                | None -> Ok None
+            | WithinEnv ->
+                match arg with
+                | Some a -> check ctx env a (TSeq(TNamed("EnvVar", []))) |> Result.map Some
+                | None -> Ok None
+            | WithinLock ->
+                match arg with
+                | Some a -> check ctx env a TStr |> Result.map Some
+                | None -> Ok None
             // proc's arg is the COMMAND node [D:scoped-procs] — typed as any
             // command (the parser guarantees ECmd), evaluated by the scope as
             // a spawn, never as a statement
-            | "proc", Some a -> infer ctx env a |> Result.map Some
-            | _ -> Ok None
+            | WithinProc ->
+                match arg with
+                | Some a -> infer ctx env a |> Result.map Some
+                | None -> Ok None
+            | WithinTmp -> Ok None
 
         let! topts =
             match opts with
@@ -4212,9 +4226,17 @@ and private withinContracts
             | Some(n, bs) -> checkBinderName bs n
             | None -> Ok()
 
+        let binderTy =
+            match kind with
+            | WithinProc -> TNamed("Proc", [])
+            | WithinTmp
+            | WithinCd
+            | WithinEnv
+            | WithinLock -> TStr
+
         let benv =
             match binder with
-            | Some(n, _) -> bindParams env [ n, (if kind = "proc" then TNamed("Proc", []) else TStr) ]
+            | Some(n, _) -> bindParams env [ n, binderTy ]
             | None -> env
 
         return targ, topts, benv

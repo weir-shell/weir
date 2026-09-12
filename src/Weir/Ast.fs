@@ -39,35 +39,60 @@ type InterpPart<'e> =
     | IStr of string
     | IExpr of 'e
 
+// the kind as a UNION [D:within-kind-union]: every kind-matching
+// consumer (parser dispatch, Check's contracts, Eval, Can) dispatches
+// on THIS type kind-first, so a new case is a BUILD failure (FS0025
+// under [D:host-strictness]) at each of them, never a silent gap
+type WithinKindId =
+    | WithinTmp
+    | WithinCd
+    | WithinEnv
+    | WithinProc
+    | WithinLock
+
 // the `within` kinds as DATA — one table, three consumers (the
 // parser's dispatch, hover, completion) [D:within-kinds]. Binds is the
 // form's central asymmetry: tmp PRODUCES a binder, cd/env CONSUME an
 // atom. The editor grammars list the same closed set by necessity
 // (separate files); the inventory guard pins them to this table.
 type WithinKind =
-    { Name: string
+    { Id: WithinKindId
+      Name: string
       Binds: bool
       Doc: string }
 
 let withinKinds: WithinKind list =
-    [ { Name = "tmp"
+    [ { Id = WithinTmp
+        Name = "tmp"
         Binds = true
         Doc = "a fresh directory, removed when the block exits" }
-      { Name = "cd"
+      { Id = WithinCd
+        Name = "cd"
         Binds = false
         Doc = "the working directory for the block, restored after" }
-      { Name = "env"
+      { Id = WithinEnv
+        Name = "env"
         Binds = false
         Doc = "an environment overlay for the block's children" }
       // the no-orphan law [D:scoped-procs]: the scope IS the lifetime
-      { Name = "proc"
+      { Id = WithinProc
+        Name = "proc"
         Binds = true
         Doc = "a background process, tree-killed and reaped when the block exits" }
       // advisory file lock [D:within-lock] — the one kind whose
       // guarantee survives kill -9 (the kernel releases it)
-      { Name = "lock"
+      { Id = WithinLock
+        Name = "lock"
         Binds = false
         Doc = "an advisory file lock, held for the block, released on every exit (kill -9 included)" } ]
+
+/// a kind's table row — total by construction: an Id only enters the
+/// tree through this table (the parser's name lookup), so the find
+/// cannot miss [D:within-kind-union]
+let withinKind (id: WithinKindId) : WithinKind =
+    withinKinds |> List.find (fun k -> k.Id = id)
+
+let withinKindName (id: WithinKindId) : string = (withinKind id).Name
 
 /// "tmp, cd, or env" — the teaching list, derived so a new kind
 /// cannot miss the message
@@ -151,7 +176,7 @@ and ExprKind =
     // The kinds are ASYMMETRIC by design: tmp PRODUCES a path (binder,
     // no arg); cd and env CONSUME one (arg, no binder) — which is why
     // the form is `within <kind> <args…>`, not one fixed shape
-    | EWithin of kind: string * binder: (string * Span) option * arg: Expr option * opts: Expr option * body: Expr
+    | EWithin of kind: WithinKindId * binder: (string * Span) option * arg: Expr option * opts: Expr option * body: Expr
     // the bare scope [D:within-always]: no resource, just the exit
     // discipline — body, then the always block on EVERY exit path
     | EAlways of body: Expr * cleanup: Expr
@@ -426,7 +451,7 @@ let rec sexpr (e: Expr) : string =
             opts |> Option.map (fun o -> $"timeout={sexpr o}") |> Option.defaultValue ""
 
         let ba = [ bn; av; ov ] |> List.filter ((<>) "") |> String.concat " "
-        $"(within {k} {ba} {sexpr b})"
+        $"(within {withinKindName k} {ba} {sexpr b})"
     | EAlways(b, c) -> $"(within {sexpr b} (always {sexpr c}))"
     | ECapture e -> $"(capture {sexpr e})"
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
