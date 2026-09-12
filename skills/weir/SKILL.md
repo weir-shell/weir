@@ -1491,7 +1491,12 @@ print (f 1)
   drive/UNC-shaped `name` never joins; interior `..` like `a/../b` is
   fine; the boundary is segment-wise, so `/safe/uploads-evil` is not
   under `/safe/uploads`). One line to choose between them: **combine for
-  paths you control, under for paths you do not.** `under` is purely
+  paths you control, under for paths you do not.** `Path.normalize` is
+  the third spelling — a lexical `..`/`.` collapse (no filesystem
+  touch, no cwd, symlinks never followed) for the legitimate escape
+  both siblings decline: combine keeps `..`, under raises. A relative
+  path keeps its leading `..`s; at an absolute root `..` swallows.
+  `under` is purely
   TEXTUAL — it confines the PATH, never the resolved target, so a
   symlink inside `base` pointing out is textually under and is NOT
   confined; following links would mean touching the disk, which makes
