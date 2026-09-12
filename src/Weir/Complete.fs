@@ -722,6 +722,7 @@ let fieldsAtRepaired
             | Weir.Ast.SExpr e
             | Weir.Ast.SCmd e -> Some e
             | Weir.Ast.SType _
+            | Weir.Ast.SSig _
             | Weir.Ast.SModule _
             | Weir.Ast.SImport _ -> None
 

@@ -3338,6 +3338,8 @@ mdir=$(mkweirtmp)
 cat > "$mdir/pmod.weir" <<'WEOF'
 module Pmod
 
+let addRes : string -> Yaml -> Yaml
+
 let addRes resPath doc =
     let p = yaml patch
         resources:
@@ -4922,7 +4924,9 @@ mdir=$(mkweirtmp)
 cat > "$mdir/paths.weir" <<'WEOF'
 module Paths
 type Ctx = { root: string; name: string }
+let make : string -> string -> Ctx
 let make r n = { root = r; name = n }
+let describe : Ctx -> string
 let describe c = c.root
 WEOF
 
@@ -5013,16 +5017,16 @@ expect "weak purity: a module let cannot run a command at import" "cannot run a 
 
 # the graph [D:modules-v1]: transitive imports resolve and evaluate; a
 # module can import and use another module's members
-printf 'module D\nlet base = 10\n' > "$mdir/deep.weir"
-printf 'module M\nimport "./deep.weir"\nlet doubled = D.base * 2\n' > "$mdir/mid.weir"
+printf 'module D\nlet base : int\nlet base = 10\n' > "$mdir/deep.weir"
+printf 'module M\nimport "./deep.weir"\nlet doubled : int\nlet doubled = D.base * 2\n' > "$mdir/mid.weir"
 printf 'import "./mid.weir"\nprint (show M.doubled)\n' > "$mdir/transitive.weir"
 out=$($BIN "$mdir/transitive.weir" 2>&1)
 expect "transitive imports resolve and evaluate (top -> mid -> deep)" "20" "$out"
 
 # a diamond's shared module is checked once and evaluates; both sides see it
-printf 'module S\nlet v = 5\n' > "$mdir/shared.weir"
-printf 'module L\nimport "./shared.weir"\nlet x = S.v + 1\n' > "$mdir/left.weir"
-printf 'module R\nimport "./shared.weir"\nlet y = S.v + 2\n' > "$mdir/right.weir"
+printf 'module S\nlet v : int\nlet v = 5\n' > "$mdir/shared.weir"
+printf 'module L\nimport "./shared.weir"\nlet x : int\nlet x = S.v + 1\n' > "$mdir/left.weir"
+printf 'module R\nimport "./shared.weir"\nlet y : int\nlet y = S.v + 2\n' > "$mdir/right.weir"
 printf 'import "./left.weir"\nimport "./right.weir"\nprint (show (L.x + R.y))\n' > "$mdir/diamond.weir"
 out=$($BIN "$mdir/diamond.weir" 2>&1)
 expect "a diamond shares one module across both paths" "13" "$out"
@@ -5077,7 +5081,7 @@ expect "import is a reserved word" "'import' is a keyword" "$out"
 
 # Self.scriptPath is the FILE's own path; Self.entryPath is the invoked
 # script's (a process fact) [D:modules-v1] (decision 12)
-printf 'module Sp\nlet where () = Self.scriptPath\nlet entry () = Self.entryPath\n' > "$mdir/sp.weir"
+printf 'module Sp\nlet where : unit -> string\nlet where () = Self.scriptPath\nlet entry : unit -> string\nlet entry () = Self.entryPath\n' > "$mdir/sp.weir"
 printf 'import "./sp.weir"\nprint (Sp.where ())\nprint (Sp.entry ())\n' > "$mdir/spmain.weir"
 out=$($BIN "$mdir/spmain.weir" 2>&1)
 # leaf pins (weir prints the platform's path spelling): the property is
@@ -5085,6 +5089,38 @@ out=$($BIN "$mdir/spmain.weir" 2>&1)
 echo "$out" | sed -n 1p | grep -q "sp\.weir$" || fail "a module's Self.scriptPath is its OWN file: $out"
 echo "$out" | sed -n 2p | grep -q "spmain\.weir$" || fail "a module's Self.entryPath is the invoked script: $out"
 echo "e2e ok: a module's Self.scriptPath is its own file; entryPath the invoked script"
+
+# ---- module signatures [D:module-signatures]: a signature IS the export ----
+# one signed + one unsigned member end-to-end: the signed one exports and
+# runs, the unsigned one refuses with the migration teaching (inferred
+# type included, did-you-mean over the SIGNED members); a script refuses
+# the form; an orphan sig errors at its own site
+cat > "$mdir/sigmod.weir" <<'WEOF'
+module Sigmod
+
+/// double it
+let twice : int -> int
+
+let twice n = n * 2
+
+let hidden n = n + 1
+WEOF
+printf 'import "./sigmod.weir"\nprint (show (Sigmod.twice 21))\n' > "$mdir/sig_ok.weir"
+out=$($BIN "$mdir/sig_ok.weir")
+expect "a signed member exports and runs" "42" "$out"
+printf 'import "./sigmod.weir"\nprint (show (Sigmod.hidden 1))\n' > "$mdir/sig_priv.weir"
+out=$($BIN check "$mdir/sig_priv.weir" 2>&1 || true)
+expect "an unsigned member is module-private; the teaching names the signature to add" "'Sigmod.hidden' is module-private (no signature) — add \`let hidden : int -> int\` in the module to export it" "$out"
+printf 'let f : int -> int\nlet f x = x\nprint (show (f 1))\n' > "$mdir/sig_script.weir"
+out=$($BIN check "$mdir/sig_script.weir" 2>&1 || true)
+expect "a script refuses the signature form" "signatures belong to module APIs — scripts infer" "$out"
+printf 'module Orph\nlet f : int -> int\n' > "$mdir/sig_orph.weir"
+out=$($BIN check "$mdir/sig_orph.weir" 2>&1 || true)
+expect "a signature without implementation errors at the sig" "sig_orph.weir:2:5: error [sig-orphan]: signature without implementation" "$out"
+printf 'module Mm\nlet f : int -> int\nlet f x = "s"\n' > "$mdir/sig_mis.weir"
+out=$($BIN check "$mdir/sig_mis.weir" 2>&1 || true)
+expect "a sig/impl mismatch names both sites and both types" "the signature (line 2) declares int -> int, but the implementation is int -> string" "$out"
+echo "e2e ok: module signatures (export, private teaching, script refusal, orphan, mismatch)"
 
 rm -rf "$mdir"
 
@@ -7158,9 +7194,13 @@ cat > "$amdir/serve/greet.weir" <<'WEOF'
 module Greet
 
 /// the greeting the pins expect
+let hello : string -> string
+
 let hello name = $"hi {name}"
 
 /// writes an audit line
+let log : string -> unit
+
 let log msg = [msg] |> File.write "audit.log"
 WEOF
 printf 'module NeedsDep\n\nimport "./x.weir" as X\n\nlet f x = x\n' > "$amdir/serve/needsdep.weir"
@@ -7180,7 +7220,7 @@ printf 'import "weir:greet" as G\nprint (G.hello "deep")\n' > "$amdir/proj/sub/d
 printf 'import "weir:greet" as G\n\nG.log "ran"\n' > "$amdir/proj/audit.weir"
 canout=$(cd "$amdir/proj" && $BIN check --can audit.weir)
 # separator-agnostic: Windows prints the module path with backslashes
-echo "$canout" | grep -q "File.write audit.log  .*modules.greet\.weir:7:" || fail "--can must carry the vendored module's write at its own line: $canout"
+echo "$canout" | grep -q "File.write audit.log  .*modules.greet\.weir:11:" || fail "--can must carry the vendored module's write at its own line: $canout"
 sed -i.bak 's/hi/hacked/' "$amdir/proj/.weir/modules/greet.weir" && rm -f "$amdir/proj/.weir/modules/greet.weir.bak"
 ( cd "$amdir/proj" && $BIN verify || true ) | grep -q "module greet: MODIFIED" || fail "verify must flag the tampered module"
 ( cd "$amdir/proj" && $BIN restore ) | grep -q "module greet: repaired" || fail "restore must repair a modified vendored file"
@@ -7197,7 +7237,7 @@ printf 'import "weir:nope" as N\nprint "x"\n' > "$amdir/proj/missing.weir"
 printf 'import "weir:../evil" as E\nprint "x"\n' > "$amdir/proj/evil.weir"
 ( cd "$amdir/proj" && $BIN evil.weir 2>&1 || true ) | grep -q "names a vendored module, never a path" || fail "weir: path-shape refusal"
 # R1's negative pins: BOTH pre-existing bare spellings stay file-relative
-printf 'module Sib\nlet s () = "sibling"\n' > "$amdir/proj/sib.weir"
+printf 'module Sib\nlet s : unit -> string\nlet s () = "sibling"\n' > "$amdir/proj/sib.weir"
 cp "$amdir/proj/sib.weir" "$amdir/proj/sibnoext"
 printf 'import "sib.weir" as A\nprint (A.s ())\n' > "$amdir/proj/r1a.weir"
 printf 'import "sibnoext" as B\nprint (B.s ())\n' > "$amdir/proj/r1b.weir"

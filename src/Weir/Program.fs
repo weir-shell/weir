@@ -77,7 +77,7 @@ let private evalOnce (input: string) : int =
             match rest with
             | [] -> Ok(List.rev acc)
             | (ll: Script.LogicalLine) :: tail ->
-                match Script.checkStatement false Script.resolver Script.scriptOnlyImport tenv ll with
+                match Script.checkStatement false None Script.resolver Script.scriptOnlyImport tenv ll with
                 | Error d -> Error d
                 | Ok chk -> checkAll chk.Env ((ll, chk) :: acc) tail
 
@@ -101,6 +101,10 @@ let private evalOnce (input: string) : int =
                     | Script.KImport _ ->
                         // unreachable: scriptOnlyImport rejects the import before this
                         Some "import is script-only"
+                    | Script.KSig _ ->
+                        // unreachable: -e passes no sig context, so the
+                        // form already refused [D:module-signatures]
+                        Some "signatures belong to module APIs — scripts infer"
                     | Script.KExpr _
                     | Script.KCmd _ -> None
                 | None -> None
@@ -138,8 +142,10 @@ let private evalOnce (input: string) : int =
                                 let bindings = Eval.bindPattern pat (Eval.eval venv te)
                                 execAll (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) (idx + 1) tail
                             | Script.KModule _
-                            | Script.KImport _ ->
-                                // unreachable: gated above / by scriptOnlyImport
+                            | Script.KImport _
+                            | Script.KSig _ ->
+                                // unreachable: gated above / by scriptOnlyImport /
+                                // the sig-context refusal [D:module-signatures]
                                 execAll venv (idx + 1) tail
                             | Script.KExpr te
                             | Script.KCmd te when idx < lastIdx ->

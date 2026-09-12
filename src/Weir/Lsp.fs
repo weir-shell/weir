@@ -257,6 +257,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     for (ll, chk) in stmts do
         match chk.Kind with
         | Script.KType _
+        | Script.KSig _
         | Script.KModule _
         | Script.KImport _ -> ()
         | Script.KLet(_, _, te)
@@ -356,6 +357,7 @@ let private toLogical (stmts: (Script.LogicalLine * Script.CheckedStatement) lis
 let private teOf (chk: Script.CheckedStatement) =
     match chk.Kind with
     | Script.KType _
+    | Script.KSig _
     | Script.KModule _
     | Script.KImport _ -> None
     | Script.KLet(_, _, te)
@@ -681,26 +683,41 @@ let private letSiteIn
     (bound: int option)
     (n: string)
     : (int * int * int) option =
-    stmts
-    |> List.filter (fun (ll, _) ->
-        match bound with
-        | Some b -> ll.Head < b
-        | None -> true)
-    |> List.rev
-    |> List.tryPick (fun (ll, c) ->
-        let binds =
-            match c.Kind with
-            | Script.KLet(bn, _, _) -> bn = n
-            | Script.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
-            | _ -> false
+    let inScope =
+        stmts
+        |> List.filter (fun (ll, _) ->
+            match bound with
+            | Some b -> ll.Head < b
+            | None -> true)
 
-        if binds then
-            binderCol n ll.Text
-            |> Option.map (fun bc ->
-                let pl, pc = Script.translate ll bc
-                (pl, pc, n.Length))
-        else
-            None)
+    let site (ll: Script.LogicalLine) =
+        binderCol n ll.Text
+        |> Option.map (fun bc ->
+            let pl, pc = Script.translate ll bc
+            (pl, pc, n.Length))
+
+    // the SIGNATURE is the declaration a member reference lands on
+    // [D:module-signatures] — the API home (doc included); the impl is
+    // one hop below it in the source
+    let sigSite =
+        inScope
+        |> List.tryPick (fun (ll, c) ->
+            match c.Kind with
+            | Script.KSig(bn, _) when bn = n -> site ll
+            | _ -> None)
+
+    sigSite
+    |> Option.orElseWith (fun () ->
+        inScope
+        |> List.rev
+        |> List.tryPick (fun (ll, c) ->
+            let binds =
+                match c.Kind with
+                | Script.KLet(bn, _, _) -> bn = n
+                | Script.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
+                | _ -> false
+
+            if binds then site ll else None))
 
 /// the command surface containing the column — bare TECmd or the
 /// reified spine (| succeeds desugars the ECmd away; recover prog and
@@ -1593,15 +1610,16 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     let badge =
                         if
                             Can.tyHasFun sch.Ty
-                            && (Can.pureTopBindings stmts
-                                |> Map.tryFind name
-                                |> Option.defaultValue false)
+                            && (Can.pureTopBindings stmts |> Map.tryFind name |> Option.defaultValue false)
                         then
                             "  (pure)"
                         else
                             ""
 
                     Some(sigOrFlat name (lambdaParamNames te) sch.Ty + badge)
+                // a member SIGNATURE line hovers the sig verbatim
+                // [D:module-signatures]
+                | Script.KSig(name, sd) when word = Some name -> Some $"{name} : {formatTy sd.Ty}"
                 | Script.KType decl -> word |> Option.bind (declHover decl)
                 | _ -> None)
             // a referenced TYPE NAME anywhere hovers its shape

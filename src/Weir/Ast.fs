@@ -359,6 +359,10 @@ type Stmt =
     | SExpr of Expr
     | SCmd of Expr
     | SType of Decl
+    // `let name : <ty>` with no `=` [D:module-signatures] — a SIGNATURE
+    // declaration, and the signature IS the export (unsigned module
+    // members are private; scripts refuse the form)
+    | SSig of name: string * ty: Ty * nameSpan: Span
     // the module marker [D:modules-v1] — `module` (name from filename) or
     // `module Name`; kwSpan aims the running-a-module and ordering errors
     | SModule of name: string option * kwSpan: Span
@@ -577,6 +581,7 @@ let sexprStmt (s: Stmt) : string =
     | SExpr e -> $"(sexpr {sexpr e})"
     | SCmd e -> $"(scmd {sexpr e})"
     | SType d -> $"(stype {d.Name})"
+    | SSig(n, ty, _) -> $"(ssig {n} {formatTy ty})"
     | SModule(None, _) -> "(module)"
     | SModule(Some n, _) -> $"(module {n})"
     | SImport(path, _, None) -> $"(import \"{path}\")"

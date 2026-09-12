@@ -488,7 +488,8 @@ let private ofChecked (pairs: (LogicalLine * CheckedStatement) list) : (LogicalL
         | KCmd te -> Some(ll, CCmd te)
         | KImport lm -> Some(ll, CImport lm)
         | KType d -> Some(ll, CType d)
-        | KModule _ -> None)
+        | KModule _
+        | KSig _ -> None)
 
 /// `weir check --can` — implies the check (decision 4): reporting on a
 /// script that does not typecheck would report on something that cannot

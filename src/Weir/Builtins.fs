@@ -5285,6 +5285,7 @@ let typeEnv: TypeEnv =
               groupDef.Name, Record groupDef
               envVarDef.Name, Record envVarDef ]
       ModuleTypes = Map.empty
+      ModulePrivate = Map.empty
       AnonLitDefs = System.Collections.Generic.Dictionary() }
 
 let typeEnvStrict: TypeEnv =

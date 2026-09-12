@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Module signatures — a signature IS the export.** In a module,
+  `let name : int -> int` with no `=` declares a member's type and
+  exports it; an unsigned member is module-private (full inference,
+  invisible to importers — importing one names the exact signature to
+  add, inferred type included, with did-you-mean over the signed
+  members). Implementations stay annotation-free: the signature's
+  types flow into their checking, so params can pattern-match their
+  declared unions and generic signatures (`'a -> 'a`) are honoured or
+  refused as less-general. Signature without implementation errors at
+  the signature; `///` docs live on the signature line (hover and
+  definition read the sig); `type` declarations stay auto-exported;
+  scripts refuse the form (scripts infer). BREAKING: previously every
+  module member was public — export now requires the signature; the
+  import error teaches the migration.
+
 - **`Path.normalize` — lexical `..`/`.` collapse.** No filesystem touch,
   no cwd, symlinks never followed. `Path.combine` keeps `..` (paths you
   control) and `Path.under` refuses an escape (paths you do not);

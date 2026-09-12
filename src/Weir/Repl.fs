@@ -1268,6 +1268,11 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
     | Script.KImport _ ->
         // unreachable: scriptOnlyImport rejects imports at check
         state
+    | Script.KSig _ ->
+        // unreachable: the REPL passes no sig context, so the form
+        // already refused with the scripts-infer teaching
+        // [D:module-signatures]
+        state
 
 
 // ---- session directives [D:repl-directives] -------------------------
@@ -1491,7 +1496,13 @@ let rec private loop (state: State) =
                 |> List.fold
                     (fun st ll ->
                         match
-                            Script.checkStatement false (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll
+                            Script.checkStatement
+                                false
+                                None
+                                (fun _ -> resolver st)
+                                Script.scriptOnlyImport
+                                st.TypeEnv
+                                ll
                         with
                         | Error d ->
                             lastErrored <- true
@@ -1539,7 +1550,9 @@ let rec private loop (state: State) =
             // lines open the multiline buffer)
             let ll = Script.singleLine (Script.stripComment line)
 
-            match Script.checkStatement false (fun _ -> resolver state) Script.scriptOnlyImport state.TypeEnv ll with
+            match
+                Script.checkStatement false None (fun _ -> resolver state) Script.scriptOnlyImport state.TypeEnv ll
+            with
             | Error d when d.Parse ->
                 lastErrored <- true
                 // the input sits on the prompt line above — caret under it
@@ -1773,7 +1786,7 @@ let private loadInit (baseState: State) : State =
                     match rest with
                     | [] -> Ok(List.rev acc)
                     | (ll: Script.LogicalLine) :: tail ->
-                        match Script.checkStatement false Script.resolver Script.scriptOnlyImport env ll with
+                        match Script.checkStatement false None Script.resolver Script.scriptOnlyImport env ll with
                         | Error d -> Error(ll, d)
                         | Ok chk -> go chk.Env ((ll, chk) :: acc) tail
 
@@ -1887,6 +1900,10 @@ let private loadInit (baseState: State) : State =
                                             ll,
                                             "the init file is not a module — no 'module' marker; its names are the prompt's"
                                         )
+                                | Script.KSig _ ->
+                                    // unreachable: no sig context here, the
+                                    // form already refused [D:module-signatures]
+                                    ()
 
                         match bad with
                         | Some(ll, msg) ->
