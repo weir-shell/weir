@@ -1704,7 +1704,7 @@
     },
     {
       "name": "exit",
-      "signature": "exit (code: int) : unit",
+      "signature": "exit (code: int) : \u0027a",
       "summary": "Exit the process with a status code.",
       "example": null,
       "pointer": null
@@ -1718,10 +1718,10 @@
     },
     {
       "name": "fail",
-      "signature": "fail (message: string) : unit",
+      "signature": "fail (message: string) : \u0027a",
       "summary": "Stop with a message and exit code 1.",
       "example": null,
-      "pointer": "message-carrying; \u0060exit n\u0060 is the bare-code spelling."
+      "pointer": "message-carrying; \u0060exit n\u0060 is the bare-code spelling. Diverges (\u0060string -\u003E \u0027a\u0060): a failing arm sits opposite a value arm [D:fail-bottom]."
     },
     {
       "name": "force",

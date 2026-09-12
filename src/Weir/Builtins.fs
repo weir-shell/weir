@@ -2383,8 +2383,8 @@ let private fileMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
 
 // fail keeps exit-1 (message-carrying); `exit n` is the propagation
-// spelling [D:exit-rename] — unit-typed here (F#'s is 'a), no checker
-// surface.
+// spelling [D:exit-rename] — both DIVERGE (`-> 'a`, F#'s typing), so a
+// fail/exit arm sits opposite a value arm [D:fail-bottom].
 let private exitImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -4302,7 +4302,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "Materialize a lazy sequence, caching it (the bare Seq.force)." (Some "[1; 2; 3] |> force") None
            |> named [ "xs" ])
           "fail",
-          (bd "Stop with a message and exit code 1." None (Some "message-carrying; `exit n` is the bare-code spelling.")
+          (bd
+              "Stop with a message and exit code 1."
+              None
+              (Some
+                  "message-carrying; `exit n` is the bare-code spelling. Diverges (`string -> 'a`): a failing arm sits opposite a value arm [D:fail-bottom].")
            |> named [ "message" ])
           "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
 
@@ -5091,8 +5095,10 @@ let private entries: (string * Ty * Value) list =
       "|succeededIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBool))), succeededWithIn []
       "|orFailedIn", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), orFailedWithIn []
       "|exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
-      "fail", TFun(TStr, TUnit), failImpl
-      "exit", TFun(TInt, TUnit), exitImpl
+      // diverging [D:fail-bottom]: the result var generalizes, so an arm
+      // or branch that fails/exits unifies with the value the others make
+      "fail", TFun(TStr, tA), failImpl
+      "exit", TFun(TInt, tA), exitImpl
       // env-carrying twins — the env-sigil reifier route
       // (`$e(cmd | complete)`)
       "|completedEnv",

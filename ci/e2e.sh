@@ -7380,4 +7380,50 @@ for line in \
 done
 echo "e2e ok: homepage hero currency (hero tag run + tag created, beat-1 three-distance check + wrote-nothing, beat-2 --help, the splice refusal, the --can quote — all match live runs)"
 
+# the ported-module findings triage [D:fail-bottom] [D:continuation-siblings]:
+# a fail arm opposite a value arm, a lambda body's tuple block-let, and
+# a multi-line application whose EVERY deeper line joins — script and
+# module body alike
+tdir=$(mkweirtmp)
+cat > "$tdir/triage.weir" <<'WEOF'
+let picked = match Some 41 with | Some v -> v | None -> fail "absent"
+print (show (picked + 1))
+
+[(1, 2); (3, 4)] |> Seq.iter (fun p ->
+    let a, b = p
+    print $"{a}+{b}")
+
+let combine3 a b c = a * 2 + b * 3 + c * 5
+
+let v =
+    combine3
+        1
+        2
+        3
+
+print (show v)
+WEOF
+out=$($BIN "$tdir/triage.weir")
+expect "fail diverges: the arm carries the value" '42' "$out"
+expect "a lambda-body tuple block-let destructures" '3+4' "$out"
+expect "multi-line application: every deeper line joins" '23' "$out"
+cat > "$tdir/mlm.weir" <<'WEOF'
+module Mlm
+
+let combine3 a b c = a * 2 + b * 3 + c * 5
+
+let total xs =
+    combine3
+        (xs |> Seq.length)
+        10
+        100
+WEOF
+cat > "$tdir/mluse.weir" <<'WEOF'
+import "./mlm.weir" as Mlm
+print (show (Mlm.total ["a"; "b"]))
+WEOF
+out=$(cd "$tdir" && $BIN mluse.weir)
+expect "multi-line application assembles in a module body" '534' "$out"
+rm -rf "$tdir"
+
 echo "e2e battery: all green"

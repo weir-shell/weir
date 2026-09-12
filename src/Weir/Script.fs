@@ -1619,10 +1619,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         let ll, compounds, closedHead =
                                                             closeCompounds p.LL p.Compounds None
 
+                                                        // the sibling floor is the STATEMENT's start column,
+                                                        // not the last line's [D:continuation-siblings]: a
+                                                        // deeper continuation line must not hoist the floor,
+                                                        // or the second argument line of a multi-line
+                                                        // application sequences as a statement
                                                         let siblingLevel =
                                                             match closedHead with
                                                             | Some h -> h
-                                                            | None -> p.LastIndent
+                                                            | None -> p.StmtLevel
 
                                                         // while a lambda's paren is open, lines at (or
                                                         // right of) its opener that would close a let or
@@ -1638,14 +1643,20 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             match p.Lets with
                                                             | (k, _) :: rest when indent = k && k > lambdaFloor ->
                                                                 rest, JIn
+                                                            // a proc head's block joins sentineled even in
+                                                            // the dangle position [D:scoped-procs]
+                                                            | _ when endsInProcHead ll.Text -> p.Lets, JStmtSibling
+                                                            // the first line after a dangling head OPENS its
+                                                            // body — a stale statement level from an earlier
+                                                            // block must not sibling-capture it
+                                                            // [D:continuation-siblings]
+                                                            | _ when p.PrevDangles && indent > p.LastIndent ->
+                                                                p.Lets, JSpace
                                                             // same-indent sibling = block sequencing
                                                             // [D:sibling-sentinel]: the machine boundary,
                                                             // NOT a user ';' — command mode stops here
                                                             | _ when indent = siblingLevel && indent > lambdaFloor ->
                                                                 p.Lets, JStmtSibling
-                                                            // a proc head's block joins sentineled even in
-                                                            // the dangle position [D:scoped-procs]
-                                                            | _ when endsInProcHead ll.Text -> p.Lets, JStmtSibling
                                                             | _ -> p.Lets, JSpace
 
                                                         let lets =
@@ -2885,7 +2896,14 @@ let checkStatement
                     | ECapture { Kind = EPipe(_, { Kind = ECmd _ }) } -> ", or drop the $( ) to run it as a command"
                     | _ -> ""
 
-                match (if gateExprs then discardError te.Ty else None) with
+                // a diverging tail makes no value to discard
+                // [D:fail-bottom]: its fresh var passes the statement gate
+                let gated =
+                    match te.Ty with
+                    | TVar _ when Check.divergesTo e -> None
+                    | ty -> if gateExprs then discardError ty else None
+
+                match gated with
                 | Some msg ->
                     let msg = msg + dropClause
 

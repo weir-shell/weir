@@ -4,6 +4,23 @@
 
 ### Added
 
+- **`fail` (and `exit`) now diverge: `string -> 'a`.** A failing arm
+  sits opposite a value arm — `match o with | Some v -> v | None ->
+  fail "absent"` types as the value, and `if bad then fail "no" else 5`
+  likewise; the throwaway `fail "x" ; 0` scaffolding is no longer
+  needed (it stays legal). A constraint nothing determines still
+  refuses, and the else-less `if bad then fail "usage"` guard is
+  untouched. Supersedes the earlier unit-typing ruling on its own
+  revisit trigger.
+
+- **Fixed: every deeper line continues a multi-line application.** An
+  application with arguments on their own deeper-indented lines used to
+  join only the first — the rest sequenced as block statements ("a
+  sequenced expression must be unit"). The sibling floor is now the
+  statement's start column, in scripts and module bodies alike; a block
+  statement after a deeper continuation also sequences instead of dying
+  at the dedent floor.
+
 - **Module signatures — a signature IS the export.** In a module,
   `let name : int -> int` with no `=` declares a member's type and
   exports it; an unsigned member is module-private (full inference,
