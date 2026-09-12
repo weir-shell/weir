@@ -23,6 +23,12 @@ Effect set is basically `{ fs.read, fs.write, console }` — no `net`, no
   recursion, bounded by construction.
 - `File(path, content)` where `content : unit -> string` → a weir
   FUNCTION-FIELD (deferred, type-checked at check-time, run at apply).
+  function-types is DONE (v0.0.23: the arrow production + refuse-and-call),
+  so this field DECLARES today. Note the F2 consequence so it does not
+  surface as a surprise: a function field is show/wire-refused ("show
+  cannot render functions"; every wire rejects it) — fine for apply, a
+  content thunk never serialises, but it is exactly what bounds a
+  STORABLE plan later ([PLAN-plan-apply]).
 - `MergeEnv`'s `Dictionary<string,string>` → `Map<string,string>`; the
   `k=v` parse → `Str.splitOnce`.
 - `printfn "File --> …"` is a `console`/`log` effect ([PLAN-pure] label).
@@ -70,6 +76,7 @@ lower to primitive effects" synthesis there.
 
 ## Depends on
 
-[PLAN-structural-walk] (the walk) · a YAML-edit capability probe (blocker)
-· [PLAN-plan-apply] (the second interpreter, later) · optionally
+[PLAN-structural-walk] (the walk) · function-types (DONE, v0.0.23 — the
+content-thunk fields) · a YAML-edit capability probe (blocker) ·
+[PLAN-plan-apply] (the second interpreter, later) · optionally
 [PLAN-path-type] (`DirWithContext` path math).

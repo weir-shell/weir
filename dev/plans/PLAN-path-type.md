@@ -4,6 +4,13 @@ Status: DRAFT (2026-09-11). Undiscussed — this file is a first design pass
 and a set of open questions, not an approved shape. Bet #2 of the
 "features F# lacks that fit weir" set.
 
+Review ruling (2026-09-11 rider): keep DRAFT behind a REAL
+rel/abs-confusion bug receipt — §3's own recommendation applied to the
+whole feature. The current receipt is one KSL path helper
+(`RelativeToRoot`) and `$"{a}/{b}"` is what people write; with the
+overload option struck (below), the surviving v1 shapes cost more than
+the feature's evidence justifies. Lowest-ranked of the current bets.
+
 ## The idea
 
 The shell's central noun is the path, and weir models it today as `string`
@@ -43,11 +50,22 @@ The complexity is in three decisions, each with a real cost:
    (`File.read "x"`). Options:
    - Migrate all fs builtins to `Path` (typed end-to-end, but a breaking
      change across every script + e2e cell + doc block).
-   - Overload: fs builtins accept `Path` OR `string` (string literal
-     coerces) — no migration, gradual adoption. Likely the pragmatic v1.
+   - STRUCK: "overload — fs builtins accept `Path` OR `string`". weir
+     refuses overloading and states "no implicit widening" (coming-from's
+     F# section); the option contradicts two stated laws and is not
+     available as written. The adjacent LEGAL mechanism is a coercion at a
+     MARKED boundary — the scalar-literal precedent (`1KiB`, `30s`): a
+     string LITERAL in an fs-builtin argument position could coerce to
+     `Path` if that position is marked. But that is Q1's construction
+     question, and it is a real coercion rule with a "where does it fire"
+     cost — not the free lunch the overload looked like.
    - Leave fs builtins on `string`; `Path` is an OPT-IN type for path math
-     you `show` back to a string at the boundary — smallest, but the type
+     you render back to a string at the boundary — smallest, but the type
      never reaches the fs surface (weak).
+   With the overload struck, the honest v1 choices are migrate-all (a
+   repo-wide breaking sweep) or opt-in-beside-string (weak). Both are
+   worse than the struck option looked — which LOWERS this feature's
+   ranking, and that is the correct reading (see the status ruling).
    This choice dominates the cost; it is the real design question.
 
 3. ABSOLUTE vs RELATIVE. In the TYPE (two types / a phantom flag, so a
@@ -56,14 +74,16 @@ The complexity is in three decisions, each with a real cost:
    simple)? Rec: runtime in v1; type-level abs/rel is a deferred
    refinement with its own receipt (a bug where rel/abs confusion bit).
 
-## Sketch (v1, explicit construction, overloaded boundary)
+## Sketch (v1, explicit construction, opt-in beside string builtins)
 
     let root = Path.of "src"
     let proj = root |> Path.join "App" |> Path.join "App.csproj"   // Path, pure
     proj |> Path.ext           // "csproj"
     proj |> Path.exists        // bool, fs.read effect
-    File.read proj             // fs builtins accept Path (string literals still coerce)
-    glob "src/**/*.csproj"     // -> seq<Path>
+    File.read (Path.str proj)  // back to string at the fs boundary (opt-in v1;
+                               // a typed fs surface needs Q2's migrate-all or
+                               // Q1's marked literal-coercion — no overload)
+    glob "src/**/*.csproj"     // -> seq<Path>, if glob migrates
 
 ## Open questions (all undiscussed — for the maintainer)
 

@@ -103,3 +103,10 @@ reason one combinator does not cover both.
 Prerequisite for [PLAN-dbt-migration] (the dep graph) and
 [PLAN-ksl-migration] (the render tree). Independent of [PLAN-pure], but
 composes with it (pure/effectful walks).
+
+Docs cross-link: this ruling answers COMING-FROM's F# `while`/`let rec`
+row, which now states neither exists and quotes the actual teaching
+(`'rec' is a keyword`) rather than implying `let rec` is a thing you
+translate away. (The rendered page deliberately does NOT cite this file —
+dev/plans names client projects and rendered surfaces must not point
+there; the client-name gate in ci/e2e.sh enforces the surface split.)

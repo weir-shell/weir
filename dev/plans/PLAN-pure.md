@@ -68,9 +68,14 @@ bottom of the lattice extended later. No corner painted.
       type error: this 'pure' block forbids effects, but 'buildImage'
       spawns a process — reached via buildImage → runBicep → 'bicep lint'
       (a command) [vendored: acme.build]
-- `let pure f = …` MODIFIER — slots into the F# post-`let` modifier chain
-  (`let rec`, `let inline`) and composes: `let rec pure f`. Desugars to a
-  body-spanning `pure` block. Single token, no list-parsing.
+- `let pure f = …` MODIFIER — weir's FIRST post-`let` modifier: weir has
+  no `let rec` / `let inline` / `let mutable` (`rec` is reserved and
+  teaches `'rec' is a keyword`), so there is NO existing modifier chain to
+  slot into. This is a new let-head grammar production and is priced as
+  such (parser production + assembler interaction + fmt + fuzz
+  alternation) — not borrowed as F#'s apparent-zero slot cost. It takes
+  F#'s modifier POSITION so any future modifier would chain naturally.
+  Desugars to a body-spanning `pure` block. Single token, no list-parsing.
 - `proc` reachable ⇒ not pure. The escape hatch is closed by
   construction; no special `proc` handling needed because there is no
   `only` yet.
@@ -99,6 +104,14 @@ bottom of the lattice extended later. No corner painted.
 
 ## Footprint (Stage 1)
 
+- PREREQUISITE: take [D:host-strictness]'s deferred (b)+(c) — restructure
+  Check/Eval kind-first and make `withinKinds` a union — BEFORE adding
+  `pure` as the sixth kind, so the addition is a build failure everywhere
+  it is unhandled rather than a silent gap (the table drifted three times
+  across its consumers unguarded: the check direction missing `proc`,
+  eval's wildcard `tmp` arm, Can.fs missing `lock`). This is owed
+  regardless; `pure` is the trigger that finally prices it in.
+  [PLAN-plan-apply] inherits it (`plan` would be the seventh kind).
 - Check.fs: builtin effect-label table + reachability→emptiness (reuse
   `--can`); pure-region check + teaching error carrying the trace.
 - Ast.fs / Parser.fs / Script.fs: one block head (`pure`) in the
