@@ -3289,6 +3289,30 @@ echo "$out" | grep -q "/inner$" || fail "an escaped lazy command must keep its w
 echo "e2e ok: ambient capture — an escaped lazy command spawns under its written-site scope"
 rm -rf "$adir2"
 
+# districts in MODULES [D:yaml-nodes]: a `yaml patch` district inside an
+# imported module function assembles and runs — pinned after a stale-
+# binary report claimed the loader broke on the district sentinel
+mdir=$(mkweirtmp)
+cat > "$mdir/pmod.weir" <<'WEOF'
+module Pmod
+
+let addRes resPath doc =
+    let p = yaml patch
+        resources:
+            - $resPath
+    doc |> Yaml.merge p
+WEOF
+cat > "$mdir/puse.weir" <<'WEOF'
+import "./pmod.weir" as Pmod
+["kind: K"] |> Yaml.parse |> Pmod.addRes "a.yaml" |> to yaml |> Seq.iter print
+WEOF
+out=$(cd "$mdir" && $BIN puse.weir)
+expect "a yaml patch district works inside an imported module" 'kind: K
+resources:
+  - a.yaml' "$out"
+echo "e2e ok: districts in modules — patch district in an imported function"
+rm -rf "$mdir"
+
 # anonymous record types [D:anon-records]: the shape inline in the
 # adapter slot — `_.field` checks, seq<> composes, the shape persists
 # across statements, and a declared record stays a DIFFERENT type
