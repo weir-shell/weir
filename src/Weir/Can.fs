@@ -515,3 +515,111 @@ let run (json: bool) (strict: bool) (path: string) : int =
                 System.Console.WriteLine(renderHuman path caps)
 
             if strict && opaqueCount caps > 0 then 2 else 0
+
+// ---- purity, the DISPLAY stage of [D:pure] --------------------------------
+// A binding is (pure) when its body can reach NO effect — computed over
+// the same classification this report walks, exposed as a boolean only
+// (labels stay internal; `only`/`deterministic` tiers expose them later).
+// CONSERVATIVE by construction: an unknown callable (a function-typed
+// param, an applied field, an import's member) forfeits the badge — the
+// badge may be missing, it can never lie. Display-only: nothing is
+// gated, weir stays effect-normal.
+
+// whole effectful MODULES (new members default impure — the safe drift
+// direction), plus the effectful members of otherwise-pure modules and
+// the bare effectful names. `fail` stays pure (control flow, not an
+// external touch); `exit` does not (it takes the process down).
+let private effectfulModules =
+    Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log" ]
+
+let private effectfulQualified =
+    Set
+        [ "Http.send"
+          "Http.fetch"
+          "Http.query"
+          "Path.glob"
+          "Path.tempRoot"
+          "Path.newTempDir"
+          "Instant.now"
+          "Duration.sleep" ]
+
+let private effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit" ]
+
+let private effectfulName (n: string) =
+    if n.Contains "." then
+        effectfulQualified.Contains n
+        || (match n.Split '.' with
+            | [| m; _ |] -> effectfulModules.Contains m
+            | _ -> false)
+    else
+        // the |-prefixed reifier desugar targets spawn [D:exit-reifiers]
+        effectfulBare.Contains n || n.StartsWith "|"
+
+// the CLOSED builtin surface: a dotted or bare name found here is pure
+// unless classified above — exhaustive by construction, so a pure
+// member (Str.trim) never falls into the unknown-callable bucket
+let private builtinNames =
+    lazy (Weir.Builtins.valueEnv |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+
+let rec tyHasFun (t: Ty) =
+    match t with
+    | TFun _ -> true
+    | TSeq i -> tyHasFun i
+    | TTuple ts -> ts |> List.exists tyHasFun
+    | TNamed(_, args) -> args |> List.exists tyHasFun
+    | _ -> false
+
+/// conservative purity of a typed expression; `env` carries the purity
+/// of KNOWN user bindings (earlier top-level lets, local lets)
+let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
+    let headOf (e: TypedExpr) =
+        let rec go (e: TypedExpr) =
+            match e.Kind with
+            | TEApp(g, _) -> go g
+            | _ -> e
+
+        go e
+
+    match te.Kind with
+    | TECmd _ -> false
+    | TEWithin _ -> false
+    | TEEnvLoad _ -> false
+    | TEArgsLoad _ -> false
+    // retry/poll sleep between attempts — the clock is ambient input
+    | TERetry _ -> false
+    | TEVar n ->
+        if effectfulName n then false
+        elif builtinNames.Force().Contains n then true
+        else
+            match Map.tryFind n env with
+            | Some p -> p
+            | None ->
+                // a constructor or data-typed unknown is inert; an
+                // unknown CALLABLE could do anything — no badge
+                not (tyHasFun te.Ty)
+    | TELet(n, _, v, b) ->
+        let pv = isPureExpr env v
+        pv && isPureExpr (Map.add n pv env) b
+    | TELambda(p, _, b) -> isPureExpr (Map.remove p env) b
+    | TEApp(_, _) ->
+        // applying a COMPUTED function (a field's value, a match result)
+        // is an unknown call; var heads resolve through the rules above,
+        // inline lambdas through their bodies
+        (match (headOf te).Kind with
+         | TEVar _
+         | TELambda _
+         | TELambdaPat _ -> true
+         | _ -> false)
+        && (Check.childExprs te |> List.forall (isPureExpr env))
+    | _ -> Check.childExprs te |> List.forall (isPureExpr env)
+
+/// per-binding purity over a checked script, in declaration order (no
+/// `let rec` exists, so a single forward pass is total)
+let pureTopBindings (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : Map<string, bool> =
+    stmts
+    |> List.fold
+        (fun (env: Map<string, bool>) (_, st) ->
+            match st.Kind with
+            | Script.KLet(n, _, te) -> Map.add n (isPureExpr env te) env
+            | _ -> env)
+        Map.empty

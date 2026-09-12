@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Pure functions are visibly pure: the `(pure)` hover badge.** A
+  top-level function whose body can reach no effect — no
+  file/dir/env/process/network/console touch, no command, no clock,
+  transitively through the bindings it calls — hovers as
+  `slug (s) : string  (pure)`. The display is deliberately asymmetric:
+  weir is effect-normal, so the rare pure function is surfaced and
+  effectful code stays exactly as it was (effect detail remains in
+  `weir check --can`). The badge is conservative — a call through a
+  function-typed parameter or any unknown callable forfeits it — so a
+  missing badge is possible, a lying badge is not. Display only:
+  nothing is gated on purity.
+
 - **`yaml patch` + `Yaml.parse`/`Yaml.merge` — edit YAML you did not
   fully declare.** `Yaml.parse` reads one document into `Yaml` nodes
   (typeless: structure held whole, undeclared keys included — where

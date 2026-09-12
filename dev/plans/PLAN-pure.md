@@ -1,6 +1,18 @@
 # weir — `pure`: an opt-in purity assertion in an effect-normal language
 
-Status: APPROVED (2026-09-11). Ship Stage 0 (infer + display) first, then
+Status: STAGE 0 BUILT (2026-09-11, branch pure-stage0; [D:pure]) — the
+display stage shipped: classification in Can.fs (whole effectful modules
++ member exceptions + bare names + node kinds; console counts; `fail`
+pure, `exit` not), conservative transitive `isPureExpr`/`pureTopBindings`
+(unknown callables forfeit the badge — missing allowed, lying not), and
+the `(pure)` hover badge on function-typed top-level lets. Two scope
+notes against the original sketch: #sig turned out to be the
+COMMAND-signature surface, so the badge is hover-only; and inner lets /
+pattern-bound lets carry no badge yet (top-level named lets only — a
+Stage 0.5 if wanted). Stage 1 (enforce) remains, behind the
+[D:host-strictness] withinKinds prerequisite below.
+
+Originally APPROVED same day. Ship Stage 0 (infer + display) first, then
 Stage 1 (enforce). The four open questions below were approved as their
 recommended answers.
 

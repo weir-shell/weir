@@ -32,6 +32,15 @@ stops being true fails the build.
   hover can't drift. Statements end at column 0 (the next col-0
   line) — blank lines and comment lines are both transparent inside
   a statement, so blocks group freely with gaps.
+- A top-level FUNCTION whose body can reach no effect hovers with a
+  `(pure)` badge [D:pure] — no file/dir/env/process/network/console
+  touch, no command, no clock, transitively through earlier bindings.
+  The display is ASYMMETRIC on purpose: weir is effect-normal, so the
+  RARE pure function is surfaced and effectful code stays unbadged
+  (effect detail lives in `weir check --can`, on demand). The badge is
+  conservative — a call through a function-typed param or any unknown
+  callable forfeits it — so it can be missing, never lying. Display
+  only: nothing is gated on purity.
 - Scripts and `-e` are STRICT: every module member is qualified —
   `Seq.map`, `Str.trim`, `Option.defaultValue`, `File.read` — including in
   command pipelines (`|> Seq.map Str.trim`). Bare names (`map`,
