@@ -454,7 +454,7 @@ send2({"jsonrpc": "2.0", "method": "exit", "params": {}}); p2.wait(timeout=5)
 import tempfile
 td = tempfile.mkdtemp()
 modp = os.path.join(td, "mod.weir"); entryp = os.path.join(td, "main.weir")
-open(modp, "w").write("module Mod\nlet base = 10\n")               # clean on disk
+open(modp, "w").write("module Mod\nlet base : int\nlet base = 10\n")  # clean on disk, signed = exported
 open(entryp, "w").write('import "./mod.weir"\nprint (show Mod.base)\n')
 p3 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 PROCS.append(p3)
@@ -480,7 +480,7 @@ for _ in range(3):
 expect(got.get(entry_uri) == [], f"a clean entry importing a clean module publishes empty: {got}")
 # open the module with a BROKEN buffer (disk stays clean)
 send3({"jsonrpc": "2.0", "method": "textDocument/didOpen",
-       "params": {"textDocument": {"uri": mod_uri, "text": "module Mod\nlet base = Str.trim 5\n"}}})
+       "params": {"textDocument": {"uri": mod_uri, "text": "module Mod\nlet base : int\nlet base = Str.trim 5\n"}}})
 seen = {}
 for _ in range(5):
     m = read3()
@@ -499,7 +499,7 @@ send3({"jsonrpc": "2.0", "method": "exit", "params": {}}); p3.wait(timeout=5)
 td2 = tempfile.mkdtemp()
 os.makedirs(os.path.join(td2, ".weir", "sigs"))
 libp = os.path.join(td2, "lib.weir")
-open(libp, "w").write("module Lib\n\n/// doubles a number\nlet double n = n * 2\n")
+open(libp, "w").write("module Lib\n\n/// doubles a number\nlet double : int -> int\n\nlet double n = n * 2\n")
 open(os.path.join(td2, ".weir", "sigs", "mytool.weir"), "w").write(
     'module Mytool\nlet version = "mytool 1.0"\ntype Cmd = {\n    /// run without side effects\n    dryRun: bool\n}\n')
 entp = os.path.join(td2, "main.weir")
@@ -574,7 +574,7 @@ expect(d and d["uri"] == lib_spelled, f"open target must use the client's spelli
 # the importer's hover — buffer over disk through the decoded-path match
 send4({"jsonrpc": "2.0", "method": "textDocument/didChange",
        "params": {"textDocument": {"uri": lib_spelled},
-                  "contentChanges": [{"text": "module Lib\n\n/// TRIPLES a number\nlet double n = n * 3\n"}]}})
+                  "contentChanges": [{"text": "module Lib\n\n/// TRIPLES a number\nlet double : int -> int\n\nlet double n = n * 3\n"}]}})
 v = req4(10, "textDocument/hover", ent_uri, 3, 13)["result"]["contents"]["value"]
 expect("TRIPLES a number" in v, f"module edit must refresh the importer's hover: {v!r}")
 
