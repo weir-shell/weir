@@ -5470,13 +5470,67 @@ let letBindingHoverTests =
         [ test "a value bound to an all-unit lambda hovers the flat type, not a () signature" {
               Expect.equal
                   (Weir.Lsp.hoverType [ "let fun2 = fun () -> fun () -> 1"; "let y = fun2" ] 1 8)
-                  (Some "fun2 : unit -> unit -> int")
-                  "flat value type — matches F#'s val fun2 : unit -> unit -> int"
+                  (Some "fun2 : unit -> unit -> int  (pure)")
+                  "flat value type — matches F#'s val fun2 : unit -> unit -> int; pure, so badged [D:pure]"
           }
           test "a function with a NAMED param keeps its signature" {
               match Weir.Lsp.hoverType [ "let apply f x = f x"; "let z = apply" ] 1 9 with
               | Some h -> Expect.stringContains h "apply (f" "the named-param signature is kept"
               | None -> failtest "apply must hover"
+          } ]
+
+let purityBadgeTests =
+    // the DISPLAY stage of [D:pure]: the rare pure function gets a
+    // hover badge; effectful stays the unbadged norm. The badge is
+    // conservative — missing is allowed, lying is not.
+    let hoverOf (lines: string list) (line: int) (col: int) =
+        match Weir.Lsp.hoverType lines line col with
+        | Some h -> h
+        | None -> failtest "binding must hover"
+
+    testList
+        "the (pure) hover badge [D:pure]"
+        [ test "a pure transform badges; an effectful sibling does not" {
+              let lines =
+                  [ "let slug s = s |> Str.toLower |> Str.replace \" \" \"-\""
+                    "let logIt s = print (slug s)"
+                    "print (slug \"A B\")"
+                    "logIt \"x\"" ]
+
+              Expect.stringContains (hoverOf lines 1 5) "(pure)" "Str-only body is pure"
+              Expect.isFalse ((hoverOf lines 2 5).Contains "(pure)") "print is an effect — no badge"
+          }
+          test "purity is transitive through earlier bindings" {
+              let lines =
+                  [ "let slug s = s |> Str.toLower"
+                    "let shout s = slug s |> Str.toUpper"
+                    "let noisy s = print s"
+                    "let loud s = noisy s"
+                    "print (shout \"a\")"
+                    "loud \"b\"" ]
+
+              Expect.stringContains (hoverOf lines 2 5) "(pure)" "a caller of a pure binding stays pure"
+              Expect.isFalse ((hoverOf lines 4 5).Contains "(pure)") "a caller of an effectful binding is not"
+          }
+          test "an unknown callable forfeits the badge; an inline lambda does not" {
+              let lines =
+                  [ "let ap f x = f x"
+                    "let addOne xs = xs |> Seq.map (fun x -> x + 1)"
+                    "print (show (ap (fun y -> y) 1))"
+                    "print (show (addOne [1] |> Seq.length))" ]
+
+              Expect.isFalse ((hoverOf lines 1 5).Contains "(pure)") "a function-typed param could do anything"
+              Expect.stringContains (hoverOf lines 2 5) "(pure)" "an inline lambda is analyzable"
+          }
+          test "boundary reads are effects; data bindings carry no badge" {
+              let lines =
+                  [ "let readName p = File.read p |> Seq.length"
+                    "let x = 1"
+                    "print (show (readName \"f\"))"
+                    "print (show x)" ]
+
+              Expect.isFalse ((hoverOf lines 1 5).Contains "(pure)") "File.read is fs — no badge"
+              Expect.isFalse ((hoverOf lines 2 5).Contains "(pure)") "data is trivially pure — the badge is for functions"
           } ]
 
 let withinKindsTests =
@@ -16046,6 +16100,7 @@ let allTests =
           semanticTokenTests
           lspCrossFileTests
           letBindingHoverTests
+          purityBadgeTests
           withinKindsTests
           withinAlwaysLockTests
           wireKeyTests

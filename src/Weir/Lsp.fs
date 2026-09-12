@@ -1586,7 +1586,22 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 // a top-level let hovers as its annotated signature, ON the
                 // binder name only — never a fallback for an unresolved spot
                 | Script.KLet(name, sch, te) when word = Some name ->
-                    Some(sigOrFlat name (lambdaParamNames te) sch.Ty)
+                    // the purity badge, display stage of [D:pure]: the
+                    // RARE pure function is surfaced; effectful stays
+                    // the unbadged norm (weir is effect-normal), and a
+                    // missing badge is conservative, never a lie
+                    let badge =
+                        if
+                            Can.tyHasFun sch.Ty
+                            && (Can.pureTopBindings stmts
+                                |> Map.tryFind name
+                                |> Option.defaultValue false)
+                        then
+                            "  (pure)"
+                        else
+                            ""
+
+                    Some(sigOrFlat name (lambdaParamNames te) sch.Ty + badge)
                 | Script.KType decl -> word |> Option.bind (declHover decl)
                 | _ -> None)
             // a referenced TYPE NAME anywhere hovers its shape
