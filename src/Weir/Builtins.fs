@@ -431,7 +431,9 @@ let private exitCodedWithIn (overlay: (string * string) list) : Value =
                             { Prog = Proc.resolveProg prog
                               Args = argv
                               Env = overlay
-                              Input = Some input }
+                              Input = Some input
+                              Cwd = None
+                              Ambient = None }
 
                     VInt(int64 code)
                 | _ -> unreachable "the checker rejects 'exitCodedIn' on these arguments")))
@@ -451,7 +453,9 @@ let private orFailedWithIn (overlay: (string * string) list) : Value =
                                 { Prog = Proc.resolveProg prog
                                   Args = argv
                                   Env = overlay
-                                  Input = Some input }
+                                  Input = Some input
+                                  Cwd = None
+                                  Ambient = None }
 
                         if code <> 0 then
                             failwith $"{msg} (exit {code})"

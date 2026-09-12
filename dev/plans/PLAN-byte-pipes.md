@@ -86,7 +86,20 @@ Three boundaries, types kept exactly where they mean something:
 - Priority: hops first (the substance), `| bytes` second (receipt
   exists), `| lines` last — receipt-driven, possibly never.
 
-## RIDER — the value-headed pipe child misses the AMBIENT SCOPE
+## RIDER — resolved in two, one still open
+
+BUILT (2026-09-12, branch ambient-capture): the ESCAPE class — a lazy
+command bound inside a scope and forced outside now replays its
+written-site ambient (Spec Cwd/Ambient snapshots; [D:ambient-capture]).
+STILL OPEN, rediagnosed with debug-order evidence: the probe matrix's
+within-body cells are a PARSER ASSOCIATION defect — `xs | cmd` written
+as a block's TAIL line parses as `(within …) | cmd`, the pipe attaching
+OUTSIDE the block, so the command never sits in the scope at all (and a
+tail `s |> f` in the same position is a bare parse error). Fix lives in
+the joined-form within-body grammar, its own branch; the matrix below
+becomes its regression pins.
+
+## The original probe matrix (the association defect's pins)
 
 Probed 2026-09-12, six-cell matrix, same spawn seam as this plan:
 

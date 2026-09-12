@@ -3272,6 +3272,23 @@ echo "$berr" | grep -qF "command failed with exit code 3" || fail "the leftmost 
 echo "e2e ok: byte pipes — raw hops byte-identical, chains compose, leftmost failure raises"
 rm -rf "$bdir"
 
+# ambient capture [D:ambient-capture]: a LAZY command bound inside a
+# `within` scope and forced OUTSIDE spawns under the scope it was
+# WRITTEN in (closure law), not the restored outer ambient
+adir2=$(mkweirtmp)
+mkdir -p "$adir2/inner"
+cat > "$adir2/amb.weir" <<'WEOF'
+let mk () =
+    within cd "inner"
+        let s = sh -c "pwd"
+        Seq.append s []
+mk () |> Seq.iter (fun l -> print l)
+WEOF
+out=$(cd "$adir2" && $BIN amb.weir)
+echo "$out" | grep -q "/inner$" || fail "an escaped lazy command must keep its written-site cwd: $out"
+echo "e2e ok: ambient capture — an escaped lazy command spawns under its written-site scope"
+rm -rf "$adir2"
+
 # anonymous record types [D:anon-records]: the shape inline in the
 # adapter slot — `_.field` checks, seq<> composes, the shape persists
 # across statements, and a declared record stays a DIFFERENT type

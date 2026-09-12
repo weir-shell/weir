@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Fixed: a lazy command escaping a `within` scope now spawns under the
+  scope it was written in.** Command values are lazy; one bound inside
+  `within cd`/`within env` and forced after the block used to spawn under
+  the restored outer ambient. The ambient (cwd + env overlay) is now
+  captured at the expression's written site, closure-style, and replayed
+  at spawn. (A related, different defect remains open: a `xs | cmd` pipe
+  written as a block's tail line associates to the outside of the block —
+  a parser association issue, tracked separately.)
+
 - **Command pipes carry bytes.** A command→command hop is now a raw byte
   pipe — no decode, no line split, no appended newline — so binary flows
   through pipelines untouched (`gzip -c f | sh -c "cat > out"` is
