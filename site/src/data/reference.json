@@ -414,6 +414,30 @@
       ]
     },
     {
+      "name": "Frontier",
+      "members": [
+        {
+          "name": "fold",
+          "signature": "Frontier.fold (keyOf: \u0027a -\u003E string) (seed: \u0027b) (step: \u0027b -\u003E \u0027a -\u003E \u0027b * seq\u003C\u0027a\u003E) (frontier: seq\u003C\u0027a\u003E) : \u0027b",
+          "summary": "Fold over a graph discovered as it goes: take a node off the FIFO frontier, skip it if its key was seen, apply the step (new accumulator \u002B the node\u0027s children, which join the frontier), repeat until empty. Cycle-safe by the visited set; a 100000-step budget turns a non-finite walk into an error, never a hang. A \u0022\u0022 key opts a node out of dedup.",
+          "example": "[1] |\u003E Frontier.fold (fun n -\u003E show n) 0 (fun acc n -\u003E (acc \u002B n, if n \u003C 3 then [n \u002B 1] else []))",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Graph",
+      "members": [
+        {
+          "name": "reach",
+          "signature": "Graph.reach (keyOf: \u0027a -\u003E string) (neighbors: \u0027a -\u003E seq\u003C\u0027a\u003E) (start: \u0027a) : seq\u003C\u0027a\u003E",
+          "summary": "Every node reachable from a start node, breadth-first, each once (cycles and diamonds are safe \u2014 the key dedups). The neighbor function IS the graph; nothing is materialized up front.",
+          "example": "Graph.reach (fun n -\u003E show n) (fun n -\u003E if n \u003C 3 then [n \u002B 1] else []) 1",
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Http",
       "members": [
         {
@@ -1592,6 +1616,18 @@
           "signature": "Str.tryToInt (s: string) : Option\u003Cint\u003E",
           "summary": "Parse an int as an Option, None when it is not a number.",
           "example": "Str.tryToInt \u002242\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Tree",
+      "members": [
+        {
+          "name": "walk",
+          "signature": "Tree.walk (step: \u0027a -\u003E seq\u003C\u0027a\u003E) (root: \u0027a) : unit",
+          "summary": "Walk a tree for effects, parent before children: the step runs each node\u0027s effect and returns its children (so a child\u0027s existence may depend on the parent\u0027s effect). No dedup \u2014 a cyclic structure wants Graph.reach or Frontier.fold; the step budget still bounds it.",
+          "example": "1 |\u003E Tree.walk (fun n -\u003E if n \u003C 3 then [n \u002B 1] else [])",
           "pointer": null
         }
       ]

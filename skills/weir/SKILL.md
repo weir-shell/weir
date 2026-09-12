@@ -580,6 +580,27 @@ print $"{key} -> {value}"
   (consumes the source; not for infinite seqs), and the piped
   spelling anchors the folder's types (prefer it). Multi-accumulator
   loops fold over a record: `Seq.fold (fun c x -> { c with ... }) c0`.
+- Graph/tree walks need no recursion [D:structural-walk] — the
+  frontier/visited worklist is a builtin, bounded by construction (the
+  visited set caps a finite graph; a 100000-step budget turns anything
+  else into an error, never a hang). The frontier is FIFO
+  (breadth-first, sibling order = the seq's order), so a parent is
+  always processed before its children. `Graph.reach keyOf neighbors
+  start` = every node reachable from start, each ONCE (cycles and
+  diamonds safe — the string key dedups); the neighbor function IS the
+  graph. `Tree.walk step root` walks for EFFECTS, parent-first: the
+  step runs each node's effect and returns its children — so a child's
+  existence may depend on the parent's effect (make the dir, then the
+  files inside it). `Frontier.fold keyOf seed step frontier` is the
+  power tool both derive from: the step folds an accumulator AND
+  discovers children (`fun acc n -> (acc', children)`); a `""` key
+  opts a node out of dedup (the tree convention).
+
+```weir
+let deps = Map.ofPairs [("app", ["core"; "util"]); ("util", ["core"])]
+let neighbors p = Map.tryGet p deps |> Option.defaultValue []
+Graph.reach (fun p -> p) neighbors "app" |> Seq.iter print
+```
 - Seq patterns, F#'s spelling on seqs: `[]`, `x :: rest` (right-assoc
   chains), `[a; b]` fixed arity; element positions nest full
   patterns. `[]` + an irrefutable cons is a COMPLETE match; fixed

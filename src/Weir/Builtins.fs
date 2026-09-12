@@ -3353,9 +3353,127 @@ let private mapMembers: (string * Ty * Value) list =
               | VStr key, VMap m -> VMap(Map.remove key m)
               | _ -> unreachable "the checker rejects 'Map.remove' on these arguments")) ]
 
+// ---- structural walks [D:structural-walk] --------------------------------
+// the frontier/visited worklist as a builtin: a graph or tree walk needs
+// no recursion, and the bound is structural — the visited set caps a
+// finite graph, the step budget caps everything else with a teaching
+// error, never a hang. The frontier is FIFO (breadth-first; sibling
+// order = the seq's order), so a parent is always processed before the
+// children it discovers.
+let private frontierBudget = 100000
+
+let private frontierWalk
+    (who: string)
+    (keyFor: Value -> string option)
+    (onNode: Value -> Value seq)
+    (initial: Value seq)
+    : unit =
+    let queue = System.Collections.Generic.Queue<Value>()
+    initial |> Seq.iter queue.Enqueue
+    let visited = System.Collections.Generic.HashSet<string>()
+    let mutable steps = 0
+
+    while queue.Count > 0 do
+        let node = queue.Dequeue()
+
+        let skip =
+            match keyFor node with
+            | Some k -> not (visited.Add k)
+            | None -> false
+
+        if not skip then
+            if steps >= frontierBudget then
+                failwith
+                    $"{who}: exceeded {frontierBudget} steps — is the graph finite, or is the key too coarse to dedup?"
+
+            steps <- steps + 1
+            onNode node |> Seq.iter queue.Enqueue
+
+let private frontierFoldImpl: Value =
+    VBuiltin(fun keyOf ->
+        VBuiltin(fun seed ->
+            VBuiltin(fun step ->
+                VBuiltin(fun frontier ->
+                    match frontier with
+                    | VSeq initial ->
+                        let mutable acc = seed
+
+                        frontierWalk
+                            "Frontier.fold"
+                            (fun n ->
+                                match apply keyOf n with
+                                // "" opts the node out of dedup — the
+                                // tree convention [D:structural-walk]
+                                | VStr "" -> None
+                                | VStr k -> Some k
+                                | v -> unreachable $"the checker rejects a non-string key: {formatValue v}")
+                            (fun n ->
+                                match apply (apply step acc) n with
+                                | VTuple [ acc'; VSeq children ] ->
+                                    acc <- acc'
+                                    children
+                                | v -> unreachable $"the checker rejects a non-(acc, children) step: {formatValue v}")
+                            initial
+
+                        acc
+                    | v -> unreachable $"the checker rejects 'Frontier.fold' on {formatValue v}"))))
+
+let private graphReachImpl: Value =
+    VBuiltin(fun keyOf ->
+        VBuiltin(fun neighbors ->
+            VBuiltin(fun start ->
+                let reached = ResizeArray<Value>()
+
+                frontierWalk
+                    "Graph.reach"
+                    (fun n ->
+                        match apply keyOf n with
+                        | VStr k -> Some k
+                        | v -> unreachable $"the checker rejects a non-string key: {formatValue v}")
+                    (fun n ->
+                        reached.Add n
+
+                        match apply neighbors n with
+                        | VSeq cs -> cs
+                        | v -> unreachable $"the checker rejects non-seq neighbors: {formatValue v}")
+                    [ start ]
+
+                VSeq(List.ofSeq reached))))
+
+let private treeWalkImpl: Value =
+    VBuiltin(fun step ->
+        VBuiltin(fun root ->
+            frontierWalk
+                "Tree.walk"
+                (fun _ -> None)
+                (fun n ->
+                    match apply step n with
+                    | VSeq cs -> cs
+                    | v -> unreachable $"the checker rejects non-seq children: {formatValue v}")
+                [ root ]
+
+            VUnit))
+
+let private frontierMembers: (string * Ty * Value) list =
+    [ "fold",
+      TFun(
+          TFun(tA, TStr),
+          TFun(tB, TFun(TFun(tB, TFun(tA, TTuple [ tB; TSeq tA ])), TFun(TSeq tA, tB)))
+      ),
+      frontierFoldImpl ]
+
+let private graphMembers: (string * Ty * Value) list =
+    [ "reach", TFun(TFun(tA, TStr), TFun(TFun(tA, TSeq tA), TFun(tA, TSeq tA))), graphReachImpl ]
+
+let private treeMembers: (string * Ty * Value) list =
+    [ "walk", TFun(TFun(tA, TSeq tA), TFun(tA, TUnit)), treeWalkImpl ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
+      "Frontier", frontierMembers
+      "Graph", graphMembers
+      "Tree", treeMembers
       "Map", mapMembers
       "Instant", instantMembers
       "Proc", procMembers
@@ -3903,6 +4021,25 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Option.flatten (Some (Some 5))")
               None
            |> named [ "opt" ])
+          "Frontier.fold",
+          (bd
+              "Fold over a graph discovered as it goes: take a node off the FIFO frontier, skip it if its key was seen, apply the step (new accumulator + the node's children, which join the frontier), repeat until empty. Cycle-safe by the visited set; a 100000-step budget turns a non-finite walk into an error, never a hang. A \"\" key opts a node out of dedup."
+              (Some
+                  "[1] |> Frontier.fold (fun n -> show n) 0 (fun acc n -> (acc + n, if n < 3 then [n + 1] else []))")
+              None
+           |> named [ "keyOf"; "seed"; "step"; "frontier" ])
+          "Graph.reach",
+          (bd
+              "Every node reachable from a start node, breadth-first, each once (cycles and diamonds are safe — the key dedups). The neighbor function IS the graph; nothing is materialized up front."
+              (Some "Graph.reach (fun n -> show n) (fun n -> if n < 3 then [n + 1] else []) 1")
+              None
+           |> named [ "keyOf"; "neighbors"; "start" ])
+          "Tree.walk",
+          (bd
+              "Walk a tree for effects, parent before children: the step runs each node's effect and returns its children (so a child's existence may depend on the parent's effect). No dedup — a cyclic structure wants Graph.reach or Frontier.fold; the step budget still bounds it."
+              (Some "1 |> Tree.walk (fun n -> if n < 3 then [n + 1] else [])")
+              None
+           |> named [ "step"; "root" ])
           "Option.defaultValue",
           bd "The Some value, or a fallback when None." (Some "Option.defaultValue 0 (Some 5)") None
           |> named [ "fallback"; "opt" ]
