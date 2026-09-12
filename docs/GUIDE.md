@@ -1345,6 +1345,38 @@ the checker teaches rather than guessing a convention XML lacks. The
 top level is a single root, so there is no `from xml seq<T>` (a repeat
 is a `seq< >` field), and no `to xml`: the boundary is read-only.
 
+**Editing YAML you did not fully declare.** `from yaml T` drops
+undeclared fields — right for reading, destructive for a rewrite. The
+typeless pair holds the document whole: `Yaml.parse` reads one
+document into `Yaml` nodes, and `Yaml.merge` applies a `yaml patch`
+district whose *structure* is the address — nest keys to navigate,
+name a sequence merge key with `by=` on the marker line, and mark
+removals with the `$-` tombstone. Update-or-insert is the semantics
+of the keyed merge, not a branch you write; applying a patch twice
+changes nothing:
+
+```weir
+let doc =
+    [ "namespace: prod"
+      "images:"
+      "    - name: app"
+      "      newTag: v1" ]
+    |> Yaml.parse
+
+let p = yaml patch by=name
+    images:
+        - name: app
+          newTag: v2
+
+doc |> Yaml.merge p |> to yaml |> Seq.iter print
+```
+
+Note `namespace: prod` survives untouched — the whole point of the
+typeless read. A patch types as `YamlPatch` and does not render
+(`to yaml` on it is a check error), so a tombstone can never leak
+into a file; editing a file is the visible round-trip
+`File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
+
 `Http.query` is the QUERY method (RFC 10008). QUERY is idempotent by
 definition, so `retry attempts=5` around an `Http.query` is safe by
 the method's own guarantee — the same wrapper around a POST is a

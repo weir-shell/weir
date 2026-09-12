@@ -2639,7 +2639,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
         VStr(sb.ToString())
     | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
     | TEFromYaml(_, shape, stream) -> yamlFromImpl shape stream
-    | TEYaml(tpl, _) -> evalYamlTpl env tpl
+    | TEYaml(tpl, _, patchBy) ->
+        // a patch district wraps its tree with the merge key — the
+        // wrapper ctor is UNPRODUCIBLE from user code and from parsed
+        // text ([D:yaml-nodes]; the |-prefix trick, [D:drop-reify-builtins])
+        let tree = evalYamlTpl env tpl
+
+        match patchBy with
+        | None -> tree
+        | Some by -> VUnion("|ypatch", Some(VTuple [ VStr(defaultArg by ""); tree ]))
     | TETo("yaml", renames, unions, stream) -> yamlToImpl renames unions stream
     | TETo("jsonl", renames, unions, _) ->
         VBuiltin(fun v ->
@@ -3062,26 +3070,45 @@ and private liftYaml (v: Value) : Value option =
         failwith
             $"yaml splice: got {formatValue v}; splices take string/int/float/bool, a Yaml node, Option of one, or a seq of those"
 
+and yamlScalarValue (raw: string) (quoted: bool) : Value =
+    // the ONE typeless scalar rule — the district and Yaml.parse agree
+    // by construction [D:yaml-nodes]
+    if not quoted && raw = "" then
+        VUnion("YNull", None)
+    elif not quoted && (raw = "true" || raw = "false") then
+        VUnion("YBool", Some(VBool(raw = "true")))
+    else
+        match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
+        | true, n -> VUnion("YInt", Some(VInt n))
+        | _ ->
+            // unquoted float-shaped literals self-type [D:floats-boundaries]
+            // — `cpu: 1.5` must not render as "1.5" (the int precedent;
+            // parseFloat refuses non-finite so nan/inf text stays string)
+            match (if quoted then Error "" else parseFloat raw) with
+            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Error _ -> VUnion("YStr", Some(VStr raw))
+
+and yamlNodeValue (node: Yaml.Node) : Value =
+    // the typeless read [D:yaml-nodes]: parsed structure into the public
+    // Yaml union — no tombstone or patch ctor can EVER come from here
+    match node with
+    | Yaml.NNull _ -> VUnion("YNull", None)
+    | Yaml.NBlock(text, _) -> VUnion("YStr", Some(VStr text))
+    | Yaml.NScalar(raw, quoted, _) -> yamlScalarValue raw quoted
+    | Yaml.NSeq(items, _) -> VUnion("YSeq", Some(VSeq(items |> List.map yamlNodeValue |> List.toSeq)))
+    | Yaml.NMap(entries, _) ->
+        VUnion(
+            "YMap",
+            Some(VSeq(entries |> List.map (fun (k, v) -> VTuple [ VStr k; yamlNodeValue v ]) |> List.toSeq))
+        )
+
 and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
     match tpl with
     // block scalar content never self-types: it is a STRING, always
     // [D:block-scalars]
     | Check.TYtBlock(text, _) -> VUnion("YStr", Some(VStr text))
-    | Check.TYtScalar(raw, quoted, _) ->
-        if not quoted && raw = "" then
-            VUnion("YNull", None)
-        elif not quoted && (raw = "true" || raw = "false") then
-            VUnion("YBool", Some(VBool(raw = "true")))
-        else
-            match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
-            | true, n -> VUnion("YInt", Some(VInt n))
-            | _ ->
-                // unquoted float-shaped literals self-type [D:floats-boundaries]
-                // — `cpu: 1.5` must not render as "1.5" (the int precedent;
-                // parseFloat refuses non-finite so nan/inf text stays string)
-                match (if quoted then Error "" else parseFloat raw) with
-                | Ok f -> VUnion("YFloat", Some(VFloat f))
-                | Error _ -> VUnion("YStr", Some(VStr raw))
+    | Check.TYtScalar(raw, quoted, _) -> yamlScalarValue raw quoted
+    | Check.TYtDrop _ -> VUnion("|ydrop", None)
     | Check.TYtSplice te -> liftYaml (eval env te) |> Option.defaultValue (VUnion("YNull", None))
     | Check.TYtSeq(items, _) -> VUnion("YSeq", Some(VSeq(evalYamlItems env items |> List.toSeq)))
     | Check.TYtMap(entries, _) ->
@@ -3140,6 +3167,7 @@ and private evalYamlItems (env: Env) (items: Check.TypedYamlTplItem list) : Valu
                 |> List.ofSeq
             | v -> liftYaml v |> Option.map List.singleton |> Option.defaultValue []
         | Check.TYtItem t -> [ evalYamlTpl env t ]
+        | Check.TYtDropItem(t, _) -> [ VUnion("|ydropitem", Some(evalYamlTpl env t)) ]
         | Check.TYtForItems(binder, source, body) ->
             match eval env source with
             | VSeq elems ->

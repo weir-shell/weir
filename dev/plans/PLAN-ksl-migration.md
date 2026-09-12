@@ -50,14 +50,21 @@ lower to primitive effects" synthesis there.
    works only with the EFFECTFUL `Tree.walk` step (removal in `step`, then
    decide children). A pure plan interpreter cannot expand it without doing
    the mutation — the exact plan/apply limitation, in real code.
-2. YAML IN-PLACE EDITING is the likely BLOCKER. KSL leans on
-   `Yaml.editInPlace`, `Yaml.editInPlaceAtPath`, `Yaml.removeNode(s)`,
-   `Yaml.merge` — STRUCTURAL edits of an existing YAML file at a JSON path.
-   weir's `from yaml T` is a READ boundary into records and `to yaml`
-   writes fresh; in-place node edit / merge-at-path is NOT a current
-   capability. PROBE FIRST: can KSL's yaml edits be expressed as
-   read-modify-write through records, or is a `Yaml`-node edit surface a
-   prerequisite? Size this before committing to the port.
+   Under [PLAN-yaml-nodes] the removal is a tombstone merge, which is
+   TOTAL (no removed?-signal) — this site uses the interim
+   render-and-compare spelling, and is the receipt for the parked
+   `Yaml.mergeReport`.
+2. YAML IN-PLACE EDITING — probe RESOLVED (2026-09-11): the blocker is
+   REAL and now SIZED as [PLAN-yaml-nodes]. Typed RMW cannot carry it
+   (`from yaml T` drops undeclared fields on write-back; the merge ops
+   target arbitrary YAML), so the port needs the typeless node read —
+   exactly [D:yaml-seq]'s park, un-parked by this stronger receipt. The
+   designed surface: `Yaml.parse` + `Yaml.merge` + a `yaml patch [by=key]`
+   district kind + the `$-` tombstone sigil — the patch's STRUCTURE is the
+   address (strategic-merge model), no path language anywhere. KSL's
+   comments-lost/CRLF-normalizing serialization means structural fidelity
+   is the bar — weir's renderer normalizing is NOT a regression. Every
+   KSL op maps (the table lives in [PLAN-yaml-nodes]).
 3. `Kustomize.modify` (edit kustomization.yaml resources/generators/
    patches/components/images) — domain logic riding the same yaml-edit
    surface as (2).
@@ -66,17 +73,18 @@ lower to primitive effects" synthesis there.
 
 ## Next steps
 
-1. PROBE (2): map every KSL yaml mutation to a weir capability; decide if a
-   `Yaml`-node edit surface is owed. This gates the whole port.
+1. ~~PROBE (2)~~ DONE — resolved into [PLAN-yaml-nodes] (build it first;
+   it is this port's last capability gap).
 2. Port `RenderTo.fileSystem` (the fs-only ops: `File`/`Dir`/`NoPath`/
    `CreateEnv`/`MergeEnv`) via `Tree.walk` — proves recursion→walk and
-   function-field content thunks.
+   function-field content thunks. Unblocked NOW ([D:structural-walk]
+   shipped); the yaml-backed ops join once [PLAN-yaml-nodes] lands.
 3. Add a `RenderTo.plan` interpreter over the same union — feel the N×M
    duplication; that experience feeds [PLAN-plan-apply].
 
 ## Depends on
 
-[PLAN-structural-walk] (the walk) · function-types (DONE, v0.0.23 — the
-content-thunk fields) · a YAML-edit capability probe (blocker) ·
-[PLAN-plan-apply] (the second interpreter, later) · optionally
-[PLAN-path-type] (`DirWithContext` path math).
+[PLAN-structural-walk] (DONE — [D:structural-walk]) · function-types
+(DONE, v0.0.23 — the content-thunk fields) · [PLAN-yaml-nodes] (DESIGNED
+— the yaml-backed ops) · [PLAN-plan-apply] (the second interpreter,
+later) · optionally [PLAN-path-type] (`DirWithContext` path math).

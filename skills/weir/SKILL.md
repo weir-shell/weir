@@ -1216,6 +1216,31 @@ type Bad = C of int
   `$VAR` and `for` lines inside it are bytes (embedded scripts stay
   verbatim); templated content interpolates upstream and splices as a
   whole value. Paste a manifest, replace values with `$`.
+- `yaml patch` — edit YAML you did not fully declare [D:yaml-nodes]:
+  `Yaml.parse` reads ONE document into `Yaml` nodes (typeless —
+  structure held whole, undeclared keys included, where `from yaml T`
+  would drop them on a rewrite), and `Yaml.merge` applies a `yaml
+  patch` district: the patch's STRUCTURE is the address (kustomize's
+  strategic-merge model — no path language). Maps upsert recursively;
+  a seq appends-if-absent, or upserts by the marker line's `by=<key>`;
+  scalars replace; the `$-` TOMBSTONE removes (value position = the
+  key; `- $- <content>` = the matching item). Update-or-insert is the
+  SEMANTICS of `by=`, not control flow; merge is orderless and
+  idempotent. LAWS: a patch types as `YamlPatch` and does NOT render
+  (`to yaml` refuses at check — no tombstone can leak into a file);
+  `$-` is refused outside a patch district; `patch` × `schema=`
+  refuse (a patch is partial); `Yaml.parse` can never produce a
+  tombstone (parsed text is data). The file round-trip is composition:
+  `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
+
+```weir
+let doc = ["replicas: 1"; "labels:"; "    app: web"; "    tier: x"] |> Yaml.parse
+let p = yaml patch
+    replicas: 3
+    labels:
+        tier: $-
+doc |> Yaml.merge p |> to yaml |> Seq.iter print
+```
 - XML is a READ-ONLY typed boundary [D:from-xml]: `from xml T` reads
   one document into `T` (point it at a `.csproj`/`.slnx`). The root
   element is the top record; a field name matches a CHILD ELEMENT by

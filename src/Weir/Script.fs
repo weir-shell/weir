@@ -1977,16 +1977,10 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
         let codeTrimmed = (line.Substring(0, commentCut)).TrimEnd()
 
         if codeTrimmed.Length >= 4 && isYamlMarkerPiece codeTrimmed then
-            let markerLen =
-                let lastTok =
-                    match codeTrimmed.LastIndexOf ' ' with
-                    | -1 -> codeTrimmed
-                    | i -> codeTrimmed.Substring(i + 1)
-
-                if lastTok.StartsWith "schema=" then
-                    min codeTrimmed.Length (lastTok.Length + 5)
-                else
-                    4
+            // marker + modifiers (patch/by=/schema=) — one strip loop
+            // shared with the predicate, so tint and law cannot
+            // disagree [D:yaml-nodes]
+            let markerLen = Parser.yamlMarkerLen codeTrimmed
 
             for j in codeTrimmed.Length - markerLen .. codeTrimmed.Length - 1 do
                 codes[j] <- Some "36"
@@ -3337,7 +3331,7 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
 
         let rec districts (te: Check.TypedExpr) =
             (match te.Kind with
-             | Check.TEYaml(tpl, Some name) -> [ te.Span, name, tpl ]
+             | Check.TEYaml(tpl, Some name, _) -> [ te.Span, name, tpl ]
              | _ -> [])
             @ (Check.childExprs te |> List.collect districts)
 

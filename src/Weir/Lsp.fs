@@ -839,7 +839,7 @@ let private schemaTokenAt (chk: Script.CheckedStatement) (text: string) (jcol: i
     |> Option.bind (fun te -> nodeAt te jcol)
     |> Option.bind (fun nd ->
         match nd.Kind with
-        | Check.TEYaml(_, Some name) when onSchemaToken name text jcol -> Some name
+        | Check.TEYaml(_, Some name, _) when onSchemaToken name text jcol -> Some name
         | _ -> None)
 
 let definitionTarget
@@ -1059,7 +1059,7 @@ let definitionTarget
                     // the schema= NAME opens the vendored file [D:schema-hover]
                     // — the checker's own resolution; a not-vendored name
                     // stays quiet (the hover carries the teaching)
-                    | Check.TEYaml(_, Some sname) when onSchemaToken sname useLl.Text jcol ->
+                    | Check.TEYaml(_, Some sname, _) when onSchemaToken sname useLl.Text jcol ->
                         (match Script.resolveSchemaFile path sname with
                          | Ok(_, file) -> Some(Some file, 1, 1, 0)
                          | Error _ -> None)

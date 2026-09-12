@@ -1422,6 +1422,70 @@ let boundaryTests =
                   | other -> failtest $"expected EYaml under the let, got {other}"
               | other -> failtest $"unexpected assembly: {other}"
           }
+          test "Yaml.parse: the typeless read — structure whole, scalars self-type [D:yaml-nodes]" {
+              expectValue
+                  "[\"replicas: 3\"; \"name: web\"; \"live: true\"] |> Yaml.parse"
+                  (VUnion(
+                      "YMap",
+                      Some(
+                          VSeq
+                              [ VTuple [ VStr "replicas"; VUnion("YInt", Some(VInt 3L)) ]
+                                VTuple [ VStr "name"; VUnion("YStr", Some(VStr "web")) ]
+                                VTuple [ VStr "live"; VUnion("YBool", Some(VBool true)) ] ]
+                      )
+                  ))
+          }
+          test "Yaml.parse: empty and multi-document inputs TEACH [D:yaml-nodes]" {
+              let empty =
+                  Expect.throwsC (fun () -> run "[\"\"] |> Yaml.parse" |> ignore) id
+
+              Expect.stringContains empty.Message "expected one YAML document" ""
+
+              let multi =
+                  Expect.throwsC (fun () -> run "[\"a: 1\"; \"---\"; \"b: 2\"] |> Yaml.parse" |> ignore) id
+
+              Expect.stringContains multi.Message "reads one document; this input has 2" "count and route"
+          }
+          test "yaml patch: types as YamlPatch; tombstones scoped; schema= refuses [D:yaml-nodes]" {
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let checkOf src =
+                  match Weir.Parser.parseLine realResolver src with
+                  | Ok(SLet(_, e)) -> typecheck env e
+                  | other -> failtest $"unexpected: {other}"
+
+              match checkOf (asm [ "let p = yaml patch by=name"; "    images:"; "        - name: app" ]) with
+              | Ok te -> Expect.equal te.Ty (TNamed("YamlPatch", [])) "a patch district types as YamlPatch"
+              | Error terr -> failtest (formatError terr)
+
+              match checkOf (asm [ "let d = yaml"; "    gone: $-" ]) with
+              | Error terr ->
+                  Expect.stringContains
+                      (formatError terr)
+                      "a tombstone ($-) means something only inside a `yaml patch` district"
+                      ""
+              | Ok _ -> failtest "a plain district must refuse a tombstone"
+
+              match checkOf (asm [ "let p = yaml patch schema=k8s"; "    a: 1" ]) with
+              | Error terr ->
+                  Expect.stringContains (formatError terr) "a patch is partial — schema= validates whole documents" ""
+              | Ok _ -> failtest "patch x schema= must refuse"
+          }
+          test "the marker law learns the patch modifiers [D:yaml-nodes]" {
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let p = yaml patch") "patch arms"
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let p = yaml patch by=name") "patch by= arms"
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let d = yaml schema=k8s") "schema= still arms"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "run patch") "a command ending in patch stays a command"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "xs |> to yaml patch") "to yaml never arms"
+          }
+          test "YamlPatch is a built-in type name — undeclarable [D:yaml-nodes]" {
+              match Weir.Check.checkDecl env (parseDecl "type YamlPatch = { x: int }") with
+              | Error terr -> Expect.stringContains terr.Message "'YamlPatch' is a built-in type" ""
+              | Ok _ -> failtest "declaring YamlPatch must refuse"
+          }
           test "district templates check: splice law, key-splice string, for binder [D:yaml-district]" {
               // a record splice violates the liftable law
               let asm lines' =
