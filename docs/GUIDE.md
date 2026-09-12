@@ -1357,10 +1357,11 @@ changes nothing:
 
 ```weir
 let doc =
-    [ "namespace: prod"
-      "images:"
-      "    - name: app"
-      "      newTag: v1" ]
+    <<<
+        namespace: prod
+        images:
+            - name: app
+              newTag: v1
     |> Yaml.parse
 
 let p = yaml patch by=name
