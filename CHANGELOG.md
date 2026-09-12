@@ -4,6 +4,30 @@
 
 ### Added
 
+- **`yaml patch` + `Yaml.parse`/`Yaml.merge` — edit YAML you did not
+  fully declare.** `Yaml.parse` reads one document into `Yaml` nodes
+  (typeless: structure held whole, undeclared keys included — where
+  `from yaml T` would drop them on a rewrite), and `Yaml.merge` applies
+  a `yaml patch` district whose *structure* is the address, kustomize's
+  strategic-merge model with no path language: maps upsert recursively;
+  a sequence appends-if-absent, or upserts by the marker line's
+  `by=<key>`; scalars replace; the `$-` tombstone removes (in value
+  position, its key; as `- $- <content>`, the matching item).
+  Update-or-insert is the semantics of the keyed merge, not a branch you
+  write, and merging is orderless and idempotent. A patch types as
+  `YamlPatch` and does not render — `to yaml` on it is a check error, so
+  a tombstone can never leak into a file; `$-` outside a patch district
+  and `patch schema=` both refuse with teachings. Editing a file is the
+  visible round-trip:
+
+  ```
+  let p = yaml patch by=name
+      images:
+          - name: app
+            newTag: v2
+  File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f
+  ```
+
 - **Graph and tree walks without recursion: `Graph.reach`, `Tree.walk`,
   `Frontier.fold`.** The frontier/visited worklist as builtins, bounded by
   construction — the visited set caps a finite graph, and a 100000-step

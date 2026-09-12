@@ -159,8 +159,9 @@ and TypedKind =
     | TELetPat of binder: Pattern * value: TypedExpr * body: TypedExpr
     | TELambdaPat of binder: Pattern * body: TypedExpr
     | TEInterp of parts: InterpPart<TypedExpr> list
-    // the yaml district's TYPED template [D:yaml-district]
-    | TEYaml of TypedYamlTpl * schema: string option
+    // the yaml district's TYPED template [D:yaml-district]; patchBy
+    // [D:yaml-nodes]: Some by = a `yaml patch` district (YamlPatch)
+    | TEYaml of TypedYamlTpl * schema: string option * patchBy: string option option
 
 and TypedYamlTpl =
     | TYtScalar of raw: string * quoted: bool * span: Ast.Span
@@ -169,6 +170,8 @@ and TypedYamlTpl =
     | TYtSplice of TypedExpr
     | TYtSeq of TypedYamlTplItem list * span: Ast.Span
     | TYtMap of TypedYamlTplEntry list * span: Ast.Span
+    // the tombstone [D:yaml-nodes] — patch districts only, checker-scoped
+    | TYtDrop of span: Ast.Span
 
 and TypedYamlTplEntry =
     | TYtPair of TypedYamlKey * TypedYamlTpl
@@ -177,6 +180,7 @@ and TypedYamlTplEntry =
 and TypedYamlTplItem =
     | TYtItem of TypedYamlTpl
     | TYtForItems of binder: Pattern * source: TypedExpr * body: TypedYamlTplItem list
+    | TYtDropItem of TypedYamlTpl * span: Ast.Span
 
 and TypedYamlKey =
     | TYtKeyLit of string * span: Ast.Span
@@ -194,6 +198,30 @@ let private err (span: Span) (msg: string) : Result<'a, TypeError> =
         { Span = span
           Message = msg
           Origin = None }
+
+// the tombstone scope law [D:yaml-nodes]: only a `yaml patch` district
+// admits $- — a plain district refuses at the tombstone's own span
+let rec private firstTombstone (tpl: YamlTpl) : Span option =
+    match tpl with
+    | YtDrop sp -> Some sp
+    | YtScalar _
+    | YtBlock _
+    | YtSplice _ -> None
+    | YtSeq(items, _) ->
+        items
+        |> List.tryPick (function
+            | YtDropItem(_, sp) -> Some sp
+            | YtItem t -> firstTombstone t
+            | YtForItems(_, _, body) ->
+                body
+                |> List.tryPick (fun i -> firstTombstone (YtSeq([ i ], Unchecked.defaultof<Span>))))
+    | YtMap(entries, _) ->
+        entries
+        |> List.tryPick (function
+            | YtPair(_, v) -> firstTombstone v
+            | YtForEntries(_, _, body) ->
+                body
+                |> List.tryPick (fun e -> firstTombstone (YtMap([ e ], Unchecked.defaultof<Span>))))
 
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
     // a built request where a URL string is expected is the fetch/send
@@ -501,7 +529,13 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                                         floatEqTeaching
                                     else
                                         $"this use requires equatable values, got {formatTy t} — sequences and functions cannot be compared with '=='"
-                            | Cls.Show -> fun t -> $"show cannot render functions; this is {formatTy t}"
+                            | Cls.Show ->
+                                fun t ->
+                                    match t with
+                                    // a patch is opaque by design [D:yaml-nodes]
+                                    | TNamed("YamlPatch", _) ->
+                                        "a patch does not show — it is instructions for a merge, not data; Yaml.merge applies it"
+                                    | _ -> $"show cannot render functions; this is {formatTy t}"
                             | Cls.Ord ->
                                 fun t ->
                                     $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, Duration, Size, or Instant" })
@@ -2994,6 +3028,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     { Kind = TEPipe(targ, tto)
                       Ty = TSeq TStr
                       Span = expr.Span }
+            | "yaml", TNamed("YamlPatch", _) ->
+                // patches do not render [D:yaml-nodes] — the type carries
+                // the law, so no tombstone can ever leak into a file
+                return!
+                    err
+                        toExpr.Span
+                        "a patch is instructions for a merge, not a document — Yaml.merge applies it; there is nothing to render"
             | "yaml", ty ->
                 // to yaml [D:yaml-seq-doc]: ONE document — a record is a
                 // mapping, a seq a SEQUENCE document (json's array, one
@@ -3643,13 +3684,28 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, xml"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
-    | EYaml(tpl, schema) ->
+    | EYaml(tpl, schema, patchBy) ->
         result {
+            // patch districts [D:yaml-nodes]: typed YamlPatch, tombstones
+            // admitted; schema= refuses (a patch is PARTIAL — required
+            // fields legitimately absent, whole-document validation
+            // cannot apply). A plain district refuses tombstones at
+            // their span, naming the kind that admits them.
+            do!
+                match patchBy, schema with
+                | Some _, Some _ ->
+                    err expr.Span "a patch is partial — schema= validates whole documents; drop one of patch/schema="
+                | None, _ ->
+                    match firstTombstone tpl with
+                    | Some sp -> err sp "a tombstone ($-) means something only inside a `yaml patch` district"
+                    | None -> Ok()
+                | _ -> Ok()
+
             let! ttpl = checkYamlTpl ctx env tpl
 
             return
-                { Kind = TEYaml(ttpl, schema)
-                  Ty = TNamed("Yaml", [])
+                { Kind = TEYaml(ttpl, schema, patchBy)
+                  Ty = TNamed((if patchBy.IsSome then "YamlPatch" else "Yaml"), [])
                   Span = expr.Span }
         }
     | ECmd(prog, args, envO) ->
@@ -4303,6 +4359,7 @@ and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<Typed
     match tpl with
     | YtScalar(raw, q, sp) -> Ok(TYtScalar(raw, q, sp))
     | YtBlock(text, sp) -> Ok(TYtBlock(text, sp))
+    | YtDrop sp -> Ok(TYtDrop sp)
     | YtSplice e ->
         result {
             let! te = infer ctx env e
@@ -4380,6 +4437,7 @@ and private checkYamlEntry (ctx: Ctx) (env: TypeEnv) (entry: YamlTplEntry) : Res
 and private checkYamlItem (ctx: Ctx) (env: TypeEnv) (item: YamlTplItem) : Result<TypedYamlTplItem, TypeError> =
     match item with
     | YtItem t -> checkYamlTpl ctx env t |> Result.map TYtItem
+    | YtDropItem(t, sp) -> checkYamlTpl ctx env t |> Result.map (fun tt -> TYtDropItem(tt, sp))
     | YtForItems(binder, source, body) ->
         result {
             let! tsrc = infer ctx env source
@@ -4454,7 +4512,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
         | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
         | TETuple items -> TETuple(items |> List.map (finalizeExpr ctx))
-        | TEYaml(tpl, schema) -> TEYaml(finalizeYamlTpl ctx tpl, schema)
+        | TEYaml(tpl, schema, patchBy) -> TEYaml(finalizeYamlTpl ctx tpl, schema, patchBy)
         | TELetPat(p, v, b) -> TELetPat(p, finalizeExpr ctx v, finalizeExpr ctx b)
         | TELambdaPat(p, b) -> TELambdaPat(p, finalizeExpr ctx b)
         | TECmd(prog, args, envO) ->
@@ -4513,6 +4571,7 @@ and private finalizeYamlTpl (ctx: Ctx) (tpl: TypedYamlTpl) : TypedYamlTpl =
     | TYtScalar _ -> tpl
     | TYtBlock _ -> tpl
     | TYtSplice e -> TYtSplice(finalizeExpr ctx e)
+    | TYtDrop _ -> tpl
     | TYtSeq(items, sp) -> TYtSeq(items |> List.map (finalizeYamlItem ctx), sp)
     | TYtMap(entries, sp) -> TYtMap(entries |> List.map (finalizeYamlEntry ctx), sp)
 
@@ -4525,6 +4584,7 @@ and private finalizeYamlEntry (ctx: Ctx) (entry: TypedYamlTplEntry) : TypedYamlT
 and private finalizeYamlItem (ctx: Ctx) (item: TypedYamlTplItem) : TypedYamlTplItem =
     match item with
     | TYtItem t -> TYtItem(finalizeYamlTpl ctx t)
+    | TYtDropItem(t, sp) -> TYtDropItem(finalizeYamlTpl ctx t, sp)
     | TYtForItems(b, src, body) -> TYtForItems(b, finalizeExpr ctx src, body |> List.map (finalizeYamlItem ctx))
 
 /// anonymous shapes in the adapter slot register their canonical defs
@@ -4699,11 +4759,13 @@ let rec yamlTplTypedExprs (tpl: TypedYamlTpl) : TypedExpr list =
     match tpl with
     | TYtScalar _ -> []
     | TYtBlock _ -> []
+    | TYtDrop _ -> []
     | TYtSplice e -> [ e ]
     | TYtSeq(items, _) ->
         items
         |> List.collect (function
             | TYtItem t -> yamlTplTypedExprs t
+            | TYtDropItem(t, _) -> yamlTplTypedExprs t
             | TYtForItems(_, src, body) ->
                 src
                 :: (body
@@ -4765,7 +4827,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
         |> List.choose (function
             | IExpr e -> Some e
             | IStr _ -> None)
-    | TEYaml(tpl, _) -> yamlTplTypedExprs tpl
+    | TEYaml(tpl, _, _) -> yamlTplTypedExprs tpl
 
 let typecheckWith
     (env: TypeEnv)

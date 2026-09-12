@@ -3196,6 +3196,61 @@ echo "$werr" | grep -qF "exceeded 100000 steps" || fail "the step budget teaches
 echo "e2e ok: structural walks — Graph.reach BFS each-once, Tree.walk parent-first, budget teaches"
 rm -rf "$wdir"
 
+# yaml patch [D:yaml-nodes]: the typeless read + district-addressed merge
+# against a REAL kustomization.yaml on disk — keyed upsert, append,
+# tombstones, undeclared fields preserved (what typed RMW cannot do),
+# and the laws (patches don't render; tombstones scoped to patch)
+ydir=$(mkweirtmp)
+cat > "$ydir/kustomization.yaml" <<'YEOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: prod
+resources:
+    - deployment.yaml
+    - retired.yaml
+images:
+    - name: app
+      newTag: v1
+    - name: db
+      newTag: v2
+YEOF
+cat > "$ydir/patch.weir" <<'WEOF'
+let f = "kustomization.yaml"
+let p = yaml patch by=name
+    images:
+        - name: app
+          newTag: v3
+        - $- name: db
+    resources:
+        - service.yaml
+        - $- retired.yaml
+File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f
+File.read f |> Seq.iter print
+WEOF
+out=$(cd "$ydir" && $BIN patch.weir)
+expect "yaml patch: undeclared fields survive the RMW" "namespace: prod" "$out"
+expect "yaml patch: keyed upsert + keyed tombstone under by=" 'images:
+  - name: app
+    newTag: v3' "$out"
+expect "yaml patch: scalar append + scalar tombstone" 'resources:
+  - deployment.yaml
+  - service.yaml' "$out"
+echo "$out" | grep -qF "name: db" && fail "keyed tombstone must remove the db image" || true
+echo "$out" | grep -qF "retired.yaml" && fail "scalar tombstone must remove retired.yaml" || true
+# idempotency: applying the same patch again changes nothing
+out2=$(cd "$ydir" && $BIN patch.weir)
+[ "$out" = "$out2" ] || fail "a patch merge must be idempotent"
+yerr=$($BIN -e 'let p = yaml patch
+    a: 1
+p |> to yaml' 2>&1) && fail "a patch must not render" || true
+echo "$yerr" | grep -qF "a patch is instructions for a merge, not a document" || fail "the render refusal teaches: $yerr"
+yerr2=$($BIN -e 'let d = yaml
+    gone: $-
+print "no"' 2>&1) && fail "a plain district must refuse a tombstone" || true
+echo "$yerr2" | grep -qF "only inside a \`yaml patch\` district" || fail "the tombstone scope teaches: $yerr2"
+echo "e2e ok: yaml patch — kustomization RMW (upsert/append/tombstones, unknown keys kept, idempotent), render+scope laws"
+rm -rf "$ydir"
+
 # anonymous record types [D:anon-records]: the shape inline in the
 # adapter slot — `_.field` checks, seq<> composes, the shape persists
 # across statements, and a declared record stays a DIFFERENT type

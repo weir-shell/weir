@@ -123,6 +123,40 @@ top level is one root element — there is no `from xml seq<T>` (a
 repeated child is a `seq< >` field). XML is read-only: there is no
 `to xml`.
 
+## Editing YAML: `Yaml.parse` and `yaml patch`
+
+`from yaml T` reads into a declared record — and drops every field you
+did not declare, which makes it wrong for read-modify-write. The
+typeless pair holds the document whole: `Yaml.parse` reads one
+document into `Yaml` nodes (scalars self-type exactly as district
+scalars do), and `Yaml.merge` applies a `yaml patch` district whose
+*structure* is the address — kustomize's strategic-merge model, with
+no path language. Maps upsert recursively; a sequence
+appends-if-absent, or upserts by the marker line's `by=<key>`; scalars
+replace; the `$-` tombstone removes (in value position, the key it
+sits under; as `- $- <content>`, the matching item). Merge is
+orderless and idempotent — update-or-insert is the semantics of
+`by=`, not a branch you write.
+
+```weir
+let doc = ["kind: Kustomization"; "images:"; "    - name: app"; "      newTag: v1"] |> Yaml.parse
+let p = yaml patch by=name
+    images:
+        - name: app
+          newTag: v2
+doc |> Yaml.merge p |> to yaml |> Seq.iter print
+```
+
+A patch types as `YamlPatch`, not `Yaml`, and the type carries the
+laws: `to yaml` on a patch refuses at check (a patch is instructions,
+not a document — no tombstone can ever reach a file), `$-` outside a
+`yaml patch` district refuses, and `patch` does not combine with
+`schema=` (a patch is partial; schemas validate whole documents).
+`Yaml.parse` can never produce a tombstone — parsed text is data.
+There is no in-place file member: the round-trip is composition,
+`File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`,
+so the one mutation stays visible in the pipeline.
+
 ## What does not serialize
 
 `Instant` has no wire convention, so JSON refuses it naming

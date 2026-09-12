@@ -979,6 +979,8 @@ let rec validateTpl (name: string) (path: string) (schema: Schema) (tpl: Check.T
 
     match schema, tpl with
     | SAny, _ -> []
+    // unreachable: patch x schema= refuses at check [D:yaml-nodes]
+    | _, Check.TYtDrop _ -> []
     | _, Check.TYtSplice te -> spliceCheck name path schema te
     | SObject(props, required, additional), Check.TYtMap(entries, mspan) ->
         let hasDynamic =
@@ -1030,6 +1032,8 @@ let rec validateTpl (name: string) (path: string) (schema: Schema) (tpl: Check.T
             es
             |> List.collect (function
                 | Check.TYtItem t -> validateTpl name path items t
+                // unreachable: patch x schema= refuses at check [D:yaml-nodes]
+                | Check.TYtDropItem(t, _) -> validateTpl name path items t
                 | Check.TYtForItems(_, _, body) -> itemErrors body)
 
         itemErrors elems

@@ -1631,6 +1631,25 @@
           "pointer": null
         }
       ]
+    },
+    {
+      "name": "Yaml",
+      "members": [
+        {
+          "name": "merge",
+          "signature": "Yaml.merge (patch: YamlPatch) (doc: Yaml) : Yaml",
+          "summary": "Apply a \u0060yaml patch\u0060 district to a document: the patch\u0027s STRUCTURE is the address (maps upsert recursively; seqs append-if-absent, or upsert/remove by the marker line\u0027s by=\u003Ckey\u003E; scalars replace; a \u0060$-\u0060 tombstone removes the key or matching item). Orderless and idempotent; the merged document renders with \u0060to yaml\u0060.",
+          "example": null,
+          "pointer": "let p = yaml patch by=name (indented patch lines) \u2014 then File.read f |\u003E Yaml.parse |\u003E Yaml.merge p |\u003E to yaml |\u003E File.write f."
+        },
+        {
+          "name": "parse",
+          "signature": "Yaml.parse (lines: seq\u003Cstring\u003E) : Yaml",
+          "summary": "Parse one YAML document (the strict subset) into Yaml nodes \u2014 the TYPELESS read: structure is held whole, undeclared keys included, where \u0060from yaml T\u0060 would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -\u003E YBool/YInt/YFloat; quoted or block -\u003E YStr; empty -\u003E YNull).",
+          "example": "[\u0022replicas: 3\u0022] |\u003E Yaml.parse",
+          "pointer": null
+        }
+      ]
     }
   ],
   "forms": [

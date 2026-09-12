@@ -168,8 +168,11 @@ and ExprKind =
     | EInterp of parts: InterpPart<Expr> list
     // the yaml district [D:yaml-district]: a checked block literal — the
     // template tree parsed at CHECK time; splices and `for` sources are
-    // ordinary Exprs, so typing/hover/eval ride existing machinery
-    | EYaml of tpl: YamlTpl * schema: string option
+    // ordinary Exprs, so typing/hover/eval ride existing machinery.
+    // patchBy [D:yaml-nodes]: None = a plain yaml district; Some by = a
+    // `yaml patch` district (typed YamlPatch), by = the optional
+    // `by=<key>` sequence merge key
+    | EYaml of tpl: YamlTpl * schema: string option * patchBy: string option option
 
 and YamlTpl =
     | YtScalar of raw: string * quoted: bool * span: Span
@@ -179,6 +182,9 @@ and YamlTpl =
     | YtSplice of Expr
     | YtSeq of items: YamlTplItem list * span: Span
     | YtMap of entries: YamlTplEntry list * span: Span
+    // the tombstone `$-` in value position [D:yaml-nodes]: remove the
+    // mapping key it sits under — patch districts only
+    | YtDrop of span: Span
 
 and YamlTplEntry =
     | YtPair of key: YamlTplKey * value: YamlTpl
@@ -189,6 +195,9 @@ and YamlTplItem =
     | YtItem of YamlTpl
     // `for p in xs` under a SEQUENCE: the body yields items per element
     | YtForItems of binder: Pattern * source: Expr * body: YamlTplItem list
+    // `- $- <content>` [D:yaml-nodes]: remove the sequence item matching
+    // the content (by the merge key under `by=`, else by equality)
+    | YtDropItem of YamlTpl * span: Span
 
 and YamlTplKey =
     // the key SPAN feeds schema validation's located errors [D:yaml-schemas]
@@ -220,11 +229,13 @@ let rec yamlTplExprs (tpl: YamlTpl) : Expr list =
     match tpl with
     | YtScalar _ -> []
     | YtBlock _ -> []
+    | YtDrop _ -> []
     | YtSplice e -> [ e ]
     | YtSeq(items, _) ->
         items
         |> List.collect (function
             | YtItem t -> yamlTplExprs t
+            | YtDropItem(t, _) -> yamlTplExprs t
             | YtForItems(_, src, body) ->
                 src
                 :: (body
@@ -263,11 +274,13 @@ let rec yamlTplPats (tpl: YamlTpl) : Pattern list =
     match tpl with
     | YtScalar _
     | YtBlock _
+    | YtDrop _
     | YtSplice _ -> []
     | YtSeq(items, _) ->
         items
         |> List.collect (function
             | YtItem t -> yamlTplPats t
+            | YtDropItem(t, _) -> yamlTplPats t
             | YtForItems(b, _, body) ->
                 b
                 :: (body
@@ -288,7 +301,7 @@ let exprPats (e: Expr) : Pattern list =
     | EMatch(_, arms) -> arms |> List.map (fun (p, _, _) -> p)
     | ELetPat(p, _, _)
     | ELambdaPat(p, _) -> [ p ]
-    | EYaml(tpl, _) -> yamlTplPats tpl
+    | EYaml(tpl, _, _) -> yamlTplPats tpl
     | _ -> []
 
 // the expression tree's child list — tooling walks share this (the
@@ -338,7 +351,7 @@ let exprChildren (e: Expr) : Expr list =
         |> List.choose (function
             | IExpr e -> Some e
             | IStr _ -> None)
-    | EYaml(tpl, _) -> yamlTplExprs tpl
+    | EYaml(tpl, _, _) -> yamlTplExprs tpl
 
 type Stmt =
     | SLet of name: string * value: Expr
@@ -490,13 +503,19 @@ let rec sexpr (e: Expr) : string =
     | ECmd(prog, args, Some envE) ->
         let body = args |> List.map sexpr |> String.concat " "
         $"(cmdenv {sexpr envE} {prog} {body})"
-    | EYaml(tpl, schema) ->
+    | EYaml(tpl, schema, patchBy) ->
         let s =
             match schema with
             | Some n -> $" schema={n}"
             | None -> ""
 
-        $"(yaml{s} {sexprYamlTpl tpl})"
+        let pb =
+            match patchBy with
+            | None -> ""
+            | Some None -> " patch"
+            | Some(Some k) -> $" patch by={k}"
+
+        $"(yaml{pb}{s} {sexprYamlTpl tpl})"
 
 and sexprYamlTpl (tpl: YamlTpl) : string =
     let space = " "
@@ -511,11 +530,13 @@ and sexprYamlTpl (tpl: YamlTpl) : string =
     | YtSplice e ->
         let inner = sexpr e
         "$(" + inner + ")"
+    | YtDrop _ -> "$-"
     | YtSeq(items, _) ->
         let body =
             items
             |> List.map (function
                 | YtItem t -> sexprYamlTpl t
+                | YtDropItem(t, _) -> "($- " + sexprYamlTpl t + ")"
                 | YtForItems(p, src, body) ->
                     let b =
                         body

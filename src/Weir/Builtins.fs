@@ -3468,12 +3468,186 @@ let private graphMembers: (string * Ty * Value) list =
 let private treeMembers: (string * Ty * Value) list =
     [ "walk", TFun(TFun(tA, TSeq tA), TFun(tA, TUnit)), treeWalkImpl ]
 
+// ---- the typeless yaml boundary [D:yaml-nodes] ----------------------------
+// Yaml.parse reads one document into the public Yaml union (structure
+// held whole, undeclared keys included — what typed RMW cannot do);
+// Yaml.merge applies a `yaml patch` district. Pure value ops — the file
+// round-trip is composition (File.read |> Yaml.parse |> Yaml.merge p
+// |> to yaml |> File.write), so the one mutation stays visible.
+
+// structural node equality: YMap order-INsensitive (a reordered mapping
+// is the same document), YSeq order-sensitive; seqs forced
+let rec private yamlEq (a: Value) (b: Value) : bool =
+    match a, b with
+    | VUnion("YMap", Some(VSeq ap)), VUnion("YMap", Some(VSeq bp)) ->
+        let pairs (xs: Value seq) =
+            xs
+            |> Seq.map (fun p ->
+                match p with
+                | VTuple [ VStr k; v ] -> k, v
+                | v -> unreachable $"a YMap pair is (string, Yaml): {formatValue v}")
+            |> List.ofSeq
+            |> List.sortBy fst
+
+        let al, bl = pairs ap, pairs bp
+
+        al.Length = bl.Length
+        && List.forall2 (fun (ka, va) (kb, vb) -> ka = kb && yamlEq va vb) al bl
+    | VUnion("YSeq", Some(VSeq ai)), VUnion("YSeq", Some(VSeq bi)) ->
+        let al, bl = List.ofSeq ai, List.ofSeq bi
+        al.Length = bl.Length && List.forall2 yamlEq al bl
+    | VUnion(na, pa), VUnion(nb, pb) -> na = nb && pa = pb
+    | _ -> false
+
+// a patch subtree INSERTED where no target exists: tombstones mean
+// absence, and absent it already is — they strip to nothing
+let rec private stripDrops (v: Value) : Value option =
+    match v with
+    | VUnion("|ydrop", _) -> None
+    | VUnion("YMap", Some(VSeq pairs)) ->
+        pairs
+        |> Seq.choose (fun p ->
+            match p with
+            | VTuple [ VStr k; pv ] -> stripDrops pv |> Option.map (fun sv -> VTuple [ VStr k; sv ])
+            | v -> unreachable $"a YMap pair is (string, Yaml): {formatValue v}")
+        |> List.ofSeq
+        |> fun ps -> Some(VUnion("YMap", Some(VSeq(List.toSeq ps))))
+    | VUnion("YSeq", Some(VSeq items)) ->
+        items
+        |> Seq.choose (fun i ->
+            match i with
+            | VUnion("|ydropitem", _) -> None
+            | i -> stripDrops i)
+        |> List.ofSeq
+        |> fun xs -> Some(VUnion("YSeq", Some(VSeq(List.toSeq xs))))
+    | v -> Some v
+
+/// the merge key's value under a mapping item, when present
+let private keyValOf (by: string) (v: Value) : Value option =
+    match v with
+    | VUnion("YMap", Some(VSeq pairs)) ->
+        pairs
+        |> Seq.tryPick (fun p ->
+            match p with
+            | VTuple [ VStr k; pv ] when k = by -> Some pv
+            | _ -> None)
+    | _ -> None
+
+// the merge laws [D:yaml-nodes]: maps upsert recursively; seqs
+// append-if-absent (under `by=`, a seq-of-mappings upserts/removes by
+// the key); scalars replace; tombstones remove. Orderless, idempotent.
+let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
+    match patch, target with
+    | VUnion("YMap", Some(VSeq ppairs)), VUnion("YMap", Some(VSeq tpairs)) ->
+        let asPairs (xs: Value seq) =
+            xs
+            |> Seq.map (fun p ->
+                match p with
+                | VTuple [ VStr k; v ] -> k, v
+                | v -> unreachable $"a YMap pair is (string, Yaml): {formatValue v}")
+            |> List.ofSeq
+
+        let merged =
+            asPairs ppairs
+            |> List.fold
+                (fun (acc: (string * Value) list) (k, pv) ->
+                    match pv with
+                    | VUnion("|ydrop", _) -> acc |> List.filter (fun (ek, _) -> ek <> k)
+                    | _ ->
+                        if acc |> List.exists (fun (ek, _) -> ek = k) then
+                            acc
+                            |> List.map (fun (ek, ev) -> if ek = k then (ek, yamlMerge by pv ev) else (ek, ev))
+                        else
+                            match stripDrops pv with
+                            | Some sv -> acc @ [ (k, sv) ]
+                            | None -> acc)
+                (asPairs tpairs)
+
+        VUnion("YMap", Some(VSeq(merged |> List.map (fun (k, v) -> VTuple [ VStr k; v ]) |> List.toSeq)))
+    | VUnion("YSeq", Some(VSeq pitems)), VUnion("YSeq", Some(VSeq titems)) ->
+        let merged =
+            pitems
+            |> Seq.fold
+                (fun (acc: Value list) pi ->
+                    match pi with
+                    | VUnion("|ydropitem", Some content) ->
+                        // remove by the merge key when both sides carry
+                        // it, else by structural equality
+                        let matches (t: Value) =
+                            match (if by = "" then None else keyValOf by content), keyValOf by t with
+                            | Some pk, Some tk -> yamlEq pk tk
+                            | _ ->
+                                match stripDrops content with
+                                | Some sc -> yamlEq sc t
+                                | None -> false
+
+                        match acc |> List.tryFindIndex matches with
+                        | Some i -> acc |> List.indexed |> List.filter (fun (j, _) -> j <> i) |> List.map snd
+                        | None -> acc
+                    | _ ->
+                        match (if by = "" then None else keyValOf by pi) with
+                        | Some pkv ->
+                            let hit =
+                                acc
+                                |> List.tryFindIndex (fun t ->
+                                    keyValOf by t |> Option.map (yamlEq pkv) |> Option.defaultValue false)
+
+                            match hit with
+                            | Some i -> acc |> List.mapi (fun j t -> if j = i then yamlMerge by pi t else t)
+                            | None ->
+                                match stripDrops pi with
+                                | Some sv -> acc @ [ sv ]
+                                | None -> acc
+                        | None ->
+                            match stripDrops pi with
+                            | Some sv -> (if acc |> List.exists (yamlEq sv) then acc else acc @ [ sv ])
+                            | None -> acc)
+                (List.ofSeq titems)
+
+        VUnion("YSeq", Some(VSeq(List.toSeq merged)))
+    // a structured patch over a different target shape replaces it
+    // fresh (the source-shape-wins law); scalars replace outright
+    | p, _ -> stripDrops p |> Option.defaultValue (VUnion("YNull", None))
+
+let private yamlParseImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq lines ->
+            let numbered =
+                lines
+                |> Seq.mapi (fun i l ->
+                    match l with
+                    | VStr s -> (i + 1, s)
+                    | v -> unreachable $"the checker rejects 'Yaml.parse' on non-string elements: {formatValue v}")
+                |> List.ofSeq
+
+            match Yaml.parseDocs numbered with
+            | Error msg -> failwith $"Yaml.parse: {msg}"
+            | Ok [] -> failwith "Yaml.parse: empty input — expected one YAML document"
+            | Ok [ doc ] -> yamlNodeValue doc
+            | Ok docs ->
+                failwith
+                    $"Yaml.parse: reads one document; this input has {List.length docs} documents — split on '---' and parse each"
+        | v -> unreachable $"the checker rejects 'Yaml.parse' on {formatValue v}")
+
+let private yamlMergeImpl: Value =
+    VBuiltin(fun patch ->
+        VBuiltin(fun doc ->
+            match patch with
+            | VUnion("|ypatch", Some(VTuple [ VStr by; tree ])) -> yamlMerge by tree doc
+            | v -> unreachable $"the checker admits only a yaml patch district here: {formatValue v}"))
+
+let private yamlModuleMembers: (string * Ty * Value) list =
+    [ "parse", TFun(TSeq TStr, TNamed("Yaml", [])), yamlParseImpl
+      "merge", TFun(TNamed("YamlPatch", []), TFun(TNamed("Yaml", []), TNamed("Yaml", []))), yamlMergeImpl ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
       "Frontier", frontierMembers
       "Graph", graphMembers
       "Tree", treeMembers
+      "Yaml", yamlModuleMembers
       "Map", mapMembers
       "Instant", instantMembers
       "Proc", procMembers
@@ -4657,6 +4831,19 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Parse one XML document (a .csproj/.slnx or any XML) into a declared record — READ-ONLY. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [<Attr>] reads an attribute, [<Elem \"X\">] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option<string>, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no `to xml`."
               None
               (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
+          "Yaml.parse",
+          (bd
+              "Parse one YAML document (the strict subset) into Yaml nodes — the TYPELESS read: structure is held whole, undeclared keys included, where `from yaml T` would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -> YBool/YInt/YFloat; quoted or block -> YStr; empty -> YNull)."
+              (Some "[\"replicas: 3\"] |> Yaml.parse")
+              None
+           |> named [ "lines" ])
+          "Yaml.merge",
+          (bd
+              "Apply a `yaml patch` district to a document: the patch's STRUCTURE is the address (maps upsert recursively; seqs append-if-absent, or upsert/remove by the marker line's by=<key>; scalars replace; a `$-` tombstone removes the key or matching item). Orderless and idempotent; the merged document renders with `to yaml`."
+              None
+              (Some
+                  "let p = yaml patch by=name (indented patch lines) — then File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f.")
+           |> named [ "patch"; "doc" ])
 
           // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
           // Surface names; the typed tree carries the un-typeable |completed

@@ -217,22 +217,58 @@ let private fieldSepP: Parser<unit, unit> = (str_ws ";" <|> str_ws fieldSepStr) 
 /// boundary adapters [D:yaml-district]. One predicate, shared with the
 /// REPL colorizer's marker tint — never a second classifier.
 let isYamlMarkerPiece (piece: string) =
-    // a `schema=<name>` suffix declares the district's contract
-    // [D:yaml-schemas]; strip it, then apply the marker law
-    let core =
-        let lastTok =
-            match piece.LastIndexOf ' ' with
-            | -1 -> piece
-            | i -> piece.Substring(i + 1)
+    // marker-local modifier suffixes — `schema=<name>` [D:yaml-schemas],
+    // `patch` / `by=<key>` [D:yaml-nodes] — strip them (right to left),
+    // then apply the marker law. The residue must still BE the marker,
+    // so `run patch` stays a command.
+    let isModifier (tok: string) =
+        tok = "patch"
+        || (tok.StartsWith "schema=" && tok.Length > 7)
+        || (tok.StartsWith "by=" && tok.Length > 3)
 
-        if lastTok.StartsWith "schema=" && lastTok.Length > 7 then
-            piece.Substring(0, piece.Length - lastTok.Length).TrimEnd()
+    let mutable core = piece
+    let mutable go = true
+
+    while go do
+        let lastTok =
+            match core.LastIndexOf ' ' with
+            | -1 -> core
+            | i -> core.Substring(i + 1)
+
+        if lastTok <> core && isModifier lastTok then
+            core <- core.Substring(0, core.Length - lastTok.Length).TrimEnd()
         else
-            piece
+            go <- false
 
     (core = "yaml" || core.EndsWith " yaml")
     && not (core.EndsWith "to yaml")
     && not (core.EndsWith "from yaml")
+
+/// the marker suffix's LENGTH in a marker piece — `yaml` plus its
+/// modifiers (`patch`, `by=`, `schema=`); the REPL colorizer's tint
+/// region, derived from the same strip loop so they cannot disagree
+let yamlMarkerLen (piece: string) : int =
+    let isModifier (tok: string) =
+        tok = "patch"
+        || (tok.StartsWith "schema=" && tok.Length > 7)
+        || (tok.StartsWith "by=" && tok.Length > 3)
+
+    let mutable core = piece
+    let mutable go = true
+
+    while go do
+        let lastTok =
+            match core.LastIndexOf ' ' with
+            | -1 -> core
+            | i -> core.Substring(i + 1)
+
+        if lastTok <> core && isModifier lastTok then
+            core <- core.Substring(0, core.Length - lastTok.Length).TrimEnd()
+        else
+            go <- false
+
+    // from the `yaml` word through the end of the modifiers
+    min piece.Length (piece.Length - core.Length + 4)
 
 /// Line-end `<<<` / `$<<<` arms a heredoc district [D:text-block] — the
 /// yaml district's sibling. The block forms mirror the string forms:
@@ -2266,7 +2302,11 @@ let private tplValueSlot (col: int) (text: string) : Result<YamlTpl, string * in
         { Start = { Line = 1; Col = tCol }
           End = { Line = 1; Col = tCol + len } }
 
-    if t.StartsWith "$" then
+    if t = "$-" then
+        // the tombstone [D:yaml-nodes] — remove the key this value sits
+        // under; the checker scopes it to `yaml patch` districts
+        Result.Ok(YtDrop(mkSpan 2))
+    elif t.StartsWith "$" then
         let inner = t.Substring 1
 
         if inner.StartsWith "(" then
@@ -2501,8 +2541,17 @@ and private parseTplBlockBody
                             | Result.Error e -> Result.Error e
                             | Result.Ok body -> units j (UFor(binder, src, body) :: acc)
                     elif text.StartsWith "- " || text.TrimEnd() = "-" then
-                        let inlinePart = if text.TrimEnd() = "-" then "" else text.Substring 2
-                        let inlineCol = col + 2
+                        let rawInline = if text.TrimEnd() = "-" then "" else text.Substring 2
+
+                        // `- $- <content>` removes the matching item
+                        // [D:yaml-nodes]; the sigil needs content to match
+                        let isDropItem = rawInline.StartsWith "$- " || rawInline.TrimEnd() = "$-"
+
+                        let inlinePart, inlineCol =
+                            if isDropItem then
+                                (if rawInline.TrimEnd() = "$-" then "" else rawInline.Substring 3), col + 5
+                            else
+                                rawInline, col + 2
 
                         let itemR =
                             match Yaml.blockHeader inlinePart with
@@ -2530,6 +2579,19 @@ and private parseTplBlockBody
                                             Result.Error("a scalar sequence item cannot have a nested block", col)
                                         else
                                             tplValueSlot inlineCol inlinePart |> Result.map YtItem
+
+                        let itemR =
+                            if not isDropItem then
+                                itemR
+                            else
+                                match itemR with
+                                | Result.Ok(YtItem(YtScalar("", false, _))) ->
+                                    Result.Error(
+                                        "a tombstone item removes what matches the content after it — write `- $- <value>` (or `- $- key: value` under by=)",
+                                        col
+                                    )
+                                | Result.Ok(YtItem t) -> Result.Ok(YtDropItem(t, spanAt col))
+                                | other -> other
 
                         match itemR with
                         | Result.Error e -> Result.Error e
@@ -2687,14 +2749,24 @@ let private districtTail: Parser<(int * int * string)[] * int, unit> =
 
 let private yamlDistrictBody: Parser<Expr, unit> =
     attempt (
+        // canonical modifier order: yaml [patch [by=<key>]] [schema=<name>]
+        // — `by=` belongs to `patch` (a sequence merge key has no meaning
+        // in a plain district), so the grammar nests it [D:yaml-nodes]
         getPosition .>> pstring "yaml"
+        .>>. opt (
+            pstring " patch"
+            >>. opt (
+                pstring " by="
+                >>. many1Satisfy (fun c -> c <> ' ' && c <> sibSep)
+            )
+        )
         .>>. opt (
             pstring " schema="
             >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
         )
         .>> followedBy (pstring sibSepStr)
     )
-    >>= fun (startP, schemaName) ->
+    >>= fun ((startP, patchBy), schemaName) ->
         districtTail
         >>= fun (lines, colCursor) ->
             if lines |> Array.forall (fun (_, _, t) -> t = "") then
@@ -2708,7 +2780,7 @@ let private yamlDistrictBody: Parser<Expr, unit> =
                     let endCol = colCursor
 
                     preturn
-                        { Kind = EYaml(tpl, schemaName)
+                        { Kind = EYaml(tpl, schemaName, patchBy)
                           Span =
                             { Start = pos startP
                               End = { Line = int startP.Line; Col = endCol } } }
